@@ -113,9 +113,9 @@ describe('mounted Outlook pane quoting path at 380px', () => {
     expect(screen.queryByText(/NCOR1B/i)).toBeNull();
     expect(screen.queryByText(/R2,150\.00/)).toBeNull();
     expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();
-    expect(await screen.findByRole('button', { name: /^Run next$/i })).toBeDefined();
+    expect(await screen.findByRole('button', { name: /^Get rates from HMS$/i })).toBeDefined();
 
-    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Get rates from HMS$/i }));
     await waitFor(() => {
       expect(screen.getAllByText(/not available here|no room options|not owned by this quoting UI|not ready yet|not connected to this pane/i).length).toBeGreaterThan(0);
     });

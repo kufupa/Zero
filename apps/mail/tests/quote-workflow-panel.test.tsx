@@ -2,9 +2,10 @@
  * @vitest-environment happy-dom
  */
 import { useState } from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
+import { resetPartyAutoLookupForTests } from '../components/quote-workflow/party-picker';
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type { QuoteSession } from '../lib/quote-workflow/types';
@@ -92,8 +93,8 @@ describe('QuoteWorkflowPanel', () => {
         }), { type: 'analysis_ready', analysis: { intent: 'other', groups: [], secondaryAsks: [], alternatives: [] } })}
       />,
     );
-    expect(screen.getByText(/not a quote request/i)).toBeDefined();
-    expect(screen.queryByRole('button', { name: /Run next/i })).toBeNull();
+    expect(screen.getByText(/not a quote or booking/i)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Get rates from HMS/i })).toBeNull();
   });
 
   it('renders one editable card per stay group with month and year dates', () => {
@@ -131,7 +132,7 @@ describe('QuoteWorkflowPanel', () => {
     render(<QuoteWorkflowPanel session={session} onRunNext={onRunNext} onRunStep={onRunStep} />);
     expect(screen.getByText(/do not assume inventory is held/i)).toBeDefined();
     expect(screen.getByText(/Dates 2026-11-12 → 2026-11-14/i)).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: /Run next/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Get rates from HMS/i }));
     expect(onRunNext).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: /Run Search availability for 12–14 Nov/i }));
     expect(onRunStep).toHaveBeenCalledWith('quote-1');
@@ -191,11 +192,11 @@ describe('QuoteWorkflowPanel', () => {
     first.unmount();
     session = { ...session, selectedOfferIds: ['st-a'] };
     render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', true);
     session = { ...session, selectedOfferIds: ['st-a', 'st-b'] };
     cleanup();
     render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', true);
     expect(screen.getByText(/Each date search keeps its own quote and PDF/)).toBeDefined();
     expect(screen.queryByText(/Combined PDF is blocked/i)).toBeNull();
   });
@@ -210,7 +211,7 @@ describe('QuoteWorkflowPanel', () => {
       reviewedReplyHtml: '<p>Authorised</p>',
     };
     render(<QuoteWorkflowPanel session={{ ...session, selectedOfferIds: ['mix-a'] }} onSelectOffer={onSelectOffer} />);
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', true);
     cleanup();
     render(
       <QuoteWorkflowPanel
@@ -218,7 +219,7 @@ describe('QuoteWorkflowPanel', () => {
         onSelectOffer={onSelectOffer}
       />,
     );
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', false);
   });
 
   it('hides Items for you on a clean quote and on unsynced mail', () => {
@@ -330,7 +331,7 @@ describe('QuoteWorkflowPanel', () => {
       ],
     };
     render(<QuoteWorkflowPanel session={ready} />);
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', false);
     expect(screen.getByText('Is an airport shuttle available?')).toBeDefined();
   });
 
@@ -472,7 +473,7 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.focus(dinner);
     fireEvent.change(dinner, { target: { value: '450,50x' } });
     expect(runButtons().every((button) => button.disabled)).toBe(true);
-    expect((screen.getByRole('button', { name: 'Run next' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Get rates from HMS' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getAllByText(/Fix the amounts before running this search\. Dinner allowance:/).length).toBeGreaterThan(0);
     expect(seen.latest?.staffHeader.dinnerAllowanceMinor).toBe(45_000);
     // Clearing the field drops the charge and unblocks the Run.
@@ -487,7 +488,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(runButtons().every((button) => button.disabled)).toBe(true);
   });
 
-  it('puts Download Excel beside the PDF button and passes the click on', () => {
+  it('puts Download Excel under the PDF button and passes the click on', () => {
     const onDownloadWorkbook = vi.fn();
     const ready = {
       ...sessionFromFixture('public-single'),
@@ -497,9 +498,9 @@ describe('QuoteWorkflowPanel', () => {
       reviewedReplyHtml: '<p>Full staff-edited reply</p>',
     };
     render(<QuoteWorkflowPanel session={ready} onDownloadWorkbook={onDownloadWorkbook} />);
-    const pdf = screen.getByRole('button', { name: /Prepare quotation PDF/i }) as HTMLButtonElement;
+    const pdf = screen.getByRole('button', { name: /^Prepare PDF$/i }) as HTMLButtonElement;
     const excel = screen.getByRole('button', { name: 'Download Excel' }) as HTMLButtonElement;
-    expect(excel.parentElement).toBe(pdf.parentElement);
+    expect(pdf.compareDocumentPosition(excel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(excel.disabled).toBe(false);
     fireEvent.click(excel);
     expect(onDownloadWorkbook).toHaveBeenCalledTimes(1);
@@ -538,7 +539,7 @@ describe('QuoteWorkflowPanel', () => {
     ).toBeDefined();
     const optionA = screen.getByRole('button', { name: 'Select date scope 2026-11-02 to 2026-11-04' });
     expect(optionA.textContent).toMatch(/Quoted R.*PDF not built/);
-    expect(screen.getByText('Finish the PDF for option A first, then run option B.')).toBeDefined();
+    expect(screen.getAllByText('Finish the PDF for option A first, then run option B.').length).toBeGreaterThan(0);
     const runB = screen.getByRole('button', { name: /^Run Search availability 2026-11-10/i }) as HTMLButtonElement;
     expect(runB.disabled).toBe(true);
     fireEvent.click(runB);
@@ -712,12 +713,18 @@ describe('the Find in HMS picker in the quote header', () => {
   }
 
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.
-  it('shows one Find in HMS picker per field when a finder is passed, and none without one', () => {
-    const { unmount } = render(<QuoteWorkflowPanel session={headerSession({})} findParty={noMatch} />);
-    expect(screen.getAllByRole('button', { name: 'Find in HMS' })).toHaveLength(2);
+  it('looks each named field up in HMS by itself, once, with its own kind; no finder, no lookup', async () => {
+    resetPartyAutoLookupForTests();
+    const find = vi.fn(noMatch);
+    const { unmount } = render(
+      <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel', agency: 'Travel Hub' })} findParty={find} />,
+    );
+    await waitFor(() => expect(find).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    expect(find).toHaveBeenCalledWith('Acme Travel', 'company');
+    expect(find).toHaveBeenCalledWith('Travel Hub', 'agency');
     unmount();
-    render(<QuoteWorkflowPanel session={headerSession({})} />);
-    expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeNull();
+    render(<QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} />);
+    expect(screen.queryByText(/Searching HMS/)).toBeNull();
   });
 
   it('drops a pick only when its own field is edited away from its name', () => {
@@ -753,14 +760,20 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(seen.latest?.staffHeader.parties?.agency).toBeUndefined();
   });
 
-  it('says Nava, not Luna, in the picker hint and its search notes', async () => {
+  it('says Nava, not Luna, when the automatic HMS lookup cannot reach HMS', async () => {
+    resetPartyAutoLookupForTests();
     const unavailable = async () => ({ outcome: 'external_system_unavailable' as const, results: [], truncated: false });
-    render(<QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} findParty={unavailable} />);
-    expect(screen.getAllByText(/Pick the exact company or agency so Nava can get their rate/).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Find in HMS' })[0]!);
+    const { container } = render(
+      <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} findParty={unavailable} />,
+    );
     expect(
-      await screen.findByText("Nava couldn't check HMS for this name. Try again, or quote at public rates."),
+      await screen.findByText(
+        "Nava couldn't check HMS for this name. Try again, or quote at public rates.",
+        undefined,
+        { timeout: 3000 },
+      ),
     ).toBeDefined();
+    expect(container.textContent).not.toMatch(/Luna/);
   });
 });
 

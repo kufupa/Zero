@@ -110,14 +110,14 @@ describe('production pane never synthesizes quote evidence', () => {
 
   it('keeps integration unavailable and does not emit fixture offers, PDF, or native calls', async () => {
     render(<OutlookPanePage />);
-    fireEvent.click(await screen.findByRole('button', { name: /^Run next$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Get rates from HMS$/i }));
     await waitFor(() => {
       expect(screen.getAllByText(/not available here|not owned by this quoting UI|integration unavailable|not ready yet|not connected to this pane/i).length).toBeGreaterThan(0);
     });
     expect(screen.queryByText(/Allocation/)).toBeNull();
     expect(screen.queryByText(/R2\s*720/)).toBeNull();
     expect(screen.queryByText(/Quote-fixture-not-live-hms/)).toBeNull();
-    const pdfButton = screen.queryByRole('button', { name: /Prepare quotation PDF/i });
+    const pdfButton = screen.queryByRole('button', { name: /^Prepare PDF$/i });
     if (pdfButton) expect(pdfButton).toHaveProperty('disabled', true);
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     expect(sendCommandMock.mock.calls.map((call) => call[0])).not.toContain('CREATE_REPLY_DRAFT');

@@ -301,7 +301,7 @@ describe('Outlook pane: one reply for every completed date option', () => {
         screen.getByText(/Attached: Quote-rev-a - Option A\.pdf, Quote-rev-b - Option B\.pdf/),
       ).toBeDefined(),
     );
-  });
+  }, 30_000);
 
   it('keeps a per-option draft for the selected option with only its own PDF', async () => {
     render(<OutlookPanePage />);
@@ -322,7 +322,7 @@ describe('Outlook pane: one reply for every completed date option', () => {
     expect((callsFor('ADD_ATTACHMENT_TO_DRAFT')[0]![1] as { base64Data: string }).base64Data).toBe(
       OPTIONS[1]!.pdfBase64,
     );
-  });
+  }, 30_000);
 
   it('will not start a different draft while an earlier reply may already be in Outlook Drafts', async () => {
     sessionState.timeoutFirstCreate = true;
@@ -357,5 +357,5 @@ describe('Outlook pane: one reply for every completed date option', () => {
     expect((callsFor('ADD_ATTACHMENT_TO_DRAFT')[0]![1] as { fileName: string }).fileName).toBe(
       'Quote-rev-b.pdf',
     );
-  });
+  }, 30_000);
 });

@@ -616,8 +616,21 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         binding: action.binding,
       };
     }
-    case 'treat_as':
-      return { ...session, treatAs: action.treatAs };
+    case 'treat_as': {
+      if (action.treatAs === session.treatAs) return session;
+      const chosen = { ...session, treatAs: action.treatAs };
+      // Rates were got for the old type. A booking needs its cards and a quote must not keep them, so the results go
+      // and Get rates runs again for the chosen type. The stays staff have are kept.
+      if (!session.staffQuote && !session.bookingDraft && Object.keys(session.staffQuotes ?? {}).length === 0) {
+        return chosen;
+      }
+      return clearDownstream({
+        ...chosen,
+        inputRevision: session.inputRevision + 1,
+        phase: 'requirements',
+        steps: planQuoteSteps(session.groups),
+      });
+    }
     case 'staff_note':
       return { ...session, staffNote: action.staffNote.trim() || null };
     case 'analysis_started':
@@ -653,16 +666,17 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         const extras = session.reviewItems.filter(
           (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
         );
+        // Staff stay edits win over a re-read. A type staff chose (quote or booking) still applies: the re-read's
+        // workflow is taken, the edited stays are kept.
+        const typeChanged =
+          Boolean(session.treatAs) && action.analysis.luna?.workflow !== session.analysis?.luna?.workflow;
+        const analysis = typeChanged ? action.analysis : session.analysis;
         return {
           ...session,
           phase: loadingDone,
+          analysis,
           analysisStartStayRevision: null,
-          reviewItems: projectQuoteReviewItems(
-            session.analysis,
-            session.groups,
-            extras,
-            session.staffActions,
-          ),
+          reviewItems: projectQuoteReviewItems(analysis, session.groups, extras, session.staffActions),
         };
       }
       if (action.analysis.intent !== 'quote') {

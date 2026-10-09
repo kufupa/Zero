@@ -1,4 +1,5 @@
 import type { LunaAnalysisWire, QuoteAmendment } from '@/lib/quote-workflow/types';
+import { Notice } from '@/components/nava-pane/pane-ui';
 
 /** Shown in place of the "not supported" copy while the change or cancel panel is on screen. */
 export const AMENDMENT_PANEL_COPY = 'Nava can find the booking; make the change in HMS yourself.';
@@ -10,7 +11,7 @@ const FLAG_COPY: Record<LunaAnalysisWire['flags'][number], string> = {
   long_stay: 'Stay over 30 nights: split it into shorter stays by hand.',
   discount_or_negotiation: 'Discount asked for: your decision is needed.',
   multi_date: "Several date options: run each one. Build each option's PDF before running the next.",
-  extras: 'Extras asked for (shuttle or dinner): set them in the Quote header before you make the PDF.',
+  extras: 'Extras asked for (shuttle or dinner): set them under Extras in Stay details before you make the PDF.',
   mixed_request: 'Several requests in one email: check each one.',
   attachment_unread: 'An attachment could not be read. Open it in Outlook and check it.',
 };
@@ -53,15 +54,13 @@ export function NotSupportedList({
   const extra = tasks ? tasksLine(tasks) : null;
   if (!copies.length && !extra) return null;
   return (
-    <section
-      role="alert"
-      className="flex flex-col gap-1 rounded-sm border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800"
-      aria-label="Not supported"
-    >
+    <div role="alert" className="flex flex-col gap-1.5" aria-label="Not supported">
       {copies.map((copy) => (
-        <p key={copy}>{copy}</p>
+        <Notice key={copy} tone="warn">
+          {copy}
+        </Notice>
       ))}
-      {extra ? <p>{extra}</p> : null}
-    </section>
+      {extra ? <Notice tone="warn">{extra}</Notice> : null}
+    </div>
   );
 }

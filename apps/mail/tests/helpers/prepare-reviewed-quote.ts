@@ -13,19 +13,19 @@ export async function fillStayFactsMatchingAuthorisedOffer(): Promise<void> {
 /** Drive an authorised HITL path. Production unavailable path must not reach here. */
 export async function prepareReviewedQuote(): Promise<void> {
   await fillStayFactsMatchingAuthorisedOffer();
-  fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+  fireEvent.click(screen.getByRole('button', { name: /^Get rates from HMS$/i }));
   const allocation = await waitFor(() => {
     const match = screen.getAllByRole('button').find((element) => {
       const text = element.textContent ?? '';
       return text.includes('Counted in the total') && !text.includes('Alternative');
     });
-    if (!match) throw new Error('expected an authorised allocation offer after Run next');
+    if (!match) throw new Error('expected an authorised allocation offer after Get rates from HMS');
     return match;
   });
   if (allocation.getAttribute('aria-pressed') !== 'true') fireEvent.click(allocation);
   const reply = screen.getByLabelText('Reviewed reply');
   fireEvent.change(reply, { target: { value: AUTHORISED_REPLY_HTML } });
-  fireEvent.click(screen.getByRole('button', { name: /Prepare quotation PDF/i }));
+  fireEvent.click(screen.getByRole('button', { name: /^Prepare PDF$/i }));
   await waitFor(() => {
     expectPreparedPdf();
   });

@@ -170,13 +170,13 @@ async function waitForAllocation(label: string) {
 async function startPendingPdf() {
   render(<OutlookPanePage />);
   await fillStayFactsMatchingAuthorisedOffer();
-  fireEvent.click(await screen.findByRole('button', { name: /^Run next$/i }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Get rates from HMS$/i }));
   // A successful run selects its allocation already; clicking again would deselect it.
   const allocation = await waitForAllocation('Standard King');
   if (allocation.getAttribute('aria-pressed') !== 'true') fireEvent.click(allocation);
   // A draft needs a reviewed reply as well as a PDF, so a stale PDF would show up as a draft attempt.
   fireEvent.change(screen.getByLabelText('Reviewed reply'), { target: { value: AUTHORISED_REPLY_HTML } });
-  fireEvent.click(screen.getByRole('button', { name: /Prepare quotation PDF/i }));
+  fireEvent.click(screen.getByRole('button', { name: /^Prepare PDF$/i }));
   await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalled());
 }
 
@@ -238,7 +238,7 @@ describe('deferred quote PDF / unavailable cannot mutate a newer session', () =>
     executeStaffQuoteMutateMock.mockReturnValue(pending.promise);
     render(<OutlookPanePage />);
     await fillStayFactsMatchingAuthorisedOffer();
-    fireEvent.click(await screen.findByRole('button', { name: /^Run next$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Get rates from HMS$/i }));
     fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '4' } });
     await act(async () => {
       pending.resolve({ status: 'pending' });

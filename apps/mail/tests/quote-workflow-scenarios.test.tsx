@@ -102,7 +102,7 @@ describe('quote workflow scenario matrix', () => {
 
   it('blocks PDF until an evidenced allocation is selected', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('public-single')} />);
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i }).hasAttribute('disabled')).toBe(true);
   });
 
   it('staff edits invalidate results in the session used by the panel', () => {

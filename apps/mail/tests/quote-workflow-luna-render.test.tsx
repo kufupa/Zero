@@ -103,7 +103,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.getByLabelText('Arrival')).toBeDefined();
   });
 
-  it('shows not-supported copy and missing questions on a non_quote Other workflow', () => {
+  it('shows the not-supported copy and one notice on a non_quote Other workflow', () => {
     const session = sessionWithAnalysis({
       intent: 'other',
       groups: [],
@@ -116,15 +116,14 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText('Other')).toBeDefined();
+    expect((screen.getByLabelText('Nava reads this as') as HTMLSelectElement).value).toBe('other');
     expect(screen.getByText('Changing or cancelling a booking is not supported yet. Handle it by hand in HMS.')).toBeDefined();
-    expect(screen.getByText('Reservation number?')).toBeDefined();
-    expect(screen.getByText(/not a quote request/i)).toBeDefined();
-    expect(screen.getByRole('button', { name: 'This is a quote request' })).toBeDefined();
-    expect(screen.getByRole('button', { name: 'This is a booking' })).toBeDefined();
+    expect(screen.queryByText('Reservation number?')).toBeNull();
+    expect(screen.getByText(/Not a quote or booking/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'This is a quote request' })).toBeNull();
   });
 
-  it('calls onTreatAs quote from the Other workflow actions', () => {
+  it('calls onTreatAs quote and booking from the type picker on the Other workflow', () => {
     const onTreatAs = vi.fn();
     const session = sessionWithAnalysis({
       intent: 'other',
@@ -134,9 +133,9 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       luna: lunaWire({ workflow: 'other' }),
     });
     render(<QuoteWorkflowPanel session={session} onTreatAs={onTreatAs} />);
-    fireEvent.click(screen.getByRole('button', { name: 'This is a quote request' }));
+    fireEvent.change(screen.getByLabelText('Nava reads this as'), { target: { value: 'quote' } });
     expect(onTreatAs).toHaveBeenCalledWith('quote');
-    fireEvent.click(screen.getByRole('button', { name: 'This is a booking' }));
+    fireEvent.change(screen.getByLabelText('Nava reads this as'), { target: { value: 'create_booking' } });
     expect(onTreatAs).toHaveBeenCalledWith('create_booking');
   });
 
@@ -233,10 +232,11 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       luna: lunaWire({ workflow: 'quote' }),
     });
     render(<QuoteWorkflowPanel session={session} onStaffNote={onStaffNote} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Something wrong? Tell Nava' }));
     fireEvent.change(screen.getByLabelText("Tell Nava what's wrong"), {
       target: { value: '4 twins at R1800' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Re-read with your note' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-read with my note' }));
     expect(onStaffNote).toHaveBeenCalledWith('4 twins at R1800');
   });
 
@@ -484,8 +484,8 @@ describe('Outlook pane Nava analysis bind', () => {
     });
     const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
     render(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'This is a quote request' })).toBeDefined());
-    fireEvent.click(screen.getByRole('button', { name: 'This is a quote request' }));
+    await waitFor(() => expect(screen.getByLabelText('Nava reads this as')).toBeDefined());
+    fireEvent.change(screen.getByLabelText('Nava reads this as'), { target: { value: 'quote' } });
     await waitFor(() => {
       expect(
         analyseMutate.mock.calls.some((call) => (call[0] as { treatAs?: string })?.treatAs === 'quote'),
@@ -506,11 +506,12 @@ describe('Outlook pane Nava analysis bind', () => {
     });
     const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
     render(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getByLabelText("Tell Nava what's wrong")).toBeDefined());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Something wrong? Tell Nava' })).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Something wrong? Tell Nava' }));
     fireEvent.change(screen.getByLabelText("Tell Nava what's wrong"), {
       target: { value: '4 twins at R1800' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Re-read with your note' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-read with my note' }));
     await waitFor(() => {
       expect(
         analyseMutate.mock.calls.some(

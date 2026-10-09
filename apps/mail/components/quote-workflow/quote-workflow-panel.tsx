@@ -5,6 +5,7 @@ import {
   canCreatePdf,
   optionLetter,
   pendingPdfStayKey,
+  pickNextRunnableStep,
   quoteRunBlockReason,
   requestedQuoteKeys,
   staffSourceReady,
@@ -19,11 +20,23 @@ import type {
   QuoteOffer,
   QuoteReviewItem,
   QuoteSession,
+  QuoteToolStep,
   StaffQuoteHeader,
   StaffExtraField,
   StaffQuoteOtherUnit,
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
+import {
+  Disclosure,
+  Field,
+  LinkButton,
+  Notice,
+  PrimaryButton,
+  Section,
+  SecondaryButton,
+  paneFieldClass,
+  paneTextareaClass,
+} from '@/components/nava-pane/pane-ui';
 import { BookingCards } from './booking-card';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { PartyPicker } from './party-picker';
@@ -36,60 +49,63 @@ import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
 import { RequirementCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
-import { WorkflowBadge } from './workflow-badge';
-
-
-const fieldClass =
-  'outline-hidden h-8 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
+import { WorkflowBadge, type QuoteIntent } from './workflow-badge';
 
 function analysingCopy(session: QuoteSession): string {
   return session.staffNote ? 'Nava is re-reading with your note…' : 'Nava is reading the email…';
 }
 
-function TellLunaBox({
+/**
+ * Staff's correction to what Nava read. Closed unless a note is already set. Submitting re-reads the email with the
+ * note, and the note wins over the email.
+ */
+function CorrectionNote({
   onStaffNote,
   draft,
   onDraftChange,
 }: {
   onStaffNote?: (note: string) => void;
-  /** The owner keeps the draft when this box unmounts. Without it the box keeps its own. */
+  /** The owner keeps the draft when this note unmounts. Without it the note keeps its own. */
   draft?: string;
   onDraftChange?: (value: string) => void;
 }) {
   const [localNote, setLocalNote] = useState('');
   const note = draft ?? localNote;
   const setNote = onDraftChange ?? setLocalNote;
+  const [open, setOpen] = useState(() => note.trim() !== '');
   return (
-    <form
-      className="flex flex-col gap-1.5"
-      onSubmit={(event) => {
-        event.preventDefault();
-        const trimmed = note.trim();
-        if (!trimmed) return;
-        onStaffNote?.(trimmed);
-      }}
-    >
-      <label className="text-xs font-semibold text-[#475569]" htmlFor="tell-luna-note">
-        Tell Nava what&apos;s wrong
-      </label>
-      <textarea
-        id="tell-luna-note"
-        aria-label="Tell Nava what's wrong"
-        placeholder="e.g. 3 nights from 12 Nov, 2 adults, dinner included"
-        className="min-h-[4.5rem] w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12.5px] text-[#1e293b]"
-        value={note}
-        onChange={(event) => setNote(event.target.value)}
-      />
-      <p className="text-[11px] text-[#64748b]">
-        Nava will re-read the email with your note. Your note wins over the email.
-      </p>
-      <button
-        type="submit"
-        className="self-start rounded-sm border border-[#0066cc] bg-white px-2 py-1 text-[11px] font-medium text-[#0066cc]"
-      >
-        Re-read with your note
-      </button>
-    </form>
+    <div className="flex flex-col gap-2">
+      <LinkButton ariaExpanded={open} onClick={() => setOpen((value) => !value)}>
+        Something wrong? Tell Nava
+      </LinkButton>
+      {open ? (
+        <form
+          className="flex flex-col gap-2 rounded-[3px] border border-[#e2e8f0] bg-[#f8fafc] p-2.5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const trimmed = note.trim();
+            if (!trimmed) return;
+            onStaffNote?.(trimmed);
+          }}
+        >
+          <p className="text-[11.5px] text-[#475569]">
+            Nava re-reads the email using your note and updates the fields below. Example: 3 nights from 12 Nov, 2
+            adults, dinner included.
+          </p>
+          <textarea
+            id="tell-luna-note"
+            aria-label="Tell Nava what's wrong"
+            placeholder="Type your note for Nava"
+            className={paneTextareaClass}
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+          />
+          <div>
+            <SecondaryButton type="submit">Re-read with my note</SecondaryButton>
+          </div>
+        </form>
+      ) : null}
+    </div>
   );
 }
 
@@ -141,7 +157,7 @@ function ZarMinorInput({
       <input
         aria-label={ariaLabel}
         aria-invalid={error ? true : undefined}
-        className={fieldClass}
+        className={paneFieldClass}
         inputMode="decimal"
         value={focused || error ? draft : formatted}
         onFocus={() => {
@@ -206,7 +222,7 @@ function CountInput({
       <input
         aria-label={ariaLabel}
         aria-invalid={error ? true : undefined}
-        className={fieldClass}
+        className={paneFieldClass}
         inputMode="numeric"
         placeholder={placeholder}
         value={focused || error ? draft : formatted}
@@ -244,7 +260,24 @@ function pickClearedBy(kind: 'company' | 'agency', header: StaffQuoteHeader, tex
   return { parties: { ...header.parties, [kind]: undefined } };
 }
 
-function StaffHeaderFields({
+/** Reports one field's unreadable text through the header, so the quote gate sees it. No revision bump. */
+function fieldErrorReporter(
+  header: StaffQuoteHeader,
+  onPatch: ((header: Partial<StaffQuoteHeader>) => void) | undefined,
+  field: StaffExtraField,
+) {
+  return (message: string | null) => {
+    const current = header.fieldErrors ?? {};
+    if ((current[field] ?? null) === message) return;
+    const next: Partial<Record<StaffExtraField, string>> = { ...current };
+    if (message) next[field] = message;
+    else delete next[field];
+    onPatch?.({ fieldErrors: next });
+  };
+}
+
+/** Rate type, company and agency: the fields that decide the quote, each with its HMS picker. */
+function StaffPartyFields({
   header,
   onPatch,
   findParty,
@@ -260,22 +293,12 @@ function StaffHeaderFields({
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
 }) {
-  // An amount with no label is not dropped: the label is required and the quote raises a review item for it.
-  const otherNeedsLabel = Boolean(header.other?.amountMinor) && !header.other?.label?.trim();
-  // Reports one field's unreadable text through the header, so the quote gate sees it. No revision bump.
-  const reportFieldError = (field: StaffExtraField) => (message: string | null) => {
-    const current = header.fieldErrors ?? {};
-    if ((current[field] ?? null) === message) return;
-    const next: Partial<Record<StaffExtraField, string>> = { ...current };
-    if (message) next[field] = message;
-    else delete next[field];
-    onPatch?.({ fieldErrors: next });
-  };
   // Each field's picker searches that field's own text and holds only that kind: its results, its pick and its suggestions.
   // HOOK(#84, not on main): the HMS typeahead's onSearchName lands on the onSearchName prop below.
   const partyPicker = (kind: 'company' | 'agency') =>
     findParty ? (
       <PartyPicker
+        autoLookup
         kind={kind}
         name={kind === 'company' ? header.company : header.agency}
         parties={header.parties ?? {}}
@@ -305,16 +328,13 @@ function StaffHeaderFields({
       />
     ) : null;
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
-      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quote header</h3>
-      <p className="text-[11px] text-[#64748b]">
-        These exact values go on the PDF. Leave Agency blank if there is none.
-      </p>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Rate type
+    <>
+      <p className="text-[11px] text-[#64748b]">These exact values go on the PDF. Leave Agency blank if there is none.</p>
+      <Field label="Rate type" required htmlFor="quote-rate-type">
         <select
+          id="quote-rate-type"
           aria-label="Rate type"
-          className={fieldClass}
+          className={paneFieldClass}
           value={header.salesStrategy}
           onChange={(event) =>
             onPatch?.({ salesStrategy: event.target.value === 'Government' ? 'Government' : 'BAR' })
@@ -323,73 +343,89 @@ function StaffHeaderFields({
           <option value="BAR">BAR (best available rate)</option>
           <option value="Government">Government rate</option>
         </select>
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Company
+      </Field>
+      <Field label="Company" htmlFor="quote-company">
         <input
+          id="quote-company"
           aria-label="Company"
-          className={fieldClass}
+          className={paneFieldClass}
           value={header.company}
           onChange={(event) =>
             onPatch?.({ company: event.target.value, ...pickClearedBy('company', header, event.target.value) })
           }
         />
-      </label>
-      {partyPicker('company')}
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Agency
+        {partyPicker('company')}
+      </Field>
+      <Field label="Agency" htmlFor="quote-agency">
         <input
+          id="quote-agency"
           aria-label="Agency"
-          className={fieldClass}
+          className={paneFieldClass}
           value={header.agency}
           onChange={(event) =>
             onPatch?.({ agency: event.target.value, ...pickClearedBy('agency', header, event.target.value) })
           }
         />
-      </label>
-      {partyPicker('agency')}
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Attention
+        {partyPicker('agency')}
+      </Field>
+    </>
+  );
+}
+
+/** Contact, allowances and notes. Folded in the pane's Extras disclosure. */
+function StaffExtraFields({
+  header,
+  onPatch,
+}: {
+  header: StaffQuoteHeader;
+  onPatch?: (header: Partial<StaffQuoteHeader>) => void;
+}) {
+  // An amount with no label is not dropped: the label is required and the quote raises a review item for it.
+  const otherNeedsLabel = Boolean(header.other?.amountMinor) && !header.other?.label?.trim();
+  return (
+    <>
+      <Field label="Attention" htmlFor="quote-attention">
         <input
+          id="quote-attention"
           aria-label="Attention"
-          className={fieldClass}
+          className={paneFieldClass}
           value={header.attention}
           onChange={(event) => onPatch?.({ attention: event.target.value })}
         />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Client email
+      </Field>
+      <Field label="Client email" htmlFor="quote-client-email">
         <input
+          id="quote-client-email"
           aria-label="Client email"
-          className={fieldClass}
+          className={paneFieldClass}
           value={header.clientEmail}
           onChange={(event) => onPatch?.({ clientEmail: event.target.value })}
         />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Client telephone
+      </Field>
+      <Field label="Client telephone" htmlFor="quote-client-telephone">
         <input
+          id="quote-client-telephone"
           aria-label="Client telephone"
-          className={fieldClass}
+          className={paneFieldClass}
           value={header.clientTelephone}
           onChange={(event) => onPatch?.({ clientTelephone: event.target.value })}
         />
-      </label>
+      </Field>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
           Dinner allowance (R per person per night)
           <ZarMinorInput
             ariaLabel="Dinner allowance (R per person per night)"
             minor={header.dinnerAllowanceMinor}
             onMinorChange={(dinnerAllowanceMinor) => onPatch?.({ dinnerAllowanceMinor })}
-            onErrorChange={reportFieldError('dinnerAllowance')}
+            onErrorChange={fieldErrorReporter(header, onPatch, 'dinnerAllowance')}
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
           Dinner label, optional (e.g. food only)
           <input
             aria-label="Dinner label"
-            className={fieldClass}
+            className={paneFieldClass}
             maxLength={120}
             value={header.dinnerAllowanceLabel ?? ''}
             onChange={(event) => onPatch?.({ dinnerAllowanceLabel: event.target.value })}
@@ -397,20 +433,20 @@ function StaffHeaderFields({
         </label>
       </div>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
           Lunch allowance (R per person per night)
           <ZarMinorInput
             ariaLabel="Lunch allowance (R per person per night)"
             minor={header.lunchAllowanceMinor}
             onMinorChange={(lunchAllowanceMinor) => onPatch?.({ lunchAllowanceMinor })}
-            onErrorChange={reportFieldError('lunchAllowance')}
+            onErrorChange={fieldErrorReporter(header, onPatch, 'lunchAllowance')}
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
           Lunch label, optional (e.g. with 1 soft drink)
           <input
             aria-label="Lunch label"
-            className={fieldClass}
+            className={paneFieldClass}
             maxLength={120}
             value={header.lunchAllowanceLabel ?? ''}
             onChange={(event) => onPatch?.({ lunchAllowanceLabel: event.target.value })}
@@ -418,13 +454,13 @@ function StaffHeaderFields({
         </label>
       </div>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
           Office transfer (R per person per day)
           <ZarMinorInput
             ariaLabel="Office transfer (R per person per day)"
             minor={header.officeTransferMinor}
             onMinorChange={(officeTransferMinor) => onPatch?.({ officeTransferMinor })}
-            onErrorChange={reportFieldError('officeTransfer')}
+            onErrorChange={fieldErrorReporter(header, onPatch, 'officeTransfer')}
           />
         </label>
         <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
@@ -435,12 +471,12 @@ function StaffHeaderFields({
             max={31}
             placeholder="nights of stay"
             onValueChange={(officeTransferDays) => onPatch?.({ officeTransferDays })}
-            onErrorChange={reportFieldError('officeTransferDays')}
+            onErrorChange={fieldErrorReporter(header, onPatch, 'officeTransferDays')}
           />
         </label>
       </div>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
+        <label className="flex items-center gap-2 text-[11.5px] font-semibold text-[#475569]">
           <input
             type="checkbox"
             aria-label="Shuttle requested"
@@ -468,7 +504,7 @@ function StaffHeaderFields({
                   max={50}
                   placeholder="1"
                   onValueChange={(shuttleTrips) => onPatch?.({ shuttleTrips })}
-                  onErrorChange={reportFieldError('shuttleTrips')}
+                  onErrorChange={fieldErrorReporter(header, onPatch, 'shuttleTrips')}
                 />
               </label>
               <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
@@ -477,7 +513,7 @@ function StaffHeaderFields({
                   ariaLabel="Shuttle amount"
                   minor={header.shuttleMinor}
                   onMinorChange={(shuttleMinor) => onPatch?.({ shuttleMinor })}
-                  onErrorChange={reportFieldError('shuttleAmount')}
+                  onErrorChange={fieldErrorReporter(header, onPatch, 'shuttleAmount')}
                 />
               </label>
             </div>
@@ -497,7 +533,7 @@ function StaffHeaderFields({
             <input
               aria-label="Other label"
               aria-invalid={otherNeedsLabel || undefined}
-              className={fieldClass}
+              className={paneFieldClass}
               maxLength={120}
               placeholder="e.g. Parking"
               required={otherNeedsLabel}
@@ -515,7 +551,7 @@ function StaffHeaderFields({
               onMinorChange={(amountMinor) =>
                 onPatch?.({ other: { label: header.other?.label ?? '', unit: header.other?.unit ?? 'item', amountMinor } })
               }
-              onErrorChange={reportFieldError('otherAmount')}
+              onErrorChange={fieldErrorReporter(header, onPatch, 'otherAmount')}
             />
           </label>
         </div>
@@ -524,7 +560,7 @@ function StaffHeaderFields({
           Unit
           <select
             aria-label="Other unit"
-            className={fieldClass}
+            className={paneFieldClass}
             value={header.other?.unit ?? 'item'}
             onChange={(event) =>
               onPatch?.({
@@ -543,11 +579,11 @@ function StaffHeaderFields({
           </select>
         </label>
       </div>
-      <label className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 text-xs font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 text-[11.5px] font-semibold text-[#475569]">
         Notes for the quote
         <textarea
           aria-label="Notes for the quote"
-          className="min-h-[3.5rem] w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12.5px] font-normal text-[#1e293b]"
+          className={`${paneTextareaClass} min-h-[3.5rem] font-normal`}
           maxLength={1000}
           value={header.notes ?? ''}
           onChange={(event) => onPatch?.({ notes: event.target.value })}
@@ -556,11 +592,22 @@ function StaffHeaderFields({
           Unpriced. Printed on the PDF and added to the reply as a note.
         </span>
       </label>
-    </section>
+    </>
   );
 }
 
-/** Date options summary: one row per date option with its dates, total, PDF state, and actions. */
+/** Whether any extra is already set, so the Extras disclosure opens and staff see what Nava read. */
+function hasExtras(header: StaffQuoteHeader): boolean {
+  return Boolean(
+    header.dinnerAllowanceMinor ||
+      header.lunchAllowanceMinor ||
+      header.officeTransferMinor ||
+      header.shuttleRequested ||
+      header.other?.amountMinor,
+  );
+}
+
+/** Date options: one row per date option with its dates, total, PDF state, and actions. Sits at the top of the rates step. */
 function StayScopePicker({
   session,
   onSelect,
@@ -575,8 +622,8 @@ function StayScopePicker({
   const allOptionsReply = completedDateOptions(session).length >= 2;
   const pending = pendingPdfStayKey(session);
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
-      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Date options</h3>
+    <div className="flex flex-col gap-2">
+      <h3 className="text-[11.5px] font-semibold text-[#475569]">Date options</h3>
       <p className="text-[11px] text-[#64748b]">
         This email asks for more than one set of dates. Run each option; Nava keeps every result.
       </p>
@@ -619,14 +666,17 @@ function StayScopePicker({
               <span className="text-[11px] font-normal text-[#475569]">{status}</span>
             </button>
             {quote && !hasPdf ? (
-              <button
-                type="button"
-                disabled={!onPreparePdf}
-                onClick={() => onPreparePdf?.(key)}
-                className="h-7 self-start rounded-sm border border-[#1a4332] bg-white px-2 text-[11px] font-semibold text-[#1a4332] disabled:opacity-40"
-              >
-                Prepare PDF for option {letter}
-              </button>
+              <div className="flex flex-col gap-1">
+                <button
+                  type="button"
+                  disabled={!onPreparePdf}
+                  onClick={() => onPreparePdf?.(key)}
+                  className="h-7 self-start rounded-sm border border-[#1a4332] bg-white px-2 text-[11px] font-semibold text-[#1a4332] disabled:opacity-40"
+                >
+                  Prepare PDF for option {letter}
+                </button>
+                {onPreparePdf ? null : <p className="text-[11px] text-[#64748b]">Not available here.</p>}
+              </div>
             ) : null}
             {selected && hasPdf ? (
               <p className="text-[11px] text-[#475569]">
@@ -638,7 +688,7 @@ function StayScopePicker({
           </div>
         );
       })}
-    </section>
+    </div>
   );
 }
 
@@ -721,6 +771,27 @@ function hideQuoteWorkspace(phase: QuoteSession['phase']): boolean {
   );
 }
 
+/** The type Nava reads the email as: the staff pick first, then the analysis. Other when it is not a quote or booking. */
+function intentOf(session: QuoteSession): QuoteIntent | null {
+  if (session.phase === 'non_quote') return 'other';
+  if (session.treatAs) return session.treatAs;
+  return session.analysis?.luna?.workflow ?? null;
+}
+
+/** Why "Get rates from HMS" cannot run now, or null when it can. */
+function ratesBlockReason(session: QuoteSession, nextStep: QuoteToolStep | undefined): string | null {
+  if (nextStep) return quoteRunBlockReason(session, nextStep);
+  if (!session.groups.length) return 'Nava has not found a stay yet.';
+  if (session.groups.some((group) => !group.arrivalDate || !group.departureDate)) {
+    return 'Add arrival and departure dates first.';
+  }
+  if (session.groups.some((group) => !group.quantity)) return 'Add the number of rooms first.';
+  if (session.steps.length > 0 && session.steps.every((step) => step.status === 'succeeded')) {
+    return 'Already up to date.';
+  }
+  return 'Nothing is ready to search yet.';
+}
+
 export function QuoteWorkflowPanel({
   session,
   onPatchGroup,
@@ -794,36 +865,22 @@ export function QuoteWorkflowPanel({
       <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
     );
   }
+  const intent = intentOf(session);
+  const amendment = amendmentOf(session);
   if (session.phase === 'non_quote') {
+    // One notice. Staff only see more when Nava flagged something they must act on: the not-supported guidance, or a file it could not read.
+    const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure');
     return (
-      <div className="flex flex-col gap-3.5">
-        <WorkflowBadge analysis={session.analysis} amendmentKind={amendmentOf(session)?.kind ?? null} />
-        <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendmentOf(session)} />
-        <NeedsAnswerList missing={session.analysis?.luna?.missing} />
-        {(session.reviewItems ?? [])
-          .filter((item) => item.kind === 'document_failure')
-          .map((item) => (
-            <StatusNote key={item.id}>{item.text}</StatusNote>
-          ))}
-        <StatusNote>Nava thinks this is not a quote request, so no quote was started. If that is wrong, use the buttons below.</StatusNote>
-        <TellLunaBox onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            className="rounded-sm border border-[#0066cc] bg-white px-2 py-1 text-[11px] font-medium text-[#0066cc]"
-            onClick={() => onTreatAs?.('quote')}
-          >
-            This is a quote request
-          </button>
-          <button
-            type="button"
-            className="rounded-sm border border-[#0066cc] bg-white px-2 py-1 text-[11px] font-medium text-[#0066cc]"
-            onClick={() => onTreatAs?.('create_booking')}
-          >
-            This is a booking
-          </button>
-        </div>
-        <p className="text-[11px] text-[#64748b]">Use if Nava sorted this email wrong.</p>
+      <div className="flex flex-col gap-3">
+        <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
+        <Notice tone="info">Not a quote or booking. Change the type above if Nava got it wrong.</Notice>
+        <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
+        <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} />
+        {unreadFiles.map((item) => (
+          <Notice key={item.id} tone="warn">
+            {item.text}
+          </Notice>
+        ))}
       </div>
     );
   }
@@ -847,15 +904,43 @@ export function QuoteWorkflowPanel({
     return <StatusNote>{analysingCopy(session)}</StatusNote>;
   }
 
+  const header = session.staffHeader ?? emptyStaffQuoteHeader();
+  const nextStep = pickNextRunnableStep(session.steps, session.runningStepId);
+  const ratesReason = ratesBlockReason(session, nextStep);
+  const running = Boolean(session.runningStepId) || Boolean(hmsQueue?.pending);
+  const showRates = session.phase !== 'failed' && session.phase !== 'missing_source';
+
   return (
-    <div className="flex flex-col gap-3.5">
-      <WorkflowBadge analysis={session.analysis} amendmentKind={amendmentOf(session)?.kind ?? null} />
-      <TellLunaBox onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
+    <div className="flex flex-col gap-3">
+      <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
+      <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}
       <PaneStatusLine session={session} />
+      {session.analysis?.alternatives.length ? (
+        <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
+      ) : null}
       {showWorkspace ? (
-        <>
-          <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendmentOf(session)} />
+        <Section step={1} title="Stay details">
+          {session.groups.map((group, index) => (
+            <RequirementCard
+              key={group.id}
+              group={group}
+              index={index}
+              onPatch={onPatchGroup}
+              evidence={session.analysis?.luna?.evidence}
+            />
+          ))}
+          <StaffPartyFields
+            header={header}
+            onPatch={onPatchStaffHeader}
+            findParty={findParty}
+            partySuggestions={partySuggestions}
+            partyIndex={partyIndex}
+          />
+          <Disclosure summary={<span>Extras: allowances, contact, notes</span>} defaultOpen={hasExtras(header)}>
+            <StaffExtraFields header={header} onPatch={onPatchStaffHeader} />
+          </Disclosure>
+          <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} />
           <NeedsAnswerList missing={session.analysis?.luna?.missing} />
           <ItemsForYou
             openItems={openItems}
@@ -865,74 +950,69 @@ export function QuoteWorkflowPanel({
             onHandle={onHandleReviewItem}
             onUndo={onUndoReviewItem}
           />
-        </>
+        </Section>
       ) : null}
-      {session.analysis?.alternatives.length ? (
-        <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
-      ) : null}
-      {showWorkspace ? (
-        <StaffHeaderFields
-          header={session.staffHeader ?? emptyStaffQuoteHeader()}
-          onPatch={onPatchStaffHeader}
-          findParty={findParty}
-          partySuggestions={partySuggestions}
-          partyIndex={partyIndex}
-        />
-      ) : null}
-      {showWorkspace ? (
-        <StayScopePicker session={session} onSelect={onSelectStayKey} onPreparePdf={onPreparePdfFor} />
-      ) : null}
-      {session.groups.map((group, index) => (
-        <RequirementCard
-          key={group.id}
-          group={group}
-          index={index}
-          onPatch={onPatchGroup}
-          evidence={session.analysis?.luna?.evidence}
-        />
-      ))}
-      {session.phase !== 'failed' && session.phase !== 'missing_source' ? (
-        <ToolStepList
-          steps={session.steps}
-          runningStepId={session.runningStepId}
-          onRunNext={onRunNext}
-          onRunStep={onRunStep}
-          blockReason={(step) => quoteRunBlockReason(session, step)}
-        />
-      ) : null}
-      {hmsQueue ? <HmsQueueStatusLine pending={hmsQueue.pending} status={hmsQueue.status} /> : null}
-      {session.offers.length ? (
-        <section className="flex flex-col gap-2">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Results</h3>
-          <p className="text-[11px] text-[#64748b]">
-            Selected total {money(allocationTotal(session.offers.filter((o) => session.selectedOfferIds.includes(o.id))))}.
-            Alternatives are not added to this total.
-            {new Set(session.offers.filter((o) => o.kind === 'allocation').map((o) => o.quoteRequestKey)).size > 1
-              ? ' Each date search keeps its own quote and PDF. Once two or more options are finished, Create one reply with all date options puts them in one draft.'
-              : ''}
-          </p>
-          {session.offers.map((offer) => {
-            const staffQuote = session.staffQuote?.revisionRef === offer.id ? session.staffQuote : null;
-            return (
-              <Fragment key={offer.id}>
-                <OfferCard
-                  offer={offer}
-                  selected={session.selectedOfferIds.includes(offer.id)}
-                  onSelect={onSelectOffer}
-                  showShot={!staffQuote}
-                />
-                {staffQuote ? (
-                  <QuoteAuditScreenshot
-                    key={staffQuote.runId ?? staffQuote.revisionRef}
-                    runId={staffQuote.runId ?? null}
-                    screenshots={staffQuote.screenshots ?? []}
-                    loadScreenshot={onLoadRunScreenshot}
-                  />
-                ) : null}
-              </Fragment>
-            );
-          })}
-        </section>
+      {showWorkspace && (showRates || session.offers.length) ? (
+        <Section step={2} title="Rates from HMS">
+          {showRates ? (
+            <StayScopePicker session={session} onSelect={onSelectStayKey} onPreparePdf={onPreparePdfFor} />
+          ) : null}
+          {showRates ? (
+            <PrimaryButton
+              onClick={onRunNext}
+              disabled={ratesReason !== null}
+              disabledReason={ratesReason}
+              loading={running}
+              loadingText="Getting rates from HMS… about 2 minutes"
+            >
+              Get rates from HMS
+            </PrimaryButton>
+          ) : null}
+          {showRates ? (
+            <Disclosure summary={<span>HMS steps</span>} defaultOpen={session.steps.length > 1}>
+              <ToolStepList
+                steps={session.steps}
+                runningStepId={session.runningStepId}
+                onRunStep={onRunStep}
+                blockReason={(step) => quoteRunBlockReason(session, step)}
+              />
+            </Disclosure>
+          ) : null}
+          {hmsQueue ? <HmsQueueStatusLine pending={hmsQueue.pending} status={hmsQueue.status} /> : null}
+          {session.offers.length ? (
+            <div className="flex flex-col gap-2">
+              <h3 className="text-[11.5px] font-semibold text-[#475569]">Results</h3>
+              <p className="text-[11px] text-[#64748b]">
+                Selected total {money(allocationTotal(session.offers.filter((o) => session.selectedOfferIds.includes(o.id))))}.
+                Alternatives are not added to this total.
+                {new Set(session.offers.filter((o) => o.kind === 'allocation').map((o) => o.quoteRequestKey)).size > 1
+                  ? ' Each date search keeps its own quote and PDF. Once two or more options are finished, Create one reply with all date options puts them in one draft.'
+                  : ''}
+              </p>
+              {session.offers.map((offer) => {
+                const staffQuote = session.staffQuote?.revisionRef === offer.id ? session.staffQuote : null;
+                return (
+                  <Fragment key={offer.id}>
+                    <OfferCard
+                      offer={offer}
+                      selected={session.selectedOfferIds.includes(offer.id)}
+                      onSelect={onSelectOffer}
+                      showShot={!staffQuote}
+                    />
+                    {staffQuote ? (
+                      <QuoteAuditScreenshot
+                        key={staffQuote.runId ?? staffQuote.revisionRef}
+                        runId={staffQuote.runId ?? null}
+                        screenshots={staffQuote.screenshots ?? []}
+                        loadScreenshot={onLoadRunScreenshot}
+                      />
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </div>
+          ) : null}
+        </Section>
       ) : null}
       {session.bookingDraft ? (
         <BookingCards
@@ -943,13 +1023,15 @@ export function QuoteWorkflowPanel({
         />
       ) : null}
       {showReply ? (
-        <DocumentReview
-          session={session}
-          onReplyChange={onReplyChange}
-          onPreparePdf={onPreparePdf}
-          onDownloadWorkbook={onDownloadWorkbook}
-          workbookPending={workbookPending}
-        />
+        <Section step={3} title="Quote documents">
+          <DocumentReview
+            session={session}
+            onReplyChange={onReplyChange}
+            onPreparePdf={onPreparePdf}
+            onDownloadWorkbook={onDownloadWorkbook}
+            workbookPending={workbookPending}
+          />
+        </Section>
       ) : null}
     </div>
   );

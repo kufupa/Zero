@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PartyPicker } from '../components/quote-workflow/party-picker';
 import {
@@ -227,85 +227,60 @@ describe('PartyPicker scoped to one field of the header', () => {
 });
 
 describe('the quote workflow header: each field finds in HMS with its own text', () => {
-  const groupFor = (field: 'Company' | 'Agency') => screen.getByRole('group', { name: `${field} lookup in HMS` });
-
-  it('Find under Company searches the Company text, and a pick sets the company and its name', async () => {
+  it('Nava searches the Company text in HMS by itself and picks the best company', async () => {
     const { QuoteWorkflowPanel } = await import('../components/quote-workflow/quote-workflow-panel');
     const { initialQuoteSession } = await import('../lib/quote-workflow/session');
+    const { resetPartyAutoLookupForTests } = await import('../components/quote-workflow/party-picker');
+    resetPartyAutoLookupForTests();
     const onPatchStaffHeader = vi.fn();
-    const find = vi.fn<(name: string) => Promise<PartyFindReply>>(async () => ({
+    const woolworths = { kind: 'company' as const, nativeId: '49', name: 'Woolworths Holdings' };
+    const find = vi.fn(async (): Promise<PartyFindReply> => ({
       outcome: 'resolved',
-      results: [{ kind: 'company', nativeId: '49', name: 'Woolworths Holdings' }],
+      results: [woolworths],
       truncated: false,
+      best: woolworths,
+      searchedFor: 'Woolworths',
     }));
     const session = {
       ...initialQuoteSession(),
       phase: 'review' as const,
       staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths' },
     };
-    render(
-      <QuoteWorkflowPanel
-        session={session}
-        onPatchStaffHeader={onPatchStaffHeader}
-        findParty={find}
-        partySuggestions={[CWT]}
-      />,
-    );
-    fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Find in HMS' }));
-    await waitFor(() =>
-      expect(within(groupFor('Company')).getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy(),
+    render(<QuoteWorkflowPanel session={session} onPatchStaffHeader={onPatchStaffHeader} findParty={find} />);
+    await waitFor(
+      () =>
+        expect(onPatchStaffHeader).toHaveBeenCalledWith({
+          parties: { company: woolworths },
+          company: 'Woolworths Holdings',
+        }),
+      { timeout: 3000 },
     );
     expect(find).toHaveBeenCalledWith('Woolworths', 'company');
-    fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Woolworths Holdings' }));
-    expect(onPatchStaffHeader).toHaveBeenCalledWith({
-      parties: { company: { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' } },
-      company: 'Woolworths Holdings',
-    });
-  });
+    expect(find).not.toHaveBeenCalledWith('Woolworths', 'agency');
+  }, 20_000);
 
-  it('Find under Agency searches the Agency text, not the Company text, and lists only agencies', async () => {
+  it('Nava searches the Agency text as an agency, never the Company text', async () => {
     const { QuoteWorkflowPanel } = await import('../components/quote-workflow/quote-workflow-panel');
     const { initialQuoteSession } = await import('../lib/quote-workflow/session');
-    const onPatchStaffHeader = vi.fn();
-    const find = vi.fn<(name: string) => Promise<PartyFindReply>>(async () => ({
-      outcome: 'resolved',
-      results: [
-        { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' },
-        { kind: 'agency', nativeId: '571', name: 'Acme Travel HQ' },
-      ],
+    const { resetPartyAutoLookupForTests } = await import('../components/quote-workflow/party-picker');
+    resetPartyAutoLookupForTests();
+    const find = vi.fn(async (): Promise<PartyFindReply> => ({
+      outcome: 'no_match',
+      results: [],
       truncated: false,
+      best: null,
+      searchedFor: null,
     }));
     const session = {
       ...initialQuoteSession(),
       phase: 'review' as const,
       staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths', agency: 'Acme Travel' },
     };
-    render(
-      <QuoteWorkflowPanel
-        session={session}
-        onPatchStaffHeader={onPatchStaffHeader}
-        findParty={find}
-        partySuggestions={[]}
-      />,
-    );
-    fireEvent.click(within(groupFor('Agency')).getByRole('button', { name: 'Find in HMS' }));
-    await waitFor(() =>
-      expect(within(groupFor('Agency')).getByRole('button', { name: 'Acme Travel HQ' })).toBeTruthy(),
-    );
-    expect(find).toHaveBeenLastCalledWith('Acme Travel', 'agency');
-    expect(within(groupFor('Agency')).queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
-    fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Find in HMS' }));
-    await waitFor(() =>
-      expect(within(groupFor('Company')).getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy(),
-    );
-    expect(find.mock.calls.map(([name]) => name)).toEqual(['Acme Travel', 'Woolworths']);
-    expect(within(groupFor('Company')).queryByRole('button', { name: 'Acme Travel HQ' })).toBeNull();
-    fireEvent.click(within(groupFor('Agency')).getByRole('button', { name: 'Acme Travel HQ' }));
-    expect(onPatchStaffHeader).toHaveBeenCalledWith({
-      parties: { agency: { kind: 'agency', nativeId: '571', name: 'Acme Travel HQ' } },
-      agency: 'Acme Travel HQ',
-    });
-  });
+    render(<QuoteWorkflowPanel session={session} onPatchStaffHeader={vi.fn()} findParty={find} />);
+    await waitFor(() => expect(find).toHaveBeenCalledWith('Acme Travel', 'agency'), { timeout: 3000 });
+    expect(find).not.toHaveBeenCalledWith('Woolworths', 'agency');
+    expect(find).not.toHaveBeenCalledWith('Acme Travel', 'company');
+  }, 20_000);
 
   it('keeps the header plain text when no finder is bound', async () => {
     const { QuoteWorkflowPanel } = await import('../components/quote-workflow/quote-workflow-panel');

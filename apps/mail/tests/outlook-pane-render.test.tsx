@@ -327,7 +327,7 @@ describe('OutlookPanePage', () => {
     };
     render(<OutlookPanePage />);
     await fillStayFactsMatchingAuthorisedOffer();
-    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Get rates from HMS$/i }));
     expect(
       await screen.findByText(
         'Luna is working in HMS – step 2 of 3: Checking the quote rules. 1 min 20 s so far.',
@@ -347,7 +347,7 @@ describe('OutlookPanePage', () => {
     bridgeMockState.holdStaffQuote = true;
     render(<OutlookPanePage />);
     await fillStayFactsMatchingAuthorisedOffer();
-    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Get rates from HMS$/i }));
     expect(await screen.findByText('Starting the HMS run…')).toBeDefined();
     await act(async () => {
       bridgeMockState.releaseStaffQuote?.();
