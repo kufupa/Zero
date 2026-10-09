@@ -50,6 +50,7 @@ import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import type { ParsedMessage, Attachment, Sender } from '@/types';
 import { resolveImportantState } from '@/lib/mail/important-ui';
 import { focusedIndexAtom } from '@/hooks/use-mail-navigation';
+import { navaSidePanelAtom } from '@/store/navaSidePanel';
 import { formatMailboxPlain } from '@/lib/mail/mailbox-format';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { type ThreadDestination } from '@/lib/thread-actions';
@@ -203,6 +204,7 @@ export function ThreadDisplay() {
   } = useThread(id ?? null);
   const [, items] = useThreads();
   const [isStarred, setIsStarred] = useState(false);
+  const [navaSidePanelOpen, setNavaSidePanelOpen] = useAtom(navaSidePanelAtom);
   const { data: session } = useSession();
   const trpc = useTRPC();
   const frontendOnlyDemo = isFrontendOnlyDemo();
@@ -1029,6 +1031,15 @@ export function ThreadDisplay() {
                     </span>
                   </button>
                 </div>
+                <button
+                  type="button"
+                  aria-pressed={navaSidePanelOpen}
+                  title={navaSidePanelOpen ? 'Hide the Nava panel' : 'Show the Nava panel'}
+                  onClick={() => setNavaSidePanelOpen(!navaSidePanelOpen)}
+                  className="hidden h-7 cursor-pointer items-center justify-center overflow-hidden rounded-lg border bg-white px-2 text-sm leading-none text-black transition-colors hover:bg-gray-100 aria-pressed:bg-gray-100 lg:inline-flex dark:border-none dark:bg-[#313131] dark:text-white dark:hover:bg-[#404040] dark:aria-pressed:bg-[#404040]"
+                >
+                  Nava
+                </button>
                 <NotesPanel threadId={id} />
                 <TooltipProvider delayDuration={0}>
                   <Tooltip>

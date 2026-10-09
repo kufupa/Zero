@@ -38,12 +38,19 @@ import {
   shouldShowDesktopListPanel,
   shouldShowDesktopThreadPanel,
   shouldShowMailSplitHandle,
+  shouldShowNavaSidePanel,
 } from '@/lib/mail/mail-panel-visibility';
 import { useAtom } from 'jotai';
+import { navaSidePanelAtom } from '@/store/navaSidePanel';
 import type { ImperativePanelHandle } from 'react-resizable-panels';
 const ThreadDisplay = lazy(() =>
   import('@/components/mail/thread-display').then((module) => ({
     default: module.ThreadDisplay,
+  })),
+);
+const WebPanePanel = lazy(() =>
+  import('@/components/nava-pane/web-pane-panel').then((module) => ({
+    default: module.WebPanePanel,
   })),
 );
 
@@ -57,6 +64,12 @@ const MAIL_THREAD_SPLIT = {
   default: 100 - MAIL_LIST_SPLIT.default,
   min: 100 - MAIL_LIST_SPLIT.max,
   max: 100 - MAIL_LIST_SPLIT.min,
+} as const;
+/** Three panes while the Nava side panel shows (list, thread, Nava); the defaults sum to 100. */
+const MAIL_NAVA_SPLIT = {
+  list: { default: 30, min: 28, max: 58 },
+  thread: { default: 42, min: 30 },
+  nava: { default: 28, min: 22, max: 40 },
 } as const;
 const MAIL_SEARCH_FOLDER_TITLES: Record<string, string> = {
   archive: 'Archive',
@@ -374,6 +387,7 @@ export function MailLayout() {
   const isWideSplit = useMediaQuery('(min-width: 1024px)');
 
   const [threadId] = useQueryState('threadId');
+  const [navaSidePanelOpen] = useAtom(navaSidePanelAtom);
   const [listCollapsed, setListCollapsed] = useState(false);
   const listPanelRef = useRef<ImperativePanelHandle>(null);
 
@@ -397,12 +411,24 @@ export function MailLayout() {
     listMounted: showListPanel,
   });
   const bothDesktopPanels = showListPanel && showThreadPanel && isDesktop;
+  const showNavaPanel = shouldShowNavaSidePanel({
+    isWideSplit,
+    threadId,
+    enabled: navaSidePanelOpen,
+  });
+  const listSplit = showNavaPanel ? MAIL_NAVA_SPLIT.list : MAIL_LIST_SPLIT;
+  const threadSplit = showNavaPanel ? MAIL_NAVA_SPLIT.thread : MAIL_THREAD_SPLIT;
 
   useEffect(() => {
     if (!isWideSplit && listCollapsed) {
       setListCollapsed(false);
     }
   }, [isWideSplit, listCollapsed]);
+
+  // Mounting or unmounting the Nava panel re-lays out the group and would reopen a collapsed list.
+  useEffect(() => {
+    if (isWideSplit && listCollapsed) listPanelRef.current?.collapse();
+  }, [isWideSplit, listCollapsed, showNavaPanel]);
 
   const activeScope = resolveActiveMailScope({
     hasBulkSelection: mail.bulkSelected.length > 0,
@@ -500,9 +526,9 @@ export function MailLayout() {
             collapsedSize={0}
             onCollapse={handleListPanelCollapse}
             onExpand={handleListPanelExpand}
-            defaultSize={bothDesktopPanels ? MAIL_LIST_SPLIT.default : 100}
-            minSize={bothDesktopPanels ? MAIL_LIST_SPLIT.min : 100}
-            maxSize={bothDesktopPanels ? MAIL_LIST_SPLIT.max : 100}
+            defaultSize={bothDesktopPanels ? listSplit.default : 100}
+            minSize={bothDesktopPanels ? listSplit.min : 100}
+            maxSize={bothDesktopPanels ? listSplit.max : 100}
             className="bg-panelLight dark:bg-panelDark mb-1 min-w-0 shadow-sm md:mr-[3px] md:rounded-2xl lg:flex lg:h-[calc(100dvh-8px)] lg:shadow-sm"
             // onMouseEnter={handleMailListMouseEnter}
             // onMouseLeave={handleMailListMouseLeave}
@@ -602,10 +628,15 @@ export function MailLayout() {
           </ResizablePanel>
           ) : null}
 
-          {showSplitHandle ? (
+          {/* Hidden, not unmounted, when the inbox collapses: */}
+          {/* the group pairs each handle with its panels by DOM order. */}
+          {showSplitHandle || showNavaPanel ? (
             <ResizableHandle
               withHandle
-              className="mr-0.5 hidden w-2 shrink-0 md:flex md:opacity-60 md:hover:opacity-100"
+              className={cn(
+                'mr-0.5 hidden w-2 shrink-0 md:opacity-60 md:hover:opacity-100',
+                showSplitHandle && 'md:flex',
+              )}
             />
           ) : null}
 
@@ -614,8 +645,8 @@ export function MailLayout() {
               id="mail-thread-panel"
               order={1}
               className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 min-w-0 rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
-              defaultSize={bothDesktopPanels ? MAIL_THREAD_SPLIT.default : 100}
-              minSize={bothDesktopPanels ? MAIL_THREAD_SPLIT.min : 100}
+              defaultSize={bothDesktopPanels ? threadSplit.default : 100}
+              minSize={bothDesktopPanels ? threadSplit.min : 100}
               // ponytail: MAIL_THREAD_SPLIT.max is 72; collapse() needs sibling max 100 to absorb list→0
               maxSize={bothDesktopPanels ? (isWideSplit ? 100 : MAIL_THREAD_SPLIT.max) : 100}
             >
@@ -647,6 +678,29 @@ export function MailLayout() {
                 </Suspense>
               </div>
             </ResizablePanel>
+          ) : null}
+
+          {showNavaPanel && threadId ? (
+            <>
+              <ResizableHandle
+                withHandle
+                className="mr-0.5 hidden w-2 shrink-0 md:flex md:opacity-60 md:hover:opacity-100"
+              />
+              <ResizablePanel
+                id="mail-nava-panel"
+                order={2}
+                className="bg-panelLight dark:bg-panelDark mb-1 mr-0.5 min-w-0 rounded-2xl shadow-sm lg:h-[calc(100dvh-8px)]"
+                defaultSize={MAIL_NAVA_SPLIT.nava.default}
+                minSize={MAIL_NAVA_SPLIT.nava.min}
+                maxSize={MAIL_NAVA_SPLIT.nava.max}
+              >
+                <div className="flex h-full min-h-0 flex-col">
+                  <Suspense fallback={<div className="flex h-full items-center justify-center" />}>
+                    <WebPanePanel key={threadId} threadId={threadId} />
+                  </Suspense>
+                </div>
+              </ResizablePanel>
+            </>
           ) : null}
 
           {/* Mobile Thread View */}
