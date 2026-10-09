@@ -8,18 +8,21 @@ import {
   type PartyFindReply,
 } from '../../lib/quote-workflow/party-lookup';
 import type { StaffQuoteParty } from '../../lib/quote-workflow/types';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export const PARTY_PICKER_HINT =
   'Pick the exact company or agency so Luna can get their rate. Takes about a minute.';
 
 export const PARTY_PICKER_BUSY = 'Searching HMS for companies and agencies. This takes about a minute.';
 
+// Every state names the query it belongs to, so a result for one name never shows for another.
 type PickerState =
   | { status: 'idle' }
-  | { status: 'busy' }
-  | { status: 'listed'; results: PartyCandidate[]; truncated: boolean }
-  | { status: 'none'; note: string };
+  | { status: 'busy'; query: string }
+  | { status: 'listed'; query: string; results: PartyCandidate[]; truncated: boolean }
+  | { status: 'none'; query: string; note: string };
+
+const IDLE: PickerState = { status: 'idle' };
 
 /**
  * Find in HMS for the quote's company or agency. One search covers both kinds, and each candidate shows its kind.
@@ -39,7 +42,16 @@ export function PartyPicker({
   onPick: (party: StaffQuoteParty) => void;
   onClear: () => void;
 }) {
-  const [state, setState] = useState<PickerState>({ status: 'idle' });
+  const query = name.trim();
+  const [state, setState] = useState<PickerState>(IDLE);
+  // Each search takes the next number, and only the latest number may write a reply. A name change takes one too,
+  // so a reply still in flight for the old name is dropped.
+  const latest = useRef(0);
+
+  useEffect(() => {
+    latest.current += 1;
+    setState(IDLE);
+  }, [query]);
 
   if (party) {
     return (
@@ -52,20 +64,28 @@ export function PartyPicker({
     );
   }
 
+  // Results count only for the name typed now. A name change has already cleared them; this covers the render before
+  // the effect runs.
+  const shown: PickerState = state.status !== 'idle' && state.query === query ? state : IDLE;
+
   const run = async () => {
-    setState({ status: 'busy' });
+    const token = ++latest.current;
+    setState({ status: 'busy', query });
     try {
-      const reply: PartyFindReply = await find(name.trim());
+      const reply: PartyFindReply = await find(query);
+      if (token !== latest.current) return;
       if (reply.results.length) {
-        setState({ status: 'listed', results: reply.results, truncated: reply.truncated });
+        setState({ status: 'listed', query, results: reply.results, truncated: reply.truncated });
         return;
       }
       setState({
         status: 'none',
+        query,
         note: reply.truncated ? PARTY_TRUNCATED_NOTE : partyNoCandidateNote(reply.outcome),
       });
     } catch {
-      setState({ status: 'none', note: partyNoCandidateNote('execution_failure') });
+      if (token !== latest.current) return;
+      setState({ status: 'none', query, note: partyNoCandidateNote('execution_failure') });
     }
   };
 
@@ -75,19 +95,19 @@ export function PartyPicker({
         <button
           type="button"
           className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#1e293b] disabled:opacity-50"
-          disabled={!name.trim() || state.status === 'busy'}
+          disabled={!query || shown.status === 'busy'}
           onClick={() => void run()}
         >
           Find in HMS
         </button>
         <span>{PARTY_PICKER_HINT}</span>
       </div>
-      {state.status === 'busy' ? <p role="status">{PARTY_PICKER_BUSY}</p> : null}
-      {state.status === 'none' ? <p role="status">{state.note}</p> : null}
-      {state.status === 'listed' ? (
+      {shown.status === 'busy' ? <p role="status">{PARTY_PICKER_BUSY}</p> : null}
+      {shown.status === 'none' ? <p role="status">{shown.note}</p> : null}
+      {shown.status === 'listed' ? (
         <>
           <ul className="flex flex-col gap-1" aria-label="Companies and agencies found in HMS">
-            {state.results.map((candidate) => (
+            {shown.results.map((candidate) => (
               <li
                 key={`${candidate.kind}:${candidate.nativeId}`}
                 className="flex items-center gap-2"
@@ -101,7 +121,7 @@ export function PartyPicker({
                       nativeId: candidate.nativeId,
                       name: candidate.name,
                     });
-                    setState({ status: 'idle' });
+                    setState(IDLE);
                   }}
                 >
                   {candidate.name}
@@ -110,7 +130,7 @@ export function PartyPicker({
               </li>
             ))}
           </ul>
-          {state.truncated ? <p role="status">{PARTY_TRUNCATED_NOTE}</p> : null}
+          {shown.truncated ? <p role="status">{PARTY_TRUNCATED_NOTE}</p> : null}
         </>
       ) : null}
     </div>
