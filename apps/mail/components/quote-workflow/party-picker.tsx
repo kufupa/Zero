@@ -4,6 +4,7 @@ import {
   partyFromSuggestion,
   partyKindLabel,
   partyNoCandidateNote,
+  partyNoKindNote,
   type PartyCandidate,
   type PartyFinder,
   type PartyFindReply,
@@ -28,13 +29,22 @@ type PickerState =
 
 const IDLE: PickerState = { status: 'idle' };
 
+/** The note for a search that listed nothing in scope. A field with a kind says when HMS matched only the other kind. */
+function noCandidateNote(reply: PartyFindReply, kind: StaffQuoteParty['kind'] | undefined): string {
+  if (reply.truncated) return PARTY_TRUNCATED_NOTE;
+  if (kind && reply.results.length) return partyNoKindNote(kind);
+  return partyNoCandidateNote(reply.outcome);
+}
+
 /**
- * Find in HMS for the quote's company and agency. One search covers both kinds, and each result shows its kind. Staff
- * pick one; a pick shows as a chip with Clear, and both kinds may be picked. Suggestions from the email are offered for
- * staff to confirm. Only a suggestion HMS listed can be picked. An unverified one can only be searched.
+ * Find in HMS for one field of the quote header. A field with a kind (Company or Agency) searches its own text, and
+ * shows only that kind: its results, its pick and its suggestions. Without a kind, one picker covers both kinds and each
+ * result shows its kind. Staff pick a result; a pick shows as a chip with Clear. Suggestions from the email are offered
+ * for staff to confirm. Only a suggestion HMS listed can be picked. An unverified one can only be searched.
  */
 export function PartyPicker({
   name,
+  kind,
   parties,
   find,
   onPick,
@@ -42,8 +52,10 @@ export function PartyPicker({
   suggestions = [],
   onSearchName,
 }: {
-  /** The text to search for: the quote's company or agency name. */
+  /** The text to search for: this field's company or agency name. */
   name: string;
+  /** The kind this field holds. Omitted, the picker covers both kinds. */
+  kind?: StaffQuoteParty['kind'];
   /** What is picked so far: at most one company and one agency. */
   parties: StaffQuoteParties;
   find: PartyFinder;
@@ -68,33 +80,37 @@ export function PartyPicker({
   // the effect runs.
   const shown: PickerState = state.status !== 'idle' && state.query === query ? state : IDLE;
 
+  const inScope = (party: { kind: StaffQuoteParty['kind'] }) => !kind || party.kind === kind;
+
   const run = async () => {
     const token = ++latest.current;
     setState({ status: 'busy', query });
     try {
       const reply: PartyFindReply = await find(query);
       if (token !== latest.current) return;
-      if (reply.results.length) {
-        setState({ status: 'listed', query, results: reply.results, truncated: reply.truncated });
+      const results = reply.results.filter(inScope);
+      if (results.length) {
+        setState({ status: 'listed', query, results, truncated: reply.truncated });
         return;
       }
-      setState({
-        status: 'none',
-        query,
-        note: reply.truncated ? PARTY_TRUNCATED_NOTE : partyNoCandidateNote(reply.outcome),
-      });
+      setState({ status: 'none', query, note: noCandidateNote(reply, kind) });
     } catch {
       if (token !== latest.current) return;
       setState({ status: 'none', query, note: partyNoCandidateNote('execution_failure') });
     }
   };
 
-  const picked = [parties.company, parties.agency].filter((party): party is StaffQuoteParty => Boolean(party));
+  const picked: StaffQuoteParty[] = [];
+  for (const party of [parties.company, parties.agency]) if (party && inScope(party)) picked.push(party);
   const pickedKinds = new Set(picked.map((party) => party.kind));
-  const offered = suggestions.filter((suggestion) => !pickedKinds.has(suggestion.kind));
+  const offered = suggestions.filter((suggestion) => inScope(suggestion) && !pickedKinds.has(suggestion.kind));
 
   return (
-    <div className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+    <div
+      role={kind ? 'group' : undefined}
+      aria-label={kind ? `${partyKindLabel(kind)} lookup in HMS` : undefined}
+      className="flex flex-col gap-1 text-[11px] text-[#64748b]"
+    >
       {picked.map((party) => (
         <div key={party.kind} className="flex items-center gap-2 text-[11.5px] font-semibold text-[#166534]">
           <span>{partyChipText(party)}</span>

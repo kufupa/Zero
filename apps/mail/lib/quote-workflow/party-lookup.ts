@@ -69,6 +69,11 @@ export function partyNoCandidateNote(outcome: PartyFindReply['outcome']): string
   return "Nava couldn't check HMS for this name. Try again, or quote at public rates.";
 }
 
+/** Shown when HMS matched the name, but none of the kind the field holds. */
+export function partyNoKindNote(kind: StaffQuoteParty['kind']): string {
+  return `No ${partyKindLabel(kind).toLowerCase()} match in HMS for this name.`;
+}
+
 /**
  * A suggestion for the picker, from the sender's domain or a name the body states. Only a listed HMS id makes it a
  * party; an unverified suggestion is a name to search in HMS and never a pick.

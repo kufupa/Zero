@@ -5,9 +5,11 @@ adds the quote path, the panel header and the suggestions. This file lives on `f
 
 ## 1. What is wired now
 
-- Panel header (`quote-workflow-panel.tsx`): when `findParty` is passed to `QuoteWorkflowPanel`, one `PartyPicker` shows
-  under the Agency field. Company and agency both pick into `header.parties`. Each pick also sets its name in the text
-  field. Editing a field away from its picked name drops that pick. Without `findParty` the header stays plain text.
+- Panel header (`quote-workflow-panel.tsx`): when `findParty` is passed to `QuoteWorkflowPanel`, a `PartyPicker` shows
+  under each field. The Company picker searches the Company text and holds only companies; the Agency picker searches the
+  Agency text and holds only agencies. Each keeps its own results, pick and suggestions, and a pick sets `header.parties`
+  and its field's name. Editing a field away from its picked name drops that pick. Without `findParty` the header stays
+  plain text.
 - Quote path (`staff-quote-workflow.ts`, `workstation.ts`): `staffQuoteInput.parties` (company and/or agency, plain HMS
   ids). The route re-checks each picked id in HMS before the quote lock (`verifyPartyPick`). A pick HMS does not return
   is refused. With `QUOTE_RATE_CONTEXT=off` nothing is looked up and the quote is public, with a review note.

@@ -268,6 +268,38 @@ function StaffHeaderFields({
     else delete next[field];
     onPatch?.({ fieldErrors: next });
   };
+  // Each field's picker searches that field's own text and holds only that kind: its results, its pick and its suggestions.
+  // HOOK(#84, not on main): the HMS typeahead's onSearchName lands on the onSearchName prop below.
+  const partyPicker = (kind: 'company' | 'agency') =>
+    findParty ? (
+      <PartyPicker
+        kind={kind}
+        name={kind === 'company' ? header.company : header.agency}
+        parties={header.parties ?? {}}
+        find={findParty}
+        suggestions={partySuggestions}
+        onPick={(party) =>
+          onPatch?.({
+            parties:
+              party.kind === 'company'
+                ? { ...header.parties, company: party }
+                : { ...header.parties, agency: party },
+            ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
+          })
+        }
+        onClear={(cleared) =>
+          onPatch?.({
+            parties:
+              cleared === 'company'
+                ? { ...header.parties, company: undefined }
+                : { ...header.parties, agency: undefined },
+          })
+        }
+        onSearchName={(searched, searchKind) =>
+          onPatch?.(searchKind === 'company' ? { company: searched } : { agency: searched })
+        }
+      />
+    ) : null;
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quote header</h3>
@@ -299,6 +331,7 @@ function StaffHeaderFields({
           }
         />
       </label>
+      {partyPicker('company')}
       <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Agency
         <input
@@ -310,36 +343,7 @@ function StaffHeaderFields({
           }
         />
       </label>
-      {/*
-        Company and agency each have a picker, on header.parties.
-        HOOK(#84, not on main): the HMS typeahead's onSearchName lands on PartyPicker.
-      */}
-      {findParty ? (
-        <PartyPicker
-          name={header.company.trim() || header.agency.trim()}
-          parties={header.parties ?? {}}
-          find={findParty}
-          suggestions={partySuggestions}
-          onPick={(party) =>
-            onPatch?.({
-              parties:
-                party.kind === 'company'
-                  ? { ...header.parties, company: party }
-                  : { ...header.parties, agency: party },
-              ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
-            })
-          }
-          onClear={(kind) =>
-            onPatch?.({
-              parties:
-                kind === 'company' ? { ...header.parties, company: undefined } : { ...header.parties, agency: undefined },
-            })
-          }
-          onSearchName={(name, kind) =>
-            onPatch?.(kind === 'company' ? { company: name } : { agency: name })
-          }
-        />
-      ) : null}
+      {partyPicker('agency')}
       <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Attention
         <input

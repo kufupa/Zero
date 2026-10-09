@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PartyPicker } from '../components/quote-workflow/party-picker';
 import {
@@ -180,19 +180,67 @@ describe('PartyPicker with both kinds and suggestions', () => {
   });
 });
 
-describe('the quote workflow header under the Agency field', () => {
-  it('shows Find in HMS when a finder is bound, and a pick sets the party and its name', async () => {
+describe('PartyPicker scoped to one field of the header', () => {
+  it('a field shows only its kind: its chip, its suggestions and its results', async () => {
+    const find = vi.fn<(name: string) => Promise<PartyFindReply>>(async () => ({
+      outcome: 'resolved',
+      results: [
+        { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' },
+        { kind: 'agency', nativeId: '290', name: 'CWT JNB' },
+      ],
+      truncated: false,
+    }));
+    const companySuggestion: PartySuggestion = { ...CWT, kind: 'company', name: 'Woolworths Company', nativeId: '77' };
+    render(
+      <PartyPicker
+        kind="agency"
+        name="CWT"
+        parties={{ company: WOOLWORTHS }}
+        find={find}
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+        suggestions={[CWT, companySuggestion]}
+      />,
+    );
+    expect(screen.queryByText('✓ Woolworths (HMS)')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Use CWT JNB' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Use Woolworths Company' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'CWT JNB' })).toBeTruthy());
+    expect(find).toHaveBeenCalledWith('CWT');
+    expect(screen.queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
+  });
+
+  it('says when HMS matched only the other kind, and picks nothing', async () => {
+    const onPick = vi.fn();
+    const find = vi.fn<(name: string) => Promise<PartyFindReply>>(async () => ({
+      outcome: 'resolved',
+      results: [{ kind: 'company', nativeId: '49', name: 'Woolworths Holdings' }],
+      truncated: false,
+    }));
+    render(<PartyPicker kind="agency" name="Woolworths" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('No agency match in HMS for this name.'));
+    expect(screen.queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
+    expect(onPick).not.toHaveBeenCalled();
+  });
+});
+
+describe('the quote workflow header: each field finds in HMS with its own text', () => {
+  const groupFor = (field: 'Company' | 'Agency') => screen.getByRole('group', { name: `${field} lookup in HMS` });
+
+  it('Find under Company searches the Company text, and a pick sets the company and its name', async () => {
     const { QuoteWorkflowPanel } = await import('../components/quote-workflow/quote-workflow-panel');
     const { initialQuoteSession } = await import('../lib/quote-workflow/session');
     const onPatchStaffHeader = vi.fn();
-    const find = vi.fn(async (): Promise<PartyFindReply> => ({
+    const find = vi.fn<(name: string) => Promise<PartyFindReply>>(async () => ({
       outcome: 'resolved',
       results: [{ kind: 'company', nativeId: '49', name: 'Woolworths Holdings' }],
       truncated: false,
     }));
     const session = {
       ...initialQuoteSession(),
-      phase: 'ready' as const,
+      phase: 'review' as const,
       staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths' },
     };
     render(
@@ -203,13 +251,59 @@ describe('the quote workflow header under the Agency field', () => {
         partySuggestions={[CWT]}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy());
+    fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Find in HMS' }));
+    await waitFor(() =>
+      expect(within(groupFor('Company')).getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy(),
+    );
     expect(find).toHaveBeenCalledWith('Woolworths');
-    fireEvent.click(screen.getByRole('button', { name: 'Woolworths Holdings' }));
+    fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Woolworths Holdings' }));
     expect(onPatchStaffHeader).toHaveBeenCalledWith({
       parties: { company: { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' } },
       company: 'Woolworths Holdings',
+    });
+  });
+
+  it('Find under Agency searches the Agency text, not the Company text, and lists only agencies', async () => {
+    const { QuoteWorkflowPanel } = await import('../components/quote-workflow/quote-workflow-panel');
+    const { initialQuoteSession } = await import('../lib/quote-workflow/session');
+    const onPatchStaffHeader = vi.fn();
+    const find = vi.fn<(name: string) => Promise<PartyFindReply>>(async () => ({
+      outcome: 'resolved',
+      results: [
+        { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' },
+        { kind: 'agency', nativeId: '571', name: 'Acme Travel HQ' },
+      ],
+      truncated: false,
+    }));
+    const session = {
+      ...initialQuoteSession(),
+      phase: 'review' as const,
+      staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths', agency: 'Acme Travel' },
+    };
+    render(
+      <QuoteWorkflowPanel
+        session={session}
+        onPatchStaffHeader={onPatchStaffHeader}
+        findParty={find}
+        partySuggestions={[]}
+      />,
+    );
+    fireEvent.click(within(groupFor('Agency')).getByRole('button', { name: 'Find in HMS' }));
+    await waitFor(() =>
+      expect(within(groupFor('Agency')).getByRole('button', { name: 'Acme Travel HQ' })).toBeTruthy(),
+    );
+    expect(find).toHaveBeenLastCalledWith('Acme Travel');
+    expect(within(groupFor('Agency')).queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
+    fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Find in HMS' }));
+    await waitFor(() =>
+      expect(within(groupFor('Company')).getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy(),
+    );
+    expect(find.mock.calls.map(([name]) => name)).toEqual(['Acme Travel', 'Woolworths']);
+    expect(within(groupFor('Company')).queryByRole('button', { name: 'Acme Travel HQ' })).toBeNull();
+    fireEvent.click(within(groupFor('Agency')).getByRole('button', { name: 'Acme Travel HQ' }));
+    expect(onPatchStaffHeader).toHaveBeenCalledWith({
+      parties: { agency: { kind: 'agency', nativeId: '571', name: 'Acme Travel HQ' } },
+      agency: 'Acme Travel HQ',
     });
   });
 
@@ -218,7 +312,7 @@ describe('the quote workflow header under the Agency field', () => {
     const { initialQuoteSession } = await import('../lib/quote-workflow/session');
     render(
       <QuoteWorkflowPanel
-        session={{ ...initialQuoteSession(), phase: 'ready' as const, staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths' } }}
+        session={{ ...initialQuoteSession(), phase: 'review' as const, staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths' } }}
       />,
     );
     expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeNull();
