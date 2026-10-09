@@ -616,8 +616,21 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         binding: action.binding,
       };
     }
-    case 'treat_as':
-      return { ...session, treatAs: action.treatAs };
+    case 'treat_as': {
+      if (action.treatAs === session.treatAs) return session;
+      const chosen = { ...session, treatAs: action.treatAs };
+      // Rates were got for the old type. A booking needs its cards and a quote must not keep them, so the results go
+      // and Get rates runs again for the chosen type. The stays staff have are kept.
+      if (!session.staffQuote && !session.bookingDraft && Object.keys(session.staffQuotes ?? {}).length === 0) {
+        return chosen;
+      }
+      return clearDownstream({
+        ...chosen,
+        inputRevision: session.inputRevision + 1,
+        phase: 'requirements',
+        steps: planQuoteSteps(session.groups),
+      });
+    }
     case 'staff_note':
       return { ...session, staffNote: action.staffNote.trim() || null };
     case 'analysis_started':

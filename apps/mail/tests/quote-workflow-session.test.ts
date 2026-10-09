@@ -2277,3 +2277,27 @@ describe('type chosen by staff after stay edits', () => {
     expect(s.groups[0]?.adults).toBe(3);
   });
 });
+
+describe('type changed after rates', () => {
+  it('drops the old rates and booking cards so Get rates runs again for the chosen type, keeping the stays', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
+    const withRates = { ...s, staffQuote: { stayKey: 'k' } as unknown as typeof s.staffQuote, phase: 'review' as const };
+    const groups = withRates.groups;
+    const after = reduceQuoteSession(withRates, { type: 'treat_as', treatAs: 'create_booking' });
+    expect(after.treatAs).toBe('create_booking');
+    expect(after.staffQuote).toBeNull();
+    expect(after.bookingDraft).toBeNull();
+    expect(after.phase).toBe('requirements');
+    expect(after.inputRevision).toBe(withRates.inputRevision + 1);
+    expect(after.groups).toEqual(groups);
+  });
+
+  it('changes only the type when there are no rates yet', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
+    const after = reduceQuoteSession(s, { type: 'treat_as', treatAs: 'create_booking' });
+    expect(after.treatAs).toBe('create_booking');
+    expect(after.inputRevision).toBe(s.inputRevision);
+  });
+});
