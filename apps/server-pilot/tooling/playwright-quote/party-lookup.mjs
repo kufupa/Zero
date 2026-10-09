@@ -352,7 +352,9 @@ export async function runLookupFilter(page, kind) {
     if (!(await btn.count())) continue;
     return btn.first().click().then(() => true, () => false);
   }
-  return false;
+  const run = await dialogRunButton(win);
+  if (!run) return false;
+  return run.click().then(() => true, () => false);
 }
 
 // The name field each dialog's field selector shows. The runner filters by the name only when the selector shows it.
@@ -433,6 +435,20 @@ async function waitUntilTrue(page, check, timeoutMs, pollMs = 150) {
   }
 }
 
+/** The lookup dialog's own Run control. ExtJS renders it as an a.x-btn (often without an ARIA button role), so match by text. */
+async function dialogRunButton(win) {
+  const candidates = [
+    win.getByRole('button', { name: /^\s*Run\s*$/ }),
+    win.locator('a.x-btn, .x-btn, button, [role="button"]').filter({ hasText: /^\s*Run\s*$/ }),
+    win.locator('span.x-btn-inner').filter({ hasText: /^\s*Run\s*$/ }),
+  ];
+  for (const candidate of candidates) {
+    const first = candidate.first();
+    if (await first.count().catch(() => 0)) return first;
+  }
+  return null;
+}
+
 /**
  * Types the query into the dialog's filter box on the Run row, once the field selector shows the name field. Returns true only
  * when the box reads the query back and the dialog's Run button is enabled. Otherwise, the reason it stopped. The saved-search
@@ -442,8 +458,8 @@ export async function fillRunRowFilter(page, kind, value) {
   if (!filled(value)) return 'query_empty';
   const win = await namedLookupWindow(page, kind);
   if (!win) return 'lookup_window_not_open';
-  const run = win.getByRole('button', { name: /^Run$/ }).first();
-  const runBox = (await run.count()) ? await run.boundingBox().catch(() => null) : null;
+  const run = await dialogRunButton(win);
+  const runBox = run ? await run.boundingBox().catch(() => null) : null;
   if (!runBox) return 'no_run_button';
   const inputs = win.locator('input:visible');
   const boxes = [];
