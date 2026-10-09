@@ -11,6 +11,7 @@ import type {
   ReservationistStaffAction,
   StaffQuoteAllocation,
   StaffQuoteHeader,
+  StaffQuoteOtherUnit,
   StaffQuoteSource,
   StayGroupRequirement,
 } from './types';
@@ -67,8 +68,16 @@ export type ExecuteStaffQuoteInput = {
   clientTelephone: string;
   dinnerAllowanceMinor?: number;
   dinnerAllowanceGroupIds?: string[];
+  dinnerAllowanceLabel?: string;
+  lunchAllowanceMinor?: number;
+  lunchAllowanceLabel?: string;
+  officeTransferMinor?: number;
+  officeTransferDays?: number;
   shuttleRequested?: boolean;
   shuttleMinor?: number;
+  shuttleTrips?: number;
+  other?: { label: string; amountMinor: number; unit: StaffQuoteOtherUnit };
+  notes?: string;
 };
 
 export type ExecuteStaffQuoteResult = {
@@ -422,8 +431,16 @@ export function approvedExecuteHeader(
   | 'clientTelephone'
   | 'dinnerAllowanceMinor'
   | 'dinnerAllowanceGroupIds'
+  | 'dinnerAllowanceLabel'
+  | 'lunchAllowanceMinor'
+  | 'lunchAllowanceLabel'
+  | 'officeTransferMinor'
+  | 'officeTransferDays'
   | 'shuttleRequested'
   | 'shuttleMinor'
+  | 'shuttleTrips'
+  | 'other'
+  | 'notes'
 > {
   const salesStrategy = header.salesStrategy === 'Government' ? 'Government' : header.salesStrategy === 'BAR' ? 'BAR' : null;
   if (!salesStrategy) {
@@ -440,12 +457,56 @@ export function approvedExecuteHeader(
     ...(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0
       ? {
           dinnerAllowanceMinor: header.dinnerAllowanceMinor,
+          ...(trimmedOrUndefined(header.dinnerAllowanceLabel)
+            ? { dinnerAllowanceLabel: trimmedOrUndefined(header.dinnerAllowanceLabel) }
+            : {}),
           ...(dinnerGroupIds ? { dinnerAllowanceGroupIds: dinnerGroupIds } : {}),
+        }
+      : {}),
+    ...(positiveWhole(header.lunchAllowanceMinor)
+      ? {
+          lunchAllowanceMinor: positiveWhole(header.lunchAllowanceMinor),
+          ...(trimmedOrUndefined(header.lunchAllowanceLabel)
+            ? { lunchAllowanceLabel: trimmedOrUndefined(header.lunchAllowanceLabel) }
+            : {}),
+        }
+      : {}),
+    ...(positiveWhole(header.officeTransferMinor)
+      ? {
+          officeTransferMinor: positiveWhole(header.officeTransferMinor),
+          ...(positiveWhole(header.officeTransferDays)
+            ? { officeTransferDays: positiveWhole(header.officeTransferDays) }
+            : {}),
         }
       : {}),
     ...(header.shuttleRequested ? { shuttleRequested: true } : {}),
     ...(header.shuttleMinor && header.shuttleMinor > 0 ? { shuttleMinor: header.shuttleMinor } : {}),
+    ...(header.shuttleRequested && positiveWhole(header.shuttleTrips)
+      ? { shuttleTrips: positiveWhole(header.shuttleTrips) }
+      : {}),
+    ...(otherChargeFor(header.other) ? { other: otherChargeFor(header.other) } : {}),
+    ...(trimmedOrUndefined(header.notes) ? { notes: trimmedOrUndefined(header.notes) } : {}),
   };
+}
+
+/** Whole positive amounts or counts only. Anything else is left off the request, never sent as zero. */
+function positiveWhole(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function trimmedOrUndefined(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+/** An "other" charge is sent only when it has a label and a positive amount. */
+function otherChargeFor(
+  other: StaffQuoteHeader['other'],
+): ExecuteStaffQuoteInput['other'] | undefined {
+  const label = trimmedOrUndefined(other?.label);
+  const amountMinor = positiveWhole(other?.amountMinor);
+  if (!other || !label || !amountMinor) return undefined;
+  return { label, amountMinor, unit: other.unit };
 }
 
 export async function bindExecuteStaffQuote(args: {

@@ -85,6 +85,7 @@ describe('native draft payload', () => {
         sourceHash: 'ab'.repeat(32),
       },
       reviewedReplyHtml: '<p>Parking is available on site.</p>',
+      staffHeader: { ...initialQuoteSession().staffHeader, notes: 'Breakfast only <day 2>' },
       pdf: { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' },
       evidence: {
         kind: 'authorised',
@@ -93,6 +94,7 @@ describe('native draft payload', () => {
       },
     });
     expect(payload?.html).toContain('Parking is available on site.');
+    expect(payload?.html).toContain('<p><strong>Note:</strong> Breakfast only &lt;day 2&gt;</p>');
     expect(payload?.html).not.toContain('Thank you for Choosing The Centurion Hotel.');
     expect(payload?.pdf.fileName).toBe('Quote-authorised.pdf');
     expect(payload?.pdf.pdfBase64).toBe('JVBERi0xLjQK');

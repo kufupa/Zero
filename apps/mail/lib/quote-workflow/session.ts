@@ -512,7 +512,8 @@ function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
     ...(analysis.luna?.missing ?? []).map((row) => row.question),
     ...(analysis.groups ?? []).flatMap((group) => group.specialRequests ?? []),
   ];
-  return texts.some((text) => /shuttle|transfer|airport/i.test(text));
+  // A bare "transfer" is a payment or bank transfer, not a shuttle. "airport transfer" still matches via "airport".
+  return texts.some((text) => /shuttle|airport/i.test(text));
 }
 
 function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAnalysis): StaffQuoteHeader {

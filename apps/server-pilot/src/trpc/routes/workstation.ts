@@ -1270,7 +1270,13 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'GOTENBERG_URL missing' });
       const result = await buildRevisionProposalPdf(
         resolved.revision,
-        { ...input, signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email },
+        {
+          ...input,
+          signerName: ctx.sessionUser.name ?? '',
+          signerEmail: ctx.sessionUser.email,
+          // The note comes from the approved attestation, not from this request.
+          notes: staff?.notes,
+        },
         { url, facts: resolved.facts },
       );
       await assertCurrentStaffQuote();

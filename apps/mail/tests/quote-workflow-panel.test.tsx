@@ -341,10 +341,47 @@ describe('QuoteWorkflowPanel', () => {
         onPatchStaffHeader={onPatchStaffHeader}
       />,
     );
-    const input = screen.getByLabelText('Dinner allowance') as HTMLInputElement;
+    const input = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: '125.' } });
     expect(input.value).toBe('125.');
+  });
+
+  it('shows one labelled field group per extra, and sends each change as its own patch', () => {
+    const onPatchStaffHeader = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={sessionFromFixture('mixed-same-dates')}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    expect(screen.getByLabelText('Dinner allowance (R per person per night)')).toBeDefined();
+    expect(screen.getByLabelText('Lunch allowance (R per person per night)')).toBeDefined();
+    expect(screen.getByLabelText('Office transfer (R per person per day)')).toBeDefined();
+    expect(screen.getByRole('group', { name: 'Other: label, amount, unit' })).toBeDefined();
+    fireEvent.change(screen.getByLabelText('Other label'), { target: { value: 'Parking' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({
+      other: expect.objectContaining({ label: 'Parking', unit: 'item' }),
+    });
+    fireEvent.change(screen.getByLabelText('Notes for the quote'), {
+      target: { value: 'Breakfast only on day 2.' },
+    });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ notes: 'Breakfast only on day 2.' });
+  });
+
+  it('asks for trips and a price once shuttle is requested, and says so while the price is missing', () => {
+    const onPatchStaffHeader = vi.fn();
+    const base = sessionFromFixture('mixed-same-dates');
+    render(
+      <QuoteWorkflowPanel
+        session={{ ...base, staffHeader: { ...base.staffHeader, shuttleRequested: true } }}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    expect(screen.getByRole('group', { name: 'Shuttle: trips × R per trip' })).toBeDefined();
+    expect(screen.getByText(/No price yet/)).toBeDefined();
+    fireEvent.change(screen.getByLabelText('Shuttle trips'), { target: { value: '2' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ shuttleTrips: 2 });
   });
 
   it('gives each date option its own Run button', () => {

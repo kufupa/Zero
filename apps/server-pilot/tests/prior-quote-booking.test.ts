@@ -511,4 +511,141 @@ describe('prior-quote routes', () => {
     });
     expect(result).toEqual({ status: 'unavailable', reason: 'not_found' });
   });
+
+  it('carries every staff extra and the note into a requote, and reads legacy dinner and shuttle rows', async () => {
+    const revision = await freshRevision();
+    const payloadFor = (extras: unknown[], notes?: string) =>
+      priorStaffQuoteRequotePayload(
+        {
+          transportId: 't1',
+          threadId: 'thread-1',
+          state: 'succeeded',
+          metrics: {
+            staffQuoteAttestation: {
+              version: 1,
+              kind: 'staff_approved_quote',
+              transportId: 't1',
+              userId: 'u1',
+              threadId: 'thread-1',
+              messageId: 'mail-1',
+              sourceHash: 'a'.repeat(64),
+              selectionEpoch: 1,
+              inputRevision: 1,
+              inputDigest: 'digest',
+              authorizationId: 'auth',
+              revisionIds: [revision.id],
+              header: { company: 'Acme', agency: 'XYZ TRAVEL' },
+              salesStrategy: 'BAR',
+              ...(notes ? { notes } : {}),
+            },
+            reservationistResult: {
+              quoteRevisionIds: [revision.id],
+              quoteRevisions: [revision],
+              proposalFacts: [
+                {
+                  ref: 'extras',
+                  facts: {
+                    revisionId: revision.id,
+                    authorizationId: revision.authorizationId,
+                    sourceRef: 'message:mail-1',
+                    sourceHash: 'ab'.repeat(32),
+                    extras,
+                    includedEntitlements: [],
+                  },
+                },
+              ],
+            },
+          },
+        } as never,
+        revision.id,
+      );
+    const payload = payloadFor(
+      [
+        {
+          id: 'dinner-allowance',
+          label: 'Dinner allowance (food only)',
+          quantity: 1,
+          units: 6,
+          unitKind: 'person_service',
+          unitMinor: 45_000,
+          service: 'dinner_allowance',
+          persons: [],
+          dates: [],
+        },
+        {
+          id: 'lunch-allowance',
+          label: 'Lunch allowance',
+          quantity: 1,
+          units: 6,
+          unitKind: 'person_service',
+          unitMinor: 20_000,
+          service: 'lunch_allowance',
+          persons: [],
+          dates: [],
+        },
+        {
+          id: 'office-transfer',
+          label: 'Office transfer',
+          quantity: 1,
+          units: 4,
+          unitKind: 'person_service',
+          unitMinor: 20_000,
+          service: 'office_transfer',
+          persons: [],
+          dates: ['2026-10-12', '2026-10-13', '2026-10-14', '2026-10-15'],
+        },
+        {
+          id: 'shuttle',
+          label: 'Shuttle',
+          quantity: 1,
+          units: 2,
+          unitKind: 'trip',
+          unitMinor: 60_000,
+          service: 'shuttle',
+          persons: [],
+          dates: ['2026-10-12'],
+        },
+        {
+          id: 'other',
+          label: 'Parking',
+          quantity: 1,
+          units: 1,
+          unitKind: 'item',
+          unitMinor: 30_000,
+          service: 'other',
+          persons: [],
+          dates: ['2026-10-12'],
+        },
+      ],
+      'Late check-in',
+    );
+    expect(payload).toMatchObject({
+      dinnerAllowanceMinor: 45_000,
+      dinnerAllowanceLabel: 'food only',
+      lunchAllowanceMinor: 20_000,
+      officeTransferMinor: 20_000,
+      officeTransferDays: 4,
+      shuttleRequested: true,
+      shuttleMinor: 60_000,
+      shuttleTrips: 2,
+      other: { label: 'Parking', amountMinor: 30_000, unit: 'item' },
+      notes: 'Late check-in',
+    });
+    const legacy = payloadFor([
+      {
+        id: 'dinner-allowance',
+        label: 'Dinner allowance',
+        quantity: 1,
+        units: 6,
+        unitKind: 'person_service',
+        unitMinor: 12_500,
+        service: 'dinner_allowance',
+        persons: [],
+        dates: [],
+      },
+    ]);
+    expect(legacy).toMatchObject({ dinnerAllowanceMinor: 12_500 });
+    expect(legacy).not.toHaveProperty('notes');
+    expect(legacy).not.toHaveProperty('other');
+  });
 });

@@ -96,6 +96,23 @@ describe('quote session', () => {
     expect(changed.selectedOfferIds).toEqual([]);
     expect(canCreateNativeDraft(changed)).toBe(false);
   });
+  it('does not tick shuttle for a bank transfer, but does for an airport transfer', () => {
+    const analysisWith = (request: string) => ({
+      ...quoteAnalysis,
+      groups: [{ ...quoteAnalysis.groups[0]!, specialRequests: [request] }],
+    });
+    const bank = reduceQuoteSession(
+      { ...initialQuoteSession(), binding: bind() },
+      { type: 'analysis_ready', analysis: analysisWith('Please confirm the bank transfer details') },
+    );
+    expect(bank.staffHeader.shuttleRequested).toBeFalsy();
+    const airport = reduceQuoteSession(
+      { ...initialQuoteSession(), binding: bind() },
+      { type: 'analysis_ready', analysis: analysisWith('Airport transfer on arrival') },
+    );
+    expect(airport.staffHeader.shuttleRequested).toBe(true);
+  });
+
   it('reuses analysis for an unchanged selection digest', () => {
     const a = reduceQuoteSession(initialQuoteSession(), {
       type: 'selection',

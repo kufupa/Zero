@@ -920,6 +920,43 @@ describe('expired prior re-quote', () => {
     });
   });
 
+  it('restores the new extras and note onto the re-quote header when staff has not edited stays', () => {
+    const { header } = buildExpiredPriorRequoteBindArgs({
+      stored: {
+        ...stored,
+        dinnerAllowanceMinor: 45_000,
+        dinnerAllowanceLabel: 'food only',
+        lunchAllowanceMinor: 20_000,
+        officeTransferMinor: 20_000,
+        officeTransferDays: 4,
+        shuttleRequested: true,
+        shuttleMinor: 60_000,
+        shuttleTrips: 2,
+        other: { label: 'Parking', amountMinor: 30_000, unit: 'item' },
+        notes: 'Late check-in',
+      },
+      sessionGroups: [g1],
+      sessionHeader: {
+        salesStrategy: 'BAR',
+        company: '',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      staffEdited: false,
+    });
+    expect(header).toMatchObject({
+      dinnerAllowanceLabel: 'food only',
+      lunchAllowanceMinor: 20_000,
+      officeTransferMinor: 20_000,
+      officeTransferDays: 4,
+      shuttleTrips: 2,
+      other: { label: 'Parking', amountMinor: 30_000, unit: 'item' },
+      notes: 'Late check-in',
+    });
+  });
+
   it('uses patched session groups when staff edited after prefill', () => {
     const edited: StayGroupRequirement = {
       ...g1,

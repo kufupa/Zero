@@ -12,7 +12,15 @@ import {
 import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
-import type { QueueStatus, QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
+import type {
+  QueueStatus,
+  QuoteOffer,
+  QuoteReviewItem,
+  QuoteSession,
+  StaffQuoteHeader,
+  StaffQuoteOtherUnit,
+  StayGroupRequirement,
+} from '@/lib/quote-workflow/types';
 import { BookingCards } from './booking-card';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { DocumentReview } from './document-review';
@@ -199,33 +207,180 @@ function StaffHeaderFields({
           onChange={(event) => onPatch?.({ clientTelephone: event.target.value })}
         />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-        Dinner allowance (ZAR / person / night)
-        <ZarMinorInput
-          ariaLabel="Dinner allowance"
-          minor={header.dinnerAllowanceMinor}
-          onMinorChange={(dinnerAllowanceMinor) => onPatch?.({ dinnerAllowanceMinor })}
-        />
-      </label>
-      <label className="flex items-center gap-2 text-[11.5px] font-semibold text-[#475569]">
-        <input
-          type="checkbox"
-          aria-label="Shuttle requested"
-          checked={Boolean(header.shuttleRequested)}
-          onChange={(event) => onPatch?.({ shuttleRequested: event.target.checked })}
-        />
-        Shuttle requested
-      </label>
-      {header.shuttleRequested ? (
+      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
         <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-          Shuttle amount (ZAR)
+          Dinner allowance (R per person per night)
           <ZarMinorInput
-            ariaLabel="Shuttle amount"
-            minor={header.shuttleMinor}
-            onMinorChange={(shuttleMinor) => onPatch?.({ shuttleMinor })}
+            ariaLabel="Dinner allowance (R per person per night)"
+            minor={header.dinnerAllowanceMinor}
+            onMinorChange={(dinnerAllowanceMinor) => onPatch?.({ dinnerAllowanceMinor })}
           />
         </label>
-      ) : null}
+        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+          Dinner label, optional (e.g. food only)
+          <input
+            aria-label="Dinner label"
+            className={fieldClass}
+            maxLength={120}
+            value={header.dinnerAllowanceLabel ?? ''}
+            onChange={(event) => onPatch?.({ dinnerAllowanceLabel: event.target.value })}
+          />
+        </label>
+      </div>
+      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
+        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+          Lunch allowance (R per person per night)
+          <ZarMinorInput
+            ariaLabel="Lunch allowance (R per person per night)"
+            minor={header.lunchAllowanceMinor}
+            onMinorChange={(lunchAllowanceMinor) => onPatch?.({ lunchAllowanceMinor })}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+          Lunch label, optional (e.g. with 1 soft drink)
+          <input
+            aria-label="Lunch label"
+            className={fieldClass}
+            maxLength={120}
+            value={header.lunchAllowanceLabel ?? ''}
+            onChange={(event) => onPatch?.({ lunchAllowanceLabel: event.target.value })}
+          />
+        </label>
+      </div>
+      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
+        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+          Office transfer (R per person per day)
+          <ZarMinorInput
+            ariaLabel="Office transfer (R per person per day)"
+            minor={header.officeTransferMinor}
+            onMinorChange={(officeTransferMinor) => onPatch?.({ officeTransferMinor })}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+          Office transfer days, optional (blank = nights of stay)
+          <input
+            aria-label="Office transfer days"
+            className={fieldClass}
+            inputMode="numeric"
+            placeholder="nights of stay"
+            value={header.officeTransferDays ?? ''}
+            onChange={(event) => {
+              const days = Number.parseInt(event.target.value, 10);
+              onPatch?.({
+                officeTransferDays: Number.isFinite(days) && days > 0 ? Math.min(days, 31) : undefined,
+              });
+            }}
+          />
+        </label>
+      </div>
+      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
+        <label className="flex items-center gap-2 text-[11.5px] font-semibold text-[#475569]">
+          <input
+            type="checkbox"
+            aria-label="Shuttle requested"
+            checked={Boolean(header.shuttleRequested)}
+            onChange={(event) => onPatch?.({ shuttleRequested: event.target.checked })}
+          />
+          Shuttle requested
+        </label>
+        {header.shuttleRequested ? (
+          <div role="group" aria-label="Shuttle: trips × R per trip" className="flex flex-col gap-1.5">
+            <span className="text-[11.5px] font-semibold text-[#475569]">Shuttle: trips × R per trip</span>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+                Trips
+                <input
+                  aria-label="Shuttle trips"
+                  className={fieldClass}
+                  inputMode="numeric"
+                  placeholder="1"
+                  value={header.shuttleTrips ?? ''}
+                  onChange={(event) => {
+                    const trips = Number.parseInt(event.target.value, 10);
+                    onPatch?.({ shuttleTrips: Number.isFinite(trips) && trips > 0 ? Math.min(trips, 20) : undefined });
+                  }}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+                R per trip
+                <ZarMinorInput
+                  ariaLabel="Shuttle amount"
+                  minor={header.shuttleMinor}
+                  onMinorChange={(shuttleMinor) => onPatch?.({ shuttleMinor })}
+                />
+              </label>
+            </div>
+            {header.shuttleMinor ? null : (
+              <p className="text-[11px] text-[#b45309]">
+                No price yet. The shuttle stays a review item until you enter R per trip.
+              </p>
+            )}
+          </div>
+        ) : null}
+      </div>
+      <div role="group" aria-label="Other: label, amount, unit" className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
+        <span className="text-[11.5px] font-semibold text-[#475569]">Other: label, amount, unit</span>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+            Label
+            <input
+              aria-label="Other label"
+              className={fieldClass}
+              maxLength={120}
+              placeholder="e.g. Parking"
+              value={header.other?.label ?? ''}
+              onChange={(event) =>
+                onPatch?.({ other: { unit: header.other?.unit ?? 'item', ...header.other, label: event.target.value } })
+              }
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+            Amount (R)
+            <ZarMinorInput
+              ariaLabel="Other amount"
+              minor={header.other?.amountMinor}
+              onMinorChange={(amountMinor) =>
+                onPatch?.({ other: { label: header.other?.label ?? '', unit: header.other?.unit ?? 'item', amountMinor } })
+              }
+            />
+          </label>
+        </div>
+        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+          Unit
+          <select
+            aria-label="Other unit"
+            className={fieldClass}
+            value={header.other?.unit ?? 'item'}
+            onChange={(event) =>
+              onPatch?.({
+                other: {
+                  label: header.other?.label ?? '',
+                  amountMinor: header.other?.amountMinor,
+                  unit: event.target.value as StaffQuoteOtherUnit,
+                },
+              })
+            }
+          >
+            <option value="per_person_night">R per person per night</option>
+            <option value="per_person">R per person</option>
+            <option value="per_trip">R per trip</option>
+            <option value="item">R once (item)</option>
+          </select>
+        </label>
+      </div>
+      <label className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 text-[11.5px] font-semibold text-[#475569]">
+        Notes for the quote
+        <textarea
+          aria-label="Notes for the quote"
+          className="min-h-[3.5rem] w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12.5px] font-normal text-[#1e293b]"
+          maxLength={1000}
+          value={header.notes ?? ''}
+          onChange={(event) => onPatch?.({ notes: event.target.value })}
+        />
+        <span className="text-[11px] font-normal text-[#64748b]">
+          Unpriced. Printed on the PDF and added to the reply as a note.
+        </span>
+      </label>
     </section>
   );
 }

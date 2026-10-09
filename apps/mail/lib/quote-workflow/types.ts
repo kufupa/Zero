@@ -216,8 +216,30 @@ export type StaffQuoteHeader = {
   dinnerAllowanceRequired?: boolean;
   /** The groups that took the B&B fallback. The allowance is charged only to these groups' guests. */
   dinnerAllowanceGroupIds?: string[];
+  /** Optional qualifier on the dinner line, e.g. "food only". Printed in brackets. */
+  dinnerAllowanceLabel?: string;
+  lunchAllowanceMinor?: number;
+  lunchAllowanceLabel?: string;
+  /** R per person per day, return trip. */
+  officeTransferMinor?: number;
+  /** Days charged for the office transfer. Absent means the nights of the stay. */
+  officeTransferDays?: number;
   shuttleRequested?: boolean;
+  /** R per trip. A legacy header with only this set means one trip. */
   shuttleMinor?: number;
+  /** Number of shuttle trips. Absent means one trip. */
+  shuttleTrips?: number;
+  other?: StaffQuoteOtherCharge;
+  /** Unpriced note for the reply and the PDF. */
+  notes?: string;
+};
+
+export type StaffQuoteOtherUnit = 'per_person_night' | 'per_person' | 'per_trip' | 'item';
+
+export type StaffQuoteOtherCharge = {
+  label: string;
+  amountMinor?: number;
+  unit: StaffQuoteOtherUnit;
 };
 
 export function emptyStaffQuoteHeader(): StaffQuoteHeader {
