@@ -30,6 +30,13 @@ bash "${SCRIPT_DIR}/sync-ec2-git-bundle.sh"
 
 REMOTE_NVM='export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; export PATH="$HOME/.local/share/pnpm:$PATH"'
 
+# Every on-box pnpm install runs husky's prepare, which fails with EACCES while .husky/_/h is mode 0444.
+# Restore the owner write bit before the first install. A missing hook is skipped.
+# See docs/solutions/workflow-issues/ec2-deploy-husky-prepare-eacces-readonly-hook.md
+echo "== ops-deploy: restore husky hook write bit =="
+bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+  'hook=/home/ubuntu/repos/zero/.husky/_/h; if [ -e "$hook" ]; then chmod u+w "$hook"; fi'
+
 echo "== ops-deploy: install dependencies before migration check =="
 bash "${SCRIPT_DIR}/ssm-run-command.sh" \
   "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && pnpm install --frozen-lockfile"
