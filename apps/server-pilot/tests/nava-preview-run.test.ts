@@ -367,6 +367,22 @@ describe('guest details never reach the outputs', () => {
   });
 });
 
+describe('classifyTrpcRequest: opt-in HMS reads', () => {
+  const url = 'https://nava.legacyhotels.co.za/api/trpc/panePartyLookup.findParty?batch=1';
+
+  it('blocks the party lookup by default and lets it through only when a proof run opts in', () => {
+    expect(classifyTrpcRequest(url).allowed).toBe(false);
+    expect(classifyTrpcRequest(url, { allowHmsReads: true }).allowed).toBe(true);
+  });
+
+  it('never lets an HMS write through, even with the opt-in', () => {
+    for (const name of ['workstation.executeStaffQuote', 'quoteWorkflow.commitStay', 'workstation.bridgeTicket']) {
+      const decision = classifyTrpcRequest(`https://nava.legacyhotels.co.za/api/trpc/${name}?batch=1`, { allowHmsReads: true });
+      expect(decision.allowed, name).toBe(false);
+    }
+  });
+});
+
 describe('classifyTrpcRequest', () => {
   const origin = 'https://nava.legacyhotels.co.za/api/trpc/';
 

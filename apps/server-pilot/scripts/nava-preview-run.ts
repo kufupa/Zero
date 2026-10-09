@@ -81,6 +81,11 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
 ]);
 /** The one mutation the viewer may call: a read-only analysis (cache and ledger rows, no HMS, no mail). */
 export const ANALYSIS_PROCEDURES: ReadonlySet<string> = new Set(['quoteWorkflow.analyseSelection']);
+/**
+ * HMS reads that are mutations only because they drive the HMS browser: the pane's automatic company/agency lookup.
+ * Blocked by default. A proof run opts in with NAVA_PREVIEW_ALLOW_HMS_READS=1; it never allows an HMS write.
+ */
+export const HMS_READ_PROCEDURES: ReadonlySet<string> = new Set(['panePartyLookup.findParty']);
 /** Mutations the pane references. Named so a block reads as a write. Any other name is blocked as unknown. */
 export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'panePartyLookup.findParty',
@@ -112,7 +117,7 @@ const TRPC_PREFIX = '/api/trpc/';
  * Classifies one request by the procedure names in its /api/trpc/ path, batched or not.
  * The HTTP method is not an input: a query sent as POST is still a read.
  */
-export function classifyTrpcRequest(url: string): TrpcDecision {
+export function classifyTrpcRequest(url: string, options: { allowHmsReads?: boolean } = {}): TrpcDecision {
   const { pathname } = new URL(url);
   const procedures = pathname.startsWith(TRPC_PREFIX)
     ? pathname.slice(TRPC_PREFIX.length).split(',').filter(Boolean)
@@ -123,6 +128,7 @@ export function classifyTrpcRequest(url: string): TrpcDecision {
   const blocked: TrpcDecision['blocked'] = [];
   for (const procedure of procedures) {
     if (READ_PROCEDURES.has(procedure) || ANALYSIS_PROCEDURES.has(procedure)) continue;
+    if (options.allowHmsReads && HMS_READ_PROCEDURES.has(procedure)) continue;
     blocked.push({
       procedure,
       reason: KNOWN_WRITE_PROCEDURES.has(procedure) ? 'write' : 'unknown',
@@ -145,6 +151,8 @@ export type RunConfig = {
   selection: RunSelection;
   outDir: string;
   timeoutMs: number;
+  /** NAVA_PREVIEW_ALLOW_HMS_READS=1: let the pane's HMS lookups (HMS_READ_PROCEDURES) through. */
+  allowHmsReads?: boolean;
 };
 
 const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
@@ -275,6 +283,7 @@ export function parseRunConfig(
     selection,
     outDir,
     timeoutMs,
+    allowHmsReads: env.NAVA_PREVIEW_ALLOW_HMS_READS?.trim() === '1',
   };
 }
 
@@ -476,10 +485,10 @@ function threadFromReferer(referer: string | undefined): string | null {
   }
 }
 
-async function installWriteGuard(page: Page, blocked: BlockedWrite[]): Promise<void> {
+async function installWriteGuard(page: Page, blocked: BlockedWrite[], allowHmsReads = false): Promise<void> {
   await page.route('**/api/trpc/**', async (route: Route) => {
     const request = route.request();
-    const decision = classifyTrpcRequest(request.url());
+    const decision = classifyTrpcRequest(request.url(), { allowHmsReads });
     if (decision.allowed) {
       await route.continue();
       return;
@@ -599,7 +608,11 @@ export async function runPreview(
   config: RunConfig,
   log: (line: string) => void,
 ): Promise<RunOutput> {
-  const launchOptions = config.chromiumPath ? { executablePath: config.chromiumPath } : {};
+  // Headless Chromium hides scrollbars by default. Staff see them in WebView2, so the screenshots must too.
+  const launchOptions = {
+    ...(config.chromiumPath ? { executablePath: config.chromiumPath } : {}),
+    ignoreDefaultArgs: ['--hide-scrollbars'],
+  };
   // --resolve equivalent: Chromium sends this host's TLS and requests to the pinned address.
   const host = new URL(config.baseUrl).hostname;
   const args = config.resolveTo ? [`--host-resolver-rules=MAP ${host} ${config.resolveTo}`] : [];
@@ -615,7 +628,7 @@ export async function runPreview(
     });
     const page = await context.newPage();
     const blocked: BlockedWrite[] = [];
-    await installWriteGuard(page, blocked);
+    await installWriteGuard(page, blocked, config.allowHmsReads === true);
 
     await page.goto(`${config.baseUrl}/nava-preview`, { waitUntil: 'domcontentloaded' });
     if (new URL(page.url()).pathname.startsWith('/login')) {
