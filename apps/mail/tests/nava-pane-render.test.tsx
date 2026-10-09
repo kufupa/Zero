@@ -1,7 +1,10 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
+import { observable } from '@trpc/server/observable';
+import { countMutationsLink } from '../lib/workstation/mutations-in-flight';
+import { PANE_RELOAD_GUARD_KEY } from '../lib/workstation/pane-release-watch';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
@@ -215,5 +218,49 @@ describe('NavaPane', () => {
     await waitFor(() =>
       expect(container.querySelector('footer')?.textContent).toContain('Build ccccccc'),
     );
+  });
+  it('holds a release reload while a tRPC mutation is in flight, then reloads once it settles', async () => {
+    vi.stubEnv('PROD', true);
+    const served = { release: 'a'.repeat(64) };
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ release: served.release })));
+    render(<NavaPane bridge={fakeBridge} />);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const pendingMutation = countMutationsLink({} as never)({
+      op: { id: 2, type: 'mutation', path: 'workstation.x', input: undefined, context: {} },
+      next: () => observable(() => () => {}),
+    } as never).subscribe({});
+    served.release = 'b'.repeat(64);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(sessionStorage.getItem(PANE_RELOAD_GUARD_KEY)).toBeNull();
+
+    pendingMutation.unsubscribe();
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => expect(sessionStorage.getItem(PANE_RELOAD_GUARD_KEY)).not.toBeNull());
+  });
+
+  it('mounts and renders when reading sessionStorage throws', () => {
+    vi.stubEnv('PROD', true);
+    vi.stubGlobal('fetch', async () => new Response('', { status: 404 }));
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access is denied', 'SecurityError');
+      },
+    });
+    try {
+      const { container } = render(<NavaPane bridge={fakeBridge} />);
+      expect(container.querySelector('header')?.textContent).toContain('Nava Reservationist');
+    } finally {
+      if (original) Object.defineProperty(globalThis, 'sessionStorage', original);
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createPaneReleaseWatch,
   fetchPaneRelease,
@@ -151,20 +151,64 @@ describe('fetchPaneRelease', () => {
 });
 
 describe('sessionPaneReloadGuard', () => {
-  it('records the last reload time in storage and reports none when storage is unavailable', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+  });
+
+  it('records the last reload time in sessionStorage', () => {
     const values = new Map<string, string>();
-    const storage = {
+    vi.stubGlobal('sessionStorage', {
       getItem: (key: string) => values.get(key) ?? null,
       setItem: (key: string, value: string) => void values.set(key, value),
-    } as unknown as Storage;
-    const guard = sessionPaneReloadGuard(storage);
+    });
+    const guard = sessionPaneReloadGuard();
     expect(guard.readAt()).toBeNull();
     expect(guard.writeAt(T0)).toBe(true);
     expect(values.get(PANE_RELOAD_GUARD_KEY)).toBe(String(T0));
     expect(guard.readAt()).toBe(T0);
+  });
 
-    const blocked = sessionPaneReloadGuard(undefined);
-    expect(blocked.readAt()).toBeNull();
-    expect(blocked.writeAt(T0)).toBe(false);
+  it('keeps the guard in memory when storage methods throw', () => {
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => {
+        throw new DOMException('denied', 'SecurityError');
+      },
+      setItem: () => {
+        throw new DOMException('denied', 'SecurityError');
+      },
+    });
+    const guard = sessionPaneReloadGuard();
+    expect(guard.readAt()).toBeNull();
+    expect(guard.writeAt(T0)).toBe(true);
+    expect(guard.readAt()).toBe(T0);
+  });
+
+  it('does not throw when reading sessionStorage itself throws, and still rate-limits reloads', async () => {
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      configurable: true,
+      get() {
+        throw new DOMException('Access is denied', 'SecurityError');
+      },
+    });
+    const guard = sessionPaneReloadGuard();
+    const clock = { now: T0 };
+    const reload = vi.fn();
+    const served = { release: RELEASE_A };
+    const watch = createPaneReleaseWatch({
+      fetchRelease: async () => served.release,
+      isBusy: () => false,
+      reload,
+      guard,
+      now: () => clock.now,
+    });
+    await watch.check();
+    served.release = RELEASE_B;
+    await watch.check();
+    expect(reload).toHaveBeenCalledTimes(1);
+    clock.now = T0 + 60_000;
+    served.release = RELEASE_A;
+    await watch.check();
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });

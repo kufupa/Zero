@@ -31,27 +31,40 @@ export type PaneReloadGuard = {
   writeAt(at: number): boolean;
 };
 
-/** sessionStorage survives the reload it guards, so a reload loop cannot restart it. */
-export function sessionPaneReloadGuard(
-  storage: Storage | undefined = typeof sessionStorage === 'undefined' ? undefined : sessionStorage,
-): PaneReloadGuard {
+/**
+ * sessionStorage survives the reload it guards, so a reload loop cannot restart it.
+ * WebViews can block storage or make even reading `sessionStorage` throw. Every access
+ * is guarded, and the time is also kept in memory, so the pane mounts either way and
+ * still rate-limits reloads within this page.
+ */
+export function sessionPaneReloadGuard(): PaneReloadGuard {
+  let memoryAt: number | null = null;
+  const storage = (): Storage | null => {
+    try {
+      return typeof sessionStorage === 'undefined' ? null : sessionStorage;
+    } catch {
+      return null;
+    }
+  };
   return {
     readAt() {
       try {
-        const raw = storage?.getItem(PANE_RELOAD_GUARD_KEY);
+        const raw = storage()?.getItem(PANE_RELOAD_GUARD_KEY);
         const at = raw === null || raw === undefined ? NaN : Number(raw);
-        return Number.isFinite(at) ? at : null;
+        if (Number.isFinite(at)) return at;
       } catch {
-        return null;
+        // Blocked storage: fall back to the in-memory record.
       }
+      return memoryAt;
     },
     writeAt(at) {
+      memoryAt = at;
       try {
-        storage?.setItem(PANE_RELOAD_GUARD_KEY, String(at));
-        return storage !== undefined;
+        storage()?.setItem(PANE_RELOAD_GUARD_KEY, String(at));
       } catch {
-        return false;
+        // Blocked storage: the in-memory record still rate-limits this page.
       }
+      return true;
     },
   };
 }

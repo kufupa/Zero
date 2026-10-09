@@ -23,6 +23,7 @@ import {
   PANE_RELEASE_POLL_MS,
   sessionPaneReloadGuard,
 } from '@/lib/workstation/pane-release-watch';
+import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
@@ -651,8 +652,8 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     }
   };
 
-  // Stale-build check. Idle = no reply or HMS run in flight, no unsent quote, booking or stay edits,
-  // and no focused input inside the pane. Reloading then loses nothing staff typed.
+  // Stale-build check. Idle = no tRPC mutation or reply draft in flight, no unsent quote, booking or
+  // stay edits, and no focused input inside the pane. Reloading then loses nothing staff typed.
   const paneRootRef = useRef<HTMLDivElement>(null);
   const hasUnsentWork =
     isDraftPending ||
@@ -664,7 +665,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     quoteSession.bookingDraft !== null ||
     hasStaffStayEdits(quoteSession);
   const isBusy = (): boolean => {
-    if (replyInFlight.current || hasUnsentWork) return true;
+    if (replyInFlight.current || mutationsInFlight() > 0 || hasUnsentWork) return true;
     const active = document.activeElement;
     return Boolean(
       active &&

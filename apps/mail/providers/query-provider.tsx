@@ -33,6 +33,7 @@ import { useActiveConnection } from '@/hooks/use-connections';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import type { AppRouter } from '@zero/server/trpc';
 import { CACHE_BURST_KEY } from '@/lib/constants';
+import { countMutationsLink } from '@/lib/workstation/mutations-in-flight';
 import { useSession } from '@/lib/auth-client';
 import { signOut } from '@/lib/auth-client';
 import { get, set, del } from 'idb-keyval';
@@ -295,6 +296,7 @@ export const trpcClient: TRPCClient<AppRouter> = isFrontendOnlyDemo()
   : createTRPCClient<AppRouter>({
       links: [
         // loggerLink({ enabled: () => true }),
+        countMutationsLink,
         httpBatchLink({
           transformer: superjson,
           url: getUrl(),
