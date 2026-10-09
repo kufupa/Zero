@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS "hitl_tool_run" (
   "message_id" text REFERENCES "message"("id") ON DELETE set null,
   "user_id" text REFERENCES "user"("id") ON DELETE set null,
   "transport_id" text NOT NULL REFERENCES "mailbox_transport"("id") ON DELETE cascade,
-  "workflow_run_id" text REFERENCES "ai_workflow_run"("id") ON DELETE set null,
+  "workflow_run_id" text,
   "kind" text NOT NULL,
   "input" jsonb,
   "input_digest" text,

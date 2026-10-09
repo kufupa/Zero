@@ -12,7 +12,7 @@ import {
   uuid,
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
-import { aiWorkflowRun, mailboxTransport, mailThread, message } from './mail.js';
+import { mailboxTransport, mailThread, message } from './mail.js';
 import { sql } from 'drizzle-orm';
 import { user } from './auth.js';
 
@@ -231,9 +231,12 @@ export const hitlToolRun = pgTable(
     transportId: text('transport_id')
       .notNull()
       .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
-    workflowRunId: text('workflow_run_id').references(() => aiWorkflowRun.id, {
-      onDelete: 'set null',
-    }),
+    /**
+     * Plain reference, deliberately no FK: ledger rows must not depend on the
+     * ai_workflow_run queue. A FK here pins ai_workflow_run_pkey, which breaks
+     * the migration-compatibility gate's pkey-drop case.
+     */
+    workflowRunId: text('workflow_run_id'),
     kind: text('kind').notNull(),
     input: jsonb('input'),
     inputDigest: text('input_digest'),

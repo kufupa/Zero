@@ -187,6 +187,27 @@ describe('HITL decision ledger schema', () => {
     expect(altered).toEqual(['ai_agent_run']);
   });
 
+  it('keeps ledger rows independent of the ai_workflow_run queue', () => {
+    // A FK into ai_workflow_run pins its pkey, and migration-compatibility drops that pkey.
+    const allowed = [
+      'ai_agent_run',
+      'hitl_episode',
+      'mail_thread',
+      'mailbox_transport',
+      'message',
+      'user',
+    ];
+    const drizzleTargets = Object.values(ledgerTables).flatMap((table) =>
+      getTableConfig(table).foreignKeys.map(
+        (foreignKey) => getTableConfig(foreignKey.reference().foreignTable).name,
+      ),
+    );
+    const ddlTargets = [...hitlMigrationDdl.matchAll(/REFERENCES "([^"]+)"/g)].map((m) => m[1]);
+    expect([...new Set(drizzleTargets)].sort()).toEqual(allowed);
+    expect([...new Set(ddlTargets)].sort()).toEqual(allowed);
+    expect(hitlMigrationDdl).not.toMatch(/ai_workflow_run/);
+  });
+
   it('registers 0046 in the journal directly after 0045 on a +1000ms clock', () => {
     const journal = JSON.parse(
       readFileSync(
