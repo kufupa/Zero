@@ -78,6 +78,7 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
 export const ANALYSIS_PROCEDURES: ReadonlySet<string> = new Set(['quoteWorkflow.analyseSelection']);
 /** Mutations the pane references. Named so a block reads as a write. Any other name is blocked as unknown. */
 export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
+  'panePartyLookup.findParty',
   'paneStayLookup.findStay',
   'paneStayLookup.searchGuest',
   'quoteWorkflow.commitStay',

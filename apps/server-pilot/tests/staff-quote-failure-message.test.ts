@@ -18,6 +18,15 @@ function coded(code: string, phase?: string): Error {
 }
 
 describe('staffQuoteFailureMessage', () => {
+  it('gives plain copy for a party rate HMS could not verify, never the generic allocation message', () => {
+    expect(staffQuoteFailureMessage(coded('staff_quote_party_invalid'))).toBe(
+      "Luna couldn't verify the company or agency rate from HMS. Try again, or quote at public rates.",
+    );
+    expect(staffQuoteFailureMessage(coded('staff_quote_party_changed'))).toBe(
+      'The HMS company or agency result changed while Luna read it. Try again.',
+    );
+  });
+
   it('maps execution and browser failures to the HMS retry message', () => {
     expect(staffQuoteFailureMessage(coded('EXECUTION_FAILURE', 'hotel_availability'))).toBe(
       HMS_RETRY,

@@ -59,6 +59,10 @@
           "type": "array",
           "items": { "$ref": "#/$defs/candidate" }
         },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when the HMS grid held 50 rows, so more matches may exist. Ask for a longer name."
+        },
         "associationEffects": {
           "type": "object",
           "additionalProperties": false,
