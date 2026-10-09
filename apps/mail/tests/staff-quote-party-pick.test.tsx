@@ -27,6 +27,21 @@ describe('partyFinderFromTrpc', () => {
     expect(partyFinderFromTrpc({ workstation: {} })).toBeNull();
   });
 
+  it('binds off a function-typed proxy client, as the pane passes the real tRPC client', async () => {
+    const reply: PartyFindReply = { outcome: 'no_match', results: [], truncated: false };
+    const mutate = vi.fn(async () => reply);
+    const routes = { panePartyLookup: { findParty: { mutate } } };
+    const proxy = new Proxy(function () {}, {
+      get: (_target, key) =>
+        typeof key === 'string' && key in routes ? routes[key as keyof typeof routes] : undefined,
+    });
+    expect(typeof proxy).toBe('function');
+    const find = partyFinderFromTrpc(proxy);
+    expect(find).not.toBeNull();
+    await expect(find!('Safari')).resolves.toEqual(reply);
+    expect(mutate).toHaveBeenCalledWith({ name: 'Safari' });
+  });
+
   it('calls panePartyLookup.findParty with the typed name only', async () => {
     const reply: PartyFindReply = { outcome: 'no_match', results: [], truncated: false };
     const mutate = vi.fn(async () => reply);

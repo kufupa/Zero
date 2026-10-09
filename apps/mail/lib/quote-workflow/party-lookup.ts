@@ -32,9 +32,12 @@ type TrpcPanePartyRoutes = {
   };
 };
 
-/** Binds panePartyLookup.findParty off a tRPC client. Null when the route is missing. */
+/**
+ * Binds panePartyLookup.findParty off a tRPC client. Null when the route is missing. The real client is a
+ * function-backed proxy (typeof 'function'), so a function is accepted too, as in the other *FromTrpc helpers.
+ */
 export function partyFinderFromTrpc(trpc: unknown): PartyFinder | null {
-  if (!trpc || typeof trpc !== 'object') return null;
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const find = (trpc as TrpcPanePartyRoutes).panePartyLookup?.findParty;
   if (!find) return null;
   return (name) => find.mutate({ name });
