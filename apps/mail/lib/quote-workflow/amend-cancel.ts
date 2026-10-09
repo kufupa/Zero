@@ -61,11 +61,28 @@ export function cancelConfirmLine(input: {
   return `Luna will cancel ${input.confirmation} for ${input.guest}. ${cancelFeeSentence(input.penaltyText)} This can't be undone from here.`;
 }
 
+// HMS charge text without a trailing full stop, so the copy does not end in two.
+function chargeText(penaltyText: string): string {
+  return penaltyText.trim().replace(/[.!?]+$/, '');
+}
+
+/** Shown when HMS opens a cancellation charge before the cancel. The cancel did not run; staff cancel it in HMS. */
+export function cancellationChargeCopy(penaltyText: string | null): string {
+  if (!penaltyText) return 'HMS shows a cancellation charge. Cancel this one in HMS yourself.';
+  return `HMS shows a cancellation charge: ${chargeText(penaltyText)}. Cancel this one in HMS yourself.`;
+}
+
 /** The note for a cancel attempt that did not go through. Commit reason refusals are handled by viewAfterCommit. */
-export function cancelOutcomeNote(outcome: string, confirmation: string): string {
+export function cancelOutcomeNote(
+  outcome: string,
+  confirmation: string,
+  penaltyText: string | null = null,
+): string {
   switch (outcome) {
     case 'refused_flag_off':
       return cancelSwitchedOffNote(confirmation);
+    case 'refused_penalty':
+      return cancellationChargeCopy(penaltyText);
     case 'refused_not_lab':
       return AMEND_CANCEL_COPY.testOnly;
     case 'refused_lock_busy':
@@ -79,8 +96,11 @@ export function cancelOutcomeNote(outcome: string, confirmation: string): string
   }
 }
 
-export function cancelledText(statusAfter: string | null): string {
-  return `Cancelled in HMS – status now ${statusAfter ?? 'unknown'}`;
+export function cancelledText(statusAfter: string | null, penaltyText: string | null = null): string {
+  const done = `Cancelled in HMS – status now ${statusAfter ?? 'unknown'}`;
+  // A charge that opened after the OK is never clicked by Luna. Staff deal with it in HMS.
+  if (!penaltyText) return done;
+  return `${done}. HMS shows a cancellation charge: ${chargeText(penaltyText)}. Check HMS and deal with that charge there.`;
 }
 
 export type CancelInput = { confirmation: string; arrival: string };
@@ -114,7 +134,7 @@ export function viewAfterPreview(run: CancelRun, confirmation: string): CancelVi
     case 'already_cancelled':
       return { kind: 'done', run, text: AMEND_CANCEL_COPY.alreadyCancelled };
     default:
-      return { kind: 'idle', note: cancelOutcomeNote(run.outcome, confirmation) };
+      return { kind: 'idle', note: cancelOutcomeNote(run.outcome, confirmation, run.penaltyText) };
   }
 }
 
@@ -125,7 +145,7 @@ export function viewAfterCommit(
 ): CancelView {
   switch (run.outcome) {
     case 'cancelled':
-      return { kind: 'done', run, text: cancelledText(run.statusAfter) };
+      return { kind: 'done', run, text: cancelledText(run.statusAfter, run.penaltyText) };
     case 'already_cancelled':
       return { kind: 'done', run, text: AMEND_CANCEL_COPY.alreadyCancelled };
     case 'refused_reason_missing':
@@ -134,7 +154,7 @@ export function viewAfterCommit(
     case 'cancel_digest_mismatch':
       return { kind: 'idle', note: AMEND_CANCEL_COPY.previewAgain };
     default:
-      return { kind: 'idle', note: cancelOutcomeNote(run.outcome, confirmation) };
+      return { kind: 'idle', note: cancelOutcomeNote(run.outcome, confirmation, run.penaltyText) };
   }
 }
 

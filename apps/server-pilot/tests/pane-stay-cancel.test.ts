@@ -109,7 +109,7 @@ function enableCancel(
   } = {},
 ): PaneStayCancelSpawnInput[] {
   const calls: PaneStayCancelSpawnInput[] = [];
-  paneStayCancelLoaders.enabled = () => true;
+  paneStayCancelLoaders.mode = () => 'lab';
   paneStayCancelLoaders.lock = passingLock();
   paneStayCancelLoaders.spawn = async (input) => {
     calls.push(input);
@@ -124,20 +124,21 @@ describe('pane stay cancel', () => {
   afterEach(() => {
     paneStayCancelLoaders.spawn = null;
     paneStayCancelLoaders.lock = null;
-    paneStayCancelLoaders.enabled = null;
+    paneStayCancelLoaders.mode = null;
     paneStaySaveLoaders.now = null;
     vi.unstubAllEnvs();
   });
 
-  it('uses the save path flag: only RESERVATIONIST_PANE_SAVE=on enables it', () => {
+  it('uses the save path flag: lab and on enable cancel, off and unset do not', () => {
     expect(paneStayCancelEnabled({})).toBe(false);
     expect(paneStayCancelEnabled({ RESERVATIONIST_PANE_SAVE: 'off' })).toBe(false);
+    expect(paneStayCancelEnabled({ RESERVATIONIST_PANE_SAVE: 'lab' })).toBe(true);
     expect(paneStayCancelEnabled({ RESERVATIONIST_PANE_SAVE: 'on' })).toBe(true);
   });
 
   it('refuses preview and commit when the flag is off, with no lock or spawn', async () => {
     const seen: string[] = [];
-    paneStayCancelLoaders.enabled = () => false;
+    paneStayCancelLoaders.mode = () => 'off';
     paneStayCancelLoaders.lock = passingLock(seen);
     paneStayCancelLoaders.spawn = async () => {
       throw new Error('must not spawn');
@@ -164,7 +165,7 @@ describe('pane stay cancel', () => {
 
   it('refuses arrivals before 2027 and malformed input before any lock or spawn', async () => {
     const seen: string[] = [];
-    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.mode = () => 'lab';
     paneStayCancelLoaders.lock = passingLock(seen);
     paneStayCancelLoaders.spawn = async () => {
       throw new Error('must not spawn');
@@ -196,7 +197,7 @@ describe('pane stay cancel', () => {
   });
 
   it('refuses commit with a blank reason or one that reads as a CLI flag, before the grant check', async () => {
-    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.mode = () => 'lab';
     paneStayCancelLoaders.lock = passingLock();
     paneStayCancelLoaders.spawn = async () => {
       throw new Error('must not spawn');
@@ -210,7 +211,7 @@ describe('pane stay cancel', () => {
   });
 
   it('refuses when no property lock exists (no loader and no DATABASE_URL)', async () => {
-    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.mode = () => 'lab';
     paneStayCancelLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
@@ -221,7 +222,7 @@ describe('pane stay cancel', () => {
   });
 
   it('refuses refused_lock_busy when the property lock stays held past the 20 s wait, with no spawn', async () => {
-    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.mode = () => 'lab';
     paneStayCancelLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
@@ -241,7 +242,7 @@ describe('pane stay cancel', () => {
   it('preview runs the CLI under the lock and returns file names, a run id slot and the preview digest', async () => {
     const seen: string[] = [];
     let captured: unknown = null;
-    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.mode = () => 'lab';
     paneStayCancelLoaders.lock = passingLock(seen);
     paneStayCancelLoaders.spawn = async (input) => {
       captured = input;
@@ -270,6 +271,7 @@ describe('pane stay cancel', () => {
       confirmation: '57291630-1',
       arrival: '2027-09-14',
       reason: null,
+      allowRealGuest: false,
     });
   });
 
@@ -289,6 +291,7 @@ describe('pane stay cancel', () => {
       confirmation: '57291630-1',
       arrival: '2027-09-14',
       reason: 'Duplicate Booking',
+      allowRealGuest: false,
     });
     expect(result).toMatchObject({
       outcome: 'cancelled',
@@ -422,7 +425,7 @@ describe('pane stay cancel', () => {
   });
 
   it('passes already_cancelled through from the CLI', async () => {
-    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.mode = () => 'lab';
     paneStayCancelLoaders.lock = passingLock();
     paneStayCancelLoaders.spawn = async () =>
       cliResult({
@@ -437,7 +440,7 @@ describe('pane stay cancel', () => {
   });
 
   it('maps a failed run to execution_failure instead of throwing', async () => {
-    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.mode = () => 'lab';
     paneStayCancelLoaders.lock = passingLock();
     paneStayCancelLoaders.spawn = async () => {
       throw new Error('CDP unreachable');
@@ -451,7 +454,7 @@ describe('pane stay cancel', () => {
   });
 
   it('logs a CLI run that finished as execution_failure, with the same message cleanup as the lookup spawner', async () => {
-    paneStayCancelLoaders.enabled = () => true;
+    paneStayCancelLoaders.mode = () => 'lab';
     paneStayCancelLoaders.lock = passingLock();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const runDirs: string[] = [];
@@ -486,7 +489,7 @@ describe('pane stay cancel', () => {
 
   it('builds CLI args with --reason only for commit and always the run directory', () => {
     const preview = buildCancelStayArgs(
-      { mode: 'preview', confirmation: '57291630-1', arrival: '2027-09-14', reason: null },
+      { mode: 'preview', confirmation: '57291630-1', arrival: '2027-09-14', reason: null, allowRealGuest: false },
       '/tmp/run',
     );
     expect(preview.slice(1)).toEqual([
@@ -505,6 +508,7 @@ describe('pane stay cancel', () => {
         confirmation: '57291630-1',
         arrival: '2027-09-14',
         reason: 'Duplicate Booking',
+        allowRealGuest: false,
       },
       '/tmp/run',
     );
@@ -517,7 +521,7 @@ describe('pane stay cancel', () => {
     const dir = await mkdtemp(join(tmpdir(), 'pane-cancel-test-'));
     try {
       await writeFile(join(dir, 'found.png'), Buffer.from('png-bytes'));
-      paneStayCancelLoaders.enabled = () => true;
+      paneStayCancelLoaders.mode = () => 'lab';
       paneStayCancelLoaders.lock = passingLock();
       paneStayCancelLoaders.spawn = async () =>
         cliResult({ runDir: dir, screenshots: [join(dir, 'found.png')] });
@@ -576,6 +580,165 @@ describe('pane stay cancel', () => {
         previewDigest: preview.previewDigest as string,
       }),
     ).resolves.toMatchObject({ outcome: 'cancelled' });
+  });
+});
+
+describe('pane cancel modes', () => {
+  const CHARGE = 'Cancellation Penalty of 2060.00 may be added to account.';
+  const oldStay = { confirmation: '57291630-1', arrival: '2026-11-12' };
+
+  afterEach(() => {
+    paneStayCancelLoaders.spawn = null;
+    paneStayCancelLoaders.lock = null;
+    paneStayCancelLoaders.mode = null;
+    cliFake.run = null;
+    vi.unstubAllEnvs();
+  });
+
+  it('lab keeps the 2027 floor: a pre-2027 stay is refused with no spawn, and the CLI gets no switch', async () => {
+    const calls = enableCancel();
+    await expect(previewCancel({ ...oldStay, owner })).resolves.toMatchObject({
+      outcome: 'refused_not_lab',
+      previewDigest: null,
+    });
+    expect(calls).toEqual([]);
+    await previewCancel({ ...stay, owner });
+    expect(calls[0]).toMatchObject({ allowRealGuest: false });
+    expect(buildCancelStayArgs(calls[0]!, '/tmp/run')).not.toContain('--allow-real-guest');
+  });
+
+  it('on lets a real guest through the floor: the CLI gets --allow-real-guest on preview and on commit', async () => {
+    const calls = enableCancel();
+    paneStayCancelLoaders.mode = () => 'on';
+    const preview = await previewCancel({ ...oldStay, owner });
+    expect(preview).toMatchObject({ outcome: 'preview_ok', previewDigest: digestOf(oldStay) });
+    const commit = await commitCancel({
+      ...oldStay,
+      owner,
+      reason: 'Guest request',
+      previewDigest: digestOf(oldStay),
+    });
+    expect(commit).toMatchObject({ outcome: 'cancelled' });
+    expect(calls.map((call) => call.allowRealGuest)).toEqual([true, true]);
+    expect(calls[1]).toMatchObject({ reason: 'Guest request' });
+    expect(buildCancelStayArgs(calls[1]!, '/tmp/run')).toContain('--allow-real-guest');
+  });
+
+  it('the real CLI run gets the switch only in on mode, from the server mode and never from the environment', async () => {
+    paneStayCancelLoaders.lock = passingLock();
+    const argvs: string[][] = [];
+    cliFake.run = async (argv) => {
+      argvs.push(argv);
+      const dir = argv[argv.indexOf('--out') + 1]!;
+      await writeFile(
+        join(dir, 'result.json'),
+        JSON.stringify({
+          outcome: 'preview_ok',
+          statusBefore: 'Reserved',
+          statusAfter: 'Reserved',
+          reasons: ['Test Reservations'],
+        }),
+      );
+    };
+    vi.stubEnv('RESERVATIONIST_PANE_SAVE', 'on');
+    paneStayCancelLoaders.mode = () => 'lab';
+    await previewCancel({ ...stay, owner });
+    paneStayCancelLoaders.mode = () => 'on';
+    await previewCancel({ ...oldStay, owner });
+    expect(argvs[0]).not.toContain('--allow-real-guest');
+    expect(argvs[1]).toContain('--allow-real-guest');
+  });
+
+  it('a penalty dialog before the OK refuses the commit with its text: no grant, no second run', async () => {
+    const calls = enableCancel({
+      commit: { outcome: 'refused_penalty', statusAfter: 'Reserved', penaltyText: CHARGE },
+    });
+    paneStayCancelLoaders.mode = () => 'on';
+    const preview = await previewCancel({ ...oldStay, owner });
+    const digest = preview.previewDigest as string;
+    await expect(
+      commitCancel({ ...oldStay, owner, reason: 'Guest request', previewDigest: digest }),
+    ).resolves.toMatchObject({
+      outcome: 'refused_penalty',
+      penaltyText: CHARGE,
+      previewDigest: null,
+      runId: null,
+    });
+    await expect(
+      commitCancel({ ...oldStay, owner, reason: 'Guest request', previewDigest: digest }),
+    ).resolves.toMatchObject({ outcome: 'cancel_preview_required' });
+    expect(calls.map((call) => call.mode)).toEqual(['preview', 'commit']);
+  });
+
+  it('a penalty dialog at preview refuses the preview, so no commit grant is issued', async () => {
+    // A fresh owner: grants from earlier tests for this stay must not satisfy this commit.
+    const fresh = 'user-penalty-preview:transport-1';
+    const calls = enableCancel({ preview: { outcome: 'refused_penalty', penaltyText: CHARGE } });
+    await expect(previewCancel({ ...stay, owner: fresh })).resolves.toMatchObject({
+      outcome: 'refused_penalty',
+      penaltyText: CHARGE,
+      previewDigest: null,
+    });
+    await expect(
+      commitCancel({
+        ...stay,
+        owner: fresh,
+        reason: 'Duplicate Booking',
+        previewDigest: digestOf(stay),
+      }),
+    ).resolves.toMatchObject({ outcome: 'cancel_preview_required' });
+    expect(calls.map((call) => call.mode)).toEqual(['preview']);
+  });
+
+  it('a charge that opens after the OK comes back with its text, and the cancel is not refused', async () => {
+    enableCancel({ commit: { outcome: 'cancelled', statusAfter: 'Cancelled', penaltyText: CHARGE } });
+    const preview = await previewCancel({ ...stay, owner });
+    await expect(
+      commitCancel({
+        ...stay,
+        owner,
+        reason: 'Duplicate Booking',
+        previewDigest: preview.previewDigest as string,
+      }),
+    ).resolves.toMatchObject({ outcome: 'cancelled', statusAfter: 'Cancelled', penaltyText: CHARGE });
+  });
+
+  it('reason is required and a stale digest refuses in on mode, before any second run', async () => {
+    const calls = enableCancel();
+    paneStayCancelLoaders.mode = () => 'on';
+    const preview = await previewCancel({ ...oldStay, owner });
+    const digest = preview.previewDigest as string;
+    await expect(
+      commitCancel({ ...oldStay, owner, reason: '   ', previewDigest: digest }),
+    ).resolves.toMatchObject({ outcome: 'refused_reason_missing' });
+    await expect(
+      commitCancel({
+        ...oldStay,
+        arrival: '2026-11-13',
+        owner,
+        reason: 'Guest request',
+        previewDigest: digest,
+      }),
+    ).resolves.toMatchObject({ outcome: 'cancel_digest_mismatch' });
+    expect(calls.map((call) => call.mode)).toEqual(['preview']);
+  });
+
+  it('off refuses preview and commit in every case, with no lock or spawn', async () => {
+    const seen: string[] = [];
+    paneStayCancelLoaders.lock = passingLock(seen);
+    paneStayCancelLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    paneStayCancelLoaders.mode = () => 'off';
+    for (const input of [oldStay, stay]) {
+      await expect(previewCancel({ ...input, owner })).resolves.toMatchObject({
+        outcome: 'refused_flag_off',
+      });
+      await expect(
+        commitCancel({ ...input, owner, reason: 'Guest request', previewDigest: digestOf(input) }),
+      ).resolves.toMatchObject({ outcome: 'refused_flag_off' });
+    }
+    expect(seen).toEqual([]);
   });
 });
 

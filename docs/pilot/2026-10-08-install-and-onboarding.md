@@ -30,7 +30,7 @@ The switch is the server setting `RESERVATIONIST_PANE_SAVE`. Exactly `off` (or n
 When it is on:
 
 - Book in HMS stays locked until the room has been previewed.
-- Cancel commits only for test stays arriving on or after 2027-01-01. For any other stay, staff see: "Cancelling from here only works on test bookings right now."
+- In `lab` mode, cancel commits only for test stays arriving on or after 2027-01-01. For any other stay, staff see: "Cancelling from here only works on test bookings right now." In `on` mode, cancel also works for real guests. If HMS shows a cancellation charge, Luna stops and staff cancel that booking in HMS themselves.
 
 ---
 
@@ -204,7 +204,7 @@ These are facts from the repo that differ from, or limit, what the call would ot
 1. **Installer hash.** The version is 1.0.17. SHA-256 `0d25d56a5ce473e6bc2fe25f5d2d3ea8fc9c6e022ba9b6388be4fd7ce4c64bbc` (verified on the server).
 2. **Device code scope.** Device credentials and the one-use code are per Windows user (runbook step 6, and the operator README).
 3. **Shared-store reply blocker.** On a shared mailbox that is not the default Drafts store, the add-in refuses to create the reply draft, by design (runbook, order of operations, step 8). **Insert draft in Outlook is refused on non-default shared mailboxes.** Staff must reply by hand in Outlook for those mailboxes.
-4. **Book and cancel are off.** Preview and Book in HMS, and Preview and Cancel in HMS, stay off until `RESERVATIONIST_PANE_SAVE` is `lab` or `on`. `lab` books only Labtest stays; `on` books real guests. Cancel commits only for test stays (arrival on or after 2027-01-01), in both modes.
+4. **Book and cancel are off.** Preview and Book in HMS, and Preview and Cancel in HMS, stay off until `RESERVATIONIST_PANE_SAVE` is `lab` or `on`. `lab` books and cancels only Labtest stays (arrival on or after 2027-01-01); `on` books and cancels real guests too. A cancellation charge in HMS stops the run in both modes; staff cancel that booking in HMS.
 5. **Amber note with the change panel: fixed in code.** The server can set the `amendment_or_cancel` flag on a change or cancel email. While the change panel is on screen, the amber list no longer says "not supported yet". It reads "Luna can find the booking; make the change in HMS yourself." Confirm the build includes this fix before the call.
 6. **Multi-date.** The combined reply attaches one PDF per completed option. It is one email draft, not one PDF.
 7. **Windows is not tested here.** The repo's own onboarding doc says Linux tests and source reading do not prove Windows Outlook behaviour. The first real PC is the test.

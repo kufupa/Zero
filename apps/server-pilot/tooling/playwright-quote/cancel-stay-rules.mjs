@@ -9,10 +9,17 @@ const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'Ju
 const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 // --last-name is optional. With it, a quick search that does not show the confirmation retries by surname.
 const VALUE_FLAGS = new Set(['--confirmation', '--arrival', '--mode', '--out', '--reason', '--last-name']);
+// Lifts the Labtest guard for one run. Only the server passes it, and only in on mode. It is never read from the environment.
+export const ALLOW_REAL_GUEST_FLAG = '--allow-real-guest';
 const REQUIRED_FLAGS = ['--confirmation', '--arrival', '--mode', '--out'];
 const MODES = new Set(['preview', 'commit']);
 const OK_OUTCOMES = new Set(['preview_ok', 'cancelled', 'already_cancelled']);
-const REFUSED_OUTCOMES = new Set(['refused_not_lab', 'refused_identity_mismatch', 'refused_reason_missing']);
+const REFUSED_OUTCOMES = new Set([
+  'refused_not_lab',
+  'refused_identity_mismatch',
+  'refused_reason_missing',
+  'refused_penalty',
+]);
 const CDP_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 export const squash = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -137,11 +144,19 @@ export function chooseStaySource({ confirmation, open, row, allowOpen = true }) 
 
 export function parseCancelArgs(argv) {
   const values = new Map();
+  let allowRealGuest = false;
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
+    if (flag === ALLOW_REAL_GUEST_FLAG) {
+      if (allowRealGuest) return refuse(`Repeated argument: ${flag}`);
+      allowRealGuest = true;
+      continue;
+    }
     if (!VALUE_FLAGS.has(flag)) return refuse(`Unknown argument: ${flag}`);
     const value = argv[index + 1];
-    if (value === undefined || VALUE_FLAGS.has(value)) return refuse(`Missing value for ${flag}`);
+    if (value === undefined || VALUE_FLAGS.has(value) || value === ALLOW_REAL_GUEST_FLAG) {
+      return refuse(`Missing value for ${flag}`);
+    }
     if (values.has(flag)) return refuse(`Repeated argument: ${flag}`);
     values.set(flag, value);
     index += 1;
@@ -161,7 +176,7 @@ export function parseCancelArgs(argv) {
   return {
     ok: true,
     exitCode: 0,
-    args: { confirmation, arrival, mode, reason, out: values.get('--out'), lastName },
+    args: { confirmation, arrival, mode, reason, out: values.get('--out'), lastName, allowRealGuest },
   };
 }
 
@@ -172,9 +187,12 @@ function optionalSurname(values) {
   return GUEST_SURNAME.test(lastName) ? lastName : false;
 }
 
-// Refuses before any browser work when the requested arrival is not a 2027+ lab stay.
+// Refuses before any browser work when the requested arrival is not a 2027+ lab stay. An on-mode run (allowRealGuest)
+// has no lab guard, so this floor does not apply to it.
 export function preflight(args) {
-  if (args.arrival < LAB_ARRIVAL_FLOOR) return { ok: false, outcome: 'refused_not_lab', reason: 'arrival_before_2027' };
+  if (!args.allowRealGuest && args.arrival < LAB_ARRIVAL_FLOOR) {
+    return { ok: false, outcome: 'refused_not_lab', reason: 'arrival_before_2027' };
+  }
   return { ok: true, outcome: null, reason: null };
 }
 
@@ -187,15 +205,33 @@ export function labGuard({ lastName, arrival }) {
   return { ok: true, reason: null, arrivalIso };
 }
 
-// Full identity check on the opened record. The lab guard runs first, so a real guest is always refused as not_lab.
-// The lab guard and the confirmation always apply. The arrival must match for a write (commit). With arrivalHint the
-// requested arrival is only a hint, so a different arrival does not refuse: arrivalReport says whether it differs.
+// Full identity check on the opened record. Without --allow-real-guest the lab guard runs first, so a real guest is
+// refused as not_lab. With it (on mode) the lab guard is skipped, and the arrival must still be readable. The
+// confirmation always applies. The arrival must match for a write (commit). With arrivalHint the requested arrival is
+// only a hint, so a different arrival does not refuse: arrivalReport says whether it differs.
 export function identityCheck(args, record, { arrivalHint = false } = {}) {
-  const lab = labGuard(record);
-  if (!lab.ok) return { ok: false, outcome: 'refused_not_lab', reason: lab.reason };
+  const arrivalIso = hmsDateToIso(record.arrival);
+  if (!args.allowRealGuest) {
+    const lab = labGuard(record);
+    if (!lab.ok) return { ok: false, outcome: 'refused_not_lab', reason: lab.reason };
+  } else if (!arrivalIso) {
+    return { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival_unparsed' };
+  }
   if (squash(record.confirmation) !== args.confirmation) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'confirmation' };
-  if (!arrivalHint && lab.arrivalIso !== args.arrival) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' };
+  if (!arrivalHint && arrivalIso !== args.arrival) return { ok: false, outcome: 'refused_identity_mismatch', reason: 'arrival' };
   return { ok: true, outcome: null, reason: null };
+}
+
+// The note HMS takes with the cancel. A lab run keeps the lab-proof text; an on-mode run records the staff's reason.
+export const LAB_CANCEL_NOTE = 'Lab proof cancel';
+export function cancelNoteFor(args) {
+  return args.allowRealGuest ? args.reason : LAB_CANCEL_NOTE;
+}
+
+// A cancellation penalty dialog refuses the run before the reason OK. It is recorded and left open, and nothing is
+// clicked on it. Returns the outcome to report, or null when no penalty is open.
+export function penaltyRefusal(penalty) {
+  return penalty ? 'refused_penalty' : null;
 }
 
 // The arrival the operator asked about (requestedArrival, possibly a date the guest proposed) against the arrival HMS
