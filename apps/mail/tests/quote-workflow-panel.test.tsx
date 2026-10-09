@@ -2,9 +2,10 @@
  * @vitest-environment happy-dom
  */
 import { useState } from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
+import { resetPartyAutoLookupForTests } from '../components/quote-workflow/party-picker';
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type { QuoteSession } from '../lib/quote-workflow/types';
@@ -712,12 +713,18 @@ describe('the Find in HMS picker in the quote header', () => {
   }
 
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.
-  it('shows one Find in HMS picker per field when a finder is passed, and none without one', () => {
-    const { unmount } = render(<QuoteWorkflowPanel session={headerSession({})} findParty={noMatch} />);
-    expect(screen.getAllByRole('button', { name: 'Find in HMS' })).toHaveLength(2);
+  it('looks each named field up in HMS by itself, once, with its own kind; no finder, no lookup', async () => {
+    resetPartyAutoLookupForTests();
+    const find = vi.fn(noMatch);
+    const { unmount } = render(
+      <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel', agency: 'Travel Hub' })} findParty={find} />,
+    );
+    await waitFor(() => expect(find).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    expect(find).toHaveBeenCalledWith('Acme Travel', 'company');
+    expect(find).toHaveBeenCalledWith('Travel Hub', 'agency');
     unmount();
-    render(<QuoteWorkflowPanel session={headerSession({})} />);
-    expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeNull();
+    render(<QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} />);
+    expect(screen.queryByText(/Searching HMS/)).toBeNull();
   });
 
   it('drops a pick only when its own field is edited away from its name', () => {
@@ -753,14 +760,20 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(seen.latest?.staffHeader.parties?.agency).toBeUndefined();
   });
 
-  it('says Nava, not Luna, in the picker hint and its search notes', async () => {
+  it('says Nava, not Luna, when the automatic HMS lookup cannot reach HMS', async () => {
+    resetPartyAutoLookupForTests();
     const unavailable = async () => ({ outcome: 'external_system_unavailable' as const, results: [], truncated: false });
-    render(<QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} findParty={unavailable} />);
-    expect(screen.getAllByText(/Pick the exact company or agency so Nava can get their rate/).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Find in HMS' })[0]!);
+    const { container } = render(
+      <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} findParty={unavailable} />,
+    );
     expect(
-      await screen.findByText("Nava couldn't check HMS for this name. Try again, or quote at public rates."),
+      await screen.findByText(
+        "Nava couldn't check HMS for this name. Try again, or quote at public rates.",
+        undefined,
+        { timeout: 3000 },
+      ),
     ).toBeDefined();
+    expect(container.textContent).not.toMatch(/Luna/);
   });
 });
 
