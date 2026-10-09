@@ -276,6 +276,83 @@ describe('quoteWorkflow.analyseSelection', () => {
     }
   });
 
+  it('raises no review row and no banner for a signature image or a calendar invite on a quote request', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.',
+      preceding: [],
+      attachments: [
+        { id: 'sig', filename: 'image001.jpg', mimeType: 'image/jpeg', byteSize: 12_000, bytesPresent: false, readFailure: 'not a PDF' },
+        { id: 'ics', filename: 'invite.ics', mimeType: 'text/calendar', byteSize: 2_000, bytesPresent: false, readFailure: 'not a PDF' },
+      ],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput(),
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 't' },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 4,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('luna');
+      expect(result.luna?.flags ?? []).not.toContain('attachment_unread');
+      expect(result.reviewItems?.filter((item) => item.kind === 'document_failure' || item.blocking)).toEqual([]);
+    }
+  });
+
+  it('raises one non-blocking row in Nava copy for a document it cannot read, and one banner flag', async () => {
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.',
+      preceding: [],
+      attachments: [
+        {
+          id: 'doc',
+          filename: 'rooming.docx',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          byteSize: 50_000,
+          bytesPresent: false,
+          readFailure: 'not a PDF',
+        },
+      ],
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput(),
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 't' },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 4,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
+      expect(result.source).toBe('luna');
+      expect(result.luna?.flags.filter((flag) => flag === 'attachment_unread')).toHaveLength(1);
+      const rows = result.reviewItems?.filter((item) => item.kind === 'document_failure') ?? [];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        blocking: false,
+        text: "Nava can't read rooming.docx yet — open it if it has booking details.",
+      });
+    }
+  });
+
   it('returns the Luna analysis through the route with an injected adapter', async () => {
     quoteWorkflowLoaders.loadSyncedSelection = async () => ({
       subject: 'Rooms',

@@ -28,6 +28,8 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   .update(K2_MAPPING)
   .update('\n')
   .update(LUNA_RESPONSE_JSON)
+  // Bumped with the review rows a cached analysis carries, so no cache entry replays the old rows.
+  .update('\nattachment-review/2')
   .digest('hex')
   .slice(0, 16);
 

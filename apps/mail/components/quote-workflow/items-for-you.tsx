@@ -32,7 +32,11 @@ export function ItemsForYou({
             {item.filename ? ` · ${item.filename}` : ''}
           </p>
           <p className="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]">
-            {item.blocking ? 'Blocks the quote — fix the stay details first' : 'Needs a reply. Not a price decision.'}
+            {item.blocking
+              ? 'Blocks the quote — fix the stay details first'
+              : item.kind === 'document_failure'
+                ? 'Needs review. Nava did not read this file.'
+                : 'Needs a reply. Not a price decision.'}
           </p>
           <div className="flex flex-wrap gap-1">
             <button
