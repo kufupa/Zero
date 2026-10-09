@@ -34,6 +34,7 @@ import { canonicalInternetMessageId } from '../../ai/quote-workflow-analyse-sele
 import {
   buildStaysProposalPdf,
   documentIdFor,
+  ProposalPdfUnavailableError,
   renderImportedProposalHtml,
   renderApprovedOverrideHtml,
   convertProposalHtml,
@@ -46,7 +47,7 @@ import {
 import {
   quoteWorkbookForStays,
   quoteWorkbookFileName,
-  WorkbookLineLimitError,
+  WorkbookRefusalError,
 } from '../../quote-proposal/quote-workbook.js';
 import {
   getInstalledStaffQuoteServices,
@@ -1555,8 +1556,10 @@ export const workstationRouter = router({
           { url },
         );
       } catch (error) {
-        if (error instanceof WorkbookLineLimitError)
+        if (error instanceof WorkbookRefusalError)
           throw new TRPCError({ code: 'PRECONDITION_FAILED', message: error.message });
+        if (error instanceof ProposalPdfUnavailableError)
+          throw new TRPCError({ code: 'BAD_GATEWAY', message: error.message, cause: error });
         throw error;
       }
       await proposalStaysFor(input, ctx, 'Proposal evidence expired during conversion');
@@ -1595,7 +1598,7 @@ export const workstationRouter = router({
           note: stayNotes(stays),
         });
       } catch (error) {
-        if (error instanceof WorkbookLineLimitError)
+        if (error instanceof WorkbookRefusalError)
           throw new TRPCError({ code: 'PRECONDITION_FAILED', message: error.message });
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Excel could not be built from this quote' });
       }

@@ -72,7 +72,7 @@ import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from './quote-lines.js';
 import { quoteDigest, exactMinor, type QuoteRevision, type ImportedOffer } from './quote-revision.js';
-import { quoteDateLabel, quoteWorkbookForStays, workbookLinesForStays, type WorkbookStay } from './quote-workbook.js';
+import { quoteDateLabel, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
 export type RevisionProposalHeader = {attention:string;company:string;clientEmail:string;clientTelephone:string;agency:string;signerName:string;signerEmail:string;/** Unpriced staff note printed under the total. */notes?:string};
 function htmlText(value:string):string {
   return value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -114,9 +114,37 @@ function staySpanLabel(stays: WorkbookStay[]): string {
 export function quoteProposalPdfUsesHtml(env: Record<string, string | undefined> = process.env): boolean {
   return env.QUOTE_PDF_RENDERER?.trim().toLowerCase() === 'html';
 }
+/** The proposal PDF could not be produced. The message is safe to show staff. */
+export class ProposalPdfUnavailableError extends Error {}
+/** Each Gotenberg call gets this long, so a stuck converter fails the request instead of hanging it. */
+const PDF_CONVERT_TIMEOUT_MS = 30_000;
+function timedFetch(fetchImpl: typeof fetch | undefined): typeof fetch {
+  return (url, init) => {
+    const timeout = AbortSignal.timeout(PDF_CONVERT_TIMEOUT_MS);
+    return (fetchImpl ?? fetch)(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+  };
+}
+async function revisionHtmlPdf(html: string, base: string, fetchImpl: typeof fetch): Promise<Uint8Array> {
+  const form = new FormData();
+  form.append('files', new Blob([html], { type: 'text/html' }), 'index.html');
+  form.append('preferCssPageSize', 'true');
+  form.append('printBackground', 'true');
+  const res = await fetchImpl(`${base}/forms/chromium/convert/html`, { method: 'POST', body: form });
+  if (!res.ok) throw new Error(`gotenberg convert failed: ${res.status}`);
+  if (res.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/pdf') throw new Error('gotenberg convert returned non-PDF MIME');
+  const pdf = new Uint8Array(await res.arrayBuffer());
+  if (pdf.length <= 5 || new TextDecoder().decode(pdf.subarray(0, 5)) !== '%PDF-') throw new Error('gotenberg convert returned empty or invalid PDF bytes');
+  return pdf;
+}
+/** The total the HTML renderer prints: the revision plus its authorised extras, in the revision's own currency. */
+function revisionHtmlTotal(stay: WorkbookStay): number {
+  return stay.revision.totalMinor + (stay.facts ? deriveAuthorizedExtraLines(stay.revision, stay.facts).reduce((sum, line) => sum + line.totalMinor, 0) : 0);
+}
 /**
  * The proposal PDF for one or more resolved stays. The Excel workbook is the master, and Gotenberg's LibreOffice route
- * converts it. The HTML renderer is the fallback behind QUOTE_PDF_RENDERER=html, and it only renders a single stay.
+ * converts it. A single stay falls back to the HTML renderer when the workbook cannot be built or converted, and
+ * QUOTE_PDF_RENDERER=html selects that renderer outright. A combined quote has no fallback: it fails with
+ * ProposalPdfUnavailableError, and a quote too large for the Excel fails with its WorkbookRefusalError.
  */
 export async function buildStaysProposalPdf(
   stays: WorkbookStay[],
@@ -125,47 +153,55 @@ export async function buildStaysProposalPdf(
 ): Promise<{ revisionId: string; pdfHash: string; pdf: Uint8Array; fileName: string; totalMinor: number }> {
   const base = opts.url.replace(/\/+$/, '');
   if (!base) throw new Error('GOTENBERG_URL missing');
-  let pdf: Uint8Array;
-  let totalMinor: number;
+  const fetchImpl = timedFetch(opts.fetchImpl);
+  const single = stays.length === 1 ? stays[0]! : undefined;
+  let rendered: { pdf: Uint8Array; totalMinor: number };
+  const viaHtml = async (stay: WorkbookStay) => {
+    const html = renderRevisionProposalHtml(stay.revision, header, stay.facts);
+    try {
+      return { pdf: await revisionHtmlPdf(html, base, fetchImpl), totalMinor: revisionHtmlTotal(stay) };
+    } catch (error) {
+      throw new ProposalPdfUnavailableError('The quote PDF converter is unavailable. Try again shortly, or send the Excel.', { cause: error });
+    }
+  };
   if (opts.html ?? quoteProposalPdfUsesHtml()) {
-    // ponytail: the HTML renderer draws one revision, so a combined quote needs the workbook renderer.
-    if (stays.length !== 1) throw new Error('html_renderer_single_stay_only');
-    const { revision, facts } = stays[0]!;
-    totalMinor = workbookLinesForStays(stays).totalMinor;
-    const html = renderRevisionProposalHtml(revision, header, facts);
-    const form = new FormData();
-    form.append('files', new Blob([html], { type: 'text/html' }), 'index.html');
-    form.append('preferCssPageSize', 'true');
-    form.append('printBackground', 'true');
-    const res = await (opts.fetchImpl ?? fetch)(`${base}/forms/chromium/convert/html`, { method: 'POST', body: form });
-    if (!res.ok) throw new Error(`gotenberg convert failed: ${res.status}`);
-    if (res.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/pdf') throw new Error('gotenberg convert returned non-PDF MIME');
-    pdf = new Uint8Array(await res.arrayBuffer());
-    if (pdf.length <= 5 || new TextDecoder().decode(pdf.subarray(0, 5)) !== '%PDF-') throw new Error('gotenberg convert returned empty or invalid PDF bytes');
+    // The HTML renderer draws one revision, so a combined quote cannot use it.
+    if (!single) throw new ProposalPdfUnavailableError('This server renders quote PDFs from HTML, which holds one stay only. Send the Excel for a combined quote.');
+    rendered = await viaHtml(single);
   } else {
-    const workbook = quoteWorkbookForStays({
-      stays,
-      header: {
-        attention: header.attention,
-        company: header.company,
-        clientEmail: header.clientEmail,
-        clientTelephone: header.clientTelephone,
-        signerName: header.signerName,
-        signerEmail: header.signerEmail,
-      },
-      note: header.notes,
-    });
-    totalMinor = workbook.totalMinor;
-    pdf = await convertXlsxWithGotenberg(workbook.bytes, { url: base, fetchImpl: opts.fetchImpl });
+    try {
+      const workbook = quoteWorkbookForStays({
+        stays,
+        header: {
+          attention: header.attention,
+          company: header.company,
+          clientEmail: header.clientEmail,
+          clientTelephone: header.clientTelephone,
+          signerName: header.signerName,
+          signerEmail: header.signerEmail,
+        },
+        note: header.notes,
+      });
+      rendered = { pdf: await convertXlsxWithGotenberg(workbook.bytes, { url: base, fetchImpl }), totalMinor: workbook.totalMinor };
+    } catch (error) {
+      if (error instanceof WorkbookLineLimitError) throw error;
+      if (!single) {
+        if (error instanceof WorkbookRefusalError) throw error;
+        throw new ProposalPdfUnavailableError('The quote PDF converter is unavailable. Try again shortly, or send the Excel.', { cause: error });
+      }
+      // One stay can still be quoted: the HTML renderer draws it from the same revision and extras.
+      console.warn('quote_pdf_html_fallback', { reason: error instanceof Error ? error.message : String(error) });
+      rendered = await viaHtml(single);
+    }
   }
   const documentId = documentIdFor(stays);
   return {
     revisionId: documentId,
-    pdfHash: createHash('sha256').update(pdf).digest('hex'),
-    pdf,
+    pdfHash: createHash('sha256').update(rendered.pdf).digest('hex'),
+    pdf: rendered.pdf,
     // ponytail: every PDF carries the document-id suffix, so same-day options never collide and no existing names are looked up.
     fileName: quotePdfFileName(header.agency.trim() || header.company, staySpanLabel(stays), documentId),
-    totalMinor,
+    totalMinor: rendered.totalMinor,
   };
 }
 export async function buildRevisionProposalPdf(revision:QuoteRevision,header:RevisionProposalHeader,opts:{url:string;fetchImpl?:typeof fetch;facts?:AuthorizedProposalFacts}):Promise<{revisionId:string;pdfHash:string;pdf:Uint8Array;fileName:string}>{

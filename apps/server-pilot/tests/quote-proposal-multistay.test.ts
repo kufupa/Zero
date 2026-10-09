@@ -3,14 +3,21 @@ import { readFileSync } from 'node:fs';
 import { unzipSync } from 'fflate';
 import type { AuthorizedProposalFacts } from '../src/quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../src/quote-proposal/quote-revision.js';
-import { buildStaysProposalPdf, documentIdFor, quoteProposalPdfUsesHtml } from '../src/quote-proposal/proposal-pdf.js';
+import {
+  buildStaysProposalPdf,
+  documentIdFor,
+  ProposalPdfUnavailableError,
+  quoteProposalPdfUsesHtml,
+} from '../src/quote-proposal/proposal-pdf.js';
 import {
   quoteWorkbookForStays,
   workbookLinesForStays,
   WorkbookLineLimitError,
+  WorkbookRefusalError,
   type WorkbookStay,
 } from '../src/quote-proposal/quote-workbook.js';
 import { approvedStaySpan, combinedStayCurrencyProblem } from '../src/ai/staff-quote-workflow.js';
+import { quoteDigest } from '../src/quote-proposal/quote-revision.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 
 const SOURCE_HASH = 'a'.repeat(64);
@@ -198,6 +205,7 @@ describe('combined quote rows', () => {
 describe('combined quote PDF', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 
   it('posts the workbook to the LibreOffice converter and returns its PDF with the workbook total', async () => {
@@ -248,8 +256,66 @@ describe('combined quote PDF', () => {
     await buildStaysProposalPdf(one, proposalHeader, { url: GOTENBERG, fetchImpl });
     expect(fetchImpl.mock.calls[0]![0]).toBe(`${GOTENBERG}/forms/chromium/convert/html`);
     await expect(buildStaysProposalPdf(two, proposalHeader, { url: GOTENBERG, fetchImpl: gotenberg() })).rejects.toThrow(
-      'html_renderer_single_stay_only',
+      new ProposalPdfUnavailableError(
+        'This server renders quote PDFs from HTML, which holds one stay only. Send the Excel for a combined quote.',
+      ),
     );
+  });
+
+  it('falls back to the HTML renderer for one stay when the LibreOffice conversion fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const one = [await stayOn('2026-10-12', ['100.00', '100.00'])];
+    const fetchImpl = vi.fn<typeof fetch>(async (url) =>
+      String(url).endsWith('/forms/libreoffice/convert')
+        ? new Response('down', { status: 503 })
+        : new Response(PDF_BYTES, { headers: { 'content-type': 'application/pdf' } }),
+    );
+    const result = await buildStaysProposalPdf(one, proposalHeader, { url: GOTENBERG, fetchImpl, html: false });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      `${GOTENBERG}/forms/libreoffice/convert`,
+      `${GOTENBERG}/forms/chromium/convert/html`,
+    ]);
+    expect(new TextDecoder().decode(result.pdf)).toBe(PDF_BYTES);
+    expect(result.totalMinor).toBe(roomTotalOf(one));
+  });
+
+  it('gives every converter call a deadline, and fails a combined quote with a clear error when Gotenberg is down', async () => {
+    const two = [await stayOn('2026-10-12', ['100.00', '100.00']), await stayOn('2026-11-01', ['110.00', '110.00'])];
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new TypeError('fetch failed');
+    });
+    await expect(buildStaysProposalPdf(two, proposalHeader, { url: GOTENBERG, fetchImpl, html: false })).rejects.toThrow(
+      ProposalPdfUnavailableError,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]![1]!.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('never prints a non-rand quote in the rand Excel: one stay falls back to HTML, a combined quote is refused', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const usd = await stayOn('2026-10-12', ['100.00', '100.00']);
+    const { id: _id, ...data } = { ...usd.revision, currency: 'USD', groups: usd.revision.groups.map((group) => ({ ...group, currency: 'USD' })) };
+    usd.revision = { ...data, id: `quote:${quoteDigest(data)}` };
+    const fetchImpl = gotenberg();
+    await buildStaysProposalPdf([usd], proposalHeader, { url: GOTENBERG, fetchImpl, html: false });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([`${GOTENBERG}/forms/chromium/convert/html`]);
+    const two = [usd, await stayOn('2026-11-01', ['110.00', '110.00'])];
+    expect(() => quoteWorkbookForStays({ stays: two, header })).toThrow(WorkbookRefusalError);
+    await expect(buildStaysProposalPdf(two, proposalHeader, { url: GOTENBERG, fetchImpl: gotenberg(), html: false })).rejects.toThrow(
+      WorkbookRefusalError,
+    );
+  });
+
+  it('fails one stay with a clear error when neither renderer answers', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const one = [await stayOn('2026-10-12', ['100.00', '100.00'])];
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    });
+    await expect(buildStaysProposalPdf(one, proposalHeader, { url: GOTENBERG, fetchImpl, html: false })).rejects.toThrow(
+      ProposalPdfUnavailableError,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the workbook path unless the flag asks for HTML', () => {

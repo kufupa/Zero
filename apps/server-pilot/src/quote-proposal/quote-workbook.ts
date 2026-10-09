@@ -75,8 +75,11 @@ type WorkbookItem = {
 /** One resolved stay: its revision and the authorised extras attached to it. */
 export type WorkbookStay = { revision: QuoteRevision; facts?: AuthorizedProposalFacts };
 
+/** A quote the proposal Excel cannot hold. The message tells staff what to do instead. */
+export class WorkbookRefusalError extends Error {}
+
 /** A quote with more lines than the proposal Excel holds. The message says how to split it. */
-export class WorkbookLineLimitError extends Error {}
+export class WorkbookLineLimitError extends WorkbookRefusalError {}
 
 function lineLimitMessage(count: number): string {
   return `Quote has ${count} lines; the proposal Excel holds at most ${MAX_WORKBOOK_LINES}. Split it into separate quotes.`;
@@ -125,6 +128,10 @@ function sumOf(items: WorkbookItem[], key: 'qty' | 'totalMinor'): number {
  */
 export function workbookLinesForStays(stays: WorkbookStay[]): { lines: WorkbookLine[]; totalMinor: number } {
   if (stays.length < 1) throw new Error('workbook_stays');
+  // The template formats every amount in rand, so a quote in any other currency would print the wrong symbol.
+  if (stays.some((stay) => stay.revision.currency !== 'ZAR')) {
+    throw new WorkbookRefusalError('The proposal Excel prices in rand only. Quote other currencies one stay at a time.');
+  }
   const items: Array<WorkbookItem & { stay: number }> = [];
   stays.forEach((stay, index) => {
     const rooms = deriveQuoteLines(stay.revision).map(
