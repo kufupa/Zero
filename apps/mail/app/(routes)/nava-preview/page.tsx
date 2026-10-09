@@ -66,7 +66,7 @@ function PreviewPanel({ threadId }: { threadId: string }) {
       data-preview-thread={threadId}
       className="h-full overflow-y-auto"
     >
-      <NavaPane bridge={bridge} />
+      <NavaPane bridge={bridge} preview />
     </div>
   );
 }

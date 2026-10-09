@@ -56,7 +56,7 @@ describe('readQuoteAttachments', () => {
         row({ id: 'logo', filename: 'logo.png', mimeType: 'image/png', isInline: true }),
         row({ id: 'inline-pdf', isInline: true }),
         row({ id: 'quote-ask' }),
-        row({ id: 'sheet', filename: 'rooming.xlsx', mimeType: 'application/vnd.ms-excel' }),
+        row({ id: 'sheet', filename: 'rooming.xlsx', mimeType: 'application/vnd.ms-excel', sizeBytes: 20_000 }),
       ],
       async (attachment) => {
         read.push(attachment.id);
@@ -65,8 +65,91 @@ describe('readQuoteAttachments', () => {
     );
     expect(read).toEqual(['quote-ask']);
     expect(result).toEqual([
-      { id: 'quote-ask', filename: 'quote-ask.pdf', byteSize: 1_000, bytesPresent: true, text: 'Rooming list text' },
-      { id: 'sheet', filename: 'rooming.xlsx', byteSize: 1_000, bytesPresent: false, readFailure: 'not a PDF' },
+      {
+        id: 'quote-ask',
+        filename: 'quote-ask.pdf',
+        mimeType: 'application/pdf',
+        byteSize: 1_000,
+        bytesPresent: true,
+        text: 'Rooming list text',
+      },
+      {
+        id: 'sheet',
+        filename: 'rooming.xlsx',
+        mimeType: 'application/vnd.ms-excel',
+        byteSize: 20_000,
+        bytesPresent: false,
+        readFailure: 'not a PDF',
+      },
+    ]);
+  });
+
+  it('never reads or lists signatures, invites, contact cards or tiny files', async () => {
+    const read: string[] = [];
+    const result = await readQuoteAttachments(
+      [
+        row({ id: 'sig', filename: 'image001.jpg', mimeType: 'image/jpeg', sizeBytes: 12_000 }),
+        row({ id: 'cid', filename: 'attachment-0', mimeType: 'image/png', sizeBytes: 30_000, contentId: 'logo@x' }),
+        row({ id: 'svg', filename: 'sig.svg', mimeType: 'image/svg+xml', sizeBytes: 50_000 }),
+        row({ id: 'ics', filename: 'invite.ics', mimeType: 'text/calendar', sizeBytes: 2_000 }),
+        row({ id: 'vcf', filename: 'contact.vcf', mimeType: 'text/vcard', sizeBytes: 900 }),
+        row({
+          id: 'tiny-doc',
+          filename: 'note.docx',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          sizeBytes: 3_000,
+        }),
+        row({ id: 'unknown-small', filename: 'data.bin', mimeType: 'application/octet-stream', sizeBytes: 8_000 }),
+      ],
+      async (attachment) => {
+        read.push(attachment.id);
+        return { text: 'x' };
+      },
+    );
+    expect(read).toEqual([]);
+    expect(result).toEqual([]);
+  });
+
+  it('keeps a document that carries a Content-ID: a cid never skips a document', async () => {
+    const result = await readQuoteAttachments(
+      [
+        row({
+          id: 'rooming',
+          filename: 'rooming.docx',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          sizeBytes: 50_000,
+          contentId: 'rooming-cid@x',
+        }),
+      ],
+      async () => ({ text: null }),
+    );
+    expect(result).toMatchObject([{ id: 'rooming', bytesPresent: false, readFailure: 'not a PDF' }]);
+  });
+
+  it('lists the office documents and large unknown files it could not read, and keeps PDF failures', async () => {
+    const result = await readQuoteAttachments(
+      [
+        row({
+          id: 'rooming',
+          filename: 'rooming.docx',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          sizeBytes: 50_000,
+        }),
+        row({ id: 'rooms', filename: 'rooms.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', sizeBytes: 9_000 }),
+        row({ id: 'terms', filename: 'terms.odt', mimeType: 'application/vnd.oasis.opendocument.text', sizeBytes: 9_000 }),
+        row({ id: 'legacy', filename: 'rooms.doc', mimeType: 'application/msword', sizeBytes: 9_000 }),
+        row({ id: 'forward', filename: 'forward.msg', mimeType: 'application/vnd.ms-outlook', sizeBytes: 60_000 }),
+        row({ id: 'tiny-pdf', sizeBytes: 1_000 }),
+      ],
+      async (attachment) => (attachment.id === 'tiny-pdf' ? { text: null, reason: 'encrypted' } : { text: null }),
+    );
+    expect(result.map((part) => [part.id, part.readFailure])).toEqual([
+      ['rooming', 'not a PDF'],
+      ['rooms', 'not a PDF'],
+      ['terms', 'not a PDF'],
+      ['legacy', 'not a PDF'],
+      ['forward', 'not a PDF'],
+      ['tiny-pdf', 'encrypted'],
     ]);
   });
 

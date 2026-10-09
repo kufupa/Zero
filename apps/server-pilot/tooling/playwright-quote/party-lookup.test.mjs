@@ -298,8 +298,47 @@ function fakeResponse({ url, postData = '', status = 200 }) {
  * click, { after, status, url, postData }; without it no answer comes. The clock moves in 50 ms steps, so a mask that shows
  * and clears between two polls is still seen by a watcher armed before the click.
  */
-function searchPage({ clock, store, runButton = true, runThrows = false, mask = () => false, onRun = () => {}, answer = null }) {
+function searchPage({ clock, store, runButton = true, runThrows = false, mask = () => false, onRun = () => {}, answer = null, selectorLabel = 'Name', windowOpen = () => true, openAfterClicks = null }) {
   const values = new Map();
+  // The lookup's dialog is open when windowOpen() holds, or, with openAfterClicks, once the trigger has been clicked that often.
+  let triggerClicks = 0;
+  const windowIsOpen = () => (openAfterClicks === null ? windowOpen() : triggerClicks >= openAfterClicks);
+  // The dialog's row: a saved-search combo, the read-only field selector, and the empty filter box; the Run button follows at the right.
+  const INPUTS = [
+    { x: 248, y: 212, width: 248, height: 26, readonly: false, value: '360 degrees' },
+    { x: 603, y: 212, width: 200, height: 26, readonly: true, value: selectorLabel },
+    { x: 851, y: 212, width: 134, height: 26, readonly: false, value: '' },
+  ];
+  const RUN_BOX = { x: 990, y: 212, width: 40, height: 28 };
+  const inputIndex = (desc) => {
+    const m = /input:visible#(\d+)$/.exec(desc);
+    return m ? Number(m[1]) : null;
+  };
+  // The Run control: found by role (/^Run$/), or by its text (/^\s*Run\s*$/) on an ExtJS a.x-btn.
+  const isRunButton = (desc) => desc.includes('^Run$') || desc.includes('^\\s*Run\\s*$');
+  const initialValueOf = (desc) => {
+    const k = inputIndex(desc);
+    return k === null ? '' : INPUTS[k].value;
+  };
+  const boundingBoxOf = (desc) => {
+    const k = inputIndex(desc);
+    if (k !== null) {
+      const { x, y, width, height } = INPUTS[k];
+      return { x, y, width, height };
+    }
+    return isRunButton(desc) ? RUN_BOX : null;
+  };
+  const attributeOf = (desc, name) => {
+    const k = inputIndex(desc);
+    if (k === null) return null;
+    if (name === 'type') return 'text';
+    return name === 'readonly' && INPUTS[k].readonly ? '' : null;
+  };
+  const enabledOf = (desc) => {
+    if (!isRunButton(desc)) return true;
+    const filterKey = desc.replace(/ >> role=button:.*$/, '') + ' >> input:visible#2';
+    return (values.get(filterKey) ?? '').trim().length > 0;
+  };
   const answerWaiters = [];
   const pendingAnswers = [];
   const maskWaiters = [];
@@ -326,19 +365,24 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
     else pendingAnswers.push({ at: clock.now + answer.after, response });
   };
   const counts = (desc) => {
+    if (inputIndex(desc) !== null) return 1;
+    if (desc.endsWith('input:visible')) return INPUTS.length;
     if (desc.includes('Processing request')) return mask() ? 1 : 0;
-    if (desc.includes('^Run$')) return runButton ? 1 : 0;
+    if (isRunButton(desc)) return runButton ? 1 : 0;
     if (desc.includes('ff_companyname')) return 1;
-    if (desc.includes('.x-window') && !desc.includes('.x-grid') && !desc.includes('input')) return 1;
+    if (desc.includes('.x-window') && !desc.includes('.x-grid') && !desc.includes('input')) return windowIsOpen() ? 1 : 0;
     return 0;
   };
   const loc = (desc) => {
     const self = {
       locator: (s) => loc(`${desc} >> ${s}`),
-      filter: () => self,
+      filter: (o) => loc(`${desc}${o?.hasText ? ` >> hasText:${String(o.hasText)}` : ''}`),
       first: () => self,
       last: () => self,
-      nth: () => self,
+      nth: (i) => loc(`${desc}#${i}`),
+      boundingBox: async () => boundingBoxOf(desc),
+      getAttribute: async (name) => attributeOf(desc, name),
+      isEnabled: async () => enabledOf(desc),
       getByRole: (role, o) => loc(`${desc} >> role=${role}:${String(o?.name)}`),
       getByText: (re) => loc(`${desc} >> text:${String(re)}`),
       count: async () => counts(desc),
@@ -348,14 +392,15 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
         return new Promise((resolve) => maskWaiters.push(resolve));
       },
       click: async () => {
-        if (desc.includes('^Run$')) {
+        if (desc.includes('x-form-lov-trigger')) triggerClicks += 1;
+        if (isRunButton(desc)) {
           if (runThrows) throw new Error('click intercepted');
           onRun();
           scheduleAnswer();
         }
       },
       fill: async (v) => values.set(desc, String(v)),
-      inputValue: async () => values.get(desc) ?? '',
+      inputValue: async () => values.get(desc) ?? initialValueOf(desc),
       press: async () => {},
       innerText: async () => '',
       evaluate: async (fn, arg) => (arg === undefined ? store() : { rows: [], loaded: 0 }),
@@ -424,13 +469,61 @@ test('a store that never settles is lookup_busy_timeout, with no candidates', as
   assert.equal(found.issues[0].reason, 'lookup_busy_timeout');
 });
 
+test('a dialog that never opens is lookup_window_not_opened after the retry, and nothing is read from another window', async () => {
+  const clock = fakeClock();
+  const page = searchPage({ clock, store: () => TOURVEST, windowOpen: () => false });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].reason, 'lookup_window_not_opened');
+  assert.deepEqual(found.candidates, []);
+});
+
+test('a dropped trigger click is retried once after eight seconds, and the search then runs', async () => {
+  const clock = fakeClock();
+  let busyFrom = Infinity;
+  let busyUntil = Infinity;
+  const page = searchPage({
+    clock,
+    store: () => TOURVEST,
+    openAfterClicks: 2,
+    mask: () => clock.now >= busyFrom && clock.now < busyUntil,
+    onRun: () => {
+      busyFrom = clock.now;
+      busyUntil = clock.now + 3000;
+    },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'resolved');
+  assert.ok(clock.now >= 8000, 'the retry waits eight seconds before it clicks the trigger again');
+});
+
+test('a dialog that opens behind a Processing request mask is waited for before the query goes in', async () => {
+  const clock = fakeClock();
+  let busyFrom = Infinity;
+  let busyUntil = Infinity;
+  const page = searchPage({
+    clock,
+    store: () => TOURVEST,
+    windowOpen: () => clock.now >= 3000,
+    mask: () => clock.now < 5000 || (clock.now >= busyFrom && clock.now < busyUntil),
+    onRun: () => {
+      busyFrom = clock.now;
+      busyUntil = clock.now + 3000;
+    },
+  });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
+  assert.equal(found.outcome, 'resolved');
+  assert.equal(lookup.lookupWindowNotOpened().issues[0].reason, 'lookup_window_not_opened');
+});
+
 test('a search with no Run control is never read as no_match', async () => {
   const clock = fakeClock();
   const page = searchPage({ clock, store: () => UNRELATED, runButton: false });
   const found = await withFakeClock(clock, () => lookup.searchKind(page, TOURVEST_REQUEST));
   assert.equal(found.outcome, 'execution_failure');
-  assert.equal(found.issues[0].reason, 'filter_not_verified');
-  assert.equal(found.issues[0].detail, 'run_not_clicked');
+  // The filter cannot be typed into a window with no Run button, so the failure is at the filter, with that reason.
+  assert.equal(found.issues[0].reason, 'filter_not_applied');
+  assert.equal(found.issues[0].detail, 'no_run_button');
 });
 
 test('a Run click that fails is execution_failure, not a read of the old grid', async () => {

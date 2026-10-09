@@ -7,10 +7,12 @@ import {
   type AttachmentLocator,
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
+import { attachmentMattersForReview, isPdfAttachment } from './quote-attachment-review.js';
 
 export type SyncedQuoteAttachment = {
   id: string;
   filename: string;
+  mimeType?: string;
   byteSize?: number;
   text?: string;
   /** Scanned PDF bytes for the model when pdftotext found no text. Never serialised. */
@@ -40,6 +42,8 @@ export type QuoteAttachmentRow = {
   isInline: boolean;
   s3Key: string;
   messageId: string;
+  /** Content-ID of the part. A cid never skips a part on its own. */
+  contentId?: string | null;
 };
 
 export type QuoteAttachmentReader = (
@@ -50,11 +54,19 @@ export const QUOTE_ATTACHMENT_MAX_FILES = 3;
 export const QUOTE_ATTACHMENT_MAX_TOTAL_BYTES = 5 * 1024 * 1024;
 const OVER_LIMIT = 'over the 3 file / 5 MB analysis limit';
 
-function isPdf(row: QuoteAttachmentRow): boolean {
-  return row.mimeType === 'application/pdf' || /\.pdf$/i.test(row.filename);
+function reviewFacts(row: QuoteAttachmentRow) {
+  return {
+    filename: row.filename,
+    mimeType: row.mimeType,
+    byteSize: row.sizeBytes,
+    isInline: row.isInline,
+  };
 }
 
-/** Inline parts are dropped; only non-inline PDFs are read, within the file/byte caps. */
+/**
+ * Signatures, invites, inline parts and tiny files are dropped here, so they never reach the reader or the review
+ * rows. Of what is left, only PDFs are read, within the file/byte caps. Other kinds are listed as not read.
+ */
 export async function readQuoteAttachments(
   rows: QuoteAttachmentRow[],
   reader: QuoteAttachmentReader,
@@ -62,9 +74,9 @@ export async function readQuoteAttachments(
   let files = 0;
   let bytes = 0;
   const plan = rows
-    .filter((row) => !row.isInline)
+    .filter((row) => attachmentMattersForReview(reviewFacts(row)))
     .map((row) => {
-      if (!isPdf(row)) return { row, failure: 'not a PDF' };
+      if (!isPdfAttachment(row)) return { row, failure: 'not a PDF' };
       if (files >= QUOTE_ATTACHMENT_MAX_FILES || bytes + row.sizeBytes > QUOTE_ATTACHMENT_MAX_TOTAL_BYTES) {
         return { row, failure: OVER_LIMIT };
       }
@@ -74,7 +86,7 @@ export async function readQuoteAttachments(
     });
   return Promise.all(
     plan.map(async ({ row, failure }): Promise<SyncedQuoteAttachment> => {
-      const base = { id: row.id, filename: row.filename, byteSize: row.sizeBytes };
+      const base = { id: row.id, filename: row.filename, mimeType: row.mimeType, byteSize: row.sizeBytes };
       if (failure) return { ...base, bytesPresent: false, readFailure: failure };
       try {
         const read = await reader(row);
@@ -197,6 +209,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
       isInline: attachment.isInline,
+      contentId: attachment.contentId,
       s3Key: attachment.s3Key,
       messageId: attachment.messageId,
     })
