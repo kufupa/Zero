@@ -1285,3 +1285,35 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
   });
 });
+
+describe('quoteWorkflow.analyseSelection without Outlook ids', () => {
+  afterEach(() => {
+    quoteWorkflowLoaders.loadSyncedSelection = null;
+    quoteWorkflowLoaders.adapter = null;
+    quoteWorkflowLoaders.llmEnabled = null;
+    quoteWorkflowLoaders.analyseCacheDir = null;
+    quoteWorkflowLoaders.promptVersion = null;
+  });
+
+  it('analyses by internetMessageId alone, as the web preview sends it', async () => {
+    const seen: Record<string, unknown>[] = [];
+    quoteWorkflowLoaders.loadSyncedSelection = async (input) => {
+      seen.push({ ...input });
+      return {
+        subject: 'Rooms',
+        bodyText: 'Please quote 1 room.',
+        preceding: [],
+        attachments: [],
+      };
+    };
+    quoteWorkflowLoaders.llmEnabled = () => false;
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<preview-1@x>',
+      selectionEpoch: 2,
+    });
+    expect(result).toMatchObject({ status: 'ready', source: 'regex_fallback' });
+    expect(seen).toHaveLength(1);
+    // The route canonicalises the id (brackets stripped) before the loader sees it.
+    expect(seen[0]).toMatchObject({ internetMessageId: 'preview-1@x' });
+  });
+});

@@ -578,9 +578,11 @@ export const mailRouter = tRouter({
         const msgReactions = reactionsByMessage.get(m.id) ?? [];
         const groupedReactions = groupReactions(msgReactions, callerEmail);
         const parsed = toParsedMessage(m, attachmentsByMessage.get(m.id) ?? [], groupedReactions);
-        if (transportId !== 'transport-nava') return parsed;
+        // Stored direction, so a client can tell the guest's mail from the mailbox's replies.
+        if (transportId !== 'transport-nava') return { ...parsed, direction: m.direction };
         return {
           ...parsed,
+          direction: m.direction,
           debugHeaders: buildMetadataDebugHeaders(m, ctx.transportEmail),
         };
       });
