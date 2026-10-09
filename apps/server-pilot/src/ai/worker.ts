@@ -180,6 +180,7 @@ import type { ToolResult } from './draft-evidence.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { isCliEntry } from '../lib/is-cli-entry.js';
 import { assessReply } from './reply-assessment.js';
+import { executeInboundExtractionRun } from './extraction/inbound-run.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb } from '../db/client.js';
 import { getS3Storage } from '../storage/s3.js';
@@ -4108,6 +4109,8 @@ export async function executeAiRun(
     shadowModelAdapter?: ModelAdapter;
     shadowModelRoute?: LocalModelRouteEvidence;
     shadowModelTransport?: LocalModelTransport;
+    /** Inbound extraction model seam. Absent uses the Azure quote route; null means no model is configured. */
+    inboundExtractionAdapter?: ModelAdapter | null;
     /** Injected only by the trusted HMS read runtime/tests; never a model callback. */
     readToolExecutor?: (input: {
       run: typeof aiWorkflowRun.$inferSelect;
@@ -5216,6 +5219,16 @@ export async function executeAiRun(
         throw error;
       }
       return { runId, state: 'succeeded' };
+    }
+
+    if (run.runKind === 'inbound_extraction') {
+      return await executeInboundExtractionRun({
+        run: runWithFence,
+        fence,
+        signal,
+        adapter: options.inboundExtractionAdapter,
+        db,
+      });
     }
 
     if (run.runKind === 'feedback_extraction') {

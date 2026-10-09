@@ -9,7 +9,7 @@ export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property co
 - Cold vendor/sales outreach, newsletters, promos, quarantine digests and cold solicitation are spam. OTP codes, bounces, payment notices, OTA relays, job/CV, day-visitor or F&B asks are not spam.
 - Thank-you/acknowledgement/FYI with no ask, and internal handovers, are skip.
 - Amendments and cancellations of an existing booking: workflow=amend or cancel. Fill confirmationNumber exactly as written (e.g. 57291630-1), guestLastName, arrival/departure as stated, requestedChange as one short plain-English line (e.g. 'Change departure from 15 Nov to 17 Nov'). No tools. Invoices, folios, payment queries stay other.
-- Groups of 10+ rooms/delegates or events are other (no tools).
+- Venue hire, conference or delegate packages (DDR), and events, are other (no tools). A rooms-only group is quote at any size, 10+ rooms included.
 - Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room. A day-month without a year is its next occurrence.
 - A request to "assist with"/"book" rooms with dates and guest names is create.
 - Missing dates: no tool can run; decide the workflow and list what is missing.`;

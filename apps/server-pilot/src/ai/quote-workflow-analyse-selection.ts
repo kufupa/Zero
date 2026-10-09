@@ -231,7 +231,7 @@ const LUNA_UNAVAILABLE_ITEM = {
   blocking: false as const,
 };
 
-function resolveAdapter(
+export function resolveAdapter(
   enabled: boolean,
   injected: ModelAdapter | null | undefined,
 ): { enabled: boolean; adapter: ModelAdapter | null } {
