@@ -50,3 +50,23 @@ When Nava reads "Woolworths" in an email, the pane shows **"Use Woolworths Holdi
 | The sweep doesn't finish in the hour (expected) | It's resumable. Any partial index still gives chips for the letters covered. If W isn't covered yet, V-chip uses a party from a covered letter |
 </content>
 </invoke>
+
+## Result (run 2026-10-09 08:05 → 08:55 UTC)
+| Item | Outcome | Evidence |
+|---|---|---|
+| Lane A, one-click button | **Shipped** #96 (Haiku). Opus diff review, Greptile 0 comments | Server 336 + mail 263 tests pass |
+| Lane B, booking card | **Shipped** #97 (Haiku). Greptile P1 (price match kept after a room change) fixed by Opus | 63 booking-card tests pass |
+| Gate thread targeting | **Shipped** #98 (Opus): `NAVA_PREVIEW_THREADS=id1,id2` | 23 gate tests pass |
+| Deploy D7 `3132d3c97` | READY, VPN + hotel probe OK, 0 pm2 restarts, 08:46 | ops-deploy ok |
+| V-index | **PASS** on prod: Woolworths → #49, 360 Degrees Travel (Pty) Ltd → #113, Tourvest → #206, Pick n Pay → none, all ≤ 1 ms | tsx on EC2 |
+| Staff bundle | Her pane reloaded onto D7 at 08:48:43 | nginx, Windows client |
+| Gate (real browser) | 5 real threads, 0 blocked writes. TFG booking request: 8 fields pre-filled, company "Foschini Retail Group (pty) Ltd", correctly no button | gate-20261009T0848xxZ |
+| V-chip (positive render) | **Not shown in a real browser.** No mailbox thread had Nava pre-fill a listed name. Covered by the QuoteWorkflowPanel unit test | — |
+| V-quote | Not re-run: she was active, and the quote path is unchanged since the D6 proof (NCOR2B R1,360) | ledger 07:04 |
+| Sweep | **Not run in the hour.** The index is written only when every prefix is done (hours). Idle-gated runner on EC2 (`/home/ubuntu/party-sweep-idle.sh`, log `/home/ubuntu/party-sweep.log`, stop: `touch /home/ubuntu/party-sweep.stop`). It runs 8 lookups per chunk once her Windows client has been idle 20 min | — |
+
+### Lessons
+- **The plan misjudged the sweep.** Reading `party-index-sweep.ts` first (5 min) would have shown "index written only at the end" before the plan promised an hour. Data step first, again.
+- **The listed table is a stopgap.** Nava extracts full legal names ("Foschini Retail Group (pty) Ltd", "HWSETA (…)"), so 3 listed parties rarely match. The full index (sweep) is what makes the button common. Next: Nava picks from the index top-k (to-do #8).
+- **The gate marks voucher emails as errors** when the voucher banner shows before analysis ends (1.3 s). That's a runner classification bug, not a pane failure.
+- Live risk not proven: bind re-searches HMS for "Woolworths Holdings" (the button's name). The 04:35 lookup searched "Woolworths". Prove it once she's idle: `v8-live-checks.ts party "Woolworths Holdings" --kind company`.
