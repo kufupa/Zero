@@ -70,7 +70,7 @@ export async function buildQuoteProposalPdf(
 
 import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
-import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from './quote-lines.js';
+import { deriveQuoteLines, deriveAuthorizedExtraLines, pricedRoomTotal, type AuthorizedProposalFacts, type RowPrice } from './quote-lines.js';
 import { quoteDigest, exactMinor, type QuoteRevision, type ImportedOffer } from './quote-revision.js';
 import { quoteDateLabel, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
 export type RevisionProposalHeader = {attention:string;company:string;clientEmail:string;clientTelephone:string;agency:string;signerName:string;signerEmail:string;/** Unpriced staff note printed under the total. */notes?:string};
@@ -83,11 +83,11 @@ function moneyMinor(value:number,currency:string):string {
   const prefix=currency==='ZAR'?'R':`${currency} `;
   return `${prefix}${Math.floor(value/100).toLocaleString('en-ZA')}.${String(value%100).padStart(2,'0')}`;
 }
-export function renderRevisionProposalHtml(revision:QuoteRevision,header:RevisionProposalHeader,facts?:AuthorizedProposalFacts):string {
-  const native=deriveQuoteLines(revision);
+export function renderRevisionProposalHtml(revision:QuoteRevision,header:RevisionProposalHeader,facts?:AuthorizedProposalFacts,rowPrices?:RowPrice[]):string {
+  const native=deriveQuoteLines(revision,rowPrices);
   const extras=facts?deriveAuthorizedExtraLines(revision,facts):[];
   const lines=[...native,...extras.map(line=>({...line,arrivalDate:line.dates[0]??revision.authoredDate,departureDate:line.dates.at(-1)??revision.authoredDate}))];
-  const totalMinor=revision.totalMinor+extras.reduce((sum,line)=>sum+line.totalMinor,0);
+  const totalMinor=native.reduce((sum,line)=>sum+line.totalMinor,0)+extras.reduce((sum,line)=>sum+line.totalMinor,0);
   if(!Number.isSafeInteger(totalMinor))throw new ProposalInputError('money_overflow');
   const files=unzipSync(readFileSync(TEMPLATE_PATH));
   const images=['xl/media/image1.png','xl/media/image2.png'].map(path=>{
@@ -136,9 +136,9 @@ async function revisionHtmlPdf(html: string, base: string, fetchImpl: typeof fet
   if (pdf.length <= 5 || new TextDecoder().decode(pdf.subarray(0, 5)) !== '%PDF-') throw new Error('gotenberg convert returned empty or invalid PDF bytes');
   return pdf;
 }
-/** The total the HTML renderer prints: the revision plus its authorised extras, in the revision's own currency. */
+/** The total the HTML renderer prints: the priced rooms plus the authorised extras, in the revision's own currency. */
 function revisionHtmlTotal(stay: WorkbookStay): number {
-  return stay.revision.totalMinor + (stay.facts ? deriveAuthorizedExtraLines(stay.revision, stay.facts).reduce((sum, line) => sum + line.totalMinor, 0) : 0);
+  return pricedRoomTotal(stay.revision, stay.rowPrices) + (stay.facts ? deriveAuthorizedExtraLines(stay.revision, stay.facts).reduce((sum, line) => sum + line.totalMinor, 0) : 0);
 }
 /**
  * The proposal PDF for one or more resolved stays. The Excel workbook is the master, and Gotenberg's LibreOffice route
@@ -157,7 +157,7 @@ export async function buildStaysProposalPdf(
   const single = stays.length === 1 ? stays[0]! : undefined;
   let rendered: { pdf: Uint8Array; totalMinor: number };
   const viaHtml = async (stay: WorkbookStay) => {
-    const html = renderRevisionProposalHtml(stay.revision, header, stay.facts);
+    const html = renderRevisionProposalHtml(stay.revision, header, stay.facts, stay.rowPrices);
     try {
       return { pdf: await revisionHtmlPdf(html, base, fetchImpl), totalMinor: revisionHtmlTotal(stay) };
     } catch (error) {
@@ -204,8 +204,8 @@ export async function buildStaysProposalPdf(
     totalMinor: rendered.totalMinor,
   };
 }
-export async function buildRevisionProposalPdf(revision:QuoteRevision,header:RevisionProposalHeader,opts:{url:string;fetchImpl?:typeof fetch;facts?:AuthorizedProposalFacts}):Promise<{revisionId:string;pdfHash:string;pdf:Uint8Array;fileName:string}>{
-  const { revisionId, pdfHash, pdf, fileName } = await buildStaysProposalPdf([{ revision, facts: opts.facts }], header, opts);
+export async function buildRevisionProposalPdf(revision:QuoteRevision,header:RevisionProposalHeader,opts:{url:string;fetchImpl?:typeof fetch;facts?:AuthorizedProposalFacts;rowPrices?:RowPrice[]}):Promise<{revisionId:string;pdfHash:string;pdf:Uint8Array;fileName:string}>{
+  const { revisionId, pdfHash, pdf, fileName } = await buildStaysProposalPdf([{ revision, facts: opts.facts, rowPrices: opts.rowPrices }], header, opts);
   return { revisionId, pdfHash, pdf, fileName };
 }
 type ApprovedOverridePacket=Awaited<ReturnType<typeof import('./quote-revision.js').resolveApprovedOverride>>;

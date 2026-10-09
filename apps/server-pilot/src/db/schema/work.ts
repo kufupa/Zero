@@ -44,6 +44,9 @@ export const WORK_EVENT_TYPES = [
   'review.ok',
   'review.flag',
   'status.changed',
+  'rate.saved',
+  'rate.one_off',
+  'rate.override',
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
 

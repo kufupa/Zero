@@ -24,8 +24,12 @@ export type RateOption = {
   currency: string;
   priced: 'full' | 'summary';
   selected: boolean;
+  /** A label for staff only. Ranking, matching and pricing never read it. */
+  hint?: 'event_rate';
 };
 
+/** HMS event rates. GNC3B and GNC4B are shown with a hint; they are never matched, ranked or priced differently. */
+const EVENT_RATE_CODES = new Set(['GNC3B', 'GNC4B']);
 const staffBoard:Record<Board,RateOption['board']>={room_only:'room_only',breakfast:'bb',dinner_bed_breakfast:'dinner_bb'};
 const boardName:Record<RateOption['board'],string>={room_only:'room only',bb:'bed and breakfast',dinner_bb:'dinner, bed and breakfast'};
 
@@ -68,7 +72,7 @@ export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {gro
   return ranked.map(r=>{const isSelected=selected.some(s=>s.groupId===request.id&&s.optionId===r.option.id);return{
    id:`${request.id}:${r.option.id}`,groupId:request.id,board:r.board,boardLabel:r.option.board??'',rateCode:r.option.rate.code,rateLabel:r.option.rate.label,
    roomCode:r.option.room.code,roomLabel:r.option.room.label,contract:r.contract,onlyContract:r.contract&&contracts===1,matchesRequest:r.matches,
-   perNightMinor:Math.round(r.perRoomMinor/nights),totalMinor:r.totalMinor,currency:source.request.requestedCurrency,priced:isSelected?'full':'summary',selected:isSelected};});
+   perNightMinor:Math.round(r.perRoomMinor/nights),totalMinor:r.totalMinor,currency:source.request.requestedCurrency,priced:isSelected?'full':'summary',selected:isSelected,...(EVENT_RATE_CODES.has(r.option.rate.code)?{hint:'event_rate' as const}:{})};});
  });
 }
 
