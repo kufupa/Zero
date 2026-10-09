@@ -168,9 +168,36 @@ export async function saveEvidence(directory, name, value) {
   await writeFile(join(directory,name), typeof value === 'string' ? value : JSON.stringify(value,null,2)+'\n', { mode: 0o600 });
 }
 
-/** Only the exact value 'on' enables the provisional quote capture. Anything else stays sequential. */
+/**
+ * On by default: an unset QUOTE_TRACE_ASYNC or the exact value 'on' enables the provisional quote capture. Any other set
+ * value keeps the sequential trace finish.
+ */
 export function quoteTraceAsyncEnabled(env = process.env) {
-  return env?.QUOTE_TRACE_ASYNC === 'on';
+  const value = env?.QUOTE_TRACE_ASYNC;
+  return value === undefined || value === 'on';
+}
+
+// Milliseconds per phase, written to result.json (phaseMs) and events.jsonl. Searches add to criteria, grid and details, so a
+// run with the group search and the public reset reports both. criteriaReset and criteriaShot are inside criteria; criteriaReset
+// also counts the trailing public reset. A phase that never ran stays 0.
+export const QUOTE_PHASES = ['secret', 'cdp', 'login', 'nav', 'criteria', 'criteriaReset', 'criteriaShot', 'grid', 'details', 'traceFinish'];
+export function createPhaseClock(now = () => performance.now()) {
+  const ms = Object.fromEntries(QUOTE_PHASES.map((name) => [name, 0]));
+  return {
+    ms,
+    async time(name, work) {
+      const started = now();
+      try { return await work(); } finally { ms[name] += Math.round(now() - started); }
+    },
+  };
+}
+
+// Types a value only when the field does not already show it, so an unchanged field skips its fill and Tab.
+export async function fillIfDifferent(page, selector, value) {
+  const input = page.locator(selector);
+  if (await input.inputValue() === value) return;
+  await input.fill(value);
+  await input.press('Tab');
 }
 
 /**
@@ -319,7 +346,7 @@ async function setToggle(page,name,value) {
 
 async function applyCurrency(page,currency) {
   const input=page.locator('input[name="currency"]:visible');
-  if (!currency) {await input.fill('');await input.press('Tab');await setToggle(page,'convertcurrency',false);return;}
+  if (!currency) {await fillIfDifferent(page,'input[name="currency"]:visible','');await setToggle(page,'convertcurrency',false);return;}
   await input.locator('xpath=ancestor::table[1]').locator('.x-form-arrow-trigger').click();
   const configured=await input.evaluate(e=>Ext.getCmp(e.id.replace(/-inputEl$/,'')).getStore().getRange().map(r=>({code:r.data.value,label:r.data.display})));
   const entry=configured.find(c=>c.code===currency);
@@ -361,8 +388,9 @@ async function dismissEmptyCalendar(page) {
     await page.locator('.x-message-box:visible a.x-btn').filter({hasText:/^OK$/}).click();
 }
 
-export async function searchCalendar(page, request, room, criteriaCheckpoint=async()=>{}, onWindow=async()=>{}) {
-  await resetPublicControls(page);
+// The criteria fill for one search: reset, then every field this request needs. Returns the applied values the window loop checks.
+async function applyCriteria(page, request, room, criteriaCheckpoint, clock) {
+  await clock.time('criteriaReset', () => resetPublicControls(page));
   // Pickers can be date-scoped. Do not resolve this request against a previous
   // group's calendar; selecting a group can then change the date again.
   await page.locator('input[name="startdate"]').fill(displayDate(request.arrivalDate));
@@ -373,8 +401,8 @@ export async function searchCalendar(page, request, room, criteriaCheckpoint=asy
     resolvedContext[kind]=await resolveReference(page,kind,request.rateContext[kind]);
   if (request.rateContext?.group&&request.search?.salesStrategy) throw new Error('UNSUPPORTED_GROUP_SALES_STRATEGY');
   const strategy=request.rateContext?.group?null:await selectSalesStrategy(page,request.search?.salesStrategy??(request.rateContext?'Preset':'BAR'));
-  await page.locator('input[name="startdate"]').fill(displayDate(request.arrivalDate));
-  await page.locator('input[name="startdate"]').press('Tab');
+  // The strategy change can move the date. Type it again only when it did.
+  await fillIfDifferent(page,'input[name="startdate"]',displayDate(request.arrivalDate));
   await applyGuests(page,room);
   await applyCurrency(page,request.requestedCurrency);
   // Visibility only. Native false hides whole rows based on the 14-day grid,
@@ -383,17 +411,20 @@ export async function searchCalendar(page, request, room, criteriaCheckpoint=asy
   await setToggle(page,'includemultirateoptions',showRestricted);
   const roomCodes=(room.required?.roomCodes??(request.roomCode?[request.roomCode]:[])).join(',');
   const rateCodes=(room.required?.rateCodes??(request.rateCode?[request.rateCode]:[])).join(',');
-  for(const [field,value] of [['roomtypes',roomCodes],['rateplans',rateCodes]]) {
-    await page.locator(`input[name="${field}"]`).fill(value);await page.locator(`input[name="${field}"]`).press('Tab');
-  }
+  for(const [field,value] of [['roomtypes',roomCodes],['rateplans',rateCodes]]) await fillIfDifferent(page,`input[name="${field}"]`,value);
   if (await page.locator('input[name="propertycodes"]').inputValue()!==request.propertyCode) throw new Error('PROPERTY_MISMATCH');
-  await criteriaCheckpoint();
+  await clock.time('criteriaShot', criteriaCheckpoint);
+  return {resolvedContext,strategy,roomCodes,rateCodes,showRestricted};
+}
+
+export async function searchCalendar(page, request, room, criteriaCheckpoint=async()=>{}, onWindow=async()=>{}, clock=createPhaseClock()) {
+  const {resolvedContext,strategy,roomCodes,rateCodes,showRestricted}=await clock.time('criteria',()=>applyCriteria(page,request,room,criteriaCheckpoint,clock));
   const windows=[];
   let expectedStart=request.arrivalDate;
   for (let index=0;index<3;index++) {
     const pending=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/internalBooking/hotelAvail/inquiryForGrid'&&r.request().method()==='POST',{timeout:45000});
     pending.catch(()=>{});
-    const [response]=await Promise.all([pending,index===0?search(page):page.locator('a.x-btn[data-qtip="Page Right"]:visible').click()]);
+    const [response]=await clock.time('grid',()=>Promise.all([pending,index===0?search(page):page.locator('a.x-btn[data-qtip="Page Right"]:visible').click()]));
     if(!response.ok())throw new Error(`SEARCH_HTTP_${response.status()}`);
     const criteria=projectCriteria(response.request().postDataJSON());
     assertApplied(request,room,criteria,{resolvedContext,startDate:expectedStart,strategy,roomCodes,rateCodes});
@@ -401,16 +432,16 @@ export async function searchCalendar(page, request, room, criteriaCheckpoint=asy
     if(await page.locator('input[type="password"]:visible').count())throw new Error('SESSION_RETURNED_TO_LOGIN');
     const body=await response.json();
     if(!body.availabilitydata) {
-      await page.getByText('Selected criteria is not available for these dates.',{exact:true}).waitFor({timeout:15000});
+      await clock.time('grid',()=>page.getByText('Selected criteria is not available for these dates.',{exact:true}).waitFor({timeout:15000}));
       windows.push({criteria,data:null,calendar:null});break;
     }
-    await page.waitForFunction(start=>{
+    await clock.time('grid',()=>page.waitForFunction(start=>{
       const visible=e=>!!e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden';
       const dates=[...document.querySelectorAll('.x-column-header-text')].filter(visible).map(e=>e.textContent.trim());
       const first=dates.find(t=>/^\d\d-[A-Z]{3}-\d{4}/.test(t));
       return first?.startsWith(start)&&!Ext.Ajax.isLoading()&&![...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(visible);
-    },displayDate(expectedStart),{timeout:30000});
-    const calendar=await readCalendar(page);
+    },displayDate(expectedStart),{timeout:30000}));
+    const calendar=await clock.time('grid',()=>readCalendar(page));
     windows.push({criteria,data:body.availabilitydata,calendar});
     await onWindow(windows.at(-1),{resolvedContext,index});
     const shown=body.availabilitydata.datesList.slice(0,calendar.headers.length).map(nativeDate);
@@ -663,7 +694,7 @@ export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, 
 export async function runInPage(page, request, directory, event=()=>{}, checkpoint=async name=>{
   await mkdir(join(directory,'screenshots'),{recursive:true,mode:0o700});
   await page.screenshot({path:join(directory,'screenshots',`${name}.png`),fullPage:true,timeout:10000});
-}) {
+}, clock=createPhaseClock()) {
   if(!request.normalizedFrom) {
     const normalized=normalizeQuoteRequest(request);
     if(!normalized.ok)return resultEnvelope({outcome:'input_gap',issues:normalized.issues,
@@ -692,9 +723,9 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
             const observations=stayDates(request).filter(d=>!seen.has(d)).map(d=>option.observations.get(d)).filter(Boolean);
             if(!observations.length||option.issues.some(i=>i.code!=='INCOMPLETE_DATES'))continue;
             try {
-              const read=await readDetails(page,{nativeRoom:option._nativeRoom,rate:option._rate,
+              const read=await clock.time('details',()=>readDetails(page,{nativeRoom:option._nativeRoom,rate:option._rate,
                 nightly:observations.map(o=>o.fact),indexes:observations.map(o=>o.index)},
-              `${prefix}-window-${windowIndex+1}-offer-${allowedDetails.size===1?1:[...allowedDetails].indexOf(option.id)+1}`,checkpoint,roomCache.get(option.room.code));
+              `${prefix}-window-${windowIndex+1}-offer-${allowedDetails.size===1?1:[...allowedDetails].indexOf(option.id)+1}`,checkpoint,roomCache.get(option.room.code)));
               roomCache.set(option.room.code,read.roomInformation);
               details.set(option.id,{...read,details:[...(previous?.details??[]),...read.details]});
             } catch(error) {
@@ -703,7 +734,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
               if(await card.count())await page.keyboard.press('Escape');
             }
           }
-        });
+        },clock);
         searchCount+=source.searchCount;
         await saveEvidence(directory,`${prefix}-source.json`,{endpoint:'/api/internalBooking/hotelAvail/inquiryForGrid',windows:source.windows.map(projectWindow),resolvedContext:source.resolvedContext});
         let roomFacts=[];
@@ -782,11 +813,11 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
     if(request.rateContext||request.requestedCurrency) {
       const publicRequest={...request,rateContext:undefined,requestedCurrency:undefined,search:{salesStrategy:'BAR',includeRestricted:false},details:'summary'};
       const publicRoom={...request.rooms[0],required:undefined,preferred:undefined};
-      publicReset=await searchCalendar(page,publicRequest,publicRoom);
+      publicReset=await searchCalendar(page,publicRequest,publicRoom,undefined,undefined,clock);
       searchCount+=publicReset.searchCount;
       await saveEvidence(directory,'public-reset.json',publicReset.windows.map(projectWindow));
     }
-    await resetPublicControls(page);
+    await clock.time('criteriaReset',()=>resetPublicControls(page));
   } catch {fatal=true;issues.push(issue('PUBLIC_RESET_FAILED','rateContext','Public reset could not be verified.'));}
   const allocation=composeAllocation(groups,request.propertyCode);
   const aggregate=aggregateOutcome({inputIssues:issues.filter(i=>i.code==='CONTEXT_INPUT_GAP'),fatal,groups,allocation});
@@ -808,6 +839,7 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
   let browser,context,page,secret,phase='input',result,auditReport;
   const audit=await createAudit(directory,{video});
   const started=Date.now();
+  const clock=createPhaseClock();
   const event=(next)=>{phase=next;process.stderr.write(JSON.stringify(audit.event(next))+'\n');};
   try {
     event('input');
@@ -823,23 +855,25 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       const url=new URL(env.HMS_STAGEHAND_CDP_URL);
       if(!['http:','ws:'].includes(url.protocol)||!['127.0.0.1','localhost','[::1]'].includes(url.hostname)||url.username||url.password||url.search) throw new Error('PRIVATE_CDP_REQUIRED');
       if(env.HMS_STAGEHAND_BROWSER_OWNERSHIP!=='borrowed') throw new Error('ATTACH_ONLY_REQUIRES_borrowed_OWNERSHIP');
-      secret=await readSecret(env);
+      secret=await clock.time('secret',()=>readSecret(env));
       if(secret.expectedPropertyCode!==request.propertyCode) throw new Error('ACCOUNT_PROPERTY_MISMATCH');
       event('attach');
-      browser=await playwright().chromium.connectOverCDP(url.href,{timeout:20000});
-      // Trace only our isolated context, never the borrowed owner's tabs.
-      context=await browser.newContext({ignoreHTTPSErrors:true,acceptDownloads:false,serviceWorkers:'block',viewport:{width:1280,height:720}});
-      page=await context.newPage();
-      page.setDefaultTimeout(20000);
-      event('login'); await login(page,secret);
+      await clock.time('cdp',async()=>{
+        browser=await playwright().chromium.connectOverCDP(url.href,{timeout:20000});
+        // Trace only our isolated context, never the borrowed owner's tabs.
+        context=await browser.newContext({ignoreHTTPSErrors:true,acceptDownloads:false,serviceWorkers:'block',viewport:{width:1280,height:720}});
+        page=await context.newPage();
+        page.setDefaultTimeout(20000);
+      });
+      event('login'); await clock.time('login',()=>login(page,secret));
       event('audit_start'); await audit.start(page,[secret.password,secret.username,secret.loginUrl]);
       await audit.checkpoint('login-complete');
-      event('hotel_availability'); await openHotelAvailability(page);
+      event('hotel_availability'); await clock.time('nav',()=>openHotelAvailability(page));
       await audit.checkpoint('hotel-availability');
-      result=await runInPage(page,request,directory,event,audit.checkpoint);
+      result=await runInPage(page,request,directory,event,audit.checkpoint,clock);
       event(`result_${result.outcome}`);
       if(onCaptured&&quoteTraceAsyncEnabled(env)) {
-        const provisional=provisionalQuoteCapture({result,audit,directory,started});
+        const provisional=provisionalQuoteCapture({result:{...result,phaseMs:{...clock.ms}},audit,directory,started});
         if(provisional){await saveEvidence(directory,'result.provisional.json',provisional);onCaptured(provisional);}
       }
     }
@@ -850,7 +884,7 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
   } finally {
     // Flush recording and trace while our page is still alive. Capture failure
     // cannot prevent closing our context or detaching CDP.
-    try {auditReport=await audit.finish();}
+    try {auditReport=await clock.time('traceFinish',()=>audit.finish());}
     catch {auditReport={status:'incomplete',errors:['AUDIT_FINALIZATION_FAILED']};}
     try { if(context) await context.close(); }
     catch { result={...result,outcome:'execution_failure',cleanupError:'OWNED_CONTEXT_CLOSE_FAILED'}; }
@@ -859,7 +893,8 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
     try { if(browser) await browser.close(); }
     catch { result={...result,outcome:'execution_failure',cleanupError:'CDP_DETACH_FAILED'}; }
   }
-  result=applyQuoteScreenshotContract({...result,audit:auditReport,elapsedMs:Date.now()-started,evidenceDirectory:directory});
+  result=applyQuoteScreenshotContract({...result,audit:auditReport,elapsedMs:Date.now()-started,evidenceDirectory:directory,phaseMs:{...clock.ms}});
+  audit.event('phase_timings',{phaseMs:result.phaseMs});
   event('run_finished');
   await saveEvidence(directory,'result.json',result);
   await saveEvidence(directory,'summary.txt',summarize(result));

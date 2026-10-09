@@ -1,5 +1,5 @@
 /**
- * Provisional staff quote capture, enabled only by QUOTE_TRACE_ASYNC=on.
+ * Provisional staff quote capture, on by default. QUOTE_TRACE_ASYNC=off (or any value other than on) is the rollback.
  *
  * The child process writes result.provisional.json and a marker once the quote is captured, then
  * finishes the browser trace. The parent treats the capture as provisional until the child has
@@ -9,8 +9,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
+/**
+ * On by default: an unset QUOTE_TRACE_ASYNC or the exact value 'on' enables it. Any other set value keeps the sequential
+ * trace finish.
+ */
 export function quoteTraceAsyncEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.QUOTE_TRACE_ASYNC === 'on';
+  const value = env.QUOTE_TRACE_ASYNC;
+  return value === undefined || value === 'on';
 }
 
 /**

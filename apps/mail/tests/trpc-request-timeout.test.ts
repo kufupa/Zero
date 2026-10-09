@@ -5,12 +5,12 @@ describe('procedure-specific request deadlines', () => {
   it('allows the server-bound native staff quote to complete', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.executeStaffQuote?batch=1')).toBe(1_200_000);
   });
-  it('uses the PDF deadline for qualified and legacy PDF routes', () => {
-    expect(trpcRequestTimeoutMs('/api/trpc/workstation.qualifiedQuoteProposalPdf')).toBe(60_000);
+  it('gives the legacy PDF route 60 seconds and the qualified PDF route the trace-finish deadline', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.quoteProposalPdf')).toBe(60_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/workstation.qualifiedQuoteProposalPdf')).toBe(120_000);
   });
-  it('gives the Excel workbook the same deadline as the PDF routes', () => {
-    expect(trpcRequestTimeoutMs('/api/trpc/workstation.quoteWorkbook')).toBe(60_000);
+  it('gives the Excel workbook the trace-finish deadline', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/workstation.quoteWorkbook')).toBe(120_000);
   });
 
   it('keeps source and ordinary queries short', () => {
@@ -27,10 +27,10 @@ describe('procedure-specific request deadlines', () => {
   it('gives analyseSelection a 45s client deadline', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.analyseSelection?batch=1')).toBe(45_000);
   });
-  it('gives prepareBookingDraft a 60s client deadline', () => {
-    expect(trpcRequestTimeoutMs('/api/trpc/workstation.prepareBookingDraft?batch=1')).toBe(60_000);
+  it('gives prepareBookingDraft and usePriorQuoteForBooking the trace-finish deadline', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/workstation.prepareBookingDraft?batch=1')).toBe(120_000);
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.usePriorQuoteForBooking?batch=1')).toBe(
-      60_000,
+      120_000,
     );
   });
   it('takes the longer deadline for encoded batched paths', () => {
@@ -46,7 +46,7 @@ describe('procedure-specific request deadlines', () => {
       trpcRequestTimeoutMs(
         new Request('https://example.test/api/trpc/workstation.qualifiedQuoteProposalPdf'),
       ),
-    ).toBe(60_000);
+    ).toBe(120_000);
     expect(trpcRequestTimeoutMs('/api/trpc/%ZZ')).toBe(5_000);
   });
   it('gives a browser find and guest-name search six minutes, longer than their five-minute server bound', () => {
@@ -70,18 +70,21 @@ describe('procedure-specific request deadlines', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.screenshot?batch=1')).toBe(5_000);
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.paneStayScreenshot?batch=1')).toBe(5_000);
   });
-  it('gives the staff quote run screenshot and proposal choices 60 seconds for the background trace', () => {
-    expect(trpcRequestTimeoutMs('/api/trpc/workstation.quoteRunScreenshot?batch=1')).toBe(60_000);
-    expect(trpcRequestTimeoutMs('/api/trpc/workstation.qualifiedProposalChoices?batch=1')).toBe(
-      60_000,
-    );
+  it('gives every route that waits for a provisional quote trace 120 seconds', () => {
+    for (const route of [
+      'workstation.quoteRunScreenshot?batch=1',
+      'workstation.qualifiedProposalChoices?batch=1',
+      'workstation.getPriorStaffQuoteRequote?batch=1',
+      'workstation.sourceQuoteProposalPdf?batch=1',
+    ])
+      expect(trpcRequestTimeoutMs(`/api/trpc/${route}`)).toBe(120_000);
   });
-  it('takes the 60 second deadline for a batch that includes the screenshot or choices route', () => {
+  it('takes the trace-finish deadline for a batch that includes a waiting route', () => {
     expect(
       trpcRequestTimeoutMs('/api/trpc/workstation.quoteRunScreenshot,workstation.foo?batch=1'),
-    ).toBe(60_000);
+    ).toBe(120_000);
     expect(trpcRequestTimeoutMs('/api/trpc/drafts.list,workstation.qualifiedProposalChoices')).toBe(
-      60_000,
+      120_000,
     );
   });
   it('does not extend unrelated workstation routes by name similarity', () => {
