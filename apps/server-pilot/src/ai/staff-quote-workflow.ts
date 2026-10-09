@@ -314,7 +314,7 @@ export function buildStaffProposalFacts(
     unitMinor: number,
     persons: Array<{ id: string; age: number }>,
     dates: string[],
-    chargeUnit?: OtherChargeUnit,
+    options: { chargeUnit?: OtherChargeUnit; daysExplicit?: boolean } = {},
   ) => {
     extras.push({
       id,
@@ -326,7 +326,8 @@ export function buildStaffProposalFacts(
       service,
       persons,
       dates,
-      ...(chargeUnit ? { chargeUnit } : {}),
+      ...(options.chargeUnit ? { chargeUnit: options.chargeUnit } : {}),
+      ...(options.daysExplicit === undefined ? {} : { daysExplicit: options.daysExplicit }),
     });
   };
   if (input.dinnerAllowanceMinor && allowancePersons.length) {
@@ -358,6 +359,8 @@ export function buildStaffProposalFacts(
       input.officeTransferMinor,
       stayPersons,
       consecutiveDates(first.arrivalDate, input.officeTransferDays ?? nights.length),
+      // Typed days are restored on a re-quote; defaulted days follow the stay instead.
+      { daysExplicit: input.officeTransferDays !== undefined },
     );
   }
   if (input.shuttleRequested) {
@@ -382,9 +385,9 @@ export function buildStaffProposalFacts(
     if (!label) {
       extrasReviewItems.push(otherLabelReviewText(amountMinor));
     } else if (unit === 'per_person_night') {
-      personService('other', label, 'other', amountMinor, stayPersons, nights, unit);
+      personService('other', label, 'other', amountMinor, stayPersons, nights, { chargeUnit: unit });
     } else if (unit === 'per_person') {
-      personService('other', label, 'other', amountMinor, stayPersons, [first.arrivalDate], unit);
+      personService('other', label, 'other', amountMinor, stayPersons, [first.arrivalDate], { chargeUnit: unit });
     } else {
       extras.push({
         id: 'other',

@@ -33,7 +33,7 @@ export function deriveQuoteLines(revision: QuoteRevision): QuoteDisplayLine[] {
 }
 export type AuthorizedProposalFacts = {
  revisionId:string;authorizationId:string;sourceRef:string;sourceHash:string;
- extras:Array<{id:string;label:string;quantity:number;units:number;unitKind:'person_service'|'item'|'trip';unitMinor:number;service:string;persons:Array<{id:string;age:number}>;dates:string[];chargeUnit?:'per_person_night'|'per_person'|'per_trip'|'item'}>;
+ extras:Array<{id:string;label:string;quantity:number;units:number;unitKind:'person_service'|'item'|'trip';unitMinor:number;service:string;persons:Array<{id:string;age:number}>;dates:string[];chargeUnit?:'per_person_night'|'per_person'|'per_trip'|'item';daysExplicit?:boolean}>;
  includedEntitlements:Array<{sourceRef:string;sourceHash:string;service:string;personIds:string[];dates:string[]}>;
 };
 /** quantity x nights x rateMinor = totalMinor. Person services: quantity is guests and nights is nights or days. Trips and items: nights is the trip or item count. */
