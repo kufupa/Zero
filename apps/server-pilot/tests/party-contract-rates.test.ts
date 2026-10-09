@@ -92,7 +92,7 @@ const policy = {
   levy: 'included' as const,
 };
 
-function groupInput(parties?: StaffQuoteParties) {
+function groupInput(parties?: StaffQuoteParties, text: { company?: string; agency?: string } = {}) {
   return staffQuoteInput.parse({
     messageId: scope.messageId,
     sourceHash: scope.sourceHash,
@@ -110,6 +110,7 @@ function groupInput(parties?: StaffQuoteParties) {
         roomCodes: ['SKNG'],
       },
     ],
+    ...text,
     ...(parties ? { parties } : {}),
   });
 }
@@ -122,16 +123,22 @@ function resolvedContext(rateContext: Record<string, { nativeId: string; name: s
 }
 
 /** One quote through the staff path, with a Rate Shop read that offers the given rows under the requested context. */
-async function quoteWith(parties: StaffQuoteParties | undefined, rates: Rate[]) {
-  const confirmed = groupInput(parties);
+async function quoteWith(
+  parties: StaffQuoteParties | undefined,
+  rates: Rate[],
+  options: { header?: { company?: string; agency?: string }; readParty?: any } = {},
+) {
+  const confirmed = groupInput(parties, options.header);
   const prepared = prepareStaffQuote(confirmed, scope, signer, new AbortController().signal);
   const context = resolvedContext(prepared.request.rateContext);
+  const sent: any[] = [];
   const services = createReservationistBusinessServices(
     {
       authorizationId: prepared.authorizationId,
       authorizeContext: async () => true,
       signer,
       readQuote: async (request: any) => {
+        sent.push(request);
         const normalized = normalizer.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
         return {
           ref: 'source:1',
@@ -152,11 +159,12 @@ async function quoteWith(parties: StaffQuoteParties | undefined, rates: Rate[]) 
         };
       },
       resolvePolicy: async () => policy,
+      ...(options.readParty ? { readParty: options.readParty } : {}),
     },
     prepared.approval,
   );
   const revision = await executeStaffQuote(prepared, services, async () => true);
-  return { prepared, revision };
+  return { prepared, revision, sent };
 }
 
 const company = (nativeId: string, name: string) => ({ kind: 'company' as const, nativeId, name });
@@ -382,5 +390,46 @@ describe('a party-rate failure falls back to public rates, and only a typed fail
       }),
     ).rejects.toThrow('staff_quote_party_unavailable');
     expect(new PartyRateFailure('staff_quote_party_invalid').code).toBe('staff_quote_party_invalid');
+  });
+});
+
+describe('an unpicked company or agency is text only: it is never looked up and never adds an id', () => {
+  // A lookup here is a failure: staff picked nothing for it, so there is nothing to look up.
+  const noLookup = () =>
+    vi.fn(async (): Promise<never> => {
+      throw new Error('unexpected party lookup');
+    });
+
+  it('company picked, agency typed: only the organization is sent, and the typed agency is not looked up', async () => {
+    const readParty = noLookup();
+    const { prepared, sent } = await quoteWith({ company: company('49', 'Woolworths') }, [WOOLWORTHS_FLAGGED, BAR], {
+      header: { company: 'Woolworths', agency: 'Typed Agency Ltd' },
+      readParty,
+    });
+    expect(readParty).not.toHaveBeenCalled();
+    expect(prepared.request.rateContext).toEqual({ organization: { nativeId: '49', name: 'Woolworths' } });
+    expect(sent.at(-1)?.rateContext).toEqual({ organization: { nativeId: '49', name: 'Woolworths' } });
+  });
+
+  it('agency picked, company typed: only the agency is sent, and the typed company is not looked up', async () => {
+    const readParty = noLookup();
+    const { prepared, sent } = await quoteWith({ agency: agency('569', 'Woolworths Agency') }, [AGENCY_FLAGGED, BAR], {
+      header: { company: 'Typed Company', agency: 'Woolworths Agency' },
+      readParty,
+    });
+    expect(readParty).not.toHaveBeenCalled();
+    expect(prepared.request.rateContext).toEqual({ agency: { nativeId: '569', name: 'Woolworths Agency' } });
+    expect(sent.at(-1)?.rateContext).toEqual({ agency: { nativeId: '569', name: 'Woolworths Agency' } });
+  });
+
+  it('nothing picked: both typed names are text only, with no lookup and no rate context', async () => {
+    const readParty = noLookup();
+    const { prepared, sent } = await quoteWith(undefined, [BAR], {
+      header: { company: 'Typed Company', agency: 'Typed Agency Ltd' },
+      readParty,
+    });
+    expect(readParty).not.toHaveBeenCalled();
+    expect(prepared.request.rateContext).toBeUndefined();
+    expect(sent.at(-1)?.rateContext).toBeUndefined();
   });
 });
