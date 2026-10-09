@@ -10,12 +10,17 @@
  *            [--arrival YYYY-MM-DD] [--nights 1-30] [--adults 1-9]
  *                                                        fetch-quote.mjs search only: no details, no rate click
  *   stay --conf <labtest conf>                           stay-lookup.mjs find (the pane's find CLI)
+ *   quote --arrival YYYY-MM-DD --nights 1-30 --adults 1-9 --room <code>
+ *         [--org <nativeId> --org-name <name>] [--agency <nativeId> --agency-name <name>]
+ *                                                        the server's staff quote path after approval (installed
+ *                                                        runner, property lock): picked parties first, public rates
+ *                                                        if HMS flags no negotiated row. In-memory input; nothing saved
  *   <any> --dry-run                                      validates arguments and env; no lock, no spawn, no HMS
  *
  * Exit codes: 0 every check ok, 1 a check refused or failed (or a dry run found a problem), 2 bad arguments.
  */
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
@@ -23,6 +28,18 @@ import { fileURLToPath } from 'node:url';
 import { buildStayLookupArgs, paneStayLookupEnabled } from '../src/ai/pane-stay-lookup.js';
 import { PANE_STAY_PROPERTY_CODE, paneStayPropertyLock, type PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { paneStaySpawnEnv } from '../src/ai/pane-stay-spawn-env.js';
+import {
+  getInstalledStaffQuoteServices,
+  readInstalledStaffQuoteConfiguration,
+} from '../src/ai/staff-quote-installation.js';
+import {
+  executeStaffQuote,
+  partyContractReviewNote,
+  prepareStaffQuote,
+  quoteWithPartyFallback,
+  staffQuoteInput,
+  type StaffQuoteInput,
+} from '../src/ai/staff-quote-workflow.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -56,13 +73,17 @@ const DROPPED_KEYS = new Set([
   'firstname', 'lastname', 'guestname', 'bookername', 'bookeremail', 'email', 'emailaddress', 'phone', 'phonenumber',
   'mobile', 'address', 'postalcode', 'dateofbirth', 'password', 'token', 'cookie', 'secret', 'username', 'reservationnote',
 ]);
-const COMMANDS = ['party', 'deeplink', 'rateshop', 'stay'] as const;
+const COMMANDS = ['party', 'deeplink', 'rateshop', 'stay', 'quote'] as const;
+// A room type as HMS names it (STQN, DLXQN). The staff quote input carries it as a room code.
+const ROOM_CODE = /^[A-Z0-9_-]{1,16}$/;
+const ERROR_CODE = /^[A-Za-z0-9_.:-]{1,80}$/;
 type CommandName = (typeof COMMANDS)[number];
 const FLAGS_BY_COMMAND: Record<CommandName, readonly string[]> = {
   party: ['kind'],
   deeplink: ['conf', 'stay-id'],
   rateshop: ['org', 'agency', 'name', 'arrival', 'nights', 'adults'],
   stay: ['conf'],
+  quote: ['arrival', 'nights', 'adults', 'room', 'org', 'org-name', 'agency', 'agency-name'],
 };
 
 export const USAGE = [
@@ -71,6 +92,7 @@ export const USAGE = [
   '  deeplink --conf <labtest confirmation> [--stay-id <id>]',
   '  rateshop (--org <nativeId> | --agency <nativeId> --name <party name>) [--arrival YYYY-MM-DD] [--nights 1-30] [--adults 1-9]',
   '  stay --conf <labtest confirmation>',
+  '  quote --arrival YYYY-MM-DD --nights 1-30 --adults 1-9 --room <code> [--org <nativeId> --org-name <name>] [--agency <nativeId> --agency-name <name>]',
   'Each check prints one JSON line. Exit 0 all ok, 1 a check refused or failed, 2 bad arguments.',
 ].join('\n');
 
@@ -80,7 +102,9 @@ export type LiveCheck =
   | { check: 'party'; name: string; kinds: PartyKind[] }
   | { check: 'deeplink'; conf: string; stayId: string | null }
   | { check: 'rateshop'; source: RateSource; arrival: string; nights: number; adults: number }
-  | { check: 'stay'; conf: string };
+  | { check: 'stay'; conf: string }
+  | { check: 'quote'; arrival: string; nights: number; adults: number; room: string; org: PartyPick | null; agency: PartyPick | null };
+export type PartyPick = { nativeId: string; name: string };
 export type ParsedLiveCheck = { check: LiveCheck; dryRun: boolean };
 export type ParseOutcome = { ok: true; value: ParsedLiveCheck } | { ok: false; error: string };
 
@@ -193,6 +217,19 @@ function tokenize(tokens: readonly string[]): Tokens {
   return { ok: true, flags, positional, dryRun };
 }
 
+type PartyFlag = { ok: true; pick: PartyPick | null } | { ok: false; error: string };
+/** A picked party is an HMS native id and the name it was picked under. Both or neither. */
+function partyPickFlag(flags: Map<string, string>, idFlag: string, nameFlag: string): PartyFlag {
+  const nativeId = flags.get(idFlag);
+  const rawName = flags.get(nameFlag);
+  if (nativeId === undefined) return rawName === undefined ? { ok: true, pick: null } : { ok: false, error: `${nameFlag}_without_${idFlag}` };
+  if (!NATIVE_ID.test(nativeId)) return { ok: false, error: 'native_id_invalid' };
+  if (rawName === undefined) return { ok: false, error: `${nameFlag}_required` };
+  const name = normalizeName(rawName);
+  if (name === null) return { ok: false, error: 'name_invalid' };
+  return { ok: true, pick: { nativeId, name } };
+}
+
 /** Parses argv after the script name. `today` (UTC, YYYY-MM-DD) only sets the default rate shop arrival. */
 export function parseLiveCheckArgs(argv: readonly string[], today: string): ParseOutcome {
   const [command, ...rest] = argv;
@@ -223,6 +260,25 @@ export function parseLiveCheckArgs(argv: readonly string[], today: string): Pars
     const stayId = flags.get('stay-id') ?? null;
     if (stayId !== null && !STAY_ID.test(stayId)) return fail('stay_id_invalid');
     return ok({ check: { check: 'deeplink', conf, stayId }, dryRun });
+  }
+
+  if (name === 'quote') {
+    if (positional.length !== 0) return fail('unexpected_argument');
+    const arrival = flags.get('arrival') ?? '';
+    if (!isRealIsoDate(arrival)) return fail('arrival_invalid');
+    const nightsRaw = flags.get('nights');
+    const nights = nightsRaw === undefined ? null : integerFlag(nightsRaw, 0, 1, MAX_NIGHTS);
+    if (nights === null) return fail('nights_invalid');
+    const adultsRaw = flags.get('adults');
+    const adults = adultsRaw === undefined ? null : integerFlag(adultsRaw, 0, 1, MAX_ADULTS);
+    if (adults === null) return fail('adults_invalid');
+    const room = flags.get('room') ?? '';
+    if (!ROOM_CODE.test(room)) return fail('room_invalid');
+    const org = partyPickFlag(flags, 'org', 'org-name');
+    if (!org.ok) return fail(org.error);
+    const agency = partyPickFlag(flags, 'agency', 'agency-name');
+    if (!agency.ok) return fail(agency.error);
+    return ok({ check: { check: 'quote', arrival, nights, adults, room, org: org.pick, agency: agency.pick }, dryRun });
   }
 
   if (name === 'rateshop') {
@@ -456,6 +512,16 @@ function planFor(check: LiveCheck): Record<string, unknown> {
       };
     case 'stay':
       return { spawn: 'stay-lookup.mjs (find)', lock: 'property' };
+    case 'quote':
+      return {
+        arrival: check.arrival,
+        nights: check.nights,
+        adults: check.adults,
+        room: check.room,
+        parties: { company: check.org !== null, agency: check.agency !== null },
+        path: 'prepareStaffQuote, quoteWithPartyFallback, executeStaffQuote (installed runner)',
+        lock: 'property',
+      };
   }
 }
 
@@ -463,6 +529,7 @@ function planFor(check: LiveCheck): Record<string, unknown> {
 export function dryRunReport(check: LiveCheck, env: NodeJS.ProcessEnv, spawnEnv: NodeJS.ProcessEnv) {
   const problems: string[] = [];
   const databaseUrlSet = Boolean(env.DATABASE_URL);
+  const quoteInputProblem = check.check === 'quote' ? staffQuoteInputProblem(check) : null;
   if (!databaseUrlSet) problems.push('property_lock_unavailable');
   const cdpLoopback = LOOPBACK_CDP.test(spawnEnv.HMS_STAGEHAND_CDP_URL ?? '');
   if (!cdpLoopback) problems.push('cdp_not_loopback_or_unset');
@@ -471,6 +538,8 @@ export function dryRunReport(check: LiveCheck, env: NodeJS.ProcessEnv, spawnEnv:
   const secretPath = spawnEnv.HMS_QUOTE_SECRET_PATH ?? '';
   const credentialFileFound = (secretPath !== '' && existsSync(secretPath)) || Boolean(spawnEnv.HMS_READ_SECRET_ARN);
   if (!credentialFileFound) problems.push('credential_source_missing');
+  if (check.check === 'quote' && !env.RESERVATIONIST_STAFF_QUOTE_CONFIGURATION) problems.push('staff_quote_configuration_missing');
+  if (quoteInputProblem) problems.push(quoteInputProblem);
   return {
     check: check.check,
     dryRun: true,
@@ -738,6 +807,193 @@ async function stayCheck(check: { conf: string }, deps: LiveCheckDeps) {
   }
 }
 
+type QuoteCheck = Extract<LiveCheck, { check: 'quote' }>;
+
+/** The staff quote input the pane would send for this check: one group for the room, and the picked parties. */
+export function staffQuoteInputFor(check: QuoteCheck, messageId: string, sourceHash: string): StaffQuoteInput {
+  const company = check.org ? { kind: 'company' as const, nativeId: check.org.nativeId, name: check.org.name } : null;
+  const agency = check.agency ? { kind: 'agency' as const, nativeId: check.agency.nativeId, name: check.agency.name } : null;
+  return staffQuoteInput.parse({
+    messageId,
+    sourceHash,
+    selectionEpoch: 1,
+    inputRevision: 1,
+    groups: [
+      {
+        id: 'live-check-1',
+        arrivalDate: check.arrival,
+        departureDate: addDays(check.arrival, check.nights),
+        quantity: 1,
+        adults: check.adults,
+        childrenAges: [],
+        board: 'room_only',
+        roomCodes: [check.room],
+      },
+    ],
+    ...(company || agency ? { parties: { ...(company ? { company } : {}), ...(agency ? { agency } : {}) } } : {}),
+  });
+}
+
+function staffQuoteInputProblem(check: QuoteCheck): string | null {
+  try {
+    staffQuoteInputFor(check, 'dry-run-message', '0'.repeat(64));
+    return null;
+  } catch {
+    return 'staff_quote_input_invalid';
+  }
+}
+
+/** A caught error as the harness prints it: the stage it came from, identifier-shaped name, code and message. No free text. */
+export type QuoteFailure = { stage: string; name: string; code: string | null; message: string };
+const IDENTIFIER_TEXT = /^[A-Za-z][A-Za-z0-9_.:-]{0,119}$/;
+export function quoteFailure(stage: string, error: unknown): QuoteFailure {
+  const name = error instanceof Error && IDENTIFIER_TEXT.test(error.name) ? error.name : 'unknown';
+  const message = error instanceof Error && IDENTIFIER_TEXT.test(error.message) ? error.message : 'message_redacted';
+  return { stage, name, code: quoteErrorCode(error), message };
+}
+
+export type QuoteLineInput = {
+  error?: QuoteFailure | null;
+  party: { company: PartyPick | null; agency: PartyPick | null };
+  chosen: { planCode: string; isNegotiatedRate: boolean } | null;
+  publicFallback: { copy: string } | null;
+  totalMinor: number | null;
+  outcome: string;
+  code: string | null;
+  ms: number;
+};
+
+/** One line for a quote: the party picked, the rate HMS chose or the public fallback, the total, the outcome and the time. */
+export function quoteCheckLine(line: QuoteLineInput) {
+  return {
+    check: 'quote',
+    ok: line.outcome === 'quote',
+    party: line.party,
+    ...(line.publicFallback ? { publicFallback: true, copy: line.publicFallback.copy } : { contractChosen: line.chosen }),
+    totalMinor: line.totalMinor,
+    outcome: line.outcome,
+    ...(line.code !== null ? { code: line.code } : {}),
+    ...(line.error ? { error: line.error } : {}),
+    ms: line.ms,
+  };
+}
+
+function quoteErrorCode(error: unknown): string | null {
+  const raw = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  return typeof raw === 'string' && ERROR_CODE.test(raw) ? raw : null;
+}
+
+/**
+ * The server's staff quote path, as the workstation runs it after approval: the picked parties first, then public rates
+ * if HMS flags no negotiated row. Runs under the property lock. Nothing is saved, booked or rendered.
+ */
+async function quoteCheck(check: QuoteCheck, deps: LiveCheckDeps): Promise<Record<string, unknown>> {
+  const started = Date.now();
+  const party = { company: check.org, agency: check.agency };
+  const failed = (outcome: string, error: QuoteFailure | null) =>
+    quoteCheckLine({
+      party,
+      chosen: null,
+      publicFallback: null,
+      totalMinor: null,
+      outcome,
+      code: error?.code ?? null,
+      error,
+      ms: elapsed(started),
+    });
+  let propertyCode: string;
+  try {
+    propertyCode = readInstalledStaffQuoteConfiguration().owner.propertyCode;
+  } catch (error) {
+    return failed('refused_configuration_unavailable', quoteFailure('configuration', error));
+  }
+  const messageId = `v8-live-check-${randomUUID()}`;
+  const sourceHash = createHash('sha256').update(messageId).digest('hex');
+  const input = staffQuoteInputFor(check, messageId, sourceHash);
+  const scope = {
+    // The route's transport. A live run with another transport is refused by the policy scope.
+    transportId: 'transport-centurion',
+    userId: 'v8-live-check',
+    threadId: messageId,
+    messageId,
+    sourceHash,
+    propertyCode,
+    messageAt: new Date().toISOString(),
+  };
+  const signer = { signerName: 'v8 live check', signerEmail: 'v8-live-check@localhost' };
+  const signal = new AbortController().signal;
+  // The source behind the revision's rate, read from the same services call that priced it. No second HMS read.
+  const captured: Array<{ source: { result: { groups: Array<{ id: string; options: QuoteOption[] }> } }; groupId: string; optionId: string }> = [];
+  // Where the attempt is, so a caught error names the step it came from.
+  let stage = 'prepare';
+  const quoteAt = (attempt: ReturnType<typeof prepareStaffQuote>) => {
+    const label = attempt.request.rateContext ? 'party' : 'public';
+    stage = `${label}.services`;
+    const services = getInstalledStaffQuoteServices(
+      { authorizationId: attempt.authorizationId, authorizeContext: async () => true, signer },
+      attempt.approval,
+    );
+    const resolveQuoteTask = services.resolveQuoteTask;
+    const authorizeGuestProposal = services.authorizeGuestProposal;
+    return executeStaffQuote(
+      attempt,
+      {
+        ...services,
+        resolveQuoteTask:
+          resolveQuoteTask &&
+          (async (quoteContext) => {
+            stage = `${label}.resolve_quote_task`;
+            const resolved = await resolveQuoteTask(quoteContext);
+            stage = `${label}.after_resolve`;
+            const selection = resolved.selections[0];
+            if (selection) {
+              captured.push({ source: await resolved.resolveSource(selection.sourceRef), groupId: selection.groupId, optionId: selection.optionId });
+            }
+            return resolved;
+          }),
+        authorizeGuestProposal:
+          authorizeGuestProposal &&
+          (async (quoteContext, revision, facts) => {
+            stage = `${label}.authorize_guest_proposal`;
+            return authorizeGuestProposal(quoteContext, revision, facts);
+          }),
+      },
+      async () => true,
+    );
+  };
+  const locked = await withPropertyLock(deps.lock(), async () => {
+    try {
+      const attempt = await quoteWithPartyFallback({
+        input,
+        first: prepareStaffQuote(input, scope, signer, signal),
+        retry: () => prepareStaffQuote(input, scope, signer, signal, 'public'),
+        run: quoteAt,
+      });
+      return { ok: true as const, attempt };
+    } catch (error) {
+      return { ok: false as const, failure: quoteFailure(stage, error) };
+    }
+  });
+  if (!locked.ok) return failed(locked.outcome, null);
+  if (!locked.value.ok) {
+    const failure = locked.value.failure;
+    return failed(failure.code === null ? 'execution_failure' : 'refused', failure);
+  }
+  const { attempt } = locked.value;
+  const picked = captured.at(-1);
+  const option = picked?.source.result.groups.find((group) => group.id === picked.groupId)?.options.find((o) => o.id === picked.optionId);
+  const rateCode = option?.rate?.code;
+  return quoteCheckLine({
+    party,
+    chosen: !attempt.fellBack && rateCode ? { planCode: rateCode, isNegotiatedRate: option?.rateScope === 'contextual' } : null,
+    publicFallback: attempt.fellBack ? { copy: partyContractReviewNote(input.parties, attempt.result.groups) ?? '' } : null,
+    totalMinor: attempt.result.totalMinor ?? null,
+    outcome: 'quote',
+    code: null,
+    ms: elapsed(started),
+  });
+}
+
 async function runCheck(check: LiveCheck, deps: LiveCheckDeps): Promise<number> {
   let failed = false;
   const emit = (record: Record<string, unknown>) => {
@@ -756,6 +1012,9 @@ async function runCheck(check: LiveCheck, deps: LiveCheckDeps): Promise<number> 
       break;
     case 'stay':
       emit(await stayCheck(check, deps));
+      break;
+    case 'quote':
+      emit(await quoteCheck(check, deps));
       break;
   }
   return failed ? 1 : 0;
