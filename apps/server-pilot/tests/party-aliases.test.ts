@@ -11,37 +11,29 @@ describe('suggestPartyFromSender', () => {
     });
   });
 
-  it('carries a listed HMS id only where the table gives one', () => {
-    expect(suggestPartyFromSender('ops@mycwt.co.za')).toEqual({
-      kind: 'agency',
-      name: 'CWT JNB',
-      nativeId: '290',
-      idStatus: 'listed',
-    });
-    expect(suggestPartyFromSender('ops@360travel.co.za')).toEqual({
-      kind: 'agency',
-      name: '360 degrees Travel',
-      nativeId: '113',
-      idStatus: 'listed',
-    });
-    expect(suggestPartyFromSender('ops@nexustravel.co.za')).toMatchObject({ nativeId: '27', idStatus: 'listed' });
-  });
-
   it('suggests Tourvest as a company for both of its domains, and matches a subdomain of them', () => {
     expect(suggestPartyFromSender('a@tourvest-mice.co.za')).toEqual({
       kind: 'company',
       name: 'Tourvest',
-      nativeId: '206',
-      idStatus: 'listed',
+      nativeId: null,
+      idStatus: 'unverified',
     });
     expect(suggestPartyFromSender('a@mail.tourvestdm.com')).toMatchObject({
       kind: 'company',
-      nativeId: '206',
+      name: 'Tourvest',
+      nativeId: null,
     });
   });
 
-  it('marks the unlisted agencies unverified, with no id', () => {
-    for (const sender of ['a@destinitravel.co.za', 'a@atlantiscorporate.co.za', 'a@planettours.co.za']) {
+  it('carries no HMS id for any sender: every suggestion is unverified until staff find it in HMS', () => {
+    for (const sender of [
+      'a@destinitravel.co.za',
+      'ops@mycwt.co.za',
+      'ops@nexustravel.co.za',
+      'ops@360travel.co.za',
+      'a@atlantiscorporate.co.za',
+      'a@planettours.co.za',
+    ]) {
       expect(suggestPartyFromSender(sender)).toMatchObject({ nativeId: null, idStatus: 'unverified' });
     }
   });

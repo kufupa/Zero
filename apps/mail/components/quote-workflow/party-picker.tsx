@@ -1,6 +1,5 @@
 import {
   PARTY_TRUNCATED_NOTE,
-  partyFromSuggestion,
   partyIndexHeading,
   partyKindLabel,
   partyNoCandidateNote,
@@ -152,8 +151,8 @@ function ResultChips({
  * With autoLookup, Nava searches HMS for the field's name by itself, once the typing rests, and picks the best match. The
  * other matches show as chips. With no match, or with a failure, the field says so and offers Search again. Without
  * autoLookup, the field keeps one Find in HMS button. The HMS list the sweep wrote is searched as staff type, and its
- * matches are a candidate only. Suggestions from the email are offered for staff to confirm. Only a suggestion HMS
- * listed can be picked. An unverified one can only be searched.
+ * matches are a candidate only. Suggestions from the email are offered for staff to confirm. A suggestion carries
+ * no HMS id, so it can only be searched.
  */
 export function PartyPicker({
   name,
@@ -323,33 +322,19 @@ export function PartyPicker({
       {offered.length ? (
         <div className="flex flex-col gap-1" aria-label="Suggested from this email">
           <p>{PARTY_SUGGESTION_HINT}</p>
-          {offered.map((suggestion) => {
-            const party = partyFromSuggestion(suggestion);
-            return party ? (
-              <div key={`${suggestion.source}:${suggestion.kind}:${suggestion.name}`} className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="text-left text-[11.5px] font-semibold text-[#0066cc] underline"
-                  onClick={() => onPick(party)}
-                >
-                  {`Use ${suggestion.name}`}
-                </button>
-                <span className="text-[10.5px]">{partyKindLabel(suggestion.kind)}</span>
-              </div>
-            ) : (
-              <div key={`${suggestion.source}:${suggestion.kind}:${suggestion.name}`} className="flex items-center gap-2">
-                <span>{`${suggestion.name} (${partyKindLabel(suggestion.kind)}), not confirmed in HMS`}</span>
-                <button
-                  type="button"
-                  className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#1e293b] disabled:opacity-50"
-                  disabled={!onSearchName}
-                  onClick={() => onSearchName?.(suggestion.name, suggestion.kind)}
-                >
-                  Search HMS for this name
-                </button>
-              </div>
-            );
-          })}
+          {offered.map((suggestion) => (
+            <div key={`${suggestion.source}:${suggestion.kind}:${suggestion.name}`} className="flex items-center gap-2">
+              <span>{`${suggestion.name} (${partyKindLabel(suggestion.kind)}), not confirmed in HMS`}</span>
+              <button
+                type="button"
+                className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#1e293b] disabled:opacity-50"
+                disabled={!onSearchName}
+                onClick={() => onSearchName?.(suggestion.name, suggestion.kind)}
+              >
+                Search HMS for this name
+              </button>
+            </div>
+          ))}
         </div>
       ) : null}
       {showAutoStatus ? (

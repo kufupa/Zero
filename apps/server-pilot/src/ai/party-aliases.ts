@@ -1,7 +1,7 @@
 /**
  * Sender-domain and mail-body hints for the pane's party picker. They are suggestions only: staff confirm them, and a
- * suggestion never sets a rate context by itself. An HMS id is carried only where the listed table gives one. Every
- * other suggestion is unverified, with no id, and staff find it with Find in HMS.
+ * suggestion never sets a rate context by itself. No HMS id is carried here. Every suggestion is unverified, and staff
+ * find its HMS id with Find in HMS, so a pick is always the one HMS returns live.
  */
 
 export type PartyKind = 'company' | 'agency';
@@ -9,8 +9,8 @@ export type PartyKind = 'company' | 'agency';
 export type PartySuggestion = {
   kind: PartyKind;
   name: string;
-  nativeId: string | null;
-  idStatus: 'listed' | 'unverified';
+  nativeId: null;
+  idStatus: 'unverified';
 };
 
 export type PartyMention = {
@@ -23,18 +23,16 @@ type SenderAlias = {
   domains: readonly string[];
   kind: PartyKind;
   name: string;
-  nativeId?: string;
 };
 
-// Listed ids come from the HMS data research: CWT JNB #290, Nexus #27, 360 degrees Travel #113, Tourvest #206.
 const SENDER_ALIASES: readonly SenderAlias[] = [
   { domains: ['destinitravel.co.za'], kind: 'agency', name: 'Destini/Club Travel' },
   { domains: ['renniesbcdtravel.com'], kind: 'agency', name: 'Rennies Travel' },
   { domains: ['atlantiscorporate.co.za'], kind: 'agency', name: 'Atlantis Corporate' },
-  { domains: ['mycwt.co.za'], kind: 'agency', name: 'CWT JNB', nativeId: '290' },
-  { domains: ['nexustravel.co.za'], kind: 'agency', name: 'Nexus', nativeId: '27' },
-  { domains: ['360travel.co.za'], kind: 'agency', name: '360 degrees Travel', nativeId: '113' },
-  { domains: ['tourvest-mice.co.za', 'tourvestdm.com'], kind: 'company', name: 'Tourvest', nativeId: '206' },
+  { domains: ['mycwt.co.za'], kind: 'agency', name: 'CWT JNB' },
+  { domains: ['nexustravel.co.za'], kind: 'agency', name: 'Nexus' },
+  { domains: ['360travel.co.za'], kind: 'agency', name: '360 degrees Travel' },
+  { domains: ['tourvest-mice.co.za', 'tourvestdm.com'], kind: 'company', name: 'Tourvest' },
   { domains: ['planettours.co.za'], kind: 'agency', name: 'Planet Africa' },
 ];
 
@@ -87,12 +85,7 @@ export function suggestPartyFromSender(sender: unknown): PartySuggestion | null 
     row.domains.some((domain) => host === domain || host.endsWith(`.${domain}`)),
   );
   if (!alias) return null;
-  return {
-    kind: alias.kind,
-    name: alias.name,
-    nativeId: alias.nativeId ?? null,
-    idStatus: alias.nativeId ? 'listed' : 'unverified',
-  };
+  return { kind: alias.kind, name: alias.name, nativeId: null, idStatus: 'unverified' };
 }
 
 function cleanPartyName(raw: string): string | null {
@@ -137,8 +130,8 @@ export type PartySuggestionView = {
   source: 'sender' | 'body';
   kind: PartyKind;
   name: string;
-  nativeId: string | null;
-  idStatus: 'listed' | 'unverified';
+  nativeId: null;
+  idStatus: 'unverified';
 };
 
 /**

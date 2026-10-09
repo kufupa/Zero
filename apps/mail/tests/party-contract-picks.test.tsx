@@ -5,7 +5,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PartyPicker } from '../components/quote-workflow/party-picker';
 import {
-  partyFromSuggestion,
   partySuggesterFromTrpc,
   type PartyFindReply,
   type PartySuggestion,
@@ -23,8 +22,8 @@ const CWT: PartySuggestion = {
   source: 'sender',
   kind: 'agency',
   name: 'CWT JNB',
-  nativeId: '290',
-  idStatus: 'listed',
+  nativeId: null,
+  idStatus: 'unverified',
 };
 const RENNIES: PartySuggestion = {
   source: 'body',
@@ -76,12 +75,6 @@ describe('the company and agency the quote sends', () => {
 });
 
 describe('suggestions from the email', () => {
-  it('only a suggestion HMS listed can become a party; an unverified one never does', () => {
-    expect(partyFromSuggestion(CWT)).toEqual({ kind: 'agency', nativeId: '290', name: 'CWT JNB' });
-    expect(partyFromSuggestion(RENNIES)).toBeNull();
-    expect(partyFromSuggestion({ ...CWT, nativeId: null, idStatus: 'listed' })).toBeNull();
-  });
-
   it('binds panePartyLookup.suggest off a function-typed proxy client, as the pane passes it', async () => {
     const reply = { suggestions: [CWT] };
     const query = vi.fn(async () => reply);
@@ -119,23 +112,6 @@ describe('PartyPicker with both kinds and suggestions', () => {
     expect(clears).toHaveLength(2);
     fireEvent.click(clears[0]!);
     expect(onClear).toHaveBeenCalledWith('company');
-  });
-
-  it('offers an HMS-listed suggestion as a pick, and only after staff click it', () => {
-    const onPick = vi.fn();
-    render(
-      <PartyPicker
-        name="Woolworths"
-        parties={{ company: WOOLWORTHS }}
-        find={noFind}
-        onPick={onPick}
-        onClear={vi.fn()}
-        suggestions={[CWT]}
-      />,
-    );
-    expect(onPick).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Use CWT JNB' }));
-    expect(onPick).toHaveBeenCalledWith({ kind: 'agency', nativeId: '290', name: 'CWT JNB' });
   });
 
   it('an unverified suggestion can only be searched: it is never a pick, and no lookup runs by itself', () => {
@@ -190,7 +166,7 @@ describe('PartyPicker scoped to one field of the header', () => {
       ],
       truncated: false,
     }));
-    const companySuggestion: PartySuggestion = { ...CWT, kind: 'company', name: 'Woolworths Company', nativeId: '77' };
+    const companySuggestion: PartySuggestion = { ...CWT, kind: 'company', name: 'Woolworths Company' };
     render(
       <PartyPicker
         kind="agency"
@@ -203,8 +179,8 @@ describe('PartyPicker scoped to one field of the header', () => {
       />,
     );
     expect(screen.queryByText('✓ Woolworths (#49)')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Use CWT JNB' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Use Woolworths Company' })).toBeNull();
+    expect(screen.getByText('CWT JNB (Agency), not confirmed in HMS')).toBeTruthy();
+    expect(screen.queryByText(/Woolworths Company/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'CWT JNB' })).toBeTruthy());
     expect(find).toHaveBeenCalledWith('CWT', 'agency');

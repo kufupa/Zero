@@ -128,6 +128,7 @@ const policy = {
     { rateCode: 'BCO1B', board: 'room_only' as const },
     { rateCode: 'WSF2B', board: 'room_only' as const },
     { rateCode: 'NGD10B', board: 'room_only' as const },
+    ...['ACM1B', 'ACM2B', 'ALH1B', 'BLU1B', 'OBK1B', 'SIG1B', 'NOR1B'].map((rateCode) => ({ rateCode, board: 'room_only' as const })),
   ],
   vat: 'included' as const,
   levy: 'included' as const,
@@ -174,12 +175,30 @@ function resolvedContext(rateContext: Record<string, { nativeId: string; name: s
   );
 }
 
+/**
+ * What HMS returns for a read's codes. Staff reads keep alternatives on, so off-rate and off-room rows come back marked as
+ * alternatives, as the runner's visibility rule does. With alternatives off, an exact rate filter returns only those rows.
+ * A room-type filter with no rate named hides the flagged rows. That is why a party's summary read must not carry a room type.
+ */
+function hmsVisibleRows(request: any, rates: Rate[]): Rate[] {
+  const required = request.rooms[0]?.required ?? {};
+  const wantedRates: string[] = required.rateCodes ?? [];
+  if (wantedRates.length && !request.search?.includeAlternatives) return rates.filter((rate) => wantedRates.includes(rate.code));
+  if (required.roomCodes?.length && !wantedRates.length) return rates.filter((rate) => rate.rateScope !== 'contextual');
+  return rates;
+}
+
 /** The Rate Shop services for one staff attempt: every read is answered from the rows, under the attempt's context. */
 function rateShopServices(
   prepared: ReturnType<typeof prepareStaffQuote>,
   rates: Rate[],
   sent: any[],
-  flags: { readParty?: any; incompleteParty?: boolean; onRateOptions?: (options: RateOption[]) => void } = {},
+  flags: {
+    readParty?: any;
+    incompleteParty?: boolean;
+    truncatedParty?: boolean;
+    onRateOptions?: (options: RateOption[]) => void;
+  } = {},
 ) {
   const context = resolvedContext(prepared.request.rateContext);
   return createReservationistBusinessServices(
@@ -190,16 +209,26 @@ function rateShopServices(
       readQuote: async (request: any) => {
         sent.push(request);
         const normalized = normalizer.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
-        const rows = rateShopRows(request, rates, context);
+        // As the runner returns them: matches first, at most maxOptionsPerGroup rows. A cut row that is not an alternative
+        // marks the list cut.
+        const rank: Record<string, number> = { match: 0, alternative: 1, unresolved: 2 };
+        const ordered = rateShopRows(request, hmsVisibleRows(request, rates), context).sort(
+          (a, b) => rank[a.matchStatus]! - rank[b.matchStatus]!,
+        );
+        const rows = ordered.slice(0, normalized.maxOptionsPerGroup);
+        const cut = ordered.slice(normalized.maxOptionsPerGroup).some((row) => row.matchStatus !== 'alternative');
         // As the runner reads it: an unfiltered full read of more than five rows has no detail rows, so it is partial.
         const unfilteredFull =
           request.details === 'full' &&
           !request.rooms.some((room: any) => room.required?.roomCodes?.length || room.required?.rateCodes?.length);
-        // A party read whose calendar pages did not all load: its groups report it, as the runner does.
+        // A party read whose calendar pages did not all load, or whose list was cut: its groups report it, as the runner does.
         const incomplete = Boolean(flags.incompleteParty && request.rateContext);
+        const truncated = Boolean(flags.truncatedParty && request.rateContext) || cut;
         const completeness = incomplete
           ? { search: 'partial', requiredFacts: 'partial' }
-          : { search: 'complete', requiredFacts: 'complete' };
+          : truncated
+            ? { search: 'truncated', requiredFacts: 'complete' }
+            : { search: 'complete', requiredFacts: 'complete' };
         return {
           ref: 'source:1',
           sha256: 'b'.repeat(64),
@@ -207,7 +236,7 @@ function rateShopServices(
           observedAt: new Date().toISOString(),
           request: normalized,
           result: {
-            outcome: incomplete || (unfilteredFull && rows.length > 5) ? 'partial' : 'quote',
+            outcome: incomplete || truncated || (unfilteredFull && rows.length > 5) ? 'partial' : 'quote',
             propertyCode: 'HRCEN',
             groups: normalized.rooms.map((r: any) => ({
               id: r.id,
@@ -233,6 +262,7 @@ async function quoteWith(
     header?: { company?: string; agency?: string };
     readParty?: any;
     incompleteParty?: boolean;
+    truncatedParty?: boolean;
     pin?: string;
     roomCodes?: string[];
   } = {},
@@ -535,13 +565,13 @@ describe('re-checking a picked id in HMS before it is bound', () => {
 });
 
 describe('suggestions for the picker', () => {
-  it('a sender alias carries its HMS id only where listed; body names never carry one', () => {
+  it('a sender alias carries no HMS id, so it is unverified until staff find it in HMS; body names never carry one', () => {
     const suggestions = suggestPartiesFor({
       sender: 'ops@mycwt.co.za',
       body: 'Travel Agency Details: RENNIES TRAVEL (PTY) LTD\nOrganization Details: Tourvest',
     });
     expect(suggestions).toEqual([
-      { source: 'sender', kind: 'agency', name: 'CWT JNB', nativeId: '290', idStatus: 'listed' },
+      { source: 'sender', kind: 'agency', name: 'CWT JNB', nativeId: null, idStatus: 'unverified' },
       { source: 'body', kind: 'agency', name: 'RENNIES TRAVEL (PTY) LTD', nativeId: null, idStatus: 'unverified' },
       { source: 'body', kind: 'company', name: 'Tourvest', nativeId: null, idStatus: 'unverified' },
     ]);
@@ -712,5 +742,145 @@ describe('a public-only party read is no contract only when its search covered e
     expect(isPartyRateFailure(new PartyRateFailure(PARTY_NO_CONTRACT_CODE))).toBe(true);
     expect(isPartyRateFailure(new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE))).toBe(true);
     expect(isPartyRateFailure(new Error(PARTY_SEARCH_INCOMPLETE_CODE))).toBe(false);
+  });
+});
+
+/** A flagged (HMS-negotiated) row, optionally for one room type. */
+const flagged = (code: string, room?: string): Rate => ({
+  code,
+  label: `${code} Negotiated`,
+  rateScope: 'contextual',
+  amounts: ['520.00'],
+  ...(room ? { room } : {}),
+});
+
+// Picked names as staff type them, each with the display name HMS gives its id. The parties are made up: these cases pin the
+// matching rule (the HMS id, never the name), not any real company.
+const PARTY_CASES = [
+  { picked: 'Acme Holdings (Pty) Ltd', hms: 'ACME HOLDINGS (PTY) LTD', kind: 'company', nativeId: '201', flagged: 'ACM1B' },
+  { picked: 'Acme Holdings', hms: 'Acme Holdings (Pty) Ltd', kind: 'company', nativeId: '201', flagged: 'ACM1B' },
+  { picked: 'ACME Holdings Pty Ltd', hms: 'ACME HOLDINGS (PTY) LTD', kind: 'company', nativeId: '201', flagged: 'ACM1B' },
+  { picked: 'Acme Holdings Logistics (Pty) Ltd', hms: 'Acme Holdings Logistics', kind: 'company', nativeId: '211', flagged: 'ALH1B' },
+  { picked: 'Acme', hms: 'Acme Trading', kind: 'company', nativeId: '203', flagged: 'ACM2B' },
+  { picked: 'Bluebird Travel & Tours', hms: 'Bluebird Travel & Tours', kind: 'agency', nativeId: '204', flagged: 'BLU1B' },
+  { picked: "O'Brien-Kent Pty. Ltd.", hms: "O'Brien-Kent (Pty) Ltd", kind: 'company', nativeId: '205', flagged: 'OBK1B' },
+  { picked: 'Sigma  Trading   (Pty)  Ltd', hms: 'Sigma Trading (Pty) Ltd', kind: 'company', nativeId: '206', flagged: 'SIG1B' },
+  { picked: 'Nordic Tours & Travel (Pty) Ltd.', hms: 'NORDIC TOURS & TRAVEL', kind: 'agency', nativeId: '207', flagged: 'NOR1B' },
+  // HMS holds no negotiated row for these: public rates, with the no-contract reason.
+  { picked: 'Zeta Mining (Pty) Ltd', hms: 'Zeta Mining (Pty) Ltd', kind: 'company', nativeId: '208', flagged: null },
+  { picked: 'Quill Travel Services (Pty) Ltd', hms: 'Quill Travel Services', kind: 'agency', nativeId: '209', flagged: null },
+  { picked: 'Helix Retail', hms: 'Helix Retail Holdings (Pty) Ltd', kind: 'company', nativeId: '210', flagged: null },
+] as const;
+
+describe('a picked party is matched by its HMS id, whatever its name looks like', () => {
+  it.each(PARTY_CASES)(
+    '"$picked" (HMS id $nativeId, named "$hms" there) prices $flagged, or says there is no contract',
+    async (c) => {
+      hmsDisplayName[c.nativeId] = c.hms;
+      try {
+        const parties =
+          c.kind === 'company' ? { company: company(c.nativeId, c.picked) } : { agency: agency(c.nativeId, c.picked) };
+        // The staff request names a room type, as a real quote does, so the room filter is in play for every case.
+        const { revision, fellBack, note, sent } = await quoteWith(
+          parties,
+          c.flagged ? [BAR, flagged(c.flagged)] : [BAR],
+          { roomCodes: ['SKNG'] },
+        );
+        // The party read names the party by its id, and asks HMS for every room type.
+        const field = c.kind === 'company' ? 'organization' : 'agency';
+        expect(sent[0]!.rateContext).toEqual({ [field]: { nativeId: c.nativeId, name: c.picked } });
+        expect(sent[0]!.rooms[0].required).not.toHaveProperty('roomCodes');
+        if (c.flagged) {
+          expect(fellBack).toBe(false);
+          expect(revision.groups[0]!.rateCode).toBe(c.flagged);
+          expect(partyContractReviewNote(parties, revision.groups)).toBeNull();
+        } else {
+          expect(fellBack).toBe(true);
+          expect(note).toBeNull();
+          expect(revision.groups[0]!.rateCode).toBe('BARRO');
+          expect(partyContractReviewNote(parties, revision.groups)).toBe(partyNoContractNote([c.picked]));
+        }
+      } finally {
+        delete hmsDisplayName[c.nativeId];
+      }
+    },
+  );
+});
+
+describe('a picked party is read once for every room type, and priced for the room the staff asked for', () => {
+  // The rows one room type returned from the rate shop: a flagged row, a public row and a conditional row.
+  const STQN_ROWS: Rate[] = [
+    { code: 'BARRO', label: 'Room Only', rateScope: 'public', amounts: ['1750.00'], room: 'STQN' },
+    { code: 'BCO1B', label: 'Woolworths Negotiated', rateScope: 'contextual', amounts: ['1520.00'], room: 'STQN' },
+    { code: 'NCOR2B', label: 'Corporate Negotiated', rateScope: 'contextual', amounts: ['1600.00'], room: 'STQN' },
+    { code: 'NCORRO', label: 'Corporate Conditional', rateScope: 'unknown', amounts: ['1400.00'], room: 'STQN' },
+  ];
+  const woolworths = { company: company('49', 'Woolworths') };
+  const copy = 'No contract rate found for Woolworths; this quote uses our best available rate.';
+
+  it('prices the cheapest flagged row for the requested room, read without a room-type filter, then names that room and rate', async () => {
+    const { revision, fellBack, sent } = await quoteWith(woolworths, STQN_ROWS, { roomCodes: ['STQN'] });
+    expect(fellBack).toBe(false);
+    expect(revision.groups[0]!.rateCode).toBe('BCO1B');
+    expect(partyContractReviewNote(woolworths, revision.groups)).toBeNull();
+    // The summary read asks HMS for every room type, up to the Rate Shop's maximum, so the flagged rows come back.
+    expect(sent[0]!.rateContext).toEqual({ organization: { nativeId: '49', name: 'Woolworths' } });
+    expect(sent[0]!.rooms[0].required).not.toHaveProperty('roomCodes');
+    expect(sent[0]!.maxOptionsPerGroup).toBe(200);
+    // The detail read is for the requested room type and the chosen rate, under the party context.
+    const detail = sent.find((request) => request.details === 'full');
+    expect(detail?.rateContext).toEqual({ organization: { nativeId: '49', name: 'Woolworths' } });
+    expect(detail?.rooms[0].required).toMatchObject({ roomCodes: ['STQN'], rateCodes: ['BCO1B'] });
+  });
+
+  it('a flagged row for another room type does not price the requested room: public, with the copy', async () => {
+    const otherRoom: Rate[] = [
+      { code: 'BARRO', label: 'Room Only', rateScope: 'public', amounts: ['1750.00'], room: 'STQN' },
+      { code: 'BCO1B', label: 'Woolworths Negotiated', rateScope: 'contextual', amounts: ['1100.00'], room: 'DLXQN' },
+    ];
+    const { revision, fellBack, note } = await quoteWith(woolworths, otherRoom, { roomCodes: ['STQN'] });
+    expect(fellBack).toBe(true);
+    expect(note).toBeNull();
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(partyContractReviewNote(woolworths, revision.groups)).toBe(copy);
+  });
+
+  it('an incomplete read says HMS could not confirm, never that there is no contract, even when another room is flagged', async () => {
+    const rates: Rate[] = [{ ...BAR, room: 'STQN' }, { ...flagged('BCO1B'), room: 'DLXQN' }];
+    const { revision, fellBack, note } = await quoteWith(woolworths, rates, { roomCodes: ['STQN'], incompleteParty: true });
+    expect(fellBack).toBe(true);
+    expect(note).toBe(
+      "Nava couldn't confirm contract rates for Woolworths — this quote uses our best available rate. Check HMS before sending.",
+    );
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
+  });
+
+  it('the requested rooms keep the list a room-filtered read returns, so a wider read never fails the quote by its size', async () => {
+    // 30 room-only rows (the flagged one first) and 30 B&B alternatives for the requested rooms: 60 rows, more than one group
+    // may carry. The list keeps its first 50, as HMS would for the room filter, and only alternatives are left out.
+    const matches: Rate[] = [
+      { ...flagged('BCO1B'), room: 'STQN' },
+      ...Array.from({ length: 29 }, (_, i) => ({ ...BAR, code: `P${i}`, amounts: [`${700 + i}.00`], room: 'SKNG' })),
+    ];
+    const alternatives: Rate[] = Array.from({ length: 30 }, (_, i) => ({
+      ...BAR,
+      code: `B${i}`,
+      board: 'breakfast' as const,
+      amounts: [`${900 + i}.00`],
+      room: 'STQN',
+    }));
+    const { revision, fellBack } = await quoteWith(woolworths, [...matches, ...alternatives], { roomCodes: ['STQN', 'SKNG'] });
+    expect(fellBack).toBe(false);
+    expect(revision.groups[0]!.rateCode).toBe('BCO1B');
+  });
+
+  it('a cut read falls back with the same honest copy, never as a hard failure, even when the requested room is flagged', async () => {
+    const rates: Rate[] = [{ ...BAR, room: 'STQN' }, { ...flagged('BCO1B'), room: 'STQN' }];
+    const { revision, fellBack, note } = await quoteWith(woolworths, rates, { roomCodes: ['STQN'], truncatedParty: true });
+    expect(fellBack).toBe(true);
+    expect(note).toBe(
+      "Nava couldn't confirm contract rates for Woolworths — this quote uses our best available rate. Check HMS before sending.",
+    );
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
   });
 });
