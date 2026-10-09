@@ -376,6 +376,16 @@ describe('HITL decision ledger schema', () => {
     expect(hitlMigrationDdl).not.toMatch(/ai_workflow_run/);
   });
 
+  it('keeps decision rows when a thread or message is deleted, instead of erasing them', () => {
+    // Mail rows are deleted by fixture cleanup today. A cascade would erase the recorded answer with them.
+    expect(hitlMigrationDdl).toMatch(/"thread_id" text REFERENCES "mail_thread"\("id"\) ON DELETE set null/);
+    expect(hitlMigrationDdl).toMatch(/"message_id" text REFERENCES "message"\("id"\) ON DELETE set null/);
+    expect(hitlMigrationDdl).not.toMatch(/REFERENCES "(mail_thread|message)"\("id"\) ON DELETE cascade/);
+    expect(schema.aiAgentRun.threadId.notNull).toBe(false);
+    expect(schema.aiAgentRun.messageId.notNull).toBe(false);
+    expect(schema.hitlEpisode.messageId.notNull).toBe(false);
+  });
+
   it('registers 0046 in the journal directly after 0045 on a +1000ms clock', () => {
     const journal = JSON.parse(
       readFileSync(

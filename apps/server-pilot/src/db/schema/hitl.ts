@@ -79,12 +79,10 @@ export const aiAgentRun = pgTable(
     transportId: text('transport_id')
       .notNull()
       .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
-    threadId: text('thread_id')
-      .notNull()
-      .references(() => mailThread.id, { onDelete: 'cascade' }),
-    messageId: text('message_id')
-      .notNull()
-      .references(() => message.id, { onDelete: 'cascade' }),
+    // Nullable with SET NULL: a decision record must survive a thread or message being deleted. Mail rows are
+    // deleted by fixture cleanup, and cascading would erase the recorded answer along with them.
+    threadId: text('thread_id').references(() => mailThread.id, { onDelete: 'set null' }),
+    messageId: text('message_id').references(() => message.id, { onDelete: 'set null' }),
     episodeId: uuid('episode_id').references((): AnyPgColumn => hitlEpisode.id, {
       onDelete: 'set null',
     }),
@@ -144,9 +142,7 @@ export const hitlEpisode = pgTable(
     transportId: text('transport_id')
       .notNull()
       .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
-    messageId: text('message_id')
-      .notNull()
-      .references(() => message.id, { onDelete: 'cascade' }),
+    messageId: text('message_id').references(() => message.id, { onDelete: 'set null' }),
     userId: text('user_id').references(() => user.id, { onDelete: 'set null' }),
     firstRunId: uuid('first_run_id').references((): AnyPgColumn => aiAgentRun.id, {
       onDelete: 'set null',
