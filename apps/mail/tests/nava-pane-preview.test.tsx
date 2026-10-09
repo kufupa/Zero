@@ -1,10 +1,13 @@
 /**
  * @vitest-environment happy-dom
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { cleanup, render, screen } from '@testing-library/react';
 import { NavaPane } from '../components/nava-pane/nava-pane';
+import { openPaneMenu, stubResizeObserverForMenus } from './helpers/pane-menu';
+
+beforeAll(stubResizeObserverForMenus);
 
 const { pingMutateMock, sendCommandMock } = vi.hoisted(() => ({
   pingMutateMock: vi.fn().mockResolvedValue({
@@ -98,12 +101,13 @@ describe('NavaPane preview mode', () => {
     cleanup();
   });
 
-  it('starts on the quoting tool with fresh storage, with no onboarding and no automatic ping', () => {
+  it('starts on the quoting tool with fresh storage, with no onboarding and no automatic ping', async () => {
     render(<NavaPane bridge={bridge()} preview />);
     expect(screen.queryByText(/Welcome to Nava/i)).toBeNull();
     expect(screen.queryByRole('button', { name: /Confirm Account & Connect/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /1\. Welcome/i })).toBeNull();
-    expect(screen.getByRole('button', { name: /Run system check/i })).toBeDefined();
+    await openPaneMenu();
+    expect(await screen.findByRole('menuitem', { name: /Run system check/i })).toBeDefined();
     expect(pingMutateMock).not.toHaveBeenCalled();
   });
 

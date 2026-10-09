@@ -14,15 +14,20 @@ const FEEDBACK_WHATSAPP_URL = 'https://wa.me/447505014078';
 /**
  * The pane's ⋯ menu, on the shared dropdown. Radix handles the keyboard: Enter or Space opens it with
  * focus on the first item, the arrows move between items, and Escape closes it and returns focus to ⋯.
- * It holds what the footer used to show: connection check, tour replay, feedback and the build id.
+ * It holds the connection check, the system check, tour replay, feedback and the build id.
  */
 export function PaneMenu({
   buildRelease,
   onCheckConnection,
+  onRunSystemCheck,
+  systemCheckRunning = false,
   onReplayTour,
 }: {
   buildRelease: string | null;
   onCheckConnection: () => void;
+  /** Runs the system check: Outlook, the selected email, the folders and the Nava server. Its results show on the tool. */
+  onRunSystemCheck: () => void;
+  systemCheckRunning?: boolean;
   onReplayTour: () => void;
 }) {
   return (
@@ -39,6 +44,9 @@ export function PaneMenu({
       <DropdownMenuContent align="end" side="top" className="w-60 text-xs text-[#1e293b]">
         <DropdownMenuItem onSelect={() => onCheckConnection()}>Check connection</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => onReplayTour()}>Replay tour</DropdownMenuItem>
+        <DropdownMenuItem disabled={systemCheckRunning} onSelect={() => onRunSystemCheck()}>
+          {systemCheckRunning ? 'Checking Outlook and the Nava server…' : 'Run system check'}
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <a href={`mailto:${FEEDBACK_EMAIL}`}>Feedback by email</a>

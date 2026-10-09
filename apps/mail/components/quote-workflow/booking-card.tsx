@@ -25,9 +25,7 @@ import {
   type PaneStayClient,
   type PaneStayInput,
 } from '@/lib/quote-workflow/pane-stay-bind';
-
-const fieldClass =
-  'outline-hidden h-8 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
+import { Notice, paneFieldClass, PrimaryButton, SecondaryButton, Section } from '@/components/nava-pane/pane-ui';
 
 const COPIED_MS = 1500;
 const COPY_FAILED_MS = 3000;
@@ -117,26 +115,26 @@ export const ROOM_TYPE_CHANGED_COPY =
 function RateCheckChip({ check }: { check: BookingRateCheck }) {
   if (check.status === 'match') {
     return (
-      <p className="rounded-xs border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] text-emerald-800">
+      <Notice tone="success">
         Price matches the email
         {check.assumedTaxBasis ? ' · assumes the price includes VAT' : ''}
-      </p>
+      </Notice>
     );
   }
   if (check.status === 'mismatch') {
     return (
-      <p className="rounded-xs border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
+      <Notice tone="warn">
         Price differs from the email: {check.claimQuote}
         {check.assumedTaxBasis ? ' · assumes the price includes VAT' : ''}
-      </p>
+      </Notice>
     );
   }
   const why = check.reason ? RATE_CHECK_REASON_COPY[check.reason] : undefined;
   return (
-    <p className="rounded-xs border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-600">
+    <Notice>
       Could not compare with the email{why ? `: ${why}` : ''}
       {check.assumedTaxBasis ? ' · assumes the price includes VAT' : ''}
-    </p>
+    </Notice>
   );
 }
 
@@ -187,8 +185,6 @@ function CopyRow({ label, roomIndex, value }: { label: string; roomIndex: number
 
 const PREVIEW_SHOT = 'filled.png';
 const SAVED_SHOT = 'saved.png';
-const PANE_BUTTON =
-  'h-8 rounded-xs border border-[#0066cc] bg-[#0066cc] px-3 text-[12px] font-semibold text-white disabled:border-[#cbd5e1] disabled:bg-[#f8fafc] disabled:text-[#94a3b8]';
 // The Book label names the mode, so a lab-only server never reads as a live save.
 const BOOK_LABEL: Record<'lab' | 'on', string> = { lab: 'Book (lab test only)', on: 'Book in HMS' };
 const textareaClass =
@@ -387,27 +383,25 @@ function RoomSave({
           ) : null}
         </>
       ) : null}
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
+      <div className="grid grid-cols-2 gap-2">
+        <SecondaryButton
           disabled={!stay || busy}
+          className="w-full"
           onClick={() => {
             if (stay) onPreview(stay);
           }}
-          className={PANE_BUTTON}
         >
           Preview in HMS
-        </button>
-        <button
-          type="button"
+        </SecondaryButton>
+        <PrimaryButton
           disabled={!fresh || busy}
+          disabledReason={!stay || busy ? null : 'Preview in HMS first'}
           onClick={() => {
             if (stay && fresh) onBook(stay, fresh.digest);
           }}
-          className={PANE_BUTTON}
         >
           {bookLabel}
-        </button>
+        </PrimaryButton>
       </div>
       <p className="text-[11px] text-[#64748b]">
         {stay
@@ -457,7 +451,7 @@ function RoomTextField({
             disabled={disabled}
             maxLength={maxLength}
             value={value}
-            className={fieldClass}
+            className={paneFieldClass}
             onChange={(event) => onChange(event.target.value)}
           />
         )}
@@ -586,27 +580,28 @@ export function BookingCards({
   }
 
   return (
-    <section className="flex flex-col gap-2">
-      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Booking draft</h3>
+    <Section title="Book in HMS">
       <p className="text-[11px] text-[#64748b]">
         {savesOn
           ? 'Preview each room in HMS first, then book it. Click Copy next to any field to paste it by hand instead.'
           : 'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.'}
       </p>
       {roomTypeChanged ? (
-        <p className="rounded-xs border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
-          {ROOM_TYPE_CHANGED_COPY}
-        </p>
+        <Notice tone="warn">{ROOM_TYPE_CHANGED_COPY}</Notice>
       ) : (
         draft.draft.rateCheck.map((check, index) => (
           <RateCheckChip key={`${check.status}:${check.claimQuote}:${index}`} check={check} />
         ))
       )}
-      {draft.draft.flags.map((flag) => (
-        <p key={flag} className="rounded-xs border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
-          {BOOKING_FLAG_COPY[flag] ?? 'Check this booking detail in HMS before booking.'}
-        </p>
-      ))}
+      {draft.draft.flags.length > 0 ? (
+        <Notice tone="warn">
+          <ul className="flex list-disc flex-col gap-0.5 pl-4">
+            {draft.draft.flags.map((flag) => (
+              <li key={flag}>{BOOKING_FLAG_COPY[flag] ?? 'Check this booking detail in HMS before booking.'}</li>
+            ))}
+          </ul>
+        </Notice>
+      ) : null}
       {draft.draft.missing.map((item) => (
         <p key={`${item.field}:${item.question}`} className="text-[11px] text-amber-800">
           {item.question}
@@ -647,7 +642,7 @@ export function BookingCards({
                 <select
                   disabled={locked}
                   aria-label="Room type"
-                  className={fieldClass}
+                  className={paneFieldClass}
                   value={choice.roomType}
                   onChange={(event) => setChoice({ roomType: event.target.value })}
                 >
@@ -687,7 +682,7 @@ export function BookingCards({
                 <select
                   disabled={locked}
                   aria-label="Source of business"
-                  className={fieldClass}
+                  className={paneFieldClass}
                   value={choice.sourceOfBusiness}
                   onChange={(event) => setChoice({ sourceOfBusiness: event.target.value })}
                 >
@@ -707,7 +702,7 @@ export function BookingCards({
                 <select
                   disabled={locked}
                   aria-label="Track"
-                  className={fieldClass}
+                  className={paneFieldClass}
                   value={choice.track}
                   onChange={(event) => setChoice({ track: event.target.value })}
                 >
@@ -727,7 +722,7 @@ export function BookingCards({
                 <select
                   disabled={locked}
                   aria-label="Guarantee"
-                  className={fieldClass}
+                  className={paneFieldClass}
                   value={choice.guaranteeType}
                   onChange={(event) => setChoice({ guaranteeType: event.target.value })}
                 >
@@ -795,6 +790,6 @@ export function BookingCards({
           </article>
         );
       })}
-    </section>
+    </Section>
   );
 }

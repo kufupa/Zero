@@ -19,17 +19,12 @@ import {
 } from '@/lib/quote-workflow/voucher-find';
 import { downloadAttachmentViaBlob, type AttachmentAccessInput } from '@/lib/attachment-access';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Notice, SecondaryButton, Section } from '@/components/nava-pane/pane-ui';
 import { HmsLinkActions } from './hms-link-actions';
 
-const panelClass = 'flex flex-col gap-2 rounded-sm border border-[#e2e8f0] bg-white p-3';
-const headingClass = 'text-[10px] font-semibold uppercase tracking-wide text-[#64748b]';
-const captionClass = 'text-[10px] text-[#94a3b8]';
-const valueClass = 'text-[12.5px] text-[#1e293b]';
-const warnNoteClass =
-  'rounded-xs border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11.5px] text-amber-900';
+const captionClass = 'text-[11px] text-[#64748b]';
+const valueClass = 'text-[12.5px] font-semibold text-[#1e293b]';
 const infoNoteClass = 'text-[11.5px] text-[#334155]';
-const buttonClass =
-  'rounded-sm border border-[#0066cc] bg-white px-2.5 py-1 text-[11.5px] font-medium text-[#0066cc] disabled:border-[#cbd5e1] disabled:text-[#94a3b8]';
 
 type SearchStatus = { phase: 'running' } | { phase: 'done'; run: HmsSearchRun };
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'failed';
@@ -123,12 +118,9 @@ export function VoucherFindCard({
   if (reply.status === 'unsynced') {
     if (!syncPending) return null;
     return (
-      <section aria-label={VOUCHER_COPY.heading} className={panelClass}>
-        <p className={headingClass}>{VOUCHER_COPY.heading}</p>
-        <p role="status" className={infoNoteClass}>
-          {VOUCHER_COPY.waitingForSync}
-        </p>
-      </section>
+      <Section title={VOUCHER_COPY.heading}>
+        <Notice role="status">{VOUCHER_COPY.waitingForSync}</Notice>
+      </Section>
     );
   }
   if (reply.status !== 'voucher') return null;
@@ -138,6 +130,15 @@ export function VoucherFindCard({
   const canSearch = canSearchVoucher(guest) && searchClient !== null;
   const surnameConflict = (guest.conflicts?.lastNames.length ?? 0) > 1;
   const arrivalConflict = (guest.conflicts?.arrivals.length ?? 0) > 1;
+  // Every warning shares one box, one short line each. Staff still see the search when the surname and arrival were read.
+  const warnings = [
+    guest.lastName === null && !surnameConflict ? VOUCHER_COPY.missingGuest : null,
+    guest.lastName !== null && guest.arrival === null && !arrivalConflict
+      ? VOUCHER_COPY.missingArrival
+      : null,
+    ...voucherConflictLines(guest),
+    unreadPdfs > 0 ? VOUCHER_COPY.partialRead : null,
+  ].filter((text): text is string => text !== null);
 
   const runSearch = async () => {
     if (!canSearchVoucher(guest)) return;
@@ -168,36 +169,22 @@ export function VoucherFindCard({
   };
 
   return (
-    <section aria-label={VOUCHER_COPY.heading} className={panelClass}>
-      <p className={headingClass}>{VOUCHER_COPY.heading}</p>
+    <Section title={VOUCHER_COPY.heading}>
       <p className={captionClass}>{VOUCHER_COPY.caption}</p>
       {line ? <p className={valueClass}>{line}</p> : null}
-      {guest.lastName === null && !surnameConflict ? (
-        <p className={warnNoteClass}>{VOUCHER_COPY.missingGuest}</p>
-      ) : null}
-      {guest.lastName !== null && guest.arrival === null && !arrivalConflict ? (
-        <p className={warnNoteClass}>{VOUCHER_COPY.missingArrival}</p>
-      ) : null}
-      {voucherConflictLines(guest).map((text) => (
-        <p key={text} className={warnNoteClass}>
-          {text}
-        </p>
-      ))}
-      {/* Staff still see the search when the surname and arrival were read. The note only says what is missing. */}
-      {unreadPdfs > 0 ? (
-        <p role="alert" className={warnNoteClass}>
-          {VOUCHER_COPY.partialRead}
-        </p>
+      {warnings.length > 0 ? (
+        <Notice tone="warn" role={unreadPdfs > 0 ? 'alert' : undefined}>
+          <ul className="flex list-disc flex-col gap-0.5 pl-4">
+            {warnings.map((text) => (
+              <li key={text}>{text}</li>
+            ))}
+          </ul>
+        </Notice>
       ) : null}
       {canSearch ? (
-        <button
-          type="button"
-          className={buttonClass}
-          disabled={search?.phase === 'running'}
-          onClick={() => void runSearch()}
-        >
+        <SecondaryButton disabled={search?.phase === 'running'} onClick={() => void runSearch()}>
           {VOUCHER_COPY.search}
-        </button>
+        </SecondaryButton>
       ) : null}
       {search?.phase === 'running' ? (
         <p role="status" className={infoNoteClass}>
@@ -207,14 +194,9 @@ export function VoucherFindCard({
       {search?.phase === 'done' ? <SearchResult run={search.run} /> : null}
       {file ? (
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            className={buttonClass}
-            disabled={save === 'saving'}
-            onClick={() => void saveFile()}
-          >
+          <SecondaryButton disabled={save === 'saving'} onClick={() => void saveFile()}>
             {save === 'saving' ? VOUCHER_COPY.saving : VOUCHER_COPY.save}
-          </button>
+          </SecondaryButton>
           <span className={captionClass}>{file.filename}</span>
           {save === 'saved' ? (
             <span role="status" className={infoNoteClass}>
@@ -222,15 +204,15 @@ export function VoucherFindCard({
             </span>
           ) : null}
           {save === 'failed' ? (
-            <span role="alert" className={warnNoteClass}>
+            <Notice tone="warn" role="alert">
               {VOUCHER_COPY.saveFailed}
-            </span>
+            </Notice>
           ) : null}
         </div>
       ) : (
         <p className={captionClass}>{VOUCHER_COPY.noFile}</p>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -248,8 +230,8 @@ function SearchResult({ run }: { run: HmsSearchRun }) {
   }
   if (run.kind === 'none')
     return <p className={infoNoteClass}>{noSearchMatchCopy(run.lastName, run.arrival)}</p>;
-  if (run.kind === 'capped') return <p className={warnNoteClass}>{AMEND_FIND_COPY.searchCapped}</p>;
-  return <p className={warnNoteClass}>{run.message}</p>;
+  if (run.kind === 'capped') return <Notice tone="warn">{AMEND_FIND_COPY.searchCapped}</Notice>;
+  return <Notice tone="warn">{run.message}</Notice>;
 }
 
 function SearchRow({ row }: { row: GuestSearchRow }) {
