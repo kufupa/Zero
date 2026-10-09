@@ -55,28 +55,6 @@ describe('index load and miss', () => {
       available: false,
       updatedAt: null,
       ageMs: null,
-      listed: [{ kind: 'company', nativeId: '206', name: 'TOURVEST TRAVEL SERVICES' }],
-      results: [],
-    });
-  });
-
-  it('the listed parties come back whether or not the index file exists', async () => {
-    const absent = await typeaheadPartyIndex('Woolworths', { path: join(dir, 'absent.json'), now: NOW });
-    expect(absent).toEqual({
-      source: 'index',
-      available: false,
-      updatedAt: null,
-      ageMs: null,
-      listed: [{ kind: 'company', nativeId: '49', name: 'Woolworths Holdings' }],
-      results: [],
-    });
-    const present = await typeaheadPartyIndex('Woolworths', {
-      path: await writeIndex('listed-only.json', indexFile([tourvest])),
-      now: NOW,
-    });
-    expect(present).toMatchObject({
-      available: true,
-      listed: [{ kind: 'company', nativeId: '49', name: 'Woolworths Holdings' }],
       results: [],
     });
   });
@@ -190,7 +168,7 @@ describe('the typeahead and the index age', () => {
     expect(future.ageMs).toBe(0);
   });
 
-  it('the typeahead route is read-only, and without a file offers only the listed parties', async () => {
+  it('the typeahead route is read-only and empty without a file', async () => {
     const caller = appRouter.createCaller({
       auth: null as never,
       reqHeaders: new Headers(),
@@ -203,11 +181,6 @@ describe('the typeahead and the index age', () => {
     await expect(caller.panePartyLookup.typeahead({ query: 'Tour' })).resolves.toMatchObject({
       source: 'index',
       available: false,
-      results: [],
-    });
-    await expect(caller.panePartyLookup.typeahead({ query: 'Woolworths' })).resolves.toMatchObject({
-      available: false,
-      listed: [{ kind: 'company', nativeId: '49', name: 'Woolworths Holdings' }],
       results: [],
     });
     vi.stubEnv('PARTY_INDEX_PATH', await writeIndex('route.json', indexFile([tourvest, cwt])));

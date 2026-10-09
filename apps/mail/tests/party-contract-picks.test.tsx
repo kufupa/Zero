@@ -113,9 +113,9 @@ describe('PartyPicker with both kinds and suggestions', () => {
         onClear={onClear}
       />,
     );
-    expect(screen.getByText('✓ Woolworths (HMS)')).toBeTruthy();
-    expect(screen.getByText('✓ Woolworths Agency (HMS)')).toBeTruthy();
-    const clears = screen.getAllByRole('button', { name: 'Clear' });
+    expect(screen.getByText('✓ Woolworths (#49)')).toBeTruthy();
+    expect(screen.getByText('✓ Woolworths Agency (#569)')).toBeTruthy();
+    const clears = screen.getAllByRole('button', { name: 'Change' });
     expect(clears).toHaveLength(2);
     fireEvent.click(clears[0]!);
     expect(onClear).toHaveBeenCalledWith('company');
@@ -202,12 +202,12 @@ describe('PartyPicker scoped to one field of the header', () => {
         suggestions={[CWT, companySuggestion]}
       />,
     );
-    expect(screen.queryByText('✓ Woolworths (HMS)')).toBeNull();
+    expect(screen.queryByText('✓ Woolworths (#49)')).toBeNull();
     expect(screen.getByRole('button', { name: 'Use CWT JNB' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Use Woolworths Company' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Search HMS now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'CWT JNB' })).toBeTruthy());
-    expect(find).toHaveBeenCalledWith('CWT');
+    expect(find).toHaveBeenCalledWith('CWT', 'agency');
     expect(screen.queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
   });
 
@@ -219,7 +219,7 @@ describe('PartyPicker scoped to one field of the header', () => {
       truncated: false,
     }));
     render(<PartyPicker kind="agency" name="Woolworths" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search HMS now' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('No agency match in HMS for this name.'));
     expect(screen.queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
     expect(onPick).not.toHaveBeenCalled();
@@ -251,11 +251,11 @@ describe('the quote workflow header: each field finds in HMS with its own text',
         partySuggestions={[CWT]}
       />,
     );
-    fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Search HMS now' }));
+    fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() =>
       expect(within(groupFor('Company')).getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy(),
     );
-    expect(find).toHaveBeenCalledWith('Woolworths');
+    expect(find).toHaveBeenCalledWith('Woolworths', 'company');
     fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Woolworths Holdings' }));
     expect(onPatchStaffHeader).toHaveBeenCalledWith({
       parties: { company: { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' } },
@@ -288,13 +288,13 @@ describe('the quote workflow header: each field finds in HMS with its own text',
         partySuggestions={[]}
       />,
     );
-    fireEvent.click(within(groupFor('Agency')).getByRole('button', { name: 'Search HMS now' }));
+    fireEvent.click(within(groupFor('Agency')).getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() =>
       expect(within(groupFor('Agency')).getByRole('button', { name: 'Acme Travel HQ' })).toBeTruthy(),
     );
-    expect(find).toHaveBeenLastCalledWith('Acme Travel');
+    expect(find).toHaveBeenLastCalledWith('Acme Travel', 'agency');
     expect(within(groupFor('Agency')).queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
-    fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Search HMS now' }));
+    fireEvent.click(within(groupFor('Company')).getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() =>
       expect(within(groupFor('Company')).getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy(),
     );
@@ -315,6 +315,6 @@ describe('the quote workflow header: each field finds in HMS with its own text',
         session={{ ...initialQuoteSession(), phase: 'review' as const, staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths' } }}
       />,
     );
-    expect(screen.queryByRole('button', { name: 'Search HMS now' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeNull();
   });
 });

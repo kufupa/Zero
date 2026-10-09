@@ -10,8 +10,14 @@ import {
 import { quoteRateContextEnabled } from '../src/ai/quote-rate-switch.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
+import { partySearchTerms } from '../src/ai/party-match.js';
+import {
+  PARTY_ROW_CACHE_TTL_MS,
+  resetPartyCacheForTests,
+  verifyPartyPick,
+} from '../src/ai/pane-party-lookup.js';
 
 vi.mock('../src/db/client.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/db/client.js')>()),
@@ -115,6 +121,8 @@ describe('findParty: refusals before any lock or spawn', () => {
       outcome: 'refused_flag_off',
       results: [],
       truncated: false,
+      best: null,
+      searchedFor: null,
     });
     expect(seen).toEqual([]);
     expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
@@ -157,6 +165,8 @@ describe('findParty: refusals before any lock or spawn', () => {
       outcome: 'refused_lock_busy',
       results: [],
       truncated: false,
+      best: null,
+      searchedFor: null,
     });
     expect(spawn).not.toHaveBeenCalled();
   });
@@ -172,6 +182,8 @@ describe('findParty: one search over companies and agencies', () => {
       outcome: 'resolved',
       results: [{ kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' }],
       truncated: false,
+      best: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' },
+      searchedFor: 'Tourvest',
     });
     expect(spawn.mock.calls.map(([input]) => input)).toEqual([
       { kind: 'company', name: 'Tourvest' },
@@ -187,6 +199,8 @@ describe('findParty: one search over companies and agencies', () => {
       outcome: 'resolved',
       results: [{ kind: 'agency', nativeId: '113', name: '360 degrees Travel' }],
       truncated: false,
+      best: { kind: 'agency', nativeId: '113', name: '360 degrees Travel' },
+      searchedFor: '360',
     });
   });
 
@@ -210,6 +224,8 @@ describe('findParty: one search over companies and agencies', () => {
       outcome: 'no_match',
       results: [],
       truncated: false,
+      best: null,
+      searchedFor: 'Nobody Here',
     });
   });
 
@@ -223,6 +239,8 @@ describe('findParty: one search over companies and agencies', () => {
       outcome: 'execution_failure',
       results: [],
       truncated: false,
+      best: null,
+      searchedFor: null,
     });
     expect(spawn).toHaveBeenCalledTimes(1);
   });
@@ -238,6 +256,8 @@ describe('findParty: one search over companies and agencies', () => {
       outcome: 'external_system_unavailable',
       results: [],
       truncated: false,
+      best: null,
+      searchedFor: null,
     });
   });
 });
@@ -251,6 +271,8 @@ describe('findParty: a busy HMS store is a failure too', () => {
       outcome: 'execution_failure',
       results: [],
       truncated: false,
+      best: null,
+      searchedFor: null,
     });
     expect(spawn).toHaveBeenCalledTimes(1);
   });
@@ -262,7 +284,7 @@ describe('findParty: a filter that did not apply is a failure', () => {
     const spawn = vi.fn(async () => runner.filterNotApplied());
     panePartyLookupLoaders.spawn = spawn;
     const found = await findParty({ name: 'Tourvest' });
-    expect(found).toEqual({ outcome: 'execution_failure', results: [], truncated: false });
+    expect(found).toEqual({ outcome: 'execution_failure', results: [], truncated: false, best: null, searchedFor: null });
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
@@ -305,6 +327,8 @@ describe('findParty: the 50-row load and the cap', () => {
       outcome: 'no_match',
       results: [],
       truncated: true,
+      best: null,
+      searchedFor: 'Tourvest',
     });
   });
 
@@ -430,12 +454,14 @@ describe('kill switch', () => {
 });
 
 describe('panePartyLookup router', () => {
-  it('is a registered mutation that returns the search result, and refuses a native id, a kind, or any extra key', async () => {
+  it('is a registered mutation that returns the search result, and refuses a native id, an unknown kind, or any extra key', async () => {
     vi.stubEnv('QUOTE_RATE_CONTEXT', 'off');
     await expect(mailboxCaller().panePartyLookup.findParty({ name: 'Tourvest' })).resolves.toEqual({
       outcome: 'refused_flag_off',
       results: [],
       truncated: false,
+      best: null,
+      searchedFor: null,
     });
     vi.stubEnv('QUOTE_RATE_CONTEXT', 'on');
     panePartyLookupLoaders.lock = passingLock();
@@ -444,13 +470,126 @@ describe('panePartyLookup router', () => {
       outcome: 'resolved',
       results: [{ kind: 'agency', nativeId: '113', name: '360 degrees Travel' }],
       truncated: false,
+      best: { kind: 'agency', nativeId: '113', name: '360 degrees Travel' },
+      searchedFor: '360',
     });
     await expect(
       mailboxCaller().panePartyLookup.findParty({ name: 'ABC', nativeId: '4001' } as never),
     ).rejects.toThrow();
     await expect(
-      mailboxCaller().panePartyLookup.findParty({ name: 'ABC', kind: 'company' } as never),
+      mailboxCaller().panePartyLookup.findParty({ name: 'ABC', kind: 'bogus' } as never),
     ).rejects.toThrow();
+  });
+});
+
+describe('partySearchTerms: the HMS texts to try for a name', () => {
+  it('cuts the legal form, then the first distinctive word', () => {
+    expect(partySearchTerms('Foschini Retail Group (pty) Ltd')).toEqual(['Foschini Retail Group', 'Foschini']);
+  });
+
+  it('keeps a bracketed acronym as a candidate', () => {
+    expect(partySearchTerms('HWSETA (Health and Welfare Sector Education and Training Authority)')).toContain('HWSETA');
+  });
+
+  it('a plain name is its only term, and SA stays when it is not the last word', () => {
+    expect(partySearchTerms('Woolworths')).toEqual(['Woolworths']);
+    expect(partySearchTerms('SA Tours')).toEqual(['SA Tours', 'Tours']);
+  });
+});
+
+describe('findParty with a kind', () => {
+  beforeEach(() => resetPartyCacheForTests());
+
+  it('searches only that kind, in one HMS run, and reports the text it used', async () => {
+    panePartyLookupLoaders.lock = passingLock();
+    const spawn = fixtureSpawn();
+    panePartyLookupLoaders.spawn = spawn;
+    const found = await findParty({ name: 'Tourvest', kind: 'company' });
+    expect(spawn.mock.calls.map(([input]) => input)).toEqual([{ kind: 'company', name: 'Tourvest' }]);
+    expect(found).toMatchObject({
+      outcome: 'resolved',
+      best: { kind: 'company', nativeId: '206' },
+      searchedFor: 'Tourvest',
+    });
+  });
+
+  it('falls back to the first distinctive word when the full name finds nothing, at most two runs', async () => {
+    panePartyLookupLoaders.lock = passingLock();
+    const spawn = vi.fn(async ({ name }: { kind: string; name: string }) =>
+      name === 'Foschini'
+        ? {
+            outcome: 'resolved',
+            candidates: [{ kind: 'organization', nativeId: '77', displayName: 'FOSCHINI GROUP LIMITED' }],
+            truncated: false,
+          }
+        : { outcome: 'no_match', candidates: [] },
+    );
+    panePartyLookupLoaders.spawn = spawn;
+    const found = await findParty({ name: 'Foschini Retail Group (pty) Ltd', kind: 'company' });
+    expect(spawn.mock.calls.map(([input]) => input.name)).toEqual(['Foschini Retail Group', 'Foschini']);
+    expect(found).toMatchObject({ outcome: 'resolved', searchedFor: 'Foschini', best: { nativeId: '77' } });
+  });
+
+  it('ranks an exact name above a row that only contains its words', async () => {
+    panePartyLookupLoaders.lock = passingLock();
+    panePartyLookupLoaders.spawn = vi.fn(async () => ({
+      outcome: 'ambiguous',
+      candidates: [
+        { kind: 'organization', nativeId: '1', displayName: 'Big Foschini Retail Group Holdings' },
+        { kind: 'organization', nativeId: '2', displayName: 'FOSCHINI RETAIL GROUP (PTY) LTD' },
+      ],
+      truncated: false,
+    }));
+    const found = await findParty({ name: 'Foschini Retail Group (pty) Ltd', kind: 'company' });
+    expect(found.best).toEqual({ kind: 'company', nativeId: '2', name: 'FOSCHINI RETAIL GROUP (PTY) LTD' });
+    expect(found.results.map((row) => row.nativeId)).toEqual(['2', '1']);
+    expect(found.outcome).toBe('ambiguous');
+  });
+});
+
+describe('verifyPartyPick and the remembered rows', () => {
+  beforeEach(() => resetPartyCacheForTests());
+  afterEach(() => vi.useRealTimers());
+
+  it('a row a search just returned binds with no HMS run', async () => {
+    panePartyLookupLoaders.lock = passingLock();
+    const spawn = fixtureSpawn();
+    panePartyLookupLoaders.spawn = spawn;
+    await findParty({ name: 'Tourvest', kind: 'company' });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    await expect(verifyPartyPick({ kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' })).resolves.toEqual({
+      ok: true,
+      party: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' },
+    });
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('a remembered id with a different name still runs HMS', async () => {
+    panePartyLookupLoaders.lock = passingLock();
+    const spawn = fixtureSpawn();
+    panePartyLookupLoaders.spawn = spawn;
+    await findParty({ name: 'Tourvest', kind: 'company' });
+    await expect(verifyPartyPick({ kind: 'company', nativeId: '206', name: 'Some Other Name' })).resolves.toEqual({
+      ok: false,
+      reason: 'not_found',
+    });
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('a remembered row expires after the TTL and HMS is asked again', async () => {
+    const start = Date.parse('2026-10-09T10:00:00Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(start);
+    panePartyLookupLoaders.lock = passingLock();
+    const spawn = fixtureSpawn();
+    panePartyLookupLoaders.spawn = spawn;
+    await findParty({ name: 'Tourvest', kind: 'company' });
+    vi.setSystemTime(start + PARTY_ROW_CACHE_TTL_MS - 1);
+    await verifyPartyPick({ kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(start + PARTY_ROW_CACHE_TTL_MS);
+    await verifyPartyPick({ kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' });
+    expect(spawn).toHaveBeenCalledTimes(2);
   });
 });
 

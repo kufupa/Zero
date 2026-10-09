@@ -6,7 +6,7 @@ import {
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { paneStayPropertyLock, type PaneStayLock } from './pane-stay-save.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
-import { matchKey } from './party-match.js';
+import { matchKey, partyNameParts, partySearchTerms, type PartyNameParts } from './party-match.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -28,23 +28,35 @@ export type PanePartyKind = 'agency' | 'company';
 
 export type PanePartyCandidate = { kind: PanePartyKind; nativeId: string; name: string };
 
-export type PanePartyFindInput = { name: string };
+/** A kind is searched alone when given. Without one, both kinds are searched, as before. */
+export type PanePartyFindInput = { name: string; kind?: PanePartyKind };
 
-export type PanePartyFindResult = {
-  outcome:
-    | 'resolved'
-    | 'ambiguous'
-    | 'no_match'
-    | 'input_gap'
-    | 'execution_failure'
-    | 'external_system_unavailable'
-    | 'refused_flag_off'
-    | 'refused_input_invalid'
-    | 'refused_lock_unavailable'
-    | 'refused_lock_busy';
+export type PanePartyOutcome =
+  | 'resolved'
+  | 'ambiguous'
+  | 'no_match'
+  | 'input_gap'
+  | 'execution_failure'
+  | 'external_system_unavailable'
+  | 'refused_flag_off'
+  | 'refused_input_invalid'
+  | 'refused_lock_unavailable'
+  | 'refused_lock_busy';
+
+/** One search's answer before ranking. The CLI mapping and the per-kind merge return this shape. */
+export type PanePartyLookupCore = {
+  outcome: PanePartyOutcome;
   results: PanePartyCandidate[];
   /** True when an HMS grid held its 50-row load or the merged list passed the cap. More matches may exist. */
   truncated: boolean;
+};
+
+/** The pane's reply: the search answer, ranked best first, with the best row and the HMS text that found the rows. */
+export type PanePartyFindResult = PanePartyLookupCore & {
+  /** The top row when it answers the typed name well (score 0 to 3). Null otherwise. */
+  best: PanePartyCandidate | null;
+  /** The HMS search text that produced the rows, or the last one tried. Null on a refusal or failure. */
+  searchedFor: string | null;
 };
 
 // Companies first, then agencies. Each kind has its own HMS window, so each is one lookup run.
@@ -78,7 +90,7 @@ export const panePartyLookupLoaders: {
   enabled: null,
 };
 
-function withoutResults(outcome: PanePartyFindResult['outcome'], truncated = false): PanePartyFindResult {
+function withoutResults(outcome: PanePartyOutcome, truncated = false): PanePartyLookupCore {
   return { outcome, results: [], truncated };
 }
 
@@ -98,14 +110,14 @@ export function panePartyCandidates(kind: PanePartyKind, raw: unknown): PanePart
 }
 
 /** Maps one kind's CLI result to the pane's result. Only resolved and ambiguous carry candidates. */
-export function panePartyFindResultFromCli(kind: PanePartyKind, raw: unknown): PanePartyFindResult {
+export function panePartyFindResultFromCli(kind: PanePartyKind, raw: unknown): PanePartyLookupCore {
   const cli = (raw ?? {}) as { outcome?: unknown; candidates?: unknown; truncated?: unknown };
   const outcome =
     typeof cli.outcome === 'string' && CLI_OUTCOMES.has(cli.outcome)
       ? cli.outcome
       : 'execution_failure';
   if (outcome !== 'resolved' && outcome !== 'ambiguous' && outcome !== 'no_match') {
-    return withoutResults(outcome as PanePartyFindResult['outcome']);
+    return withoutResults(outcome as PanePartyOutcome);
   }
   const truncated = cli.truncated === true;
   const results = panePartyCandidates(kind, cli.candidates);
@@ -147,9 +159,9 @@ function rankKindCandidates(query: string, candidates: readonly PanePartyCandida
  * Otherwise each kind is ranked and capped on its own, and the companies come before the agencies.
  */
 export function mergePartyKindResults(
-  perKind: readonly PanePartyFindResult[],
+  perKind: readonly PanePartyLookupCore[],
   query = '',
-): PanePartyFindResult {
+): PanePartyLookupCore {
   const refused = perKind.find((result) => result.outcome.startsWith('refused_'));
   if (refused) return withoutResults(refused.outcome);
   for (const failure of KIND_FAILURES) {
@@ -205,20 +217,152 @@ export async function spawnPartyLookup(input: { kind: PanePartyKind; name: strin
   }
 }
 
+/** A kind search tries at most this many HMS texts: the cleaned name, then its first distinctive word. */
+const PARTY_KIND_SEARCH_TERMS = 2;
+const ANSWERED_OUTCOMES: ReadonlySet<string> = new Set(['resolved', 'ambiguous', 'no_match']);
+/** The most rows the pane gets, best first. */
+export const PANE_PARTY_RESULT_CAP = 5;
+/** How long a row HMS returned is remembered for verifyPartyPick. */
+export const PARTY_ROW_CACHE_TTL_MS = 30 * 60_000;
+
+// Rows HMS returned, by kind and id. A pick the pane was just shown binds without another HMS run.
+const partyRowCache = new Map<string, { name: string; at: number }>();
+
+function rememberPartyRows(rows: readonly PanePartyCandidate[]): void {
+  const now = Date.now();
+  for (const [key, entry] of partyRowCache) {
+    if (now - entry.at >= PARTY_ROW_CACHE_TTL_MS) partyRowCache.delete(key);
+  }
+  for (const row of rows) partyRowCache.set(`${row.kind}:${row.nativeId}`, { name: row.name, at: now });
+}
+
+/** The name HMS gave this id, when it was remembered within the TTL and still matches the name asked for. */
+function rememberedPartyName(pick: { kind: PanePartyKind; nativeId: string }, name: string): string | null {
+  const key = `${pick.kind}:${pick.nativeId}`;
+  const entry = partyRowCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.at >= PARTY_ROW_CACHE_TTL_MS) {
+    partyRowCache.delete(key);
+    return null;
+  }
+  return sameHmsName(entry.name, name) ? entry.name : null;
+}
+
+/** Test seam: forgets every remembered row. */
+export function resetPartyCacheForTests(): void {
+  partyRowCache.clear();
+}
+
+/** 0 exact, 1 starts with the cleaned name, 2 holds every word of it, 3 holds the first distinctive word, else 4. */
+function rowScore(name: string, parts: PartyNameParts, row: string): number {
+  const found = matchKey(row);
+  if (found === matchKey(name)) return 0;
+  const padded = ` ${found} `;
+  const cleaned = matchKey(parts.cleaned);
+  if (cleaned && (found === cleaned || found.startsWith(`${cleaned} `))) return 1;
+  if (cleaned && cleaned.split(' ').every((word) => padded.includes(` ${word} `))) return 2;
+  const first = parts.firstWord ? matchKey(parts.firstWord) : '';
+  if (first && padded.includes(` ${first} `)) return 3;
+  return 4;
+}
+
+/** The rows best first, one per HMS id. Equal scores keep HMS's order. */
+function rankRows(name: string, rows: readonly PanePartyCandidate[]): Array<{ row: PanePartyCandidate; score: number }> {
+  const parts = partyNameParts(name);
+  const seen = new Set<string>();
+  return rows
+    .filter((row) => {
+      const key = `${row.kind}:${row.nativeId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((row, index) => ({ row, index, score: rowScore(name, parts, row.name) }))
+    .sort((left, right) => left.score - right.score || left.index - right.index)
+    .map(({ row, score }) => ({ row, score }));
+}
+
+/** A refusal or failure as the reply: no rows, no best, nothing searched. */
+function replyWithout(outcome: PanePartyOutcome): PanePartyFindResult {
+  return { ...withoutResults(outcome), best: null, searchedFor: null };
+}
+
+/** The reply for a search that ran: rows best first and capped, the best row, and the HMS text that was searched. */
+function rankedReply(
+  name: string,
+  core: PanePartyLookupCore,
+  searchedFor: string,
+  cap: number = PANE_PARTY_RESULT_CAP,
+): PanePartyFindResult {
+  if (!ANSWERED_OUTCOMES.has(core.outcome)) return replyWithout(core.outcome);
+  const ranked = rankRows(name, core.results);
+  const results = ranked.slice(0, cap).map(({ row }) => row);
+  rememberPartyRows(results);
+  const top = ranked[0];
+  return {
+    outcome: core.outcome,
+    results,
+    truncated: core.truncated || ranked.length > cap,
+    best: top && top.score <= 3 ? top.row : null,
+    searchedFor,
+  };
+}
+
+/** One runner run for one kind and HMS text, under the property lock. A refusal or failure comes back in the core shape. */
+async function lookupKind(
+  kind: PanePartyKind,
+  term: string,
+  lock: PaneStayLock,
+  spawn: (input: { kind: PanePartyKind; name: string }) => Promise<unknown>,
+): Promise<PanePartyLookupCore> {
+  let raw: unknown;
+  try {
+    raw = await lock.withLock(() => spawn({ kind, name: term }), acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+  } catch (error) {
+    if (isPropertyReadLockDeadline(error)) return withoutResults('refused_lock_busy');
+    warnPaneStaySpawnFailed('party', error);
+    return withoutResults('execution_failure');
+  }
+  return panePartyFindResultFromCli(kind, raw);
+}
+
 /**
- * Read-only HMS search of companies and agencies for one name, under the session hotel's property lock, one lookup
- * per kind. It links nothing: every candidate goes back to staff, who pick one. The kill switch QUOTE_RATE_CONTEXT=off
- * refuses it.
+ * A search for one kind. Its HMS texts are tried in turn and the search stops at the first that finds rows, so there are
+ * at most two HMS runs. A refusal or failure ends it at once.
+ */
+async function findPartyOfKind(
+  kind: PanePartyKind,
+  name: string,
+  lock: PaneStayLock,
+  spawn: (input: { kind: PanePartyKind; name: string }) => Promise<unknown>,
+): Promise<PanePartyFindResult> {
+  const terms = partySearchTerms(name).slice(0, PARTY_KIND_SEARCH_TERMS);
+  const tries = terms.length ? terms : [name];
+  let core: PanePartyLookupCore = withoutResults('no_match');
+  let searchedFor = tries[0];
+  for (const term of tries) {
+    searchedFor = term;
+    core = await lookupKind(kind, term, lock, spawn);
+    if (!ANSWERED_OUTCOMES.has(core.outcome) || core.results.length) break;
+  }
+  return rankedReply(name, core, searchedFor);
+}
+
+/**
+ * Read-only HMS search of companies and agencies for one name, under the session hotel's property lock. With a kind, only
+ * that kind is searched, and its HMS texts are tried in turn. Without one, it runs one lookup per kind. It links nothing:
+ * every candidate goes back to staff, who pick one. The kill switch QUOTE_RATE_CONTEXT=off refuses it.
  */
 export async function findParty(input: PanePartyFindInput): Promise<PanePartyFindResult> {
   const enabled = panePartyLookupLoaders.enabled ?? (() => quoteRateContextEnabled());
-  if (!enabled()) return withoutResults('refused_flag_off');
+  if (!enabled()) return replyWithout('refused_flag_off');
   const name = typeof input.name === 'string' ? input.name.trim() : '';
-  if (!name || name.length > 256) return withoutResults('refused_input_invalid');
+  if (!name || name.length > 256) return replyWithout('refused_input_invalid');
   const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
-  if (!lock) return withoutResults('refused_lock_unavailable');
+  if (!lock) return replyWithout('refused_lock_unavailable');
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
-  const perKind: PanePartyFindResult[] = [];
+  if (input.kind) return findPartyOfKind(input.kind, name, lock, spawn);
+  const perKind: PanePartyLookupCore[] = [];
   for (const kind of PARTY_KINDS) {
     let raw: unknown;
     try {
@@ -242,7 +386,8 @@ export async function findParty(input: PanePartyFindInput): Promise<PanePartyFin
       break;
     }
   }
-  return mergePartyKindResults(perKind, name);
+  // Both kinds keep their own per-kind cap from the merge, as before. The 5-row cap is for a kind search.
+  return rankedReply(name, mergePartyKindResults(perKind, name), name, Number.POSITIVE_INFINITY);
 }
 
 export type VerifiedPartyResult =
@@ -271,6 +416,9 @@ export async function verifyPartyPick(pick: {
   if (!enabled()) return { ok: false, reason: 'refused_flag_off' };
   const name = typeof pick.name === 'string' ? pick.name.trim() : '';
   if (!name || name.length > 256 || !pick.nativeId) return { ok: false, reason: 'not_found' };
+  // A row HMS returned within the TTL, with the same name, binds with no HMS run and no lock wait.
+  const remembered = rememberedPartyName(pick, name);
+  if (remembered !== null) return { ok: true, party: { kind: pick.kind, nativeId: pick.nativeId, name: remembered } };
   const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
   if (!lock) return { ok: false, reason: 'refused_lock_unavailable' };
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
@@ -283,6 +431,7 @@ export async function verifyPartyPick(pick: {
     return { ok: false, reason: 'unverified' };
   }
   const found = panePartyFindResultFromCli(pick.kind, raw);
+  if (ANSWERED_OUTCOMES.has(found.outcome)) rememberPartyRows(found.results);
   const row = found.results.find(
     (candidate) => candidate.kind === pick.kind && candidate.nativeId === pick.nativeId && sameHmsName(candidate.name, name),
   );

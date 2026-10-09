@@ -32,7 +32,7 @@ function picker(name: string, find: (query: string) => Promise<PartyFindReply>, 
 }
 
 function findButton(): HTMLButtonElement {
-  return screen.getByRole('button', { name: 'Search HMS now' }) as HTMLButtonElement;
+  return screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement;
 }
 
 describe('PartyPicker copy for a search HMS cut short', () => {
@@ -41,7 +41,7 @@ describe('PartyPicker copy for a search HMS cut short', () => {
     render(picker('Tour', find));
     fireEvent.click(findButton());
     await waitFor(() => expect(screen.getByText(PARTY_TRUNCATED_NOTE)).toBeTruthy());
-    expect(screen.queryByText(/No match in HMS/)).toBeNull();
+    expect(screen.queryByText(/Not found in HMS/)).toBeNull();
   });
 });
 
