@@ -23,6 +23,7 @@ import { quoteWorkflowRouter } from './routes/quote-workflow.js';
 import { paneStayCancelRouter } from './routes/pane-stay-cancel.js';
 import { paneStayLookupRouter } from './routes/pane-stay-lookup.js';
 import { panePartyLookupRouter } from './routes/pane-party-lookup.js';
+import { workItemsRouter } from './routes/work-items.js';
 
 export const appRouter = router({
   mail: mailRouter,
@@ -44,6 +45,7 @@ export const appRouter = router({
   paneStayCancel: paneStayCancelRouter,
   paneStayLookup: paneStayLookupRouter,
   panePartyLookup: panePartyLookupRouter,
+  workItems: workItemsRouter,
 });
 
 export type AppRouter = typeof appRouter;

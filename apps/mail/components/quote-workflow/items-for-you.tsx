@@ -8,6 +8,7 @@ export function ItemsForYou({
   onEditReply,
   onHandle,
   onUndo,
+  onRetry,
 }: {
   openItems: QuoteReviewItem[];
   handledItems: QuoteReviewItem[];
@@ -15,6 +16,8 @@ export function ItemsForYou({
   onEditReply?: () => void;
   onHandle?: (itemId: string) => void;
   onUndo?: (itemId: string) => void;
+  /** Runs the read again. Shown on an analysis failure only. */
+  onRetry?: () => void;
 }) {
   if (!openItems.length && !handledItems.length) return null;
   return (
@@ -50,6 +53,16 @@ export function ItemsForYou({
             >
               Show in email
             </button>
+            {item.kind === 'analysis_failure' && onRetry ? (
+              <button
+                type="button"
+                className="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+                aria-label="Retry reading this email"
+                onClick={() => onRetry()}
+              >
+                Retry read
+              </button>
+            ) : null}
             {item.kind === 'question' || item.kind === 'analysis_failure' ? (
               <button
                 type="button"

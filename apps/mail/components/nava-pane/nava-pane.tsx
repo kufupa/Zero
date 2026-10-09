@@ -30,6 +30,7 @@ import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
+import { stayDatesOf, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import {
   bindGetPriorStaffQuoteRequote,
   bindListThreadQuoteRevisions,
@@ -249,14 +250,32 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     quoteSession.treatAs,
     quoteSession.staffNote,
   );
+  // The stored read for the selected mail. A ready or failed read stands in for the live read. A treat-as or a staff
+  // note asks for a fresh read, so the stored read is not used then, and it does not re-trigger the effect below.
+  const storedWork = useStoredWork({
+    trpc: trpcClient,
+    internetMessageId: activeEmail?.internetMessageId ?? null,
+  });
+  const storedOverridden = Boolean(quoteSession.treatAs || quoteSession.staffNote);
+  const storedGate = storedOverridden ? 'override' : storedWork.key;
   useEffect(() => {
     const binding = quoteSession.binding;
     if (!binding || !quoteAdmissionKey) return;
+    // The binding follows the selected mail one render later. Until then it names the previous mail.
+    if ((binding.internetMessageId ?? null) !== (activeEmail?.internetMessageId ?? null)) return;
     dispatchQuote({ type: 'analysis_started' });
     const workflow = quoteWorkflowFromTrpc(trpcClient);
     const selectionEpoch = binding.selectionEpoch;
+    const decision = storedDecision(storedWork.pane, storedOverridden);
+    if (decision.kind === 'ready') {
+      dispatchQuote({ type: 'mailbox_status', status: 'ready' });
+      dispatchQuote({ type: 'analysis_ready', analysis: decision.analysis });
+    } else if (decision.kind === 'failed') {
+      dispatchQuote({ type: 'mailbox_status', status: 'ready' });
+      dispatchQuote({ type: 'analysis_failed', message: decision.reason });
+    }
     let cancelled = false;
-    void bindAnalyseSelection({
+    if (decision.kind === 'live') void bindAnalyseSelection({
       mutate: workflow.analyseSelection?.mutate,
       input: {
         internetMessageId: binding.internetMessageId,
@@ -325,7 +344,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     };
     // Admission key is the selection identity. Body/subject are no longer read on the client.
     // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
-  }, [quoteAnalysisRetryKey]);
+  }, [quoteAnalysisRetryKey, storedGate]);
 
   const priorQuoteKey = [
     quoteSession.analysis?.luna?.workflow ?? '',
@@ -1160,7 +1179,18 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               findParty={PANE_PARTY_FINDER}
               partyIndex={PANE_PARTY_INDEX}
-              onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
+              onPatchGroup={(groupId, patch) => {
+                dispatchQuote({ type: 'patch_group', groupId, patch });
+                // A stay's dates belong to every group of that stay. Only a stored read says which groups share one.
+                const dates = stayDatesOf(patch);
+                if (storedWork.pane.state === 'ready' && Object.keys(dates).length > 0) {
+                  for (const sibling of storedWork.siblingGroupIds(groupId)) {
+                    dispatchQuote({ type: 'patch_group', groupId: sibling, patch: dates });
+                  }
+                }
+                storedWork.recordGroupPatch(groupId, patch);
+              }}
+              onRetryRead={quoteSession.phase === 'failed' ? storedWork.retry : undefined}
               onStayAction={(action) => {
                 if (action.type !== 'remove_stay') {
                   dispatchQuote(action);

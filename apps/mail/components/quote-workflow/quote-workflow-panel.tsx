@@ -847,6 +847,7 @@ export function QuoteWorkflowPanel({
   workbookPending,
   onHandleReviewItem,
   onUndoReviewItem,
+  onRetryRead,
   onViewSource,
   onEditReply,
   onPatchStaffHeader,
@@ -882,6 +883,8 @@ export function QuoteWorkflowPanel({
   workbookPending?: boolean;
   onHandleReviewItem?: (itemId: string) => void;
   onUndoReviewItem?: (itemId: string) => void;
+  /** Runs the read again after an analysis failure. Absent when there is nothing to retry. */
+  onRetryRead?: () => void;
   onViewSource?: (item: QuoteReviewItem) => void;
   onEditReply?: () => void;
   onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>) => void;
@@ -1045,6 +1048,7 @@ export function QuoteWorkflowPanel({
             onEditReply={onEditReply}
             onHandle={onHandleReviewItem}
             onUndo={onUndoReviewItem}
+            onRetry={onRetryRead}
           />
         </Section>
       ) : null}

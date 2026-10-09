@@ -11,6 +11,7 @@ import { isAutoTriageNeverSpam } from '../never-spam.js';
 import { canonicalInternetMessageId, resolveAdapter } from '../quote-workflow-analyse-selection.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-selection.js';
 import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
+import { ensureWorkItemForMessage } from '../work-items.js';
 import {
   enqueueAiRun,
   markAiRunDeadLetter,
@@ -181,7 +182,10 @@ export async function runInboundExtraction(
       ),
     )
     .limit(1);
-  if (existing) return 'exists';
+  if (existing) {
+    await ensureWorkItemForMessage(db, { transportId: run.transportId, messageId: run.triggerMessageId });
+    return 'exists';
+  }
   const adapter = deps.adapter === undefined ? resolveAdapter(true, null).adapter : deps.adapter;
   if (!adapter) return 'unconfigured';
   const max = inboundExtractionMaxPerHour(env);
@@ -260,6 +264,8 @@ export async function runInboundExtraction(
       ...(translationUsage ? { translation: translationUsage } : {}),
     },
   });
+  // The work item points at this read. Its person-set values stay in its state (see work-items.ts).
+  await ensureWorkItemForMessage(db, { transportId: run.transportId, messageId: run.triggerMessageId });
   if (
     extraction.kind === 'spam' &&
     env.AI_WRITE_GATE_ENABLED === 'true' &&
