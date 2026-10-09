@@ -314,7 +314,8 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
     const m = /input:visible#(\d+)$/.exec(desc);
     return m ? Number(m[1]) : null;
   };
-  const isRunButton = (desc) => desc.includes('role=button:/^Run$/');
+  // The Run control: found by role (/^Run$/), or by its text (/^\s*Run\s*$/) on an ExtJS a.x-btn.
+  const isRunButton = (desc) => desc.includes('^Run$') || desc.includes('^\\s*Run\\s*$');
   const initialValueOf = (desc) => {
     const k = inputIndex(desc);
     return k === null ? '' : INPUTS[k].value;
@@ -367,7 +368,7 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
     if (inputIndex(desc) !== null) return 1;
     if (desc.endsWith('input:visible')) return INPUTS.length;
     if (desc.includes('Processing request')) return mask() ? 1 : 0;
-    if (desc.includes('^Run$')) return runButton ? 1 : 0;
+    if (isRunButton(desc)) return runButton ? 1 : 0;
     if (desc.includes('ff_companyname')) return 1;
     if (desc.includes('.x-window') && !desc.includes('.x-grid') && !desc.includes('input')) return windowIsOpen() ? 1 : 0;
     return 0;
@@ -375,7 +376,7 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
   const loc = (desc) => {
     const self = {
       locator: (s) => loc(`${desc} >> ${s}`),
-      filter: () => self,
+      filter: (o) => loc(`${desc}${o?.hasText ? ` >> hasText:${String(o.hasText)}` : ''}`),
       first: () => self,
       last: () => self,
       nth: (i) => loc(`${desc}#${i}`),
@@ -392,7 +393,7 @@ function searchPage({ clock, store, runButton = true, runThrows = false, mask = 
       },
       click: async () => {
         if (desc.includes('x-form-lov-trigger')) triggerClicks += 1;
-        if (desc.includes('^Run$')) {
+        if (isRunButton(desc)) {
           if (runThrows) throw new Error('click intercepted');
           onRun();
           scheduleAnswer();

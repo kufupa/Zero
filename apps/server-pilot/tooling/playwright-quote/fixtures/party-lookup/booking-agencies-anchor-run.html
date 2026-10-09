@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- SYNTHETIC fixture for party-lookup. It mirrors the layout of the HMS "Booking Agencies" dialog from a live screenshot: a saved-search
+     combo at the left of the row, the field selector, a match-mode button, an empty text box, and a grey Run button at the
+     right end of that row. The column grid and its filter row sit below. Names and ids are invented. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Booking Agencies dialog (synthetic)</title>
+<style>
+  body { margin: 0; width: 1280px; height: 720px; position: relative; font: 12px Arial, sans-serif; background: #f2f2f2; }
+  [hidden] { display: none !important; }
+  .abs { position: absolute; box-sizing: border-box; }
+  input.x-form-text { position: absolute; box-sizing: border-box; height: 26px; border: 1px solid #aaa; padding: 0 6px; background: #fff; }
+  button { position: absolute; box-sizing: border-box; height: 28px; }
+  .x-window { position: absolute; left: 220px; top: 100px; width: 840px; height: 520px; background: #fff; border: 1px solid #999; }
+  .x-boundlist { position: absolute; z-index: 10; width: 200px; background: #fff; border: 1px solid #888; }
+  .x-boundlist-item { padding: 4px 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <!-- The screen's own header search and Run: never the dialog's. -->
+  <input class="x-form-text" id="header-search" placeholder="Search by Name, Confirmation, Room or Loyalty" style="left:708px; top:50px; width:360px;">
+  <button id="header-run" style="left:1078px; top:50px; width:56px; background:#8b1d24; color:#fff;">Run</button>
+
+  <div class="x-window">
+    <div class="abs" style="left:20px; top:14px; font-weight:bold;">Booking Agencies</div>
+    <div class="abs" style="left:20px; top:55px;">Select a record and click OK.</div>
+    <input class="x-form-text" id="saved-search" value="360 degrees" style="left:29px; top:112px; width:248px;">
+    <input class="x-form-text" id="field-selector" readonly value="Booking Agency Name" style="left:383px; top:112px; width:200px;">
+    <button id="match-mode" style="left:592px; top:112px; width:32px;">[A]</button>
+    <input class="x-form-text" id="filter-box" style="left:631px; top:112px; width:134px;">
+    <a id="dialog-run" class="x-btn" style="position:absolute; left:770px; top:112px; width:40px; height:28px; display:block; background:#c8c8c8; text-align:center; line-height:28px;"><span class="x-btn-inner">Run</span></a>
+    <div id="field-list" class="x-boundlist" hidden style="left:383px; top:140px;"><div class="x-boundlist-item">IATA/Reference Number</div><div class="x-boundlist-item">Booking Agency Name</div><div class="x-boundlist-item">Address</div><div class="x-boundlist-item">City</div></div>
+    <div class="abs" style="left:20px; top:160px; width:800px; height:26px; background:#444; color:#fff; padding:5px 8px;">IATA/Reference Number &nbsp; Booking Agency Name &nbsp; Address &nbsp; City &nbsp; Country &nbsp; Contact Last Name</div>
+    <input class="x-form-text" style="left:30px; top:186px; width:150px;">
+    <input class="x-form-text" style="left:260px; top:186px; width:150px;">
+    <input class="x-form-text" style="left:520px; top:186px; width:150px;">
+    <div class="abs" style="left:20px; top:230px; width:800px; height:24px; background:#dbeaf5; padding:4px 8px;">&nbsp; Booking Agency: 4 Travel &nbsp;&nbsp; 63 Stephen Dlamini Road &nbsp;&nbsp; Durban &nbsp;&nbsp; South Africa</div>
+    <label class="abs" style="left:600px; top:470px;"><input type="checkbox" id="show-filter" checked> Show Filter Row</label>
+  </div>
+
+  <script>
+    const filterBox = document.getElementById('filter-box');
+    const dialogRun = document.getElementById('dialog-run');
+    const selector = document.getElementById('field-selector');
+    const list = document.getElementById('field-list');
+    filterBox.addEventListener('input', () => { dialogRun.disabled = filterBox.value.trim() === ''; });
+    dialogRun.addEventListener('click', () => { window.dialogRan = filterBox.value; });
+    document.getElementById('header-run').addEventListener('click', () => { window.headerRan = true; });
+    selector.addEventListener('click', () => { list.hidden = false; });
+    list.addEventListener('click', (event) => {
+      if (!event.target.classList.contains('x-boundlist-item')) return;
+      selector.value = event.target.textContent;
+      list.hidden = true;
+    });
+  </script>
+</body>
+</html>

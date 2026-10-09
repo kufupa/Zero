@@ -75,6 +75,17 @@ test('booking agencies: the query goes in the box on the Run row, the dialog Run
   }
 });
 
+test('a Run that is an ExtJS anchor with no button role is found by its text, and the query runs', { skip }, async () => {
+  const page = await openFixture('booking-agencies-anchor-run.html');
+  try {
+    assert.equal(await lookup.fillRunRowFilter(page, 'bookingAgency', 'Acme Travel'), true);
+    assert.equal(await lookup.runLookupFilter(page, 'bookingAgency'), true);
+    assert.equal(await page.evaluate(() => window.dialogRan), 'Acme Travel');
+  } finally {
+    await page.close();
+  }
+});
+
 test('the field selector is switched to the name field before the query goes in', { skip }, async () => {
   const page = await openFixture('booking-agencies-dialog.html');
   try {
