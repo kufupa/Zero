@@ -660,4 +660,41 @@ describe('NavaPane screen states', () => {
     await settle();
     expect(container).toMatchSnapshot();
   });
+
+  it('reply: an automated sender gets no Insert draft button (AE3)', async () => {
+    bridgeMockState.analysisOverride = {
+      status: 'ready',
+      intent: 'quote',
+      groups: [
+        {
+          id: 'g1',
+          childrenAges: [],
+          board: 'unknown',
+          quantity: 1,
+          specialRequests: [],
+          fields: { arrivalDate: 'missing', departureDate: 'missing', adults: 'missing' },
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      sourceRevision: 1,
+      noReplySender: true,
+    };
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(
+      await screen.findByText(
+        'Nava filled these in from the email. Check them before getting rates.',
+      ),
+    ).toBeDefined();
+    await settle();
+    expect(screen.queryByRole('button', { name: 'Insert draft in Outlook' })).toBeNull();
+  });
+
+  it('preview: the webmail reply says it is preview only, not that the add-in is too old', async () => {
+    render(<NavaPane bridge={fakeBridge} preview />);
+    expect(
+      await screen.findByText('Preview only: copy the reply or download the PDF.'),
+    ).toBeDefined();
+    expect(screen.queryByText(/add-in is too old/)).toBeNull();
+  });
 });

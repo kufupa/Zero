@@ -782,3 +782,29 @@ describe('staff quote no-matching-rate flag', () => {
     expect(otherFailure).not.toHaveProperty('noMatchingRate', true);
   });
 });
+
+describe('bindAnalyseSelection no-reply sender', () => {
+  it('carries the sender flag onto the analysis for the pane', async () => {
+    const mutate = vi.fn(async () => ({
+      status: 'ready' as const,
+      intent: 'other' as const,
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      sourceRevision: 3,
+      noReplySender: true,
+    }));
+    const result = await bindAnalyseSelection({
+      mutate,
+      input: {
+        storeId: 'store-1',
+        entryId: '001',
+        folderEntryId: 'folder-inbox',
+        selectionEpoch: 2,
+        internetMessageId: '<a@x>',
+      },
+    });
+    expect(result.kind).toBe('ready');
+    if (result.kind === 'ready') expect(result.analysis.noReplySender).toBe(true);
+  });
+});

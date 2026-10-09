@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
 
 /**
- * Open HMS and Copy confirmation, shown beside an HMS confirmation number. Open HMS is a plain link with no target:
- * the Outlook add-in opens non-Nava origins in the default browser. The link needs VITE_PUBLIC_HMS_LANDING_URL in the
- * build. Without it the link is hidden, and Copy still shows.
+ * The HMS handoff for one confirmation number: Copy link and Copy confirmation, with Open HMS as the plain link. Copy
+ * link copies the HMS landing page and the number finds the booking there. Copy link and Open HMS need
+ * VITE_PUBLIC_HMS_LANDING_URL in the build. Without it only Copy confirmation shows. Open HMS has no link target:
+ * the Outlook add-in opens non-Nava origins in the default browser.
  */
 
 const linkClass = 'text-[11.5px] font-medium text-[#0066cc] underline';
@@ -58,10 +60,13 @@ function copyWithSelection(text: string): boolean {
   }
 }
 
-/** Open HMS and Copy confirmation for one HMS confirmation number. Renders nothing for an empty number. */
+type CopyTarget = 'link' | 'number';
+
+/** Copy link and Copy confirmation for one HMS confirmation number. Renders nothing for an empty number. */
 export function HmsLinkActions({ confirmation }: { confirmation: string }) {
   const landing = hmsLandingUrl();
-  const [feedback, setFeedback] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const number = confirmation.trim();
+  const [feedback, setFeedback] = useState<{ target: CopyTarget; copied: boolean } | null>(null);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -70,27 +75,48 @@ export function HmsLinkActions({ confirmation }: { confirmation: string }) {
     };
   }, []);
 
-  if (!confirmation.trim()) return null;
+  if (!number) return null;
 
-  const copy = async () => {
-    const copied = await copyText(confirmation);
-    setFeedback(copied ? 'copied' : 'failed');
+  const copy = async (target: CopyTarget, text: string) => {
+    const copied = await copyText(text);
+    setFeedback({ target, copied });
+    if (copied) {
+      toast.success(
+        target === 'link'
+          ? 'HMS link copied. Paste it into a browser.'
+          : `Confirmation number ${text} copied.`,
+      );
+    }
     if (resetTimer.current) clearTimeout(resetTimer.current);
-    resetTimer.current = setTimeout(() => setFeedback('idle'), 2000);
+    resetTimer.current = setTimeout(() => setFeedback(null), 2000);
   };
+
+  const label = (target: CopyTarget, idle: string) =>
+    feedback?.target === target && feedback.copied ? 'Copied' : idle;
+  const failure =
+    feedback && !feedback.copied
+      ? feedback.target === 'link'
+        ? "Couldn't copy the link. Use Open HMS instead."
+        : "Couldn't copy. Select the number and copy it."
+      : '';
 
   return (
     <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+      {landing ? (
+        <button type="button" className={buttonClass} onClick={() => void copy('link', landing)}>
+          {label('link', 'Copy link')}
+        </button>
+      ) : null}
+      <button type="button" className={buttonClass} onClick={() => void copy('number', number)}>
+        {label('number', 'Copy confirmation')}
+      </button>
       {landing ? (
         <a href={landing} className={linkClass}>
           Open HMS
         </a>
       ) : null}
-      <button type="button" className={buttonClass} onClick={() => void copy()}>
-        {feedback === 'copied' ? 'Copied' : 'Copy confirmation'}
-      </button>
       <span role="status" className="text-[11px] text-amber-900">
-        {feedback === 'failed' ? "Couldn't copy. Select the number and copy it." : ''}
+        {failure}
       </span>
     </span>
   );

@@ -184,6 +184,41 @@ describe('quoteWorkflow.analyseSelection', () => {
     expect(enqueueHmsRead).not.toHaveBeenCalled();
   });
 
+  it('flags an automated sender so the pane can hide Insert draft, and leaves a guest sender unflagged', async () => {
+    quoteWorkflowLoaders.llmEnabled = () => false;
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Your voucher',
+      bodyText: 'Please send availability for two rooms.',
+      preceding: [],
+      attachments: [],
+      fromAddress: 'Travelit <notifications@travelit.example>',
+    });
+    const automated = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<noreply-1@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 1,
+    });
+    expect(automated).toMatchObject({ status: 'ready', noReplySender: true });
+
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote request',
+      bodyText: 'Please send availability for two rooms.',
+      preceding: [],
+      attachments: [],
+      fromAddress: 'ada@example.test',
+    });
+    const guest = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<guest-1@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 1,
+    });
+    expect(guest).toMatchObject({ status: 'ready', noReplySender: false });
+  });
+
   it('still analyses when an attachment is unreadable and lists it as a document_failure', async () => {
     quoteWorkflowLoaders.loadSyncedSelection = async () => ({
       subject: 'Quote request',

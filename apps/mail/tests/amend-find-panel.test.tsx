@@ -158,6 +158,11 @@ function pressFind() {
   fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
 }
 
+/** The HMS column shows its Status row once HMS holds the booking. */
+async function expectFoundBooking() {
+  await waitFor(() => expect(document.querySelector('[data-field="status"]')).not.toBeNull());
+}
+
 function cancelRun(overrides: Partial<CancelRun> = {}): CancelRun {
   return {
     outcome: 'execution_failure',
@@ -226,7 +231,7 @@ describe('AmendLookupPanel', () => {
     pressFind();
     await waitFor(() => expect(findStay).toHaveBeenCalledTimes(1));
     expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
-    expect(screen.getByText('Nava is looking up the booking in HMS… (about 1–2 minutes)')).toBeTruthy();
+    expect(screen.getByText('Nava is looking up the booking in HMS…')).toBeTruthy();
     rerender(<AmendLookupPanel session={session} trpc={lookupTrpc(findStay)} />);
     expect(findStay).toHaveBeenCalledTimes(1);
   });
@@ -236,7 +241,7 @@ describe('AmendLookupPanel', () => {
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     pressFind();
     await waitFor(() => expect(screen.getByText('Guest wants: 14 Oct 2026')).toBeTruthy());
-    expect(screen.getByText(`confirmation number ${CONFIRMATION}`)).toBeTruthy();
+    expect(screen.queryByText('Matched on')).toBeNull();
     expect(screen.getAllByText(/^Guest wants:/)).toHaveLength(1);
     expect(document.querySelector('[data-field="departure"]')?.getAttribute('data-differs')).toBe('true');
     expect(document.querySelector('[data-field="arrival"]')?.getAttribute('data-differs')).toBe('false');
@@ -263,7 +268,7 @@ describe('AmendLookupPanel', () => {
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     pressFind();
-    await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
+    await expectFoundBooking();
     expect(screen.getByText('Rate plan')).toBeTruthy();
     expect(screen.getByText('BAR')).toBeTruthy();
     expect(screen.getByText('Meal plan')).toBeTruthy();
@@ -276,7 +281,7 @@ describe('AmendLookupPanel', () => {
     const findStay = vi.fn().mockResolvedValue(found({ ratePlan: null, mealPlan: null, grandTotal: null }));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     pressFind();
-    await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
+    await expectFoundBooking();
     expect(screen.queryByText('Rate plan')).toBeNull();
     expect(screen.queryByText('Meal plan')).toBeNull();
     expect(screen.queryByText('Grand total')).toBeNull();
@@ -380,14 +385,14 @@ describe('AmendLookupPanel', () => {
     pressFind();
     await screen.findByText('Nava could not read the HMS result. Try again in a minute.');
     fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
-    await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
+    await expectFoundBooking();
     expect(findStay).toHaveBeenCalledTimes(2);
   });
 });
 
 describe('AmendLookupPanel guest-name search', () => {
   const NO_NUMBER: QuoteAmendment = { ...AMEND, confirmationNumber: null };
-  const SEARCH_BUTTON = 'Search HMS (about 1 minute)';
+  const SEARCH_BUTTON = 'Search HMS';
   const NO_ROWS_OK = { outcome: 'ok', rows: [], screenshots: [], runId: null };
 
   it('prefills the name search from the email, and opens it when the email has no booking number', () => {
@@ -427,9 +432,9 @@ describe('AmendLookupPanel guest-name search', () => {
     expect(items[1]?.textContent).toContain('Cancelled');
     expect(items[1]?.textContent).toContain('12 Oct 2026 to Not shown');
     fireEvent.click(items[0] as HTMLButtonElement);
-    await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
+    await expectFoundBooking();
     expect(findStay).toHaveBeenCalledWith({ confirmation: '46184891-1', arrival: '2026-10-12' });
-    expect(screen.getByText('confirmation number 46184891-1')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
   });
 
   it('says no booking matched the surname and arrival, and says what to check', async () => {
@@ -490,30 +495,61 @@ describe('AmendLookupPanel guest-name search', () => {
       <AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: '64318608-1' })} trpc={lookupTrpc(findStay)} />,
     );
     pressFind();
-    await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
+    await expectFoundBooking();
     expect(findStay).toHaveBeenCalledWith({ confirmation: '64318608-1', arrival: '2026-10-12' });
-    expect(screen.getByText('confirmation number 64318608-1')).toBeTruthy();
+    expect(screen.queryByText('Matched on')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
     expect(screen.queryByTestId('amend-guest-search')).toBeNull();
   });
 
-  it('shows Open HMS beside the email number and the booking HMS returns, with no link target', async () => {
+  it('shows one handoff row, Copy link and Copy confirmation, with Open HMS beside them and no link target', async () => {
+    const HMS_LANDING = 'https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY';
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     expect(screen.queryAllByRole('link', { name: 'Open HMS' })).toHaveLength(0);
+    expect(screen.queryAllByRole('button', { name: 'Copy link' })).toHaveLength(0);
     expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
-    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', 'https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY');
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', HMS_LANDING);
     cleanup();
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    expect(screen.getAllByRole('button', { name: 'Copy link' })).toHaveLength(1);
     expect(screen.getAllByRole('link', { name: 'Open HMS' })).toHaveLength(1);
     pressFind();
-    await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
+    await expectFoundBooking();
     const links = screen.getAllByRole('link', { name: 'Open HMS' });
-    expect(links).toHaveLength(2);
-    for (const link of links) {
-      expect(link.getAttribute('href')).toBe('https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY');
-      expect(link.hasAttribute('target')).toBe(false);
-    }
-    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(2);
+    expect(links).toHaveLength(1);
+    expect(links[0]?.getAttribute('href')).toBe(HMS_LANDING);
+    expect(links[0]?.hasAttribute('target')).toBe(false);
+    expect(screen.getAllByRole('button', { name: 'Copy link' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
+  });
+
+  it('hides the find button and its wait note once HMS shows the booking', async () => {
+    const findStay = vi.fn().mockResolvedValue(found());
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    expect(screen.getByRole('button', { name: 'Find this booking in HMS' })).toBeTruthy();
+    pressFind();
+    await expectFoundBooking();
+    expect(screen.queryByRole('button', { name: 'Find this booking in HMS' })).toBeNull();
+    expect(screen.queryByText('Takes about 1–2 minutes. Quotes wait while it runs.')).toBeNull();
+  });
+
+  it('shows the requested dates from the email beside the booked dates from HMS (AE2)', async () => {
+    const amend = { ...AMEND, arrival: '2026-10-31', departure: '2026-11-07' };
+    const findStay = vi
+      .fn()
+      .mockResolvedValue(found({ arrival: '2026-11-01', departure: '2026-11-06' }));
+    render(<AmendLookupPanel session={sessionWith(amend)} trpc={lookupTrpc(findStay)} />);
+    pressFind();
+    await expectFoundBooking();
+    expect(screen.getByText('31 Oct 2026')).toBeTruthy();
+    expect(screen.getByText('7 Nov 2026')).toBeTruthy();
+    const arrival = document.querySelector('[data-field="arrival"]');
+    const departure = document.querySelector('[data-field="departure"]');
+    expect(arrival?.textContent).toContain('1 Nov 2026');
+    expect(arrival?.getAttribute('data-differs')).toBe('true');
+    expect(departure?.textContent).toContain('6 Nov 2026');
+    expect(departure?.getAttribute('data-differs')).toBe('true');
   });
 });
 
@@ -717,7 +753,7 @@ describe('AmendLookupPanel cancel from the pane', () => {
       },
     };
     render(<AmendLookupPanel session={sessionWith({ ...CANCEL, confirmationNumber: null })} trpc={trpc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search HMS (about 1 minute)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS' }));
     const bookings = () => within(screen.getByRole('list', { name: 'Bookings found in HMS' })).getAllByRole('button');
     await screen.findByRole('list', { name: 'Bookings found in HMS' });
     fireEvent.click(bookings()[0] as HTMLButtonElement);
@@ -729,7 +765,7 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(await screen.findByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
     expect(screen.queryByText(`HMS says: ${PENALTY}`)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
-  });
+  }, 15_000);
 
   it('says so when HMS shows no cancellation fee', async () => {
     capabilities.paneSave = true;

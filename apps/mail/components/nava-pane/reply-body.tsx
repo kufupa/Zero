@@ -9,6 +9,7 @@ import {
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
+import { PREVIEW_ONLY_MESSAGE } from '@/lib/workstation/web-pane-bridge';
 import { PrimaryButton, SecondaryButton } from './pane-ui';
 import { singleReplyDraft, type ReplyDraftScope } from './use-insert-ai-draft';
 
@@ -22,6 +23,8 @@ type ReplyBodyProps = {
   isDraftPending: boolean;
   statusMessage: string | null;
   onDraft: (scope: ReplyDraftScope) => void;
+  /** The webmail preview. It cannot create a draft, so the reason says so instead of blaming the add-in. */
+  preview?: boolean;
 };
 
 /**
@@ -38,7 +41,10 @@ export function ReplyBody({
   isDraftPending,
   statusMessage,
   onDraft,
+  preview = false,
 }: ReplyBodyProps) {
+  // A no-reply sender (an automated mailbox) gets no insert actions. The reply text stays for copying.
+  const noReplySender = quoteSession.analysis?.noReplySender === true;
   // One reply for every completed date option (two or more PDFs); per-option Draft stays available.
   const dateOptionLetters = completedDateOptions(quoteSession).map((option) => option.letter);
   const allOptionsDraft = dateOptionLetters.length >= 2;
@@ -54,9 +60,11 @@ export function ReplyBody({
   // Why the reply button is off, or null when it can make the draft. A click that still gets through toasts the same reason.
   const draftBlockedReason: string | null = !activeEmail
     ? 'Select an email first'
-    : !supportsAction('CREATE_REPLY_DRAFT') || !supportsAction('ADD_ATTACHMENT_TO_DRAFT')
-      ? 'This Outlook add-in is too old to attach the PDF. Update the Nava Outlook add-in, then try again.'
-      : allOptionsDraft
+    : preview
+      ? PREVIEW_ONLY_MESSAGE
+      : !supportsAction('CREATE_REPLY_DRAFT') || !supportsAction('ADD_ATTACHMENT_TO_DRAFT')
+        ? 'This Outlook add-in is too old to attach the PDF. Update the Nava Outlook add-in, then try again.'
+        : allOptionsDraft
         ? requireMultiOptionDraft(quoteSession, combinedEdit)
           ? null
           : 'Prepare a PDF for each date option first'
@@ -67,7 +75,7 @@ export function ReplyBody({
             : 'Prepare the quote PDF first';
   return (
     <>
-      {quoteOrBookingEmail ? (
+      {noReplySender ? null : quoteOrBookingEmail ? (
         <PrimaryButton
           onClick={() => onDraft(allOptionsDraft ? 'all' : 'selected')}
           disabled={isDraftPending || draftBlockedReason !== null}
@@ -109,12 +117,12 @@ export function ReplyBody({
           />
         </label>
       ) : null}
-      {allOptionsDraft ? (
+      {allOptionsDraft && !noReplySender ? (
         <p className="text-center text-[11px] text-[#64748b]">
           Puts every option you ran into one email draft. Nothing is sent.
         </p>
       ) : null}
-      {allOptionsDraft ? (
+      {allOptionsDraft && !noReplySender ? (
         <SecondaryButton
           onClick={() => onDraft('selected')}
           disabled={
@@ -128,10 +136,12 @@ export function ReplyBody({
           {selectedOptionLabel}
         </SecondaryButton>
       ) : null}
-      <p className="text-[11px] text-[#64748b]">
-        Creates an unsent reply with the PDF attached. Review it, then Send manually in Outlook. Nava never sends from
-        this pane.
-      </p>
+      {noReplySender ? null : (
+        <p className="text-[11px] text-[#64748b]">
+          Creates an unsent reply with the PDF attached. Review it, then Send manually in Outlook.
+          Nava never sends from this pane.
+        </p>
+      )}
       {/* Status Message */}
       {statusMessage !== null && (
         <p role="status" className="text-xs text-amber-700">

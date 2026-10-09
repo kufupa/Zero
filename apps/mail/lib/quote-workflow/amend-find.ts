@@ -7,7 +7,8 @@ import type { QuoteAmendment } from './types';
  */
 
 export const AMEND_FIND_COPY = {
-  looking: 'Nava is looking up the booking in HMS… (about 1–2 minutes)',
+  looking: 'Nava is looking up the booking in HMS…',
+  lookupWait: 'Takes about 1–2 minutes. Quotes wait while it runs.',
   noNumber: "Nava couldn't find a booking number in the email. Find the booking by guest name below.",
   waitingThread: 'Waiting for this email to sync before the HMS lookup can start.',
   notFound:
@@ -25,8 +26,8 @@ export const AMEND_FIND_COPY = {
   seeBooking: 'See the booking in HMS',
   footer: 'Nava only looks the booking up. Make the change in HMS yourself.',
   searchIntro: 'The email has no HMS booking number, so find the booking by surname and arrival day.',
-  searchButton: 'Search HMS (about 1 minute)',
-  searching: 'Nava is searching HMS by guest name… (about 1 minute)',
+  searchButton: 'Search HMS',
+  searching: 'Nava is searching HMS by guest name…',
   searchCapped: 'Many matches — add the departure date.',
   searchInvalid: 'Check the surname and dates, then search again.',
   searchFailed: 'Nava could not read the HMS search. Try again in a minute.',

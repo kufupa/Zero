@@ -952,6 +952,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
       isDraftPending={isDraftPending}
       statusMessage={draftStatusMessage}
       onDraft={trackedDraft}
+      preview={preview}
     />
   );
 
@@ -1227,6 +1228,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
               setTourSlideIndex(0);
               setCurrentScreen('tour');
             }}
+            preview={preview}
           />
         </footer>
       </div>

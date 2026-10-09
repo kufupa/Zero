@@ -168,6 +168,8 @@ export type QuoteAnalysis = {
   luna?: LunaAnalysisWire | null;
   /** Intent stays other for amend and cancel. This only feeds the HMS lookup panel. */
   amendment?: QuoteAmendment | null;
+  /** The email came from an automated mailbox staff cannot answer. The pane hides Insert draft for it. */
+  noReplySender?: boolean;
   aiUnavailable?: boolean;
   source?: QuoteAnalysisSource;
   fallbackReason?: QuoteWorkflowFallbackReason;

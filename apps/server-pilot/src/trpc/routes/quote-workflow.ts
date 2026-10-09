@@ -34,6 +34,7 @@ import {
   runPaneStay,
   type PaneStayResult,
 } from '../../ai/pane-stay-save.js';
+import { isNoReplyAddress } from '../../mail/conversation-signals.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
@@ -170,7 +171,8 @@ export const quoteWorkflowRouter = router({
       if (outcome.kind === 'fallback') {
         console.warn('quote_workflow_fallback', outcome.reason);
       }
-      return payload;
+      // The sender decides whether staff can answer, so the pane hides Insert draft for an automated one. Read per request.
+      return { ...payload, noReplySender: isNoReplyAddress(synced.fromAddress) };
     }),
   // Read-only. Voucher or POP mail gets the guest surname and arrival read from its text, and the file to save. The
   // stored subject and body decide it, so an ordinary email reads no attachment bytes. Nothing is booked or changed.

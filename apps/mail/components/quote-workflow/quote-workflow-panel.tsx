@@ -623,6 +623,7 @@ function StayScopePicker({
   const stayKeys = requestedQuoteKeys(session.groups);
   if (stayKeys.length <= 1) return null;
   const allOptionsReply = completedDateOptions(session).length >= 2;
+  const noReplySender = session.analysis?.noReplySender === true;
   const pending = pendingPdfStayKey(session);
   return (
     <div className="flex flex-col gap-2">
@@ -681,7 +682,7 @@ function StayScopePicker({
                 {onPreparePdf ? null : <p className="text-[11px] text-[#64748b]">Not available here.</p>}
               </div>
             ) : null}
-            {selected && hasPdf ? (
+            {selected && hasPdf && !noReplySender ? (
               <p className="text-[11px] text-[#475569]">
                 {allOptionsReply
                   ? `Use Draft option ${letter} only below for this option.`

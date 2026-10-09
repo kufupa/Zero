@@ -12,7 +12,7 @@ const mutedChipClass =
 
 const AMENDMENT_CHIP: Record<AmendmentKind, { label: string; hint: string; className: string }> = {
   amend: {
-    label: 'Change to booking',
+    label: 'Amendment',
     hint: 'Nava thinks the guest wants to change an existing booking.',
     className: 'rounded-sm bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-900',
   },
@@ -52,6 +52,8 @@ export function WorkflowBadge({
   const options = (['quote', 'create_booking', 'other'] as const).filter(
     (value) => value !== 'other' || current === 'other',
   );
+  // An amendment is not a quote or a booking. While it reads as Other, the picker names it instead, so Other never shows.
+  const pickerNamesAmendment = Boolean(amendment) && current === 'other';
   return (
     <div className="flex flex-wrap items-center gap-2">
       <div className="flex items-center gap-2">
@@ -61,6 +63,8 @@ export function WorkflowBadge({
             aria-label="Nava reads this as"
             className={paneFieldClass}
             value={current ?? ''}
+            title={pickerNamesAmendment ? amendment?.hint : undefined}
+            data-amendment-kind={pickerNamesAmendment ? amendmentKind : undefined}
             onChange={(event) => {
               const next = event.target.value;
               if (next === 'quote' || next === 'create_booking') onIntentChange?.(next);
@@ -73,13 +77,13 @@ export function WorkflowBadge({
             ) : null}
             {options.map((value) => (
               <option key={value} value={value}>
-                {INTENT_LABEL[value]}
+                {value === 'other' && amendment ? amendment.label : INTENT_LABEL[value]}
               </option>
             ))}
           </select>
         </div>
       </div>
-      {amendment ? (
+      {amendment && !pickerNamesAmendment ? (
         <span className={amendment.className} title={amendment.hint} data-amendment-kind={amendmentKind}>
           {amendment.label}
         </span>
