@@ -1,4 +1,5 @@
 import {
+  canonicalCenturionWindow,
   CENTURION_TRANSPORT_ID,
   CENTURION_WINDOW_END_UTC,
   CENTURION_WINDOW_START_UTC,
@@ -13,6 +14,7 @@ import { chmod, lstat, mkdir, realpath, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 import path from 'node:path';
 
 const APPROVED_INSTANCE_ID = 'i-008f737974a9ba9b3';
@@ -103,6 +105,25 @@ type PreparedExport = {
   snapshotId: string;
   databaseUrl: string;
 };
+
+type ExportWindow = { startInclusive: string; endExclusive: string };
+
+/** `--from` and `--to` (ISO UTC) must come together; with neither, the original nine-day window applies. */
+function exportWindowFrom(args: readonly string[]): ExportWindow {
+  const { values } = parseArgs({
+    args: [...args],
+    options: { from: { type: 'string' }, to: { type: 'string' } },
+    strict: true,
+    allowPositionals: false,
+  });
+  if (values.from === undefined && values.to === undefined) {
+    return { startInclusive: CENTURION_WINDOW_START_UTC, endExclusive: CENTURION_WINDOW_END_UTC };
+  }
+  if (values.from === undefined || values.to === undefined) {
+    throw new Error('--from and --to must be given together');
+  }
+  return canonicalCenturionWindow(values.from, values.to);
+}
 
 const defaultImdsRequestDependencies: DirectCenturionImdsRequestDependencies = {
   request: (options, onResponse) =>
@@ -298,13 +319,13 @@ function isIsoTimestamp(value: unknown): value is string {
   return typeof value === 'string' && !Number.isNaN(Date.parse(value));
 }
 
-function assertCenturionSnapshot(snapshot: CenturionCorpusSnapshot): void {
+function assertCenturionSnapshot(snapshot: CenturionCorpusSnapshot, window: ExportWindow): void {
   if (
     !snapshot ||
     snapshot.transportId !== CENTURION_TRANSPORT_ID ||
     !isIsoTimestamp(snapshot.asOf) ||
-    snapshot.window.startInclusive !== CENTURION_WINDOW_START_UTC ||
-    snapshot.window.endExclusive !== CENTURION_WINDOW_END_UTC ||
+    snapshot.window.startInclusive !== window.startInclusive ||
+    snapshot.window.endExclusive !== window.endExclusive ||
     snapshot.window.timezone !== CENTURION_WINDOW_TIMEZONE ||
     !Array.isArray(snapshot.messages) ||
     !snapshot.counts ||
@@ -432,13 +453,12 @@ export function createCenturionNineDayCorpusExportCommand(
   };
 
   return async (): Promise<number> => {
-    let args: readonly string[];
+    let window: ExportWindow;
     try {
-      args = dependencies.args();
+      window = exportWindowFrom(dependencies.args());
     } catch {
       return writeFailure(dependencies, 'invalid_arguments');
     }
-    if (args.length !== 0) return writeFailure(dependencies, 'invalid_arguments');
 
     let prepared: PreparedExport;
     try {
@@ -455,10 +475,9 @@ export function createCenturionNineDayCorpusExportCommand(
       });
       const snapshot = await reader.readCenturionSnapshot({
         transportId: CENTURION_TRANSPORT_ID,
-        startInclusive: CENTURION_WINDOW_START_UTC,
-        endExclusive: CENTURION_WINDOW_END_UTC,
+        ...window,
       });
-      assertCenturionSnapshot(snapshot);
+      assertCenturionSnapshot(snapshot, window);
       await reader.close();
       reader = undefined;
       await dependencies.writeSnapshot({
@@ -466,11 +485,7 @@ export function createCenturionNineDayCorpusExportCommand(
         outDir: prepared.outDir,
         snapshotId: prepared.snapshotId,
         transportId: CENTURION_TRANSPORT_ID,
-        window: {
-          startInclusive: CENTURION_WINDOW_START_UTC,
-          endExclusive: CENTURION_WINDOW_END_UTC,
-          timezone: CENTURION_WINDOW_TIMEZONE,
-        },
+        window: { ...window, timezone: CENTURION_WINDOW_TIMEZONE },
         snapshot,
       });
       const summary = {

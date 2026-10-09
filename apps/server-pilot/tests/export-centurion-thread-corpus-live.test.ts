@@ -209,6 +209,7 @@ describe('connected mailbox live corpus export command', () => {
     expect(await run(harness)).toBe(0);
     expect(harness.readerOptions).toEqual({
       databaseUrl: PRIVATE_DATABASE_MARKER,
+      transportIds: ['transport-centurion'],
     });
     expect(harness.request).toMatchObject({
       repoRoot: REPO_ROOT,

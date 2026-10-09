@@ -82,6 +82,7 @@ function createFakePostgres(
     messages?: readonly FakeRow[];
     attachments?: readonly FakeRow[];
     transportRows?: readonly FakeRow[];
+    asOf?: string;
   } = {},
 ): {
   client: ThreadCorpusPostgresClient;
@@ -92,6 +93,7 @@ function createFakePostgres(
   const beginOptions: string[] = [];
   let insideTransaction = false;
   let client: ThreadCorpusPostgresClient;
+  const asOf = input.asOf ?? AS_OF;
   const messages = input.messages ?? [messageRow()];
   const attachments = input.attachments ?? [];
   const transportRows = input.transportRows ?? [
@@ -110,7 +112,7 @@ function createFakePostgres(
   ): Promise<readonly FakeRow[]> => {
     const text = queryText(strings);
     queries.push({ text, values, insideTransaction });
-    if (/CURRENT_TIMESTAMP/i.test(text)) return [{ asOf: AS_OF }];
+    if (/CURRENT_TIMESTAMP/i.test(text)) return [{ asOf }];
     if (/FROM mailbox_transport/i.test(text)) return transportRows;
     if (/FROM message AS m/i.test(text)) return messages;
     if (/FROM attachment AS a/i.test(text)) return attachments;
@@ -134,11 +136,14 @@ function createFakePostgres(
   return { client, queries, beginOptions };
 }
 
-async function readCenturionSnapshot(fake: {
-  client: ThreadCorpusPostgresClient;
-  queries: Query[];
-  beginOptions: string[];
-}): Promise<CenturionCorpusSnapshot> {
+async function readCenturionSnapshot(
+  fake: {
+    client: ThreadCorpusPostgresClient;
+    queries: Query[];
+    beginOptions: string[];
+  },
+  window = { startInclusive: CENTURION_WINDOW_START_UTC, endExclusive: CENTURION_WINDOW_END_UTC },
+): Promise<CenturionCorpusSnapshot> {
   const reader = createThreadCorpusPostgresReader({
     databaseUrl: 'fixture://non-production',
     transportIds: [CENTURION_TRANSPORT_ID],
@@ -147,8 +152,7 @@ async function readCenturionSnapshot(fake: {
   try {
     return await reader.readCenturionSnapshot({
       transportId: CENTURION_TRANSPORT_ID,
-      startInclusive: CENTURION_WINDOW_START_UTC,
-      endExclusive: CENTURION_WINDOW_END_UTC,
+      ...window,
     });
   } finally {
     await reader.close();
@@ -235,7 +239,7 @@ describe('Centurion nine-day corpus reader', () => {
     }
   });
 
-  it('rejects caller-supplied Centurion bounds that differ from the fixed plan window', async () => {
+  it('rejects inverted, non-UTC, impossible, or over-31-day Centurion bounds before any query', async () => {
     const fake = createFakePostgres();
     const reader = createThreadCorpusPostgresReader({
       databaseUrl: 'fixture://non-production',
@@ -243,16 +247,49 @@ describe('Centurion nine-day corpus reader', () => {
       clientFactory: () => fake.client,
     });
 
-    await expect(
-      reader.readCenturionSnapshot({
-        transportId: CENTURION_TRANSPORT_ID,
-        startInclusive: '2026-09-08T22:00:00.000Z',
-        endExclusive: CENTURION_WINDOW_END_UTC,
-      }),
-    ).rejects.toThrow(/fixed|window/i);
+    const rejected: Array<[string, string, RegExp]> = [
+      ['2026-10-09T22:00Z', '2026-10-04T22:00Z', /end must be after/],
+      ['2026-10-04T22:00:00+02:00', '2026-10-09T22:00Z', /ISO UTC/],
+      ['2026-02-31T00:00Z', '2026-03-05T00:00Z', /ISO UTC/],
+      ['2026-09-01T00:00Z', '2026-10-03T00:00Z', /31 days/],
+    ];
+    for (const [startInclusive, endExclusive, message] of rejected) {
+      await expect(
+        reader.readCenturionSnapshot({ transportId: CENTURION_TRANSPORT_ID, startInclusive, endExclusive }),
+      ).rejects.toThrow(message);
+    }
     expect(fake.beginOptions).toEqual([]);
     expect(fake.queries).toEqual([]);
     await reader.close();
+  });
+
+  it('reads an operator-supplied ISO UTC window with the same half-open classification', async () => {
+    const window = { startInclusive: '2026-10-04T22:00Z', endExclusive: '2026-10-09T22:00Z' };
+    const fake = createFakePostgres({
+      asOf: '2026-10-10T01:00:00.000Z',
+      messages: [
+        messageRow({ id: 'at-start', threadId: 'thread-main', receivedAt: '2026-10-04T22:00:00.000Z' }),
+        messageRow({ id: 'at-end', threadId: 'thread-after', receivedAt: '2026-10-09T22:00:00.000Z' }),
+        messageRow({ id: 'before-linked', threadId: 'thread-main', receivedAt: '2026-10-04T21:59:00.000Z' }),
+        messageRow({ id: 'before-unlinked', threadId: 'thread-old', receivedAt: '2026-10-04T21:00:00.000Z' }),
+      ],
+    });
+
+    const snapshot = await readCenturionSnapshot(fake, window);
+
+    expect(snapshot.window).toEqual({
+      startInclusive: '2026-10-04T22:00:00.000Z',
+      endExclusive: '2026-10-09T22:00:00.000Z',
+      timezone: 'Africa/Johannesburg',
+    });
+    expect(snapshot.messages.map((row) => [row.id, row.scope])).toEqual([
+      ['at-start', 'in_window'],
+      ['before-linked', 'context_only'],
+    ]);
+    const messageQuery = fake.queries.find((query) => /FROM message AS m/i.test(query.text));
+    expect(messageQuery?.values).toEqual(
+      expect.arrayContaining(['2026-10-04T22:00:00.000', '2026-10-09T22:00:00.000']),
+    );
   });
 
   it('records event timestamp fallback provenance, including missing timestamps', async () => {
@@ -491,7 +528,9 @@ describe('Centurion nine-day guarded export command', () => {
       'close',
       'writeSnapshot',
     ]);
-    expect(harness.readerOptions).toEqual([{ databaseUrl: 'fixture://non-production' }]);
+    expect(harness.readerOptions).toEqual([
+      { databaseUrl: 'fixture://non-production', transportIds: [CENTURION_TRANSPORT_ID] },
+    ]);
     expect(harness.writes[0]).toMatchObject({
       repoRoot: REPO_ROOT,
       outDir: OUT_DIR,
@@ -533,5 +572,70 @@ describe('Centurion nine-day guarded export command', () => {
     expect(code).toBe(1);
     expect(harness.calls).toEqual([]);
     expect(harness.stderr.join('')).toContain('invalid_arguments');
+  });
+
+  it('writes only the operator-supplied window, with linked history marked context-only', async () => {
+    const fake = createFakePostgres({
+      asOf: '2026-10-10T01:00:00.000Z',
+      messages: [
+        messageRow({ id: 'at-start', threadId: 'thread-main', receivedAt: '2026-10-04T22:00:00.000Z' }),
+        messageRow({ id: 'at-end', threadId: 'thread-after', receivedAt: '2026-10-09T22:00:00.000Z' }),
+        messageRow({ id: 'before-linked', threadId: 'thread-main', receivedAt: '2026-10-04T21:59:00.000Z' }),
+        messageRow({ id: 'before-unlinked', threadId: 'thread-old', receivedAt: '2026-10-04T21:00:00.000Z' }),
+      ],
+    });
+    const harness = makeExportHarness({
+      args: ['--from', '2026-10-04T22:00Z', '--to', '2026-10-09T22:00Z'],
+    });
+    harness.deps.createReader = (options) =>
+      createThreadCorpusPostgresReader({ ...options, clientFactory: () => fake.client });
+
+    const code = await createCenturionNineDayCorpusExportCommand(harness.deps)();
+
+    expect(code).toBe(0);
+    const write = harness.writes[0] as { window: unknown; snapshot: CenturionCorpusSnapshot };
+    expect(write.window).toEqual({
+      startInclusive: '2026-10-04T22:00:00.000Z',
+      endExclusive: '2026-10-09T22:00:00.000Z',
+      timezone: 'Africa/Johannesburg',
+    });
+    expect(write.snapshot.messages.map((row) => [row.id, row.dailyIncluded])).toEqual([
+      ['at-start', true],
+      ['before-linked', false],
+    ]);
+    expect(harness.stdout.join('')).toContain('"includedMessageCount":1');
+  });
+
+  it('accepts a window of exactly 31 days and rejects one millisecond more before any setup', async () => {
+    const window = { startInclusive: '2026-09-01T00:00:00.000Z', endExclusive: '2026-10-02T00:00:00.000Z' };
+    const exact = makeExportHarness({
+      args: ['--from', '2026-09-01T00:00Z', '--to', '2026-10-02T00:00Z'],
+      snapshot: { ...makeExportSnapshot(), window: { ...window, timezone: 'Africa/Johannesburg' } },
+    });
+    expect(await createCenturionNineDayCorpusExportCommand(exact.deps)()).toBe(0);
+
+    const over = makeExportHarness({
+      args: ['--from', '2026-09-01T00:00Z', '--to', '2026-10-02T00:00:00.001Z'],
+    });
+    expect(await createCenturionNineDayCorpusExportCommand(over.deps)()).toBe(1);
+    expect(over.calls).toEqual([]);
+    expect(over.stderr.join('')).toContain('invalid_arguments');
+  });
+
+  it('rejects half-specified, inverted, non-UTC, or extra arguments before any setup', async () => {
+    const invalid: string[][] = [
+      ['--from', '2026-10-04T22:00Z'],
+      ['--to', '2026-10-09T22:00Z'],
+      ['--from', '2026-10-09T22:00Z', '--to', '2026-10-04T22:00Z'],
+      ['--from', '2026-10-04T22:00:00+02:00', '--to', '2026-10-09T22:00Z'],
+      ['--from', '2026-09-01T00:00Z', '--to', '2026-10-05T00:00Z'],
+      ['--from', '2026-10-04T22:00Z', '--to', '2026-10-09T22:00Z', 'extra'],
+    ];
+    for (const args of invalid) {
+      const harness = makeExportHarness({ args });
+      expect(await createCenturionNineDayCorpusExportCommand(harness.deps)()).toBe(1);
+      expect(harness.calls).toEqual([]);
+      expect(harness.stderr.join('')).toContain('invalid_arguments');
+    }
   });
 });
