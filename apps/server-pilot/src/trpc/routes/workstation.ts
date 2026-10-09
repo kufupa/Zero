@@ -178,9 +178,9 @@ export function staffQuoteFailureMessage(
       'Organisation or agency lookup is unavailable; retry the quote.',
     staff_quote_party_unavailable: 'Organisation or agency lookup failed; retry the quote.',
     staff_quote_party_invalid:
-      "Luna couldn't verify the company or agency rate from HMS. Try again, or quote at public rates.",
+      "Nava couldn't verify the company or agency rate from HMS. Try again, or quote at public rates.",
     staff_quote_party_changed:
-      'The HMS company or agency result changed while Luna read it. Try again.',
+      'The HMS company or agency result changed while Nava read it. Try again.',
     business_selected_joint_inventory_unavailable:
       'Verify combined availability for the requested rooms and dates.',
     business_selected_price_unavailable:
@@ -206,9 +206,9 @@ export const PARTY_LOOKUP_OFF_NOTE =
 
 const PARTY_VERIFY_COPY: Record<string, string> = {
   not_found: 'HMS did not confirm the picked company or agency. Search again and pick it.',
-  unverified: "Luna couldn't check the picked company or agency in HMS. Try again.",
+  unverified: "Nava couldn't check the picked company or agency in HMS. Try again.",
   refused_lock_busy: 'HMS is busy with another run. Try again in a minute.',
-  refused_lock_unavailable: "Luna can't reach HMS right now. Tell the Nava team.",
+  refused_lock_unavailable: "Nava can't reach HMS right now. Tell the Nava team.",
   refused_flag_off: PARTY_LOOKUP_OFF_NOTE,
 };
 

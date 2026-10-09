@@ -1,7 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { BookingDraftReady, BookingRateCheck, StayGroupRequirement } from '@/lib/quote-workflow/types';
+import type {
+  BookingDraftReady,
+  BookingRateCheck,
+  StaffQuoteParties,
+  StaffQuoteParty,
+  StayGroupRequirement,
+} from '@/lib/quote-workflow/types';
 import { HmsLinkActions } from './hms-link-actions';
 import {
   commitOutcome,
@@ -57,6 +63,11 @@ function textValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+// A company or agency picked for the quote fills an empty field with its HMS name. Only a pick with an HMS id counts.
+function pickedName(party: StaffQuoteParty | undefined): string {
+  return party?.nativeId ? party.name : '';
+}
+
 function countValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '';
   const count = Number(value);
@@ -99,6 +110,9 @@ async function writeClipboard(value: string): Promise<boolean> {
     return copyViaSelection(value);
   }
 }
+
+export const ROOM_TYPE_CHANGED_COPY =
+  'Room type changed from the quote, so the price check no longer applies. Quote again to check the price for this room.';
 
 function RateCheckChip({ check }: { check: BookingRateCheck }) {
   if (check.status === 'match') {
@@ -454,6 +468,7 @@ function RoomTextField({
 }
 
 type RoomChoice = {
+  roomType: string;
   track: string;
   sourceOfBusiness: string;
   guaranteeType: string;
@@ -465,6 +480,7 @@ type RoomChoice = {
 };
 
 const NO_CHOICE: RoomChoice = {
+  roomType: '',
   track: '',
   sourceOfBusiness: '',
   guaranteeType: '',
@@ -479,11 +495,14 @@ export function BookingCards({
   draft,
   groups = [],
   paneSave = null,
+  parties,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
   /** Set only when the server pane save flag is lab or on. Without it the card stays copy-only. */
   paneSave?: PaneStayClient | null;
+  /** The company and agency picked for this quote. They fill only the fields the draft leaves empty. */
+  parties?: StaffQuoteParties;
 }) {
   const client = paneSave;
   // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
@@ -497,11 +516,12 @@ export function BookingCards({
           return [
             key,
             {
+              roomType: textValue(room.request.roomType),
               track: textValue(room.request.track),
               sourceOfBusiness: textValue(room.request.sourceOfBusiness),
               guaranteeType: textValue(room.request.guaranteeType),
-              bookingAgency: textValue(room.request.agency),
-              organization: textValue(room.request.organization),
+              bookingAgency: textValue(room.request.agency) || pickedName(parties?.agency),
+              organization: textValue(room.request.organization) || pickedName(parties?.company),
               reservationNote: textValue(room.request.reservationNote),
               bookerName: textValue(room.request.bookerName),
               bookerEmail: textValue(room.request.bookerEmail),
@@ -512,6 +532,11 @@ export function BookingCards({
   );
 
   const [saves, setSaves] = useState<Record<string, RoomSaveState>>({});
+  // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
+  const roomTypeChanged = draft.draft.rooms.some((room) => {
+    const choice = choices[`${room.groupId}:${room.roomIndex}`];
+    return choice !== undefined && choice.roomType !== textValue(room.request.roomType);
+  });
 
   function patchSave(roomKey: string, patch: RoomSaveState) {
     setSaves((current) => ({ ...current, [roomKey]: { ...current[roomKey], ...patch } }));
@@ -568,9 +593,15 @@ export function BookingCards({
           ? 'Preview each room in HMS first, then book it. Click Copy next to any field to paste it by hand instead.'
           : 'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.'}
       </p>
-      {draft.draft.rateCheck.map((check, index) => (
-        <RateCheckChip key={`${check.status}:${check.claimQuote}:${index}`} check={check} />
-      ))}
+      {roomTypeChanged ? (
+        <p className="rounded-xs border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
+          {ROOM_TYPE_CHANGED_COPY}
+        </p>
+      ) : (
+        draft.draft.rateCheck.map((check, index) => (
+          <RateCheckChip key={`${check.status}:${check.claimQuote}:${index}`} check={check} />
+        ))
+      )}
       {draft.draft.flags.map((flag) => (
         <p key={flag} className="rounded-xs border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
           {BOOKING_FLAG_COPY[flag] ?? 'Check this booking detail in HMS before booking.'}
@@ -610,7 +641,26 @@ export function BookingCards({
             <CopyRow roomIndex={roomIndex} label="Nights" value={nightsBetween(arrival, departure)} />
             <CopyRow roomIndex={roomIndex} label="Adults" value={countValue(request.adults)} />
             <CopyRow roomIndex={roomIndex} label="Children" value={String(childCount)} />
-            <CopyRow roomIndex={roomIndex} label="Room type" value={textValue(request.roomType)} />
+            <div className="flex items-end gap-2">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
+                Room type
+                <select
+                  disabled={locked}
+                  aria-label="Room type"
+                  className={fieldClass}
+                  value={choice.roomType}
+                  onChange={(event) => setChoice({ roomType: event.target.value })}
+                >
+                  <option value="">Select room type</option>
+                  {draft.options.roomType.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <CopyButton label="Room type" roomIndex={roomIndex} value={choice.roomType} />
+            </div>
             <CopyRow roomIndex={roomIndex} label="Rate code" value={textValue(request.ratePlan)} />
             <CopyRow roomIndex={roomIndex} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
             <CopyRow roomIndex={roomIndex} label="Last name" value={textValue(request.lastName)} />

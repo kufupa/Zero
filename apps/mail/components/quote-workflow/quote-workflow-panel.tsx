@@ -935,7 +935,12 @@ export function QuoteWorkflowPanel({
         </section>
       ) : null}
       {session.bookingDraft ? (
-        <BookingCards draft={session.bookingDraft} groups={session.groups} paneSave={paneSave} />
+        <BookingCards
+          draft={session.bookingDraft}
+          groups={session.groups}
+          paneSave={paneSave}
+          parties={session.staffHeader.parties}
+        />
       ) : null}
       {showReply ? (
         <DocumentReview

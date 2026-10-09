@@ -179,6 +179,7 @@ export async function readPaneSaveFlag(trpc: unknown): Promise<boolean> {
 }
 
 export type PaneStayChoice = {
+  roomType: string;
   track: string;
   sourceOfBusiness: string;
   guaranteeType: string;
@@ -201,7 +202,7 @@ export function paneStayInputForRoom(
   const lastName = text(request.lastName);
   const arrival = text(request.arrival);
   const departure = text(request.departure);
-  const roomType = text(request.roomType);
+  const roomType = text(choice.roomType);
   const ratePlan = text(request.ratePlan);
   const adultsRaw = request.adults;
   const adults =

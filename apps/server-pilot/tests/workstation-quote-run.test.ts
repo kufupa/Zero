@@ -274,7 +274,7 @@ describe('workstation.hmsQueueStatus', () => {
       phase: 'Searching rates',
       phaseIndex: 1,
       phaseCount: 3,
-      message: 'Luna is working in HMS – step 1 of 3: Searching rates.',
+      message: 'Nava is working in HMS – step 1 of 3: Searching rates.',
     });
     expect(fake.selectCalls).not.toHaveBeenCalled();
     expect(fake.executeCalls).not.toHaveBeenCalled();

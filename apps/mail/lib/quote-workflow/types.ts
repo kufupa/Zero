@@ -448,6 +448,7 @@ export type BookingDraftReady = {
     track: string[];
     sourceOfBusiness: string[];
     guaranteeType: string[];
+    roomType: string[];
   };
   messageId: string;
   selectionEpoch: number;

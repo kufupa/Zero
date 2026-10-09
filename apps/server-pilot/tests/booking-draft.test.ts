@@ -2,6 +2,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildBookingDrafts,
+  createRequestFieldOptions,
   requestFromQuotedRoom,
   splitGuestName,
 } from '../src/ai/booking-draft.js';
@@ -160,6 +161,12 @@ describe('requestFromQuotedRoom', () => {
       { field: 'sourceOfBusiness', question: 'Source of business for this booking?' },
       { field: 'guaranteeType', question: 'Guarantee type for this booking?' },
     ]);
+  });
+});
+
+describe('createRequestFieldOptions', () => {
+  it('lists the room type codes the booking card selects from', () => {
+    expect(createRequestFieldOptions().roomType).toEqual(expect.arrayContaining(['STQN', 'DLXKNG']));
   });
 });
 

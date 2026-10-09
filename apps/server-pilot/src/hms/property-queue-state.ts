@@ -178,7 +178,7 @@ export function describeHmsQueueStatus(input: {
     phaseIndex,
     phaseCount,
     runningForMs,
-    message: `Luna is working in HMS – step ${phaseIndex} of ${phaseCount}: ${phase}.`,
+    message: `Nava is working in HMS – step ${phaseIndex} of ${phaseCount}: ${phase}.`,
   };
 }
 

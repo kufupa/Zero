@@ -1102,7 +1102,7 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
     expect(result.status).toBe('ready');
     if (result.status === 'ready') {
       expect(result.reviewItems?.map((item) => item.text)).toContainEqual(
-        expect.stringMatching(/^Luna is unavailable.*Check the dates and room count below/),
+        expect.stringMatching(/^Nava is unavailable.*Check the dates and room count below/),
       );
     }
   });
