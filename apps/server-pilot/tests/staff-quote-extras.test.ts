@@ -1,10 +1,13 @@
+import { TRPCError } from '@trpc/server';
 import { describe, expect, it } from 'vitest';
 import {
   buildStaffProposalFacts,
+  MAX_EXTRA_AMOUNT_MINOR,
   prepareStaffQuote,
   staffQuoteInput,
   type StaffQuoteInput,
 } from '../src/ai/staff-quote-workflow.js';
+import { staffExtrasOrBadRequest } from '../src/trpc/routes/workstation.js';
 import { deriveAuthorizedExtraLines } from '../src/quote-proposal/quote-lines.js';
 import { renderRevisionProposalHtml } from '../src/quote-proposal/proposal-pdf.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
@@ -290,7 +293,7 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
       { officeTransferDays: 0 },
       { shuttleMinor: -1 },
       { shuttleTrips: 0 },
-      { shuttleTrips: 21 },
+      { shuttleTrips: 51 },
       { other: { label: 'Parking', amountMinor: -100, unit: 'item' } },
       { other: { label: 'Parking', amountMinor: 100, unit: 'per_night' } },
     ]) {
@@ -364,11 +367,32 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
     expect(html).toContain(compact('<td>2</td><td>Dinner allowance</td><td>3</td><td>R125.00</td><td>R750.00</td>'));
   });
 
-  it('covers the new extras and the note in the input digest', async () => {
-    const revision = await syntheticRevision();
-    const digestOf = (overrides: Partial<StaffQuoteInput>) =>
+  it.each<[string, Partial<StaffQuoteInput>]>([
+    ['lunch amount', { lunchAllowanceMinor: 25_000 }],
+    ['lunch label', { lunchAllowanceLabel: 'with 1 soft drink' }],
+    ['office transfer amount', { officeTransferMinor: 25_000 }],
+    ['office transfer days', { officeTransferDays: 4 }],
+    ['shuttle trips', { shuttleTrips: 2 }],
+    ['shuttle price', { shuttleMinor: 65_000 }],
+    ['other label', { other: { label: 'Valet', amountMinor: 30_000, unit: 'item' } }],
+    ['other amount', { other: { label: 'Parking', amountMinor: 31_000, unit: 'item' } }],
+    ['other unit', { other: { label: 'Parking', amountMinor: 30_000, unit: 'per_trip' } }],
+    ['dinner label', { dinnerAllowanceLabel: 'food only' }],
+    ['note', { notes: 'Late check-in' }],
+  ])('changing the %s changes the input digest', (_name, change) => {
+    const base = baseInput({
+      dinnerAllowanceMinor: 45_000,
+      lunchAllowanceMinor: 20_000,
+      officeTransferMinor: 20_000,
+      shuttleRequested: true,
+      shuttleMinor: 60_000,
+      shuttleTrips: 1,
+      other: { label: 'Parking', amountMinor: 30_000, unit: 'item' },
+      notes: 'Breakfast only on day 2.',
+    });
+    const digestOf = (input: StaffQuoteInput) =>
       prepareStaffQuote(
-        baseInput(overrides),
+        input,
         {
           transportId: 'transport-1',
           userId: 'user-1',
@@ -382,10 +406,55 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
         { signerName: 'Signer', signerEmail: 'signer@example.invalid' },
         new AbortController().signal,
       ).inputDigest;
-    const base = digestOf({});
-    expect(digestOf({ lunchAllowanceMinor: 20_000 })).not.toBe(base);
-    expect(digestOf({ notes: 'Late check-in' })).not.toBe(base);
-    expect(digestOf({ other: { label: 'Parking', amountMinor: 30_000, unit: 'item' } })).not.toBe(base);
-    expect(revision.id).toBeTruthy();
+    expect(digestOf(baseInput({ ...base, ...change }))).not.toBe(digestOf(base));
+  });
+
+  it('rejects huge, fractional, non-numeric and out-of-range extras at the input', () => {
+    const rejected: Array<Partial<StaffQuoteInput> & Record<string, unknown>> = [
+      { dinnerAllowanceMinor: MAX_EXTRA_AMOUNT_MINOR + 1 },
+      { lunchAllowanceMinor: 45_000.5 },
+      { officeTransferMinor: Number.NaN },
+      { shuttleMinor: Number.POSITIVE_INFINITY },
+      { shuttleTrips: 51 },
+      { other: { label: 'Parking', amountMinor: MAX_EXTRA_AMOUNT_MINOR + 1, unit: 'item' } },
+      { dinnerAllowanceMinor: '45000' },
+    ];
+    for (const bad of rejected) {
+      expect(staffQuoteInput.safeParse({ ...baseInput(), ...bad }).success, JSON.stringify(bad)).toBe(false);
+    }
+    expect(
+      staffQuoteInput.safeParse({ ...baseInput(), dinnerAllowanceMinor: MAX_EXTRA_AMOUNT_MINOR, shuttleTrips: 50 }).success,
+    ).toBe(true);
+  });
+
+  it('prices extras that cannot be priced as a BAD_REQUEST, never an internal error', async () => {
+    const revision = await syntheticRevision();
+    const prepared = { authorizationId: revision.authorizationId };
+    const priced = staffExtrasOrBadRequest(baseInput({ dinnerAllowanceMinor: 45_000 }), scope, prepared, revision);
+    expect(priced.extraTotal).toBe(270_000);
+    const oversize = { ...baseInput(), dinnerAllowanceMinor: MAX_EXTRA_AMOUNT_MINOR * 10 } as unknown as StaffQuoteInput;
+    let caught: unknown;
+    try {
+      staffExtrasOrBadRequest(oversize, scope, prepared, revision);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(TRPCError);
+    expect((caught as TRPCError).code).toBe('BAD_REQUEST');
+  });
+
+  it('escapes a hostile staff note and a hostile extra label on the PDF', async () => {
+    const revision = await syntheticRevision();
+    const built = buildStaffProposalFacts(
+      baseInput({ other: { label: '<img src=x onerror=alert(1)>', amountMinor: 30_000, unit: 'item' } }),
+      scope,
+      { authorizationId: revision.authorizationId },
+      revision,
+    );
+    const html = renderRevisionProposalHtml(revision, { ...pdfHeader, notes: '<script>alert(1)</script>' }, built.facts!);
+    expect(html).not.toContain('<script>alert(1)');
+    expect(html).not.toContain('<img src=x onerror');
+    expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
   });
 });

@@ -38,6 +38,9 @@ const groupSchema = z
 export const OTHER_CHARGE_UNITS = ['per_person_night', 'per_person', 'per_trip', 'item'] as const;
 export type OtherChargeUnit = (typeof OTHER_CHARGE_UNITS)[number];
 const staffLabel = z.string().trim().max(120);
+/** Largest accepted amount for one extra unit: R1,000,000 in cents. Keeps every total far from unsafe integers. */
+export const MAX_EXTRA_AMOUNT_MINOR = 100_000_000;
+const extraAmount = z.number().int().positive().max(MAX_EXTRA_AMOUNT_MINOR);
 /** Prices, native party IDs and qualification flags are deliberately not client inputs. */
 export const staffQuoteInput = z
   .object({
@@ -53,22 +56,22 @@ export const staffQuoteInput = z
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),
     // Staff-typed extras. Every amount is ZAR minor units and must be positive; absent means not charged.
-    dinnerAllowanceMinor: z.number().int().positive().optional(),
+    dinnerAllowanceMinor: extraAmount.optional(),
     dinnerAllowanceLabel: staffLabel.optional(),
     // The groups that took the B&B fallback. The allowance charges only these groups' guests; absent means every group.
     dinnerAllowanceGroupIds: z.array(z.string().min(1).max(64)).max(8).optional(),
-    lunchAllowanceMinor: z.number().int().positive().optional(),
+    lunchAllowanceMinor: extraAmount.optional(),
     lunchAllowanceLabel: staffLabel.optional(),
-    officeTransferMinor: z.number().int().positive().optional(),
+    officeTransferMinor: extraAmount.optional(),
     officeTransferDays: z.number().int().min(1).max(31).optional(),
     shuttleRequested: z.boolean().optional(),
-    shuttleMinor: z.number().int().positive().optional(),
-    shuttleTrips: z.number().int().min(1).max(20).optional(),
+    shuttleMinor: extraAmount.optional(),
+    shuttleTrips: z.number().int().min(1).max(50).optional(),
     other: z
       .object({
         // A blank label is kept, not rejected: the amount then raises a review item instead of vanishing.
         label: z.string().trim().max(120).default(''),
-        amountMinor: z.number().int().positive(),
+        amountMinor: extraAmount,
         unit: z.enum(OTHER_CHARGE_UNITS),
       })
       .strict()
