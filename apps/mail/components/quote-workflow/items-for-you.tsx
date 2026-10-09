@@ -20,7 +20,7 @@ export function ItemsForYou({
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3" aria-label="Check before sending">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Check before sending</h3>
       <p className="text-[11px] text-[#64748b]">
-        Luna found these. Clear each one before you send the reply. Show in email finds the line in the email.
+        Nava found these. Clear each one before you send the reply. Show in email finds the line in the email.
         Edit reply opens the reply box. Mark as done hides the item here only.
       </p>
       {openItems.map((item) => (

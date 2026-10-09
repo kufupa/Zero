@@ -60,13 +60,13 @@ describe('QuoteWorkflowPanel', () => {
   it('shows analysing, unsynced, missing-source, failed, unsupported, and non-quote states', () => {
     const start = initialQuoteSession();
     render(<QuoteWorkflowPanel session={{ ...start, phase: 'analysing' }} />);
-    expect(screen.getByText(/Luna is reading the email/i)).toBeDefined();
+    expect(screen.getByText(/Nava is reading the email/i)).toBeDefined();
     cleanup();
     render(<QuoteWorkflowPanel session={{ ...start, phase: 'unsynced' }} />);
     expect(screen.getByText(/not finished syncing/i)).toBeDefined();
     cleanup();
     render(<QuoteWorkflowPanel session={sessionFromFixture('attachment-dependent')} />);
-    expect(screen.getAllByText(/Luna could not read the attachment contents/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Nava could not read the attachment contents/i).length).toBeGreaterThan(0);
     expect(screen.queryByText(/rooming-list\.pdf is the document/i)).toBeNull();
     cleanup();
     render(<QuoteWorkflowPanel session={sessionFromFixture('source-failure')} />);
@@ -265,7 +265,7 @@ describe('QuoteWorkflowPanel', () => {
     const missing = sessionFromFixture('attachment-dependent');
     render(<QuoteWorkflowPanel session={missing} />);
     expect(screen.getByText('Could not read: rooming-list.pdf')).toBeDefined();
-    expect(screen.getAllByText(/Luna could not read the attachment contents/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Nava could not read the attachment contents/i).length).toBeGreaterThan(0);
     expect(screen.getByLabelText('Reviewed reply')).toBeDefined();
     cleanup();
 
@@ -364,7 +364,7 @@ describe('QuoteWorkflowPanel', () => {
     render(<QuoteWorkflowPanel session={quoted} onRunStep={onRunStep} onRunNext={vi.fn()} />);
     expect(screen.getByRole('heading', { name: 'Date options' })).toBeDefined();
     expect(
-      screen.getByText('This email asks for more than one set of dates. Run each option; Luna keeps every result.'),
+      screen.getByText('This email asks for more than one set of dates. Run each option; Nava keeps every result.'),
     ).toBeDefined();
     const optionA = screen.getByRole('button', { name: 'Select date scope 2026-11-02 to 2026-11-04' });
     expect(optionA.textContent).toMatch(/Quoted R.*PDF not built/);

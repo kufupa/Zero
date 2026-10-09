@@ -126,7 +126,7 @@ const TOUR_SLIDES: TourSlide[] = [
     bullets: [
       {
         title: 'Automated execution:',
-        desc: 'Simply hit run and Nava AI performs the task directly inside Infor HMS for you.',
+        desc: 'Simply hit run and Nava performs the task directly inside Infor HMS for you.',
       },
       {
         title: 'Inspect screenshot proof:',
@@ -140,7 +140,7 @@ const TOUR_SLIDES: TourSlide[] = [
     bullets: [
       {
         title: 'Drafted responses & actions:',
-        desc: 'Nava AI prepares suggested replies and action cards directly in your Outlook window.',
+        desc: 'Nava prepares suggested replies and action cards directly in your Outlook window.',
       },
       {
         title: 'Check details & tone:',
@@ -423,7 +423,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
       .catch((error: unknown) => {
         if (cancelled) return;
         const message =
-          error instanceof Error && error.message.trim() ? error.message : 'Luna could not read this email. Select it again and try again.';
+          error instanceof Error && error.message.trim() ? error.message : 'Nava could not read this email. Select it again and try again.';
         dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
         dispatchQuote({ type: 'analysis_failed', message });
       });
@@ -1393,7 +1393,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               N
             </span>
             <div>
-              <h1 className="text-[13px] font-bold text-[#1e293b]">Nava AI Reservationist</h1>
+              <h1 className="text-[13px] font-bold text-[#1e293b]">Nava Reservationist</h1>
             </div>
           </div>
           <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-[#475569]">
@@ -1502,7 +1502,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eaf4ee] text-[#1a4332]">
                 <Building2 className="h-6 w-6" />
               </div>
-              <h1 className="text-base font-bold text-[#1e293b]">Welcome to Nava AI</h1>
+              <h1 className="text-base font-bold text-[#1e293b]">Welcome to Nava</h1>
               <p className="mt-1 text-xs leading-relaxed text-[#64748b]">
                 Your intelligent assistant for Infor HMS quoting and reservations, built directly
                 into Outlook.
@@ -1541,9 +1541,9 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eff6ff] text-[#0066cc]">
                 <Network className="h-6 w-6" />
               </div>
-              <h1 className="text-base font-bold text-[#1e293b]">Connecting to Nava AI Services</h1>
+              <h1 className="text-base font-bold text-[#1e293b]">Connecting to Nava Services</h1>
               <p className="mt-1 text-xs text-[#64748b]">
-                Verifying connection to Nava AI server and workstation environment.
+                Verifying connection to Nava server and workstation environment.
               </p>
 
               <div className="my-5 w-full space-y-3 text-left">
@@ -1570,7 +1570,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                   <div className="flex-1">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-semibold text-[#1e293b]">
-                        Nava AI Server Connection
+                        Nava Server Connection
                       </span>
                       {pingState === 'success' && (
                         <span className="text-[10px] font-bold text-emerald-700">CONNECTED</span>
@@ -1595,7 +1595,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                 {pingState === 'success' && (
                   <div className="flex items-center gap-2 rounded-sm border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11.5px] font-medium text-emerald-800">
                     <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
-                    <span>Nava AI server connected · Workstation API ping verified.</span>
+                    <span>Nava server connected · Workstation API ping verified.</span>
                   </div>
                 )}
 
@@ -1702,7 +1702,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                 >
                   {tourSlideIndex === TOUR_SLIDES.length - 1 ? (
                     <>
-                      <span>Open Nava AI</span> <ArrowRight className="ml-1 h-3.5 w-3.5" />
+                      <span>Open Nava</span> <ArrowRight className="ml-1 h-3.5 w-3.5" />
                     </>
                   ) : (
                     <>
@@ -1746,7 +1746,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
 
             {!quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
               {activeEmail
-                ? "Luna's suggestions from this email. Check and correct them before running searches."
+                ? "Nava's suggestions from this email. Check and correct them before running searches."
                 : 'Sample data, not from a live email.'}
             </p>}
 
@@ -1781,7 +1781,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
                 document.getElementById('quote-selected-message')?.scrollIntoView({ block: 'nearest' });
                 toast.message(
                   item.filename
-                    ? `Luna found this in the selected email. It lists the file ${item.filename}. A file name does not show what is inside, so open the attachment in Outlook to read it.`
+                    ? `Nava found this in the selected email. It lists the file ${item.filename}. A file name does not show what is inside, so open the attachment in Outlook to read it.`
                     : 'The selected email is shown at the top of this pane. Open it in Outlook for the full text.',
                 );
               }}

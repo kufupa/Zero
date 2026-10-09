@@ -297,7 +297,7 @@ function RoomSave({
         </p>
         {commit.runId && savedShot ? (
           <PaneScreenshot
-            caption="See what Luna saved in HMS"
+            caption="See what Nava saved in HMS"
             runId={commit.runId}
             name={savedShot}
             screenshot={screenshot}
@@ -313,7 +313,7 @@ function RoomSave({
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       {preview?.status === 'running' ? (
         <p role="status" className="text-[11.5px] text-[#334155]">
-          Luna is filling the booking in HMS… (about 2 minutes)
+          Nava is filling the booking in HMS… (about 2 minutes)
         </p>
       ) : null}
       {preview?.status === 'refused' ? (
@@ -328,7 +328,7 @@ function RoomSave({
       ) : null}
       {fresh && stay && fresh.runId && previewShot ? (
         <PaneScreenshot
-          caption="See what Luna filled in HMS"
+          caption="See what Nava filled in HMS"
           runId={fresh.runId}
           name={previewShot}
           screenshot={screenshot}
@@ -336,12 +336,12 @@ function RoomSave({
       ) : null}
       {fresh && stay ? (
         <p className="text-[12px] text-[#1e293b]">
-          {`Luna will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press Book in HMS.`}
+          {`Nava will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press Book in HMS.`}
         </p>
       ) : null}
       {commit?.status === 'running' ? (
         <p role="status" className="text-[11.5px] text-[#334155]">
-          Luna is booking this in HMS… (about 2 minutes)
+          Nava is booking this in HMS… (about 2 minutes)
         </p>
       ) : null}
       {commit?.status === 'refused' ? (
@@ -351,7 +351,7 @@ function RoomSave({
           </p>
           {commit.runId && refusedShot ? (
             <PaneScreenshot
-              caption="See what Luna saved in HMS"
+              caption="See what Nava saved in HMS"
               runId={commit.runId}
               name={refusedShot}
               screenshot={screenshot}
@@ -383,7 +383,7 @@ function RoomSave({
       </div>
       <p className="text-[11px] text-[#64748b]">
         {stay
-          ? 'Luna fills the booking in HMS and checks availability. Nothing is saved.'
+          ? 'Nava fills the booking in HMS and checks availability. Nothing is saved.'
           : `Set ${missing.join(', ')} before you preview.`}
       </p>
     </div>

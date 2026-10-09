@@ -281,7 +281,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
                   runId={found.runId}
                   name={found.screenshots.includes('record.png') ? 'record.png' : null}
                   label={AMEND_FIND_COPY.seeBooking}
-                  alt="What Luna saw on the HMS booking record"
+                  alt="What Nava saw on the HMS booking record"
                 />
               ) : null}
             </>
@@ -622,7 +622,7 @@ function CancelScreenshot({ client, run }: { client: AmendCancelClient | null; r
       runId={run.runId}
       name={run.screenshots.at(-1) ?? null}
       label={AMEND_CANCEL_COPY.seeScreenshot}
-      alt="What Luna saw on the HMS cancel screen"
+      alt="What Nava saw on the HMS cancel screen"
     />
   );
 }

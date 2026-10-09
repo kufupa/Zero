@@ -72,7 +72,7 @@ describe('OutlookPanePage unauthenticated', () => {
     expect(screen.getByText(/Nava Assistant Sign In/i)).toBeDefined();
     expect(screen.getByRole('button', { name: /sign in/i })).toBeDefined();
     expect(screen.queryByText(/Login with Nava/i)).toBeNull();
-    expect(screen.queryByText(/Nava AI Reservationist/i)).toBeNull();
+    expect(screen.queryByText(/Nava Reservationist/i)).toBeNull();
   });
 
   it('uses the light pane shell from the side-pane design', () => {

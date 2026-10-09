@@ -56,7 +56,7 @@ function sessionWithAnalysis(analysis: QuoteAnalysis): QuoteSession {
   return reduceQuoteSession(session, { type: 'analysis_ready', analysis });
 }
 
-describe('QuoteWorkflowPanel Luna extras', () => {
+describe('QuoteWorkflowPanel Nava extras', () => {
   it('labels a defaulted meal plan as Default and still shows the stay as editable', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',
@@ -223,7 +223,7 @@ describe('QuoteWorkflowPanel Luna extras', () => {
     expect(screen.getByText('2 adults from desk')).toBeDefined();
   });
 
-  it('submits Tell Luna notes through onStaffNote', () => {
+  it('submits Tell Nava notes through onStaffNote', () => {
     const onStaffNote = vi.fn();
     const session = sessionWithAnalysis({
       intent: 'quote',
@@ -233,7 +233,7 @@ describe('QuoteWorkflowPanel Luna extras', () => {
       luna: lunaWire({ workflow: 'quote' }),
     });
     render(<QuoteWorkflowPanel session={session} onStaffNote={onStaffNote} />);
-    fireEvent.change(screen.getByLabelText("Tell Luna what's wrong"), {
+    fireEvent.change(screen.getByLabelText("Tell Nava what's wrong"), {
       target: { value: '4 twins at R1800' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Re-read with your note' }));
@@ -385,7 +385,7 @@ vi.mock('../providers/query-provider', () => ({
   },
 }));
 
-describe('Outlook pane Luna analysis bind', () => {
+describe('Outlook pane Nava analysis bind', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     paneState.entryId = '001';
@@ -397,7 +397,7 @@ describe('Outlook pane Luna analysis bind', () => {
     const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
     render(<OutlookPanePage />);
     await waitFor(() => {
-      expect(screen.queryByText(/Luna is reading the email/i)).toBeNull();
+      expect(screen.queryByText(/Nava is reading the email/i)).toBeNull();
     });
     expect(screen.getAllByText(/analyseSelection network down/i).length).toBeGreaterThan(0);
     expect(screen.queryByLabelText('Arrival')).toBeNull();
@@ -494,7 +494,7 @@ describe('Outlook pane Luna analysis bind', () => {
     await waitFor(() => expect(screen.getByLabelText('Arrival')).toBeDefined());
   }, 15_000);
 
-  it('re-runs analyseSelection with a staff note from Tell Luna', async () => {
+  it('re-runs analyseSelection with a staff note from Tell Nava', async () => {
     analyseMutate.mockResolvedValue({
       status: 'ready',
       intent: 'quote',
@@ -506,8 +506,8 @@ describe('Outlook pane Luna analysis bind', () => {
     });
     const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
     render(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getByLabelText("Tell Luna what's wrong")).toBeDefined());
-    fireEvent.change(screen.getByLabelText("Tell Luna what's wrong"), {
+    await waitFor(() => expect(screen.getByLabelText("Tell Nava what's wrong")).toBeDefined());
+    fireEvent.change(screen.getByLabelText("Tell Nava what's wrong"), {
       target: { value: '4 twins at R1800' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Re-read with your note' }));
