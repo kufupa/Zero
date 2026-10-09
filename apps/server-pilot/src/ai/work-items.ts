@@ -113,9 +113,12 @@ export function formStays(payload: MailExtractionPayload, state: WorkState): For
     }
     if (path.field === 'removed' && state[key] === true) removed.add(path.rowId ?? path.stayId);
   }
-  return stays
-    .filter((stay) => !removed.has(stay.id))
-    .map((stay) => ({ ...stay, rows: stay.rows.filter((row) => !removed.has(row.id)) }));
+  return stays.flatMap((stay) => {
+    if (removed.has(stay.id)) return [];
+    const rows = stay.rows.filter((row) => !removed.has(row.id));
+    // A stay whose every row she removed is gone too.
+    return stay.rows.length > 0 && rows.length === 0 ? [] : [{ ...stay, rows }];
+  });
 }
 
 const WORKFLOW_BY_KIND: Partial<Record<MailKind, LunaAnalysis['workflow']>> = {
@@ -251,7 +254,8 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
   return {
     analysis: {
       intent: mapped.intent,
-      groups: mapped.groups,
+      // Each group names its stay, so the pane groups rows by the read's stays and logs edits to the stay's id.
+      groups: mapped.groups.map((group, index) => ({ ...group, stayId: order[index]?.stayId })),
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
       reviewItems: [...failures, ...questionItems(mapped.missing)],

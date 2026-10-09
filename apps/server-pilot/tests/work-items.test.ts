@@ -7,6 +7,7 @@ import {
   aiValueAt,
   dismissWorkItem,
   ensureWorkItemForMessage,
+  formStays,
   listWorkItems,
   parseFieldPath,
   recordFieldEvent,
@@ -173,6 +174,7 @@ describe('stored read for the pane', () => {
       });
       expect(work.analysis.groups[2]!.arrivalDate).toBe('2027-11-17');
       expect(work.refs[ROW_TWIN]).toEqual({ stayId: STAY_ONE, rowId: ROW_TWIN });
+      expect(work.analysis.groups.map((group) => group.stayId)).toEqual([STAY_ONE, STAY_ONE, STAY_TWO]);
       expect(work.analysis.reviewItems?.map((item) => item.id)).toContain('missing:rooms:0');
       expect(work.workItemStatus).toBe('needs_you');
     }));
@@ -462,6 +464,13 @@ describe('field events', () => {
       expect(after.refs.r_user02).toEqual({ stayId: 's_user01', rowId: 'r_user02' });
       expect(after.analysis.luna.flags).toContain('multi_date');
     }));
+
+  it('drops a stay once she has removed every row of it', () => {
+    const stays = formStays(payload(), { [`stays[${STAY_TWO}].rows[${ROW_STAY_TWO}].removed`]: true });
+    expect(stays.map((stay) => stay.id)).toEqual([STAY_ONE]);
+    const undone = formStays(payload(), { [`stays[${STAY_TWO}].rows[${ROW_STAY_TWO}].removed`]: null });
+    expect(undone.map((stay) => stay.id)).toEqual([STAY_ONE, STAY_TWO]);
+  });
 
   it('keeps a person value through a re-extraction, and the work item stays the same', () =>
     withDb(async (db) => {

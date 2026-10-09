@@ -680,6 +680,18 @@ describe('NavaPane screen states', () => {
     );
   }, 15_000);
 
+  it('stored: a stay she adds is logged under its own id, so it is there on reopen', async () => {
+    bridgeMockState.storedWork = STORED_READY;
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-03'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add stay' }));
+    await waitFor(() =>
+      expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ workItemId: 'wi-1', fieldPath: expect.stringMatching(/^stays\[s_\w+\]\.removed$/), value: null }),
+      ),
+    );
+  });
+
   it('voucher: a voucher email shows the Find the booking card with the guest it names', async () => {
     voucherFindQuery.mockResolvedValue({
       status: 'voucher',

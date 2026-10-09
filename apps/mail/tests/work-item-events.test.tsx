@@ -6,10 +6,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession } from '@/lib/quote-workflow/session';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
+import type { StayGroupRequirement } from '@/lib/quote-workflow/types';
 import {
-  fieldEventsFor,
+  fieldEventsBetween,
   STORED_LOOKUP_TIMEOUT_MS,
-  stayDatesOf,
   storedDecision,
   useStoredWork,
   WORK_EVENT_DEBOUNCE_MS,
@@ -33,6 +33,27 @@ const READY: Ready = {
   },
   analysis: ANALYSIS,
 };
+
+/** One pane row. Stored rows carry the read's stay id, as the stored analysis gives them. */
+function row(id: string, stayId: string | undefined, values: Partial<StayGroupRequirement> = {}): StayGroupRequirement {
+  return {
+    id,
+    stayId,
+    arrivalDate: '2026-10-12',
+    departureDate: '2026-10-14',
+    quantity: 1,
+    adults: 2,
+    childrenAges: [],
+    board: 'bb',
+    specialRequests: [],
+    fields: {},
+    ...values,
+  };
+}
+
+const G1 = row('g1', 'st-1');
+const G2 = row('g2', 'st-1');
+const G3 = row('g3', 'st-2', { arrivalDate: '2026-11-01', departureDate: '2026-11-03' });
 
 function fakeTrpc(lookup: () => unknown) {
   const query = vi.fn(async (_input: unknown) => lookup());
@@ -65,54 +86,77 @@ describe('storedDecision', () => {
   });
 });
 
-describe('fieldEventsFor', () => {
-  it('maps a row group to its stable stay and row ids', () => {
-    expect(fieldEventsFor(READY.refs, 'g1', { arrivalDate: '2026-10-12', quantity: 2, board: 'dinner_bb' })).toEqual([
-      { path: 'stays[st-1].requested.arrival', value: '2026-10-12' },
+describe('fieldEventsBetween', () => {
+  it('maps a row edit to its stable stay and row ids, and a stay date to the stay', () => {
+    expect(
+      fieldEventsBetween(READY.refs, [G1, G2], [row('g1', 'st-1', { arrivalDate: '2026-10-11', quantity: 2, board: 'dinner_bb' }), G2]),
+    ).toEqual([
+      { path: 'stays[st-1].requested.arrival', value: '2026-10-11' },
       { path: 'stays[st-1].rows[rw-1].count', value: 2 },
       { path: 'stays[st-1].rows[rw-1].board', value: 'dbb' },
     ]);
   });
 
-  it('logs stay dates only for a stay with no row', () => {
-    expect(fieldEventsFor(READY.refs, 'g3', { departureDate: '2026-10-14', quantity: 2 })).toEqual([
-      { path: 'stays[st-2].requested.departure', value: '2026-10-14' },
+  it('logs stay dates only for a stay with no row, and an unknown board or empty date as null', () => {
+    expect(fieldEventsBetween(READY.refs, [G3], [{ ...G3, departureDate: '', quantity: 3 }])).toEqual([
+      { path: 'stays[st-2].requested.departure', value: null },
     ]);
-  });
-
-  it('states an unknown board as null', () => {
-    expect(fieldEventsFor(READY.refs, 'g2', { board: 'unknown' })).toEqual([
+    expect(fieldEventsBetween(READY.refs, [G2], [{ ...G2, board: 'unknown' }])).toEqual([
       { path: 'stays[st-1].rows[rw-2].board', value: null },
     ]);
   });
 
-  it('keeps a stay on its own id when another stay is gone', () => {
-    const afterDelete = { g3: { stayId: 'st-2', rowId: null } };
-    expect(fieldEventsFor(afterDelete, 'g3', { arrivalDate: '2026-10-12' })).toEqual([
-      { path: 'stays[st-2].requested.arrival', value: '2026-10-12' },
+  it('logs a removed stay by its own ids, and an edit on the next stay keeps that stay\'s ids', () => {
+    expect(fieldEventsBetween(READY.refs, [G1, G2, G3], [G3])).toEqual([
+      { path: 'stays[st-1].rows[rw-1].removed', value: true },
+      { path: 'stays[st-1].removed', value: true },
+      { path: 'stays[st-1].rows[rw-2].removed', value: true },
+      { path: 'stays[st-1].removed', value: true },
+    ]);
+    expect(fieldEventsBetween(READY.refs, [G3], [{ ...G3, arrivalDate: '2026-10-30' }])).toEqual([
+      { path: 'stays[st-2].requested.arrival', value: '2026-10-30' },
     ]);
   });
 
-  it('logs nothing for a group the stored read does not know', () => {
-    expect(fieldEventsFor(READY.refs, 'g9', { quantity: 2 })).toEqual([]);
+  it('logs a row she adds under its own id, with the values it has', () => {
+    const added = row('r_ab12', 'st-1', { quantity: undefined, adults: undefined, board: 'bb' });
+    expect(fieldEventsBetween(READY.refs, [G1, G2], [G1, G2, added])).toEqual([
+      { path: 'stays[st-1].rows[r_ab12].removed', value: null },
+      { path: 'stays[st-1].rows[r_ab12].childAges', value: [] },
+      { path: 'stays[st-1].rows[r_ab12].board', value: 'bb' },
+    ]);
   });
-});
 
-describe('stayDatesOf', () => {
-  it('keeps the two stay dates and drops the room fields', () => {
-    expect(stayDatesOf({ arrivalDate: '2026-10-12', quantity: 2, roomPreference: 'Twin' })).toEqual({
-      arrivalDate: '2026-10-12',
-    });
+  it('logs a new stay with its dates, and an undo puts removed rows back', () => {
+    const copy = row('r_cd34_0', 's_cd34');
+    expect(fieldEventsBetween(READY.refs, [G1], [G1, copy])).toEqual([
+      { path: 'stays[s_cd34].removed', value: null },
+      { path: 'stays[s_cd34].requested.arrival', value: '2026-10-12' },
+      { path: 'stays[s_cd34].requested.departure', value: '2026-10-14' },
+      { path: 'stays[s_cd34].rows[r_cd34_0].removed', value: null },
+      { path: 'stays[s_cd34].rows[r_cd34_0].count', value: 1 },
+      { path: 'stays[s_cd34].rows[r_cd34_0].adults', value: 2 },
+      { path: 'stays[s_cd34].rows[r_cd34_0].childAges', value: [] },
+      { path: 'stays[s_cd34].rows[r_cd34_0].board', value: 'bb' },
+    ]);
+    expect(fieldEventsBetween(READY.refs, [G3], [G1, G3]).slice(0, 2)).toEqual([
+      { path: 'stays[st-1].removed', value: null },
+      { path: 'stays[st-1].requested.arrival', value: '2026-10-12' },
+    ]);
+  });
+
+  it('logs nothing for a row with no stable id, such as the blank stay while Nava reads', () => {
+    const draft = row(DRAFT_GROUP_ID, 'd:unknown:unknown');
+    expect(fieldEventsBetween(READY.refs, [draft], [{ ...draft, arrivalDate: '2026-12-01' }])).toEqual([]);
   });
 });
 
 describe('useStoredWork', () => {
-  it('shows a ready read from the server for this mail, with its sibling groups', async () => {
+  it('shows a ready read from the server for this mail', async () => {
     const { trpc, query } = fakeTrpc(() => READY);
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
     await waitFor(() => expect(result.current.pane.state).toBe('ready'));
     expect(query).toHaveBeenCalledWith({ internetMessageId: 'm-1' });
-    expect(result.current.siblingGroupIds('g1')).toEqual(['g2']);
   });
 
   it('reads live when nothing is stored', async () => {
@@ -157,7 +201,7 @@ describe('useStoredWork', () => {
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
     await waitFor(() => expect(result.current.pane.state).toBe('ready'));
     act(() => {
-      for (const quantity of [1, 2, 3, 4, 5]) result.current.recordGroupPatch('g1', { quantity });
+      for (const quantity of [2, 3, 4, 5, 6]) result.current.recordGroups([G1], [{ ...G1, quantity }]);
     });
     expect(mutate).not.toHaveBeenCalled();
     await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1), { timeout: WORK_EVENT_DEBOUNCE_MS + 2000 });
@@ -166,7 +210,7 @@ describe('useStoredWork', () => {
         workItemId: 'wi-1',
         type: 'field.edit',
         fieldPath: 'stays[st-1].rows[rw-1].count',
-        value: 5,
+        value: 6,
         msSinceOpen: expect.any(Number),
       }),
     );
@@ -176,11 +220,11 @@ describe('useStoredWork', () => {
     const { trpc, mutate } = fakeTrpc(() => READY);
     const { result, unmount } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
     await waitFor(() => expect(result.current.pane.state).toBe('ready'));
-    act(() => result.current.recordGroupPatch('g2', { adults: 2 }));
+    act(() => result.current.recordGroups([G2], [{ ...G2, adults: 3 }]));
     unmount();
     expect(mutate).toHaveBeenCalledTimes(1);
     expect(mutate).toHaveBeenCalledWith(
-      expect.objectContaining({ fieldPath: 'stays[st-1].rows[rw-2].adults', value: 2 }),
+      expect.objectContaining({ fieldPath: 'stays[st-1].rows[rw-2].adults', value: 3 }),
     );
   });
 
@@ -194,7 +238,7 @@ describe('useStoredWork', () => {
         await Promise.resolve();
       });
       expect(result.current.pane.state).toBe('ready');
-      act(() => result.current.recordGroupPatch('g1', { quantity: 4 }));
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
       await act(async () => {
         await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS);
       });
@@ -230,12 +274,12 @@ describe('useStoredWork', () => {
       await act(async () => {
         await Promise.resolve();
       });
-      act(() => result.current.recordGroupPatch('g1', { quantity: 4 }));
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
       await act(async () => {
         await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS);
       });
       expect(result.current.saveFailed).toBe(true);
-      act(() => result.current.recordGroupPatch('g1', { quantity: 6 }));
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 6 }]));
       expect(result.current.saveFailed).toBe(false);
     } finally {
       vi.useRealTimers();
@@ -246,7 +290,7 @@ describe('useStoredWork', () => {
     const { trpc, mutate } = fakeTrpc(() => ({ status: 'none' }));
     const { result, unmount } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
     await waitFor(() => expect(result.current.pane.state).toBe('reading'));
-    act(() => result.current.recordGroupPatch('g1', { quantity: 3 }));
+    act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 3 }]));
     unmount();
     expect(mutate).not.toHaveBeenCalled();
   });

@@ -10,8 +10,9 @@ import type { QuoteAnalysis, QuoteBoard, StayGroupRequirement } from './types';
 
 /**
  * The pane's stored read for the selected mail (U4). Ready shows the stored analysis with no model call. Reading is a
- * live read. Failed shows the stored reason until the person asks for a retry. Edits to dates and room fields are
- * logged as field events, one per field path after a quiet period, so five keystrokes make one event. A send that
+ * live read. Failed shows the stored reason until the person asks for a retry. Edits to dates and room fields, and
+ * rows or stays she adds or removes, are logged as field events, one per field path after a quiet period, so five
+ * keystrokes make one event. A send that
  * fails is tried once more, then kept and shown as "Couldn't save change" with a retry, so no edit is lost.
  */
 
@@ -56,14 +57,6 @@ type PendingEvent = FieldSend & { timer: ReturnType<typeof setTimeout> };
 export type FieldEvent = { path: string; value: RecordFieldEventInput['value'] };
 type Refs = Record<string, { stayId: string; rowId: string | null }>;
 
-/** Date fields of a group patch. They belong to the stay, so every group of that stay takes them. */
-export function stayDatesOf(patch: Partial<StayGroupRequirement>): Partial<StayGroupRequirement> {
-  return {
-    ...(patch.arrivalDate !== undefined ? { arrivalDate: patch.arrivalDate } : {}),
-    ...(patch.departureDate !== undefined ? { departureDate: patch.departureDate } : {}),
-  };
-}
-
 /** The pane's board as the extraction names it. Unknown is no board stated. */
 function extractionBoard(board: QuoteBoard): string | null {
   if (board === 'dinner_bb') return 'dbb';
@@ -71,26 +64,83 @@ function extractionBoard(board: QuoteBoard): string | null {
   return board;
 }
 
+/** Ids the server takes in a field path. The pane's own date-made stay ids ("d:…") are not stable ids. */
+const STABLE_ID = /^[A-Za-z0-9_-]{1,40}$/;
+
+/** A row's stay and row id: the stored read's, or its own for a row she added or copied. */
+function refOf(refs: Refs, group: StayGroupRequirement): Refs[string] | null {
+  const stored = refs[group.id];
+  if (stored) return stored;
+  return group.stayId && STABLE_ID.test(group.stayId) && STABLE_ID.test(group.id)
+    ? { stayId: group.stayId, rowId: group.id }
+    : null;
+}
+
+function datesAt(stay: string, group: StayGroupRequirement): FieldEvent[] {
+  return [
+    { path: `${stay}.requested.arrival`, value: group.arrivalDate || null },
+    { path: `${stay}.requested.departure`, value: group.departureDate || null },
+  ];
+}
+
+function rowFieldsAt(row: string, group: StayGroupRequirement): FieldEvent[] {
+  return [
+    { path: `${row}.count`, value: group.quantity ?? null },
+    { path: `${row}.adults`, value: group.adults ?? null },
+    { path: `${row}.roomType`, value: group.roomPreference || null },
+    { path: `${row}.childAges`, value: group.childrenAges },
+    { path: `${row}.board`, value: extractionBoard(group.board) },
+  ];
+}
+
+function sameValue(a: FieldEvent['value'] | undefined, b: FieldEvent['value']): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
 /**
- * The field events one group patch makes. Dates go to the stay path and room fields to the row path, both by stable
- * id, so deleting one stay cannot shift another stay's values. A group with no row logs stay dates only.
+ * The field events between the rows before and after one edit. Paths use stable ids, so removing one stay never moves
+ * another stay's values. A stay's dates go to the stay path. A row or stay that appears logs `.removed: null` (it
+ * exists) plus its values; one that goes logs `.removed: true`. Rows with no stable id (the blank reading stay) log
+ * nothing.
  */
-export function fieldEventsFor(refs: Refs, groupId: string, patch: Partial<StayGroupRequirement>): FieldEvent[] {
-  const ref = refs[groupId];
-  if (!ref) return [];
-  const stay = `stays[${ref.stayId}]`;
-  const row = ref.rowId ? `${stay}.rows[${ref.rowId}]` : null;
+export function fieldEventsBetween(
+  refs: Refs,
+  before: StayGroupRequirement[],
+  after: StayGroupRequirement[],
+): FieldEvent[] {
   const events: FieldEvent[] = [];
-  if (patch.arrivalDate !== undefined) events.push({ path: `${stay}.requested.arrival`, value: patch.arrivalDate });
-  if (patch.departureDate !== undefined) {
-    events.push({ path: `${stay}.requested.departure`, value: patch.departureDate });
+  const prior = new Map(before.map((group) => [group.id, group]));
+  const priorStay = new Map<string, StayGroupRequirement>();
+  for (const group of before) {
+    const ref = refOf(refs, group);
+    if (ref && !priorStay.has(ref.stayId)) priorStay.set(ref.stayId, group);
   }
-  if (row) {
-    if (patch.quantity !== undefined) events.push({ path: `${row}.count`, value: patch.quantity });
-    if (patch.adults !== undefined) events.push({ path: `${row}.adults`, value: patch.adults });
-    if (patch.roomPreference !== undefined) events.push({ path: `${row}.roomType`, value: patch.roomPreference });
-    if (patch.childrenAges !== undefined) events.push({ path: `${row}.childAges`, value: patch.childrenAges });
-    if (patch.board !== undefined) events.push({ path: `${row}.board`, value: extractionBoard(patch.board) });
+  const changed = (now: FieldEvent[], then: FieldEvent[] | null) => {
+    const old = new Map(then?.map((event) => [event.path, event.value]));
+    for (const event of now) {
+      if (then ? !sameValue(old.get(event.path), event.value) : event.value !== null) events.push(event);
+    }
+  };
+  for (const group of after) {
+    const ref = refOf(refs, group);
+    if (!ref) continue;
+    const stay = `stays[${ref.stayId}]`;
+    const old = prior.get(group.id);
+    const oldStay = old ?? priorStay.get(ref.stayId);
+    if (!oldStay) events.push({ path: `${stay}.removed`, value: null });
+    changed(datesAt(stay, group), oldStay ? datesAt(stay, oldStay) : null);
+    if (!ref.rowId) continue;
+    const row = `${stay}.rows[${ref.rowId}]`;
+    if (!old) events.push({ path: `${row}.removed`, value: null });
+    changed(rowFieldsAt(row, group), old ? rowFieldsAt(row, old) : null);
+  }
+  const kept = new Set(after.map((group) => group.id));
+  const keptStays = new Set(after.flatMap((group) => refOf(refs, group)?.stayId ?? []));
+  for (const group of before) {
+    const ref = kept.has(group.id) ? null : refOf(refs, group);
+    if (!ref) continue;
+    if (ref.rowId) events.push({ path: `stays[${ref.stayId}].rows[${ref.rowId}].removed`, value: true });
+    if (!keptStays.has(ref.stayId)) events.push({ path: `stays[${ref.stayId}].removed`, value: true });
   }
   return events;
 }
@@ -239,26 +289,16 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
     }));
   }, [internetMessageId]);
 
-  const recordGroupPatch = useCallback(
-    (groupId: string, patch: Partial<StayGroupRequirement>) => {
+  /** Logs one edit (a field patch or a stay/row action) as field events. Only a stored read has a work item. */
+  const recordGroups = useCallback(
+    (before: StayGroupRequirement[], after: StayGroupRequirement[]) => {
       if (!readyRefs || !readyWorkItemId) return;
-      for (const event of fieldEventsFor(readyRefs, groupId, patch)) {
+      for (const event of fieldEventsBetween(readyRefs, before, after)) {
         schedule(event.path, readyWorkItemId, event.value);
       }
     },
     [readyRefs, readyWorkItemId, schedule],
   );
 
-  /** The other groups of the same stay. A stay's dates reach them as well. */
-  const siblingGroupIds = useCallback(
-    (groupId: string): string[] => {
-      if (!readyRefs) return [];
-      const stayId = readyRefs[groupId]?.stayId;
-      if (!stayId) return [];
-      return Object.keys(readyRefs).filter((id) => id !== groupId && readyRefs[id]?.stayId === stayId);
-    },
-    [readyRefs],
-  );
-
-  return { pane, key, retry, recordGroupPatch, siblingGroupIds, saveFailed, retrySave };
+  return { pane, key, retry, recordGroups, saveFailed, retrySave };
 }

@@ -859,12 +859,16 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         for (const key of Object.keys(draft) as (keyof StayGroupRequirement)[]) {
           if (draft.fields[String(key)] === 'staff_corrected') Object.assign(typed, { [key]: draft[key] });
         }
-        // Read as a first read (no groups, revision 0), then move the revision on past hers so it only ever grows.
+        // Read as a first read (no groups, revisions 0), then move the revisions on past hers so they only ever grow.
         const read = reduceQuoteSession(
-          { ...session, groups: [], inputRevision: 0, analysisStartStayRevision: null },
+          { ...session, groups: [], inputRevision: 0, stayRevision: 0, analysisStartStayRevision: null },
           action,
         );
-        const landed = { ...read, inputRevision: session.inputRevision + read.inputRevision + 1 };
+        const landed = {
+          ...read,
+          inputRevision: session.inputRevision + read.inputRevision + 1,
+          stayRevision: session.stayRevision + read.stayRevision + 1,
+        };
         if (!landed.groups.length) return landed;
         return landed.groups.reduce(
           (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: typed }),

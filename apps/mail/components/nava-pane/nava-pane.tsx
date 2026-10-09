@@ -26,11 +26,12 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
+import type { QuoteSessionAction } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
-import { stayDatesOf, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
+import { storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import {
   bindGetPriorStaffQuoteRequote,
   bindListThreadQuoteRevisions,
@@ -257,6 +258,12 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     internetMessageId: activeEmail?.internetMessageId ?? null,
   });
   const storedOverridden = Boolean(quoteSession.treatAs || quoteSession.staffNote);
+  /** A staff edit to the stay rows. On a stored read it is logged against the work item, so it is there on reopen. */
+  const editStayRows = (action: QuoteSessionAction) => {
+    const before = quoteSessionRef.current;
+    dispatchQuote(action);
+    storedWork.recordGroups(before.groups, reduceQuoteSession(before, action).groups);
+  };
   const storedGate = storedOverridden ? 'override' : storedWork.key;
   useEffect(() => {
     const binding = quoteSession.binding;
@@ -1188,30 +1195,20 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               findParty={PANE_PARTY_FINDER}
               partyIndex={PANE_PARTY_INDEX}
-              onPatchGroup={(groupId, patch) => {
-                dispatchQuote({ type: 'patch_group', groupId, patch });
-                // A stay's dates belong to every group of that stay. Only a stored read says which groups share one.
-                const dates = stayDatesOf(patch);
-                if (storedWork.pane.state === 'ready' && Object.keys(dates).length > 0) {
-                  for (const sibling of storedWork.siblingGroupIds(groupId)) {
-                    dispatchQuote({ type: 'patch_group', groupId: sibling, patch: dates });
-                  }
-                }
-                storedWork.recordGroupPatch(groupId, patch);
-              }}
+              onPatchGroup={(groupId, patch) => editStayRows({ type: 'patch_group', groupId, patch })}
               // Shown only on a failed-read item, which stays listed after she starts typing in the form.
               onRetryRead={storedWork.retry}
               onStayAction={(action) => {
                 if (action.type !== 'remove_stay') {
-                  dispatchQuote(action);
+                  editStayRows(action);
                   return;
                 }
                 // Undo restores this snapshot: the stay's rows, where they sat, and the rates still current for them.
                 const removal = removedStayFor(quoteSessionRef.current, action.stayId);
-                dispatchQuote(action);
+                editStayRows(action);
                 if (!removal) return;
                 toast('Stay removed', {
-                  action: { label: 'Undo', onClick: () => dispatchQuote({ type: 'restore_stay', removal }) },
+                  action: { label: 'Undo', onClick: () => editStayRows({ type: 'restore_stay', removal }) },
                 });
               }}
               onRunNext={() => {
