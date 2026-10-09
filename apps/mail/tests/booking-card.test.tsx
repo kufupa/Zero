@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BookingCards } from '../components/quote-workflow/booking-card';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
@@ -529,6 +529,24 @@ describe('booking card pane save', () => {
     expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
   });
 
+  it('gives the booked confirmation a Copy confirmation action that copies the number', async () => {
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      const { client } = paneClient();
+      render(<BookingCards draft={draftReady()} paneSave={client} />);
+      pickRoomChoices(0);
+      fireEvent.click(previewButton(0));
+      await screen.findByText(JOHN_SMITH_PREVIEW);
+      fireEvent.click(bookButton(0));
+      await screen.findByText('Booked in HMS – confirmation 98765-1');
+      fireEvent.click(screen.getByRole('button', { name: 'Copy confirmation' }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('98765-1'));
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
   it('freezes the source, track and guarantee choices once Book in HMS has run', async () => {
     const { client } = paneClient();
     render(<BookingCards draft={draftReady()} paneSave={client} />);
@@ -582,6 +600,8 @@ describe('booking card pane save', () => {
         "Luna couldn't confirm there's no existing booking for this guest, so it didn't save. Check HMS, then book by hand.",
       ),
     ).toBeDefined();
+    // A refusal has no confirmation number, so there is nothing to open or copy.
+    expect(screen.queryByRole('button', { name: 'Copy confirmation' })).toBeNull();
     expect(bookButton(0)).toHaveProperty('disabled', true);
     expect(previewButton(0)).toHaveProperty('disabled', false);
   });
