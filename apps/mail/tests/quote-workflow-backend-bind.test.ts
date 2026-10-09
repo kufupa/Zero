@@ -8,6 +8,7 @@ import {
   STAFF_QUOTE_PILOT_MISSING,
 } from '../lib/quote-workflow/backend-bind';
 import {
+  approvedExecuteHeader,
   bindExecuteStaffQuote,
   bindQualifiedStaffProposalPdf,
   nativeRoomCodes,
@@ -465,6 +466,66 @@ describe('staff quote execute/PDF header bind', () => {
       shuttleRequested: true,
       shuttleMinor: 45_000,
     });
+  });
+
+  it('sends each new extra and the note as its own field, and leaves out empty ones', () => {
+    expect(
+      approvedExecuteHeader({
+        ...government,
+        lunchAllowanceMinor: 20_000,
+        lunchAllowanceLabel: ' with 1 soft drink ',
+        officeTransferMinor: 20_000,
+        officeTransferDays: 0,
+        shuttleRequested: true,
+        shuttleTrips: 2,
+        other: { label: ' Parking ', amountMinor: 30_000, unit: 'item' },
+        notes: '  Breakfast only on day 2.  ',
+      }),
+    ).toMatchObject({
+      lunchAllowanceMinor: 20_000,
+      lunchAllowanceLabel: 'with 1 soft drink',
+      officeTransferMinor: 20_000,
+      shuttleRequested: true,
+      shuttleTrips: 2,
+      other: { label: 'Parking', amountMinor: 30_000, unit: 'item' },
+      notes: 'Breakfast only on day 2.',
+    });
+    const bare = approvedExecuteHeader({
+      ...government,
+      other: { label: 'Parking', unit: 'item' },
+      notes: '   ',
+    });
+    expect(bare).not.toHaveProperty('other');
+    expect(bare).not.toHaveProperty('notes');
+    expect(bare).not.toHaveProperty('officeTransferDays');
+  });
+
+  it('sends an other amount with no label, so the server can raise a review item for it', () => {
+    expect(
+      approvedExecuteHeader({ ...government, other: { label: '  ', amountMinor: 30_000, unit: 'item' } }),
+    ).toMatchObject({ other: { label: '', amountMinor: 30_000, unit: 'item' } });
+  });
+
+  it('does not run the quote while an amount is unreadable', async () => {
+    const mutate = vi.fn(async () => readyResult);
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: {
+        ...government,
+        dinnerAllowanceMinor: 45_000,
+        fieldErrors: { dinnerAllowance: 'Enter an amount in rand, like 450 or 1,250.50' },
+      },
+    });
+    expect(result).toEqual({
+      status: 'unavailable',
+      reason:
+        'Fix the amounts before running this search. Dinner allowance: Enter an amount in rand, like 450 or 1,250.50',
+    });
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it('sends the group ids the dinner allowance belongs to, so the server charges only those guests', async () => {

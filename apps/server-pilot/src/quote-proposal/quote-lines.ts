@@ -33,10 +33,11 @@ export function deriveQuoteLines(revision: QuoteRevision): QuoteDisplayLine[] {
 }
 export type AuthorizedProposalFacts = {
  revisionId:string;authorizationId:string;sourceRef:string;sourceHash:string;
- extras:Array<{id:string;label:string;quantity:number;units:number;unitKind:'person_service'|'item'|'trip';unitMinor:number;service:string;persons:Array<{id:string;age:number}>;dates:string[]}>;
+ extras:Array<{id:string;label:string;quantity:number;units:number;unitKind:'person_service'|'item'|'trip';unitMinor:number;service:string;persons:Array<{id:string;age:number}>;dates:string[];chargeUnit?:'per_person_night'|'per_person'|'per_trip'|'item'}>;
  includedEntitlements:Array<{sourceRef:string;sourceHash:string;service:string;personIds:string[];dates:string[]}>;
 };
-export type ExtraDisplayLine = {id:string;description:string;quantity:number;units:number;unitKind:string;rateMinor:number;totalMinor:number;sourceRef:string;sourceHash:string;dates:string[]};
+/** quantity x nights x rateMinor = totalMinor. Person services: quantity is guests and nights is nights or days. Trips and items: nights is the trip or item count. */
+export type ExtraDisplayLine = {id:string;description:string;quantity:number;nights:number;units:number;unitKind:string;rateMinor:number;totalMinor:number;sourceRef:string;sourceHash:string;dates:string[]};
 /** Facts must be resolved from authorized document/policy storage; callers cannot supply model text as authority. */
 export function deriveAuthorizedExtraLines(revision:QuoteRevision,facts:AuthorizedProposalFacts):ExtraDisplayLine[]{
  deriveQuoteLines(revision);
@@ -51,15 +52,23 @@ export function deriveAuthorizedExtraLines(revision:QuoteRevision,facts:Authoriz
   if(!['person_service','item','trip'].includes(extra.unitKind))throw new Error('extra_units');
   for(const date of extra.dates)occupiedDates(date,new Date(Date.parse(`${date}T00:00:00Z`)+86400000).toISOString().slice(0,10));
   if(new Set(extra.dates).size!==extra.dates.length||new Set(extra.persons.map(p=>p.id)).size!==extra.persons.length||extra.persons.some(p=>!p.id||!Number.isInteger(p.age)||p.age<0))throw new Error('extra_person_date');
-  let units=extra.units,dates=extra.dates;
+  let blocks:Array<{quantity:number;nights:number;dates:string[]}>;
   if(extra.unitKind==='person_service'){
    if(!extra.persons.length||!extra.dates.length||extra.units!==extra.persons.length*extra.dates.length||extra.quantity!==1)throw new Error('ambiguous_meal_units');
-   const charged=extra.persons.flatMap(person=>extra.dates.filter(date=>!facts.includedEntitlements.some(e=>e.service===extra.service&&e.personIds.includes(person.id)&&e.dates.includes(date))).map(date=>({person,date})));
-   units=charged.length;dates=[...new Set(charged.map(c=>c.date))];
-  }
-  if(!units)continue;
-  const totalMinor=units*extra.quantity*extra.unitMinor;if(!Number.isSafeInteger(totalMinor))throw new Error('money_overflow');
-  lines.push({id:extra.id,description:extra.label,quantity:extra.quantity,units,unitKind:extra.unitKind,rateMinor:extra.unitMinor,totalMinor,sourceRef:facts.sourceRef,sourceHash:facts.sourceHash,dates});
+   // Guests charged for the same dates form one block, so every printed row reads as guests x nights.
+   const byDates=new Map<string,{quantity:number;dates:string[]}>();
+   for(const person of extra.persons){
+    const dates=extra.dates.filter(date=>!facts.includedEntitlements.some(e=>e.service===extra.service&&e.personIds.includes(person.id)&&e.dates.includes(date)));
+    if(!dates.length)continue;
+    const key=dates.join('|'),row=byDates.get(key)??{quantity:0,dates};
+    row.quantity++;byDates.set(key,row);
+   }
+   blocks=[...byDates.values()].map(row=>({quantity:row.quantity,nights:row.dates.length,dates:row.dates}));
+  }else blocks=[{quantity:extra.quantity,nights:extra.units,dates:extra.dates}];
+  blocks.forEach((block,index)=>{
+   const totalMinor=block.quantity*block.nights*extra.unitMinor;if(!Number.isSafeInteger(totalMinor))throw new Error('money_overflow');
+   lines.push({id:index?`${extra.id}-${index+1}`:extra.id,description:extra.label,quantity:block.quantity,nights:block.nights,units:block.quantity*block.nights,unitKind:extra.unitKind,rateMinor:extra.unitMinor,totalMinor,sourceRef:facts.sourceRef,sourceHash:facts.sourceHash,dates:block.dates});
+  });
  }
  return lines;
 }

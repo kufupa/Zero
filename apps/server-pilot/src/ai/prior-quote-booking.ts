@@ -5,7 +5,7 @@ import {
   deriveAuthorizedExtraLines,
   type AuthorizedProposalFacts,
 } from '../quote-proposal/quote-lines.js';
-import type { StaffQuoteAttestation } from './staff-quote-workflow.js';
+import type { OtherChargeUnit, StaffQuoteAttestation } from './staff-quote-workflow.js';
 
 export type PriorStaffQuoteRequoteGroup = {
   id: string;
@@ -24,8 +24,16 @@ export type PriorStaffQuoteRequotePayload = {
   company: string;
   agency: string;
   dinnerAllowanceMinor?: number;
+  dinnerAllowanceLabel?: string;
+  lunchAllowanceMinor?: number;
+  lunchAllowanceLabel?: string;
+  officeTransferMinor?: number;
+  officeTransferDays?: number;
   shuttleRequested?: boolean;
   shuttleMinor?: number;
+  shuttleTrips?: number;
+  other?: { label: string; amountMinor: number; unit: OtherChargeUnit };
+  notes?: string;
 };
 
 export type ThreadQuoteRevisionSummary = {
@@ -168,20 +176,41 @@ export function quotedTotalWithStoredExtras(revision: QuoteRevision, run: PriorQ
   }
 }
 
-function extrasHeaderFromFacts(facts: AuthorizedProposalFacts | undefined): {
-  dinnerAllowanceMinor?: number;
-  shuttleRequested?: boolean;
-  shuttleMinor?: number;
-} {
-  if (!facts) return {};
-  const dinner = facts.extras.find(
-    (row) => row.service === 'dinner_allowance' && row.unitKind === 'person_service',
-  );
-  const shuttle = facts.extras.find((row) => row.service === 'shuttle' && row.unitKind === 'trip');
-  return {
-    ...(dinner ? { dinnerAllowanceMinor: dinner.unitMinor } : {}),
-    ...(shuttle ? { shuttleRequested: true as const, shuttleMinor: shuttle.unitMinor } : {}),
-  };
+/** The staff qualifier stored in a label such as "Dinner allowance (food only)". */
+function qualifierFromLabel(label: string, base: string): string | undefined {
+  return label.startsWith(`${base} (`) && label.endsWith(')') ? label.slice(base.length + 2, -1) : undefined;
+}
+
+/** Maps persisted staff extras back to header fields. Legacy dinner and shuttle rows keep their meaning. */
+function extrasHeaderFromFacts(
+  facts: AuthorizedProposalFacts | undefined,
+): Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'company' | 'agency' | 'notes'> {
+  const out: Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'company' | 'agency' | 'notes'> = {};
+  for (const row of facts?.extras ?? []) {
+    if (row.service === 'dinner_allowance' && row.unitKind === 'person_service') {
+      out.dinnerAllowanceMinor = row.unitMinor;
+      const qualifier = qualifierFromLabel(row.label, 'Dinner allowance');
+      if (qualifier) out.dinnerAllowanceLabel = qualifier;
+    } else if (row.service === 'lunch_allowance' && row.unitKind === 'person_service') {
+      out.lunchAllowanceMinor = row.unitMinor;
+      const qualifier = qualifierFromLabel(row.label, 'Lunch allowance');
+      if (qualifier) out.lunchAllowanceLabel = qualifier;
+    } else if (row.service === 'office_transfer' && row.unitKind === 'person_service') {
+      out.officeTransferMinor = row.unitMinor;
+      if (row.dates.length) out.officeTransferDays = row.dates.length;
+    } else if (row.service === 'shuttle' && row.unitKind === 'trip') {
+      out.shuttleRequested = true;
+      out.shuttleMinor = row.unitMinor;
+      out.shuttleTrips = row.units;
+    } else if (row.service === 'other') {
+      // The unit the staff chose is stored on the fact. Facts stored before that fall back to the old inference.
+      const unit: OtherChargeUnit =
+        row.chargeUnit ??
+        (row.unitKind === 'trip' ? 'per_trip' : row.unitKind === 'item' ? 'item' : row.dates.length > 1 ? 'per_person_night' : 'per_person');
+      out.other = { label: row.label, amountMinor: row.unitMinor, unit };
+    }
+  }
+  return out;
 }
 
 /** Stored revision + attestation inputs for executeStaffQuote when freshness expired. */
@@ -217,6 +246,7 @@ export function priorStaffQuoteRequotePayload(
     company: staff.header.company ?? '',
     agency: staff.header.agency ?? '',
     ...extrasHeaderFromFacts(proposalFactsForRevision(run, revisionRef)),
+    ...(staff.notes ? { notes: staff.notes } : {}),
   };
 }
 

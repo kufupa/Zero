@@ -7,6 +7,7 @@ import {
   attestStaffQuote,
   buildStaffProposalFacts,
   type StaffQuoteAttestation,
+  type StaffQuoteInput,
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
 import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
@@ -92,6 +93,30 @@ const HMS_EXECUTION_CODES = new Set([
 const HMS_EXECUTION_PHASE = /^(login|hotel_availability|search|details|run|execution)$/;
 
 // Identifiers only: free-text error messages can carry PMS or guest data, so they never reach logs.
+/**
+ * Prices the staff extras for one approved revision. Invalid or oversize extras are the caller's mistake,
+ * so any failure here is a BAD_REQUEST, never an internal error.
+ */
+export function staffExtrasOrBadRequest(
+  input: StaffQuoteInput,
+  scope: Parameters<typeof buildStaffProposalFacts>[1],
+  prepared: Parameters<typeof buildStaffProposalFacts>[2],
+  revision: QuoteRevision,
+): { proposal: ReturnType<typeof buildStaffProposalFacts>; extraTotal: number } {
+  try {
+    const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
+    const extraTotal = proposal.facts
+      ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce((sum, line) => sum + line.totalMinor, 0)
+      : 0;
+    return { proposal, extraTotal };
+  } catch {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'The extras on this quote are not valid. Check the amounts and counts, then run the quote again.',
+    });
+  }
+}
+
 export function staffQuoteFailureCode(error: unknown): string {
   const raw = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
   const candidate = typeof raw === 'string' ? raw : error instanceof Error ? error.message : '';
@@ -670,19 +695,29 @@ export const workstationRouter = router({
         });
       }
       queued.setPhase(3);
-      const attestation = attestStaffQuote(input, scope, prepared, revision);
-      const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
-      const extraTotal = proposal.facts
-        ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce(
-            (sum, line) => sum + line.totalMinor,
-            0,
-          )
-        : 0;
-      if (!(await stillCurrent()))
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: 'Selected email changed while pricing',
-        });
+      // Any failure after pricing must not leave this generation 'running'.
+      const markGenerationFailed = (code: string) =>
+        Promise.resolve(
+          db
+            .update(aiDraftGeneration)
+            .set({ status: 'failed', errorMessage: code })
+            .where(eq(aiDraftGeneration.id, generationId)),
+        ).catch(() => undefined);
+      let attestation: StaffQuoteAttestation;
+      let proposal: ReturnType<typeof buildStaffProposalFacts>;
+      let extraTotal: number;
+      try {
+        attestation = attestStaffQuote(input, scope, prepared, revision);
+        ({ proposal, extraTotal } = staffExtrasOrBadRequest(input, scope, prepared, revision));
+        if (!(await stillCurrent()))
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Selected email changed while pricing',
+          });
+      } catch (error) {
+        await markGenerationFailed('staff_quote_post_pricing_failed');
+        throw error;
+      }
       const runId = evidence.directory
         ? quoteRunIdFromEvidenceDirectory(config.outputDir, evidence.directory)
         : null;
@@ -762,7 +797,12 @@ export const workstationRouter = router({
         registerPendingStaffQuote([workflowRunId, mail.id, ...(runId ? [runId] : [])], pending);
         return summary();
       }
-      await persistRun();
+      try {
+        await persistRun();
+      } catch (error) {
+        await markGenerationFailed('staff_quote_persist_failed');
+        throw error;
+      }
       return summary();
     } finally {
       if (!queueEndedLater) queued.end();
@@ -1270,7 +1310,13 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'GOTENBERG_URL missing' });
       const result = await buildRevisionProposalPdf(
         resolved.revision,
-        { ...input, signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email },
+        {
+          ...input,
+          signerName: ctx.sessionUser.name ?? '',
+          signerEmail: ctx.sessionUser.email,
+          // The note comes from the approved attestation, not from this request.
+          notes: staff?.notes,
+        },
         { url, facts: resolved.facts },
       );
       await assertCurrentStaffQuote();

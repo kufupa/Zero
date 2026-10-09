@@ -1,5 +1,5 @@
 import { canCreateNativeDraft, canCreatePdf } from '@/lib/quote-workflow/session';
-import type { QuoteSession } from '@/lib/quote-workflow/types';
+import { staffHeaderFieldProblem, type QuoteSession } from '@/lib/quote-workflow/types';
 
 export function DocumentReview({
   session,
@@ -12,6 +12,7 @@ export function DocumentReview({
 }) {
   const pdfReady = canCreatePdf(session);
   const nativeReady = canCreateNativeDraft(session);
+  const amountProblem = staffHeaderFieldProblem(session.staffHeader);
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quotation and reply</h3>
@@ -35,8 +36,9 @@ export function DocumentReview({
       </button>
       {!pdfReady ? (
         <p className="text-[11px] text-[#64748b]">
-          Pick a room option for every stay before making the PDF. Separate date searches do not prove
-          that all stays are available together.
+          {amountProblem
+            ? `Fix the amounts before making the PDF or Excel. ${amountProblem}`
+            : 'Pick a room option for every stay before making the PDF. Separate date searches do not prove that all stays are available together.'}
         </p>
       ) : null}
       {session.pdf ? (

@@ -3,6 +3,7 @@ import type {
   LunaAnalysisWire,
   QuoteBoard,
   StaffQuoteHeader,
+  StaffQuoteOtherCharge,
   StaffQuoteSource,
   StayGroupRequirement,
 } from './types';
@@ -236,8 +237,16 @@ export type PriorStaffQuoteRequotePayload = {
   company: string;
   agency: string;
   dinnerAllowanceMinor?: number;
+  dinnerAllowanceLabel?: string;
+  lunchAllowanceMinor?: number;
+  lunchAllowanceLabel?: string;
+  officeTransferMinor?: number;
+  officeTransferDays?: number;
   shuttleRequested?: boolean;
   shuttleMinor?: number;
+  shuttleTrips?: number;
+  other?: StaffQuoteOtherCharge;
+  notes?: string;
 };
 
 export type PriorStaffQuoteRequoteRow = {
@@ -300,10 +309,25 @@ export function buildExpiredPriorRequoteBindArgs(args: {
                 : {}),
             }
           : {}),
+        ...definedEntries({
+          dinnerAllowanceLabel: args.stored.dinnerAllowanceLabel,
+          lunchAllowanceMinor: args.stored.lunchAllowanceMinor,
+          lunchAllowanceLabel: args.stored.lunchAllowanceLabel,
+          officeTransferMinor: args.stored.officeTransferMinor,
+          officeTransferDays: args.stored.officeTransferDays,
+          shuttleTrips: args.stored.shuttleTrips,
+          other: args.stored.other,
+          notes: args.stored.notes,
+        }),
       },
     };
   }
   return { groups: args.sessionGroups, header: args.sessionHeader };
+}
+
+/** Copies only the keys that have a value, so a missing stored field keeps the session's own value. */
+function definedEntries<T extends object>(value: T): Partial<T> {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as Partial<T>;
 }
 
 export function staffQuoteGroupsForExpiredPriorRequote(args: {

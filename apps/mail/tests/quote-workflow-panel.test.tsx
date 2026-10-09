@@ -1,6 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
+import { useState } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
@@ -341,10 +342,149 @@ describe('QuoteWorkflowPanel', () => {
         onPatchStaffHeader={onPatchStaffHeader}
       />,
     );
-    const input = screen.getByLabelText('Dinner allowance') as HTMLInputElement;
+    const input = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: '125.' } });
     expect(input.value).toBe('125.');
+  });
+
+  it('shows one labelled field group per extra, and sends each change as its own patch', () => {
+    const onPatchStaffHeader = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={sessionFromFixture('mixed-same-dates')}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    expect(screen.getByLabelText('Dinner allowance (R per person per night)')).toBeDefined();
+    expect(screen.getByLabelText('Lunch allowance (R per person per night)')).toBeDefined();
+    expect(screen.getByLabelText('Office transfer (R per person per day)')).toBeDefined();
+    expect(screen.getByRole('group', { name: 'Other: label, amount, unit' })).toBeDefined();
+    fireEvent.change(screen.getByLabelText('Other label'), { target: { value: 'Parking' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({
+      other: expect.objectContaining({ label: 'Parking', unit: 'item' }),
+    });
+    fireEvent.change(screen.getByLabelText('Notes for the quote'), {
+      target: { value: 'Breakfast only on day 2.' },
+    });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ notes: 'Breakfast only on day 2.' });
+  });
+
+  it('asks for trips and a price once shuttle is requested, and says so while the price is missing', () => {
+    const onPatchStaffHeader = vi.fn();
+    const base = sessionFromFixture('mixed-same-dates');
+    render(
+      <QuoteWorkflowPanel
+        session={{ ...base, staffHeader: { ...base.staffHeader, shuttleRequested: true } }}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    expect(screen.getByRole('group', { name: 'Shuttle: trips × R per trip' })).toBeDefined();
+    expect(screen.getByText(/No price yet/)).toBeDefined();
+    fireEvent.change(screen.getByLabelText('Shuttle trips'), { target: { value: '2' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ shuttleTrips: 2 });
+  });
+
+  it('asks for a label when an other amount has none, and stops asking once it has one', () => {
+    const base = sessionFromFixture('mixed-same-dates');
+    const withOther = (other: QuoteSession['staffHeader']['other']) => ({
+      ...base,
+      staffHeader: { ...base.staffHeader, other },
+    });
+    render(<QuoteWorkflowPanel session={withOther({ label: '', amountMinor: 30_000, unit: 'item' })} />);
+    expect(screen.getByText('Add a label for this amount')).toBeDefined();
+    expect((screen.getByLabelText('Other label') as HTMLInputElement).required).toBe(true);
+    cleanup();
+    render(<QuoteWorkflowPanel session={withOther({ label: '', unit: 'item' })} />);
+    expect(screen.queryByText('Add a label for this amount')).toBeNull();
+    cleanup();
+    render(<QuoteWorkflowPanel session={withOther({ label: 'Parking', amountMinor: 30_000, unit: 'item' })} />);
+    expect(screen.queryByText('Add a label for this amount')).toBeNull();
+    expect((screen.getByLabelText('Other label') as HTMLInputElement).required).toBe(false);
+  });
+
+  it('keeps unreadable amount text on screen with an inline message, and saves nothing', () => {
+    const onPatchStaffHeader = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={sessionFromFixture('mixed-same-dates')}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    const input = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'abc' } });
+    fireEvent.blur(input);
+    expect(input.value).toBe('abc');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(screen.getByText('Enter an amount in rand, like 450 or 1,250.50')).toBeDefined();
+    expect(onPatchStaffHeader).not.toHaveBeenCalledWith({ dinnerAllowanceMinor: undefined });
+  });
+
+  it('reads R and thousands separators, and shows an inline message for an amount over R1,000,000', () => {
+    const onPatchStaffHeader = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={sessionFromFixture('mixed-same-dates')}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    const input = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'R 1,250.50' } });
+    fireEvent.blur(input);
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ dinnerAllowanceMinor: 125_050 });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '2,000,000' } });
+    expect(screen.getByText('Amounts above R1,000,000 are not accepted')).toBeDefined();
+    fireEvent.blur(input);
+    expect(onPatchStaffHeader).not.toHaveBeenCalledWith({ dinnerAllowanceMinor: 200_000_000 });
+    expect(onPatchStaffHeader).toHaveBeenCalledWith({ dinnerAllowanceMinor: 125_050 });
+  });
+
+  it('caps shuttle trips at 50 with an inline message, and saves a count within the cap', () => {
+    const onPatchStaffHeader = vi.fn();
+    const base = sessionFromFixture('mixed-same-dates');
+    render(
+      <QuoteWorkflowPanel
+        session={{ ...base, staffHeader: { ...base.staffHeader, shuttleRequested: true } }}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    const trips = screen.getByLabelText('Shuttle trips') as HTMLInputElement;
+    fireEvent.change(trips, { target: { value: '60' } });
+    expect(screen.getByText('Up to 50 allowed')).toBeDefined();
+    expect(onPatchStaffHeader).not.toHaveBeenCalledWith({ shuttleTrips: 60 });
+    fireEvent.change(trips, { target: { value: '50' } });
+    expect(screen.queryByText('Up to 50 allowed')).toBeNull();
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ shuttleTrips: 50 });
+  });
+
+  it('blocks every Run while an amount is unreadable, and drops the charge only when the field is cleared', () => {
+    const seen: { latest: QuoteSession | null } = { latest: null };
+    const base = staggeredDatesSession();
+    const initial = { ...base, staffHeader: { ...base.staffHeader, dinnerAllowanceMinor: 45_000 } };
+    render(<RunGate initial={initial} seen={seen} />);
+    const runButtons = () => screen.getAllByRole('button', { name: /^Run Search availability/i }) as HTMLButtonElement[];
+    expect(runButtons().every((button) => !button.disabled)).toBe(true);
+    const dinner = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
+    // R450 is saved; the typed text is unreadable. The quote must not run on the saved R450 silently.
+    fireEvent.focus(dinner);
+    fireEvent.change(dinner, { target: { value: '450,50x' } });
+    expect(runButtons().every((button) => button.disabled)).toBe(true);
+    expect((screen.getByRole('button', { name: 'Run next' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getAllByText(/Fix the amounts before running this search\. Dinner allowance:/).length).toBeGreaterThan(0);
+    expect(seen.latest?.staffHeader.dinnerAllowanceMinor).toBe(45_000);
+    // Clearing the field drops the charge and unblocks the Run.
+    fireEvent.change(dinner, { target: { value: '' } });
+    fireEvent.blur(dinner);
+    expect(seen.latest?.staffHeader.dinnerAllowanceMinor).toBeUndefined();
+    expect(seen.latest?.staffHeader.fieldErrors?.dinnerAllowance).toBeUndefined();
+    expect(runButtons().every((button) => !button.disabled)).toBe(true);
+    // An amount over the cap blocks the Run as well.
+    fireEvent.change(dinner, { target: { value: '2,000,000' } });
+    expect(screen.getByText('Amounts above R1,000,000 are not accepted')).toBeDefined();
+    expect(runButtons().every((button) => button.disabled)).toBe(true);
   });
 
   it('gives each date option its own Run button', () => {
@@ -424,6 +564,22 @@ const BINDING = {
 };
 
 /** Two date options (2 Nov and 10 Nov) with no results yet. */
+/** The panel with its session held in state and changed by the real reducer, as the page does. */
+function RunGate({ initial, seen }: { initial: QuoteSession; seen: { latest: QuoteSession | null } }) {
+  const [session, setSession] = useState(initial);
+  seen.latest = session;
+  return (
+    <QuoteWorkflowPanel
+      session={session}
+      onPatchStaffHeader={(header) =>
+        setSession((current) => reduceQuoteSession(current, { type: 'patch_staff_header', header }))
+      }
+      onRunStep={vi.fn()}
+      onRunNext={vi.fn()}
+    />
+  );
+}
+
 function staggeredDatesSession() {
   let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: BINDING });
   session = reduceQuoteSession(session, {

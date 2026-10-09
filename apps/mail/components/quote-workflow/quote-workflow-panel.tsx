@@ -11,8 +11,18 @@ import {
 } from '@/lib/quote-workflow/session';
 import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
+import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
-import type { QueueStatus, QuoteOffer, QuoteReviewItem, QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '@/lib/quote-workflow/types';
+import type {
+  QueueStatus,
+  QuoteOffer,
+  QuoteReviewItem,
+  QuoteSession,
+  StaffQuoteHeader,
+  StaffExtraField,
+  StaffQuoteOtherUnit,
+  StayGroupRequirement,
+} from '@/lib/quote-workflow/types';
 import { BookingCards } from './booking-card';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { DocumentReview } from './document-review';
@@ -77,54 +87,144 @@ function formatZarMinor(minor: number | undefined): string {
   return minor !== undefined && minor > 0 ? (minor / 100).toFixed(2).replace(/\.00$/, '') : '';
 }
 
+/**
+ * A rand amount typed by staff. Text that cannot be read, or an amount over the cap, stays on screen with an
+ * inline message and is reported to the quote gate. The saved amount is not changed by it.
+ */
 function ZarMinorInput({
   ariaLabel,
   minor,
   onMinorChange,
+  onErrorChange,
 }: {
   ariaLabel: string;
   minor: number | undefined;
   onMinorChange: (minor: number | undefined) => void;
+  /** Reports unreadable or over-cap text to the quote gate; null once the text reads cleanly. */
+  onErrorChange?: (message: string | null) => void;
 }) {
   const formatted = formatZarMinor(minor);
   const [draft, setDraft] = useState(formatted);
   const [focused, setFocused] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const report = (message: string | null) => {
+    setError(message);
+    onErrorChange?.(message);
+  };
   useEffect(() => {
-    if (!focused) setDraft(formatted);
-  }, [formatted, focused]);
+    if (!focused && !error) setDraft(formatted);
+  }, [formatted, focused, error]);
+  const apply = (raw: string) => {
+    const result = parseZarInput(raw);
+    if (result.status === 'ok') {
+      report(null);
+      onMinorChange(result.minor);
+    } else if (result.status === 'empty') {
+      report(null);
+      onMinorChange(undefined);
+    } else {
+      report(result.status === 'partial' ? EXTRA_AMOUNT_FORMAT_MESSAGE : result.message);
+    }
+  };
   return (
-    <input
-      aria-label={ariaLabel}
-      className={fieldClass}
-      inputMode="decimal"
-      value={focused ? draft : formatted}
-      onFocus={() => {
-        setDraft(formatted);
-        setFocused(true);
-      }}
-      onBlur={() => {
-        setFocused(false);
-        const raw = draft.trim();
-        if (!raw) {
-          onMinorChange(undefined);
-          return;
-        }
-        const rand = Number(raw);
-        onMinorChange(Number.isFinite(rand) && rand > 0 ? Math.round(rand * 100) : undefined);
-      }}
-      onChange={(event) => {
-        const raw = event.target.value;
-        setDraft(raw);
-        if (!raw.trim()) {
-          onMinorChange(undefined);
-          return;
-        }
-        if (/\.\d{0,1}$/.test(raw) && raw.endsWith('.')) return;
-        const rand = Number(raw.trim());
-        if (Number.isFinite(rand) && rand > 0) onMinorChange(Math.round(rand * 100));
-      }}
-    />
+    <>
+      <input
+        aria-label={ariaLabel}
+        aria-invalid={error ? true : undefined}
+        className={fieldClass}
+        inputMode="decimal"
+        value={focused || error ? draft : formatted}
+        onFocus={() => {
+          setDraft(formatted);
+          setFocused(true);
+        }}
+        onBlur={() => {
+          setFocused(false);
+          apply(draft.replace(/\.$/, ''));
+        }}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          apply(event.target.value);
+        }}
+      />
+      {error ? <span className="mt-0.5 block text-[11px] font-normal text-[#b45309]">{error}</span> : null}
+    </>
   );
+}
+
+/** A whole number of trips or days, up to max. Anything else is reported to the quote gate and not saved. */
+function CountInput({
+  ariaLabel,
+  value,
+  max,
+  placeholder,
+  onValueChange,
+  onErrorChange,
+}: {
+  ariaLabel: string;
+  value: number | undefined;
+  max: number;
+  placeholder?: string;
+  onValueChange: (value: number | undefined) => void;
+  onErrorChange?: (message: string | null) => void;
+}) {
+  const formatted = value === undefined ? '' : String(value);
+  const [draft, setDraft] = useState(formatted);
+  const [focused, setFocused] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const report = (message: string | null) => {
+    setError(message);
+    onErrorChange?.(message);
+  };
+  useEffect(() => {
+    if (!focused && !error) setDraft(formatted);
+  }, [formatted, focused, error]);
+  const apply = (raw: string) => {
+    const result = parseCountInput(raw, max);
+    if (result.status === 'ok') {
+      report(null);
+      onValueChange(result.count);
+    } else if (result.status === 'empty') {
+      report(null);
+      onValueChange(undefined);
+    } else {
+      report(result.message);
+    }
+  };
+  return (
+    <>
+      <input
+        aria-label={ariaLabel}
+        aria-invalid={error ? true : undefined}
+        className={fieldClass}
+        inputMode="numeric"
+        placeholder={placeholder}
+        value={focused || error ? draft : formatted}
+        onFocus={() => {
+          setDraft(formatted);
+          setFocused(true);
+        }}
+        onBlur={() => {
+          setFocused(false);
+          apply(draft);
+        }}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          apply(event.target.value);
+        }}
+      />
+      {error ? <span className="mt-0.5 block text-[11px] font-normal text-[#b45309]">{error}</span> : null}
+    </>
+  );
+}
+
+function withoutFieldErrors(
+  errors: Partial<Record<StaffExtraField, string>> | undefined,
+  fields: StaffExtraField[],
+): Partial<Record<StaffExtraField, string>> {
+  const kept = { ...errors };
+  for (const field of fields) delete kept[field];
+  return kept;
 }
 
 function StaffHeaderFields({
@@ -134,6 +234,17 @@ function StaffHeaderFields({
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
 }) {
+  // An amount with no label is not dropped: the label is required and the quote raises a review item for it.
+  const otherNeedsLabel = Boolean(header.other?.amountMinor) && !header.other?.label?.trim();
+  // Reports one field's unreadable text through the header, so the quote gate sees it. No revision bump.
+  const reportFieldError = (field: StaffExtraField) => (message: string | null) => {
+    const current = header.fieldErrors ?? {};
+    if ((current[field] ?? null) === message) return;
+    const next: Partial<Record<StaffExtraField, string>> = { ...current };
+    if (message) next[field] = message;
+    else delete next[field];
+    onPatch?.({ fieldErrors: next });
+  };
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quote header</h3>
@@ -199,33 +310,187 @@ function StaffHeaderFields({
           onChange={(event) => onPatch?.({ clientTelephone: event.target.value })}
         />
       </label>
-      <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-        Dinner allowance (ZAR / person / night)
-        <ZarMinorInput
-          ariaLabel="Dinner allowance"
-          minor={header.dinnerAllowanceMinor}
-          onMinorChange={(dinnerAllowanceMinor) => onPatch?.({ dinnerAllowanceMinor })}
-        />
-      </label>
-      <label className="flex items-center gap-2 text-[11.5px] font-semibold text-[#475569]">
-        <input
-          type="checkbox"
-          aria-label="Shuttle requested"
-          checked={Boolean(header.shuttleRequested)}
-          onChange={(event) => onPatch?.({ shuttleRequested: event.target.checked })}
-        />
-        Shuttle requested
-      </label>
-      {header.shuttleRequested ? (
+      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
         <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
-          Shuttle amount (ZAR)
+          Dinner allowance (R per person per night)
           <ZarMinorInput
-            ariaLabel="Shuttle amount"
-            minor={header.shuttleMinor}
-            onMinorChange={(shuttleMinor) => onPatch?.({ shuttleMinor })}
+            ariaLabel="Dinner allowance (R per person per night)"
+            minor={header.dinnerAllowanceMinor}
+            onMinorChange={(dinnerAllowanceMinor) => onPatch?.({ dinnerAllowanceMinor })}
+            onErrorChange={reportFieldError('dinnerAllowance')}
           />
         </label>
-      ) : null}
+        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+          Dinner label, optional (e.g. food only)
+          <input
+            aria-label="Dinner label"
+            className={fieldClass}
+            maxLength={120}
+            value={header.dinnerAllowanceLabel ?? ''}
+            onChange={(event) => onPatch?.({ dinnerAllowanceLabel: event.target.value })}
+          />
+        </label>
+      </div>
+      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
+        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+          Lunch allowance (R per person per night)
+          <ZarMinorInput
+            ariaLabel="Lunch allowance (R per person per night)"
+            minor={header.lunchAllowanceMinor}
+            onMinorChange={(lunchAllowanceMinor) => onPatch?.({ lunchAllowanceMinor })}
+            onErrorChange={reportFieldError('lunchAllowance')}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+          Lunch label, optional (e.g. with 1 soft drink)
+          <input
+            aria-label="Lunch label"
+            className={fieldClass}
+            maxLength={120}
+            value={header.lunchAllowanceLabel ?? ''}
+            onChange={(event) => onPatch?.({ lunchAllowanceLabel: event.target.value })}
+          />
+        </label>
+      </div>
+      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
+        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+          Office transfer (R per person per day)
+          <ZarMinorInput
+            ariaLabel="Office transfer (R per person per day)"
+            minor={header.officeTransferMinor}
+            onMinorChange={(officeTransferMinor) => onPatch?.({ officeTransferMinor })}
+            onErrorChange={reportFieldError('officeTransfer')}
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+          Office transfer days, optional (blank = nights of stay)
+          <CountInput
+            ariaLabel="Office transfer days"
+            value={header.officeTransferDays}
+            max={31}
+            placeholder="nights of stay"
+            onValueChange={(officeTransferDays) => onPatch?.({ officeTransferDays })}
+            onErrorChange={reportFieldError('officeTransferDays')}
+          />
+        </label>
+      </div>
+      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
+        <label className="flex items-center gap-2 text-[11.5px] font-semibold text-[#475569]">
+          <input
+            type="checkbox"
+            aria-label="Shuttle requested"
+            checked={Boolean(header.shuttleRequested)}
+            onChange={(event) =>
+              onPatch?.({
+                shuttleRequested: event.target.checked,
+                ...(event.target.checked
+                  ? {}
+                  : { fieldErrors: withoutFieldErrors(header.fieldErrors, ['shuttleAmount', 'shuttleTrips']) }),
+              })
+            }
+          />
+          Shuttle requested
+        </label>
+        {header.shuttleRequested ? (
+          <div role="group" aria-label="Shuttle: trips × R per trip" className="flex flex-col gap-1.5">
+            <span className="text-[11.5px] font-semibold text-[#475569]">Shuttle: trips × R per trip</span>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+                Trips
+                <CountInput
+                  ariaLabel="Shuttle trips"
+                  value={header.shuttleTrips}
+                  max={50}
+                  placeholder="1"
+                  onValueChange={(shuttleTrips) => onPatch?.({ shuttleTrips })}
+                  onErrorChange={reportFieldError('shuttleTrips')}
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+                R per trip
+                <ZarMinorInput
+                  ariaLabel="Shuttle amount"
+                  minor={header.shuttleMinor}
+                  onMinorChange={(shuttleMinor) => onPatch?.({ shuttleMinor })}
+                  onErrorChange={reportFieldError('shuttleAmount')}
+                />
+              </label>
+            </div>
+            {header.shuttleMinor ? null : (
+              <p className="text-[11px] text-[#b45309]">
+                No price yet. The shuttle stays a review item until you enter R per trip.
+              </p>
+            )}
+          </div>
+        ) : null}
+      </div>
+      <div role="group" aria-label="Other: label, amount, unit" className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
+        <span className="text-[11.5px] font-semibold text-[#475569]">Other: label, amount, unit</span>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+            Label
+            <input
+              aria-label="Other label"
+              aria-invalid={otherNeedsLabel || undefined}
+              className={fieldClass}
+              maxLength={120}
+              placeholder="e.g. Parking"
+              required={otherNeedsLabel}
+              value={header.other?.label ?? ''}
+              onChange={(event) =>
+                onPatch?.({ other: { unit: header.other?.unit ?? 'item', ...header.other, label: event.target.value } })
+              }
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+            Amount (R)
+            <ZarMinorInput
+              ariaLabel="Other amount"
+              minor={header.other?.amountMinor}
+              onMinorChange={(amountMinor) =>
+                onPatch?.({ other: { label: header.other?.label ?? '', unit: header.other?.unit ?? 'item', amountMinor } })
+              }
+              onErrorChange={reportFieldError('otherAmount')}
+            />
+          </label>
+        </div>
+        {otherNeedsLabel ? <p className="text-[11px] text-[#b45309]">Add a label for this amount</p> : null}
+        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+          Unit
+          <select
+            aria-label="Other unit"
+            className={fieldClass}
+            value={header.other?.unit ?? 'item'}
+            onChange={(event) =>
+              onPatch?.({
+                other: {
+                  label: header.other?.label ?? '',
+                  amountMinor: header.other?.amountMinor,
+                  unit: event.target.value as StaffQuoteOtherUnit,
+                },
+              })
+            }
+          >
+            <option value="per_person_night">R per person per night</option>
+            <option value="per_person">R per person</option>
+            <option value="per_trip">R per trip</option>
+            <option value="item">R once (item)</option>
+          </select>
+        </label>
+      </div>
+      <label className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 text-[11.5px] font-semibold text-[#475569]">
+        Notes for the quote
+        <textarea
+          aria-label="Notes for the quote"
+          className="min-h-[3.5rem] w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12.5px] font-normal text-[#1e293b]"
+          maxLength={1000}
+          value={header.notes ?? ''}
+          onChange={(event) => onPatch?.({ notes: event.target.value })}
+        />
+        <span className="text-[11px] font-normal text-[#64748b]">
+          Unpriced. Printed on the PDF and added to the reply as a note.
+        </span>
+      </label>
     </section>
   );
 }
