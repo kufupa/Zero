@@ -54,13 +54,15 @@ describe('cancellation charge copy', () => {
       'Cancelled in HMS – status now Cancelled. HMS shows a cancellation charge: Cancellation Penalty of 2060.00 may be added to account. Check HMS and deal with that charge there.',
     );
     expect(cancelledText('Cancelled')).toBe('Cancelled in HMS – status now Cancelled');
-    expect(
-      viewAfterCommit(
-        run({ outcome: 'cancelled', statusAfter: 'Cancelled', penaltyText: CHARGE, previewDigest: null }),
-        run(),
-        CONFIRMATION,
-      ),
-    ).toMatchObject({ kind: 'done' });
+    // The done line a commit gets when the CLI reports cancelled with a charge: the charge text and the staff step.
+    const done = viewAfterCommit(
+      run({ outcome: 'cancelled', statusAfter: 'Cancelled', penaltyText: CHARGE, previewDigest: null }),
+      run(),
+      CONFIRMATION,
+    );
+    expect(done).toMatchObject({ kind: 'done' });
+    expect(done.kind === 'done' && done.text).toContain(`HMS shows a cancellation charge: ${CHARGE.replace(/\.$/, '')}.`);
+    expect(done.kind === 'done' && done.text).toContain('Check HMS and deal with that charge there.');
   });
 });
 
