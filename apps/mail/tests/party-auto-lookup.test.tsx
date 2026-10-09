@@ -140,6 +140,26 @@ describe('automatic HMS lookup for a company or agency field', () => {
   });
 });
 
+describe('automatic lookup when the name changes mid-search', () => {
+  it('shows the finished search when staff come back to its name, instead of staying on Searching', async () => {
+    let finish: (value: PartyFindReply) => void = () => undefined;
+    const find = vi.fn<PartyFinder>((name) =>
+      name === 'Woolworths'
+        ? new Promise<PartyFindReply>((resolve) => {
+            finish = resolve;
+          })
+        : Promise.resolve(reply({ outcome: 'no_match' })),
+    );
+    const { rerender } = render(<Harness find={find} name="Woolworths" />);
+    await waitFor(() => expect(find).toHaveBeenCalledWith('Woolworths', 'company'));
+    rerender(<Harness find={find} name="Pick n Pay" />);
+    finish(reply({ results: [WOOLWORTHS], best: WOOLWORTHS, searchedFor: 'Woolworths' }));
+    rerender(<Harness find={find} name="Woolworths" />);
+    await screen.findByText(/Woolworths Holdings \(#49\)/, undefined, { timeout: 3000 });
+    expect(screen.queryByText(/Searching HMS/)).toBeNull();
+  });
+});
+
 describe('the finder passes the kind it was given', () => {
   it('sends the kind with the name, and the name alone when there is none', async () => {
     const mutate = vi.fn(async () => reply({ outcome: 'resolved' }));

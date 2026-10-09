@@ -229,7 +229,9 @@ export function PartyPicker({
     let live = true;
     const timer = setTimeout(() => {
       const entry = startAutoSearch(autoKey, () => find(query, searchKind), false);
-      if (!entry.reply) void entry.promise.then(() => live && rerender());
+      // A search for this name may have finished while the field showed another name: render its reply now.
+      if (entry.reply) rerender();
+      else void entry.promise.then(() => live && rerender());
     }, PARTY_AUTO_LOOKUP_DEBOUNCE_MS);
     return () => {
       live = false;
