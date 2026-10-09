@@ -64,6 +64,7 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'drafts.list',
   'mail.get',
   'mail.listThreads',
+  'panePartyLookup.suggest',
   'paneStayCancel.paneStayScreenshot',
   'paneStayLookup.screenshot',
   'quoteWorkflow.voucherFind',
