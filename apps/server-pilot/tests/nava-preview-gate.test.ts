@@ -119,7 +119,8 @@ describe('nava-preview-gate.sh --dry-run', () => {
       'AWS_REGION=af-south-1',
       'BETTER_AUTH_URL=https://nava.legacyhotels.co.za',
     ]);
-    const result = gateRun(['--dry-run'], { ENV_FILE: env });
+    // An exported NAVA_PREVIEW_THREADS would switch the selection, so the default case clears it.
+    const result = gateRun(['--dry-run'], { ENV_FILE: env, NAVA_PREVIEW_THREADS: '' });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('transport-centurion');
     expect(result.stdout).toContain('s3://test-bucket-xyz/nava-preview-gate/<run id>/');
