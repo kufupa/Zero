@@ -68,6 +68,7 @@ import {
   type PriorStaffQuoteRequoteRow,
 } from '@/lib/quote-workflow/booking-draft-bind';
 import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
+import { partyFinderFromTrpc } from '@/lib/quote-workflow/party-lookup';
 import {
   bindExecuteStaffQuote,
   bindHmsQueueStatus,
@@ -227,6 +228,8 @@ type PendingReplyOperation = {
 
 // One client for the pane's life, so screenshot loaders keep their identity across renders.
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
+// One HMS party search for the quote header's Find in HMS picker. Null when the panePartyLookup route is missing.
+const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
 
 function singleReplyDraft(draft: ReturnType<typeof requireReviewedNativeDraft>) {
   return draft
@@ -1851,10 +1854,11 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               Nava&apos;s suggestions from this email. Check and correct them before running searches.
             </p>}
 
-            {/* TODO(party-picker): once #61/#79 merge, pass findParty={PANE_PARTY_FINDER} (partyFinderFromTrpc(trpcClient), module scope) and wire per docs/plans/v8-party-wiring-notes.md §2 (on feat/v8-party). */}
+            {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
             <QuoteWorkflowPanel
               session={quoteSession}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
+              findParty={PANE_PARTY_FINDER}
               onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
               onRunNext={() => {
                 const nextStep = pickNextRunnableStep(quoteSession.steps, quoteSession.runningStepId);

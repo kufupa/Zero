@@ -25,6 +25,8 @@ import type {
 } from '@/lib/quote-workflow/types';
 import { BookingCards } from './booking-card';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
+import type { PartyFinder } from '@/lib/quote-workflow/party-lookup';
+import { PartyPicker } from './party-picker';
 import { DocumentReview } from './document-review';
 import { HmsQueueStatusLine } from './hms-queue-status';
 import { ItemsForYou } from './items-for-you';
@@ -238,9 +240,12 @@ function withoutFieldErrors(
 function StaffHeaderFields({
   header,
   onPatch,
+  findParty,
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
+  /** HMS party search for the Find in HMS picker. Null or absent: no picker, and the header stays plain text. */
+  findParty?: PartyFinder | null;
 }) {
   // An amount with no label is not dropped: the label is required and the quote raises a review item for it.
   const otherNeedsLabel = Boolean(header.other?.amountMinor) && !header.other?.label?.trim();
@@ -279,7 +284,14 @@ function StaffHeaderFields({
           aria-label="Company"
           className={fieldClass}
           value={header.company}
-          onChange={(event) => onPatch?.({ company: event.target.value })}
+          onChange={(event) =>
+            onPatch?.({
+              company: event.target.value,
+              // Editing the company away from a picked company drops that pick,
+              // so the quote never sends a party the text does not name.
+              ...(header.party?.kind === 'company' && event.target.value !== header.party.name ? { party: undefined } : {}),
+            })
+          }
         />
       </label>
       <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
@@ -288,9 +300,33 @@ function StaffHeaderFields({
           aria-label="Agency"
           className={fieldClass}
           value={header.agency}
-          onChange={(event) => onPatch?.({ agency: event.target.value })}
+          onChange={(event) =>
+            onPatch?.({
+              agency: event.target.value,
+              ...(header.party?.kind === 'agency' && event.target.value !== header.party.name ? { party: undefined } : {}),
+            })
+          }
         />
       </label>
+      {/*
+        One picker under Agency for both kinds.
+        HOOK(#79, not on main): #79 gives company and agency one picker each, on header.parties. This one goes.
+        HOOK(#84, not on main): the HMS typeahead's onSearchName lands on PartyPicker.
+      */}
+      {findParty ? (
+        <PartyPicker
+          name={header.company.trim() || header.agency.trim()}
+          party={header.party}
+          find={findParty}
+          onPick={(party) =>
+            onPatch?.({
+              party,
+              ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
+            })
+          }
+          onClear={() => onPatch?.({ party: undefined })}
+        />
+      ) : null}
       <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Attention
         <input
@@ -680,6 +716,7 @@ export function QuoteWorkflowPanel({
   onViewSource,
   onEditReply,
   onPatchStaffHeader,
+  findParty,
   onSelectStayKey,
   onTreatAs,
   onStaffNote,
@@ -707,6 +744,8 @@ export function QuoteWorkflowPanel({
   onViewSource?: (item: QuoteReviewItem) => void;
   onEditReply?: () => void;
   onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>) => void;
+  /** HMS company and agency search for the quote header's Find in HMS picker. Null or absent: no picker. */
+  findParty?: PartyFinder | null;
   onSelectStayKey?: (stayKey: string) => void;
   onTreatAs?: (treatAs: 'quote' | 'create_booking') => void;
   onStaffNote?: (note: string) => void;
@@ -809,6 +848,7 @@ export function QuoteWorkflowPanel({
         <StaffHeaderFields
           header={session.staffHeader ?? emptyStaffQuoteHeader()}
           onPatch={onPatchStaffHeader}
+          findParty={findParty}
         />
       ) : null}
       {showWorkspace ? (
