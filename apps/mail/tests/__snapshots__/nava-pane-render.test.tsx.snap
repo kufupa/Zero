@@ -345,7 +345,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
           >
             <button
               aria-expanded="false"
-              class="text-[11.5px] font-semibold text-[#0066cc] hover:underline"
+              class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
               type="button"
             >
               Something wrong? Tell Nava
@@ -356,7 +356,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
           class="flex flex-col gap-2.5"
         >
           <button
-            class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+            class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
             type="button"
           >
             <svg
@@ -910,7 +910,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
           >
             <button
               aria-expanded="false"
-              class="text-[11.5px] font-semibold text-[#0066cc] hover:underline"
+              class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
               type="button"
             >
               Something wrong? Tell Nava
@@ -940,6 +940,27 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
               <div
                 class="flex flex-col gap-3"
               >
+                <div
+                  class="flex items-center justify-between gap-2"
+                >
+                  <span />
+                  <div
+                    class="flex items-center gap-3"
+                  >
+                    <button
+                      class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+                      type="button"
+                    >
+                      Duplicate stay
+                    </button>
+                    <button
+                      class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+                      type="button"
+                    >
+                      Remove stay
+                    </button>
+                  </div>
+                </div>
                 <div
                   class="flex flex-col gap-1"
                 >
@@ -974,7 +995,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                         <span
                           class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
                         >
-                          Arrival date
+                          Check-in
                           <span
                             class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
                           >
@@ -995,7 +1016,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                         <span
                           class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
                         >
-                          Departure date
+                          Check-out
                           <span
                             class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
                           >
@@ -1036,7 +1057,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                       </span>
                       <button
                         aria-expanded="false"
-                        class="text-[11.5px] font-semibold text-[#0066cc] hover:underline"
+                        class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
                         type="button"
                       >
                         Change dates 
@@ -1063,7 +1084,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                           >
                             <label
                               class="flex items-center gap-1.5"
-                              for="«r3k»-arrival"
+                              for="«r3j»-arrival"
                             >
                               <span>
                                 Arrival
@@ -1073,7 +1094,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                           <input
                             aria-label="Arrival"
                             class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                            id="«r3k»-arrival"
+                            id="«r3j»-arrival"
                             type="date"
                             value=""
                           />
@@ -1086,7 +1107,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                           >
                             <label
                               class="flex items-center gap-1.5"
-                              for="«r3k»-departure"
+                              for="«r3j»-departure"
                             >
                               <span>
                                 Departure
@@ -1096,7 +1117,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                           <input
                             aria-label="Departure"
                             class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                            id="«r3k»-departure"
+                            id="«r3j»-departure"
                             type="date"
                             value=""
                           />
@@ -1106,298 +1127,376 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                   </div>
                 </div>
                 <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r3j»-board"
-                    >
-                      <span>
-                        Meal plan
-                        <span
-                          aria-hidden="true"
-                          class="ml-0.5 font-bold text-[#c01823]"
-                        >
-                          *
-                        </span>
-                      </span>
-                    </label>
-                    <span
-                      class="font-normal text-[#64748b]"
-                    />
-                  </div>
-                  <select
-                    aria-label="Meal plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r3j»-board"
-                  >
-                    <option
-                      value="unknown"
-                    >
-                      Not stated yet
-                    </option>
-                    <option
-                      value="room_only"
-                    >
-                      Room only
-                    </option>
-                    <option
-                      value="bb"
-                    >
-                      Bed & breakfast
-                    </option>
-                    <option
-                      value="dinner_bb"
-                    >
-                      Dinner, bed & breakfast
-                    </option>
-                  </select>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r3j»-room"
-                    >
-                      <span>
-                        Room type
-                      </span>
-                    </label>
-                    <span
-                      class="font-normal text-[#64748b]"
-                    />
-                  </div>
-                  <select
-                    aria-label="Room type"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r3j»-room"
-                  >
-                    <option
-                      value=""
-                    >
-                      Any room type — no stated preference
-                    </option>
-                    <option
-                      value="STWN"
-                    >
-                      Standard Twin
-                    </option>
-                    <option
-                      value="STQN"
-                    >
-                      Standard Queen
-                    </option>
-                    <option
-                      value="SKNG"
-                    >
-                      Standard King
-                    </option>
-                    <option
-                      value="EXKNG"
-                    >
-                      Executive King
-                    </option>
-                    <option
-                      value="DLXTWN"
-                    >
-                      Deluxe Twin
-                    </option>
-                    <option
-                      value="DLXQN"
-                    >
-                      Deluxe Queen
-                    </option>
-                    <option
-                      value="DLXKNG"
-                    >
-                      Deluxe King
-                    </option>
-                    <option
-                      value="LUXKNG"
-                    >
-                      Luxury King
-                    </option>
-                    <option
-                      value="SUITE"
-                    >
-                      Suite
-                    </option>
-                  </select>
-                </div>
-                <div
                   class="overflow-hidden rounded-[3px] border border-[#cbd5e1]"
                 >
                   <div
                     class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-[7px]"
                   >
                     <span
-                      class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                      class="text-[11.5px] font-semibold text-[#475569]"
                     >
-                      Rooms
+                      Room 
+                      1
                     </span>
                     <div
-                      aria-label="Rooms for stay 1"
-                      class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
-                      role="group"
+                      class="flex items-center gap-3"
                     >
                       <button
-                        aria-label="Fewer: Rooms for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        disabled=""
+                        class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
                         type="button"
                       >
-                        −
-                      </button>
-                      <span
-                        aria-live="polite"
-                        class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
-                      >
-                        1
-                      </span>
-                      <button
-                        aria-label="More: Rooms for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        type="button"
-                      >
-                        +
+                        Duplicate room
                       </button>
                     </div>
                   </div>
                   <div
-                    class="flex items-center justify-between bg-white px-2.5 py-2"
+                    class="flex flex-col gap-3 p-2.5"
+                  >
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r3k»-room"
+                        >
+                          <span>
+                            Room type
+                            <span
+                              aria-hidden="true"
+                              class="ml-0.5 font-bold text-[#c01823]"
+                            >
+                              *
+                            </span>
+                          </span>
+                        </label>
+                        <span
+                          class="font-normal text-[#64748b]"
+                        />
+                      </div>
+                      <select
+                        aria-label="Room type"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r3k»-room"
+                      >
+                        <option
+                          value=""
+                        >
+                          Choose a room type
+                        </option>
+                        <option
+                          value="STWN"
+                        >
+                          Standard Twin (STWN)
+                        </option>
+                        <option
+                          value="STQN"
+                        >
+                          Standard Queen (STQN)
+                        </option>
+                        <option
+                          value="SKNG"
+                        >
+                          Standard King (SKNG)
+                        </option>
+                        <option
+                          value="EXKNG"
+                        >
+                          Executive King (EXKNG)
+                        </option>
+                        <option
+                          value="DLXTWN"
+                        >
+                          Deluxe Twin (DLXTWN)
+                        </option>
+                        <option
+                          value="DLXQN"
+                        >
+                          Deluxe Queen (DLXQN)
+                        </option>
+                        <option
+                          value="DLXKNG"
+                        >
+                          Deluxe King (DLXKNG)
+                        </option>
+                        <option
+                          value="LUXKNG"
+                        >
+                          Luxury King (LUXKNG)
+                        </option>
+                        <option
+                          value="SUITE"
+                        >
+                          Suite (SUITE)
+                        </option>
+                      </select>
+                    </div>
+                    <div
+                      class="overflow-hidden rounded-[3px] border border-[#cbd5e1]"
+                    >
+                      <div
+                        class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-[7px]"
+                      >
+                        <span
+                          class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                        >
+                          Rooms
+                        </span>
+                        <div
+                          aria-label="Rooms for stay 1, room 1"
+                          class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
+                          role="group"
+                        >
+                          <button
+                            aria-label="Fewer: Rooms for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            disabled=""
+                            type="button"
+                          >
+                            −
+                          </button>
+                          <span
+                            aria-live="polite"
+                            class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
+                          >
+                            1
+                          </span>
+                          <button
+                            aria-label="More: Rooms for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            type="button"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                      <div
+                        class="flex items-center justify-between bg-white px-2.5 py-2"
+                      >
+                        <span
+                          class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                        >
+                          Adults per room
+                          <span
+                            class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
+                          >
+                            Missing
+                          </span>
+                        </span>
+                        <div
+                          aria-label="Adult guests per room for stay 1, room 1"
+                          class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
+                          role="group"
+                        >
+                          <button
+                            aria-label="Fewer: Adult guests per room for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            disabled=""
+                            type="button"
+                          >
+                            −
+                          </button>
+                          <span
+                            aria-live="polite"
+                            class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
+                          >
+                            –
+                          </span>
+                          <button
+                            aria-label="More: Adult guests per room for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            type="button"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                      <input
+                        aria-hidden="true"
+                        aria-label="Rooms"
+                        class="sr-only"
+                        min="1"
+                        tabindex="-1"
+                        type="number"
+                        value="1"
+                      />
+                      <input
+                        aria-hidden="true"
+                        aria-label="Adults"
+                        class="sr-only"
+                        min="0"
+                        tabindex="-1"
+                        type="number"
+                        value=""
+                      />
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r3k»-board"
+                        >
+                          <span>
+                            Meal plan
+                            <span
+                              aria-hidden="true"
+                              class="ml-0.5 font-bold text-[#c01823]"
+                            >
+                              *
+                            </span>
+                          </span>
+                        </label>
+                        <span
+                          class="font-normal text-[#64748b]"
+                        />
+                      </div>
+                      <select
+                        aria-label="Meal plan"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r3k»-board"
+                      >
+                        <option
+                          value="unknown"
+                        >
+                          Not stated yet
+                        </option>
+                        <option
+                          value="room_only"
+                        >
+                          Room only
+                        </option>
+                        <option
+                          value="bb"
+                        >
+                          Bed & breakfast
+                        </option>
+                        <option
+                          value="dinner_bb"
+                        >
+                          Dinner, bed & breakfast
+                        </option>
+                      </select>
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r3k»-children"
+                        >
+                          <span>
+                            Children ages
+                          </span>
+                        </label>
+                      </div>
+                      <input
+                        aria-label="Children ages"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r3k»-children"
+                        value=""
+                      />
+                      <p
+                        class="text-[11px] text-[#64748b]"
+                      >
+                        Separate ages with commas.
+                      </p>
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r3k»-organisation"
+                        >
+                          <span>
+                            Company or agency
+                          </span>
+                        </label>
+                      </div>
+                      <input
+                        aria-label="Company or agency"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r3k»-organisation"
+                        value=""
+                      />
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r3k»-requests"
+                        >
+                          <span>
+                            Special requests
+                          </span>
+                        </label>
+                      </div>
+                      <textarea
+                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                        id="«r3k»-requests"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex items-center justify-between gap-2"
+                >
+                  <button
+                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                    type="button"
+                  >
+                    Add room
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-2"
+              >
+                <button
+                  class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                  type="button"
+                >
+                  Add stay
+                </button>
+                <div
+                  class="flex items-center justify-between gap-2 rounded-[3px] border border-[#cbd5e1] bg-[#f8fafc] px-3 py-2.5"
+                >
+                  <div
+                    class="flex flex-col gap-0.5"
                   >
                     <span
-                      class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                      class="text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
                     >
-                      Adults per room
-                      <span
-                        class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                      >
-                        Missing
-                      </span>
+                      Total
                     </span>
-                    <div
-                      aria-label="Adult guests per room for stay 1"
-                      class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
-                      role="group"
+                    <span
+                      class="text-[13px] font-bold text-[#1e293b]"
                     >
-                      <button
-                        aria-label="Fewer: Adult guests per room for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        disabled=""
-                        type="button"
-                      >
-                        −
-                      </button>
-                      <span
-                        aria-live="polite"
-                        class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
-                      >
-                        –
-                      </span>
-                      <button
-                        aria-label="More: Adult guests per room for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        type="button"
-                      >
-                        +
-                      </button>
-                    </div>
+                      1
+                       
+                      room
+                       · 
+                      0
+                       
+                      guests
+                    </span>
                   </div>
-                  <input
-                    aria-hidden="true"
-                    aria-label="Rooms"
-                    class="sr-only"
-                    min="1"
-                    tabindex="-1"
-                    type="number"
-                    value="1"
-                  />
-                  <input
-                    aria-hidden="true"
-                    aria-label="Adults"
-                    class="sr-only"
-                    min="0"
-                    tabindex="-1"
-                    type="number"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r3j»-children"
-                    >
-                      <span>
-                        Children ages
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Children ages"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r3j»-children"
-                    value=""
-                  />
-                  <p
-                    class="text-[11px] text-[#64748b]"
-                  >
-                    Separate ages with commas.
-                  </p>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r3j»-organisation"
-                    >
-                      <span>
-                        Company or agency
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Company or agency"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r3j»-organisation"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r3j»-requests"
-                    >
-                      <span>
-                        Special requests
-                      </span>
-                    </label>
-                  </div>
-                  <textarea
-                    class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-                    id="«r3j»-requests"
-                  />
                 </div>
               </div>
               <p
@@ -1913,11 +2012,17 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 class="flex flex-col gap-1"
               >
                 <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
+                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] bg-[#0066cc] hover:bg-[#0052a3]"
+                  disabled=""
                   type="button"
                 >
                   Get rates from HMS
                 </button>
+                <p
+                  class="text-center text-[11px] text-[#64748b]"
+                >
+                  Choose a room type for each row.
+                </p>
               </div>
               <details
                 class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
@@ -1964,7 +2069,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                         Dates unknown → unknown · Stay 1: 1 × any room, adults not set
                       </p>
                       <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
                         type="button"
                       >
                         Run 
@@ -2004,7 +2109,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                   class="flex flex-col gap-1"
                 >
                   <button
-                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
+                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] bg-[#0066cc] hover:bg-[#0052a3]"
                     disabled=""
                     type="button"
                   >
@@ -2020,7 +2125,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                   class="flex flex-col gap-1.5"
                 >
                   <button
-                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                     disabled=""
                     type="button"
                   >
@@ -2082,7 +2187,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
               class="flex flex-col gap-1"
             >
               <button
-                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
+                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] bg-[#1a4332] hover:bg-[#143528]"
                 disabled=""
                 type="button"
               >
@@ -2477,7 +2582,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
           >
             <button
               aria-expanded="false"
-              class="text-[11.5px] font-semibold text-[#0066cc] hover:underline"
+              class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
               type="button"
             >
               Something wrong? Tell Nava
@@ -2507,6 +2612,27 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
               <div
                 class="flex flex-col gap-3"
               >
+                <div
+                  class="flex items-center justify-between gap-2"
+                >
+                  <span />
+                  <div
+                    class="flex items-center gap-3"
+                  >
+                    <button
+                      class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+                      type="button"
+                    >
+                      Duplicate stay
+                    </button>
+                    <button
+                      class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+                      type="button"
+                    >
+                      Remove stay
+                    </button>
+                  </div>
+                </div>
                 <div
                   class="flex flex-col gap-1"
                 >
@@ -2541,7 +2667,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                         <span
                           class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
                         >
-                          Arrival date
+                          Check-in
                           <span
                             class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
                           >
@@ -2562,7 +2688,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                         <span
                           class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
                         >
-                          Departure date
+                          Check-out
                           <span
                             class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
                           >
@@ -2603,7 +2729,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                       </span>
                       <button
                         aria-expanded="false"
-                        class="text-[11.5px] font-semibold text-[#0066cc] hover:underline"
+                        class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
                         type="button"
                       >
                         Change dates 
@@ -2630,7 +2756,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                           >
                             <label
                               class="flex items-center gap-1.5"
-                              for="«r31»-arrival"
+                              for="«r30»-arrival"
                             >
                               <span>
                                 Arrival
@@ -2640,7 +2766,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                           <input
                             aria-label="Arrival"
                             class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                            id="«r31»-arrival"
+                            id="«r30»-arrival"
                             type="date"
                             value=""
                           />
@@ -2653,7 +2779,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                           >
                             <label
                               class="flex items-center gap-1.5"
-                              for="«r31»-departure"
+                              for="«r30»-departure"
                             >
                               <span>
                                 Departure
@@ -2663,7 +2789,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                           <input
                             aria-label="Departure"
                             class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                            id="«r31»-departure"
+                            id="«r30»-departure"
                             type="date"
                             value=""
                           />
@@ -2673,298 +2799,376 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                   </div>
                 </div>
                 <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r30»-board"
-                    >
-                      <span>
-                        Meal plan
-                        <span
-                          aria-hidden="true"
-                          class="ml-0.5 font-bold text-[#c01823]"
-                        >
-                          *
-                        </span>
-                      </span>
-                    </label>
-                    <span
-                      class="font-normal text-[#64748b]"
-                    />
-                  </div>
-                  <select
-                    aria-label="Meal plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r30»-board"
-                  >
-                    <option
-                      value="unknown"
-                    >
-                      Not stated yet
-                    </option>
-                    <option
-                      value="room_only"
-                    >
-                      Room only
-                    </option>
-                    <option
-                      value="bb"
-                    >
-                      Bed & breakfast
-                    </option>
-                    <option
-                      value="dinner_bb"
-                    >
-                      Dinner, bed & breakfast
-                    </option>
-                  </select>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r30»-room"
-                    >
-                      <span>
-                        Room type
-                      </span>
-                    </label>
-                    <span
-                      class="font-normal text-[#64748b]"
-                    />
-                  </div>
-                  <select
-                    aria-label="Room type"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r30»-room"
-                  >
-                    <option
-                      value=""
-                    >
-                      Any room type — no stated preference
-                    </option>
-                    <option
-                      value="STWN"
-                    >
-                      Standard Twin
-                    </option>
-                    <option
-                      value="STQN"
-                    >
-                      Standard Queen
-                    </option>
-                    <option
-                      value="SKNG"
-                    >
-                      Standard King
-                    </option>
-                    <option
-                      value="EXKNG"
-                    >
-                      Executive King
-                    </option>
-                    <option
-                      value="DLXTWN"
-                    >
-                      Deluxe Twin
-                    </option>
-                    <option
-                      value="DLXQN"
-                    >
-                      Deluxe Queen
-                    </option>
-                    <option
-                      value="DLXKNG"
-                    >
-                      Deluxe King
-                    </option>
-                    <option
-                      value="LUXKNG"
-                    >
-                      Luxury King
-                    </option>
-                    <option
-                      value="SUITE"
-                    >
-                      Suite
-                    </option>
-                  </select>
-                </div>
-                <div
                   class="overflow-hidden rounded-[3px] border border-[#cbd5e1]"
                 >
                   <div
                     class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-[7px]"
                   >
                     <span
-                      class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                      class="text-[11.5px] font-semibold text-[#475569]"
                     >
-                      Rooms
+                      Room 
+                      1
                     </span>
                     <div
-                      aria-label="Rooms for stay 1"
-                      class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
-                      role="group"
+                      class="flex items-center gap-3"
                     >
                       <button
-                        aria-label="Fewer: Rooms for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        disabled=""
+                        class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
                         type="button"
                       >
-                        −
-                      </button>
-                      <span
-                        aria-live="polite"
-                        class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
-                      >
-                        1
-                      </span>
-                      <button
-                        aria-label="More: Rooms for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        type="button"
-                      >
-                        +
+                        Duplicate room
                       </button>
                     </div>
                   </div>
                   <div
-                    class="flex items-center justify-between bg-white px-2.5 py-2"
+                    class="flex flex-col gap-3 p-2.5"
+                  >
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r31»-room"
+                        >
+                          <span>
+                            Room type
+                            <span
+                              aria-hidden="true"
+                              class="ml-0.5 font-bold text-[#c01823]"
+                            >
+                              *
+                            </span>
+                          </span>
+                        </label>
+                        <span
+                          class="font-normal text-[#64748b]"
+                        />
+                      </div>
+                      <select
+                        aria-label="Room type"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r31»-room"
+                      >
+                        <option
+                          value=""
+                        >
+                          Choose a room type
+                        </option>
+                        <option
+                          value="STWN"
+                        >
+                          Standard Twin (STWN)
+                        </option>
+                        <option
+                          value="STQN"
+                        >
+                          Standard Queen (STQN)
+                        </option>
+                        <option
+                          value="SKNG"
+                        >
+                          Standard King (SKNG)
+                        </option>
+                        <option
+                          value="EXKNG"
+                        >
+                          Executive King (EXKNG)
+                        </option>
+                        <option
+                          value="DLXTWN"
+                        >
+                          Deluxe Twin (DLXTWN)
+                        </option>
+                        <option
+                          value="DLXQN"
+                        >
+                          Deluxe Queen (DLXQN)
+                        </option>
+                        <option
+                          value="DLXKNG"
+                        >
+                          Deluxe King (DLXKNG)
+                        </option>
+                        <option
+                          value="LUXKNG"
+                        >
+                          Luxury King (LUXKNG)
+                        </option>
+                        <option
+                          value="SUITE"
+                        >
+                          Suite (SUITE)
+                        </option>
+                      </select>
+                    </div>
+                    <div
+                      class="overflow-hidden rounded-[3px] border border-[#cbd5e1]"
+                    >
+                      <div
+                        class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-[7px]"
+                      >
+                        <span
+                          class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                        >
+                          Rooms
+                        </span>
+                        <div
+                          aria-label="Rooms for stay 1, room 1"
+                          class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
+                          role="group"
+                        >
+                          <button
+                            aria-label="Fewer: Rooms for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            disabled=""
+                            type="button"
+                          >
+                            −
+                          </button>
+                          <span
+                            aria-live="polite"
+                            class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
+                          >
+                            1
+                          </span>
+                          <button
+                            aria-label="More: Rooms for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            type="button"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                      <div
+                        class="flex items-center justify-between bg-white px-2.5 py-2"
+                      >
+                        <span
+                          class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                        >
+                          Adults per room
+                          <span
+                            class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
+                          >
+                            Missing
+                          </span>
+                        </span>
+                        <div
+                          aria-label="Adult guests per room for stay 1, room 1"
+                          class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
+                          role="group"
+                        >
+                          <button
+                            aria-label="Fewer: Adult guests per room for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            disabled=""
+                            type="button"
+                          >
+                            −
+                          </button>
+                          <span
+                            aria-live="polite"
+                            class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
+                          >
+                            –
+                          </span>
+                          <button
+                            aria-label="More: Adult guests per room for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            type="button"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                      <input
+                        aria-hidden="true"
+                        aria-label="Rooms"
+                        class="sr-only"
+                        min="1"
+                        tabindex="-1"
+                        type="number"
+                        value="1"
+                      />
+                      <input
+                        aria-hidden="true"
+                        aria-label="Adults"
+                        class="sr-only"
+                        min="0"
+                        tabindex="-1"
+                        type="number"
+                        value=""
+                      />
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r31»-board"
+                        >
+                          <span>
+                            Meal plan
+                            <span
+                              aria-hidden="true"
+                              class="ml-0.5 font-bold text-[#c01823]"
+                            >
+                              *
+                            </span>
+                          </span>
+                        </label>
+                        <span
+                          class="font-normal text-[#64748b]"
+                        />
+                      </div>
+                      <select
+                        aria-label="Meal plan"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r31»-board"
+                      >
+                        <option
+                          value="unknown"
+                        >
+                          Not stated yet
+                        </option>
+                        <option
+                          value="room_only"
+                        >
+                          Room only
+                        </option>
+                        <option
+                          value="bb"
+                        >
+                          Bed & breakfast
+                        </option>
+                        <option
+                          value="dinner_bb"
+                        >
+                          Dinner, bed & breakfast
+                        </option>
+                      </select>
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r31»-children"
+                        >
+                          <span>
+                            Children ages
+                          </span>
+                        </label>
+                      </div>
+                      <input
+                        aria-label="Children ages"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r31»-children"
+                        value=""
+                      />
+                      <p
+                        class="text-[11px] text-[#64748b]"
+                      >
+                        Separate ages with commas.
+                      </p>
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r31»-organisation"
+                        >
+                          <span>
+                            Company or agency
+                          </span>
+                        </label>
+                      </div>
+                      <input
+                        aria-label="Company or agency"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r31»-organisation"
+                        value=""
+                      />
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r31»-requests"
+                        >
+                          <span>
+                            Special requests
+                          </span>
+                        </label>
+                      </div>
+                      <textarea
+                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                        id="«r31»-requests"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex items-center justify-between gap-2"
+                >
+                  <button
+                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                    type="button"
+                  >
+                    Add room
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-2"
+              >
+                <button
+                  class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                  type="button"
+                >
+                  Add stay
+                </button>
+                <div
+                  class="flex items-center justify-between gap-2 rounded-[3px] border border-[#cbd5e1] bg-[#f8fafc] px-3 py-2.5"
+                >
+                  <div
+                    class="flex flex-col gap-0.5"
                   >
                     <span
-                      class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                      class="text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
                     >
-                      Adults per room
-                      <span
-                        class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                      >
-                        Missing
-                      </span>
+                      Total
                     </span>
-                    <div
-                      aria-label="Adult guests per room for stay 1"
-                      class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
-                      role="group"
+                    <span
+                      class="text-[13px] font-bold text-[#1e293b]"
                     >
-                      <button
-                        aria-label="Fewer: Adult guests per room for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        disabled=""
-                        type="button"
-                      >
-                        −
-                      </button>
-                      <span
-                        aria-live="polite"
-                        class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
-                      >
-                        –
-                      </span>
-                      <button
-                        aria-label="More: Adult guests per room for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        type="button"
-                      >
-                        +
-                      </button>
-                    </div>
+                      1
+                       
+                      room
+                       · 
+                      0
+                       
+                      guests
+                    </span>
                   </div>
-                  <input
-                    aria-hidden="true"
-                    aria-label="Rooms"
-                    class="sr-only"
-                    min="1"
-                    tabindex="-1"
-                    type="number"
-                    value="1"
-                  />
-                  <input
-                    aria-hidden="true"
-                    aria-label="Adults"
-                    class="sr-only"
-                    min="0"
-                    tabindex="-1"
-                    type="number"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r30»-children"
-                    >
-                      <span>
-                        Children ages
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Children ages"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r30»-children"
-                    value=""
-                  />
-                  <p
-                    class="text-[11px] text-[#64748b]"
-                  >
-                    Separate ages with commas.
-                  </p>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r30»-organisation"
-                    >
-                      <span>
-                        Company or agency
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Company or agency"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r30»-organisation"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r30»-requests"
-                    >
-                      <span>
-                        Special requests
-                      </span>
-                    </label>
-                  </div>
-                  <textarea
-                    class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-                    id="«r30»-requests"
-                  />
                 </div>
               </div>
               <p
@@ -3480,11 +3684,17 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 class="flex flex-col gap-1"
               >
                 <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
+                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] bg-[#0066cc] hover:bg-[#0052a3]"
+                  disabled=""
                   type="button"
                 >
                   Get rates from HMS
                 </button>
+                <p
+                  class="text-center text-[11px] text-[#64748b]"
+                >
+                  Choose a room type for each row.
+                </p>
               </div>
               <details
                 class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
@@ -3531,7 +3741,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                         Dates unknown → unknown · Stay 1: 1 × any room, adults not set
                       </p>
                       <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
                         type="button"
                       >
                         Run 
@@ -3571,7 +3781,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                   class="flex flex-col gap-1"
                 >
                   <button
-                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
+                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] bg-[#0066cc] hover:bg-[#0052a3]"
                     disabled=""
                     type="button"
                   >
@@ -3587,7 +3797,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                   class="flex flex-col gap-1.5"
                 >
                   <button
-                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                     disabled=""
                     type="button"
                   >
@@ -3649,7 +3859,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
               class="flex flex-col gap-1"
             >
               <button
-                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
+                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] bg-[#1a4332] hover:bg-[#143528]"
                 disabled=""
                 type="button"
               >
@@ -4272,7 +4482,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
           >
             <button
               aria-expanded="false"
-              class="text-[11.5px] font-semibold text-[#0066cc] hover:underline"
+              class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
               type="button"
             >
               Something wrong? Tell Nava
@@ -4302,6 +4512,27 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
               <div
                 class="flex flex-col gap-3"
               >
+                <div
+                  class="flex items-center justify-between gap-2"
+                >
+                  <span />
+                  <div
+                    class="flex items-center gap-3"
+                  >
+                    <button
+                      class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+                      type="button"
+                    >
+                      Duplicate stay
+                    </button>
+                    <button
+                      class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+                      type="button"
+                    >
+                      Remove stay
+                    </button>
+                  </div>
+                </div>
                 <div
                   class="flex flex-col gap-1"
                 >
@@ -4336,7 +4567,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                         <span
                           class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
                         >
-                          Arrival date
+                          Check-in
                           <span
                             class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
                           >
@@ -4357,7 +4588,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                         <span
                           class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
                         >
-                          Departure date
+                          Check-out
                           <span
                             class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
                           >
@@ -4398,7 +4629,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                       </span>
                       <button
                         aria-expanded="false"
-                        class="text-[11.5px] font-semibold text-[#0066cc] hover:underline"
+                        class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
                         type="button"
                       >
                         Change dates 
@@ -4425,7 +4656,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                           >
                             <label
                               class="flex items-center gap-1.5"
-                              for="«r37»-arrival"
+                              for="«r36»-arrival"
                             >
                               <span>
                                 Arrival
@@ -4435,7 +4666,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                           <input
                             aria-label="Arrival"
                             class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                            id="«r37»-arrival"
+                            id="«r36»-arrival"
                             type="date"
                             value=""
                           />
@@ -4448,7 +4679,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                           >
                             <label
                               class="flex items-center gap-1.5"
-                              for="«r37»-departure"
+                              for="«r36»-departure"
                             >
                               <span>
                                 Departure
@@ -4458,7 +4689,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                           <input
                             aria-label="Departure"
                             class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                            id="«r37»-departure"
+                            id="«r36»-departure"
                             type="date"
                             value=""
                           />
@@ -4468,298 +4699,376 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                   </div>
                 </div>
                 <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r36»-board"
-                    >
-                      <span>
-                        Meal plan
-                        <span
-                          aria-hidden="true"
-                          class="ml-0.5 font-bold text-[#c01823]"
-                        >
-                          *
-                        </span>
-                      </span>
-                    </label>
-                    <span
-                      class="font-normal text-[#64748b]"
-                    />
-                  </div>
-                  <select
-                    aria-label="Meal plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r36»-board"
-                  >
-                    <option
-                      value="unknown"
-                    >
-                      Not stated yet
-                    </option>
-                    <option
-                      value="room_only"
-                    >
-                      Room only
-                    </option>
-                    <option
-                      value="bb"
-                    >
-                      Bed & breakfast
-                    </option>
-                    <option
-                      value="dinner_bb"
-                    >
-                      Dinner, bed & breakfast
-                    </option>
-                  </select>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r36»-room"
-                    >
-                      <span>
-                        Room type
-                      </span>
-                    </label>
-                    <span
-                      class="font-normal text-[#64748b]"
-                    />
-                  </div>
-                  <select
-                    aria-label="Room type"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r36»-room"
-                  >
-                    <option
-                      value=""
-                    >
-                      Any room type — no stated preference
-                    </option>
-                    <option
-                      value="STWN"
-                    >
-                      Standard Twin
-                    </option>
-                    <option
-                      value="STQN"
-                    >
-                      Standard Queen
-                    </option>
-                    <option
-                      value="SKNG"
-                    >
-                      Standard King
-                    </option>
-                    <option
-                      value="EXKNG"
-                    >
-                      Executive King
-                    </option>
-                    <option
-                      value="DLXTWN"
-                    >
-                      Deluxe Twin
-                    </option>
-                    <option
-                      value="DLXQN"
-                    >
-                      Deluxe Queen
-                    </option>
-                    <option
-                      value="DLXKNG"
-                    >
-                      Deluxe King
-                    </option>
-                    <option
-                      value="LUXKNG"
-                    >
-                      Luxury King
-                    </option>
-                    <option
-                      value="SUITE"
-                    >
-                      Suite
-                    </option>
-                  </select>
-                </div>
-                <div
                   class="overflow-hidden rounded-[3px] border border-[#cbd5e1]"
                 >
                   <div
                     class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-[7px]"
                   >
                     <span
-                      class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                      class="text-[11.5px] font-semibold text-[#475569]"
                     >
-                      Rooms
+                      Room 
+                      1
                     </span>
                     <div
-                      aria-label="Rooms for stay 1"
-                      class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
-                      role="group"
+                      class="flex items-center gap-3"
                     >
                       <button
-                        aria-label="Fewer: Rooms for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        disabled=""
+                        class="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
                         type="button"
                       >
-                        −
-                      </button>
-                      <span
-                        aria-live="polite"
-                        class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
-                      >
-                        1
-                      </span>
-                      <button
-                        aria-label="More: Rooms for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        type="button"
-                      >
-                        +
+                        Duplicate room
                       </button>
                     </div>
                   </div>
                   <div
-                    class="flex items-center justify-between bg-white px-2.5 py-2"
+                    class="flex flex-col gap-3 p-2.5"
+                  >
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r37»-room"
+                        >
+                          <span>
+                            Room type
+                            <span
+                              aria-hidden="true"
+                              class="ml-0.5 font-bold text-[#c01823]"
+                            >
+                              *
+                            </span>
+                          </span>
+                        </label>
+                        <span
+                          class="font-normal text-[#64748b]"
+                        />
+                      </div>
+                      <select
+                        aria-label="Room type"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r37»-room"
+                      >
+                        <option
+                          value=""
+                        >
+                          Choose a room type
+                        </option>
+                        <option
+                          value="STWN"
+                        >
+                          Standard Twin (STWN)
+                        </option>
+                        <option
+                          value="STQN"
+                        >
+                          Standard Queen (STQN)
+                        </option>
+                        <option
+                          value="SKNG"
+                        >
+                          Standard King (SKNG)
+                        </option>
+                        <option
+                          value="EXKNG"
+                        >
+                          Executive King (EXKNG)
+                        </option>
+                        <option
+                          value="DLXTWN"
+                        >
+                          Deluxe Twin (DLXTWN)
+                        </option>
+                        <option
+                          value="DLXQN"
+                        >
+                          Deluxe Queen (DLXQN)
+                        </option>
+                        <option
+                          value="DLXKNG"
+                        >
+                          Deluxe King (DLXKNG)
+                        </option>
+                        <option
+                          value="LUXKNG"
+                        >
+                          Luxury King (LUXKNG)
+                        </option>
+                        <option
+                          value="SUITE"
+                        >
+                          Suite (SUITE)
+                        </option>
+                      </select>
+                    </div>
+                    <div
+                      class="overflow-hidden rounded-[3px] border border-[#cbd5e1]"
+                    >
+                      <div
+                        class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-[7px]"
+                      >
+                        <span
+                          class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                        >
+                          Rooms
+                        </span>
+                        <div
+                          aria-label="Rooms for stay 1, room 1"
+                          class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
+                          role="group"
+                        >
+                          <button
+                            aria-label="Fewer: Rooms for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            disabled=""
+                            type="button"
+                          >
+                            −
+                          </button>
+                          <span
+                            aria-live="polite"
+                            class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
+                          >
+                            1
+                          </span>
+                          <button
+                            aria-label="More: Rooms for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            type="button"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                      <div
+                        class="flex items-center justify-between bg-white px-2.5 py-2"
+                      >
+                        <span
+                          class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                        >
+                          Adults per room
+                          <span
+                            class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
+                          >
+                            Missing
+                          </span>
+                        </span>
+                        <div
+                          aria-label="Adult guests per room for stay 1, room 1"
+                          class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
+                          role="group"
+                        >
+                          <button
+                            aria-label="Fewer: Adult guests per room for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            disabled=""
+                            type="button"
+                          >
+                            −
+                          </button>
+                          <span
+                            aria-live="polite"
+                            class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
+                          >
+                            –
+                          </span>
+                          <button
+                            aria-label="More: Adult guests per room for stay 1, room 1"
+                            class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
+                            type="button"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                      <input
+                        aria-hidden="true"
+                        aria-label="Rooms"
+                        class="sr-only"
+                        min="1"
+                        tabindex="-1"
+                        type="number"
+                        value="1"
+                      />
+                      <input
+                        aria-hidden="true"
+                        aria-label="Adults"
+                        class="sr-only"
+                        min="0"
+                        tabindex="-1"
+                        type="number"
+                        value=""
+                      />
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r37»-board"
+                        >
+                          <span>
+                            Meal plan
+                            <span
+                              aria-hidden="true"
+                              class="ml-0.5 font-bold text-[#c01823]"
+                            >
+                              *
+                            </span>
+                          </span>
+                        </label>
+                        <span
+                          class="font-normal text-[#64748b]"
+                        />
+                      </div>
+                      <select
+                        aria-label="Meal plan"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r37»-board"
+                      >
+                        <option
+                          value="unknown"
+                        >
+                          Not stated yet
+                        </option>
+                        <option
+                          value="room_only"
+                        >
+                          Room only
+                        </option>
+                        <option
+                          value="bb"
+                        >
+                          Bed & breakfast
+                        </option>
+                        <option
+                          value="dinner_bb"
+                        >
+                          Dinner, bed & breakfast
+                        </option>
+                      </select>
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r37»-children"
+                        >
+                          <span>
+                            Children ages
+                          </span>
+                        </label>
+                      </div>
+                      <input
+                        aria-label="Children ages"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r37»-children"
+                        value=""
+                      />
+                      <p
+                        class="text-[11px] text-[#64748b]"
+                      >
+                        Separate ages with commas.
+                      </p>
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r37»-organisation"
+                        >
+                          <span>
+                            Company or agency
+                          </span>
+                        </label>
+                      </div>
+                      <input
+                        aria-label="Company or agency"
+                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                        id="«r37»-organisation"
+                        value=""
+                      />
+                    </div>
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="«r37»-requests"
+                        >
+                          <span>
+                            Special requests
+                          </span>
+                        </label>
+                      </div>
+                      <textarea
+                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                        id="«r37»-requests"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex items-center justify-between gap-2"
+                >
+                  <button
+                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                    type="button"
+                  >
+                    Add room
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-2"
+              >
+                <button
+                  class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                  type="button"
+                >
+                  Add stay
+                </button>
+                <div
+                  class="flex items-center justify-between gap-2 rounded-[3px] border border-[#cbd5e1] bg-[#f8fafc] px-3 py-2.5"
+                >
+                  <div
+                    class="flex flex-col gap-0.5"
                   >
                     <span
-                      class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
+                      class="text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
                     >
-                      Adults per room
-                      <span
-                        class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                      >
-                        Missing
-                      </span>
+                      Total
                     </span>
-                    <div
-                      aria-label="Adult guests per room for stay 1"
-                      class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
-                      role="group"
+                    <span
+                      class="text-[13px] font-bold text-[#1e293b]"
                     >
-                      <button
-                        aria-label="Fewer: Adult guests per room for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        disabled=""
-                        type="button"
-                      >
-                        −
-                      </button>
-                      <span
-                        aria-live="polite"
-                        class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
-                      >
-                        –
-                      </span>
-                      <button
-                        aria-label="More: Adult guests per room for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        type="button"
-                      >
-                        +
-                      </button>
-                    </div>
+                      1
+                       
+                      room
+                       · 
+                      0
+                       
+                      guests
+                    </span>
                   </div>
-                  <input
-                    aria-hidden="true"
-                    aria-label="Rooms"
-                    class="sr-only"
-                    min="1"
-                    tabindex="-1"
-                    type="number"
-                    value="1"
-                  />
-                  <input
-                    aria-hidden="true"
-                    aria-label="Adults"
-                    class="sr-only"
-                    min="0"
-                    tabindex="-1"
-                    type="number"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r36»-children"
-                    >
-                      <span>
-                        Children ages
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Children ages"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r36»-children"
-                    value=""
-                  />
-                  <p
-                    class="text-[11px] text-[#64748b]"
-                  >
-                    Separate ages with commas.
-                  </p>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r36»-organisation"
-                    >
-                      <span>
-                        Company or agency
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Company or agency"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r36»-organisation"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r36»-requests"
-                    >
-                      <span>
-                        Special requests
-                      </span>
-                    </label>
-                  </div>
-                  <textarea
-                    class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-                    id="«r36»-requests"
-                  />
                 </div>
               </div>
               <p
@@ -5275,11 +5584,17 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 class="flex flex-col gap-1"
               >
                 <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
+                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] bg-[#0066cc] hover:bg-[#0052a3]"
+                  disabled=""
                   type="button"
                 >
                   Get rates from HMS
                 </button>
+                <p
+                  class="text-center text-[11px] text-[#64748b]"
+                >
+                  Choose a room type for each row.
+                </p>
               </div>
               <details
                 class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
@@ -5326,7 +5641,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                         Dates unknown → unknown · Stay 1: 1 × any room, adults not set
                       </p>
                       <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
                         type="button"
                       >
                         Run 
@@ -5366,7 +5681,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                   class="flex flex-col gap-1"
                 >
                   <button
-                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
+                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] bg-[#0066cc] hover:bg-[#0052a3]"
                     disabled=""
                     type="button"
                   >
@@ -5382,7 +5697,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                   class="flex flex-col gap-1.5"
                 >
                   <button
-                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                     disabled=""
                     type="button"
                   >
@@ -5444,7 +5759,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
               class="flex flex-col gap-1"
             >
               <button
-                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
+                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] bg-[#1a4332] hover:bg-[#143528]"
                 disabled=""
                 type="button"
               >
@@ -5493,1481 +5808,6 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
           id="radix-«r34»"
-          type="button"
-        >
-          <svg
-            class="lucide lucide-ellipsis h-4 w-4"
-            fill="none"
-            height="24"
-            stroke="currentColor"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            viewBox="0 0 24 24"
-            width="24"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <circle
-              cx="12"
-              cy="12"
-              r="1"
-            />
-            <circle
-              cx="19"
-              cy="12"
-              r="1"
-            />
-            <circle
-              cx="5"
-              cy="12"
-              r="1"
-            />
-          </svg>
-        </button>
-      </footer>
-    </div>
-  </div>
-</div>
-`;
-
-exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with its missing-guest and partial-read notes 1`] = `
-<div>
-  <div
-    class="flex h-screen w-full justify-center overflow-hidden bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
-  >
-    <div
-      class="shadow-xs relative flex h-full w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]"
-    >
-      <header
-        class="flex h-11 shrink-0 items-center justify-between border-b border-[#e2e8f0] bg-white px-3.5"
-      >
-        <div
-          class="flex items-center gap-2"
-        >
-          <span
-            class="flex h-5 w-5 items-center justify-center rounded-[3px] bg-[#1a4332] text-[11px] font-extrabold text-white"
-          >
-            N
-          </span>
-          <div>
-            <h1
-              class="text-[13px] font-bold text-[#1e293b]"
-            >
-              Nava Reservationist
-            </h1>
-          </div>
-        </div>
-        <div
-          class="flex items-center gap-1.5 text-[11.5px] font-medium text-[#475569]"
-        >
-          <span
-            class="h-2 w-2 rounded-full animate-pulse bg-emerald-600"
-          />
-          <span>
-            Centurion
-          </span>
-          <span
-            class="sr-only"
-          >
-            Connected to Classic Outlook (16.0; product/build unknown)
-          </span>
-        </div>
-      </header>
-      <p
-        class="mx-3 mt-2 text-[11px] text-slate-600"
-      >
-        Update the Outlook add-in to enable automatic email copying.
-      </p>
-      <main
-        class="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5"
-      >
-        <div
-          class="flex items-center justify-between gap-2 rounded-[4px] border border-[#e2e8f0] bg-white px-2.5 py-2"
-          id="quote-selected-message"
-        >
-          <div
-            class="flex min-w-0 items-center gap-2"
-          >
-            <svg
-              class="lucide lucide-mail h-3.5 w-3.5 shrink-0 text-[#64748b]"
-              fill="none"
-              height="24"
-              stroke="currentColor"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              viewBox="0 0 24 24"
-              width="24"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <rect
-                height="16"
-                rx="2"
-                width="20"
-                x="2"
-                y="4"
-              />
-              <path
-                d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"
-              />
-            </svg>
-            <div
-              class="flex min-w-0 flex-col"
-            >
-              <span
-                class="truncate text-[13px] font-bold text-[#1e293b]"
-              >
-                Suite Availability Request
-              </span>
-              <span
-                class="truncate text-[11px] text-[#64748b]"
-              >
-                David Miller &lt;guest@example.com&gt;
-              </span>
-            </div>
-          </div>
-          <span
-            class="flex shrink-0 items-center gap-1 rounded-[3px] bg-[#eaf4ee] px-1.5 py-0.5 text-[10px] font-semibold text-[#1a4332]"
-          >
-            <svg
-              class="lucide lucide-check h-3 w-3"
-              fill="none"
-              height="24"
-              stroke="currentColor"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              viewBox="0 0 24 24"
-              width="24"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M20 6 9 17l-5-5"
-              />
-            </svg>
-             Synced
-          </span>
-        </div>
-        <section
-          aria-label="Find the booking"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-        >
-          <div
-            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-          >
-            <h3
-              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
-            >
-              Find the booking
-            </h3>
-          </div>
-          <div
-            class="flex flex-col gap-3 p-3"
-          >
-            <p
-              class="text-[11px] text-[#64748b]"
-            >
-              Read from this voucher or proof of payment. Nava only searches HMS and saves the file. It books and changes nothing.
-            </p>
-            <p
-              class="text-[12.5px] font-semibold text-[#1e293b]"
-            >
-              arriving 12 Nov 2026
-            </p>
-            <div
-              class="rounded-[3px] border px-2.5 py-1.5 text-[11.5px] border-amber-300 bg-amber-50 text-amber-900"
-              role="alert"
-            >
-              <ul
-                class="flex list-disc flex-col gap-0.5 pl-4"
-              >
-                <li>
-                  Nava could not read the guest surname from this email. Find the booking by name in HMS.
-                </li>
-                <li>
-                  Part of the voucher couldn't be read — check the PDF.
-                </li>
-              </ul>
-            </div>
-            <p
-              class="text-[11px] text-[#64748b]"
-            >
-              No file to save from this email.
-            </p>
-          </div>
-        </section>
-        <p
-          class="px-1 text-[11px] text-[#64748b]"
-        >
-          Nava filled these in from the email. Check them before getting rates.
-        </p>
-        <div
-          class="flex flex-col gap-3"
-        >
-          <div
-            class="flex flex-wrap items-center gap-2"
-          >
-            <div
-              class="flex items-center gap-2"
-            >
-              <span
-                class="text-[11.5px] font-semibold text-[#475569]"
-              >
-                Nava reads this as
-              </span>
-              <div
-                class="w-40"
-              >
-                <select
-                  aria-label="Nava reads this as"
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                >
-                  <option
-                    disabled=""
-                    value=""
-                  >
-                    Choose a type
-                  </option>
-                  <option
-                    value="quote"
-                  >
-                    Quote request
-                  </option>
-                  <option
-                    value="create_booking"
-                  >
-                    Booking
-                  </option>
-                </select>
-              </div>
-            </div>
-          </div>
-          <div
-            class="flex flex-col gap-2"
-          >
-            <button
-              aria-expanded="false"
-              class="text-[11.5px] font-semibold text-[#0066cc] hover:underline"
-              type="button"
-            >
-              Something wrong? Tell Nava
-            </button>
-          </div>
-          <section
-            aria-label="Stay details"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-          >
-            <div
-              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-            >
-              <h3
-                class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
-              >
-                <span
-                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
-                >
-                  1
-                </span>
-                Stay details
-              </h3>
-            </div>
-            <div
-              class="flex flex-col gap-3 p-3"
-            >
-              <div
-                class="flex flex-col gap-3"
-              >
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                    >
-                      <span>
-                        Dates of stay
-                        <span
-                          aria-hidden="true"
-                          class="ml-0.5 font-bold text-[#c01823]"
-                        >
-                          *
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-                  <div
-                    class="overflow-hidden rounded-[3px] border border-[#cbd5e1]"
-                  >
-                    <div
-                      class="grid grid-cols-2 divide-x divide-[#e2e8f0]"
-                    >
-                      <button
-                        aria-pressed="false"
-                        class="flex flex-col gap-0.5 border-b-2 px-2.5 py-2 text-left transition-colors hover:bg-[#f8fafc] border-transparent"
-                        type="button"
-                      >
-                        <span
-                          class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
-                        >
-                          Arrival date
-                          <span
-                            class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                          >
-                            Missing
-                          </span>
-                        </span>
-                        <span
-                          class="text-[13px] text-[#94a3b8]"
-                        >
-                          Pick a date
-                        </span>
-                      </button>
-                      <button
-                        aria-pressed="false"
-                        class="flex flex-col gap-0.5 border-b-2 px-2.5 py-2 text-left transition-colors hover:bg-[#f8fafc] border-transparent"
-                        type="button"
-                      >
-                        <span
-                          class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]"
-                        >
-                          Departure date
-                          <span
-                            class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                          >
-                            Missing
-                          </span>
-                        </span>
-                        <span
-                          class="text-[13px] text-[#94a3b8]"
-                        >
-                          Pick a date
-                        </span>
-                      </button>
-                    </div>
-                    <div
-                      class="flex items-center justify-between border-t border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-1.5 text-[11.5px] text-[#475569]"
-                    >
-                      <span
-                        class="flex items-center gap-1.5"
-                      >
-                        <svg
-                          aria-hidden="true"
-                          class="lucide lucide-moon h-3 w-3"
-                          fill="none"
-                          height="24"
-                          stroke="currentColor"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          viewBox="0 0 24 24"
-                          width="24"
-                          xmlns="http://www.w3.org/2000/svg"
-                        >
-                          <path
-                            d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"
-                          />
-                        </svg>
-                        Pick both dates
-                      </span>
-                      <button
-                        aria-expanded="false"
-                        class="text-[11.5px] font-semibold text-[#0066cc] hover:underline"
-                        type="button"
-                      >
-                        Change dates 
-                        ▾
-                      </button>
-                    </div>
-                    <div
-                      class="space-y-2 border-t border-[#e2e8f0] bg-white p-2.5"
-                      hidden=""
-                    >
-                      <p
-                        class="text-[11px] text-[#64748b]"
-                      >
-                        or type dates
-                      </p>
-                      <div
-                        class="grid grid-cols-2 gap-2"
-                      >
-                        <div
-                          class="flex flex-col gap-1"
-                        >
-                          <div
-                            class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                          >
-                            <label
-                              class="flex items-center gap-1.5"
-                              for="«r3b»-arrival"
-                            >
-                              <span>
-                                Arrival
-                              </span>
-                            </label>
-                          </div>
-                          <input
-                            aria-label="Arrival"
-                            class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                            id="«r3b»-arrival"
-                            type="date"
-                            value=""
-                          />
-                        </div>
-                        <div
-                          class="flex flex-col gap-1"
-                        >
-                          <div
-                            class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                          >
-                            <label
-                              class="flex items-center gap-1.5"
-                              for="«r3b»-departure"
-                            >
-                              <span>
-                                Departure
-                              </span>
-                            </label>
-                          </div>
-                          <input
-                            aria-label="Departure"
-                            class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                            id="«r3b»-departure"
-                            type="date"
-                            value=""
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r3a»-board"
-                    >
-                      <span>
-                        Meal plan
-                        <span
-                          aria-hidden="true"
-                          class="ml-0.5 font-bold text-[#c01823]"
-                        >
-                          *
-                        </span>
-                      </span>
-                    </label>
-                    <span
-                      class="font-normal text-[#64748b]"
-                    />
-                  </div>
-                  <select
-                    aria-label="Meal plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r3a»-board"
-                  >
-                    <option
-                      value="unknown"
-                    >
-                      Not stated yet
-                    </option>
-                    <option
-                      value="room_only"
-                    >
-                      Room only
-                    </option>
-                    <option
-                      value="bb"
-                    >
-                      Bed & breakfast
-                    </option>
-                    <option
-                      value="dinner_bb"
-                    >
-                      Dinner, bed & breakfast
-                    </option>
-                  </select>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r3a»-room"
-                    >
-                      <span>
-                        Room type
-                      </span>
-                    </label>
-                    <span
-                      class="font-normal text-[#64748b]"
-                    />
-                  </div>
-                  <select
-                    aria-label="Room type"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r3a»-room"
-                  >
-                    <option
-                      value=""
-                    >
-                      Any room type — no stated preference
-                    </option>
-                    <option
-                      value="STWN"
-                    >
-                      Standard Twin
-                    </option>
-                    <option
-                      value="STQN"
-                    >
-                      Standard Queen
-                    </option>
-                    <option
-                      value="SKNG"
-                    >
-                      Standard King
-                    </option>
-                    <option
-                      value="EXKNG"
-                    >
-                      Executive King
-                    </option>
-                    <option
-                      value="DLXTWN"
-                    >
-                      Deluxe Twin
-                    </option>
-                    <option
-                      value="DLXQN"
-                    >
-                      Deluxe Queen
-                    </option>
-                    <option
-                      value="DLXKNG"
-                    >
-                      Deluxe King
-                    </option>
-                    <option
-                      value="LUXKNG"
-                    >
-                      Luxury King
-                    </option>
-                    <option
-                      value="SUITE"
-                    >
-                      Suite
-                    </option>
-                  </select>
-                </div>
-                <div
-                  class="overflow-hidden rounded-[3px] border border-[#cbd5e1]"
-                >
-                  <div
-                    class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-[7px]"
-                  >
-                    <span
-                      class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
-                    >
-                      Rooms
-                    </span>
-                    <div
-                      aria-label="Rooms for stay 1"
-                      class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
-                      role="group"
-                    >
-                      <button
-                        aria-label="Fewer: Rooms for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        disabled=""
-                        type="button"
-                      >
-                        −
-                      </button>
-                      <span
-                        aria-live="polite"
-                        class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
-                      >
-                        1
-                      </span>
-                      <button
-                        aria-label="More: Rooms for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        type="button"
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-                  <div
-                    class="flex items-center justify-between bg-white px-2.5 py-2"
-                  >
-                    <span
-                      class="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]"
-                    >
-                      Adults per room
-                      <span
-                        class="rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                      >
-                        Missing
-                      </span>
-                    </span>
-                    <div
-                      aria-label="Adult guests per room for stay 1"
-                      class="flex items-center overflow-hidden rounded-[3px] border border-[#cbd5e1]"
-                      role="group"
-                    >
-                      <button
-                        aria-label="Fewer: Adult guests per room for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        disabled=""
-                        type="button"
-                      >
-                        −
-                      </button>
-                      <span
-                        aria-live="polite"
-                        class="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]"
-                      >
-                        –
-                      </span>
-                      <button
-                        aria-label="More: Adult guests per room for stay 1"
-                        class="flex h-[26px] w-[26px] items-center justify-center bg-[#f8fafc] text-[13px] font-bold text-[#475569] hover:bg-[#e2e8f0] disabled:cursor-not-allowed disabled:text-[#cbd5e1]"
-                        type="button"
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-                  <input
-                    aria-hidden="true"
-                    aria-label="Rooms"
-                    class="sr-only"
-                    min="1"
-                    tabindex="-1"
-                    type="number"
-                    value="1"
-                  />
-                  <input
-                    aria-hidden="true"
-                    aria-label="Adults"
-                    class="sr-only"
-                    min="0"
-                    tabindex="-1"
-                    type="number"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r3a»-children"
-                    >
-                      <span>
-                        Children ages
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Children ages"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r3a»-children"
-                    value=""
-                  />
-                  <p
-                    class="text-[11px] text-[#64748b]"
-                  >
-                    Separate ages with commas.
-                  </p>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r3a»-organisation"
-                    >
-                      <span>
-                        Company or agency
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Company or agency"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="«r3a»-organisation"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="«r3a»-requests"
-                    >
-                      <span>
-                        Special requests
-                      </span>
-                    </label>
-                  </div>
-                  <textarea
-                    class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-                    id="«r3a»-requests"
-                  />
-                </div>
-              </div>
-              <p
-                class="text-[11px] text-[#64748b]"
-              >
-                These exact values go on the PDF. Leave Agency blank if there is none.
-              </p>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-rate-type"
-                  >
-                    <span>
-                      Rate type
-                      <span
-                        aria-hidden="true"
-                        class="ml-0.5 font-bold text-[#c01823]"
-                      >
-                        *
-                      </span>
-                    </span>
-                  </label>
-                </div>
-                <select
-                  aria-label="Rate type"
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  id="quote-rate-type"
-                >
-                  <option
-                    value="BAR"
-                  >
-                    BAR (best available rate)
-                  </option>
-                  <option
-                    value="Government"
-                  >
-                    Government rate
-                  </option>
-                </select>
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-company"
-                  >
-                    <span>
-                      Company
-                    </span>
-                  </label>
-                </div>
-                <input
-                  aria-label="Company"
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  id="quote-company"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-agency"
-                  >
-                    <span>
-                      Agency
-                    </span>
-                  </label>
-                </div>
-                <input
-                  aria-label="Agency"
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  id="quote-agency"
-                  value=""
-                />
-              </div>
-              <details
-                class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
-              >
-                <summary
-                  class="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[11.5px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden"
-                >
-                  <span>
-                    Extras: allowances, contact, notes
-                  </span>
-                  <span
-                    aria-hidden="true"
-                    class="transition-transform group-open:rotate-180"
-                  >
-                    ▾
-                  </span>
-                </summary>
-                <div
-                  class="flex flex-col gap-3 p-2.5"
-                >
-                  <div
-                    class="flex flex-col gap-1"
-                  >
-                    <div
-                      class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                    >
-                      <label
-                        class="flex items-center gap-1.5"
-                        for="quote-attention"
-                      >
-                        <span>
-                          Attention
-                        </span>
-                      </label>
-                    </div>
-                    <input
-                      aria-label="Attention"
-                      class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="quote-attention"
-                      value=""
-                    />
-                  </div>
-                  <div
-                    class="flex flex-col gap-1"
-                  >
-                    <div
-                      class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                    >
-                      <label
-                        class="flex items-center gap-1.5"
-                        for="quote-client-email"
-                      >
-                        <span>
-                          Client email
-                        </span>
-                      </label>
-                    </div>
-                    <input
-                      aria-label="Client email"
-                      class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="quote-client-email"
-                      value=""
-                    />
-                  </div>
-                  <div
-                    class="flex flex-col gap-1"
-                  >
-                    <div
-                      class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                    >
-                      <label
-                        class="flex items-center gap-1.5"
-                        for="quote-client-telephone"
-                      >
-                        <span>
-                          Client telephone
-                        </span>
-                      </label>
-                    </div>
-                    <input
-                      aria-label="Client telephone"
-                      class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="quote-client-telephone"
-                      value=""
-                    />
-                  </div>
-                  <div
-                    class="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2"
-                  >
-                    <label
-                      class="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]"
-                    >
-                      Dinner allowance (R per person per night)
-                      <input
-                        aria-label="Dinner allowance (R per person per night)"
-                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                        inputmode="decimal"
-                        value=""
-                      />
-                    </label>
-                    <label
-                      class="flex flex-col gap-1 text-[11px] text-[#64748b]"
-                    >
-                      Dinner label, optional (e.g. food only)
-                      <input
-                        aria-label="Dinner label"
-                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                        maxlength="120"
-                        value=""
-                      />
-                    </label>
-                  </div>
-                  <div
-                    class="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2"
-                  >
-                    <label
-                      class="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]"
-                    >
-                      Lunch allowance (R per person per night)
-                      <input
-                        aria-label="Lunch allowance (R per person per night)"
-                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                        inputmode="decimal"
-                        value=""
-                      />
-                    </label>
-                    <label
-                      class="flex flex-col gap-1 text-[11px] text-[#64748b]"
-                    >
-                      Lunch label, optional (e.g. with 1 soft drink)
-                      <input
-                        aria-label="Lunch label"
-                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                        maxlength="120"
-                        value=""
-                      />
-                    </label>
-                  </div>
-                  <div
-                    class="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2"
-                  >
-                    <label
-                      class="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]"
-                    >
-                      Office transfer (R per person per day)
-                      <input
-                        aria-label="Office transfer (R per person per day)"
-                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                        inputmode="decimal"
-                        value=""
-                      />
-                    </label>
-                    <label
-                      class="flex flex-col gap-1 text-[11px] text-[#64748b]"
-                    >
-                      Office transfer days, optional (blank = nights of stay)
-                      <input
-                        aria-label="Office transfer days"
-                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                        inputmode="numeric"
-                        placeholder="nights of stay"
-                        value=""
-                      />
-                    </label>
-                  </div>
-                  <div
-                    class="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2"
-                  >
-                    <label
-                      class="flex items-center gap-2 text-[11.5px] font-semibold text-[#475569]"
-                    >
-                      <input
-                        aria-label="Shuttle requested"
-                        type="checkbox"
-                      />
-                      Shuttle requested
-                    </label>
-                  </div>
-                  <div
-                    aria-label="Other: label, amount, unit"
-                    class="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2"
-                    role="group"
-                  >
-                    <span
-                      class="text-[11.5px] font-semibold text-[#475569]"
-                    >
-                      Other: label, amount, unit
-                    </span>
-                    <div
-                      class="grid grid-cols-2 gap-2"
-                    >
-                      <label
-                        class="flex flex-col gap-1 text-[11px] text-[#64748b]"
-                      >
-                        Label
-                        <input
-                          aria-label="Other label"
-                          class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                          maxlength="120"
-                          placeholder="e.g. Parking"
-                          value=""
-                        />
-                      </label>
-                      <label
-                        class="flex flex-col gap-1 text-[11px] text-[#64748b]"
-                      >
-                        Amount (R)
-                        <input
-                          aria-label="Other amount"
-                          class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                          inputmode="decimal"
-                          value=""
-                        />
-                      </label>
-                    </div>
-                    <label
-                      class="flex flex-col gap-1 text-[11px] text-[#64748b]"
-                    >
-                      Unit
-                      <select
-                        aria-label="Other unit"
-                        class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      >
-                        <option
-                          value="per_person_night"
-                        >
-                          R per person per night
-                        </option>
-                        <option
-                          value="per_person"
-                        >
-                          R per person
-                        </option>
-                        <option
-                          value="per_trip"
-                        >
-                          R per trip
-                        </option>
-                        <option
-                          value="item"
-                        >
-                          R once (item)
-                        </option>
-                      </select>
-                    </label>
-                  </div>
-                  <label
-                    class="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    Notes for the quote
-                    <textarea
-                      aria-label="Notes for the quote"
-                      class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] min-h-[3.5rem] font-normal"
-                      maxlength="1000"
-                    />
-                    <span
-                      class="text-[11px] font-normal text-[#64748b]"
-                    >
-                      Unpriced. Printed on the PDF and added to the reply as a note.
-                    </span>
-                  </label>
-                </div>
-              </details>
-              <section
-                aria-label="Check before sending"
-                class="flex flex-col gap-1.5"
-              >
-                <div
-                  class="rounded-[3px] border px-2.5 py-1.5 text-[11.5px] border-amber-300 bg-amber-50 text-amber-900"
-                >
-                  <p
-                    class="font-semibold"
-                  >
-                    Check before sending
-                  </p>
-                  <p>
-                    Nava found these. Clear each one before you send the reply. Show in email finds the line in the email. Edit reply opens the reply box. Mark as done hides the item here only.
-                  </p>
-                </div>
-                <div
-                  class="flex flex-col gap-1 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5"
-                >
-                  <p
-                    class="text-[12px] font-semibold text-[#1e293b]"
-                  >
-                    Number of adults is missing for Stay 1.
-                  </p>
-                  <p
-                    class="text-[11px] text-[#64748b]"
-                  >
-                    Stay 1
-                  </p>
-                  <p
-                    class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                  >
-                    Blocks the quote — fix the stay details first
-                  </p>
-                  <div
-                    class="flex flex-wrap gap-1.5"
-                  >
-                    <button
-                      aria-label="Show in email: Number of adults is missing for Stay 1."
-                      class="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-                      type="button"
-                    >
-                      Show in email
-                    </button>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5"
-                >
-                  <p
-                    class="text-[12px] font-semibold text-[#1e293b]"
-                  >
-                    Arrival date is missing for Stay 1.
-                  </p>
-                  <p
-                    class="text-[11px] text-[#64748b]"
-                  >
-                    Stay 1
-                  </p>
-                  <p
-                    class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                  >
-                    Blocks the quote — fix the stay details first
-                  </p>
-                  <div
-                    class="flex flex-wrap gap-1.5"
-                  >
-                    <button
-                      aria-label="Show in email: Arrival date is missing for Stay 1."
-                      class="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-                      type="button"
-                    >
-                      Show in email
-                    </button>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5"
-                >
-                  <p
-                    class="text-[12px] font-semibold text-[#1e293b]"
-                  >
-                    Meal plan is not stated for Stay 1.
-                  </p>
-                  <p
-                    class="text-[11px] text-[#64748b]"
-                  >
-                    Stay 1
-                  </p>
-                  <p
-                    class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                  >
-                    Blocks the quote — fix the stay details first
-                  </p>
-                  <div
-                    class="flex flex-wrap gap-1.5"
-                  >
-                    <button
-                      aria-label="Show in email: Meal plan is not stated for Stay 1."
-                      class="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-                      type="button"
-                    >
-                      Show in email
-                    </button>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5"
-                >
-                  <p
-                    class="text-[12px] font-semibold text-[#1e293b]"
-                  >
-                    Departure date is missing for Stay 1.
-                  </p>
-                  <p
-                    class="text-[11px] text-[#64748b]"
-                  >
-                    Stay 1
-                  </p>
-                  <p
-                    class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                  >
-                    Blocks the quote — fix the stay details first
-                  </p>
-                  <div
-                    class="flex flex-wrap gap-1.5"
-                  >
-                    <button
-                      aria-label="Show in email: Departure date is missing for Stay 1."
-                      class="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
-                      type="button"
-                    >
-                      Show in email
-                    </button>
-                  </div>
-                </div>
-              </section>
-            </div>
-          </section>
-          <section
-            aria-label="Rates from HMS"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-          >
-            <div
-              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-            >
-              <h3
-                class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
-              >
-                <span
-                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
-                >
-                  2
-                </span>
-                Rates from HMS
-              </h3>
-            </div>
-            <div
-              class="flex flex-col gap-3 p-3"
-            >
-              <div
-                class="flex flex-col gap-1"
-              >
-                <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
-                  type="button"
-                >
-                  Get rates from HMS
-                </button>
-              </div>
-              <details
-                class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
-              >
-                <summary
-                  class="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[11.5px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden"
-                >
-                  <span>
-                    HMS steps
-                  </span>
-                  <span
-                    aria-hidden="true"
-                    class="transition-transform group-open:rotate-180"
-                  >
-                    ▾
-                  </span>
-                </summary>
-                <div
-                  class="flex flex-col gap-3 p-2.5"
-                >
-                  <div
-                    class="flex flex-col gap-2"
-                  >
-                    <div
-                      class="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 first:border-t-0 first:pt-0"
-                    >
-                      <div
-                        class="flex items-center justify-between gap-2"
-                      >
-                        <span
-                          class="text-[12px] font-semibold text-[#1e293b]"
-                        >
-                          Search availability unknown → unknown
-                        </span>
-                        <span
-                          class="text-[10px] font-bold uppercase text-[#64748b]"
-                        >
-                          Ready
-                        </span>
-                      </div>
-                      <p
-                        class="text-[11px] text-[#64748b]"
-                      >
-                        Dates unknown → unknown · Stay 1: 1 × any room, adults not set
-                      </p>
-                      <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
-                        type="button"
-                      >
-                        Run 
-                        Search availability unknown → unknown
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </details>
-            </div>
-          </section>
-          <section
-            aria-label="Quote documents"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-          >
-            <div
-              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-            >
-              <h3
-                class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
-              >
-                <span
-                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
-                >
-                  3
-                </span>
-                Quote documents
-              </h3>
-            </div>
-            <div
-              class="flex flex-col gap-3 p-3"
-            >
-              <div
-                class="flex flex-col gap-3"
-              >
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <button
-                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
-                    disabled=""
-                    type="button"
-                  >
-                    Prepare PDF
-                  </button>
-                  <p
-                    class="text-center text-[11px] text-[#64748b]"
-                  >
-                    Get rates first.
-                  </p>
-                </div>
-                <div
-                  class="flex flex-col gap-1.5"
-                >
-                  <button
-                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
-                    disabled=""
-                    type="button"
-                  >
-                    Download Excel
-                  </button>
-                  <p
-                    class="text-center text-[11px] text-[#64748b]"
-                  >
-                    Excel needs the same checks as the PDF.
-                  </p>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-reviewed-reply"
-                    >
-                      <span>
-                        Reply to the client (you can edit it)
-                      </span>
-                    </label>
-                  </div>
-                  <textarea
-                    aria-label="Reviewed reply"
-                    class="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-                    id="quote-reviewed-reply"
-                  />
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
-        <section
-          aria-label="Reply"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-        >
-          <div
-            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-          >
-            <h3
-              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
-            >
-              <span
-                class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
-              >
-                4
-              </span>
-              Reply
-            </h3>
-          </div>
-          <div
-            class="flex flex-col gap-3 p-3"
-          >
-            <div
-              class="flex flex-col gap-1"
-            >
-              <button
-                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] bg-[#0066cc] text-[13px] font-bold text-white transition-colors hover:bg-[#0052a3] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]"
-                disabled=""
-                type="button"
-              >
-                <svg
-                  class="lucide lucide-send h-3.5 w-3.5"
-                  fill="none"
-                  height="24"
-                  stroke="currentColor"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  viewBox="0 0 24 24"
-                  width="24"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <path
-                    d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"
-                  />
-                  <path
-                    d="m21.854 2.147-10.94 10.939"
-                  />
-                </svg>
-                Insert draft in Outlook
-              </button>
-              <p
-                class="text-center text-[11px] text-[#64748b]"
-              >
-                Prepare the quote PDF first
-              </p>
-            </div>
-            <p
-              class="text-[11px] text-[#64748b]"
-            >
-              Creates an unsent reply with the PDF attached. Review it, then Send manually in Outlook. Nava never sends from this pane.
-            </p>
-          </div>
-        </section>
-      </main>
-      <footer
-        class="mt-auto flex shrink-0 items-center justify-end border-t border-[#f1f5f9] px-3 py-1.5"
-      >
-        <button
-          aria-expanded="false"
-          aria-haspopup="menu"
-          aria-label="More"
-          class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
-          data-state="closed"
-          id="radix-«r38»"
           type="button"
         >
           <svg

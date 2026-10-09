@@ -115,6 +115,8 @@ describe('mounted Outlook pane quoting path at 380px', () => {
     expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();
     expect(await screen.findByRole('button', { name: /^Get rates from HMS$/i })).toBeDefined();
 
+    // Get rates waits for a room type on every row; the email gave none.
+    fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'STQN' } });
     fireEvent.click(screen.getByRole('button', { name: /^Get rates from HMS$/i }));
     await waitFor(() => {
       expect(screen.getAllByText(/not available here|no room options|not owned by this quoting UI|not ready yet|not connected to this pane/i).length).toBeGreaterThan(0);

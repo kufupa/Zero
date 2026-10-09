@@ -21,8 +21,8 @@ const Toaster = () => {
       toastOptions={{
         unstyled: true,
         classNames: {
-          title: 'title flex-1 justify-center text-black! dark:text-white! text-sm leading-none',
-          description: 'text-black! dark:text-white! text-xs',
+          title: 'title flex-1 justify-center text-white! text-sm leading-none',
+          description: 'text-white/80! text-xs',
           toast: 'p-1',
           actionButton:
             'inline-flex h-5 items-center justify-between mr-1 gap-1 overflow-hidden rounded-md! border px-1 text-xs dark:border-none bg-[#E0E0E0]! dark:bg-[#424242]! pointer-events-auto cursor-pointer',
@@ -35,7 +35,7 @@ const Toaster = () => {
           icon: 'pl-3 icon mr-2',
           content: 'flex-1 p-1.5 pl-2',
           default:
-            'w-full p-1.5 bg-white dark:bg-[#2C2C2C] rounded-xl flex items-center gap-2 overflow-visible border dark:border-none',
+            'w-full p-1.5 bg-[#1e293b] text-white rounded-full flex items-center gap-2 overflow-visible shadow-md',
         },
       }}
     />

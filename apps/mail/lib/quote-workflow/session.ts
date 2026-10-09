@@ -10,6 +10,7 @@ import type {
   QuoteSelectionBinding,
   QuoteStepInputs,
   QuoteToolStep,
+  RemovedStay,
   StaffQuoteAllocation,
   StayGroupRequirement,
   StaffQuoteHeader,
@@ -17,6 +18,7 @@ import type {
 import { emptyStaffQuoteHeader, staffHeaderFieldProblem, type StaffExtraField } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
 import { approvedExecuteHeader } from './staff-quote-bind';
+import { knownRoomCode, type RoomTypeCode } from './room-types';
 
 /**
  * The amendment Luna reported on this email, or null. It lives on the analysis, so it survives every reducer
@@ -70,6 +72,42 @@ export function buildQuoteStepInputs(session: QuoteSession, step: QuoteToolStep)
 
 export function stayKeyForGroup(group: StayGroupRequirement): string {
   return `${group.arrivalDate ?? 'unknown'}:${group.departureDate ?? 'unknown'}`;
+}
+
+/** The stay a row belongs to. A row with no stayId belongs to the stay its dates make. */
+export function stayIdOf(group: StayGroupRequirement): string {
+  return group.stayId ?? `d:${stayKeyForGroup(group)}`;
+}
+
+/** The rows grouped into stays, in the order each stay's first row appears. */
+export function groupStays(groups: StayGroupRequirement[]): Array<{ id: string; rows: StayGroupRequirement[] }> {
+  const byId = new Map<string, StayGroupRequirement[]>();
+  for (const group of groups) {
+    const id = stayIdOf(group);
+    byId.set(id, [...(byId.get(id) ?? []), group]);
+  }
+  return [...byId].map(([id, rows]) => ({ id, rows }));
+}
+
+/** The known native room code a row asks for. The server quotes roomPreference, so only that counts. Empty or unknown is no room type yet. */
+export function rowRoomCode(group: StayGroupRequirement): RoomTypeCode | null {
+  return knownRoomCode(group.roomPreference);
+}
+
+/** Rooms, and guests as rooms times adults per room, over the rows given. */
+export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; guests: number } {
+  return groups.reduce(
+    (sum, group) => ({
+      rooms: sum.rooms + (group.quantity ?? 0),
+      guests: sum.guests + (group.quantity ?? 0) * (group.adults ?? 0),
+    }),
+    { rooms: 0, guests: 0 },
+  );
+}
+
+/** A random part for the ids of rows and stays that a structural edit creates. The reducer takes it as input. */
+export function newQuoteToken(): string {
+  return Math.random().toString(36).slice(2, 10);
 }
 
 /**
@@ -479,9 +517,12 @@ function provenanceMatches(
 }
 
 export function hasStaffStayEdits(session: QuoteSession): boolean {
-  if (session.inputRevision > 1) return true;
-  return session.groups.some((group) =>
-    Object.values(group.fields).some((provenance) => provenance === 'staff_corrected'),
+  // Stay edits move stayRevision and give rows a stayId. Structure staff built must survive a re-read too.
+  if (session.inputRevision > 1 || session.stayRevision > 1) return true;
+  return session.groups.some(
+    (group) =>
+      group.stayId !== undefined ||
+      Object.values(group.fields).some((provenance) => provenance === 'staff_corrected'),
   );
 }
 
@@ -581,6 +622,147 @@ function applyGroupPatch(
   // A rate pick sends its rateCode with the board and room. Editing one of those fields by hand unpins the rate.
   if (!('rateCode' in patch) && RATE_PIN_FIELDS.some((key) => key in patch)) delete next.rateCode;
   return next;
+}
+
+/** Keeps the entries whose key is in `keys` (keep true) or is not (keep false). */
+function keepKeys<T>(record: Record<string, T>, keys: ReadonlySet<string>, keep: boolean): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).filter(([key]) => keys.has(key) === keep));
+}
+
+/** The date options (quote requests) that the rows fall in. */
+function dateKeysOf(groups: StayGroupRequirement[]): Set<string> {
+  return new Set(groups.map(stayKeyForGroup));
+}
+
+/** Gives a stay that has no stayId the id it already answers to, so the stay keeps that id when its dates change. */
+function pinStay(groups: StayGroupRequirement[], stayId: string): StayGroupRequirement[] {
+  return groups.map((group) => (group.stayId === undefined && stayIdOf(group) === stayId ? { ...group, stayId } : group));
+}
+
+/** Puts rows right after the last row of their stay. */
+function insertAfterStay(
+  groups: StayGroupRequirement[],
+  stayId: string,
+  rows: StayGroupRequirement[],
+): StayGroupRequirement[] {
+  const last = groups.reduce((found, group, index) => (stayIdOf(group) === stayId ? index : found), -1);
+  return [...groups.slice(0, last + 1), ...rows, ...groups.slice(last + 1)];
+}
+
+/** A new row with no room type, rooms or adults yet. The steppers show a dash until staff enter them. */
+function blankRow(
+  id: string,
+  stayId: string,
+  dates: Pick<StayGroupRequirement, 'arrivalDate' | 'departureDate' | 'board'>,
+): StayGroupRequirement {
+  return { id, stayId, ...dates, childrenAges: [], specialRequests: [], fields: {} };
+}
+
+/** A duplicate row: the same values under a new id and stay, with no rate pin. Staff own every value in the copy. */
+function copyRow(source: StayGroupRequirement, id: string, stayId: string): StayGroupRequirement {
+  const copy: StayGroupRequirement = {
+    ...source,
+    id,
+    stayId,
+    roomCodes: source.roomCodes?.slice(),
+    childrenAges: [...source.childrenAges],
+    specialRequests: [...source.specialRequests],
+    fields: Object.fromEntries(Object.keys(source.fields).map((key) => [key, 'staff_corrected' as const])),
+  };
+  delete copy.rateCode;
+  return copy;
+}
+
+/** Steps for the groups. An option the edit did not touch keeps its step, so a running or failed option stays as it was. */
+function rePlanSteps(
+  session: QuoteSession,
+  groups: StayGroupRequirement[],
+  staffQuotes: Record<string, StaffQuoteAllocation>,
+  affected: ReadonlySet<string>,
+): QuoteToolStep[] {
+  return planQuoteSteps(groups, staffQuotes).map((planned) => {
+    const previous = session.steps.find((step) => step.id === planned.id);
+    const touched = planned.shareKey === undefined || affected.has(planned.shareKey);
+    return previous && !touched ? previous : planned;
+  });
+}
+
+/**
+ * A stay edit. The rates of the date options it touches (`affected`) go. Every other option keeps its rates and any
+ * run in flight. The input revision moves only when the running option is one of the touched ones: its result would
+ * otherwise land on rows that changed under it. `keepRatesOf` keeps one row's rate cards while its pinned re-run waits.
+ */
+function editStays(
+  session: QuoteSession,
+  groups: StayGroupRequirement[],
+  affected: ReadonlySet<string>,
+  keepRatesOf?: string,
+): QuoteSession {
+  const running = session.steps.find((step) => step.id === session.runningStepId);
+  const keys = requestedQuoteKeys(groups);
+  const selectedStayKey =
+    session.selectedStayKey && keys.includes(session.selectedStayKey)
+      ? session.selectedStayKey
+      : keys.length === 1
+        ? keys[0]!
+        : session.selectedStayKey;
+  const reviewItems = projectQuoteReviewItems(
+    session.analysis,
+    groups,
+    session.reviewItems.filter((item) => item.kind === 'document_failure' || item.kind === 'analysis_failure'),
+    session.staffActions,
+  );
+  const edited = { ...session, groups, stayRevision: session.stayRevision + 1, selectedStayKey, reviewItems };
+  if (running?.shareKey && affected.has(running.shareKey)) {
+    const cleared = clearDownstream({
+      ...edited,
+      inputRevision: session.inputRevision + 1,
+      phase: 'requirements',
+      steps: planQuoteSteps(groups),
+    });
+    return { ...cleared, rateOptions: (session.rateOptions ?? []).filter((option) => option.groupId === keepRatesOf) };
+  }
+  const staffQuotes = keepKeys(session.staffQuotes, affected, false);
+  const offers = session.offers.filter((offer) => !affected.has(offer.quoteRequestKey));
+  const affectedGroupIds = new Set(
+    [...session.groups, ...groups].filter((group) => affected.has(stayKeyForGroup(group))).map((group) => group.id),
+  );
+  const selectedAffected = Boolean(session.selectedStayKey && affected.has(session.selectedStayKey));
+  const hasResults = Object.keys(staffQuotes).length > 0 || offers.length > 0;
+  // Review's PDF and booking draft rest on the results, so with none left review falls back too.
+  const resultsPhase = session.phase === 'results' || session.phase === 'tools' || session.phase === 'review';
+  return {
+    ...edited,
+    phase: !hasResults && resultsPhase ? 'requirements' : session.phase,
+    steps: rePlanSteps(session, groups, staffQuotes, affected),
+    staffQuotes,
+    stayPdfs: keepKeys(session.stayPdfs, affected, false),
+    offers,
+    selectedOfferIds: session.selectedOfferIds.filter((id) => offers.some((offer) => offer.id === id)),
+    staffQuote: selectedAffected ? null : session.staffQuote,
+    pdf: selectedAffected ? null : session.pdf,
+    // The evidence still backs the results of the stays that were not touched. It goes only with the last result.
+    evidence: hasResults ? session.evidence : null,
+    bookingDraft: null,
+    rateOptions: (session.rateOptions ?? []).filter(
+      (option) => option.groupId === keepRatesOf || !affectedGroupIds.has(option.groupId),
+    ),
+  };
+}
+
+/** What Undo needs to put a stay back: its rows, where they sat, and the rates of its date options. Null if no row has it. */
+export function removedStayFor(session: QuoteSession, stayId: string): RemovedStay | null {
+  const rows = session.groups.filter((group) => stayIdOf(group) === stayId);
+  if (!rows.length) return null;
+  const keys = dateKeysOf(rows);
+  return {
+    rows,
+    index: session.groups.findIndex((group) => stayIdOf(group) === stayId),
+    inputRevision: session.inputRevision,
+    staffQuotes: keepKeys(session.staffQuotes, keys, true),
+    stayPdfs: keepKeys(session.stayPdfs, keys, true),
+    offers: session.offers.filter((offer) => keys.has(offer.quoteRequestKey)),
+  };
 }
 
 function keptFieldErrors(
@@ -929,43 +1111,95 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const dinnerAllowanceGroupIds = [
         ...new Set([...(patched.staffHeader.dinnerAllowanceGroupIds ?? []), ...action.groupIds]),
       ];
-      return {
+      // The allowance is a header fact that every date option's PDF uses, so this clears every result, as a header edit does.
+      return clearDownstream({
         ...patched,
+        inputRevision: session.inputRevision + 1,
+        phase: 'requirements',
+        steps: planQuoteSteps(patched.groups),
         staffHeader: { ...patched.staffHeader, dinnerAllowanceRequired: true, dinnerAllowanceGroupIds },
-      };
+      });
     }
     case 'patch_group': {
-      const groups = session.groups.map((group) =>
+      const target = session.groups.find((group) => group.id === action.groupId);
+      if (!target) return session;
+      const groups = pinStay(session.groups, stayIdOf(target)).map((group) =>
         group.id === action.groupId ? applyGroupPatch(group, action.patch) : group,
       );
-      const cleared = clearDownstream({
-        ...session,
+      const patched = groups.find((group) => group.id === action.groupId)!;
+      // A rate pick keeps its own cards on screen while the pinned re-run is pending. Other edits clear them.
+      return editStays(
+        session,
         groups,
-        inputRevision: session.inputRevision + 1,
-        stayRevision: session.stayRevision + 1,
-        phase: 'requirements',
-        steps: planQuoteSteps(groups),
-        selectedStayKey: session.selectedStayKey && groups.some((group) => stayKeyForGroup(group) === session.selectedStayKey)
-          ? session.selectedStayKey
-          : requestedQuoteKeys(groups).length === 1
-            ? requestedQuoteKeys(groups)[0]!
-            : session.selectedStayKey,
-        reviewItems: projectQuoteReviewItems(
-          session.analysis,
-          groups,
-          session.reviewItems.filter(
-            (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
-          ),
-          session.staffActions,
-        ),
+        new Set([stayKeyForGroup(target), stayKeyForGroup(patched)]),
+        'rateCode' in action.patch ? action.groupId : undefined,
+      );
+    }
+    case 'add_stay': {
+      const row = blankRow(`r_${action.token}`, `s_${action.token}`, { board: session.groups[0]?.board ?? 'unknown' });
+      return editStays(session, [...session.groups, row], new Set([stayKeyForGroup(row)]));
+    }
+    case 'add_row': {
+      const template = session.groups.find((group) => stayIdOf(group) === action.stayId);
+      if (!template) return session;
+      const row = blankRow(`r_${action.token}`, action.stayId, {
+        arrivalDate: template.arrivalDate,
+        departureDate: template.departureDate,
+        board: template.board,
       });
-      // A rate pick keeps its group's cards on screen while the pinned re-run is pending. Any other edit clears them.
+      const groups = insertAfterStay(pinStay(session.groups, action.stayId), action.stayId, [row]);
+      return editStays(session, groups, new Set([stayKeyForGroup(template)]));
+    }
+    case 'duplicate_row': {
+      const source = session.groups.find((group) => group.id === action.groupId);
+      if (!source) return session;
+      const stayId = stayIdOf(source);
+      const copy = copyRow(source, `r_${action.token}`, stayId);
+      const groups = insertAfterStay(pinStay(session.groups, stayId), stayId, [copy]);
+      return editStays(session, groups, new Set([stayKeyForGroup(source)]));
+    }
+    case 'remove_row': {
+      const source = session.groups.find((group) => group.id === action.groupId);
+      if (!source) return session;
+      const stayId = stayIdOf(source);
+      // A stay keeps at least one row. Its last row goes with the whole stay, which Undo can bring back.
+      if (session.groups.filter((group) => stayIdOf(group) === stayId).length < 2) return session;
+      const groups = pinStay(session.groups, stayId).filter((group) => group.id !== action.groupId);
+      return editStays(session, groups, new Set([stayKeyForGroup(source)]));
+    }
+    case 'duplicate_stay': {
+      const rows = session.groups.filter((group) => stayIdOf(group) === action.stayId);
+      if (!rows.length) return session;
+      const stayId = `s_${action.token}`;
+      const copies = rows.map((row, index) => copyRow(row, `r_${action.token}_${index}`, stayId));
+      const groups = insertAfterStay(pinStay(session.groups, action.stayId), action.stayId, copies);
+      return editStays(session, groups, dateKeysOf(rows));
+    }
+    case 'remove_stay': {
+      const rows = session.groups.filter((group) => stayIdOf(group) === action.stayId);
+      if (!rows.length) return session;
+      const groups = session.groups.filter((group) => stayIdOf(group) !== action.stayId);
+      return editStays(session, groups, dateKeysOf(rows));
+    }
+    case 'restore_stay': {
+      const { removal } = action;
+      if (session.groups.some((group) => removal.rows.some((row) => row.id === group.id))) return session;
+      const at = Math.min(removal.index, session.groups.length);
+      const groups = [...session.groups.slice(0, at), ...removal.rows, ...session.groups.slice(at)];
+      const keys = dateKeysOf(removal.rows);
+      const restored = editStays(session, groups, keys);
+      // The rates were got under one input revision. They come back only if no edit has moved it since.
+      if (restored.inputRevision !== removal.inputRevision) return restored;
+      const staffQuotes = { ...restored.staffQuotes, ...removal.staffQuotes };
       return {
-        ...cleared,
-        rateOptions:
-          'rateCode' in action.patch
-            ? (session.rateOptions ?? []).filter((option) => option.groupId === action.groupId)
-            : [],
+        ...restored,
+        staffQuotes,
+        stayPdfs: { ...restored.stayPdfs, ...removal.stayPdfs },
+        offers: [
+          ...restored.offers,
+          ...removal.offers.filter((offer) => !restored.offers.some((item) => item.id === offer.id)),
+        ],
+        steps: rePlanSteps(restored, groups, staffQuotes, keys),
       };
     }
     case 'results_ready': {

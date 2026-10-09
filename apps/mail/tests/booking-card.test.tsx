@@ -238,8 +238,8 @@ describe('booking cards', () => {
       'XYZ TRAVEL',
       'XYZ TRAVEL',
     ]);
-    expect(screen.getByText(/Room 1/i)).toBeDefined();
-    expect(screen.getByText(/Room 2/i)).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Room 1' })).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Room 2' })).toBeDefined();
     expect(screen.getAllByText('STQN')).toHaveLength(2);
     expect(screen.getAllByText('TAXYZ')).toHaveLength(2);
     expect(screen.getByText('Smith')).toBeDefined();

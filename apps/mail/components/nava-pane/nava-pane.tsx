@@ -70,6 +70,7 @@ import {
   pickNextRunnableStep,
   quoteRunBlockReason,
   reduceQuoteSession,
+  removedStayFor,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -1149,6 +1150,19 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
               findParty={PANE_PARTY_FINDER}
               partyIndex={PANE_PARTY_INDEX}
               onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
+              onStayAction={(action) => {
+                if (action.type !== 'remove_stay') {
+                  dispatchQuote(action);
+                  return;
+                }
+                // Undo restores this snapshot: the stay's rows, where they sat, and the rates still current for them.
+                const removal = removedStayFor(quoteSessionRef.current, action.stayId);
+                dispatchQuote(action);
+                if (!removal) return;
+                toast('Stay removed', {
+                  action: { label: 'Undo', onClick: () => dispatchQuote({ type: 'restore_stay', removal }) },
+                });
+              }}
               onRunNext={() => {
                 const nextStep = pickNextRunnableStep(quoteSession.steps, quoteSession.runningStepId);
                 if (nextStep) runQuoteStep(nextStep.id);

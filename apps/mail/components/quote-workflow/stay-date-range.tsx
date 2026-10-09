@@ -154,14 +154,14 @@ export function StayDateRange({
     <div className="overflow-hidden rounded-[3px] border border-[#cbd5e1]">
       <div className="grid grid-cols-2 divide-x divide-[#e2e8f0]">
         <DateTile
-          caption="Arrival date"
+          caption="Check-in"
           value={arrivalDate}
           active={open && end === 'arrival'}
           provenance={provenance?.arrival}
           onClick={() => openAt('arrival')}
         />
         <DateTile
-          caption="Departure date"
+          caption="Check-out"
           value={departureDate}
           active={open && end === 'departure'}
           provenance={provenance?.departure}

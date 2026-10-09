@@ -81,6 +81,7 @@ export function ReplyBody({
           disabled={isDraftPending || draftBlockedReason !== null}
           disabledReason={isDraftPending ? null : draftBlockedReason}
           icon={<Send className="h-3.5 w-3.5" />}
+          tone="green"
         >
           {isDraftPending
             ? 'Creating the draft in Outlook…'
