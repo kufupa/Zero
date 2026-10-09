@@ -1,5 +1,10 @@
+import { sanitizeMailBodyHtml } from '@/lib/mail/sanitize-mail-body-html';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import type { DraftedDetails } from '../use-insert-ai-draft';
+import { useMemo } from 'react';
+
+const sanitiseReplyHtml = (html: string) =>
+  html ? sanitizeMailBodyHtml(html, { shouldLoadImages: true, inlineStyles: true }).html : '';
 
 /** Review block: the reply just inserted, with its reviewed quotation and the attachment names. */
 export function DraftPreviewBlock({
@@ -11,6 +16,11 @@ export function DraftPreviewBlock({
   reviewedReplyHtml: QuoteSession['reviewedReplyHtml'];
   onDismiss: () => void;
 }) {
+  const safePreviewHtml = useMemo(
+    () => sanitiseReplyHtml(details.previewHtml ?? ''),
+    [details.previewHtml],
+  );
+  const safeReviewedHtml = useMemo(() => sanitiseReplyHtml(reviewedReplyHtml), [reviewedReplyHtml]);
   return (
     <div className="animate-in fade-in rounded-sm border border-[#cbd5e1] bg-white p-3 text-xs leading-relaxed text-[#1e293b] duration-200">
       <div className="mb-2 flex items-start justify-between border-b border-[#e2e8f0] pb-2 text-[11px] text-[#64748b]">
@@ -29,9 +39,9 @@ export function DraftPreviewBlock({
         </button>
       </div>
       {details.previewHtml ? (
-        <div dangerouslySetInnerHTML={{ __html: details.previewHtml }} />
+        <div dangerouslySetInnerHTML={{ __html: safePreviewHtml }} />
       ) : reviewedReplyHtml ? (
-        <div dangerouslySetInnerHTML={{ __html: reviewedReplyHtml }} />
+        <div dangerouslySetInnerHTML={{ __html: safeReviewedHtml }} />
       ) : (
         <p>No reviewed reply HTML. Insert uses only a staff-reviewed reply.</p>
       )}

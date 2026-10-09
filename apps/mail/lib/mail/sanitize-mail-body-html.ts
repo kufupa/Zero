@@ -18,12 +18,60 @@ function isAllowedImageSource(src: string, shouldLoadImages: boolean): boolean {
 }
 
 /**
+ * Layout and text properties only. None of them takes url(), so inline style cannot fetch a remote
+ * resource. Positioning, background-image and list-style are left out on purpose.
+ */
+const INLINE_STYLE_RULES = Object.fromEntries(
+  [
+    'background-color',
+    'border',
+    'border-bottom',
+    'border-collapse',
+    'border-color',
+    'border-left',
+    'border-radius',
+    'border-right',
+    'border-spacing',
+    'border-style',
+    'border-top',
+    'border-width',
+    'color',
+    'display',
+    'font',
+    'font-family',
+    'font-size',
+    'font-style',
+    'font-weight',
+    'height',
+    'line-height',
+    'margin',
+    'margin-bottom',
+    'margin-left',
+    'margin-right',
+    'margin-top',
+    'max-width',
+    'min-width',
+    'padding',
+    'padding-bottom',
+    'padding-left',
+    'padding-right',
+    'padding-top',
+    'text-align',
+    'text-decoration',
+    'vertical-align',
+    'white-space',
+    'width',
+  ].map((property) => [property, [/.*/]]),
+);
+
+/**
  * Safe client-side fallback for when server-side email processing is unavailable.
  * Keep the inbound mail allowlist aligned with server-pilot/src/mail/sanitize-email-html.ts.
+ * `inlineStyles` keeps layout style attributes for staff-reviewed replies. Mail bodies never set it.
  */
 export function sanitizeMailBodyHtml(
   html: string,
-  options: { shouldLoadImages: boolean },
+  options: { shouldLoadImages: boolean; inlineStyles?: boolean },
 ): { html: string; hasBlockedImages: boolean } {
   if (!html) return { html: '<p><em>No email content available</em></p>', hasBlockedImages: false };
 
@@ -46,10 +94,12 @@ export function sanitizeMailBodyHtml(
         'bgcolor',
         'colspan',
         'rowspan',
+        ...(options.inlineStyles ? ['style'] : []),
       ],
       a: ['href', 'name', 'target', 'rel', 'class'],
       img: ['src', 'alt', 'width', 'height', 'class'],
     },
+    allowedStyles: { '*': INLINE_STYLE_RULES },
     allowedSchemes: ['http', 'https', 'mailto', 'tel'],
     allowedSchemesByTag: { img: allowedImgSchemes },
     transformTags: {
