@@ -68,7 +68,7 @@ import {
   type PriorStaffQuoteRequoteRow,
 } from '@/lib/quote-workflow/booking-draft-bind';
 import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
-import { partyFinderFromTrpc } from '@/lib/quote-workflow/party-lookup';
+import { partyFinderFromTrpc, partyIndexFromTrpc } from '@/lib/quote-workflow/party-lookup';
 import {
   bindExecuteStaffQuote,
   bindHmsQueueStatus,
@@ -230,6 +230,8 @@ type PendingReplyOperation = {
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
 // One HMS party search for the quote header's Find in HMS picker. Null when the panePartyLookup route is missing.
 const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
+// The same picker's typeahead: the HMS list and the listed parties, as staff type. Null when the route is missing.
+const PANE_PARTY_INDEX = partyIndexFromTrpc(trpcClient);
 
 function singleReplyDraft(draft: ReturnType<typeof requireReviewedNativeDraft>) {
   return draft
@@ -1865,6 +1867,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
               session={quoteSession}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               findParty={PANE_PARTY_FINDER}
+              partyIndex={PANE_PARTY_INDEX}
               onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
               onRunNext={() => {
                 const nextStep = pickNextRunnableStep(quoteSession.steps, quoteSession.runningStepId);

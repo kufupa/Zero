@@ -26,6 +26,9 @@ export const PARTY_SUGGESTION_HINT = 'Suggested from this email. Staff confirm b
 /** How long the typing rests before the HMS list is searched. The list is local, so this only spares the server a call per key. */
 export const PARTY_INDEX_DEBOUNCE_MS = 250;
 
+/** Most one-click chips under a field. The listed parties come first, then the list's best matches. */
+const PARTY_CHIP_LIMIT = 3;
+
 // Every state names the query it belongs to, so a result for one name never shows for another.
 type PickerState =
   | { status: 'idle' }
@@ -37,6 +40,17 @@ const IDLE: PickerState = { status: 'idle' };
 
 type IndexState = { status: 'idle' } | { status: 'ready'; query: string; reply: PartyIndexReply };
 const IDLE_INDEX: IndexState = { status: 'idle' };
+
+/** One candidate per HMS id. The first one seen is kept. */
+function uniqueCandidates(candidates: PartyCandidate[]): PartyCandidate[] {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = `${candidate.kind}:${candidate.nativeId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 /** The note for a search that listed nothing in scope. A field with a kind says when HMS matched only the other kind. */
 function noCandidateNote(reply: PartyFindReply, kind: StaffQuoteParty['kind'] | undefined): string {
@@ -50,7 +64,8 @@ function noCandidateNote(reply: PartyFindReply, kind: StaffQuoteParty['kind'] | 
  * shows only that kind: its matches, its pick and its suggestions. Without a kind, one picker covers both kinds and each
  * result shows its kind. The HMS list the sweep wrote is searched as staff type, and its matches are a candidate only:
  * the live search and the quote's own check in HMS are what bind a party. Suggestions from the email are offered for
- * staff to confirm. Only a suggestion HMS listed can be picked. An unverified one can only be searched.
+ * staff to confirm. Only a suggestion HMS listed can be picked. An unverified one can only be searched. The name's
+ * listed parties and list matches also show as one-click chips, until a party is picked for the field.
  */
 export function PartyPicker({
   name,
@@ -85,6 +100,8 @@ export function PartyPicker({
   // Each search takes the next number, and only the latest number may write a reply. A name change takes one too,
   // so a reply still in flight for the old name is dropped.
   const latest = useRef(0);
+  // A field that already holds its pick asks the list nothing more, and shows no chips.
+  const pickedHere = Boolean(kind ? parties[kind] : parties.company || parties.agency);
 
   useEffect(() => {
     latest.current += 1;
@@ -95,7 +112,7 @@ export function PartyPicker({
   useEffect(() => {
     const token = ++indexToken.current;
     setIndex(IDLE_INDEX);
-    if (!indexSearch || !query) return;
+    if (!indexSearch || !query || pickedHere) return;
     const timer = setTimeout(() => {
       indexSearch(query)
         .then((reply) => {
@@ -106,13 +123,14 @@ export function PartyPicker({
         });
     }, PARTY_INDEX_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, indexSearch]);
+  }, [query, indexSearch, pickedHere]);
 
   // Results count only for the name typed now. A name change has already cleared them; this covers the render before
   // the effect runs.
   const shown: PickerState = state.status !== 'idle' && state.query === query ? state : IDLE;
-  const indexMatches: PartyIndexReply | null =
-    index.status === 'ready' && index.query === query && index.reply.available ? index.reply : null;
+  const indexReply: PartyIndexReply | null = index.status === 'ready' && index.query === query ? index.reply : null;
+  // The list's own matches need the list file. The listed parties above do not.
+  const indexMatches: PartyIndexReply | null = indexReply?.available ? indexReply : null;
 
   // With a kind, only that kind is in scope. Without one, every kind is.
   const inScope = (party: { kind: StaffQuoteParty['kind'] }) => !kind || party.kind === kind;
@@ -140,6 +158,11 @@ export function PartyPicker({
   for (const party of [parties.company, parties.agency]) if (party && inScope(party)) picked.push(party);
   const pickedKinds = new Set(picked.map((party) => party.kind));
   const offered = suggestions.filter((suggestion) => inScope(suggestion) && !pickedKinds.has(suggestion.kind));
+  const chips = pickedHere
+    ? []
+    : uniqueCandidates([...(indexReply?.listed ?? []), ...(indexReply?.results ?? [])])
+        .filter(inScope)
+        .slice(0, PARTY_CHIP_LIMIT);
 
   return (
     <div
@@ -186,6 +209,24 @@ export function PartyPicker({
               </div>
             );
           })}
+        </div>
+      ) : null}
+      {chips.length ? (
+        <div className="flex flex-wrap gap-2">
+          {chips.map((candidate) => (
+            <button
+              key={`${candidate.kind}:${candidate.nativeId}`}
+              type="button"
+              className="rounded-xs border border-[#0066cc] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#0066cc]"
+              onClick={() => {
+                onPick({ kind: candidate.kind, nativeId: candidate.nativeId, name: candidate.name });
+                setState(IDLE);
+                setIndex(IDLE_INDEX);
+              }}
+            >
+              {`Use ${candidate.name} (#${candidate.nativeId})`}
+            </button>
+          ))}
         </div>
       ) : null}
       {indexResults.length ? (

@@ -1,3 +1,5 @@
+import { matchKey } from './party-match.js';
+
 /**
  * Sender-domain and mail-body hints for the pane's party picker. They are suggestions only: staff confirm them, and a
  * suggestion never sets a rate context by itself. An HMS id is carried only where the listed table gives one. Every
@@ -37,6 +39,31 @@ const SENDER_ALIASES: readonly SenderAlias[] = [
   { domains: ['tourvest-mice.co.za', 'tourvestdm.com'], kind: 'company', name: 'Tourvest', nativeId: '206' },
   { domains: ['planettours.co.za'], kind: 'agency', name: 'Planet Africa' },
 ];
+
+type ListedParty = { kind: PartyKind; nativeId: string; name: string; aliases: readonly string[] };
+
+// Verified by live HMS lookup 2026-10-09. Each name is HMS's own: verifyPartyPick binds only an exact name match.
+export const LISTED_PARTIES: readonly ListedParty[] = [
+  { kind: 'company', nativeId: '49', name: 'Woolworths Holdings', aliases: ['woolworths'] },
+  { kind: 'company', nativeId: '206', name: 'TOURVEST TRAVEL SERVICES', aliases: ['tourvest'] },
+  { kind: 'agency', nativeId: '113', name: '360 degrees Travel', aliases: ['360 degrees', '360 travel', '360degrees'] },
+];
+
+/**
+ * The listed parties a typed name points at: the party's name starts with the text, or the text holds the name or one
+ * of its aliases as whole words. The text needs three letters or digits, so one stray letter offers no party.
+ */
+export function listedPartiesFor(query: string): Array<{ kind: PartyKind; nativeId: string; name: string }> {
+  const wanted = matchKey(query);
+  if (wanted.length < 3) return [];
+  const holdsWords = (phrase: string) => ` ${wanted} `.includes(` ${matchKey(phrase)} `);
+  return LISTED_PARTIES.filter(
+    (party) =>
+      matchKey(party.name).startsWith(wanted) ||
+      holdsWords(party.name) ||
+      party.aliases.some((alias) => holdsWords(alias)),
+  ).map(({ kind, nativeId, name }) => ({ kind, nativeId, name }));
+}
 
 const LABELLED_LINES: ReadonlyArray<{
   pattern: RegExp;

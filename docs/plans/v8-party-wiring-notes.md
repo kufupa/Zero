@@ -87,6 +87,9 @@ The page owns the tRPC client and the selected email, so it must:
   "Search HMS now" still runs the live search.
 - A pick from the list is a candidate only. The quote re-checks its id in HMS before any rate binds (`verifyStaffParties`),
   and an id HMS does not confirm is refused.
-- No file: no matches section, and the live search works as before.
+- Chips: under the field, up to three one-click chips "Use <name> (#<id>)". The parties in `LISTED_PARTIES`
+  (party-aliases.ts) come first, then the list's best matches. A chip picks as a "Search HMS now" row does. A field
+  with a pick shows no chips.
+- No file: no matches section, and the live search works as before. The listed-party chips still show.
 - Known limit: a two-letter prefix still truncated when the sweep ends cannot be listed further. The sweep reports how many
   remain, and those names need the live search.

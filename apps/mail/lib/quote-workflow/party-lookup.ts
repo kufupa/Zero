@@ -112,13 +112,15 @@ export function partyFromSuggestion(suggestion: PartySuggestion): StaffQuotePart
 
 /**
  * The HMS list the sweep wrote, searched locally (panePartyLookup.typeahead). It never reaches HMS. Empty when there is
- * no list. A pick from it is only a candidate: the quote re-checks the id live in HMS before it binds.
+ * no list. A pick from it is only a candidate: the quote re-checks the id live in HMS before it binds. `listed` holds
+ * the verified parties the name points at. They are offered as one-click chips with or without the list.
  */
 export type PartyIndexReply = {
   source: 'index';
   available: boolean;
   updatedAt: string | null;
   ageMs: number | null;
+  listed: PartyCandidate[];
   results: PartyCandidate[];
 };
 
