@@ -149,3 +149,52 @@ test('resolved outcome requires criteria and results screenshots', () => {
   });
   assert.equal(ok.outcome, 'resolved');
 });
+
+test('a filter reads back only when the query text is in the input', () => {
+  assert.equal(lookup.filterReadsBack('Tourvest', 'TOURVEST'), true);
+  assert.equal(lookup.filterReadsBack('360 degrees Travel', '360  Degrees Travel'), true);
+  assert.equal(lookup.filterReadsBack('Tourvest', ''), false);
+  assert.equal(lookup.filterReadsBack('Tourvest', 'Tour'), false);
+  assert.equal(lookup.filterReadsBack('Tourvest', 'Woolworths Holdings'), false);
+  assert.equal(lookup.filterReadsBack('', ''), false);
+});
+
+test('a filter that did not apply is execution_failure with filter_not_applied, never no_match', () => {
+  const failed = lookup.filterNotApplied();
+  assert.equal(failed.outcome, 'execution_failure');
+  assert.deepEqual(failed.candidates, []);
+  assert.equal(failed.truncated, false);
+  assert.equal(failed.issues[0].reason, 'filter_not_applied');
+});
+
+test('a full lookup store (50 rows) is truncated; fewer is not', () => {
+  assert.equal(lookup.HMS_LOOKUP_PAGE_ROWS, 50);
+  assert.equal(lookup.lookupTruncated(50), true);
+  assert.equal(lookup.lookupTruncated(49), false);
+  assert.equal(lookup.lookupTruncated(0), false);
+  const rows = [{ nativeId: '206', displayName: 'Tourvest Test Profile', matchedOn: ['store'] }];
+  const full = lookup.classifyKindRows('organization', rows, { query: { organizationName: 'Tourvest' } }, 50);
+  assert.equal(full.outcome, 'resolved');
+  assert.equal(full.truncated, true);
+  const partial = lookup.classifyKindRows('organization', rows, { query: { organizationName: 'Tourvest' } }, 12);
+  assert.equal(partial.truncated, false);
+});
+
+test('a company query keeps the matching company row and drops the rest of a filtered grid', () => {
+  const found = lookup.classifyKindRows(
+    'organization',
+    [
+      { nativeId: '206', displayName: 'Tourvest Test Profile', matchedOn: ['store'] },
+      { nativeId: '207', displayName: 'Unrelated Company', matchedOn: ['store'] },
+    ],
+    { query: { organizationName: 'Tourvest' } },
+  );
+  assert.equal(found.outcome, 'resolved');
+  assert.deepEqual(found.candidates.map((c) => c.nativeId), ['206']);
+  assert.equal(found.candidates[0].kind, 'organization');
+});
+
+test('a result envelope is not truncated unless the lookup says so', () => {
+  assert.equal(lookup.resultEnvelope().truncated, false);
+  assert.equal(lookup.resultEnvelope({ outcome: 'no_match' }).truncated, false);
+});

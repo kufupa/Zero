@@ -31,6 +31,35 @@ function filled(value) {
 
 export const BORROWED_CLOSE_OWNER = false;
 export const CONNECT_MS = 25000;
+// A lookup store loads 50 rows. A full store can hide more matches, so the result is marked truncated.
+export const HMS_LOOKUP_PAGE_ROWS = 50;
+// With no busy mask after this grace, the store has nothing to wait for. Long enough for a store reload to start.
+export const LOOKUP_IDLE_GRACE_MS = 5000;
+
+export function lookupTruncated(loaded) {
+  return Number(loaded) >= HMS_LOOKUP_PAGE_ROWS;
+}
+
+// Letters and digits only, so case, spacing and punctuation never fail a filter that was applied.
+function filterKey(value) {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/** True only when a filter input reads back the query that was typed into it. */
+export function filterReadsBack(query, readBack) {
+  const key = filterKey(query);
+  return key.length > 0 && filterKey(readBack) === key;
+}
+
+/** The lookup's filter never reached the window, so its grid is not the query's. Fails closed: never no_match. */
+export function filterNotApplied() {
+  return {
+    outcome: 'execution_failure',
+    candidates: [],
+    truncated: false,
+    issues: [{ code: 'EXECUTION_FAILURE', path: 'filter', reason: 'filter_not_applied' }],
+  };
+}
 
 export function toolbarQueryOrder(count) {
   const n = Number(count) || 0;
@@ -114,6 +143,7 @@ export function resultEnvelope(partial = {}) {
   return {
     outcome: 'execution_failure',
     candidates: [],
+    truncated: false,
     associationEffects: {},
     screenshots: {},
     ...partial,
@@ -171,7 +201,8 @@ export function storeRowsForKind(kind, records = []) {
     .filter((row) => row.nativeId && row.displayName);
 }
 
-async function readExtStoreRows(page, kind) {
+// Rows from the lookup's Ext store. `loaded` counts every record the store holds, before the id and name filter.
+async function readExtStore(page, kind) {
   const records = await page.evaluate(() => {
     if (typeof Ext === 'undefined') return [];
     const query = (sel) => {
@@ -191,7 +222,7 @@ async function readExtStoreRows(page, kind) {
     }
     return out;
   }).catch(() => []);
-  return storeRowsForKind(kind, records);
+  return { rows: storeRowsForKind(kind, records), loaded: records.length };
 }
 
 async function lookupWindow(page, kind) {
@@ -217,14 +248,17 @@ async function fillExt(locator, value) {
     }, String(value)).catch(() => {});
   }
   const got = await field.inputValue().catch(() => '');
-  return String(got).toLowerCase().includes(String(value).toLowerCase().slice(0, 8));
+  return filterReadsBack(value, got);
 }
 
+// Fills the lookup's filter with value and runs it. True only when a filter input reads the query back, so a caller
+// never reads a grid that the query did not reach.
 async function applyLookupFilter(page, kind, value) {
-  if (!filled(value)) return;
+  if (!filled(value)) return false;
   const win = await lookupWindow(page, kind);
+  let held = false;
   for (const name of nameFieldsForKind(kind)) {
-    await fillExt(win.locator(`input[name="${name}"]:visible`), value);
+    if (await fillExt(win.locator(`input[name="${name}"]:visible`), value)) held = true;
   }
   const toolbar = win.locator('.x-toolbar input[type="text"]:visible');
   const n = await toolbar.count();
@@ -236,10 +270,12 @@ async function applyLookupFilter(page, kind, value) {
     if (combo) continue;
     const ok = await fillExt(box, value);
     if (ok) {
+      held = true;
       await box.press('Enter').catch(() => {});
       break;
     }
   }
+  if (!held) return false;
   for (const name of dialogRunNames(kind)) {
     const btn = win.getByRole('button', { name });
     if (await btn.count()) {
@@ -248,6 +284,7 @@ async function applyLookupFilter(page, kind, value) {
     }
   }
   await page.waitForTimeout(1200);
+  return true;
 }
 
 const GRID_HEADER_RE = /^(organization id|name|guest id|account|iata\/reference number|booking agency name|address|city|country|external id|last name|first name|second last name|restricted reason|email type|email address|contact last name)$/i;
@@ -275,22 +312,26 @@ export function cellsToRow(cells = [], { kind } = {}) {
   return { nativeId, displayName, matchedOn: ['dom'] };
 }
 
+// Waits for the lookup's store after a filter run: the "Processing request" mask must show and then clear. With no mask
+// after the grace period there is nothing to wait for. Every kind waits here, not only guest.
 async function waitLookupIdle(page) {
-  const deadline = Date.now() + 60000;
+  const start = Date.now();
+  const deadline = start + 60000;
   let sawBusy = false;
   while (Date.now() < deadline) {
     const busy = await page.getByText(/Processing request/i).count();
     if (busy) sawBusy = true;
-    const rows = await page.locator('.x-window:visible .x-grid-view .x-grid-row, .x-window:visible .x-grid-item').count();
     if (sawBusy && !busy) return;
-    if (!busy && rows > 0 && sawBusy) return;
+    if (!sawBusy && Date.now() - start >= LOOKUP_IDLE_GRACE_MS) return;
     await page.waitForTimeout(500);
   }
 }
 
+// Reads the lookup's rows: the Ext store first, then the dialog grid, then any visible window table.
+// `loaded` is how many rows the grid held, which decides truncation.
 async function readVisibleGrid(page, kind) {
-  const fromStore = await readExtStoreRows(page, kind);
-  if (fromStore.length) return fromStore;
+  const fromStore = await readExtStore(page, kind);
+  if (fromStore.rows.length) return fromStore;
   const dialog = page.locator('.x-window:visible').filter({ hasText: /Select a record and click OK|Search Criteria|Guest Search/i }).last();
   if (await dialog.count()) {
     const locators = [
@@ -309,14 +350,14 @@ async function readVisibleGrid(page, kind) {
         const row = cellsToRow(line, { kind });
         if (row) rows.push(row);
       }
-      if (rows.length) return rows;
+      if (rows.length) return { rows, loaded: n };
     }
   }
   return page.evaluate((kindArg) => {
     const visible = (el) => !!el?.getClientRects?.().length && getComputedStyle(el).visibility !== 'hidden';
     const wins = [...document.querySelectorAll('.x-window')].filter(visible);
     const win = wins.find((w) => /Organizations|Booking|A\/R|Guest Search|Select a record/i.test(w.innerText || '')) || wins.at(-1);
-    if (!win) return [];
+    if (!win) return { rows: [], loaded: 0 };
     const headerRe = /^(organization id|name|guest id|account|iata\/reference number|booking agency name)$/i;
     const rows = [];
     const dataRows = win.querySelectorAll('.x-grid-view .x-grid-row, .x-grid-view .x-grid-data-row, .x-grid-item');
@@ -340,7 +381,7 @@ async function readVisibleGrid(page, kind) {
       if (!nativeId || !displayName) continue;
       rows.push({ nativeId, displayName, matchedOn: ['table'] });
     }
-    return rows;
+    return { rows, loaded: dataRows.length };
   }, kind);
 }
 
@@ -350,62 +391,70 @@ function queryNeedle(request) {
     || q.externalOrganizationId || q.lastName || '';
 }
 
-export function classifyKindRows(kind, rows, request) {
+/** Rows to outcome for one kind. Call only on a grid the query filtered; `loaded` is the grid's row count before the id filter. */
+export function classifyKindRows(kind, rows, request, loaded = rows.length) {
   const tagged = rows.map((row) => ({ ...row, kind }));
   const needle = queryNeedle(request);
   const narrowed = rowsMatchingQuery(tagged, needle);
-  if (needle && narrowed.length === 0) return classifyOutcome([]);
-  return classifyOutcome(narrowed.length ? narrowed : tagged);
+  const found = needle && narrowed.length === 0
+    ? classifyOutcome([])
+    : classifyOutcome(narrowed.length ? narrowed : tagged);
+  return { ...found, truncated: lookupTruncated(loaded) };
+}
+
+// Reads the grid once the filter ran: waits for the store on every kind, then checks the external-system banner.
+async function readLookupKind(page, kind, request) {
+  await waitLookupIdle(page);
+  if (await page.getByText(/Cannot retrieve profile:\s*External system/i).count()) {
+    return { outcome: 'external_system_unavailable', candidates: [], truncated: false };
+  }
+  const grid = await readVisibleGrid(page, kind);
+  return classifyKindRows(kind, grid.rows, request, grid.loaded);
 }
 
 async function searchKind(page, request) {
   if (await page.getByText(/Cannot retrieve profile:\s*External system/i).count()) {
-    return { outcome: 'external_system_unavailable', candidates: [] };
+    return { outcome: 'external_system_unavailable', candidates: [], truncated: false };
   }
+  // Every kind reads its grid only after its filter is read back. A filter that did not apply is a failure, never no_match.
   if (request.kind === 'organization') {
     await clickLov(page, 'company');
     const name = request.query.organizationName;
     const ext = request.query.externalOrganizationId;
-    if (filled(ext) && await page.locator('input[name="externalorganizationid"]:visible').count()) {
-      await fillExt(page.locator('input[name="externalorganizationid"]:visible'), ext);
-      await applyLookupFilter(page, 'organization', ext);
-    } else {
-      await applyLookupFilter(page, 'organization', name);
-    }
-    if (await page.getByText(/Cannot retrieve profile:\s*External system/i).count()) {
-      return { outcome: 'external_system_unavailable', candidates: [] };
-    }
-    return classifyKindRows('organization', await readVisibleGrid(page, 'organization'), request);
+    const extField = page.locator('input[name="externalorganizationid"]:visible');
+    const applied = filled(ext) && (await extField.count())
+      ? (await fillExt(extField, ext)) && (await applyLookupFilter(page, 'organization', ext))
+      : await applyLookupFilter(page, 'organization', name);
+    if (!applied) return filterNotApplied();
+    return readLookupKind(page, 'organization', request);
   }
   if (request.kind === 'bookingAgency') {
     await clickLov(page, 'ta1');
     const name = request.query.bookingAgencyName;
     const iata = request.query.iataNumber;
-    if (filled(iata)) {
-      const iataField = page.locator('.x-window:visible input[name="ff_iatanumber"]:visible, .x-window:visible input[name="iatanumber"]:visible');
-      await fillExt(iataField, iata);
-      await applyLookupFilter(page, 'bookingAgency', iata);
-    } else {
-      await applyLookupFilter(page, 'bookingAgency', name);
-    }
-    if (await page.getByText(/Cannot retrieve profile:\s*External system/i).count()) {
-      return { outcome: 'external_system_unavailable', candidates: [] };
-    }
-    return classifyKindRows('bookingAgency', await readVisibleGrid(page, 'bookingAgency'), request);
+    const iataField = page.locator('.x-window:visible input[name="ff_iatanumber"]:visible, .x-window:visible input[name="iatanumber"]:visible');
+    const applied = filled(iata)
+      ? (await fillExt(iataField, iata)) && (await applyLookupFilter(page, 'bookingAgency', iata))
+      : await applyLookupFilter(page, 'bookingAgency', name);
+    if (!applied) return filterNotApplied();
+    return readLookupKind(page, 'bookingAgency', request);
   }
   if (request.kind === 'arAccount') {
     await clickLov(page, 'araccountname');
-    await applyLookupFilter(page, 'arAccount', request.query.arAccountName);
-    return classifyKindRows('arAccount', await readVisibleGrid(page, 'arAccount'), request);
+    if (!(await applyLookupFilter(page, 'arAccount', request.query.arAccountName))) return filterNotApplied();
+    return readLookupKind(page, 'arAccount', request);
   }
   await page.locator('[data-qtip="Guest Search"], [data-qtip="Search Guest"]').first().click({ timeout: 5000 }).catch(async () => {
     await page.getByRole('button', { name: /Guest Search/i }).first().click();
   });
   const guestWin = await lookupWindow(page, 'guest');
-  if (filled(request.query.lastName)) await fillExt(guestWin.locator('input[name="lastname"]:visible'), request.query.lastName);
-  if (filled(request.query.firstName)) await fillExt(guestWin.locator('input[name="firstname"]:visible'), request.query.firstName);
-  if (filled(request.query.email)) await fillExt(guestWin.locator('input[name="emailaddress"]:visible'), request.query.email);
-  if (filled(request.query.phone)) await fillExt(guestWin.locator('input[name="phonenumber"]:visible'), request.query.phone);
+  const typed = [];
+  if (filled(request.query.lastName)) typed.push(await fillExt(guestWin.locator('input[name="lastname"]:visible'), request.query.lastName));
+  if (filled(request.query.firstName)) typed.push(await fillExt(guestWin.locator('input[name="firstname"]:visible'), request.query.firstName));
+  if (filled(request.query.email)) typed.push(await fillExt(guestWin.locator('input[name="emailaddress"]:visible'), request.query.email));
+  if (filled(request.query.phone)) typed.push(await fillExt(guestWin.locator('input[name="phonenumber"]:visible'), request.query.phone));
+  // No typed field, or a field that did not read back, means the search would run unfiltered: refuse before Search.
+  if (!typed.length || typed.includes(false)) return filterNotApplied();
   const internal = guestWin.getByText(/Internal Search/);
   if (await internal.count()) await internal.first().click().catch(() => {});
   const searchBtn = guestWin.getByRole('button', { name: /^Search$/ });
@@ -414,15 +463,16 @@ async function searchKind(page, request) {
   if (await searchBtn.count()) await searchBtn.first().click().catch(() => {});
   else if (await searchAnchor.count()) await searchAnchor.last().click().catch(() => {});
   else if (await searchText.count()) await searchText.last().click().catch(() => {});
-  else await applyLookupFilter(page, 'guest', request.query.lastName);
+  else if (!(await applyLookupFilter(page, 'guest', request.query.lastName))) return filterNotApplied();
   await waitLookupIdle(page);
   const profileErr = page.getByText(/Cannot retrieve profile:/i);
   if (await profileErr.count()) {
     const msg = await profileErr.first().innerText().catch(() => '');
-    if (/required/i.test(msg)) return { outcome: 'input_gap', candidates: [] };
-    return { outcome: 'external_system_unavailable', candidates: [] };
+    if (/required/i.test(msg)) return { outcome: 'input_gap', candidates: [], truncated: false };
+    return { outcome: 'external_system_unavailable', candidates: [], truncated: false };
   }
-  return classifyKindRows('guest', await readVisibleGrid(page, 'guest'), request);
+  const grid = await readVisibleGrid(page, 'guest');
+  return classifyKindRows('guest', grid.rows, request, grid.loaded);
 }
 
 export async function lookupParty({ requestPath, outputDir, env = process.env } = {}) {

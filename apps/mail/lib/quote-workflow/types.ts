@@ -204,6 +204,13 @@ export type StaffQuoteAllocation = {
   screenshots?: string[];
 };
 
+/** The HMS company or agency staff picked with Find in HMS. nativeId is HMS's id; the quote uses it as the rate context. */
+export type StaffQuoteParty = {
+  kind: 'agency' | 'company';
+  nativeId: string;
+  name: string;
+};
+
 export type StaffQuoteHeader = {
   salesStrategy: 'BAR' | 'Government';
   company: string;
@@ -237,6 +244,8 @@ export type StaffQuoteHeader = {
    * no PDF, Excel or reply can be made, and the saved amount is never used silently.
    */
   fieldErrors?: Partial<Record<StaffExtraField, string>>;
+  /** Absent means public rates, as before. */
+  party?: StaffQuoteParty;
 };
 
 /** Amount and count fields whose typed text the pane reads. */

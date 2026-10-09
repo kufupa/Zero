@@ -12,6 +12,7 @@ import type {
   StaffQuoteAllocation,
   StaffQuoteHeader,
   StaffQuoteOtherUnit,
+  StaffQuoteParty,
   StaffQuoteSource,
   StayGroupRequirement,
 } from './types';
@@ -79,6 +80,8 @@ export type ExecuteStaffQuoteInput = {
   shuttleTrips?: number;
   other?: { label: string; amountMinor: number; unit: StaffQuoteOtherUnit };
   notes?: string;
+  /** Sent only when staff picked a company or agency in HMS. Without one the request is unchanged. */
+  party?: StaffQuoteParty;
 };
 
 export type ExecuteStaffQuoteResult = {
@@ -554,6 +557,15 @@ export async function bindExecuteStaffQuote(args: {
       inputRevision: args.inputRevision,
       groups: prepared.ok,
       ...header,
+      ...(args.header.party
+        ? {
+            party: {
+              kind: args.header.party.kind,
+              nativeId: args.header.party.nativeId,
+              name: args.header.party.name,
+            },
+          }
+        : {}),
     });
     if (!result || typeof result !== 'object') {
       return { status: 'unavailable', reason: 'HMS returned no result for this quote. Try again.' };

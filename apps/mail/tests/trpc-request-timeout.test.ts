@@ -49,6 +49,11 @@ describe('procedure-specific request deadlines', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.findStay?batch=1')).toBe(360_000);
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.searchGuest?batch=1')).toBe(360_000);
   });
+  it('gives the Find in HMS party search six minutes, and leaves its neighbours short', () => {
+    expect(trpcRequestTimeoutMs('/api/trpc/panePartyLookup.findParty?batch=1')).toBe(360_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/panePartyLookup.findPartyX')).toBe(5_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.findStay?batch=1')).toBe(360_000);
+  });
   it('gives cancel preview and commit 21 minutes, longer than the 20-minute server bound', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.previewCancel?batch=1')).toBe(1_260_000);
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayCancel.commitCancel?batch=1')).toBe(1_260_000);
