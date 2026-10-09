@@ -33,6 +33,8 @@ export type SyncedQuoteSelection = {
   /** Stable DB ids of the selected message and its thread. Not part of the source hash. */
   messageId?: string;
   threadId?: string;
+  /** Sender address of the selected message. Only the route reads it, to flag no-reply senders, so it is not hashed. */
+  fromAddress?: string;
 };
 
 export type QuoteAttachmentRow = {
@@ -204,6 +206,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       subject: message.subject,
       textBody: message.textBody,
       receivedAt: message.receivedAt,
+      fromAddress: message.fromAddress,
     })
     .from(message)
     .where(
@@ -256,5 +259,6 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     attachments: await readQuoteAttachments(rows, reader),
     messageId: row.id,
     threadId: row.threadId,
+    fromAddress: row.fromAddress,
   };
 }

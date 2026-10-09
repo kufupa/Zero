@@ -61,7 +61,7 @@ describe('WorkflowBadge', () => {
       const picker = screen.getByLabelText('Nava reads this as') as HTMLSelectElement;
       expect(picker.value).toBe(intent);
       expect(picker.options[picker.selectedIndex]?.text).toBe(text);
-      expect(screen.queryByText('Change to booking')).toBeNull();
+      expect(screen.queryByText('Amendment')).toBeNull();
       expect(screen.queryByText('Cancellation')).toBeNull();
       unmount();
     }
@@ -84,7 +84,7 @@ describe('WorkflowBadge', () => {
   it('is unchanged when the amendment kind is null', () => {
     render(<WorkflowBadge analysis={analysis('quote')} amendmentKind={null} intent="quote" />);
     expect((screen.getByLabelText('Nava reads this as') as HTMLSelectElement).value).toBe('quote');
-    expect(screen.queryByText('Change to booking')).toBeNull();
+    expect(screen.queryByText('Amendment')).toBeNull();
   });
 
   it('renders nothing without an analysis, even with an amendment kind', () => {
@@ -92,9 +92,9 @@ describe('WorkflowBadge', () => {
     expect(container.textContent).toBe('');
   });
 
-  it('shows Change to booking with hover text for an amend', () => {
+  it('shows Amendment with hover text for an amend', () => {
     render(<WorkflowBadge analysis={analysis('other')} amendmentKind="amend" />);
-    const chip = screen.getByText('Change to booking');
+    const chip = screen.getByText('Amendment');
     expect(chip.getAttribute('title')).toBe(CHANGE_HINT);
     expect(chip.getAttribute('data-amendment-kind')).toBe('amend');
     expect(screen.queryByText('Other')).toBeNull();
@@ -110,12 +110,12 @@ describe('WorkflowBadge', () => {
 
   it('shows the amendment chip even when Nava gave no workflow', () => {
     render(<WorkflowBadge analysis={analysis(null)} amendmentKind="amend" />);
-    expect(screen.getByText('Change to booking')).toBeDefined();
+    expect(screen.getByText('Amendment')).toBeDefined();
   });
 
   it('uses clear, distinct colours for the two amendment chips', () => {
     const { unmount } = render(<WorkflowBadge analysis={analysis('other')} amendmentKind="amend" />);
-    const amendClass = screen.getByText('Change to booking').className;
+    const amendClass = screen.getByText('Amendment').className;
     unmount();
     render(<WorkflowBadge analysis={analysis('other')} amendmentKind="cancel" />);
     const cancelClass = screen.getByText('Cancellation').className;
@@ -140,8 +140,11 @@ describe('WorkflowBadge', () => {
       analysis: analysis('other', { amendment: AMEND }),
     } as never);
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText('Change to booking').getAttribute('title')).toBe(CHANGE_HINT);
+    expect(screen.getByText('Amendment').closest('[title]')?.getAttribute('title')).toBe(
+      CHANGE_HINT,
+    );
     expect(screen.queryByText('Cancellation')).toBeNull();
+    expect(screen.queryByText('Other')).toBeNull();
   });
 
   it('shows Cancellation in the quote panel for a cancel from the analysis', () => {
@@ -150,7 +153,9 @@ describe('WorkflowBadge', () => {
       analysis: analysis('other', { amendment: { ...AMEND, kind: 'cancel' } }),
     } as never);
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText('Cancellation').getAttribute('title')).toBe(CANCEL_HINT);
+    expect(screen.getByText('Cancellation').closest('[title]')?.getAttribute('title')).toBe(
+      CANCEL_HINT,
+    );
   });
 
   it('keeps the normal label in the quote panel when the analysis has no amendment', () => {
@@ -159,7 +164,24 @@ describe('WorkflowBadge', () => {
       analysis: analysis('quote'),
     } as never);
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.queryByText('Change to booking')).toBeNull();
+    expect(screen.queryByText('Amendment')).toBeNull();
     expect(screen.queryByText('Cancellation')).toBeNull();
+  });
+
+  it('reads an amendment as Amendment, not Other, and does not repeat it in a chip (AE2)', () => {
+    render(<WorkflowBadge analysis={analysis('other')} amendmentKind="amend" intent="other" />);
+    const picker = screen.getByLabelText('Nava reads this as') as HTMLSelectElement;
+    expect(picker.options[picker.selectedIndex]?.text).toBe('Amendment');
+    expect(picker.title).toBe(CHANGE_HINT);
+    expect(screen.queryByText('Other')).toBeNull();
+    expect(screen.queryByText('Amendment', { selector: 'span' })).toBeNull();
+  });
+
+  it('names a cancellation Cancellation in the picker while it reads as Other', () => {
+    render(<WorkflowBadge analysis={analysis('other')} amendmentKind="cancel" intent="other" />);
+    const picker = screen.getByLabelText('Nava reads this as') as HTMLSelectElement;
+    expect(picker.options[picker.selectedIndex]?.text).toBe('Cancellation');
+    expect(picker.title).toBe(CANCEL_HINT);
+    expect(screen.queryByText('Cancellation', { selector: 'span' })).toBeNull();
   });
 });

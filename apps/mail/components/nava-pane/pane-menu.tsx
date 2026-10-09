@@ -14,7 +14,8 @@ const FEEDBACK_WHATSAPP_URL = 'https://wa.me/447505014078';
 /**
  * The pane's ⋯ menu, on the shared dropdown. Radix handles the keyboard: Enter or Space opens it with
  * focus on the first item, the arrows move between items, and Escape closes it and returns focus to ⋯.
- * It holds the connection check, the system check, tour replay, feedback and the build id.
+ * It holds the connection check, the system check, tour replay, feedback and the build id. The webmail preview leaves out
+ * the connection check and tour replay, which only the Outlook pane can run.
  */
 export function PaneMenu({
   buildRelease,
@@ -22,6 +23,7 @@ export function PaneMenu({
   onRunSystemCheck,
   systemCheckRunning = false,
   onReplayTour,
+  preview = false,
 }: {
   buildRelease: string | null;
   onCheckConnection: () => void;
@@ -29,6 +31,7 @@ export function PaneMenu({
   onRunSystemCheck: () => void;
   systemCheckRunning?: boolean;
   onReplayTour: () => void;
+  preview?: boolean;
 }) {
   return (
     <DropdownMenu>
@@ -42,8 +45,12 @@ export function PaneMenu({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side="top" className="w-60 text-xs text-[#1e293b]">
-        <DropdownMenuItem onSelect={() => onCheckConnection()}>Check connection</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onReplayTour()}>Replay tour</DropdownMenuItem>
+        {preview ? null : (
+          <DropdownMenuItem onSelect={() => onCheckConnection()}>Check connection</DropdownMenuItem>
+        )}
+        {preview ? null : (
+          <DropdownMenuItem onSelect={() => onReplayTour()}>Replay tour</DropdownMenuItem>
+        )}
         <DropdownMenuItem disabled={systemCheckRunning} onSelect={() => onRunSystemCheck()}>
           {systemCheckRunning ? 'Checking Outlook and the Nava server…' : 'Run system check'}
         </DropdownMenuItem>

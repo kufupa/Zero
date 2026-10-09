@@ -140,6 +140,17 @@ function emailParts(addr: string): [local: string, domain: string] {
   return [email.slice(0, at), email.slice(at + 1)];
 }
 
+/**
+ * True when the sender is an automated mailbox staff cannot answer (noreply, notifications, bounce and the like).
+ * The pane hides Insert draft for these. Separators are ignored, so no-reply and do-not-reply match too.
+ */
+export function isNoReplyAddress(address: string | null | undefined): boolean {
+  if (!address) return false;
+  const [local] = emailParts(address);
+  const compact = local.replace(/[-._]/g, '');
+  return SYSTEM_LOCALPART_HINTS.some((hint) => compact.includes(hint.replace(/[-._]/g, '')));
+}
+
 function emailAddr(raw: string): string {
   const [local, domain] = emailParts(raw);
   return domain ? `${local}@${domain}` : raw.trim().toLowerCase();

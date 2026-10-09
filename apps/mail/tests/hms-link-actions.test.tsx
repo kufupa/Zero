@@ -9,6 +9,9 @@ import {
   copyText,
 } from '../components/quote-workflow/hms-link-actions';
 
+const toast = vi.hoisted(() => ({ success: vi.fn() }));
+vi.mock('sonner', () => ({ toast }));
+
 const LANDING = 'https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY';
 
 function setClipboard(value: unknown) {
@@ -21,6 +24,7 @@ function setExecCommand(value: unknown) {
 
 afterEach(() => {
   cleanup();
+  toast.success.mockClear();
   vi.useRealTimers();
   vi.unstubAllEnvs();
   setClipboard(undefined);
@@ -51,6 +55,7 @@ describe('HmsLinkActions Open HMS', () => {
     vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', '');
     render(<HmsLinkActions confirmation="64318608-1" />);
     expect(screen.queryByRole('link', { name: 'Open HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
   });
 
@@ -77,6 +82,25 @@ describe('HmsLinkActions Copy confirmation', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy());
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText).toHaveBeenCalledWith('64318608-1');
+  });
+
+  it('announces the number with a toast once it is copied, and not when the copy fails', async () => {
+    setClipboard({ writeText: vi.fn(async () => {}) });
+    render(<HmsLinkActions confirmation="64318608-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy confirmation' }));
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith('Confirmation number 64318608-1 copied.'),
+    );
+    toast.success.mockClear();
+    cleanup();
+    setClipboard(undefined);
+    setExecCommand(vi.fn(() => false));
+    render(<HmsLinkActions confirmation="64318608-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy confirmation' }));
+    await waitFor(() =>
+      expect(screen.getByText("Couldn't copy. Select the number and copy it.")).toBeTruthy(),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it('falls back to copying a selected hidden textarea when the clipboard API refuses', async () => {
@@ -129,5 +153,30 @@ describe('copyText', () => {
     setClipboard({ writeText });
     await expect(copyText('64318608-1')).resolves.toBe(true);
     expect(writeText).toHaveBeenCalledWith('64318608-1');
+  });
+});
+
+describe('HmsLinkActions Copy link', () => {
+  it('copies the landing page address and then shows Copied on the link button', async () => {
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
+    const writeText = vi.fn(async () => {});
+    setClipboard({ writeText });
+    render(<HmsLinkActions confirmation="64318608-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy());
+    expect(writeText).toHaveBeenCalledWith(LANDING);
+    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
+  });
+
+  it('says so and points to Open HMS when the link cannot be copied', async () => {
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
+    setClipboard(undefined);
+    setExecCommand(vi.fn(() => false));
+    render(<HmsLinkActions confirmation="64318608-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    await waitFor(() =>
+      expect(screen.getByText("Couldn't copy the link. Use Open HMS instead.")).toBeTruthy(),
+    );
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });
