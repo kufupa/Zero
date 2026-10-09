@@ -1834,7 +1834,6 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               </div>
             )}
 
-            {/* TODO(voucher-find): mount VoucherFindCard (components/quote-workflow/voucher-find-card.tsx, #73) here once #73 merges. */}
             <AmendLookupPanel session={quoteSession} trpc={trpcClient} />
             <VoucherFindCard
               key={activeEmail?.internetMessageId ?? 'no-email'}

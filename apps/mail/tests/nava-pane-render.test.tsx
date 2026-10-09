@@ -17,8 +17,9 @@ vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
 }));
 
 // State the mocks below read. Defaults match outlook-pane-render.test.tsx.
-const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate } = vi.hoisted(() => ({
+const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFindQuery } = vi.hoisted(() => ({
   pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
+  voucherFindQuery: vi.fn().mockResolvedValue({ status: 'not_voucher' }),
   quotePdfMutate: vi.fn().mockResolvedValue({
     fileName: 'Quote - CIDB 15-17 Sep.pdf',
     pdfBase64: 'JVBERw==',
@@ -161,6 +162,7 @@ vi.mock('../providers/query-provider', () => ({
       qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
     },
     quoteWorkflow: {
+      voucherFind: { query: voucherFindQuery },
       analyseSelection: {
         mutate: async () => ({
           status: 'ready' as const,
@@ -216,6 +218,8 @@ function mountBuildMeta(content: string) {
 describe('NavaPane', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    voucherFindQuery.mockReset();
+    voucherFindQuery.mockResolvedValue({ status: 'not_voucher' });
   });
 
   afterEach(() => {
@@ -445,5 +449,24 @@ describe('NavaPane', () => {
 
     expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
     expect(((await tellNavaBox()) as HTMLTextAreaElement).value).toBe('Three nights from 12 Nov');
+  it('shows the Find the booking card for a voucher email, with the guest the voucher names', async () => {
+    voucherFindQuery.mockResolvedValue({
+      status: 'voucher',
+      messageId: 'mail-1',
+      guest: { lastName: 'Smith', arrival: '2026-11-12' },
+      file: null,
+    });
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByRole('region', { name: 'Find the booking' })).toBeDefined();
+    expect(screen.getByText(/Guest Smith/)).toBeDefined();
+    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' });
+  });
+
+  it('keeps the Find the booking card hidden for an email that is not a voucher', async () => {
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() =>
+      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' }),
+    );
+    expect(screen.queryByRole('region', { name: 'Find the booking' })).toBeNull();
   });
 });
