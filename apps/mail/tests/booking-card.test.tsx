@@ -597,7 +597,7 @@ describe('booking card pane save', () => {
     fireEvent.click(bookButton(0));
     expect(
       await screen.findByText(
-        "Luna couldn't confirm there's no existing booking for this guest, so it didn't save. Check HMS, then book by hand.",
+        "Nava couldn't confirm there's no existing booking for this guest, so it didn't save. Check HMS, then book by hand.",
       ),
     ).toBeDefined();
     // A refusal has no confirmation number, so there is nothing to open or copy.

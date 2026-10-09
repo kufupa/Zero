@@ -8,9 +8,10 @@ import { toast } from 'sonner';
 import { prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 
-const { sendCommandMock, quotePdfMutateMock, prepareDraftMutateMock, analyseOverride, sessionState } = vi.hoisted(() => ({
+const { sendCommandMock, quotePdfMutateMock, quoteWorkbookMutateMock, prepareDraftMutateMock, analyseOverride, sessionState } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
   quotePdfMutateMock: vi.fn(),
+  quoteWorkbookMutateMock: vi.fn(),
   prepareDraftMutateMock: vi.fn(),
   // Tests opt in to a Luna read-out (e.g. create_booking); null keeps the default analysis.
   analyseOverride: { current: null as ((input: unknown) => Promise<unknown>) | null },
@@ -104,6 +105,7 @@ vi.mock('../providers/query-provider', () => ({
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
       quoteProposalPdf: { mutate: quotePdfMutateMock },
+      quoteWorkbook: { mutate: quoteWorkbookMutateMock },
       staffQuoteSource: {
         query: async () => ({
           status: 'ready' as const,
@@ -271,6 +273,7 @@ describe('Outlook pane quote proposal PDF', () => {
     analyseOverride.current = null;
     prepareDraftMutateMock.mockReset();
     prepareDraftMutateMock.mockResolvedValue({ status: 'unavailable', reason: 'not under test' });
+    quoteWorkbookMutateMock.mockReset();
     quotePdfMutateMock.mockReset();
     quotePdfMutateMock.mockResolvedValue({
       fileName: 'Quote - CIDB 15-17 Sep.pdf',
@@ -291,6 +294,40 @@ describe('Outlook pane quote proposal PDF', () => {
     cleanup();
     vi.mocked(toast.error).mockClear();
     vi.mocked(toast.success).mockClear();
+  });
+
+  it('sends the approved quote to the server Excel route from Download Excel', async () => {
+    quoteWorkbookMutateMock.mockRejectedValueOnce(new Error('workbook route reached'));
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    const download = screen.getByRole('button', { name: 'Download Excel' });
+    expect(download.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(download);
+    await waitFor(() => expect(quoteWorkbookMutateMock).toHaveBeenCalledTimes(1));
+    expect(quoteWorkbookMutateMock.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ workflowRunId: 'run-1', revisionRef: 'rev-auth' }),
+    );
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('workbook route reached'));
+  });
+
+  it('makes one Excel export at a time and keeps Download Excel disabled until it settles', async () => {
+    let settle!: (value: unknown) => void;
+    quoteWorkbookMutateMock.mockImplementationOnce(
+      () => new Promise((resolve) => {
+        settle = resolve;
+      }),
+    );
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    const download = screen.getByRole('button', { name: 'Download Excel' });
+    fireEvent.click(download);
+    await waitFor(() => expect(download.hasAttribute('disabled')).toBe(true));
+    fireEvent.click(download);
+    expect(quoteWorkbookMutateMock).toHaveBeenCalledTimes(1);
+
+    settle({ fileName: 'Quote - CIDB - 2026-11-12.xlsx', xlsxBase64: '', totalMinor: 0, revisionId: 'rev-auth' });
+    await waitFor(() => expect(download.hasAttribute('disabled')).toBe(false));
+    expect(toast.warning).toHaveBeenCalled();
   });
 
   it('refuses convert and draft until a server-selected mailbox exists', async () => {

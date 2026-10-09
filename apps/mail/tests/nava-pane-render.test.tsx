@@ -17,8 +17,9 @@ vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
 }));
 
 // State the mocks below read. Defaults match outlook-pane-render.test.tsx.
-const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate } = vi.hoisted(() => ({
+const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFindQuery } = vi.hoisted(() => ({
   pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
+  voucherFindQuery: vi.fn().mockResolvedValue({ status: 'not_voucher' }),
   quotePdfMutate: vi.fn().mockResolvedValue({
     fileName: 'Quote - CIDB 15-17 Sep.pdf',
     pdfBase64: 'JVBERw==',
@@ -161,6 +162,7 @@ vi.mock('../providers/query-provider', () => ({
       qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
     },
     quoteWorkflow: {
+      voucherFind: { query: voucherFindQuery },
       analyseSelection: {
         mutate: async () => ({
           status: 'ready' as const,
@@ -216,6 +218,8 @@ function mountBuildMeta(content: string) {
 describe('NavaPane', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    voucherFindQuery.mockReset();
+    voucherFindQuery.mockResolvedValue({ status: 'not_voucher' });
   });
 
   afterEach(() => {
@@ -445,5 +449,70 @@ describe('NavaPane', () => {
 
     expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
     expect(((await tellNavaBox()) as HTMLTextAreaElement).value).toBe('Three nights from 12 Nov');
+  });
+
+  it('shows the Find the booking card for a voucher email, with the guest the voucher names', async () => {
+    voucherFindQuery.mockResolvedValue({
+      status: 'voucher',
+      messageId: 'mail-1',
+      guest: { lastName: 'Smith', arrival: '2026-11-12' },
+      file: null,
+    });
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByRole('region', { name: 'Find the booking' })).toBeDefined();
+    expect(screen.getByText(/Guest Smith/)).toBeDefined();
+    expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' });
+  });
+
+  it('keeps the Find the booking card hidden for an email that is not a voucher', async () => {
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() =>
+      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' }),
+    );
+    expect(screen.queryByRole('region', { name: 'Find the booking' })).toBeNull();
+  });
+
+  /**
+   * Each element's own text nodes, one per line so words never run together, plus the labelled
+   * attributes that screen readers and tooltips read. (happy-dom's TreeWalker finds no text, so the
+   * walk goes through childNodes instead.)
+   */
+  function staffVisibleText(): string {
+    const elements = [document.body, ...Array.from(document.body.querySelectorAll('*'))];
+    const texts = elements.flatMap((element) =>
+      Array.from(element.childNodes)
+        .filter((node) => node.nodeType === 3)
+        .map((node) => node.textContent ?? ''),
+    );
+    const labelled = elements.flatMap((element) =>
+      ['aria-label', 'alt', 'title', 'placeholder'].map((name) => element.getAttribute(name) ?? ''),
+    );
+    return [...texts, ...labelled].join('\n');
+  }
+
+  it('shows no retired assistant name on any screen, including the voucher card', async () => {
+    localStorage.removeItem('nava_onboarding_completed');
+    // A voucher whose guest surname could not be read: the card shows its missing-guest and partial-read notes.
+    voucherFindQuery.mockResolvedValue({
+      status: 'voucher',
+      messageId: 'mail-1',
+      guest: { lastName: null, arrival: '2026-11-12' },
+      file: null,
+      unreadPdfs: 1,
+    });
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(staffVisibleText()).not.toMatch(/luna/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /2\. Connection/i }));
+    await screen.findByText(/Workstation API ping verified/);
+    expect(staffVisibleText()).not.toMatch(/luna/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /3\. Tour/i }));
+    expect(staffVisibleText()).not.toMatch(/luna/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
+    expect(await screen.findByRole('region', { name: 'Find the booking' })).toBeDefined();
+    await screen.findByLabelText("Tell Nava what's wrong");
+    expect(staffVisibleText()).not.toMatch(/luna/i);
   });
 });

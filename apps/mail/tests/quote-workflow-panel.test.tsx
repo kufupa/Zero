@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { useState } from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
@@ -677,3 +677,121 @@ function staggeredDatesWithOptionA(): QuoteSession {
     inputRevision: session.inputRevision,
   });
 }
+
+describe('the Find in HMS picker in the quote header', () => {
+  const ACME = { kind: 'company' as const, nativeId: 'C-100', name: 'Acme Travel' };
+  const TRAVEL_HUB = { kind: 'agency' as const, nativeId: 'A-7', name: 'Travel Hub' };
+  const noMatch = async () => ({ outcome: 'no_match' as const, results: [], truncated: false });
+
+  function headerSession(staffHeader: Partial<QuoteSession['staffHeader']>): QuoteSession {
+    const base = sessionFromFixture('agency-contract');
+    return { ...base, offers: [], phase: 'requirements', staffHeader: { ...base.staffHeader, ...staffHeader } };
+  }
+
+  // Applies each header patch through the real reducer, so a test reads the header the quote would send.
+  function PartyGate({
+    initial,
+    seen,
+    findParty,
+  }: {
+    initial: QuoteSession;
+    seen: { latest: QuoteSession | null };
+    findParty: typeof noMatch;
+  }) {
+    const [session, setSession] = useState(initial);
+    seen.latest = session;
+    return (
+      <QuoteWorkflowPanel
+        session={session}
+        findParty={findParty}
+        onPatchStaffHeader={(header) =>
+          setSession((current) => reduceQuoteSession(current, { type: 'patch_staff_header', header }))
+        }
+      />
+    );
+  }
+
+  it('shows one Find in HMS picker when a finder is passed, and none without one', () => {
+    const { unmount } = render(<QuoteWorkflowPanel session={headerSession({})} findParty={noMatch} />);
+    expect(screen.getAllByRole('button', { name: 'Find in HMS' })).toHaveLength(1);
+    unmount();
+    render(<QuoteWorkflowPanel session={headerSession({})} />);
+    expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeNull();
+  });
+
+  it('searches the typed company, and picking a result sets Company and the party', async () => {
+    const onPatchStaffHeader = vi.fn();
+    const find = vi.fn(async () => ({ outcome: 'resolved' as const, results: [ACME], truncated: false }));
+    render(
+      <QuoteWorkflowPanel
+        session={headerSession({ company: 'Acme', agency: '' })}
+        findParty={find}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Acme Travel' }));
+    expect(find).toHaveBeenCalledWith('Acme');
+    expect(onPatchStaffHeader).toHaveBeenCalledWith({ party: ACME, company: 'Acme Travel' });
+  });
+
+  it('picking an agency sets Agency and leaves Company alone', async () => {
+    const onPatchStaffHeader = vi.fn();
+    const find = vi.fn(async () => ({ outcome: 'resolved' as const, results: [TRAVEL_HUB], truncated: false }));
+    render(
+      <QuoteWorkflowPanel
+        session={headerSession({ company: '', agency: 'Travel Hub' })}
+        findParty={find}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Travel Hub' }));
+    expect(onPatchStaffHeader).toHaveBeenCalledWith({ party: TRAVEL_HUB, agency: 'Travel Hub' });
+  });
+
+  it('drops a pick only when its own field is edited away from its name', () => {
+    const seen: { latest: QuoteSession | null } = { latest: null };
+    const { unmount } = render(
+      <PartyGate initial={headerSession({ company: 'Acme Travel', party: ACME })} seen={seen} findParty={noMatch} />,
+    );
+    fireEvent.change(screen.getByLabelText('Agency'), { target: { value: 'Hub' } });
+    expect(seen.latest?.staffHeader.party).toEqual(ACME);
+    fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'Acme Travel Ltd' } });
+    expect(seen.latest?.staffHeader.party).toBeUndefined();
+    unmount();
+
+    render(
+      <PartyGate
+        initial={headerSession({ company: 'Acme Travel', agency: 'Travel Hub', party: TRAVEL_HUB })}
+        seen={seen}
+        findParty={noMatch}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'Acme Travel Ltd' } });
+    expect(seen.latest?.staffHeader.party).toEqual(TRAVEL_HUB);
+    fireEvent.change(screen.getByLabelText('Agency'), { target: { value: 'Travel Hub Ltd' } });
+    expect(seen.latest?.staffHeader.party).toBeUndefined();
+  });
+
+  it('shows the picked party as a chip, and Clear removes the pick and keeps the typed name', () => {
+    const seen: { latest: QuoteSession | null } = { latest: null };
+    render(
+      <PartyGate initial={headerSession({ company: 'Acme Travel', party: ACME })} seen={seen} findParty={noMatch} />,
+    );
+    const chip = screen.getByText('✓ Acme Travel (HMS)').parentElement as HTMLElement;
+    fireEvent.click(within(chip).getByRole('button', { name: 'Clear' }));
+    expect(seen.latest?.staffHeader.party).toBeUndefined();
+    expect(seen.latest?.staffHeader.company).toBe('Acme Travel');
+  });
+
+  it('says Nava, not Luna, in the picker hint and its search notes', async () => {
+    const unavailable = async () => ({ outcome: 'external_system_unavailable' as const, results: [], truncated: false });
+    render(<QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} findParty={unavailable} />);
+    expect(screen.getByText(/Pick the exact company or agency so Nava can get their rate/)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    expect(
+      await screen.findByText("Nava couldn't check HMS for this name. Try again, or quote at public rates."),
+    ).toBeDefined();
+  });
+});

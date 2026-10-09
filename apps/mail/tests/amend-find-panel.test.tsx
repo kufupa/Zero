@@ -196,7 +196,7 @@ describe('AmendLookupPanel', () => {
     expect(screen.getByText('12 Oct 2026')).toBeTruthy();
     expect(screen.getByText('14 Oct 2026')).toBeTruthy();
     expect(screen.getAllByText('From the email')).toHaveLength(5);
-    expect(screen.getByText('Luna only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
+    expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
   });
 
   it('labels a cancellation request as one', () => {
@@ -226,7 +226,7 @@ describe('AmendLookupPanel', () => {
     pressFind();
     await waitFor(() => expect(findStay).toHaveBeenCalledTimes(1));
     expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
-    expect(screen.getByText('Luna is looking up the booking in HMS… (about 1–2 minutes)')).toBeTruthy();
+    expect(screen.getByText('Nava is looking up the booking in HMS… (about 1–2 minutes)')).toBeTruthy();
     rerender(<AmendLookupPanel session={session} trpc={lookupTrpc(findStay)} />);
     expect(findStay).toHaveBeenCalledTimes(1);
   });
@@ -342,7 +342,7 @@ describe('AmendLookupPanel', () => {
     const button = screen.getByRole('button', { name: 'Find this booking in HMS' }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     expect(
-      screen.getByText("Luna couldn't find a booking number in the email. Find the booking by guest name below."),
+      screen.getByText("Nava couldn't find a booking number in the email. Find the booking by guest name below."),
     ).toBeTruthy();
     expect(screen.getByText('No HMS booking number found in the email.')).toBeTruthy();
     expect(findStay).not.toHaveBeenCalled();
@@ -350,10 +350,10 @@ describe('AmendLookupPanel', () => {
 
   it.each([
     ['refused_lock_busy', 'HMS is busy with another quote or lookup. Try again in a minute.'],
-    ['refused_lock_unavailable', "Luna can't reach HMS right now. Tell the Nava team."],
+    ['refused_lock_unavailable', "Nava can't reach HMS right now. Tell the Nava team."],
     ['refused_flag_off', 'The HMS lookup is not connected in this session. Search HMS by hand.'],
     ['refused_input_invalid', AMEND_FIND_COPY.notExact],
-    ['execution_failure', 'Luna could not read the HMS result. Try again in a minute.'],
+    ['execution_failure', 'Nava could not read the HMS result. Try again in a minute.'],
   ])('shows the copy for a %s result', async (outcome, message) => {
     const findStay = vi.fn().mockResolvedValue(refusal(outcome));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
@@ -367,7 +367,7 @@ describe('AmendLookupPanel', () => {
       .mockRejectedValue(new Error('[{"code":"invalid_string","path":["confirmation"]}] socket hang up'));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     pressFind();
-    await waitFor(() => expect(screen.getByText("Luna couldn't look this up. Search HMS yourself.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Nava couldn't look this up. Search HMS yourself.")).toBeTruthy());
     expect(screen.queryByText(/invalid_string|socket hang up/)).toBeNull();
   });
 
@@ -378,7 +378,7 @@ describe('AmendLookupPanel', () => {
       .mockResolvedValueOnce(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     pressFind();
-    await screen.findByText('Luna could not read the HMS result. Try again in a minute.');
+    await screen.findByText('Nava could not read the HMS result. Try again in a minute.');
     fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
     await waitFor(() => expect(screen.getByText('Matched on')).toBeTruthy());
     expect(findStay).toHaveBeenCalledTimes(2);
@@ -680,7 +680,7 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(commitButton.disabled).toBe(false);
     expect(
       screen.getByText(
-        `Luna will cancel 57291630-1 for Thabo Mokoena. HMS says: ${PENALTY} This can't be undone from here.`,
+        `Nava will cancel 57291630-1 for Thabo Mokoena. HMS says: ${PENALTY} This can't be undone from here.`,
       ),
     ).toBeTruthy();
 
@@ -693,8 +693,8 @@ describe('AmendLookupPanel cancel from the pane', () => {
       previewDigest: DIGEST,
     });
     await waitFor(() => expect(shot).toHaveBeenLastCalledWith({ runId: RUN_ID, name: 'readback.png' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna saw in HMS' }));
-    const dialog = screen.getByRole('dialog', { name: 'See what Luna saw in HMS' });
+    fireEvent.click(await screen.findByRole('button', { name: 'See what Nava saw in HMS' }));
+    const dialog = screen.getByRole('dialog', { name: 'See what Nava saw in HMS' });
     expect(within(dialog).getByRole('img').getAttribute('src')).toBe(SHOT_PNG);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -742,7 +742,7 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(screen.getByText('HMS showed no cancellation fee.')).toBeTruthy();
     expect(
       screen.getByText(
-        "Luna will cancel 57291630-1 for Thabo Mokoena. HMS showed no cancellation fee. This can't be undone from here.",
+        "Nava will cancel 57291630-1 for Thabo Mokoena. HMS showed no cancellation fee. This can't be undone from here.",
       ),
     ).toBeTruthy();
   });
@@ -776,8 +776,8 @@ describe('AmendLookupPanel cancel from the pane', () => {
   it.each([
     ['refused_not_lab', 'Cancelling from here only works on test bookings right now.'],
     ['refused_lock_busy', 'HMS is busy with another quote or lookup. Try again in a minute.'],
-    ['refused_lock_unavailable', "Luna can't reach HMS right now. Tell the Nava team."],
-    ['execution_failure', "Luna couldn't finish in HMS. Check HMS yourself."],
+    ['refused_lock_unavailable', "Nava can't reach HMS right now. Tell the Nava team."],
+    ['execution_failure', "Nava couldn't finish in HMS. Check HMS yourself."],
     [
       'refused_flag_off',
       'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
@@ -830,7 +830,7 @@ describe('AmendLookupPanel cancel from the pane', () => {
     const preview = vi.fn().mockRejectedValue(new Error('socket hang up'));
     renderCancel({ preview });
     fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
-    expect(await screen.findByText("Luna couldn't finish in HMS. Check HMS yourself.")).toBeTruthy();
+    expect(await screen.findByText("Nava couldn't finish in HMS. Check HMS yourself.")).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
   });
 
@@ -840,10 +840,10 @@ describe('AmendLookupPanel cancel from the pane', () => {
     await screen.findByRole('button', { name: 'Preview cancellation' });
     expect(
       screen.getByText(
-        'Luna can preview the cancellation for you. Nothing is cancelled until you press Cancel booking in HMS.',
+        'Nava can preview the cancellation for you. Nothing is cancelled until you press Cancel booking in HMS.',
       ),
     ).toBeTruthy();
-    expect(screen.queryByText('Luna only looks the booking up. Make the change in HMS yourself.')).toBeNull();
+    expect(screen.queryByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeNull();
   });
 
   it('keeps the look-up footer on cancel mail when the pane save flag is off', async () => {
@@ -851,14 +851,14 @@ describe('AmendLookupPanel cancel from the pane', () => {
     await screen.findByText(
       'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
     );
-    expect(screen.getByText('Luna only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
+    expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
   });
 
   it('keeps the look-up footer on amend mail even when the pane save flag is on', () => {
     capabilities.paneSave = true;
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(vi.fn(NEVER_SETTLES))} />);
-    expect(screen.getByText('Luna only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
-    expect(screen.queryByText(/Luna can preview the cancellation/)).toBeNull();
+    expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
+    expect(screen.queryByText(/Nava can preview the cancellation/)).toBeNull();
   });
 });
 

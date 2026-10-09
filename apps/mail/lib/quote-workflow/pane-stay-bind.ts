@@ -16,10 +16,10 @@ export const PANE_BOOKER_NAME_MAX = 50;
 export const PANE_BOOKER_EMAIL_MAX = 80;
 
 export const PANE_PREVIEW_FAILED_COPY =
-  'Luna could not finish the preview in HMS. Nothing was saved. Press Preview in HMS again.';
+  'Nava could not finish the preview in HMS. Nothing was saved. Press Preview in HMS again.';
 
 export const PANE_COMMIT_UNREACHABLE_COPY =
-  'Luna lost contact with HMS while booking, so it is not clear whether HMS saved it. Check HMS for this guest before booking again.';
+  'Nava lost contact with HMS while booking, so it is not clear whether HMS saved it. Check HMS for this guest before booking again.';
 
 const REFUSAL_COPY: Record<string, string> = {
   pane_save_flag_off: 'Saving in HMS is switched off for now. Copy each field into HMS by hand.',
@@ -29,20 +29,20 @@ const REFUSAL_COPY: Record<string, string> = {
   pane_save_property_mismatch:
     'This booking is for a different hotel than this HMS session. Book it by hand in HMS.',
   osress_reader_parked:
-    "Luna couldn't confirm there's no existing booking for this guest, so it didn't save. Check HMS, then book by hand.",
+    "Nava couldn't confirm there's no existing booking for this guest, so it didn't save. Check HMS, then book by hand.",
   osress_duplicate:
-    'HMS already has a booking for this guest on these dates, so Luna did not save. Check HMS, then book by hand.',
+    'HMS already has a booking for this guest on these dates, so Nava did not save. Check HMS, then book by hand.',
   pane_save_preview_required:
     'This preview has expired or was already used. Press Preview in HMS again.',
   pane_save_digest_mismatch: 'The booking changed after the preview. Press Preview in HMS again.',
-  pane_save_lock_unavailable: "Luna can't reach HMS right now. Nothing was saved. Tell the Nava team.",
+  pane_save_lock_unavailable: "Nava can't reach HMS right now. Nothing was saved. Tell the Nava team.",
   refused_lock_busy:
     'HMS is busy with another quote or lookup. Nothing was saved. Try again in a minute.',
   refused_save_blank_required:
     'HMS still has a blank required field. Nothing was saved. Fill in every field, then preview again.',
 };
 
-const REFUSED_FALLBACK = 'Luna stopped before saving anything. Check HMS, then book by hand.';
+const REFUSED_FALLBACK = 'Nava stopped before saving anything. Check HMS, then book by hand.';
 
 // The server's refusal for a save that may have booked the stay although no number came back.
 export const PANE_SAVE_UNCONFIRMED_REASON = 'pane_save_unconfirmed';

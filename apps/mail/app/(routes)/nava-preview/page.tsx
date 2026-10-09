@@ -38,7 +38,7 @@ function statusCopy(selection: PreviewSelection): string {
   if (selection.status === 'loading') return 'Loading thread…';
   if (selection.status === 'error') return 'Could not load this thread.';
   if (selection.status === 'unsynced' && selection.reason === 'no_message_id') {
-    return 'Not analysable: the latest guest email has no Message-ID, so Luna cannot bind it.';
+    return 'Not analysable: the latest guest email has no Message-ID, so Nava cannot bind it.';
   }
   if (selection.status === 'unsynced') return 'No guest email in this thread to analyse.';
   return '';

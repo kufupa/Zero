@@ -31,6 +31,7 @@ import {
   type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
 import { beginMutation, endMutation, mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
+import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
@@ -67,6 +68,7 @@ import {
   type PriorStaffQuoteRequoteRow,
 } from '@/lib/quote-workflow/booking-draft-bind';
 import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
+import { partyFinderFromTrpc } from '@/lib/quote-workflow/party-lookup';
 import {
   bindExecuteStaffQuote,
   bindHmsQueueStatus,
@@ -226,6 +228,8 @@ type PendingReplyOperation = {
 
 // One client for the pane's life, so screenshot loaders keep their identity across renders.
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
+// One HMS party search for the quote header's Find in HMS picker. Null when the panePartyLookup route is missing.
+const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
 
 function singleReplyDraft(draft: ReturnType<typeof requireReviewedNativeDraft>) {
   return draft
@@ -682,6 +686,23 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     quoteSession.bookingDraft !== null ||
     unsentStaffNote ||
     hasStaffStayEdits(quoteSession);
+  // One Excel export at a time. A second click while one is being made does nothing, and the button
+  // stays disabled until the export settles. The server call is a tRPC mutation, so it also counts as in flight.
+  const [workbookPending, setWorkbookPending] = useState(false);
+  const workbookInFlight = useRef(false);
+  const downloadWorkbook = () => {
+    if (workbookInFlight.current) return;
+    workbookInFlight.current = true;
+    setWorkbookPending(true);
+    void downloadStaffQuoteWorkbook({
+      session: quoteSessionRef.current,
+      mutate: staffQuoteFromTrpc(trpcClient).workstation.quoteWorkbook?.mutate,
+      notify: (message) => toast.warning(message),
+    }).finally(() => {
+      workbookInFlight.current = false;
+      setWorkbookPending(false);
+    });
+  };
   // The build this page was served, read from its index.html at page load (never from a fetch).
   const [loadedBuild] = useState<string | null>(() => loadedPaneBuild());
   // A newer build is live but not loaded. It loads at the next safe boundary: an email switch, or 15 idle minutes.
@@ -1833,9 +1854,11 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               Nava&apos;s suggestions from this email. Check and correct them before running searches.
             </p>}
 
+            {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
             <QuoteWorkflowPanel
               session={quoteSession}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
+              findParty={PANE_PARTY_FINDER}
               onPatchGroup={(groupId, patch) => dispatchQuote({ type: 'patch_group', groupId, patch })}
               onRunNext={() => {
                 const nextStep = pickNextRunnableStep(quoteSession.steps, quoteSession.runningStepId);
@@ -1875,6 +1898,8 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
               }}
               onPreparePdf={() => preparePdfFor(null)}
               onPreparePdfFor={(stayKey) => preparePdfFor(stayKey)}
+              onDownloadWorkbook={downloadWorkbook}
+              workbookPending={workbookPending}
             />
 
             <div className="flex flex-col gap-2.5">
