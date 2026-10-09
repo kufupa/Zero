@@ -19,6 +19,7 @@ export const panePartyLookupRouter = router({
   findParty: mailboxProcedure.input(findPartyInput).mutation(async ({ input }) => findParty(input)),
   // Read-only. Suggestions come from the sender's domain and the body's names; only HMS-listed ids are ever attached.
   suggest: mailboxProcedure.input(suggestInput).query(({ input }) => ({ suggestions: suggestPartiesFor(input) })),
-  // Read-only and local: the HMS list the sweep wrote. It never reaches HMS, and it is empty when there is no list.
+  // Read-only and local: the HMS list the sweep wrote, and the listed parties. It never reaches HMS. Without the
+  // list, only the listed parties come back.
   typeahead: mailboxProcedure.input(typeaheadInput).query(({ input }) => typeaheadPartyIndex(input.query)),
 });

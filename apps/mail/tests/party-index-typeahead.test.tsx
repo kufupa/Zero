@@ -26,8 +26,12 @@ const WOOLWORTHS_COMPANY = { kind: 'company' as const, nativeId: '49', name: 'Wo
 const WOOLWORTHS_AGENCY = { kind: 'agency' as const, nativeId: '571', name: 'Woolworths Travel' };
 const ACME_AGENCY = { kind: 'agency' as const, nativeId: '612', name: 'Acme Travel HQ' };
 
-function indexReply(results: PartyIndexReply['results'], ageMs: number | null = 3 * HOUR): PartyIndexReply {
-  return { source: 'index', available: true, updatedAt: '2026-10-01T00:00:00.000Z', ageMs, results };
+function indexReply(
+  results: PartyIndexReply['results'],
+  ageMs: number | null = 3 * HOUR,
+  listed: PartyIndexReply['listed'] = [],
+): PartyIndexReply {
+  return { source: 'index', available: true, updatedAt: '2026-10-01T00:00:00.000Z', ageMs, listed, results };
 }
 
 const NO_LIVE_MATCH = async (): Promise<PartyFindReply> => ({ outcome: 'no_match', results: [], truncated: false });
@@ -114,6 +118,7 @@ describe('PartyPicker: matches from the HMS list', () => {
       available: false,
       updatedAt: null,
       ageMs: null,
+      listed: [],
       results: [],
     }));
     render(picker({ indexSearch }));
@@ -169,6 +174,82 @@ describe('PartyPicker: matches from the HMS list', () => {
   });
 });
 
+describe('PartyPicker: one-click chips for a name', () => {
+  const unavailable = (listed: PartyIndexReply['listed']): PartyIndexReply => ({
+    source: 'index',
+    available: false,
+    updatedAt: null,
+    ageMs: null,
+    listed,
+    results: [],
+  });
+
+  it('offers the listed party as a chip with no HMS list file, and a click picks it with no live search', async () => {
+    const onPick = vi.fn();
+    const find = vi.fn<(name: string) => Promise<PartyFindReply>>(NO_LIVE_MATCH);
+    const indexSearch = vi.fn(async () => unavailable([WOOLWORTHS_COMPANY]));
+    render(picker({ find, onPick, indexSearch }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Use Woolworths Holdings (#49)' }));
+    expect(onPick).toHaveBeenCalledTimes(1);
+    expect(onPick).toHaveBeenCalledWith({ kind: 'company', nativeId: '49', name: 'Woolworths Holdings' });
+    expect(find).not.toHaveBeenCalled();
+  });
+
+  it('shows the chips only until a party is picked for the field, and again once that pick is cleared', async () => {
+    const indexSearch = vi.fn(async () => unavailable([WOOLWORTHS_COMPANY]));
+    const { rerender } = render(picker({ indexSearch }));
+    await screen.findByRole('button', { name: 'Use Woolworths Holdings (#49)' });
+    rerender(picker({ indexSearch, parties: { company: WOOLWORTHS_COMPANY } }));
+    expect(screen.queryByRole('button', { name: /^Use / })).toBeNull();
+    expect(indexSearch).toHaveBeenCalledTimes(1);
+    rerender(picker({ indexSearch, parties: {} }));
+    await screen.findByRole('button', { name: 'Use Woolworths Holdings (#49)' });
+  });
+
+  it('shows no chip when no name matches, and Search HMS now stays', async () => {
+    const indexSearch = vi.fn(async () => unavailable([]));
+    render(picker({ name: 'Pick n Pay', indexSearch }));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, PARTY_INDEX_DEBOUNCE_MS + 20));
+    });
+    expect(indexSearch).toHaveBeenCalledWith('Pick n Pay');
+    expect(screen.queryByRole('button', { name: /^Use / })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Search HMS now' })).toBeTruthy();
+  });
+
+  it('shows at most three chips: the listed party first, then the matches, one per HMS id', async () => {
+    const indexSearch = vi.fn(
+      async (): Promise<PartyIndexReply> =>
+        indexReply(
+          [
+            WOOLWORTHS_COMPANY,
+            WOOLWORTHS_AGENCY,
+            ACME_AGENCY,
+            { kind: 'company', nativeId: '50', name: 'Woolworths Foods' },
+          ],
+          3 * HOUR,
+          [WOOLWORTHS_COMPANY],
+        ),
+    );
+    render(picker({ indexSearch }));
+    const chips = await screen.findAllByRole('button', { name: /^Use / });
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      'Use Woolworths Holdings (#49)',
+      'Use Woolworths Travel (#571)',
+      'Use Acme Travel HQ (#612)',
+    ]);
+  });
+
+  it('a field with a kind chips only matches of its kind', async () => {
+    const indexSearch = vi.fn(async () =>
+      indexReply([WOOLWORTHS_COMPANY, WOOLWORTHS_AGENCY], 3 * HOUR, [WOOLWORTHS_COMPANY]),
+    );
+    render(picker({ kind: 'agency', indexSearch }));
+    const chips = await screen.findAllByRole('button', { name: /^Use / });
+    expect(chips.map((chip) => chip.textContent)).toEqual(['Use Woolworths Travel (#571)']);
+  });
+});
+
 describe('the quote workflow header: the HMS list is asked with each field\'s own text', () => {
   it('the company and agency lists each answer their own field, and each shows only its kind', async () => {
     const { QuoteWorkflowPanel } = await import('../components/quote-workflow/quote-workflow-panel');
@@ -199,5 +280,38 @@ describe('the quote workflow header: the HMS list is asked with each field\'s ow
     expect(within(companyGroup).queryByRole('button', { name: 'Woolworths Travel' })).toBeNull();
     expect(within(agencyGroup).queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
     expect(partyIndex.mock.calls.map(([query]) => query).sort()).toEqual(['Acme Travel', 'Woolworths']);
+  });
+
+  it('a company Nava filled in from the email gets its chip, and a click picks it into the header', async () => {
+    const { QuoteWorkflowPanel } = await import('../components/quote-workflow/quote-workflow-panel');
+    const { initialQuoteSession } = await import('../lib/quote-workflow/session');
+    const onPatchStaffHeader = vi.fn();
+    const partyIndex = vi.fn(async (): Promise<PartyIndexReply> => ({
+      source: 'index',
+      available: false,
+      updatedAt: null,
+      ageMs: null,
+      listed: [WOOLWORTHS_COMPANY],
+      results: [],
+    }));
+    const session = {
+      ...initialQuoteSession(),
+      phase: 'review' as const,
+      staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths' },
+    };
+    render(
+      <QuoteWorkflowPanel
+        session={session}
+        onPatchStaffHeader={onPatchStaffHeader}
+        findParty={vi.fn<(name: string) => Promise<PartyFindReply>>(NO_LIVE_MATCH)}
+        partyIndex={partyIndex}
+      />,
+    );
+    const companyGroup = screen.getByRole('group', { name: 'Company lookup in HMS' });
+    fireEvent.click(await within(companyGroup).findByRole('button', { name: 'Use Woolworths Holdings (#49)' }));
+    expect(onPatchStaffHeader).toHaveBeenCalledWith({
+      parties: { company: { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' } },
+      company: 'Woolworths Holdings',
+    });
   });
 });
