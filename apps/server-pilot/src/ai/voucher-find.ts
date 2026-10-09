@@ -349,14 +349,17 @@ export async function readVoucherAttachmentText(
   } catch {
     reader = async () => ({ text: null, reason: 'storage unavailable' });
   }
-  return readScannedVoucherPages(await readQuoteAttachments(files, reader), {
-    enabled: isScannedPdfVisionEnabled(process.env),
-    adapter: azureVisionAdapter(),
+  const texts = await readQuoteAttachments(files, reader);
+  const enabled = isScannedPdfVisionEnabled(process.env);
+  return readScannedVoucherPages(texts, {
+    enabled,
+    adapter: enabled ? azureVisionAdapter() : null,
     signal: AbortSignal.timeout(VISION_DEADLINE_MS),
   });
 }
 
 // Vision fallback for scanned voucher PDFs (SCANNED_PDF_VISION=on). Same Azure Luna route as the quote analyse.
+// The route's 15 s text read plus this deadline stay inside the pane's 45 s voucherFind wait (trpc-request-timeout).
 const VISION_MODEL_ID = 'gpt-6-luna';
 const VISION_DEADLINE_MS = 20_000;
 const VISION_SYSTEM_PROMPT =
