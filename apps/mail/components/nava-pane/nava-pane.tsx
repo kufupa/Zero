@@ -18,6 +18,7 @@ import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
 import { PaneMenu } from './pane-menu';
+import { PrimaryButton, SecondaryButton, Section } from './pane-ui';
 import {
   createPaneVersionWatch,
   fetchPaneVersion,
@@ -783,6 +784,11 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     runQuoteStep(stepId);
   }, [quoteSession.inputRevision]);
 
+  // The check's results sit at the foot of the tool. A check started from the ⋯ menu brings them into view when it ends.
+  useEffect(() => {
+    if (!testing) document.getElementById('system-check-results')?.scrollIntoView?.({ block: 'nearest' });
+  }, [testing]);
+
   if (isLoading) {
     return (
       <div className="flex min-h-screen w-full items-center justify-center bg-[#f1f3f6] font-sans text-slate-700">
@@ -1472,6 +1478,98 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
       ? `Draft option ${optionLetter(selectedIndex)} only`
       : 'Draft the selected option only';
 
+  // Only quote and booking mail gets Nava's suggestions and the numbered reply step. Other mail gets neither.
+  const quoteOrBookingEmail = quoteSession.analysis?.intent === 'quote';
+  // Why the reply button is off, or null when it can make the draft. A click that still gets through toasts the same reason.
+  const draftBlockedReason: string | null = !activeEmail
+    ? 'Select an email first'
+    : !supportsAction('CREATE_REPLY_DRAFT') || !supportsAction('ADD_ATTACHMENT_TO_DRAFT')
+      ? 'This Outlook add-in is too old to attach the PDF. Update the Nava Outlook add-in, then try again.'
+      : allOptionsDraft
+        ? requireMultiOptionDraft(quoteSession, combinedEdit)
+          ? null
+          : 'Prepare a PDF for each date option first'
+        : singleReplyDraft(requireReviewedNativeDraft(quoteSession))
+          ? null
+          : quoteSession.pdf
+            ? 'Finish the reply and PDF first'
+            : 'Prepare the quote PDF first';
+  const replyBody = (
+    <>
+      {quoteOrBookingEmail ? (
+        <PrimaryButton
+          onClick={() => trackedDraft(allOptionsDraft ? 'all' : 'selected')}
+          disabled={isDraftPending || draftBlockedReason !== null}
+          disabledReason={isDraftPending ? null : draftBlockedReason}
+          icon={<Send className="h-3.5 w-3.5" />}
+        >
+          {isDraftPending
+            ? 'Creating the draft in Outlook…'
+            : allOptionsDraft
+              ? allOptionsLabel
+              : 'Insert draft in Outlook'}
+        </PrimaryButton>
+      ) : (
+        <SecondaryButton
+          onClick={() => trackedDraft(allOptionsDraft ? 'all' : 'selected')}
+          disabled={!activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending}
+          icon={<Send className="h-3.5 w-3.5" />}
+        >
+          {isDraftPending
+            ? 'Creating the Outlook draft. Please wait…'
+            : allOptionsDraft
+              ? allOptionsLabel
+              : 'Insert draft in Outlook'}
+        </SecondaryButton>
+      )}
+      {allOptionsDraft ? (
+        <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+          Combined reply (you can edit it)
+          <textarea
+            aria-label="Combined reply"
+            className="outline-hidden min-h-28 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
+            value={requireMultiOptionDraft(quoteSession, combinedEdit)?.html ?? ''}
+            onChange={(event) =>
+              setCombinedEdit({
+                signature: multiOptionSignature(quoteSession) ?? '',
+                html: event.target.value,
+              })
+            }
+          />
+        </label>
+      ) : null}
+      {allOptionsDraft ? (
+        <p className="text-center text-[11px] text-[#64748b]">
+          Puts every option you ran into one email draft. Nothing is sent.
+        </p>
+      ) : null}
+      {allOptionsDraft ? (
+        <SecondaryButton
+          onClick={() => trackedDraft('selected')}
+          disabled={
+            !activeEmail ||
+            !supportsAction('CREATE_REPLY_DRAFT') ||
+            isDraftPending ||
+            !canCreateNativeDraft(quoteSession)
+          }
+          className="w-full"
+        >
+          {selectedOptionLabel}
+        </SecondaryButton>
+      ) : null}
+      <p className="text-[11px] text-[#64748b]">
+        Creates an unsent reply with the PDF attached. Review it, then Send manually in Outlook. Nava never sends from
+        this pane.
+      </p>
+      {/* Status Message */}
+      {draftStatus && draftStatus.key === selectedKey && (
+        <p role="status" className="text-xs text-amber-700">
+          {draftStatus.message}
+        </p>
+      )}
+    </>
+  );
+
   return (
     <div
       onKeyDownCapture={markInput}
@@ -1822,11 +1920,11 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
           <main className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
             {/* Email context for the selected email; until one is selected, an empty state. */}
             {activeEmail ? (
-              <div id="quote-selected-message" className="flex items-center justify-between rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3">
+              <div id="quote-selected-message" className="flex items-center justify-between gap-2 rounded-[4px] border border-[#e2e8f0] bg-white px-2.5 py-2">
                 <div className="flex min-w-0 items-center gap-2">
-                  <Mail className="h-4 w-4 shrink-0 text-[#64748b]" />
+                  <Mail className="h-3.5 w-3.5 shrink-0 text-[#64748b]" />
                   <div className="flex min-w-0 flex-col">
-                    <span className="truncate text-xs font-semibold text-[#1e293b]">
+                    <span className="truncate text-[13px] font-bold text-[#1e293b]">
                       {activeEmail.subject || '(no subject)'}
                     </span>
                     <span className="truncate text-[11px] text-[#64748b]">
@@ -1834,7 +1932,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
                     </span>
                   </div>
                 </div>
-                <span className="flex shrink-0 items-center gap-1 rounded-sm bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                <span className="flex shrink-0 items-center gap-1 rounded-[3px] bg-[#eaf4ee] px-1.5 py-0.5 text-[10px] font-semibold text-[#1a4332]">
                   <Check className="h-3 w-3" /> Synced
                 </span>
               </div>
@@ -1857,9 +1955,11 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
               }
             />
 
-            {activeEmail && !quoteSession.staffQuote && <p className="px-1 text-[10px] uppercase tracking-wider text-amber-700/80">
-              Nava&apos;s suggestions from this email. Check and correct them before running searches.
-            </p>}
+            {activeEmail && !quoteSession.staffQuote && quoteOrBookingEmail ? (
+              <p className="px-1 text-[11px] text-[#64748b]">
+                Nava filled these in from the email. Check them before getting rates.
+              </p>
+            ) : null}
 
             {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
             <QuoteWorkflowPanel
@@ -1910,122 +2010,47 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
               workbookPending={workbookPending}
             />
 
-            <div className="flex flex-col gap-2.5">
-                {/* Draft Quotation into Outlook Reply Button */}
-                <Button
-                  type="button"
-                  aria-label={allOptionsDraft ? allOptionsLabel : 'Insert Draft in Outlook'}
-                  onClick={() => trackedDraft(allOptionsDraft ? 'all' : 'selected')}
-                  disabled={!activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending}
-                  className="shadow-xs h-10 w-full rounded-sm bg-[#1a4332] text-xs font-bold text-white transition-colors hover:bg-[#123023] disabled:opacity-50"
-                >
-                  <Send className="mr-1.5 h-3.5 w-3.5" />
-                  {isDraftPending
-                    ? 'Creating the Outlook draft. Please wait…'
-                    : allOptionsDraft
-                      ? allOptionsLabel
-                      : 'Insert draft in Outlook'}
-                </Button>
-                {allOptionsDraft ? (
-                  <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-                    Combined reply (you can edit it)
-                    <textarea
-                      aria-label="Combined reply"
-                      className="outline-hidden min-h-28 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
-                      value={requireMultiOptionDraft(quoteSession, combinedEdit)?.html ?? ''}
-                      onChange={(event) =>
-                        setCombinedEdit({
-                          signature: multiOptionSignature(quoteSession) ?? '',
-                          html: event.target.value,
-                        })
-                      }
-                    />
-                  </label>
-                ) : null}
-                {allOptionsDraft ? (
-                  <p className="text-center text-[11px] text-[#64748b]">
-                    Puts every option you ran into one email draft. Nothing is sent.
-                  </p>
-                ) : null}
-                {allOptionsDraft ? (
-                  <Button
-                    type="button"
-                    aria-label={selectedOptionLabel}
-                    onClick={() => trackedDraft('selected')}
-                    disabled={
-                      !activeEmail ||
-                      !supportsAction('CREATE_REPLY_DRAFT') ||
-                      isDraftPending ||
-                      !canCreateNativeDraft(quoteSession)
-                    }
-                    className="shadow-xs h-9 w-full rounded-sm border border-[#1a4332] bg-white text-xs font-semibold text-[#1a4332] transition-colors hover:bg-[#eaf4ee] disabled:opacity-50"
-                  >
-                    {selectedOptionLabel}
-                  </Button>
-                ) : null}
-                <p className="text-center text-[11px] text-[#64748b]">
-                  Creates an unsent reply with the PDF attached. Review it, then Send manually in Outlook.
-                  Nava never sends from this pane.
-                </p>
+            {/* Step 4: the reply. Quote and booking mail shows it as the numbered step; other mail keeps a plain button. */}
+            {quoteOrBookingEmail ? (
+              <Section step={4} title="Reply">
+                {replyBody}
+              </Section>
+            ) : (
+              <div className="flex flex-col gap-2.5">{replyBody}</div>
+            )}
 
-                {/* Status Message */}
-                {draftStatus && draftStatus.key === selectedKey && (
-                  <p role="status" className="text-xs text-amber-700">
-                    {draftStatus.message}
-                  </p>
-                )}
-
-                {/* Outlook Email Draft Preview Box */}
-                {showDraftPreview && draftedDetails && (
-                  <div className="animate-in fade-in rounded-sm border border-[#cbd5e1] bg-white p-3 text-xs leading-relaxed text-[#1e293b] duration-200">
-                    <div className="mb-2 flex items-start justify-between border-b border-[#e2e8f0] pb-2 text-[11px] text-[#64748b]">
-                      <div>
-                        <strong>To:</strong> {draftedDetails.sender} &lt;
-                        {draftedDetails.senderEmail}&gt;
-                        <br />
-                        <strong>Subject:</strong> RE: {draftedDetails.subject} — Quotation
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setDraftedDetails(null)}
-                        className="text-[10px] text-slate-400 hover:text-slate-600"
-                      >
-                        Dismiss
-                      </button>
-                    </div>
-                    {draftedDetails.previewHtml ? (
-                      <div dangerouslySetInnerHTML={{ __html: draftedDetails.previewHtml }} />
-                    ) : quoteSession.reviewedReplyHtml ? (
-                      <div dangerouslySetInnerHTML={{ __html: quoteSession.reviewedReplyHtml }} />
-                    ) : (
-                      <p>No reviewed reply HTML. Insert uses only a staff-reviewed reply.</p>
-                    )}
-                    {draftedDetails.planName ? (
-                      <p className="mt-2 text-[11px] text-[#64748b]">Attached: {draftedDetails.planName}</p>
-                    ) : null}
+            {/* Outlook Email Draft Preview Box */}
+            {showDraftPreview && draftedDetails && (
+              <div className="animate-in fade-in rounded-sm border border-[#cbd5e1] bg-white p-3 text-xs leading-relaxed text-[#1e293b] duration-200">
+                <div className="mb-2 flex items-start justify-between border-b border-[#e2e8f0] pb-2 text-[11px] text-[#64748b]">
+                  <div>
+                    <strong>To:</strong> {draftedDetails.sender} &lt;
+                    {draftedDetails.senderEmail}&gt;
+                    <br />
+                    <strong>Subject:</strong> RE: {draftedDetails.subject} — Quotation
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setDraftedDetails(null)}
+                    className="text-[10px] text-slate-400 hover:text-slate-600"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+                {draftedDetails.previewHtml ? (
+                  <div dangerouslySetInnerHTML={{ __html: draftedDetails.previewHtml }} />
+                ) : quoteSession.reviewedReplyHtml ? (
+                  <div dangerouslySetInnerHTML={{ __html: quoteSession.reviewedReplyHtml }} />
+                ) : (
+                  <p>No reviewed reply HTML. Insert uses only a staff-reviewed reply.</p>
                 )}
-            </div>
-
-            {/* System Diagnostics Drawer */}
-            <div className="pt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={runComprehensiveTest}
-                disabled={testing}
-                className="h-8 w-full border-[#cbd5e1] text-xs font-medium text-[#475569] hover:bg-[#f8fafc]"
-              >
-                <RefreshCw className={`mr-2 h-3.5 w-3.5 ${testing ? 'animate-spin' : ''}`} />
-                {testing ? 'Checking Outlook and the Nava server…' : 'Run system check'}
-              </Button>
-              <p className="mt-1 text-center text-[11px] text-[#64748b]">
-                Checks that Outlook, the selected email and the Nava server all respond.
-              </p>
-            </div>
-
+                {draftedDetails.planName ? (
+                  <p className="mt-2 text-[11px] text-[#64748b]">Attached: {draftedDetails.planName}</p>
+                ) : null}
+              </div>
+            )}
             {(testResults.bridge !== null || testResults.serverPing !== null) && (
-              <div className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-xs">
+              <div id="system-check-results" className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-xs">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-[#64748b]">
                   System check results
                 </p>
@@ -2074,6 +2099,8 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
               setCurrentScreen('diagnostics');
               if (pingState !== 'loading') void executeServerPing();
             }}
+            systemCheckRunning={testing}
+            onRunSystemCheck={() => void runComprehensiveTest()}
             onReplayTour={() => {
               setTourSlideIndex(0);
               setCurrentScreen('tour');

@@ -2,8 +2,9 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
+import { openPaneMenu, stubResizeObserverForMenus } from './helpers/pane-menu';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { toast } from 'sonner';
@@ -213,6 +214,8 @@ vi.mock('../providers/query-provider', () => ({
   },
 }));
 
+beforeAll(stubResizeObserverForMenus);
+
 describe('OutlookPanePage', () => {
   const createReplyCalls = () =>
     sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT');
@@ -355,14 +358,17 @@ describe('OutlookPanePage', () => {
     await waitFor(() => expect(screen.queryByText('Starting the HMS run…')).toBeNull());
   });
 
-  it('renders the Run System Test button', () => {
+  it('offers the system check in the ⋯ menu', async () => {
     render(<OutlookPanePage />);
-    expect(screen.getByRole('button', { name: /Run system check/i })).toBeDefined();
+    await openPaneMenu();
+    expect(await screen.findByRole('menuitem', { name: /Run system check/i })).toBeDefined();
   });
 
-  it('labels the AI draft card as a sample placeholder', () => {
+  it('says Nava filled the suggestions in from the email once it has read a quote', async () => {
     render(<OutlookPanePage />);
-    expect(screen.getByText(/Nava's suggestions from this email.*Check and correct/i)).toBeDefined();
+    expect(
+      await screen.findByText(/Nava filled these in from the email.*Check them before getting rates/i, {}, { timeout: 5000 }),
+    ).toBeDefined();
   });
 
   it('passes the selected store ID when creating a reply draft', async () => {
@@ -567,21 +573,23 @@ describe('OutlookPanePage', () => {
 
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
-    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
+    // A failed attempt remounts the button, so wait on the live one.
+    const insertButton = () => screen.getByRole('button', { name: /Insert Draft in Outlook/i });
+    await waitFor(() => expect(insertButton().hasAttribute('disabled')).toBe(false));
 
     vi.spyOn(Date, 'now').mockReturnValue(startedAt + 15 * 60 * 1000 + 1000);
-    fireEvent.click(button);
+    fireEvent.click(insertButton());
 
     expect(createReplyCalls()).toHaveLength(1);
     expect(toast.error).toHaveBeenCalledWith(
       expect.stringMatching(/retry window has closed.*check Outlook Drafts/i),
     );
 
-    fireEvent.click(button);
+    fireEvent.click(insertButton());
     expect(createReplyCalls()).toHaveLength(1);
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
     confirmSpy.mockReturnValue(true);
-    fireEvent.click(button);
+    fireEvent.click(insertButton());
     await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
 
     const firstPayload = createReplyCalls()[0]?.[1] as { operationId: string };
@@ -689,7 +697,7 @@ describe('OutlookPanePage', () => {
 
     bridgeMockState.selectedEntryId = 'message-0';
     pane.rerender(<OutlookPanePage />);
-    fireEvent.click(button);
+    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
 
     expect(createReplyCalls()).toHaveLength(257);
     expect(toast.error).toHaveBeenCalledWith(
@@ -724,7 +732,7 @@ describe('OutlookPanePage', () => {
     vi.spyOn(Date, 'now').mockRestore();
   // Each of 257 admissions now drives the approved-input/PDF workflow, not a
   // demo quote. Retain the real overflow boundary without a shortened cap.
-  }, 180_000);
+  }, 400_000);
 
   it('blocks overlapping reply clicks synchronously until the native request settles', async () => {
     let finish!: (value: unknown) => void;

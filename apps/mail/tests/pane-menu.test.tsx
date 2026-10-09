@@ -28,7 +28,12 @@ function setup() {
   const onCheckConnection = vi.fn();
   const onReplayTour = vi.fn();
   render(
-    <PaneMenu buildRelease="abcdef1234" onCheckConnection={onCheckConnection} onReplayTour={onReplayTour} />,
+    <PaneMenu
+      buildRelease="abcdef1234"
+      onCheckConnection={onCheckConnection}
+      onRunSystemCheck={vi.fn()}
+      onReplayTour={onReplayTour}
+    />,
   );
   return { trigger: screen.getByRole('button', { name: 'More' }), onCheckConnection, onReplayTour };
 }

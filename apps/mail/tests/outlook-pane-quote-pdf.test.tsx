@@ -204,8 +204,9 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.sessionId = 'session-2';
     view.rerender(<OutlookPanePage />);
     await waitFor(() => expect(screen.queryByText(/Prepared PDF/i)).toBeNull());
-    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Make the PDF and finish the reply')));
+    // The button is off until a PDF is prepared for this session, and says why.
+    expect(screen.getByRole('button', { name: /Insert Draft in Outlook/i }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText('Prepare the quote PDF first')).toBeDefined();
     expect(sendCommandMock.mock.calls.some(call => call[0] === 'CREATE_REPLY_DRAFT')).toBe(false);
   });
   it('prepares the booking draft from the staff-edited stay dates, not the raw Luna read-out', async () => {

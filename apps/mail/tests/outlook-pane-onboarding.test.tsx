@@ -2,8 +2,9 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
+import { runPaneMenuItem, stubResizeObserverForMenus } from './helpers/pane-menu';
 
 const defaultMockEmail = {
   entryId: '001',
@@ -114,6 +115,8 @@ vi.mock('../providers/query-provider', () => ({
   },
 }));
 
+beforeAll(stubResizeObserverForMenus);
+
 describe('OutlookPane Onboarding Flow', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -150,7 +153,7 @@ describe('OutlookPane Onboarding Flow', () => {
     });
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Run system check/i }));
+    await runPaneMenuItem('Run system check');
     await waitFor(() =>
       expect(pingMutateMock).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -173,7 +176,7 @@ describe('OutlookPane Onboarding Flow', () => {
     });
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Run system check/i }));
+    await runPaneMenuItem('Run system check');
     await waitFor(() =>
       expect(pingMutateMock).toHaveBeenCalledWith(
         expect.objectContaining({
