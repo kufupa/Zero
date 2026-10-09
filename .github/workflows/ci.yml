@@ -37,7 +37,7 @@ jobs:
             apps/server-pilot/deploy/deploy-ec2.sh apps/server-pilot/deploy/pane-csp-release.mjs \
             apps/server-pilot/deploy/check-web-release-ownership.mjs \
             apps/server-pilot/deploy/write-ec2-env.sh \
-            apps/mail/lib/workstation apps/mail/app/'(routes)'/outlook-pane \
+            apps/mail/lib/workstation apps/mail/app/'(routes)'/outlook-pane apps/mail/components/nava-pane \
             apps/mail/app/root.tsx \
             .github/workflows/ci.yml; then
             echo 'required=false' >> "$GITHUB_OUTPUT"
@@ -79,7 +79,7 @@ jobs:
         shell: bash
         run: |
           env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
-            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx tests/outlook-pane-quote-pdf.test.tsx \
+            tests/workstation-bridge-protocol.test.tsx tests/outlook-pane-render.test.tsx tests/nava-pane-render.test.tsx tests/outlook-pane-quote-pdf.test.tsx \
             tests/outlook-sync-progress.test.tsx tests/outlook-sync-client.test.tsx tests/outlook-pane-onboarding.test.tsx
           env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS pnpm --filter @zero/mail exec vitest run \
             tests/mail-content-rendering.test.tsx tests/resolve-mail-html.test.ts tests/mail-content-fallback.test.ts
