@@ -268,6 +268,7 @@ export function initialQuoteSession(): QuoteSession {
     staffQuote: null,
     staffQuotes: {},
     stayPdfs: {},
+    rateOptions: [],
     staffHeader: emptyStaffQuoteHeader(),
     staffActions: [],
     selectedStayKey: null,
@@ -431,6 +432,7 @@ function clearDownstream(session: QuoteSession): QuoteSession {
     staffQuote: null,
     staffQuotes: {},
     stayPdfs: {},
+    rateOptions: [],
     bookingDraft: null,
     // Results are gone, so every date option is runnable again.
     steps: session.steps.map((step) =>
@@ -563,6 +565,9 @@ function reviewItemsFromExtrasNotes(
   return added.length ? [...kept, ...added] : kept;
 }
 
+/** Fields that decide which rate HMS quotes. A rate pin does not survive a change to any of them. */
+const RATE_PIN_FIELDS = ['board', 'arrivalDate', 'departureDate', 'roomPreference', 'roomCodes'] as const;
+
 function applyGroupPatch(
   group: StayGroupRequirement,
   patch: Partial<StayGroupRequirement>,
@@ -572,7 +577,10 @@ function applyGroupPatch(
     if (key === 'id' || key === 'fields') continue;
     fields[String(key)] = 'staff_corrected';
   }
-  return { ...group, ...patch, id: group.id, fields };
+  const next: StayGroupRequirement = { ...group, ...patch, id: group.id, fields };
+  // A rate pick sends its rateCode with the board and room. Editing one of those fields by hand unpins the rate.
+  if (!('rateCode' in patch) && RATE_PIN_FIELDS.some((key) => key in patch)) delete next.rateCode;
+  return next;
 }
 
 function keptFieldErrors(
@@ -837,9 +845,15 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       // A new run replaces only this option's result and PDF. Other options keep theirs.
       const stayPdfs = { ...session.stayPdfs };
       delete stayPdfs[stayKey];
+      // The same goes for rate cards: this run's groups get its options, and the other groups keep theirs.
+      const runGroupIds = new Set(action.offer.coversGroupIds);
       return {
         ...session,
         phase: stayCount > 1 ? 'tools' : 'results',
+        rateOptions: [
+          ...(session.rateOptions ?? []).filter((option) => !runGroupIds.has(option.groupId)),
+          ...(action.staffQuote.rateOptions ?? []),
+        ],
         offers: [
           ...session.offers.filter(
             (offer) =>
@@ -924,7 +938,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const groups = session.groups.map((group) =>
         group.id === action.groupId ? applyGroupPatch(group, action.patch) : group,
       );
-      return clearDownstream({
+      const cleared = clearDownstream({
         ...session,
         groups,
         inputRevision: session.inputRevision + 1,
@@ -945,6 +959,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           session.staffActions,
         ),
       });
+      // A rate pick keeps its group's cards on screen while the pinned re-run is pending. Any other edit clears them.
+      return {
+        ...cleared,
+        rateOptions:
+          'rateCode' in action.patch
+            ? (session.rateOptions ?? []).filter((option) => option.groupId === action.groupId)
+            : [],
+      };
     }
     case 'results_ready': {
       if (!action.provenance) return session;

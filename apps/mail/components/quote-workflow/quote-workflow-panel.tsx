@@ -8,6 +8,7 @@ import {
   pickNextRunnableStep,
   quoteRunBlockReason,
   requestedQuoteKeys,
+  stayKeyForGroup,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
@@ -21,6 +22,7 @@ import type {
   QuoteReviewItem,
   QuoteSession,
   QuoteToolStep,
+  RateOption,
   StaffQuoteHeader,
   StaffExtraField,
   StaffQuoteOtherUnit,
@@ -47,6 +49,7 @@ import { NeedsAnswerList } from './needs-answer-list';
 import { NotSupportedList } from './not-supported-list';
 import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
+import { RateCards } from './rate-cards';
 import { RequirementCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
 import { WorkflowBadge, type QuoteIntent } from './workflow-badge';
@@ -704,6 +707,12 @@ function money(minor: number): string {
   return `R${(minor / 100).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** The picked company, else the picked agency. A contract rate is named after one of them. */
+function contractPartyName(header: StaffQuoteHeader): string | undefined {
+  const party = header.parties?.company ?? header.parties?.agency;
+  return party?.name?.trim() || undefined;
+}
+
 function OfferCard({
   offer,
   selected,
@@ -854,6 +863,15 @@ export function QuoteWorkflowPanel({
   /** Loads one HMS audit screenshot of a completed staff quote run. */
   onLoadRunScreenshot?: LoadRunScreenshot;
 }) {
+  // A rate card tapped and waiting for its pin to reach the session. The re-run starts once the pin is there, so it reads it.
+  const [pinRun, setPinRun] = useState<{ groupId: string; rateCode: string; stepId: string } | null>(null);
+  useEffect(() => {
+    if (!pinRun) return;
+    const group = session.groups.find((item) => item.id === pinRun.groupId);
+    if (group?.rateCode !== pinRun.rateCode) return;
+    setPinRun(null);
+    onRunStep?.(pinRun.stepId);
+  }, [pinRun, session.groups, onRunStep]);
   if (session.phase === 'idle') {
     return <StatusNote>Select an email in Outlook. Nava will read it and list what the quote needs.</StatusNote>;
   }
@@ -909,6 +927,35 @@ export function QuoteWorkflowPanel({
   const ratesReason = ratesBlockReason(session, nextStep);
   const running = Boolean(session.runningStepId) || Boolean(hmsQueue?.pending);
   const showRates = session.phase !== 'failed' && session.phase !== 'missing_source';
+  // Rate cards show for a room group with two or more options. One option keeps the plain result below.
+  const rateGroups = session.groups.flatMap((group) => {
+    const options = (session.rateOptions ?? []).filter((option) => option.groupId === group.id);
+    if (options.length < 2) return [];
+    const step = session.steps.find((item) => item.kind === 'quote_stay' && item.shareKey === stayKeyForGroup(group));
+    return [
+      {
+        group,
+        options,
+        step,
+        blockReason: step ? quoteRunBlockReason(session, step) : 'Nothing is ready to search yet.',
+        pendingRateCode:
+          pinRun?.groupId === group.id
+            ? pinRun.rateCode
+            : step !== undefined && session.runningStepId === step.id
+              ? (group.rateCode ?? null)
+              : null,
+      },
+    ];
+  });
+  /** Tapping a rate pins it on its group and re-runs that date option. Only a card whose run is not in flight can start one. */
+  const pickRate = (option: RateOption) => {
+    const group = session.groups.find((item) => item.id === option.groupId);
+    if (!group || !onPatchGroup) return;
+    const step = session.steps.find((item) => item.kind === 'quote_stay' && item.shareKey === stayKeyForGroup(group));
+    if (!step || quoteRunBlockReason(session, step)) return;
+    onPatchGroup(group.id, { board: option.board, roomCodes: [option.roomCode], rateCode: option.rateCode });
+    setPinRun({ groupId: group.id, rateCode: option.rateCode, stepId: step.id });
+  };
 
   return (
     <div className="flex flex-col gap-3">
@@ -979,6 +1026,18 @@ export function QuoteWorkflowPanel({
             </Disclosure>
           ) : null}
           {hmsQueue ? <HmsQueueStatusLine pending={hmsQueue.pending} status={hmsQueue.status} /> : null}
+          {rateGroups.map((rates) => (
+            <Fragment key={rates.group.id}>
+              <RateCards
+                options={rates.options}
+                partyName={contractPartyName(header)}
+                disabled={running || pinRun !== null || rates.blockReason !== null}
+                pendingRateCode={rates.pendingRateCode}
+                onPick={pickRate}
+              />
+              {rates.blockReason ? <p className="text-[11px] text-[#64748b]">{rates.blockReason}</p> : null}
+            </Fragment>
+          ))}
           {session.offers.length ? (
             <div className="flex flex-col gap-2">
               <h3 className="text-[11.5px] font-semibold text-[#475569]">Results</h3>
