@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { requireReviewedNativeDraft } from '../lib/quote-workflow/native-draft';
+import { requireReviewedNativeDraft, withStaffNote } from '../lib/quote-workflow/native-draft';
 import { initialQuoteSession } from '../lib/quote-workflow/session';
 
 describe('native draft payload', () => {
@@ -98,6 +98,13 @@ describe('native draft payload', () => {
     expect(payload?.html).not.toContain('Thank you for Choosing The Centurion Hotel.');
     expect(payload?.pdf.fileName).toBe('Quote-authorised.pdf');
     expect(payload?.pdf.pdfBase64).toBe('JVBERi0xLjQK');
+  });
+
+  it('adds the staff note to a reply once, however many times it is applied', () => {
+    const once = withStaffNote('<p>Reply.</p>', 'Late check-in');
+    expect(once).toBe('<p>Reply.</p><p><strong>Note:</strong> Late check-in</p>');
+    expect(withStaffNote(once, 'Late check-in')).toBe(once);
+    expect(withStaffNote('<p>Reply.</p>', '   ')).toBe('<p>Reply.</p>');
   });
 
   it('refuses native insert when canCreatePdf is false even with authorised html and pdf bytes', () => {

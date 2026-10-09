@@ -197,6 +197,20 @@ describe('one reply for every completed date option', () => {
     expect(requireMultiOptionDraft(session, null)?.html).toBe(generated);
   });
 
+  it('carries the staff note into the combined reply once, and an edit made before a note change is not used', () => {
+    const base = twoQuotedOptions();
+    const session = { ...base, staffHeader: { ...base.staffHeader, notes: 'Breakfast only <day 2>' } };
+    const note = '<p><strong>Note:</strong> Breakfast only &lt;day 2&gt;</p>';
+    expect(requireMultiOptionDraft(session)?.html.endsWith(note)).toBe(true);
+    // An edited combined reply that already has the note is not given a second one.
+    const edited = `<p>Edited rates.</p>${note}`;
+    const signature = multiOptionSignature(session) ?? '';
+    expect(requireMultiOptionDraft(session, { signature, html: edited })?.html).toBe(edited);
+    // Changing the note makes the earlier edit stale.
+    const changed = { ...session, staffHeader: { ...session.staffHeader, notes: 'Late check-in' } };
+    expect(requireMultiOptionDraft(changed, { signature, html: edited })?.html).not.toBe(edited);
+  });
+
   it('attaches each option PDF once, with its option letter in the name', () => {
     const draft = requireMultiOptionDraft(twoQuotedOptions());
     expect(draft?.letters).toEqual(['A', 'B']);

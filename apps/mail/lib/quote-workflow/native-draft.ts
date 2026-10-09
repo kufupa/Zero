@@ -16,10 +16,10 @@ export function requireReviewedNativeDraft(session: QuoteSession): {
   };
 }
 
-/** The unpriced staff note goes into the reply as its own escaped paragraph, as it does on the PDF. */
-function withStaffNote(html: string, notes: string | undefined): string {
+/** The staff note as one escaped paragraph, the same wording the PDF uses. Null when there is no note. */
+export function staffNoteParagraph(notes: string | undefined): string | null {
   const note = notes?.trim();
-  if (!note) return html;
+  if (!note) return null;
   const escaped = note
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -27,7 +27,16 @@ function withStaffNote(html: string, notes: string | undefined): string {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
     .replace(/\n/g, '<br>');
-  return `${html}<p><strong>Note:</strong> ${escaped}</p>`;
+  return `<p><strong>Note:</strong> ${escaped}</p>`;
+}
+
+/**
+ * Adds the staff note to a reply, once. A reply that already carries it (an edited combined reply, say) is
+ * returned unchanged, so the note is never doubled.
+ */
+export function withStaffNote(html: string, notes: string | undefined): string {
+  const paragraph = staffNoteParagraph(notes);
+  return paragraph && !html.includes(paragraph) ? `${html}${paragraph}` : html;
 }
 
 export function selectedQuotePdf(session: QuoteSession): QuotePdf | null {

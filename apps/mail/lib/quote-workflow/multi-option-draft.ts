@@ -7,6 +7,7 @@ import {
 import type { QuoteOffer, QuotePdf, QuoteSession, StaffQuoteAllocation } from './types';
 import { approvedExecuteHeader } from './staff-quote-bind';
 import { FIXTURE_PDF } from './fixtures';
+import { withStaffNote } from './native-draft';
 
 /**
  * One unsent reply that covers every date option staff completed. Each option keeps its own
@@ -84,8 +85,11 @@ export type CombinedReplyEdit = { signature: string; html: string };
 export function multiOptionSignature(session: QuoteSession): string | null {
   const options = completedDateOptions(session);
   if (options.length < 2) return null;
+  // The note is part of the reply, so changing it makes an earlier edited combined reply stale.
+  const note = session.staffHeader?.notes?.trim() ?? '';
   return options
     .map((option) => `${option.letter}:${option.key}:${option.quote.totalMinor}:${option.pdf.pdfHash ?? ''}`)
+    .concat(`note:${note}`)
     .join('|');
 }
 
@@ -98,7 +102,7 @@ export function requireMultiOptionDraft(
   if (options.length < 2) return null;
   const edited = edit && edit.signature === multiOptionSignature(session) ? edit.html : null;
   return {
-    html: edited ?? multiOptionDraftHtml(options),
+    html: withStaffNote(edited ?? multiOptionDraftHtml(options), session.staffHeader?.notes),
     attachments: options.map((option) => ({
       fileName: optionAttachmentName(option.pdf.fileName, option.letter),
       pdfBase64: option.pdf.bytesBase64,
