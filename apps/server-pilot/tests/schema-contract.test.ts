@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
+import { getTableConfig, PgDialect, type PgTable } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,13 @@ import {
   HITL_TOOL_RUN_KINDS,
   HITL_TOOL_RUN_STATUSES,
 } from '../src/db/schema/hitl.js';
+import {
+  MAIL_EXTRACTION_STATUSES,
+  MAIL_KINDS,
+  WORK_EVENT_ACTOR_KINDS,
+  WORK_EVENT_TYPES,
+  WORK_ITEM_STATUSES,
+} from '../src/db/schema/work.js';
 
 describe('v4 production mail schema', () => {
   it('uses mailbox access for owner/member/admin', () => {
@@ -206,13 +213,12 @@ function ddlForeignKeys(ddl: string): Array<{ table: string; column: string; tar
 }
 
 /**
- * Every definition the hand-written 0046 DDL must carry for the four ledger tables: the column set, each
+ * Every definition a hand-written migration's DDL must carry for the given Drizzle tables: the column set, each
  * column's type, nullability, primary flag and default, the index set with each index's uniqueness, columns
  * and predicate, and the foreign keys with their targets and delete actions. Empty when they agree.
  */
-function ledgerDefinitionDrift(ddl: string): string[] {
+function definitionDrift(ddl: string, tables: PgTable[]): string[] {
   const drift: string[] = [];
-  const tables = [schema.aiAgentRun, schema.hitlEpisode, schema.hitlEvent, schema.hitlToolRun];
   for (const table of tables) {
     const config = getTableConfig(table);
     const body = createTableBody(ddl, config.name);
@@ -295,7 +301,7 @@ describe('HITL decision ledger schema', () => {
   });
 
   it('keeps the hand-written migration in step with every Drizzle table, definition by definition', () => {
-    expect(ledgerDefinitionDrift(hitlMigrationDdl)).toEqual([]);
+    expect(definitionDrift(hitlMigrationDdl, Object.values(ledgerTables))).toEqual([]);
     for (const table of Object.values(ledgerTables)) {
       const config = getTableConfig(table);
       for (const check of config.checks) {
@@ -325,7 +331,10 @@ describe('HITL decision ledger schema', () => {
     ];
     for (const [label, from, to] of mutations) {
       expect(hitlMigrationDdl.includes(from), label).toBe(true);
-      expect(ledgerDefinitionDrift(hitlMigrationDdl.replace(from, to)), label).not.toEqual([]);
+      expect(
+        definitionDrift(hitlMigrationDdl.replace(from, to), Object.values(ledgerTables)),
+        label,
+      ).not.toEqual([]);
     }
   });
 
@@ -397,6 +406,122 @@ describe('HITL decision ledger schema', () => {
     const next = journal.entries.find((entry) => entry.idx === 46);
     expect(previous?.tag).toBe('0045_message_thread_transport_fk');
     expect(next?.tag).toBe('0046_hitl_ledger');
+    expect(next?.when).toBe((previous?.when ?? 0) + 1000);
+  });
+});
+
+const workMigrationDdl = readFileSync(
+  fileURLToPath(new URL('../drizzle/0047_nava_work_items.sql', import.meta.url)),
+  'utf8',
+);
+
+describe('Nava work item schema', () => {
+  const workTables = {
+    mailExtraction: schema.mailExtraction,
+    workItem: schema.workItem,
+    workEvent: schema.workEvent,
+    customRate: schema.customRate,
+  };
+
+  it('keeps the 0047 DDL in step with every new Drizzle table, definition by definition', () => {
+    expect(definitionDrift(workMigrationDdl, Object.values(workTables))).toEqual([]);
+    for (const table of Object.values(workTables)) {
+      const config = getTableConfig(table);
+      for (const check of config.checks) {
+        expect(createTableBody(workMigrationDdl, config.name), check.name).toContain(
+          `CONSTRAINT "${check.name}"`,
+        );
+      }
+    }
+  });
+
+  it('reports drift in the 0047 tables when a default or predicate changes', () => {
+    const mutations: Array<[string, string, string]> = [
+      [
+        'default',
+        `"status" text DEFAULT 'needs_you' NOT NULL`,
+        `"status" text DEFAULT 'review' NOT NULL`,
+      ],
+      ['index predicate', 'WHERE "archived_at" IS NULL', 'WHERE "archived_at" IS NOT NULL'],
+      [
+        'foreign key action',
+        '"work_item_id" uuid NOT NULL REFERENCES "work_item"("id") ON DELETE restrict',
+        '"work_item_id" uuid NOT NULL REFERENCES "work_item"("id") ON DELETE cascade',
+      ],
+    ];
+    const tables = Object.values(workTables);
+    for (const [label, from, to] of mutations) {
+      expect(workMigrationDdl.includes(from), label).toBe(true);
+      expect(definitionDrift(workMigrationDdl.replace(from, to), tables), label).not.toEqual([]);
+    }
+  });
+
+  it('keeps 0047 CHECK vocabularies in step with the TypeScript lists', () => {
+    const lines = workMigrationDdl.split('\n');
+    const expected: Array<[string, readonly string[]]> = [
+      ['mail_extraction_status_check', MAIL_EXTRACTION_STATUSES],
+      ['mail_extraction_kind_check', MAIL_KINDS],
+      ['work_item_kind_check', MAIL_KINDS],
+      ['work_item_status_check', WORK_ITEM_STATUSES],
+      ['work_event_actor_kind_check', WORK_EVENT_ACTOR_KINDS],
+      ['work_event_type_check', WORK_EVENT_TYPES],
+    ];
+    for (const [name, values] of expected) {
+      const line = lines.find((item) => item.includes(`CONSTRAINT "${name}"`));
+      expect(line, name).toBeDefined();
+      const listed = [...(line ?? '').matchAll(/'([^']+)'/g)].map((match) => match[1]);
+      expect(listed, name).toEqual([...values]);
+    }
+  });
+
+  it('extends ai_workflow_run with a nullable work item link and a smallint priority defaulting to 0', () => {
+    expect(workMigrationDdl).toContain('ADD COLUMN IF NOT EXISTS "work_item_id" uuid,');
+    expect(workMigrationDdl).toContain(
+      'ADD COLUMN IF NOT EXISTS "priority" smallint DEFAULT 0 NOT NULL;',
+    );
+    expect(workMigrationDdl).toContain(
+      'FOREIGN KEY ("work_item_id") REFERENCES "work_item"("id") ON DELETE set null;',
+    );
+    expect(workMigrationDdl).toContain(
+      'CREATE INDEX IF NOT EXISTS "ai_workflow_run_work_item_created_idx" ON "ai_workflow_run" ("work_item_id", "created_at");',
+    );
+    expect(schema.aiWorkflowRun.workItemId.notNull).toBe(false);
+    expect(schema.aiWorkflowRun.priority.notNull).toBe(true);
+    expect(schema.aiWorkflowRun.priority.default).toBe(0);
+    const workItemKey = getTableConfig(schema.aiWorkflowRun).foreignKeys.find(
+      (foreignKey) => foreignKey.reference().columns[0]?.name === 'work_item_id',
+    );
+    expect(workItemKey?.onDelete).toBe('set null');
+  });
+
+  it('adds three run kinds to the enum without using them inside the migration', () => {
+    const kinds = ['inbound_extraction', 'quote_followup', 'hms_write'];
+    expect(schema.aiWorkflowRunKindEnum.enumValues).toEqual(expect.arrayContaining(kinds));
+    const addValues = [...workMigrationDdl.matchAll(/ADD VALUE IF NOT EXISTS '([a-z_]+)';/g)];
+    expect(addValues.map((match) => match[1])).toEqual(kinds);
+    const outsideAddValue = workMigrationDdl.replace(/ADD VALUE IF NOT EXISTS '[a-z_]+';/g, '');
+    for (const kind of kinds) expect(outsideAddValue, kind).not.toContain(`'${kind}'`);
+  });
+
+  it('keeps 0047 additive: nothing dropped, and only ai_workflow_run is altered', () => {
+    expect(workMigrationDdl).not.toMatch(/\bDROP\s+(TABLE|COLUMN|INDEX|CONSTRAINT)\b/i);
+    const altered = new Set(
+      [...workMigrationDdl.matchAll(/ALTER TABLE "([^"]+)"/g)].map((m) => m[1]),
+    );
+    expect([...altered]).toEqual(['ai_workflow_run']);
+  });
+
+  it('registers 0047 in the journal directly after 0046 on a +1000ms clock', () => {
+    const journal = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL('../drizzle/meta/_journal.json', import.meta.url)),
+        'utf8',
+      ),
+    ) as { entries: Array<{ idx: number; when: number; tag: string }> };
+    const previous = journal.entries.find((entry) => entry.idx === 46);
+    const next = journal.entries.find((entry) => entry.idx === 47);
+    expect(previous?.tag).toBe('0046_hitl_ledger');
+    expect(next?.tag).toBe('0047_nava_work_items');
     expect(next?.when).toBe((previous?.when ?? 0) + 1000);
   });
 });

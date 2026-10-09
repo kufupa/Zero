@@ -13,7 +13,11 @@ import {
   check,
   customType,
   foreignKey,
+  smallint,
+  uuid,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
+import { workItem } from './work.js';
 import { sql } from 'drizzle-orm';
 import { user } from './auth.js';
 
@@ -57,6 +61,9 @@ export const aiWorkflowRunKindEnum = pgEnum('ai_workflow_run_kind', [
   'feedback_extraction',
   'read_tool',
   'shadow_prediction',
+  'inbound_extraction',
+  'quote_followup',
+  'hms_write',
 ]);
 
 export const aiWorkflowRunStateEnum = pgEnum('ai_workflow_run_state', [
@@ -553,6 +560,12 @@ export const aiWorkflowRun = pgTable(
     readResultExpiresAt: timestamp('read_result_expires_at'),
     state: aiWorkflowRunStateEnum('state').notNull().default('queued'),
     executorLane: aiExecutorLaneEnum('executor_lane').notNull().default('default'),
+    /** Nullable, SET NULL: the run record outlives its work item. */
+    workItemId: uuid('work_item_id').references((): AnyPgColumn => workItem.id, {
+      onDelete: 'set null',
+    }),
+    /** Claim order within a lane: higher first, ahead of created_at. */
+    priority: smallint('priority').notNull().default(0),
     claimOwner: text('claim_owner'),
     claimToken: text('claim_token'),
     attempts: integer('attempts').notNull().default(0),
@@ -583,6 +596,7 @@ export const aiWorkflowRun = pgTable(
     index('ai_workflow_run_transport_idx').on(t.transportId, t.state, t.createdAt),
     index('ai_workflow_run_thread_idx').on(t.threadId, t.runKind),
     index('ai_workflow_run_trigger_message_idx').on(t.triggerMessageId),
+    index('ai_workflow_run_work_item_created_idx').on(t.workItemId, t.createdAt),
   ],
 );
 

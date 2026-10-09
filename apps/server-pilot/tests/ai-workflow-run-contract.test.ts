@@ -578,6 +578,33 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
     expect(await claimNextAiRun({ ownerId: 'hms-worker-2', lane: 'hms' })).toBeNull();
   });
 
+  it('claims a higher-priority run in the lane before an older lower-priority run', async () => {
+    const older = await seedMailContext();
+    const newer = await seedMailContext();
+    const enqueue = (ctx: Awaited<ReturnType<typeof seedMailContext>>, label: string) =>
+      enqueueAiRun({
+        transportId: ctx.transportId,
+        threadId: ctx.threadId,
+        triggerMessageId: ctx.messageId,
+        runKind: 'candidate_draft',
+        idempotencyKey: `priority-${label}:${ctx.messageId}`,
+        modelId: 'amazon.nova-lite-v1:0',
+        promptVersion: 'draft-v1',
+        executorLane: 'hms',
+      });
+    const olderRun = await enqueue(older, 'older');
+    const newerRun = await enqueue(newer, 'newer');
+    await getDb()
+      .update(aiWorkflowRun)
+      .set({ priority: 10 })
+      .where(eq(aiWorkflowRun.id, newerRun.id));
+
+    const first = await claimNextAiRun({ ownerId: 'hms-priority-a', lane: 'hms' });
+    expect(first?.id).toBe(newerRun.id);
+    const second = await claimNextAiRun({ ownerId: 'hms-priority-b', lane: 'hms' });
+    expect(second?.id).toBe(olderRun.id);
+  });
+
   it('sets deadline once and preserves it across retry and stale reclaim', async () => {
     const { transportId, threadId, messageId } = await seedMailContext();
     await enqueueAiRun({
