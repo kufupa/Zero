@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
+  cancelNoteFor, penaltyRefusal,
   chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, formPairsFromSnapshot, hmsDateToIso,
   arrivalReport, identityCheck, isCancelledStatus, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
   parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty,
@@ -31,6 +32,7 @@ test('parseCancelArgs accepts the documented usage and defaults the reason', () 
     reason: 'Test Reservations',
     out: '/tmp/cancel-stay-proof',
     lastName: null,
+    allowRealGuest: false,
   });
 });
 
@@ -709,4 +711,60 @@ test('an error after the OK click stays uncertain unless a read confirmed the ca
   assert.equal(outcomeAfterFailure({ clickedOk: true, statusAfter: 'Cancelled' }), 'cancelled');
   assert.equal(outcomeAfterFailure({ clickedOk: false, statusAfter: 'Cancelled' }), 'execution_failure');
   assert.equal(outcomeAfterFailure({ clickedOk: false, statusAfter: null }), 'execution_failure');
+});
+
+// ---- Modes: --allow-real-guest, the lab guard, the cancel note and the penalty refusal ----
+
+test('--allow-real-guest is a switch: off by default, given once, and never taken as a value', () => {
+  assert.equal(parseCancelArgs(argv()).args.allowRealGuest, false);
+  const on = parseCancelArgs([...argv(), '--allow-real-guest']);
+  assert.equal(on.ok, true, on.error);
+  assert.equal(on.args.allowRealGuest, true);
+  assert.equal(parseCancelArgs([...argv(), '--allow-real-guest', '--allow-real-guest']).ok, false);
+  assert.equal(parseCancelArgs(['--reason', '--allow-real-guest', ...argv()]).ok, false);
+});
+
+test('without --allow-real-guest the CLI keeps the Labtest guard before any browser work', () => {
+  const before2027 = parseCancelArgs(argv({ '--arrival': '2026-11-12' })).args;
+  assert.equal(preflight(before2027).outcome, 'refused_not_lab');
+  const guest = { confirmation: '57291630-1', lastName: 'Smith', arrival: '12-NOV-2026', status: 'Reserved' };
+  assert.equal(identityCheck(before2027, guest).outcome, 'refused_not_lab');
+});
+
+test('--allow-real-guest lifts the lab guard for that run only, and the confirmation and arrival still match', () => {
+  const on = parseCancelArgs([
+    ...argv({ '--arrival': '2026-11-12', '--mode': 'commit', '--reason': 'Guest request' }),
+    '--allow-real-guest',
+  ]).args;
+  assert.equal(preflight(on).ok, true);
+  const guest = { confirmation: '57291630-1', lastName: 'Smith', arrival: '12-NOV-2026', status: 'Reserved' };
+  assert.deepEqual(identityCheck(on, guest), { ok: true, outcome: null, reason: null });
+  assert.equal(identityCheck(on, { ...guest, confirmation: '11110906-1' }).outcome, 'refused_identity_mismatch');
+  assert.equal(identityCheck(on, { ...guest, arrival: '13-NOV-2026' }).outcome, 'refused_identity_mismatch');
+  assert.equal(identityCheck(on, { ...guest, arrival: '13-NOV-2026' }, { arrivalHint: true }).ok, true);
+  assert.equal(identityCheck(on, { ...guest, arrival: 'garbage' }).reason, 'arrival_unparsed');
+});
+
+test('the cancel note is the lab text for lab runs and the staff reason for on-mode runs', () => {
+  assert.equal(cancelNoteFor(parseCancelArgs(argv({ '--mode': 'commit' })).args), 'Lab proof cancel');
+  const on = parseCancelArgs([
+    ...argv({ '--arrival': '2026-11-12', '--mode': 'commit', '--reason': 'Guest request' }),
+    '--allow-real-guest',
+  ]).args;
+  assert.equal(cancelNoteFor(on), 'Guest request');
+});
+
+test('a penalty dialog refuses the run as refused_penalty, exit 2, and nothing else does', () => {
+  const penalty = parsePenalty(['Cancellation Penalty of 2060.00 may be added to account.']);
+  assert.equal(penaltyRefusal(penalty), 'refused_penalty');
+  assert.equal(penaltyRefusal(parsePenalty(['Cancel Reservation', 'Test Reservations'])), null);
+  assert.equal(exitCodeFor('refused_penalty'), 2);
+});
+
+test('cancel-stay.mjs takes its note from cancelNoteFor and refuses a penalty before any OK click', async () => {
+  const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /Lab proof cancel/);
+  assert.match(source, /note\.fill\(cancelNoteFor\(args\)\)/);
+  assert.match(source, /penaltyRefusal\(penaltyBefore\)/);
+  assert.match(source, /penaltyRefusal\(penaltyNow\)/);
 });

@@ -8,10 +8,12 @@ import {
   paneStayClock,
   paneStayPropertyLock,
   paneStaySaveEnabled,
+  paneStaySaveMode,
   pruneExpiredPaneRuns,
   recordPanePreview,
   registerPaneRun,
   takePanePreview,
+  type PaneSaveMode,
   type PaneStayLock,
 } from './pane-stay-save.js';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -28,6 +30,7 @@ const CANCEL_STAY = fileURLToPath(
   new URL('../../tooling/playwright-quote/cancel-stay.mjs', import.meta.url),
 );
 const LAB_ARRIVAL_FLOOR = '2027-01-01';
+const ALLOW_REAL_GUEST_FLAG = '--allow-real-guest';
 const CANCEL_TIMEOUT_MS = 20 * 60_000;
 
 export type PaneStayCancelMode = 'preview' | 'commit';
@@ -76,6 +79,8 @@ export type PaneStayCancelSpawnInput = {
   confirmation: string;
   arrival: string;
   reason: string | null;
+  /** True only in on mode. The CLI then drops the Labtest guard for this run. */
+  allowRealGuest: boolean;
 };
 
 /** What one cancel-stay.mjs run reports in its result.json. Screenshots are absolute paths. */
@@ -96,14 +101,14 @@ export type PaneStayCancelSpawnResult = {
 export const paneStayCancelLoaders: {
   spawn: ((input: PaneStayCancelSpawnInput) => Promise<PaneStayCancelSpawnResult>) | null;
   lock: PaneStayLock | null;
-  enabled: (() => boolean) | null;
+  mode: (() => PaneSaveMode) | null;
 } = {
   spawn: null,
   lock: null,
-  enabled: null,
+  mode: null,
 };
 
-// Same gate as the save path: RESERVATIONIST_PANE_SAVE=on.
+// Same gate as the save path: RESERVATIONIST_PANE_SAVE lab or on. off refuses. The mode decides the guard (below).
 export function paneStayCancelEnabled(env: NodeJS.Dict<string> = process.env): boolean {
   return paneStaySaveEnabled(env);
 }
@@ -114,15 +119,17 @@ function isRealIsoDate(value: string): boolean {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
-// Server-side input checks. The cancel input has no guest name, so the Labtest identity is enforced by the
-// CLI on the stay it opens (refused_not_lab). The 2027 floor is enforced here, before any browser work.
+// Server-side input checks. The cancel input has no guest name, so in lab mode the Labtest identity is enforced by the
+// CLI on the stay it opens (refused_not_lab). The 2027 floor is enforced here, before any browser work. On mode
+// (allowRealGuest) real guests are allowed, so the floor does not apply.
 export function checkCancelInput(
   input: PaneStayCancelPreviewInput,
+  { allowRealGuest = false }: { allowRealGuest?: boolean } = {},
 ): 'refused_input_invalid' | 'refused_not_lab' | null {
   if (!/^\d+-\d+$/.test(input.confirmation) || !isRealIsoDate(input.arrival)) {
     return 'refused_input_invalid';
   }
-  if (input.arrival < LAB_ARRIVAL_FLOOR) return 'refused_not_lab';
+  if (!allowRealGuest && input.arrival < LAB_ARRIVAL_FLOOR) return 'refused_not_lab';
   return null;
 }
 
@@ -146,6 +153,8 @@ export function buildCancelStayArgs(input: PaneStayCancelSpawnInput, outDir: str
     outDir,
   ];
   if (input.mode === 'commit' && input.reason) args.push('--reason', input.reason);
+  // Only an on-mode run passes the switch. Nothing else in the environment can lift the lab guard.
+  if (input.allowRealGuest) args.push(ALLOW_REAL_GUEST_FLAG);
   return args;
 }
 
@@ -211,9 +220,11 @@ async function runPaneStayCancel(
   mode: PaneStayCancelMode,
   input: OwnedInput<PaneStayCancelPreviewInput & { reason?: string; previewDigest?: string }>,
 ): Promise<PaneStayCancelResult> {
-  const enabled = paneStayCancelLoaders.enabled ?? (() => paneStayCancelEnabled());
-  if (!enabled()) return refused('refused_flag_off');
-  const inputRefusal = checkCancelInput(input);
+  // The save-path mode decides the guard: off refuses, lab keeps the Labtest guard, on allows real guests.
+  const saveMode = paneStayCancelLoaders.mode?.() ?? paneStaySaveMode();
+  if (saveMode === 'off') return refused('refused_flag_off');
+  const allowRealGuest = saveMode === 'on';
+  const inputRefusal = checkCancelInput(input, { allowRealGuest });
   if (inputRefusal) return refused(inputRefusal);
   const reason = mode === 'commit' ? (input.reason ?? '').replace(/\s+/g, ' ').trim() : null;
   if (mode === 'commit' && (!reason || reason.startsWith('-')))
@@ -233,6 +244,7 @@ async function runPaneStayCancel(
     confirmation: input.confirmation,
     arrival: input.arrival,
     reason,
+    allowRealGuest,
   };
   try {
     await pruneExpiredPaneRuns(paneStayClock());

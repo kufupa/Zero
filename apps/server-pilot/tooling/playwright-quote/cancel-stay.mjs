@@ -8,9 +8,10 @@
 // already_cancelled. If the dropdown window does not cover arrival, its calendar icon moves it first; the grid
 // window picker is the fallback.
 // Preview reads the reason list and dismisses the dialog unconfirmed.
-// Commit picks --reason and clicks its OK once. A cancellation penalty dialog is
-// recorded and left open; OK is never clicked on it.
-// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"] [--last-name Labtest]
+// Commit picks --reason and clicks its OK once. A cancellation penalty dialog, open before preview or commit
+// clicks OK, refuses the run (refused_penalty). It is recorded and left open; nothing is clicked on it.
+// --allow-real-guest lifts the Labtest guard for one run (on mode). The server passes it; it is never read from the env.
+// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"] [--last-name Labtest] [--allow-real-guest]
 // --last-name is optional: when the confirmation does not show in the header quick search, the surname is typed and the row with the exact confirmation is used.
 // Exit: 0 preview_ok|cancelled|already_cancelled; 2 refused_* or usage; 1 other outcome (also writes failure.png).
 // Read-only lookups (find, search-guest) live in stay-lookup.mjs, which imports the helpers exported here.
@@ -20,15 +21,14 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
-  arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, hmsDateToIso, identityCheck,
+  arrivalReport, cancelNoteFor, chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, hmsDateToIso, identityCheck,
   isCancelledStatus, normalizeReasons, outcomeAfterFailure, parseBalanceValue, parseCancelArgs, parseDateWindowLabel, parsePenalty,
-  parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, settleCancel, squash,
+  parseQuickSearchRow, penaltyRefusal, pickerMonthSteps, preflight, resolveOutcome, settleCancel, squash,
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 
 const MAX_PICKER_CLICKS = 60;
 const QUICK_WAIT_MS = 8000;
-const CANCEL_NOTE = 'Lab proof cancel';
 const PICKER_OPEN = '.x-datepicker:visible, .x-date-picker:visible, .x-monthpicker:visible';
 const PICKER_TITLE = '.x-datepicker-month .x-btn-inner, .x-datepicker-month';
 const PICKER_NEXT = '.x-datepicker-next, .x-datepicker-next a';
@@ -43,6 +43,7 @@ function newResult(args) {
     mode: args.mode,
     reason: args.reason,
     lastName: args.lastName ?? null,
+    allowRealGuest: args.allowRealGuest === true,
     quickStages: [],
     arrivalMismatch: false,
     requestedArrival: args.arrival ?? null,
@@ -628,15 +629,19 @@ async function run(ctx) {
   result.cancelPath = await openCancelDialog(page);
   const dialog = await waitCancelDialog(page);
   await shot(ctx, 'cancel-dialog.png');
+  // A penalty dialog refuses the run in both modes. It is recorded and left open, and nothing is clicked on it.
   const penaltyBefore = parsePenalty(await visibleWindowTexts(page));
-  if (penaltyBefore) {
-    if (args.mode === 'commit') throw new Error('PENALTY_DIALOG_OPEN_BEFORE_OK');
+  const refusedBefore = penaltyRefusal(penaltyBefore);
+  if (refusedBefore) {
     recordPenalty(result, penaltyBefore);
     await shot(ctx, 'penalty.png');
+    result.refusal = 'penalty_dialog_open';
+    result.outcome = refusedBefore;
+    return;
   }
   if (args.mode === 'commit') {
     const note = dialog.locator('textarea:visible');
-    if ((await note.count()) === 1) await note.fill(CANCEL_NOTE);
+    if ((await note.count()) === 1) await note.fill(cancelNoteFor(args));
   }
   const list = await readReasonList(page, dialog);
   result.reasons = list.reasons;
@@ -662,6 +667,16 @@ async function run(ctx) {
   if (!identityCheck(args, again).ok) throw new Error('IDENTITY_CHANGED_BEFORE_OK');
   await list.items.nth(index).click({ force: true });
   await page.waitForTimeout(300);
+  // Last look before the one OK: a penalty dialog that appeared since the first check refuses the run, with no OK click.
+  const penaltyNow = parsePenalty(await visibleWindowTexts(page));
+  const refusedNow = penaltyRefusal(penaltyNow);
+  if (refusedNow) {
+    recordPenalty(result, penaltyNow);
+    await shot(ctx, 'penalty.png');
+    result.refusal = 'penalty_dialog_open';
+    result.outcome = refusedNow;
+    return;
+  }
   if (!(await clickReasonOk(page))) throw new Error('REASON_OK_NOT_UNIQUE');
   result.clickedOk = true;
   mark(ctx, 'committed');
