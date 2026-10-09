@@ -440,6 +440,23 @@ describe('save path wiring', () => {
 });
 
 describe('paneStayLookup router', () => {
+  it('with HMS_JOB_QUEUE unset, the queue routes queue nothing and jobStatus reads nothing', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', '');
+    const spawn = vi.fn(async () => lookupResult());
+    paneStayLookupLoaders.spawn = spawn;
+    const caller = mailboxCaller();
+    await expect(caller.paneStayLookup.queueFind({ threadId: 'thread-1', confirmation: '57291630-1' })).resolves.toEqual({
+      runId: null,
+    });
+    await expect(
+      caller.paneStayLookup.queueSearchGuest({ threadId: 'thread-1', lastName: 'Mokoena', arrival: '2027-09-14' }),
+    ).resolves.toEqual({ runId: null });
+    await expect(
+      caller.paneStayLookup.jobStatus({ threadId: 'thread-1', kind: 'find', confirmation: '57291630-1' }),
+    ).resolves.toBeNull();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('findStay is registered as a read-only mutation with a strict input and returns the find shape', async () => {
     paneStayLookupLoaders.lock = passingLock();
     paneStayLookupLoaders.spawn = async () => lookupResult({ runId: undefined, runDir: undefined });

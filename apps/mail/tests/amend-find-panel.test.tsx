@@ -208,8 +208,9 @@ async function runHmsFind(options: {
   const transport = hmsJobTransport(bound, THREAD);
   if (!transport) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
   try {
-    const { runId } = await transport.queue(next.request);
-    return findRunFromJob(await settle(transport, runId), false) ?? { kind: 'error', message: AMEND_FIND_COPY.readFailed };
+    const started = await transport.queue(next.request);
+    const view = started.view ?? (started.runId ? await settle(transport, started.runId) : null);
+    return findRunFromJob(view, false) ?? { kind: 'error', message: AMEND_FIND_COPY.readFailed };
   } catch {
     return { kind: 'error', message: AMEND_FIND_COPY.lookupFailed };
   }
@@ -229,8 +230,9 @@ async function runHmsSearch(options: {
   const transport = hmsJobTransport(bound, THREAD);
   if (!transport) return { kind: 'error', message: AMEND_FIND_COPY.unavailable };
   try {
-    const { runId } = await transport.queue(next.request);
-    return searchRunFromJob(await settle(transport, runId), false) ?? { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+    const started = await transport.queue(next.request);
+    const view = started.view ?? (started.runId ? await settle(transport, started.runId) : null);
+    return searchRunFromJob(view, false) ?? { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
   } catch {
     return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
   }
@@ -487,6 +489,54 @@ describe('AmendLookupPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
     await expectFoundBooking();
     expect(findStay).toHaveBeenCalledTimes(2);
+  });
+});
+
+/** The server with its job queue off (HMS_JOB_QUEUE unset): queue calls return no run id, findStay/searchGuest answer. */
+function syncTrpc(findStay: ReturnType<typeof vi.fn>, searchGuest: ReturnType<typeof vi.fn> = vi.fn()) {
+  const jobStatus = vi.fn(async (_input: object) => null);
+  return {
+    jobStatus,
+    trpc: {
+      paneStayLookup: {
+        queueFind: { mutate: async () => ({ runId: null }) },
+        queueSearchGuest: { mutate: async () => ({ runId: null }) },
+        findStay: { mutate: findStay },
+        searchGuest: { mutate: searchGuest },
+        jobStatus: { query: jobStatus },
+        screenshot: { query: vi.fn().mockResolvedValue(NO_SHOT) },
+      },
+      brain: { getCapabilities: { query: async () => ({ paneSave: capabilities.paneSave }) } },
+    },
+  };
+}
+
+describe('AmendLookupPanel with the job queue off', () => {
+  it('finds the booking synchronously through findStay, with no job polled and no as-of stamp', async () => {
+    const findStay = vi.fn().mockResolvedValue(found({ departure: '2026-10-13' }));
+    const { trpc, jobStatus } = syncTrpc(findStay);
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
+    pressFind();
+    await waitFor(() => expect(screen.getByText('Guest wants: 14 Oct 2026')).toBeTruthy());
+    expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    expect(jobStatus.mock.calls.some(([input]) => 'runId' in input)).toBe(false);
+    expect(screen.queryByTestId('hms-as-of')).toBeNull();
+  });
+
+  it('runs the guest-name search synchronously through searchGuest', async () => {
+    const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA], screenshots: [], runId: null });
+    const { trpc } = syncTrpc(vi.fn(), search);
+    render(<AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: null })} trpc={trpc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS' }));
+    await screen.findByRole('list', { name: 'Bookings found in HMS' });
+    expect(search).toHaveBeenCalledWith({ lastName: 'Mokoena', arrival: '2026-10-12', departure: '2026-10-14' });
+  });
+
+  it('reads a failed synchronous call as the lookup failure, as before jobs', async () => {
+    const { trpc } = syncTrpc(vi.fn().mockRejectedValue(new Error('socket hang up')));
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
+    pressFind();
+    await waitFor(() => expect(screen.getByText("Nava couldn't look this up. Search HMS yourself.")).toBeTruthy());
   });
 });
 

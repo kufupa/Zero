@@ -151,12 +151,19 @@ export type HmsJobView = {
   result: Record<string, unknown> | null;
 };
 
-export type QueuedHmsJob = { runId: string };
+/** runId is null when the server's job queue is off (HMS_JOB_QUEUE): the lookup then runs synchronously instead. */
+export type QueuedHmsJob = { runId: string | null };
+
+/** What queueing a request gives the pane: a job to poll, or with the queue off, the settled synchronous answer. */
+export type HmsJobStart = { runId: string; view?: undefined } | { runId: null; view: HmsJobView };
 
 /** The paneStayLookup job routes, bound off the pane's tRPC client. */
 export type HmsJobClient = {
   queueFind: (input: FindStayInput & { threadId: string }) => Promise<QueuedHmsJob>;
   queueSearchGuest: (input: GuestSearchInput & { threadId: string }) => Promise<QueuedHmsJob>;
+  /** The synchronous find and search, used while the server's job queue is off. */
+  findStay?: (input: FindStayInput) => Promise<FindStayReply>;
+  searchGuest?: (input: GuestSearchInput) => Promise<GuestSearchReply>;
   jobStatus: (
     input: { runId: string } | { threadId: string; kind: HmsJobKind; confirmation?: string },
   ) => Promise<HmsJobView | null>;
@@ -165,7 +172,7 @@ export type HmsJobClient = {
 
 /** The job calls for one thread: queue a request, and read a job by run id or the latest of a kind on the thread. */
 export type HmsJobTransport = {
-  queue: (request: HmsJobRequest) => Promise<QueuedHmsJob>;
+  queue: (request: HmsJobRequest) => Promise<HmsJobStart>;
   status: (input: { runId: string } | { kind: HmsJobKind; confirmation?: string }) => Promise<HmsJobView | null>;
 };
 
@@ -173,6 +180,8 @@ type TrpcPaneStayLookupRoutes = {
   paneStayLookup?: {
     queueFind?: { mutate: HmsJobClient['queueFind'] };
     queueSearchGuest?: { mutate: HmsJobClient['queueSearchGuest'] };
+    findStay?: { mutate: NonNullable<HmsJobClient['findStay']> };
+    searchGuest?: { mutate: NonNullable<HmsJobClient['searchGuest']> };
     jobStatus?: { query: HmsJobClient['jobStatus'] };
     screenshot?: { query: (input: ScreenshotInput) => Promise<ScreenshotReply> };
   };
@@ -186,32 +195,59 @@ export function amendFindClientFromTrpc(trpc: unknown): HmsJobClient | null {
   const queueSearch = routes?.queueSearchGuest;
   const status = routes?.jobStatus;
   const shot = routes?.screenshot;
+  const find = routes?.findStay;
+  const search = routes?.searchGuest;
   if (!queueFind || !queueSearch || !status || !shot) return null;
   return {
     queueFind: (input) => queueFind.mutate(input),
     queueSearchGuest: (input) => queueSearch.mutate(input),
+    ...(find ? { findStay: (input: FindStayInput) => find.mutate(input) } : {}),
+    ...(search ? { searchGuest: (input: GuestSearchInput) => search.mutate(input) } : {}),
     jobStatus: (input) => status.query(input),
     screenshot: (input) => shot.query(input),
   };
 }
 
-/** The job calls for one thread, or null when the client or the thread is missing. */
+/** A synchronous reply shown as a settled job, so the panels read it the same way. No as-of stamp: it is live. */
+function syncView(request: HmsJobRequest, reply: FindStayReply | GuestSearchReply): HmsJobView {
+  return {
+    runId: reply.runId ?? '',
+    request,
+    prefetch: false,
+    status: 'done',
+    position: null,
+    attempts: 0,
+    failureClass: null,
+    asOf: null,
+    result: reply as unknown as Record<string, unknown>,
+  };
+}
+
+/**
+ * The job calls for one thread, or null when the client or the thread is missing. With the server's job queue off, the
+ * queue call returns no run id and the request runs through the synchronous findStay or searchGuest, as before jobs.
+ */
 export function hmsJobTransport(client: HmsJobClient | null, threadId: string | null): HmsJobTransport | null {
   if (!client || !threadId) return null;
   return {
-    queue: (request) =>
-      request.kind === 'find'
-        ? client.queueFind({
-            threadId,
-            confirmation: request.confirmation,
-            ...(request.arrival ? { arrival: request.arrival } : {}),
-          })
-        : client.queueSearchGuest({
-            threadId,
-            lastName: request.lastName,
-            arrival: request.arrival,
-            ...(request.departure ? { departure: request.departure } : {}),
-          }),
+    queue: async (request) => {
+      if (request.kind === 'find') {
+        const input: FindStayInput = request.arrival
+          ? { confirmation: request.confirmation, arrival: request.arrival }
+          : { confirmation: request.confirmation };
+        const { runId } = await client.queueFind({ threadId, ...input });
+        if (runId) return { runId };
+        if (!client.findStay) throw new Error('paneStayLookup.findStay unavailable');
+        return { runId: null, view: syncView(request, await client.findStay(input)) };
+      }
+      const input: GuestSearchInput = request.departure
+        ? { lastName: request.lastName, arrival: request.arrival, departure: request.departure }
+        : { lastName: request.lastName, arrival: request.arrival };
+      const { runId } = await client.queueSearchGuest({ threadId, ...input });
+      if (runId) return { runId };
+      if (!client.searchGuest) throw new Error('paneStayLookup.searchGuest unavailable');
+      return { runId: null, view: syncView(request, await client.searchGuest(input)) };
+    },
     status: (input) => client.jobStatus('runId' in input ? input : { threadId, ...input }),
   };
 }

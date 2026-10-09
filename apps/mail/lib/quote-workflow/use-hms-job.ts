@@ -95,10 +95,12 @@ export function useHmsJob(input: {
       setQueueFailed(false);
       setQueuing(true);
       transport.queue(request).then(
-        ({ runId: next }) => {
+        (started) => {
           if (generation.current !== mine) return;
           setQueuing(false);
-          setRunId(next);
+          // Job queue off: the lookup ran synchronously and its answer is already settled.
+          if (started.view) setView(started.view);
+          else setRunId(started.runId);
         },
         () => {
           if (generation.current !== mine) return;

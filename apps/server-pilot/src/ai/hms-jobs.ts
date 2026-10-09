@@ -14,7 +14,7 @@ import { basename } from 'node:path';
 import { and, desc, eq, gt, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
-import { aiWorkflowRun, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailThread, message } from '../db/schema/mail.js';
 import { workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
@@ -43,6 +43,14 @@ import {
   markAiRunSucceeded,
   NOT_APPLICABLE_MODEL_ID,
 } from './run-ledger.js';
+
+/**
+ * The queued pane path. Only the exact value `on` enables it. Off (the default), pane finds and searches run
+ * synchronously in the web process as before, no job is queued or prefetched, and no worker claims hms jobs.
+ */
+export function hmsJobQueueEnabled(env: NodeJS.Dict<string> = process.env): boolean {
+  return env.HMS_JOB_QUEUE === 'on';
+}
 
 export const HMS_JOB_PRIORITY_USER = 10;
 export const HMS_JOB_PRIORITY_PREFETCH = 0;
@@ -240,7 +248,7 @@ export async function prefetchHmsConfirmations(
   db: DB = getDb(),
   env = parseEnv(process.env as Record<string, string | undefined>),
 ): Promise<number> {
-  if (!env.HMS_PREFETCH_ENABLED) return 0;
+  if (!env.HMS_PREFETCH_ENABLED || !hmsJobQueueEnabled()) return 0;
   // Live admission stamps an admission snapshot; backfill and imports do not.
   if (
     run.runKind !== 'inbound_triage' ||
@@ -250,11 +258,13 @@ export async function prefetchHmsConfirmations(
     return 0;
   }
   const [mail] = await db
-    .select({ subject: message.subject, textBody: message.textBody })
+    .select({ subject: message.subject, textBody: message.textBody, spamAt: mailThread.spamAt })
     .from(message)
+    .innerJoin(mailThread, eq(mailThread.id, message.threadId))
     .where(eq(message.id, run.triggerMessageId))
     .limit(1);
-  if (!mail) return 0;
+  // Spam never spends the hourly prefetch cap.
+  if (!mail || mail.spamAt) return 0;
   const numbers = extractHmsConfirmations(`${mail.subject ?? ''}\n${mail.textBody ?? ''}`);
   if (numbers.length === 0) return 0;
   const workItemId = await latestWorkItemId(db, run.transportId, run.threadId);
@@ -287,7 +297,7 @@ export async function prefetchHmsConfirmations(
   return created;
 }
 
-/** Fire-and-forget from the worker after a triage commit. Off unless HMS_PREFETCH_ENABLED=1. */
+/** Fire-and-forget from the worker after a triage commit. Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1. */
 export function schedulePrefetchForInbound(run: AiWorkflowRun): void {
   void prefetchHmsConfirmations(run).catch(() => undefined);
 }

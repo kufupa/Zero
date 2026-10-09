@@ -13,6 +13,7 @@ import {
   enqueueHmsJob,
   executeHmsJob,
   extractHmsConfirmations,
+  hmsJobQueueEnabled,
   hmsJobRequestSchema,
   HMS_JOB_PRIORITY_PREFETCH,
   HMS_JOB_PRIORITY_USER,
@@ -24,6 +25,7 @@ import {
 import { paneStayLookupLoaders, type PaneStayLookupSpawnResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { aiDraftGeneration, aiWorkflowRun, message, mailThread } from '../src/db/schema/mail.js';
+import { runHmsJobOnce } from '../src/ai/worker.js';
 import type { DB } from '../src/db/client.js';
 import { parseEnv } from '../src/env.js';
 import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
@@ -156,6 +158,13 @@ describe('U23 HMS job queue (pure)', () => {
         arrival: '2026-10-12',
       }).success,
     ).toBe(false);
+  });
+
+  it('turns the job queue on only for HMS_JOB_QUEUE=on', () => {
+    expect(hmsJobQueueEnabled({})).toBe(false);
+    expect(hmsJobQueueEnabled({ HMS_JOB_QUEUE: '1' })).toBe(false);
+    expect(hmsJobQueueEnabled({ HMS_JOB_QUEUE: 'off' })).toBe(false);
+    expect(hmsJobQueueEnabled({ HMS_JOB_QUEUE: 'on' })).toBe(true);
   });
 
   it('lets pane jobs claim without the read service, and nothing else on a read-only lane', () => {
@@ -447,6 +456,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it('a duplicate prefetch is a no-op, and the hourly cap holds per transport', () =>
     withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1 and 7654321-2');
       const inbound = await insertInboundTriage(db, threadId, messageId);
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true, HMS_PREFETCH_PER_HOUR: 1 };
@@ -466,12 +476,115 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it('prefetch stays off unless HMS_PREFETCH_ENABLED is set, and never runs for backfill', () =>
     withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
       const inbound = await insertInboundTriage(db, threadId, messageId);
       const base = parseEnv(process.env as Record<string, string | undefined>);
       expect(await prefetchHmsConfirmations(inbound, db, { ...base, HMS_PREFETCH_ENABLED: false })).toBe(0);
       const backfill = { ...inbound, admissionSnapshotId: null };
       expect(await prefetchHmsConfirmations(backfill, db, { ...base, HMS_PREFETCH_ENABLED: true })).toBe(0);
+    }));
+
+  it('prefetch needs the job queue on, and skips mail on a spam thread', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
+      const inbound = await insertInboundTriage(db, threadId, messageId);
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+      expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(0);
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      await db.update(mailThread).set({ spamAt: new Date() }).where(eq(mailThread.id, threadId));
+      expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(0);
+      await db.update(mailThread).set({ spamAt: null }).where(eq(mailThread.id, threadId));
+      expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(1);
+    }));
+
+  it('the ai-worker claimer claims nothing while HMS_JOB_QUEUE is off', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      await queueUserHmsJob(
+        { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
+        db,
+      );
+      const execute = vi.fn(async () => undefined);
+      expect(await runHmsJobOnce({ db, execute })).toBe(false);
+      expect(execute).not.toHaveBeenCalled();
+    }));
+
+  it('AE5 through the ai-worker claimer: queue, unmount, the worker runs the job, remount reads the result', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      paneStayLookupLoaders.lock = lockWith(true);
+      paneStayLookupLoaders.spawn = vi.fn(async () => FOUND);
+      const { threadId } = await seedThread(db);
+      const queued = await queueUserHmsJob(
+        { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
+        db,
+      );
+      // The pane is gone. The worker claims and runs the job on its own.
+      const executed: string[] = [];
+      const execute = async (runId: string) => {
+        const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId));
+        executed.push(await runClaimedJob(db, run!));
+      };
+      expect(await runHmsJobOnce({ db, execute })).toBe(true);
+      expect(executed).toEqual(['succeeded']);
+      const remounted = await readHmsJobView(
+        { transportId: TRANSPORT_ID, threadId, kind: 'find', confirmation: CONFIRMATION },
+        db,
+      );
+      expect(remounted).toMatchObject({ runId: queued!.id, status: 'done' });
+      expect(remounted?.result).toMatchObject({ outcome: 'found' });
+      // A restart of that worker while a job runs puts it back to retry_wait for the next claim.
+      const again = await queueUserHmsJob(
+        { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
+        db,
+      );
+      const held = await claimJob(db, 'hms-ai-worker-333');
+      await markAiRunRunning(
+        { runId: held.id, claimOwner: held.claimOwner!, claimToken: held.claimToken!, deadlineAt: held.deadlineAt! },
+        db,
+      );
+      await db
+        .update(aiWorkflowRun)
+        .set({ heartbeatAt: new Date(Date.now() - 10 * 60_000) })
+        .where(eq(aiWorkflowRun.id, held.id));
+      expect(await requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-444' }, db)).toBe(1);
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: again!.id }, db)).toMatchObject({
+        status: 'retrying',
+      });
+    }));
+
+  it('the ai-worker claimer takes only pane job runs on the hms lane, and nothing while the lane is paused', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db);
+      const base = {
+        transportId: TRANSPORT_ID,
+        threadId,
+        triggerMessageId: messageId,
+        modelId: 'not_applicable',
+        state: 'queued' as const,
+        priority: 50,
+        nextRunAt: new Date(Date.now() - 60_000),
+        createdAt: new Date(Date.now() - 60_000),
+      };
+      // Other hms-lane work, older and higher priority than the pane job: a read-service read and a write.
+      await db.insert(aiWorkflowRun).values([
+        { ...base, id: randomUUID(), runKind: 'read_tool', idempotencyKey: `read-${randomUUID()}`, promptVersion: 'hms-read/1', executorLane: 'hms' },
+        { ...base, id: randomUUID(), runKind: 'hms_write', idempotencyKey: `write-${randomUUID()}`, promptVersion: 'hms-write/1', executorLane: 'hms' },
+      ]);
+      const job = await queueUserHmsJob(
+        { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
+        db,
+      );
+      const execute = vi.fn(async () => undefined);
+      vi.stubEnv('HMS_LANE_PAUSED', '1');
+      expect(await runHmsJobOnce({ db, execute })).toBe(false);
+      vi.stubEnv('HMS_LANE_PAUSED', '');
+      expect(await runHmsJobOnce({ db, execute })).toBe(true);
+      expect(execute).toHaveBeenCalledWith(job!.id);
+      expect(await runHmsJobOnce({ db, execute })).toBe(false);
+      expect(execute).toHaveBeenCalledTimes(1);
     }));
 
   it('stale reclaim never takes an hms_write run, but still reclaims a stale read job', () =>

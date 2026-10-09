@@ -5,7 +5,12 @@ import {
   paneStayLookupLoaders,
   searchGuest,
 } from '../../ai/pane-stay-lookup.js';
-import { queueUserHmsJob, readHmsJobView, registerJobScreenshotRun } from '../../ai/hms-jobs.js';
+import {
+  hmsJobQueueEnabled,
+  queueUserHmsJob,
+  readHmsJobView,
+  registerJobScreenshotRun,
+} from '../../ai/hms-jobs.js';
 import {
   PANE_RUN_ID_PATTERN,
   PANE_SCREENSHOT_NAME_PATTERN,
@@ -115,7 +120,9 @@ export const paneStayLookupRouter = router({
       onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
     });
   }),
+  // HMS_JOB_QUEUE off (the default): nothing is queued. runId null tells the pane to run findStay or searchGuest above.
   queueFind: mailboxProcedure.input(queueFindInput).mutation(async ({ input, ctx }) => {
+    if (!hmsJobQueueEnabled()) return { runId: null };
     const run = await queueUserHmsJob({
       transportId: ctx.activeTransportId,
       userId: ctx.sessionUser.id,
@@ -128,6 +135,7 @@ export const paneStayLookupRouter = router({
   queueSearchGuest: mailboxProcedure
     .input(queueSearchGuestInput)
     .mutation(async ({ input, ctx }) => {
+      if (!hmsJobQueueEnabled()) return { runId: null };
       const run = await queueUserHmsJob({
         transportId: ctx.activeTransportId,
         userId: ctx.sessionUser.id,
@@ -143,7 +151,7 @@ export const paneStayLookupRouter = router({
       return { runId: run.id };
     }),
   jobStatus: mailboxProcedure.input(jobStatusInput).query(({ input, ctx }) =>
-    readHmsJobView({ transportId: ctx.activeTransportId, ...input }),
+    hmsJobQueueEnabled() ? readHmsJobView({ transportId: ctx.activeTransportId, ...input }) : null,
   ),
   // Same reader as paneStayCancel.paneStayScreenshot. A lookup the hms worker ran is not in this process's registry,
   // so on a miss its job record registers the directory, and the read is tried once more.
