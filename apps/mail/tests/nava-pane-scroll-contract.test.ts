@@ -1,9 +1,14 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const root = join(__dirname, '..');
-const pane = readFileSync(join(root, 'components/nava-pane/nava-pane.tsx'), 'utf8');
+// The root layout and the tool's <main> stay in the shell. The first-run screens live in screens/.
+const navaPane = join(root, 'components/nava-pane');
+const pane = readFileSync(join(navaPane, 'nava-pane.tsx'), 'utf8');
+const screens = readdirSync(join(navaPane, 'screens'))
+  .map((file) => readFileSync(join(navaPane, 'screens', file), 'utf8'))
+  .join('\n');
 const css = readFileSync(join(root, 'app/globals.css'), 'utf8');
 
 // Staff saw no scrollbar (2026-10-09): the pane grew with its content (min-h-screen), so its scroll area never
@@ -17,7 +22,7 @@ describe('the Outlook pane scrolls inside itself with a visible bar', () => {
 
   it('scrolls the tool body and the first-run screens in a visible-bar area', () => {
     expect(pane).toMatch(/<main className="nava-pane-scroll [^"]*overflow-y-auto/);
-    expect(pane.match(/nava-pane-scroll/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(`${pane}\n${screens}`.match(/nava-pane-scroll/g)?.length).toBeGreaterThanOrEqual(4);
   });
 
   it('styles that area with a standard, always-visible scrollbar', () => {

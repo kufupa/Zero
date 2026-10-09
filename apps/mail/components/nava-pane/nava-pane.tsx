@@ -1,24 +1,8 @@
-import {
-  CheckCircle2,
-  AlertCircle,
-  RefreshCw,
-  Send,
-  Mail,
-  Check,
-  Building2,
-  ChevronLeft,
-  ChevronRight,
-  Network,
-  Sparkles,
-  ArrowRight,
-  Clock,
-} from 'lucide-react';
-import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
 import { PaneMenu } from './pane-menu';
-import { PrimaryButton, SecondaryButton, Section } from './pane-ui';
+import { Section } from './pane-ui';
 import {
   createPaneVersionWatch,
   fetchPaneVersion,
@@ -30,26 +14,18 @@ import {
   reloadPane,
   type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
-import { beginMutation, endMutation, mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
+import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
-import { AmendLookupPanel } from '@/components/quote-workflow/amend-lookup-panel';
-import { VoucherFindCard } from '@/components/quote-workflow/voucher-find-card';
 import {
   fixtureReplyHtml,
   loadQuoteFixture,
   pickFixtureForSession,
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
-import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
-import {
-  completedDateOptions,
-  requireMultiOptionDraft,
-  multiOptionSignature,
-  type CombinedReplyEdit,
-} from '@/lib/quote-workflow/multi-option-draft';
+import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
@@ -82,7 +58,6 @@ import { useHmsQueueStatus } from '@/lib/quote-workflow/use-hms-queue-status';
 import {
   admissionKey,
   analysisRetryKey,
-  canCreateNativeDraft,
   canCreatePdf,
   canRunQuoteStep,
   dinnerAllowanceStillRequired,
@@ -92,11 +67,9 @@ import {
   hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
-  optionLetter,
   pickNextRunnableStep,
   quoteRunBlockReason,
   reduceQuoteSession,
-  requestedQuoteKeys,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -105,126 +78,18 @@ import { trpcClient } from '@/providers/query-provider';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
 import { toast } from 'sonner';
+import { WelcomeScreen } from './screens/welcome';
+import { DiagnosticsScreen } from './screens/diagnostics';
+import { TourScreen } from './screens/tour';
+import { SelectedEmailBlock } from './blocks/selected-email';
+import { BookingVoucherCard } from './blocks/booking-voucher-card';
+import { DraftPreviewBlock } from './blocks/draft-preview';
+import { SystemCheckResultsBlock } from './blocks/system-check-results';
+import { ReplyBody } from './reply-body';
+import { useInsertAiDraft } from './use-insert-ai-draft';
+import { useSystemCheck } from './use-system-check';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool';
-
-type TourSlide = {
-  title: string;
-  subtitle: string;
-  bullets: Array<{ title: string; desc: string }>;
-};
-
-const TOUR_SLIDES: TourSlide[] = [
-  {
-    title: '1. Automatic Email Sync',
-    subtitle:
-      'When an inquiry arrives, key parameters are detected directly from the email thread.',
-    bullets: [
-      {
-        title: 'Direct HMS pre-fill:',
-        desc: 'Extracted details automatically populate your fields with zero manual re-typing.',
-      },
-      {
-        title: 'Verify auto-filled details:',
-        desc: 'During the pilot, please check the email vs the AI auto-filled details to make sure everything is correct.',
-      },
-    ],
-  },
-  {
-    title: '2. Live Infor HMS Actions & Proof',
-    subtitle:
-      'Execute live PMS tasks directly without switching windows or navigating Infor HMS manually.',
-    bullets: [
-      {
-        title: 'Automated execution:',
-        desc: 'Simply hit run and Nava performs the task directly inside Infor HMS for you.',
-      },
-      {
-        title: 'Inspect screenshot proof:',
-        desc: 'Please inspect the live Infor HMS audit capture (full-screen 1000×800) to verify live PMS details.',
-      },
-    ],
-  },
-  {
-    title: '3. Assisted Responses & Actions',
-    subtitle: 'Accelerate daily reservation workflows with AI-assisted drafting.',
-    bullets: [
-      {
-        title: 'Drafted responses & actions:',
-        desc: 'Nava prepares suggested replies and action cards directly in your Outlook window.',
-      },
-      {
-        title: 'Check details & tone:',
-        desc: 'Always check both the details and the tone of the drafted response before sending the email.',
-      },
-      {
-        title: 'Expanding capabilities:',
-        desc: 'Availability quoting is active now; guest lookups, folios, and reservation changes will roll out throughout the pilot.',
-      },
-    ],
-  },
-];
-
-const MAX_UNRESOLVED_REPLY_OPERATIONS = 256;
-const MAX_EXPIRED_REPLY_OUTCOMES = 256;
-const REPLY_OPERATION_CACHE_TTL_MS = 15 * 60 * 1000;
-const UNRESOLVED_REPLY_MARKER = 'nava_outlook_unresolved_reply_v1';
-
-// A generic marker survives re-login/reload without storing mail IDs or PDF bytes.
-// A fresh pane cannot replay the old native operation ID, so ask staff to check
-// Drafts before intentionally starting another operation.
-function hasUnresolvedReplyMarker(): boolean {
-  try { return sessionStorage.getItem(UNRESOLVED_REPLY_MARKER) === '1'; }
-  catch { return false; }
-}
-
-function setUnresolvedReplyMarker(unresolved: boolean): void {
-  try {
-    if (unresolved) sessionStorage.setItem(UNRESOLVED_REPLY_MARKER, '1');
-    else sessionStorage.removeItem(UNRESOLVED_REPLY_MARKER);
-  } catch { /* Restricted WebView storage: in-memory retries still work. */ }
-}
-
-function confirmNewReplyAfterUncertainOutcome(): boolean {
-  try {
-    // Intentional blocking acknowledgment: unlike a toast, another click
-    // cannot silently create a second Outlook draft after an unknown outcome.
-    // oxlint-disable-next-line no-alert
-    return window.confirm(
-      'Check Outlook Drafts for the earlier reply. Have you checked Drafts and do you want to start a new draft?',
-    );
-  } catch { return false; }
-}
-
-/** 'selected' is one date option's reply; 'all' is one reply carrying every completed option. */
-type ReplyDraftScope = 'selected' | 'all';
-
-type PendingReplyOperation = {
-  operationId: string;
-  startedAt: number;
-  scope: ReplyDraftScope;
-  pdfs?: Array<{ fileName: string; pdfBase64: string }>;
-  reviewedHtml?: string;
-  replyPayload?: {
-    operationId: string;
-    entryId: string;
-    storeId: string;
-    folderEntryId: string;
-    htmlBody: string;
-    replyAll: boolean;
-    openInComposer: boolean;
-  };
-  draftLocation?: MailLocation;
-  attachmentPayloads?: Array<{
-    operationId: string;
-    entryId: string;
-    storeId: string;
-    folderEntryId: string;
-    fileName: string;
-    base64Data: string;
-  }>;
-  attachmentsAdded?: number;
-};
 
 // One client for the pane's life, so screenshot loaders keep their identity across renders.
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
@@ -232,15 +97,6 @@ const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
 const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
 // The same picker's typeahead: the HMS list and the listed parties, as staff type. Null when the route is missing.
 const PANE_PARTY_INDEX = partyIndexFromTrpc(trpcClient);
-
-function singleReplyDraft(draft: ReturnType<typeof requireReviewedNativeDraft>) {
-  return draft
-    ? {
-        html: draft.html,
-        attachments: [{ fileName: draft.pdf.fileName, pdfBase64: draft.pdf.pdfBase64 }],
-      }
-    : null;
-}
 
 /**
  * Pane body. The route calls useOutlookBridge() once and passes the result in as `bridge`.
@@ -263,15 +119,6 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     refreshAuthorization,
     activateMailboxSync,
   } = bridge;
-  const replyRetries = useRef(new Map<string, PendingReplyOperation>());
-  const expiredReplyOutcomes = useRef(new Set<string>());
-  const hasUntrackedExpiredReplyOutcomes = useRef(false);
-  const expiredOutcomeConfirmationKey = useRef<string | null>(null);
-  const unresolvedReplyConfirmationKey = useRef<string | null>(null);
-  const replyMarkerBelongsToCurrentScope = useRef(false);
-  const replyInFlight = useRef(false);
-  const [isDraftPending, setIsDraftPending] = useState(false);
-  const [draftStatus, setDraftStatus] = useState<{ key: string; message: string } | null>(null);
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
   // Preview/Book in HMS show only when the server flag is on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
@@ -320,34 +167,39 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     contextRevision.current = { ...contextRevision.current, selection: selectedIdentity,
       selectionEpoch: contextRevision.current.selectionEpoch + 1 };
   }
-  const scopeRef = useRef(currentScope);
   const previousScope = useRef(currentScope);
-  scopeRef.current = currentScope;
+  const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
+  const {
+    trackedDraft,
+    isDraftPending,
+    draftStatus,
+    draftedDetails,
+    dismissDraftedDetails,
+    resetReplyDraft,
+  } = useInsertAiDraft({
+    activeEmail,
+    mailboxEmail: activeConnection?.email,
+    transportLoading,
+    currentScope,
+    contextRevision,
+    quoteSession,
+    combinedEdit,
+    sendCommand,
+    supportsAction,
+  });
+  const { testing, testResults, runComprehensiveTest, resetTestResults } = useSystemCheck({
+    activeEmail,
+    capabilities,
+    detectedEmail,
+    sendCommand,
+  });
   useLayoutEffect(() => {
     if (previousScope.current === currentScope) return;
     previousScope.current = currentScope;
     dispatchQuote({ type: 'reset' });
-    replyRetries.current.clear();
-    expiredReplyOutcomes.current.clear();
-    hasUntrackedExpiredReplyOutcomes.current = false;
-    expiredOutcomeConfirmationKey.current = null;
-    unresolvedReplyConfirmationKey.current = null;
-    replyMarkerBelongsToCurrentScope.current = false;
-    replyInFlight.current = false;
-    setIsDraftPending(false);
-    setDraftedDetails(null);
-    setDraftStatus(null);
-    setTestResults({ bridge: null, activeEmail: null, folderTable: null, serverPing: null });
+    resetReplyDraft();
+    resetTestResults();
   }, [currentScope]);
-
-  const [draftedDetails, setDraftedDetails] = useState<{
-    entryId: string;
-    subject: string;
-    sender: string;
-    senderEmail: string;
-    planName: string;
-    previewHtml?: string;
-  } | null>(null);
 
   const showDraftPreview = Boolean(
     draftedDetails && activeEmail?.entryId && draftedDetails.entryId === activeEmail.entryId,
@@ -612,20 +464,6 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     };
   }, [priorQuoteKey]);
 
-  // Diagnostic state
-  const [testing, setTesting] = useState(false);
-  const [testResults, setTestResults] = useState<{
-    bridge: boolean | null;
-    activeEmail: boolean | null;
-    folderTable: boolean | null;
-    serverPing: boolean | null;
-  }>({
-    bridge: null,
-    activeEmail: null,
-    folderTable: null,
-    serverPing: null,
-  });
-
   // Onboarding & Screen State
   const [currentScreen, setCurrentScreen] = useState<PaneScreen>(() => {
     if (typeof window !== 'undefined') {
@@ -645,7 +483,6 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
   const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
   const [pingErrorMessage, setPingErrorMessage] = useState<string | null>(null);
 
-  const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
   const detectedProperty = 'The Centurion Hotel';
 
   const executeServerPing = async () => {
@@ -784,11 +621,6 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     runQuoteStep(stepId);
   }, [quoteSession.inputRevision]);
 
-  // The check's results sit at the foot of the tool. A check started from the ⋯ menu brings them into view when it ends.
-  useEffect(() => {
-    if (!testing) document.getElementById('system-check-results')?.scrollIntoView?.({ block: 'nearest' });
-  }, [testing]);
-
   if (isLoading) {
     return (
       <div className="flex min-h-screen w-full items-center justify-center bg-[#f1f3f6] font-sans text-slate-700">
@@ -807,366 +639,6 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
   if (!session?.user || requiresRelogin) {
     return <OutlookPaneSignIn />;
   }
-
-  const runComprehensiveTest = async () => {
-    setTesting(true);
-    const results = {
-      bridge: false,
-      activeEmail: false,
-      folderTable: false,
-      serverPing: false,
-    };
-
-    try {
-      const pingResp = await sendCommand<
-        Record<string, never>,
-        { version?: string; bridgeProtocolVersion?: number }
-      >('PING', {} as Record<string, never>);
-      results.bridge = pingResp?.bridgeProtocolVersion === 4;
-
-      const activeResp = await sendCommand<Record<string, never>, { subject?: string }>(
-        'GET_ACTIVE_EMAIL',
-        {} as Record<string, never>,
-      );
-      results.activeEmail = Boolean(activeResp?.subject || activeEmail?.subject);
-
-      try {
-        const folders = await sendCommand<
-          Record<string, never>,
-          {
-            items: Array<{ entryId: string; defaultFolderType?: number }>;
-            truncated: boolean;
-          }
-        >('LIST_FOLDERS', {});
-        const inbox = folders.items.find((folder) => folder.defaultFolderType === 6);
-        if (inbox) {
-          const folderResp = await sendCommand<
-            { folderEntryId: string; count: number; offset: number },
-            { items: unknown[] }
-          >('GET_FOLDER_EMAILS', { folderEntryId: inbox.entryId, count: 5, offset: 0 });
-          results.folderTable = Array.isArray(folderResp.items);
-        }
-      } catch {
-        // No approved Inbox ID: never fall back to a name-based or arbitrary folder read.
-        results.folderTable = false;
-      }
-
-      const srv = await trpcClient.workstation.ping.mutate({
-        workstationUser: 'unknown',
-        outlookEmail: detectedEmail,
-        outlookVersion: capabilities?.outlookVersion ?? 'unknown',
-      });
-      results.serverPing = srv?.status === 'ok';
-
-      setTestResults(results);
-      toast.success('System check complete.');
-    } catch (err) {
-      setTestResults(results);
-      toast.error(`System check failed: ${err instanceof Error ? err.message : 'unknown error'}. Try again.`);
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const currentSubject = activeEmail?.subject || 'Suite Availability Request';
-  const currentSender = activeEmail?.senderName || 'David Miller';
-  const currentSenderEmail = activeEmail?.senderEmail || 'guest@example.com';
-
-  // The reply draft is a write to Outlook. It counts as in flight until it settles, like a tRPC mutation.
-  const trackedDraft = (scope: ReplyDraftScope) => {
-    beginMutation();
-    void handleInsertAiDraft(scope).finally(endMutation);
-  };
-
-  const handleInsertAiDraft = async (scope: ReplyDraftScope = 'selected') => {
-    if (replyInFlight.current || !activeEmail?.entryId) return;
-    const startedScope = currentScope;
-    const startedScopeEpoch = contextRevision.current.scopeEpoch;
-    const startedSelectionEpoch = contextRevision.current.selectionEpoch;
-    const sameStaffScope = () => scopeRef.current === startedScope &&
-      contextRevision.current.scopeEpoch === startedScopeEpoch;
-    const key = `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`;
-    const subject =
-      activeEmail.subject.replace(/\s+/g, ' ').trim().slice(0, 60) || 'Untitled email';
-    const replyLabel = `Reply to “${subject}”: `;
-    let previousAttempt = replyRetries.current.get(key);
-    const now = Date.now();
-    const rememberExpiredOutcome = (expiredKey: string) => {
-      if (expiredReplyOutcomes.current.has(expiredKey)) return;
-      if (expiredReplyOutcomes.current.size >= MAX_EXPIRED_REPLY_OUTCOMES) {
-        hasUntrackedExpiredReplyOutcomes.current = true;
-        return;
-      }
-      expiredReplyOutcomes.current.add(expiredKey);
-    };
-
-    if (previousAttempt && now - previousAttempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
-      replyRetries.current.delete(key);
-      rememberExpiredOutcome(key);
-      // Even after staff acknowledges an expired outcome, its old operation
-      // ID must never be retried against a server window that has closed.
-      previousAttempt = undefined;
-    }
-    for (const [retryKey, attempt] of replyRetries.current) {
-      if (now - attempt.startedAt >= REPLY_OPERATION_CACHE_TTL_MS) {
-        replyRetries.current.delete(retryKey);
-        rememberExpiredOutcome(retryKey);
-      }
-    }
-    let acknowledgedExpiredOutcome = false;
-    if (expiredReplyOutcomes.current.has(key)) {
-      if (expiredOutcomeConfirmationKey.current !== key) {
-        expiredOutcomeConfirmationKey.current = key;
-        toast.error(
-          `${replyLabel}The retry window has closed. Check Outlook Drafts, then click again to continue.`,
-        );
-        return;
-      }
-      if (!confirmNewReplyAfterUncertainOutcome()) return;
-      expiredReplyOutcomes.current.delete(key);
-      expiredOutcomeConfirmationKey.current = null;
-      acknowledgedExpiredOutcome = true;
-    }
-    if (hasUntrackedExpiredReplyOutcomes.current && !acknowledgedExpiredOutcome) {
-      if (expiredOutcomeConfirmationKey.current !== key) {
-        expiredOutcomeConfirmationKey.current = key;
-        toast.error(
-          `${replyLabel}Too many earlier replies have an unknown result. Check Outlook Drafts, then click again to continue.`,
-        );
-        return;
-      }
-      if (!confirmNewReplyAfterUncertainOutcome()) return;
-      expiredOutcomeConfirmationKey.current = null;
-    }
-    // In a live pane another message may have an unresolved, safely retryable
-    // operation. The generic reload marker only gates a fresh pane with no IDs.
-    if (!previousAttempt && replyRetries.current.size === 0 &&
-      !replyMarkerBelongsToCurrentScope.current && hasUnresolvedReplyMarker()) {
-      if (unresolvedReplyConfirmationKey.current !== key) {
-        unresolvedReplyConfirmationKey.current = key;
-        toast.error(
-          `${replyLabel}An earlier draft may have been created before the pane changed. Check Outlook Drafts, then click again to start a new draft.`,
-        );
-        return;
-      }
-      if (!confirmNewReplyAfterUncertainOutcome()) return;
-      unresolvedReplyConfirmationKey.current = null;
-      // Keep the prior unknown outcome recorded until this attempt actually
-      // reaches native Outlook and succeeds. PDF generation may still abort.
-    }
-    if (!previousAttempt && replyRetries.current.size >= MAX_UNRESOLVED_REPLY_OPERATIONS) {
-      toast.error(
-        `${replyLabel}Too many replies have an unknown result. Check Outlook Drafts before refreshing the pane or starting another reply.`,
-      );
-      return;
-    }
-
-    if (!startedScope || transportLoading || !activeConnection?.email) {
-      toast.error('Sign in and select your mailbox before creating the draft.');
-      return;
-    }
-    if (!activeEmail.storeId || !activeEmail.folderEntryId) {
-      toast.error(
-        'Outlook did not provide the selected message and source folder. Select it again.',
-      );
-      return;
-    }
-
-    if (!supportsAction('ADD_ATTACHMENT_TO_DRAFT')) {
-      toast.error('This Outlook add-in is too old to attach the PDF. Update the Nava Outlook add-in, then try again.');
-      return;
-    }
-
-    if (previousAttempt && previousAttempt.scope !== scope) {
-      // An attempt that may already have reached Outlook is retried with its own button only.
-      if (previousAttempt.replyPayload) {
-        toast.error(
-          `${replyLabel}An earlier reply for this email may already be in Outlook Drafts. Retry it with its own button, or check Drafts first.`,
-        );
-        return;
-      }
-      replyRetries.current.delete(key);
-      previousAttempt = undefined;
-    }
-    const reviewedDraft =
-      scope === 'all'
-        ? requireMultiOptionDraft(quoteSession, combinedEdit)
-        : singleReplyDraft(requireReviewedNativeDraft(quoteSession));
-    if (!reviewedDraft) {
-      toast.error(
-        scope === 'all'
-          ? `${replyLabel}Prepare a PDF for each date option first. Each PDF must match its own run.`
-          : 'Make the PDF and finish the reply before creating the draft. Sample rates are never used.',
-      );
-      return;
-    }
-
-    replyInFlight.current = true;
-    setIsDraftPending(true);
-    setDraftStatus(null);
-    const attempt: PendingReplyOperation = previousAttempt ?? {
-      operationId: createOperationId(),
-      startedAt: now,
-      scope,
-    };
-    replyRetries.current.set(key, attempt);
-
-    // Before CREATE is submitted, staff may update the review. Once it may
-    // have reached Outlook, retries must replay the exact original pair.
-    if (!attempt.replyPayload) {
-      attempt.reviewedHtml = reviewedDraft.html;
-      attempt.pdfs = reviewedDraft.attachments.map((item) => ({
-        fileName: item.fileName,
-        pdfBase64: item.pdfBase64,
-      }));
-    }
-    const quotationHtml = attempt.reviewedHtml ?? reviewedDraft.html;
-    let draftCreated = false;
-
-    try {
-      const pdfs = attempt.pdfs ?? reviewedDraft.attachments;
-      if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
-        // No new Outlook command has started for this click. A delayed quotation
-        // cannot create or retry a reply for a selection that changed away
-        // and back, even when its current EntryID and session string match.
-        if (sameStaffScope() && !attempt.replyPayload) replyRetries.current.delete(key);
-        return;
-      }
-      attempt.pdfs = pdfs;
-      if (!attempt.draftLocation) {
-        // Renewal may suppress selection events while Outlook is busy. A PDF
-        // generated for A must not turn into a reply to A after staff select B.
-        const selected = await sendCommand<Record<string, never>, WorkstationEmailPayload | null>(
-          'GET_ACTIVE_EMAIL', {},
-        );
-        if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch) {
-          if (sameStaffScope() && !attempt.replyPayload) replyRetries.current.delete(key);
-          return;
-        }
-        if (!selected || selected.entryId !== activeEmail.entryId ||
-          selected.storeId !== activeEmail.storeId ||
-          selected.folderEntryId !== activeEmail.folderEntryId) {
-          if (!attempt.replyPayload) replyRetries.current.delete(key);
-          toast.error('You switched emails while the PDF was being made. Select the email again, then retry.');
-          return;
-        }
-      }
-      const replyPayload = attempt.replyPayload ?? {
-        operationId: attempt.operationId,
-        entryId: activeEmail.entryId,
-        storeId: activeEmail.storeId,
-        folderEntryId: activeEmail.folderEntryId,
-        htmlBody: quotationHtml,
-        replyAll: false,
-        openInComposer: false,
-      };
-      attempt.replyPayload = replyPayload;
-      if (!attempt.draftLocation) {
-        replyMarkerBelongsToCurrentScope.current = true;
-        setUnresolvedReplyMarker(true);
-      }
-      const result =
-        attempt.draftLocation ??
-        (await sendCommand<typeof replyPayload, MailLocation>('CREATE_REPLY_DRAFT', replyPayload));
-      if (!sameStaffScope()) return;
-      if (!result || typeof result !== 'object')
-        throw new Error('Outlook did not confirm the reply draft.');
-      draftCreated = true;
-      const replyResult = result;
-      if (!replyResult.entryId || !replyResult.storeId || !replyResult.folderEntryId) {
-        throw new Error(
-          'Outlook did not confirm the draft and its source folder. Inspect Drafts before retrying.',
-        );
-      }
-      attempt.draftLocation = replyResult;
-      const attachmentPayloads =
-        attempt.attachmentPayloads ??
-        pdfs.map((item) => ({
-          operationId: createOperationId(),
-          entryId: replyResult.entryId,
-          storeId: replyResult.storeId,
-          folderEntryId: replyResult.folderEntryId,
-          fileName: item.fileName,
-          base64Data: item.pdfBase64,
-        }));
-      attempt.attachmentPayloads = attachmentPayloads;
-      // Each PDF keeps its own operation ID. A retry resumes at the first PDF Outlook has not confirmed.
-      const alreadyAdded = attempt.attachmentsAdded ?? 0;
-      for (const [index, payload] of attachmentPayloads.entries()) {
-        if (index < alreadyAdded) continue;
-        await sendCommand('ADD_ATTACHMENT_TO_DRAFT', payload);
-        attempt.attachmentsAdded = index + 1;
-        if (!sameStaffScope()) return;
-      }
-      replyRetries.current.delete(key);
-      // A successful draft for B does not resolve an expired or unknown
-      // outcome for A. Those per-message sets are in memory only; preserve
-      // the generic warning across reloads until every outcome is resolved.
-      if (!expiredReplyOutcomes.current.size && !hasUntrackedExpiredReplyOutcomes.current &&
-        ![...replyRetries.current.values()].some((pending) => pending.replyPayload)) {
-        setUnresolvedReplyMarker(false);
-      }
-      setDraftedDetails({
-        entryId: activeEmail.entryId,
-        subject: currentSubject,
-        sender: currentSender,
-        senderEmail: currentSenderEmail,
-        planName: pdfs.map((item) => item.fileName).join(', '),
-        ...(attempt.scope === 'all' ? { previewHtml: quotationHtml } : {}),
-      });
-      const opened = replyResult.displayed === true;
-      const details = [
-        replyResult?.composerWarning,
-        replyResult?.draftPlacementWarning,
-        replyResult?.folderPlacementWarning,
-        replyResult?.locationUnverified ? 'Could not confirm which folder the draft is in.' : null,
-      ].filter(Boolean);
-      const summary = opened
-        ? 'Draft opened in Outlook. Check it, then send it yourself.'
-        : replyResult?.entryId
-          ? 'Draft saved in Outlook but did not open. Find it in Outlook Drafts.'
-          : 'Outlook accepted the request, but could not confirm the draft. Check Outlook Drafts before trying again.';
-      const message = [summary, ...details].join(' ');
-      setDraftStatus({ key, message });
-      if (details.length || !opened) toast.warning(`${replyLabel}${message}`);
-      else toast.success(`${replyLabel}${message}`);
-    } catch (err) {
-      if (!sameStaffScope()) return;
-      if (contextRevision.current.selectionEpoch !== startedSelectionEpoch && !attempt.replyPayload) {
-        replyRetries.current.delete(key);
-        return;
-      }
-      const errorCode =
-        err instanceof Error && 'code' in err && typeof err.code === 'string' ? err.code : null;
-      const hasUnknownOutcome = errorCode === 'OPERATION_OUTCOME_UNKNOWN';
-      const timedOut = err instanceof Error && err.message.includes('timed out');
-      const navigationInterrupted =
-        err instanceof Error && err.message.includes('Outlook navigation changed');
-      const mayHaveReachedOutlook = Boolean(attempt.replyPayload);
-      if (!timedOut && !hasUnknownOutcome && !draftCreated && !mayHaveReachedOutlook) {
-        replyRetries.current.delete(key);
-      }
-      if (
-        hasUnknownOutcome ||
-        (timedOut && draftCreated) ||
-        ((timedOut || navigationInterrupted) && mayHaveReachedOutlook)
-      ) {
-        const message =
-          'Outlook may have created the draft but did not confirm it. Check Outlook Drafts before retrying. A retry reuses the same PDF.';
-        setDraftStatus({ key, message });
-        toast.error(`${replyLabel}${message}`);
-      } else {
-        toast.error(
-          `${replyLabel}Could not create the draft: ${err instanceof Error ? err.message : 'unknown error'}`,
-        );
-      }
-    } finally {
-      if (sameStaffScope()) {
-        replyInFlight.current = false;
-        setIsDraftPending(false);
-      }
-    }
-  };
 
   requoteSameStayRef.current = (row) => {
     const session = quoteSessionRef.current;
@@ -1466,108 +938,21 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     });
   };
 
-  // One reply for every completed date option (two or more PDFs); per-option Draft stays available.
-  const dateOptionLetters = completedDateOptions(quoteSession).map((option) => option.letter);
-  const allOptionsDraft = dateOptionLetters.length >= 2;
-  const allOptionsLabel = `Create one reply with all date options (${dateOptionLetters.join(', ')})`;
-  const selectedIndex = quoteSession.selectedStayKey
-    ? requestedQuoteKeys(quoteSession.groups).indexOf(quoteSession.selectedStayKey)
-    : -1;
-  const selectedOptionLabel =
-    selectedIndex >= 0
-      ? `Draft option ${optionLetter(selectedIndex)} only`
-      : 'Draft the selected option only';
-
   // Only quote and booking mail gets Nava's suggestions and the numbered reply step. Other mail gets neither.
   const quoteOrBookingEmail = quoteSession.analysis?.intent === 'quote';
-  // Why the reply button is off, or null when it can make the draft. A click that still gets through toasts the same reason.
-  const draftBlockedReason: string | null = !activeEmail
-    ? 'Select an email first'
-    : !supportsAction('CREATE_REPLY_DRAFT') || !supportsAction('ADD_ATTACHMENT_TO_DRAFT')
-      ? 'This Outlook add-in is too old to attach the PDF. Update the Nava Outlook add-in, then try again.'
-      : allOptionsDraft
-        ? requireMultiOptionDraft(quoteSession, combinedEdit)
-          ? null
-          : 'Prepare a PDF for each date option first'
-        : singleReplyDraft(requireReviewedNativeDraft(quoteSession))
-          ? null
-          : quoteSession.pdf
-            ? 'Finish the reply and PDF first'
-            : 'Prepare the quote PDF first';
+  const draftStatusMessage = draftStatus && draftStatus.key === selectedKey ? draftStatus.message : null;
   const replyBody = (
-    <>
-      {quoteOrBookingEmail ? (
-        <PrimaryButton
-          onClick={() => trackedDraft(allOptionsDraft ? 'all' : 'selected')}
-          disabled={isDraftPending || draftBlockedReason !== null}
-          disabledReason={isDraftPending ? null : draftBlockedReason}
-          icon={<Send className="h-3.5 w-3.5" />}
-        >
-          {isDraftPending
-            ? 'Creating the draft in Outlook…'
-            : allOptionsDraft
-              ? allOptionsLabel
-              : 'Insert draft in Outlook'}
-        </PrimaryButton>
-      ) : (
-        <SecondaryButton
-          onClick={() => trackedDraft(allOptionsDraft ? 'all' : 'selected')}
-          disabled={!activeEmail || !supportsAction('CREATE_REPLY_DRAFT') || isDraftPending}
-          icon={<Send className="h-3.5 w-3.5" />}
-        >
-          {isDraftPending
-            ? 'Creating the Outlook draft. Please wait…'
-            : allOptionsDraft
-              ? allOptionsLabel
-              : 'Insert draft in Outlook'}
-        </SecondaryButton>
-      )}
-      {allOptionsDraft ? (
-        <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-          Combined reply (you can edit it)
-          <textarea
-            aria-label="Combined reply"
-            className="outline-hidden min-h-28 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
-            value={requireMultiOptionDraft(quoteSession, combinedEdit)?.html ?? ''}
-            onChange={(event) =>
-              setCombinedEdit({
-                signature: multiOptionSignature(quoteSession) ?? '',
-                html: event.target.value,
-              })
-            }
-          />
-        </label>
-      ) : null}
-      {allOptionsDraft ? (
-        <p className="text-center text-[11px] text-[#64748b]">
-          Puts every option you ran into one email draft. Nothing is sent.
-        </p>
-      ) : null}
-      {allOptionsDraft ? (
-        <SecondaryButton
-          onClick={() => trackedDraft('selected')}
-          disabled={
-            !activeEmail ||
-            !supportsAction('CREATE_REPLY_DRAFT') ||
-            isDraftPending ||
-            !canCreateNativeDraft(quoteSession)
-          }
-          className="w-full"
-        >
-          {selectedOptionLabel}
-        </SecondaryButton>
-      ) : null}
-      <p className="text-[11px] text-[#64748b]">
-        Creates an unsent reply with the PDF attached. Review it, then Send manually in Outlook. Nava never sends from
-        this pane.
-      </p>
-      {/* Status Message */}
-      {draftStatus && draftStatus.key === selectedKey && (
-        <p role="status" className="text-xs text-amber-700">
-          {draftStatus.message}
-        </p>
-      )}
-    </>
+    <ReplyBody
+      activeEmail={activeEmail}
+      supportsAction={supportsAction}
+      quoteSession={quoteSession}
+      combinedEdit={combinedEdit}
+      onCombinedEditChange={setCombinedEdit}
+      quoteOrBookingEmail={quoteOrBookingEmail}
+      isDraftPending={isDraftPending}
+      statusMessage={draftStatusMessage}
+      onDraft={trackedDraft}
+    />
   );
 
   return (
@@ -1697,256 +1082,51 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
 
         {/* SCREEN 1: WELCOME & MAILBOX DETECTION */}
         {shownScreen === 'welcome' && (
-          <div className="animate-in fade-in nava-pane-scroll flex flex-1 flex-col overflow-y-auto p-4 duration-150">
-            <div className="my-auto flex flex-col items-center text-center">
-              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eaf4ee] text-[#1a4332]">
-                <Building2 className="h-6 w-6" />
-              </div>
-              <h1 className="text-base font-bold text-[#1e293b]">Welcome to Nava</h1>
-              <p className="mt-1 text-xs leading-relaxed text-[#64748b]">
-                Your intelligent assistant for Infor HMS quoting and reservations, built directly
-                into Outlook.
-              </p>
-
-              <div className="my-5 w-full rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-left">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-[#64748b]">
-                  Detected Outlook Account
-                </span>
-                <div className="mt-1.5 flex items-center gap-2 text-xs font-semibold text-[#1e293b]">
-                  <Mail className="h-4 w-4 text-[#64748b]" />
-                  <span>{detectedEmail}</span>
-                </div>
-                <span className="mt-1 block text-[11px] text-[#64748b]">{detectedProperty}</span>
-              </div>
-
-              <Button
-                type="button"
-                onClick={() => {
-                  setCurrentScreen('diagnostics');
-                  void executeServerPing();
-                }}
-                className="flex w-full items-center justify-center gap-2 bg-[#1a4332] text-xs font-semibold text-white hover:bg-[#123023]"
-              >
-                <span>Confirm Account & Connect</span>
-                <ArrowRight className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
+          <WelcomeScreen
+            detectedEmail={detectedEmail}
+            detectedProperty={detectedProperty}
+            onConfirm={() => {
+              setCurrentScreen('diagnostics');
+              void executeServerPing();
+            }}
+          />
         )}
 
         {/* SCREEN 2: SYSTEM & NAVA AI SERVICES CHECK */}
         {shownScreen === 'diagnostics' && (
-          <div className="animate-in fade-in nava-pane-scroll flex flex-1 flex-col overflow-y-auto p-4 duration-150">
-            <div className="my-auto flex flex-col items-center text-center">
-              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eff6ff] text-[#0066cc]">
-                <Network className="h-6 w-6" />
-              </div>
-              <h1 className="text-base font-bold text-[#1e293b]">Connecting to Nava Services</h1>
-              <p className="mt-1 text-xs text-[#64748b]">
-                Verifying connection to Nava server and workstation environment.
-              </p>
-
-              <div className="my-5 w-full space-y-3 text-left">
-                <div
-                  className={`flex items-start gap-2.5 rounded-sm border p-3 ${
-                    pingState === 'success'
-                      ? 'border-emerald-200 bg-emerald-50/50'
-                      : pingState === 'error'
-                        ? 'border-rose-200 bg-rose-50/50'
-                        : 'border-[#e2e8f0] bg-white'
-                  }`}
-                >
-                  {pingState === 'loading' && (
-                    <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-[#0066cc]" />
-                  )}
-                  {pingState === 'success' && (
-                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
-                  )}
-                  {pingState === 'error' && (
-                    <AlertCircle className="h-4 w-4 shrink-0 text-rose-600" />
-                  )}
-                  {pingState === 'idle' && <Clock className="h-4 w-4 shrink-0 text-slate-400" />}
-
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-[#1e293b]">
-                        Nava Server Connection
-                      </span>
-                      {pingState === 'success' && (
-                        <span className="text-[10px] font-bold text-emerald-700">CONNECTED</span>
-                      )}
-                      {pingState === 'loading' && (
-                        <span className="text-[10px] font-bold text-blue-700">CONNECTING…</span>
-                      )}
-                      {pingState === 'error' && (
-                        <span className="text-[10px] font-bold text-rose-700">ERROR</span>
-                      )}
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-[#64748b]">
-                      {pingState === 'success' &&
-                        `Centurion Hotel · API server pinged at ${serverPingTimeStr} · Active`}
-                      {pingState === 'loading' && `Pinging server from ${detectedEmail}…`}
-                      {pingState === 'error' && (pingErrorMessage || 'Failed to connect to server')}
-                      {pingState === 'idle' && 'Waiting to initiate handshake…'}
-                    </div>
-                  </div>
-                </div>
-
-                {pingState === 'success' && (
-                  <div className="flex items-center gap-2 rounded-sm border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11.5px] font-medium text-emerald-800">
-                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
-                    <span>Nava server connected · Workstation API ping verified.</span>
-                  </div>
-                )}
-
-                {pingState === 'error' && (
-                  <Button
-                    type="button"
-                    onClick={() => void executeServerPing()}
-                    className="w-full bg-rose-600 text-xs text-white hover:bg-rose-700"
-                  >
-                    Retry Connection
-                  </Button>
-                )}
-              </div>
-
-              <Button
-                type="button"
-                disabled={pingState !== 'success'}
-                onClick={() => {
-                  setTourSlideIndex(0);
-                  setCurrentScreen('tour');
-                }}
-                className="flex w-full items-center justify-center gap-2 bg-[#1a4332] text-xs font-semibold text-white hover:bg-[#123023] disabled:opacity-50"
-              >
-                <span>Next: 60-Second Feature Tour</span>
-                <ArrowRight className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
+          <DiagnosticsScreen
+            pingState={pingState}
+            serverPingTimeStr={serverPingTimeStr}
+            pingErrorMessage={pingErrorMessage}
+            detectedEmail={detectedEmail}
+            onRetry={() => void executeServerPing()}
+            onNext={() => {
+              setTourSlideIndex(0);
+              setCurrentScreen('tour');
+            }}
+          />
         )}
 
         {/* SCREEN 3: 3-SLIDE QUICK TOUR PRIMER */}
         {shownScreen === 'tour' && (
-          <div className="animate-in fade-in nava-pane-scroll flex flex-1 flex-col overflow-y-auto p-3 duration-150">
-            <div className="my-auto flex flex-col items-center rounded-sm border border-[#e2e8f0] bg-white p-4 text-center">
-              <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-[#f1f3f6] text-[#1a4332]">
-                {tourSlideIndex === 0 && <Mail className="h-5 w-5" />}
-                {tourSlideIndex === 1 && <Building2 className="h-5 w-5" />}
-                {tourSlideIndex === 2 && <Sparkles className="h-5 w-5" />}
-              </div>
-              <h2 className="text-sm font-bold text-[#1e293b]">
-                {TOUR_SLIDES[tourSlideIndex]?.title}
-              </h2>
-              <p className="mt-1 text-xs text-[#64748b]">{TOUR_SLIDES[tourSlideIndex]?.subtitle}</p>
-
-              <div className="mt-4 w-full space-y-2 text-left">
-                {TOUR_SLIDES[tourSlideIndex]?.bullets.map((b) => (
-                  <div
-                    key={b.title}
-                    className="flex items-start gap-2 rounded-sm bg-[#f8fafc] p-2 text-xs"
-                  >
-                    <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
-                    <div>
-                      <strong className="text-[#1e293b]">{b.title}</strong>{' '}
-                      <span className="text-[#475569]">{b.desc}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Dots */}
-              <div className="my-4 flex justify-center gap-1.5">
-                {[0, 1, 2].map((idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => setTourSlideIndex(idx)}
-                    className={`h-2 rounded-full transition-all ${
-                      idx === tourSlideIndex ? 'w-5 bg-[#1a4332]' : 'w-2 bg-[#cbd5e1]'
-                    }`}
-                    aria-label={`Slide ${idx + 1}`}
-                  />
-                ))}
-              </div>
-
-              {/* Prev/Next buttons */}
-              <div className="flex w-full items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={tourSlideIndex === 0}
-                  onClick={() => setTourSlideIndex((i) => Math.max(0, i - 1))}
-                  className="flex-1 text-xs"
-                >
-                  <ChevronLeft className="mr-1 h-3.5 w-3.5" /> Previous
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => {
-                    if (tourSlideIndex < TOUR_SLIDES.length - 1) {
-                      setTourSlideIndex((i) => i + 1);
-                    } else {
-                      if (typeof window !== 'undefined') {
-                        try {
-                          localStorage.setItem('nava_onboarding_completed', 'true');
-                        } catch {
-                          // Non-fatal if storage write fails
-                        }
-                      }
-                      setCurrentScreen('tool');
-                      toast.success('Onboarding complete! Opened Infor HMS Quoting Tool');
-                    }
-                  }}
-                  className="flex-1 bg-[#1a4332] text-xs font-semibold text-white hover:bg-[#123023]"
-                >
-                  {tourSlideIndex === TOUR_SLIDES.length - 1 ? (
-                    <>
-                      <span>Open Nava</span> <ArrowRight className="ml-1 h-3.5 w-3.5" />
-                    </>
-                  ) : (
-                    <>
-                      <span>Next</span> <ChevronRight className="ml-1 h-3.5 w-3.5" />
-                    </>
-                  )}
-                </Button>
-              </div>
-            </div>
-          </div>
+          <TourScreen
+            slideIndex={tourSlideIndex}
+            setSlideIndex={setTourSlideIndex}
+            onOpenTool={() => setCurrentScreen('tool')}
+          />
         )}
+        {/* Screen slot: the Needs-you list (U24) mounts here as one more shownScreen branch. */}
 
         {/* Scrollable Body: SCREEN 4 QUOTING TOOL */}
         {shownScreen === 'tool' && (
           <main className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
             {/* Email context for the selected email; until one is selected, an empty state. */}
-            {activeEmail ? (
-              <div id="quote-selected-message" className="flex items-center justify-between gap-2 rounded-[4px] border border-[#e2e8f0] bg-white px-2.5 py-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Mail className="h-3.5 w-3.5 shrink-0 text-[#64748b]" />
-                  <div className="flex min-w-0 flex-col">
-                    <span className="truncate text-[13px] font-bold text-[#1e293b]">
-                      {activeEmail.subject || '(no subject)'}
-                    </span>
-                    <span className="truncate text-[11px] text-[#64748b]">
-                      {`${activeEmail.senderName || 'Unknown sender'}${activeEmail.senderEmail ? ` <${activeEmail.senderEmail}>` : ''}`}
-                    </span>
-                  </div>
-                </div>
-                <span className="flex shrink-0 items-center gap-1 rounded-[3px] bg-[#eaf4ee] px-1.5 py-0.5 text-[10px] font-semibold text-[#1a4332]">
-                  <Check className="h-3 w-3" /> Synced
-                </span>
-              </div>
-            ) : (
-              <div id="quote-selected-message" className="rounded-sm border border-dashed border-[#cbd5e1] p-3 text-center text-xs text-[#64748b]">
-                Click an email to start
-              </div>
-            )}
+            <SelectedEmailBlock activeEmail={activeEmail} />
 
-            <AmendLookupPanel session={quoteSession} trpc={trpcClient} />
-            <VoucherFindCard
-              key={activeEmail?.internetMessageId ?? 'no-email'}
+            {/* Booking and voucher block: a change or cancellation card, then the Find the booking card. */}
+            <BookingVoucherCard
+              session={quoteSession}
               internetMessageId={activeEmail?.internetMessageId ?? null}
-              trpc={trpcClient}
               syncCommitted={sync.status?.committed ?? null}
               syncPending={
                 sync.status
@@ -2021,72 +1201,14 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
 
             {/* Outlook Email Draft Preview Box */}
             {showDraftPreview && draftedDetails && (
-              <div className="animate-in fade-in rounded-sm border border-[#cbd5e1] bg-white p-3 text-xs leading-relaxed text-[#1e293b] duration-200">
-                <div className="mb-2 flex items-start justify-between border-b border-[#e2e8f0] pb-2 text-[11px] text-[#64748b]">
-                  <div>
-                    <strong>To:</strong> {draftedDetails.sender} &lt;
-                    {draftedDetails.senderEmail}&gt;
-                    <br />
-                    <strong>Subject:</strong> RE: {draftedDetails.subject} — Quotation
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setDraftedDetails(null)}
-                    className="text-[10px] text-slate-400 hover:text-slate-600"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-                {draftedDetails.previewHtml ? (
-                  <div dangerouslySetInnerHTML={{ __html: draftedDetails.previewHtml }} />
-                ) : quoteSession.reviewedReplyHtml ? (
-                  <div dangerouslySetInnerHTML={{ __html: quoteSession.reviewedReplyHtml }} />
-                ) : (
-                  <p>No reviewed reply HTML. Insert uses only a staff-reviewed reply.</p>
-                )}
-                {draftedDetails.planName ? (
-                  <p className="mt-2 text-[11px] text-[#64748b]">Attached: {draftedDetails.planName}</p>
-                ) : null}
-              </div>
+              <DraftPreviewBlock
+                details={draftedDetails}
+                reviewedReplyHtml={quoteSession.reviewedReplyHtml}
+                onDismiss={dismissDraftedDetails}
+              />
             )}
             {(testResults.bridge !== null || testResults.serverPing !== null) && (
-              <div id="system-check-results" className="flex flex-col gap-1.5 rounded-sm border border-[#e2e8f0] bg-[#f8fafc] p-3 text-xs">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-[#64748b]">
-                  System check results
-                </p>
-                <div className="flex items-center justify-between text-[#1e293b]">
-                  <span>1. Outlook add-in connected</span>
-                  {testResults.bridge ? (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                  ) : (
-                    <AlertCircle className="h-4 w-4 text-rose-500" />
-                  )}
-                </div>
-                <div className="flex items-center justify-between text-[#1e293b]">
-                  <span>2. Selected email readable</span>
-                  {testResults.activeEmail ? (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                  ) : (
-                    <AlertCircle className="h-4 w-4 text-rose-500" />
-                  )}
-                </div>
-                <div className="flex items-center justify-between text-[#1e293b]">
-                  <span>3. Outlook folders readable</span>
-                  {testResults.folderTable ? (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                  ) : (
-                    <AlertCircle className="h-4 w-4 text-rose-500" />
-                  )}
-                </div>
-                <div className="flex items-center justify-between text-[#1e293b]">
-                  <span>4. Nava server reachable</span>
-                  {testResults.serverPing ? (
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                  ) : (
-                    <AlertCircle className="h-4 w-4 text-rose-500" />
-                  )}
-                </div>
-              </div>
+              <SystemCheckResultsBlock results={testResults} />
             )}
           </main>
         )}
