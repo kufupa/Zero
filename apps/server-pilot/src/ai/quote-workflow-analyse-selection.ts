@@ -12,7 +12,15 @@ import {
   mapLlmDecision,
   type QuoteTreatAs,
   type QuoteWorkflowFallbackReason,
+  type QuoteWorkflowTelemetry,
 } from './quote-workflow-llm.js';
+import {
+  analyseInputKey,
+  recordAgentRunCapped,
+  type AgentRunDraft,
+  type AgentRunRecorder,
+  type AgentRunTrigger,
+} from './hitl-recorder.js';
 import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import type {
   SyncedQuoteAttachment,
@@ -238,12 +246,97 @@ export type AnalyseSyncedOptions = {
   adapter?: ModelAdapter | null;
   /** Read only after a cache miss, so a cache hit never touches the flag or env. */
   llmEnabled: () => boolean;
+  /** Ledger seam. Absent or null records nothing (HITL_LEDGER off). */
+  recorder?: AgentRunRecorder | null;
+  /** Stamped on each run. Only pane runs carry a session user and open an episode. */
+  recordAs?: { trigger: AgentRunTrigger; userId: string | null };
 };
 
 export type AnalyseSyncedOutcome =
   | { kind: 'cache_hit' }
   | { kind: 'luna'; cached: boolean }
   | { kind: 'fallback'; reason: QuoteWorkflowFallbackReason };
+
+type LedgerContext = {
+  recorder: AgentRunRecorder;
+  draft: Pick<
+    AgentRunDraft,
+    | 'trigger'
+    | 'userId'
+    | 'transportId'
+    | 'threadId'
+    | 'messageId'
+    | 'inputHash'
+    | 'inputKey'
+    | 'promptVersion'
+    | 'treatAs'
+    | 'staffNotePresent'
+  >;
+};
+
+/** Ledger context for one analyse, or null when nothing is recorded. */
+function ledgerContextFor(
+  synced: SyncedQuoteSelection,
+  options: AnalyseSyncedOptions,
+  sourceHash: () => string,
+): LedgerContext | null {
+  const { recorder, recordAs } = options;
+  if (!recorder || !recordAs || !synced.messageId || !synced.threadId) return null;
+  const inputHash = sourceHash();
+  const treatAs = options.treatAs ?? null;
+  return {
+    recorder,
+    draft: {
+      trigger: recordAs.trigger,
+      userId: recordAs.userId,
+      transportId: options.transportId,
+      threadId: synced.threadId,
+      messageId: synced.messageId,
+      inputHash,
+      inputKey: analyseInputKey({
+        transportId: options.transportId,
+        messageId: synced.messageId,
+        sourceHash: inputHash,
+        promptVersion: options.promptVersion,
+        treatAs,
+      }),
+      promptVersion: options.promptVersion,
+      treatAs,
+      staffNotePresent: Boolean(options.staffNote?.trim()),
+    },
+  };
+}
+
+function usageOf(telemetry: QuoteWorkflowTelemetry | undefined): AgentRunDraft['usage'] {
+  const usage = telemetry?.usage;
+  if (!usage) return null;
+  return {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    costUsd: usage.costUsd ?? null,
+    usageSource: usage.usageSource ?? null,
+  };
+}
+
+/** The mapped suggestion the pane pre-fills, without the raw model output. */
+function suggestedFieldsOf(payload: Record<string, unknown>): Record<string, unknown> {
+  return {
+    intent: payload.intent ?? null,
+    groups: payload.groups ?? [],
+    secondaryAsks: payload.secondaryAsks ?? [],
+    alternatives: payload.alternatives ?? [],
+  };
+}
+
+/** Adds analysisRunId only when the run was recorded. The cache file never carries it. */
+function withAnalysisRunId<T extends object>(
+  payload: T,
+  analysisRunId: string | null,
+): T & { analysisRunId?: string } {
+  return analysisRunId
+    ? { ...payload, analysisRunId }
+    : (payload as T & { analysisRunId?: string });
+}
 
 /**
  * Cache-or-analyse for one synced selection. Returns the route payload plus an
@@ -254,11 +347,15 @@ export async function analyseSyncedSelection(
   options: AnalyseSyncedOptions,
 ) {
   const { cacheDir, internetMessageId, treatAs, staffNote } = options;
+  const started = Date.now();
+  let sourceHashMemo: string | undefined;
+  const sourceHash = () => (sourceHashMemo ??= hashSyncedQuoteSelection(synced, { staffNote }));
+  const ledger = ledgerContextFor(synced, options, sourceHash);
   const cacheFile =
     internetMessageId && cacheDir
       ? analyseCachePath({
           internetMessageId,
-          sourceHash: hashSyncedQuoteSelection(synced, { staffNote }),
+          sourceHash: sourceHash(),
           promptVersion: options.promptVersion,
           cacheDir,
           treatAs,
@@ -268,8 +365,25 @@ export async function analyseSyncedSelection(
   if (cacheFile) {
     const hit = await readAnalyseCache(cacheFile);
     if (hit && isReusableAnalyseCache(hit)) {
+      const payload = { ...hit, sourceRevision: options.selectionEpoch };
+      const analysisRunId = ledger
+        ? await recordAgentRunCapped(ledger.recorder, {
+            ...ledger.draft,
+            cacheStatus: 'hit',
+            source: 'luna',
+            fallbackReason: null,
+            workflow: typeof hit.workflow === 'string' ? hit.workflow : null,
+            provider: null,
+            modelId: null,
+            modelRoute: null,
+            latencyMs: Date.now() - started,
+            usage: null,
+            output: null,
+            suggestedFields: suggestedFieldsOf(hit),
+          })
+        : null;
       return {
-        payload: { ...hit, sourceRevision: options.selectionEpoch },
+        payload: withAnalysisRunId(payload, analysisRunId),
         outcome: { kind: 'cache_hit' } as const,
       };
     }
@@ -318,7 +432,31 @@ export async function analyseSyncedSelection(
         /* analysis still returns; cache is best-effort */
       }
     }
-    return { payload, outcome: { kind: 'luna', cached } as const };
+    const analysisRunId = ledger
+      ? await recordAgentRunCapped(ledger.recorder, {
+          ...ledger.draft,
+          cacheStatus: 'miss',
+          source: 'luna',
+          fallbackReason: null,
+          workflow: luna.workflow,
+          provider: llm.telemetry?.provider ?? null,
+          modelId: llm.telemetry?.modelId ?? null,
+          modelRoute: llm.telemetry?.modelRoute ?? null,
+          latencyMs: llm.telemetry?.latencyMs ?? Date.now() - started,
+          usage: usageOf(llm.telemetry),
+          output: luna,
+          suggestedFields: {
+            intent: mapped.intent,
+            groups: mapped.groups,
+            secondaryAsks: mapped.secondaryAsks,
+            alternatives: mapped.alternatives,
+          },
+        })
+      : null;
+    return {
+      payload: withAnalysisRunId(payload, analysisRunId),
+      outcome: { kind: 'luna', cached } as const,
+    };
   }
   const analysis = analyseQuoteSources({
     subject: synced.subject,
@@ -350,8 +488,29 @@ export async function analyseSyncedSelection(
     amendment: null,
     sourceRevision: options.selectionEpoch,
   };
+  const analysisRunId = ledger
+    ? await recordAgentRunCapped(ledger.recorder, {
+        ...ledger.draft,
+        cacheStatus: 'miss',
+        source: 'regex_fallback',
+        fallbackReason: llm.fallbackReason,
+        workflow: treatAs ?? null,
+        provider: llm.telemetry?.provider ?? null,
+        modelId: llm.telemetry?.modelId ?? null,
+        modelRoute: llm.telemetry?.modelRoute ?? null,
+        latencyMs: llm.telemetry?.latencyMs ?? Date.now() - started,
+        usage: usageOf(llm.telemetry),
+        output: null,
+        suggestedFields: {
+          intent: analysis.intent,
+          groups: analysis.groups,
+          secondaryAsks: analysis.secondaryAsks,
+          alternatives: analysis.alternatives,
+        },
+      })
+    : null;
   return {
-    payload,
+    payload: withAnalysisRunId(payload, analysisRunId),
     outcome: { kind: 'fallback', reason: llm.fallbackReason } as const,
   };
 }

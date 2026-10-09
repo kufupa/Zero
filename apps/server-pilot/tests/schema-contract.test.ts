@@ -12,7 +12,7 @@ import {
   HITL_LABEL_STRENGTHS,
   HITL_TOOL_RUN_KINDS,
   HITL_TOOL_RUN_STATUSES,
-} from '../src/db/schema/hitl';
+} from '../src/db/schema/hitl.js';
 
 describe('v4 production mail schema', () => {
   it('uses mailbox access for owner/member/admin', () => {
@@ -189,7 +189,10 @@ describe('HITL decision ledger schema', () => {
 
   it('registers 0046 in the journal directly after 0045 on a +1000ms clock', () => {
     const journal = JSON.parse(
-      readFileSync(fileURLToPath(new URL('../drizzle/meta/_journal.json', import.meta.url)), 'utf8'),
+      readFileSync(
+        fileURLToPath(new URL('../drizzle/meta/_journal.json', import.meta.url)),
+        'utf8',
+      ),
     ) as { entries: Array<{ idx: number; when: number; tag: string }> };
     const previous = journal.entries.find((entry) => entry.idx === 45);
     const next = journal.entries.find((entry) => entry.idx === 46);

@@ -197,6 +197,14 @@ function toBool(name: string, raw: string): boolean {
   throw new Error(`env ${name} must be boolean (true|false|1|0), got: ${raw}`);
 }
 
+/**
+ * HITL decision ledger writes. Only the exact value `on` enables them; unset, `off`,
+ * or anything else keeps the ledger closed, so no row is written.
+ */
+export function isHitlLedgerEnabled(input: EnvInput = process.env): boolean {
+  return input.HITL_LEDGER === 'on';
+}
+
 /** Check whether catch-up manual mail dump upload is enabled at runtime. */
 export function isCatchupUploadEnabled(input: EnvInput = process.env): boolean {
   const val = input.CATCHUP_UPLOAD_ENABLED;
