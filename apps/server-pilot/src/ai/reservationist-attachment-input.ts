@@ -8,6 +8,7 @@ import {
   type AuthorizedArtifactBytes,
   type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
+import { maskCardNumbers } from './card-mask.js';
 import type { DocumentDisclosure, DocumentSource } from './reservationist-document-facts.js';
 export type ReservationistAttachmentMetadata = {
   attachmentId: string;
@@ -204,7 +205,8 @@ export async function admitReservationistAttachment(input: {
       return fail('malformed');
     }
     if (!text.trim()) return fail('no_embedded_text');
-    pages = [text];
+    // Same masking as PDF text: card numbers and security codes never reach the model or a stored source.
+    pages = [maskCardNumbers(text)];
     pageCount = 1;
     reason = 'text';
   }
