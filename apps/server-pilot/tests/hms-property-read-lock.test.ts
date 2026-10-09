@@ -156,3 +156,39 @@ describe('U8 property-scoped read lock', () => {
     }
   });
 });
+
+describe('U23 try-once acquisition', () => {
+  it('a background acquisition makes one attempt and reports the deadline at once when the lock is busy', async () => {
+    const handle: PropertyReadConnection = {
+      query: vi.fn(async () => [{ pg_try_advisory_lock: false }]),
+      close: vi.fn(async () => undefined),
+    };
+    const lock = createPropertyReadLock({
+      tenantId: 'tenant-centurion',
+      propertyCode: 'HRCEN',
+      connectionFactory: async () => handle,
+    });
+    const body = vi.fn(async () => 'never reached');
+    const started = Date.now();
+    const failure = await lock.withLock(body, { tryOnce: true }).then(
+      () => null,
+      (cause: unknown) => cause,
+    );
+    expect(isPropertyReadLockDeadline(failure)).toBe(true);
+    expect(body).not.toHaveBeenCalled();
+    expect(handle.query).toHaveBeenCalledTimes(1);
+    expect(handle.close).toHaveBeenCalledOnce();
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('a try-once acquisition still takes a free lock', async () => {
+    const lock = createPropertyReadLock({
+      tenantId: 'tenant-centurion',
+      propertyCode: 'HRCEN',
+      connectionFactory: async () => connection(),
+    });
+    await expect(lock.withLock(async () => 'read-result', { tryOnce: true })).resolves.toBe(
+      'read-result',
+    );
+  });
+});

@@ -24,6 +24,8 @@ export type VoucherFindReply =
   | {
       status: 'voucher';
       messageId: string;
+      /** The mail's thread, which the guest-name search job is anchored to. Optional so older replies still type-check. */
+      threadId?: string;
       guest: VoucherGuest;
       file: VoucherFile | null;
       /** Voucher PDFs whose text was not read. Optional so older replies still type-check. The quote panel names each file. */

@@ -14,6 +14,7 @@ import {
   resolveDeployedTriagePromptVersion,
   mailBaselineGenerationKey,
   RunDeadlineError,
+  HMS_JOB_PROMPT_VERSION,
   shouldRetryAiFailure,
   toAiRunFence,
   type AiFailureClass,
@@ -157,6 +158,12 @@ import { DOCUMENT_LIST_MAX_BYTES, DOCUMENT_LIST_MAX_ROWS } from '../hms/document
 import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../hms/quote-stay-contract.js';
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import { scheduleInboundTriageAnalyseWarm } from './quote-workflow-warmer.js';
+import {
+  executeHmsJob,
+  hmsJobQueueEnabled,
+  requeueHmsReadsAfterRestart,
+  schedulePrefetchForInbound,
+} from './hms-jobs.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { persistMailBaselineProjection } from '../metrics/mail-baseline-projection.js';
 import type { LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
@@ -182,7 +189,7 @@ import { isCliEntry } from '../lib/is-cli-entry.js';
 import { assessReply } from './reply-assessment.js';
 import { executeInboundExtractionRun } from './extraction/inbound-run.js';
 import { createMastraRuntime } from './mastra.js';
-import { closeDb, getDb } from '../db/client.js';
+import { closeDb, getDb, type DB } from '../db/client.js';
 import { getS3Storage } from '../storage/s3.js';
 
 /** Code-owned asks derived from the bounded inbound request; no model chooses scope. */
@@ -4147,7 +4154,22 @@ export async function executeAiRun(
   };
   const leaseAbort = new AbortController();
   const shutdownSignal = options.shutdownSignal ?? new AbortController().signal;
-  const signal = buildRunAbortSignal({ fence, leaseAbort, shutdownSignal, now });
+  let signal: AbortSignal;
+  try {
+    signal = buildRunAbortSignal({ fence, leaseAbort, shutdownSignal, now });
+  } catch (error) {
+    // Too little deadline is left to run. Dead-letter the claim here: an error that escapes this function ends the worker process.
+    if (!(error instanceof RunDeadlineError)) throw error;
+    await markAiRunDeadLetter({
+      runId: run.id,
+      claimOwner: owner,
+      claimToken,
+      expectedStates: ['claimed'],
+      lastError: 'RUN_DEADLINE',
+      failureClass: 'RUN_DEADLINE',
+    });
+    return { runId: run.id, state: 'dead_letter' };
+  }
 
   const flipped = await markAiRunRunning(fence);
   if (!flipped) {
@@ -4202,6 +4224,11 @@ export async function executeAiRun(
     }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
 
     if (signal.aborted) throw new RunDeadlineError();
+
+    // Pane HMS jobs run through the CLI under the property lock, so they do not need the read service.
+    if (run.runKind === 'read_tool' && run.promptVersion === HMS_JOB_PROMPT_VERSION) {
+      return { runId, state: await executeHmsJob({ run, fence }) };
+    }
 
     if (run.runKind === 'read_tool') {
       if (run.executorLane !== 'hms') {
@@ -5347,22 +5374,28 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     shadowModelRouteFactory,
     ...scope
   } = options;
-  // hms + off: drafting claims none, but an independently enabled read lane
-  // remains claimable without browser/model initialization.
-  if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && !env.HMS_READ_SERVICE_ENABLED) {
-    return false;
-  }
+  // hms + off: drafting claims none. Read runs stay claimable without browser/model
+  // initialization: all reads when the read service is on, else pane HMS jobs only (HMS_JOB_QUEUE=on).
+  const hmsReadOnly = lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off';
+  if (hmsReadOnly && !env.HMS_READ_SERVICE_ENABLED && !hmsJobQueueEnabled()) return false;
+  const hmsJobsOnly = hmsReadOnly && !env.HMS_READ_SERVICE_ENABLED;
   maybeInitHmsRuntime(lane);
   // Eager singleton browser for HMS shadow (reuse across runs).
   if (lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'shadow') {
     await getOrCreateProductionHmsRuntime();
   }
   const owner = aiWorkerOwnerId(lane);
-  const readOnlyLane =
-    lane === 'hms' && env.HMS_DRAFT_ENRICHMENT_MODE === 'off' && env.HMS_READ_SERVICE_ENABLED;
-  const claimScope = readOnlyLane ? { ...scope, runKind: 'read_tool' as const } : scope;
+  const claimScope = hmsReadOnly
+    ? {
+        ...scope,
+        runKind: 'read_tool' as const,
+        ...(hmsJobsOnly ? { promptVersion: HMS_JOB_PROMPT_VERSION } : {}),
+      }
+    : scope;
   const claimed = await claimNextAiRun({ ownerId: owner, lane, ...claimScope });
   if (!claimed) {
+    // Jobs-only hms worker: no maintenance, as before this lane claimed jobs.
+    if (hmsJobsOnly) return false;
     // Assessment and retention are private, bounded database lanes. They run
     // only after the claim check, so a normal queued prediction cannot be
     // hidden behind maintenance work; no route factory is initialized here.
@@ -5404,8 +5437,52 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     // Fire-and-forget after the triage commit, never inside the admission
     // transaction. Off unless LUNA_ANALYSE_WARMER=on (see quote-workflow-warmer.ts).
     scheduleInboundTriageAnalyseWarm(claimed);
+    // Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1; live inbound triage only.
+    schedulePrefetchForInbound(claimed);
   }
   return true;
+}
+
+/**
+ * Pane HMS job claimer, run by the default ai-worker when HMS_JOB_QUEUE=on. It claims only hms-lane read_tool runs of
+ * the pane job kind (hms-job/1: pane finds, guest searches and prefetch), never drafting, read-service reads or writes.
+ * Each job takes the property lock, and HMS_LANE_PAUSED=1 stops every claim (claimNextAiRun). The removed
+ * hms-ai-worker (shadow drafting) is not needed for this and stays removed.
+ */
+export async function runHmsJobOnce(
+  options: {
+    shutdownSignal?: AbortSignal;
+    db?: DB;
+    /** Test seam. Production runs the claimed job through executeAiRun. */
+    execute?: (runId: string) => Promise<unknown>;
+  } = {},
+): Promise<boolean> {
+  if (!hmsJobQueueEnabled()) return false;
+  const claimed = await claimNextAiRun({
+    ownerId: aiWorkerOwnerId('hms'),
+    lane: 'hms',
+    runKind: 'read_tool',
+    promptVersion: HMS_JOB_PROMPT_VERSION,
+    ...(options.db ? { db: options.db } : {}),
+  });
+  if (!claimed) return false;
+  const execute =
+    options.execute ?? ((runId: string) => executeAiRun(runId, { shutdownSignal: options.shutdownSignal }));
+  await execute(claimed.id);
+  return true;
+}
+
+const HMS_JOB_POLL_MS = 3_000;
+
+/** Claims pane HMS jobs one at a time until the signal aborts. Runs alongside the default loop, so triage never waits on HMS. */
+async function runHmsJobLoop(signal: AbortSignal): Promise<void> {
+  while (!signal.aborted) {
+    const worked = await runHmsJobOnce({ shutdownSignal: signal }).catch((error: unknown) => {
+      console.error('hms_job_loop_failed', error instanceof Error ? error.message : String(error));
+      return false;
+    });
+    if (!worked && !signal.aborted) await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
+  }
 }
 
 export async function runAiWorkerDrain(
@@ -5495,6 +5572,11 @@ export async function runAiWorkerLoop(
   };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
+  // HMS_JOB_QUEUE=on: the default worker also claims pane HMS jobs. Scoped (proof) loops never do.
+  const hmsJobs =
+    resolveWorkerLane() === 'default' && hmsJobQueueEnabled() && !scope.idempotencyPrefix
+      ? runHmsJobLoop(shutdown.signal)
+      : null;
 
   try {
     while (!stopping) {
@@ -5510,6 +5592,9 @@ export async function runAiWorkerLoop(
   } finally {
     process.off('SIGTERM', stop);
     process.off('SIGINT', stop);
+    // Let a running HMS job settle its run row before the database closes.
+    shutdown.abort();
+    await hmsJobs;
     await closeAiWorkerResources();
   }
 }
@@ -5562,6 +5647,10 @@ async function main() {
   }
 
   // Proof isolation: ops-hms-shadow start sets AI_WORKER_IDEMPOTENCY_PREFIX.
+  if (env.AI_WORKER_LANE === 'hms' || hmsJobQueueEnabled()) {
+    const requeued = await requeueHmsReadsAfterRestart({ ownerId: aiWorkerOwnerId('hms') });
+    if (requeued > 0) console.log(JSON.stringify({ ok: true, hmsReadsRequeued: requeued }));
+  }
   const idempotencyPrefix = process.env.AI_WORKER_IDEMPOTENCY_PREFIX?.trim();
   await runAiWorkerLoop(
     5_000,

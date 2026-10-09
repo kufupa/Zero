@@ -1494,6 +1494,7 @@ describe('quoteWorkflow.voucherFind', () => {
       isInline: false,
       s3Key: `k/${id}`,
       messageId: 'm1',
+      threadId: 'thread-1',
       ...extra,
     };
   }
@@ -1509,6 +1510,7 @@ describe('quoteWorkflow.voucherFind', () => {
     const readText = vi.fn(async () => []);
     voucherLoaders.candidate = async () => ({
       messageId: 'm1',
+      threadId: 'thread-1',
       subject: 'Booking request',
       bodyText: 'Please quote two rooms.',
       attachments: [attachmentRow('a', 'Quote.pdf')],
@@ -1535,6 +1537,7 @@ describe('quoteWorkflow.voucherFind', () => {
       seen.push(input);
       return {
         messageId: 'm1',
+        threadId: 'thread-1',
         subject: 'Voucher – Smith',
         bodyText: 'Please find it attached.',
         attachments: [
@@ -1550,6 +1553,7 @@ describe('quoteWorkflow.voucherFind', () => {
     expect(reply).toEqual({
       status: 'voucher',
       messageId: 'm1',
+      threadId: 'thread-1',
       guest: { lastName: 'Smith', arrival: '2026-11-12' },
       file: {
         id: 'att-1',
@@ -1564,6 +1568,7 @@ describe('quoteWorkflow.voucherFind', () => {
   it('counts a voucher PDF the reader could not read, so the card can tell staff to check it', async () => {
     voucherLoaders.candidate = async () => ({
       messageId: 'm1',
+      threadId: 'thread-1',
       subject: 'Voucher – Smith',
       bodyText: 'Please find it attached.',
       attachments: [attachmentRow('att-1', 'Smith_VCH_1879000.pdf'), attachmentRow('att-2', 'Smith_VCH_1879000_p2.pdf')],
@@ -1591,6 +1596,7 @@ describe('quoteWorkflow.voucherFind', () => {
   it('counts a scanned voucher PDF with no text as unread, and still answers from the email', async () => {
     voucherLoaders.candidate = async () => ({
       messageId: 'm2',
+      threadId: 'thread-1',
       subject: 'Voucher – Jones',
       bodyText: 'Guest: Jones\nArrival: 12 Nov 2026',
       attachments: [attachmentRow('scan-1', 'Jones_VCH_77.pdf')],
@@ -1616,6 +1622,7 @@ describe('quoteWorkflow.voucherFind', () => {
     voucherLoaders.readText = readText;
     voucherLoaders.candidate = async () => ({
       messageId: 'm1',
+      threadId: 'thread-1',
       subject: 'Proof of payment',
       bodyText: 'Attached.',
       attachments: [
@@ -1631,6 +1638,7 @@ describe('quoteWorkflow.voucherFind', () => {
     readText.mockClear();
     voucherLoaders.candidate = async () => ({
       messageId: 'm2',
+      threadId: 'thread-1',
       subject: 'Proof of payment',
       bodyText: 'Attached.',
       attachments: [attachmentRow('p1', 'payment-1.pdf'), attachmentRow('p2', 'payment-2.pdf')],

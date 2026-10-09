@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import {
   AMEND_CANCEL_COPY,
   amendCancelClientFromTrpc,
@@ -18,21 +18,22 @@ import {
   AMEND_FIND_COPY,
   amendDiffs,
   amendFindClientFromTrpc,
-  amendSearchClientFromTrpc,
   arrivalMismatchNote,
+  findRequestFor,
+  findRunFromJob,
   formatStayDate,
+  hmsJobTransport,
   hmsNumberFor,
+  isSettled,
   noSearchMatchCopy,
   notHmsNumberNote,
-  runHmsFind,
-  runHmsSearch,
+  searchRequestFor,
+  searchRunFromJob,
   stayGuest,
   stayText,
   type AmendDiff,
-  type AmendFindClient,
-  type AmendSearchClient,
   type GuestSearchRow,
-  type HmsFindRun,
+  type HmsJobView,
   type HmsSearchRun,
   type ScreenshotInput,
   type ScreenshotReply,
@@ -40,16 +41,9 @@ import {
 } from '@/lib/quote-workflow/amend-find';
 import { amendmentOf } from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
+import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { HmsLinkActions } from './hms-link-actions';
-
-type LookupStatus = { phase: 'running' } | { phase: 'done'; run: HmsFindRun };
-
-/** The HMS number a find ran for, so the cancel section acts on the stay that is on screen. */
-type LookupState = { key: string; confirmation: string; status: LookupStatus };
-
-type SearchStatus = { phase: 'running' } | { phase: 'done'; run: HmsSearchRun };
-
-type SearchState = { key: string; status: SearchStatus };
+import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
 
 type SearchForm = { lastName: string; arrival: string; departure: string };
 
@@ -72,38 +66,35 @@ const selectClass =
 /**
  * Amend and cancel mail: shows what the guest asked beside the booking HMS returns for the email's booking number.
  * With no usable number, staff find the booking by surname and arrival instead. Renders nothing unless the analysis
- * carries an amendment.
+ * carries an amendment. Lookups are persisted HMS jobs: the panel shows the job's state and its dated snapshot.
  */
 export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trpc: unknown }) {
   const amendment = amendmentOf(session);
-  const findClient = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
-  const searchClient = useMemo(() => amendSearchClientFromTrpc(trpc), [trpc]);
+  const client = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
   const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
   const threadId = session.staffSource?.threadId.trim() || null;
+  const transport = useMemo(() => hmsJobTransport(client, threadId), [client, threadId]);
   const epoch = session.binding?.selectionEpoch ?? null;
   const key = threadId && epoch !== null ? `${threadId}:${epoch}` : null;
   const confirmationNumber = amendment?.confirmationNumber?.trim() || null;
   // Only a dash confirmation (57291630-1) is an HMS number. A bare number may be a billing or voucher reference, so it is not one.
   const hmsNumber = hmsNumberFor(confirmationNumber);
   const lookupable = hmsNumber !== null;
-  // The email's arrival rides with the find so HMS quick search covers that day. runHmsFind drops a non-date.
+  // The email's arrival rides with the find so HMS quick search covers that day. findRequestFor drops a non-date.
   const findArrival = amendment?.arrival ?? null;
 
-  const [lookup, setLookup] = useState<LookupState | null>(null);
-  const [search, setSearch] = useState<SearchState | null>(null);
+  // The find reads back the email's own number after a remount. A booking picked from a search is queued in this session.
+  const find = useHmsJob({
+    transport,
+    resume: hmsNumber ? { kind: 'find', confirmation: hmsNumber } : null,
+    scope: key,
+  });
+  const search = useHmsJob({ transport, resume: { kind: 'search_guest' }, scope: key });
+  // A search the form refused before queueing. It shows in place of a run, for the scope it was made in.
+  const [refusedSearch, setRefusedSearch] = useState<{ scope: string; message: string } | null>(null);
   const [paneSave, setPaneSave] = useState(false);
   // Cancel views are kept per booking on an email (see cancelScope), so a reply for one booking never shows on another.
   const [cancelViews, setCancelViews] = useState<Record<string, CancelView>>({});
-  const mounted = useRef(false);
-  const runToken = useRef(0);
-  const searchToken = useRef(0);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
 
   // Cancelling stays off until the server says the pane save flag is on.
   useEffect(() => {
@@ -120,73 +111,41 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     };
   }, [trpc]);
 
-  const runLookup = useCallback(
-    async (
-      activeClient: AmendFindClient | null,
-      activeConfirmation: string,
-      activeArrival: string | null,
-      activeKey: string,
-    ) => {
-      const token = ++runToken.current;
-      const isCurrent = () => mounted.current && runToken.current === token;
-      setLookup({ key: activeKey, confirmation: activeConfirmation, status: { phase: 'running' } });
-      const run = await runHmsFind({
-        client: activeClient,
-        confirmation: activeConfirmation,
-        arrival: activeArrival,
-      });
-      if (isCurrent()) {
-        setLookup({ key: activeKey, confirmation: activeConfirmation, status: { phase: 'done', run } });
-      }
-    },
-    [],
-  );
-
-  const runSearch = useCallback(async (activeClient: AmendSearchClient | null, form: SearchForm, activeKey: string) => {
-    const token = ++searchToken.current;
-    const isCurrent = () => mounted.current && searchToken.current === token;
-    setSearch({ key: activeKey, status: { phase: 'running' } });
-    const run = await runHmsSearch({
-      client: activeClient,
-      lastName: form.lastName,
-      arrival: form.arrival,
-      departure: form.departure,
-    });
-    if (isCurrent()) setSearch({ key: activeKey, status: { phase: 'done', run } });
-  }, []);
-
   if (!amendment) return null;
 
-  const status = lookup && key && lookup.key === key ? lookup.status : null;
-  const running = status?.phase === 'running';
-  const found = status?.phase === 'done' && status.run.kind === 'found' ? status.run : null;
+  const findView: HmsJobView | null = find.view;
+  const findRun = findRunFromJob(findView, find.queueFailed);
+  const running = find.queuing || (findView !== null && !isSettled(findView));
+  const found = findRun?.kind === 'found' ? findRun : null;
   const stay: StayRecordWire | null = found?.stay ?? null;
-  // The number the stay on screen was found under: the email's own, the -1 form, or a row picked from a search.
-  const foundNumber = found && lookup ? lookup.confirmation : null;
+  // The number the stay on screen was found under: the email's own, or a row picked from a search.
+  const foundNumber = found && findView?.request?.kind === 'find' ? findView.request.confirmation : null;
   // The one HMS handoff row copies the number HMS holds the booking under, else the number in the email.
   const handoffNumber = foundNumber ?? confirmationNumber;
   const diff: AmendDiff = stay ? amendDiffs(amendment, stay) : {};
-  const canLookUp = Boolean(key && threadId && lookupable);
-  const searchStatus = search && key && search.key === key ? search.status : null;
-  const searching = searchStatus?.phase === 'running';
-  const busy = running || searching;
-  const findNotFound = status?.phase === 'done' && status.run.kind === 'not_found';
+  const canLookUp = Boolean(key && transport && lookupable);
+  const searchView: HmsJobView | null = search.view;
+  const refusedNow = refusedSearch && key && refusedSearch.scope === key ? refusedSearch.message : null;
+  const searchRun: HmsSearchRun | null = refusedNow
+    ? { kind: 'error', message: refusedNow }
+    : searchRunFromJob(searchView, search.queueFailed);
+  const searching = search.queuing || (searchView !== null && !isSettled(searchView));
+  // A background prefetch shows its status but never blocks a staff Find: the staff run queues ahead of it.
+  const findBusy = find.queuing || (findView !== null && !isSettled(findView) && !findView.prefetch);
+  const busy = findBusy || searching;
+  const findNotFound = findRun?.kind === 'not_found';
   // The name search opens when there is no usable number, when a find came back not found, or once a search has run.
-  const searchOpen = !lookupable || findNotFound || searchStatus !== null;
+  const searchOpen = !lookupable || findNotFound || searchView !== null || search.queuing;
 
   let note: { tone: 'info' | 'warn'; text: string } | null = null;
-  if (running) note = { tone: 'info', text: AMEND_FIND_COPY.looking };
-  else if (status?.phase === 'done' && status.run.kind === 'error')
-    note = { tone: 'warn', text: status.run.message };
-  else if (status?.phase === 'done' && status.run.kind === 'not_found')
-    note = { tone: 'warn', text: AMEND_FIND_COPY.notFound };
-  else if (status?.phase === 'done' && status.run.kind === 'ambiguous')
-    note = { tone: 'warn', text: AMEND_FIND_COPY.ambiguous };
+  if (findRun?.kind === 'error') note = { tone: 'warn', text: findRun.message };
+  else if (findRun?.kind === 'not_found') note = { tone: 'warn', text: AMEND_FIND_COPY.notFound };
+  else if (findRun?.kind === 'ambiguous') note = { tone: 'warn', text: AMEND_FIND_COPY.ambiguous };
   else if (!confirmationNumber) note = { tone: 'info', text: AMEND_FIND_COPY.noNumber };
   else if (!lookupable) note = { tone: 'warn', text: notHmsNumberNote(confirmationNumber) };
   else if (!threadId) note = { tone: 'info', text: AMEND_FIND_COPY.waitingThread };
 
-  const searchHint = !searchClient ? AMEND_FIND_COPY.unavailable : !key ? AMEND_FIND_COPY.waitingThread : null;
+  const searchHint = !client ? AMEND_FIND_COPY.unavailable : !key ? AMEND_FIND_COPY.waitingThread : null;
 
   // The cancel view belongs to the booking it was started for: one email can show several bookings in turn.
   const cancelScope = key && foundNumber ? `${key}|${foundNumber}` : null;
@@ -279,13 +238,14 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
               {grandTotal ? <HmsRow field="grand-total" label="Grand total" value={grandTotal} /> : null}
               {found ? (
                 <RunScreenshot
-                  load={findClient?.screenshot ?? null}
+                  load={client?.screenshot ?? null}
                   runId={found.runId}
                   name={found.screenshots.includes('record.png') ? 'record.png' : null}
                   label={AMEND_FIND_COPY.seeBooking}
                   alt="What Nava saw on the HMS booking record"
                 />
               ) : null}
+              {findView?.status === 'done' ? <HmsAsOf asOf={findView.asOf} /> : null}
             </>
           ) : (
             <p className="text-[11.5px] text-[#64748b]">{running ? 'Looking up…' : 'Nothing shown yet.'}</p>
@@ -300,9 +260,9 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
               className={buttonClass}
               disabled={!canLookUp || busy}
               onClick={() => {
-                if (key && threadId && hmsNumber) {
-                  void runLookup(findClient, hmsNumber, findArrival, key);
-                }
+                if (!key || !hmsNumber) return;
+                const next = findRequestFor(hmsNumber, findArrival);
+                if ('request' in next) find.start(next.request);
               }}
             >
               Find this booking in HMS
@@ -315,6 +275,12 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
             <p className="text-[10.5px] text-[#64748b]">{AMEND_FIND_COPY.lookupWait}</p>
           </>
         )}
+        <HmsJobStatusLine
+          view={findView}
+          queuing={find.queuing}
+          detail={AMEND_FIND_COPY.looking}
+          onRetry={find.retry}
+        />
         <div aria-live="polite">
           {note ? <p className={note.tone === 'warn' ? warnNoteClass : infoNoteClass}>{note.text}</p> : null}
         </div>
@@ -327,15 +293,28 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
             arrival: amendment.arrival ?? '',
             departure: amendment.departure ?? '',
           }}
-          canSearch={Boolean(key && searchClient)}
+          canSearch={Boolean(key && transport)}
           hint={searchHint}
           busy={busy}
-          status={searchStatus}
+          searching={searching}
+          queuing={search.queuing}
+          view={searchView}
+          run={searchRun}
+          onRetry={search.retry}
           onSearch={(form) => {
-            if (key) void runSearch(searchClient, form, key);
+            if (!key) return;
+            const next = searchRequestFor(form);
+            if ('request' in next) {
+              setRefusedSearch(null);
+              search.start(next.request);
+            } else {
+              setRefusedSearch({ scope: key, message: next.error });
+            }
           }}
           onPick={(row) => {
-            if (key) void runLookup(findClient, row.confirmation, row.arrival, key);
+            if (!key) return;
+            const next = findRequestFor(row.confirmation, row.arrival);
+            if ('request' in next) find.start(next.request);
           }}
         />
       ) : null}
@@ -365,7 +344,11 @@ function GuestSearchSection({
   canSearch,
   hint,
   busy,
-  status,
+  searching,
+  queuing,
+  view,
+  run,
+  onRetry,
   onSearch,
   onPick,
 }: {
@@ -373,7 +356,11 @@ function GuestSearchSection({
   canSearch: boolean;
   hint: string | null;
   busy: boolean;
-  status: SearchStatus | null;
+  searching: boolean;
+  queuing: boolean;
+  view: HmsJobView | null;
+  run: HmsSearchRun | null;
+  onRetry: () => void;
   onSearch: (form: SearchForm) => void;
   onPick: (row: GuestSearchRow) => void;
 }) {
@@ -381,8 +368,6 @@ function GuestSearchSection({
   const surnameId = useId();
   const arrivalId = useId();
   const departureId = useId();
-  const searching = status?.phase === 'running';
-  const run = status?.phase === 'done' ? status.run : null;
 
   return (
     <div data-testid="amend-guest-search" className="flex flex-col gap-2">
@@ -433,8 +418,9 @@ function GuestSearchSection({
       </button>
       {hint ? <p className={captionClass}>{hint}</p> : null}
       <div aria-live="polite" className="flex flex-col gap-2">
-        {searching ? <p className={infoNoteClass}>{AMEND_FIND_COPY.searching}</p> : null}
+        <HmsJobStatusLine view={view} queuing={queuing} detail={AMEND_FIND_COPY.searching} onRetry={onRetry} />
         {run ? <SearchResult run={run} busy={busy} onPick={onPick} /> : null}
+        {view?.status === 'done' ? <HmsAsOf asOf={view.asOf} /> : null}
       </div>
     </div>
   );

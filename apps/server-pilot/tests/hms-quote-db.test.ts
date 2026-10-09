@@ -871,7 +871,7 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
     });
   });
 
-  it('rejects an expired claimed run before lower I/O', async () => {
+  it('dead-letters an expired claimed run before lower I/O', async () => {
     if (!reachable) throw new Error('owned disposable PG16 DB probe unexpectedly unavailable');
     await withWorkerDb(async (db) => {
       await withReadOnlyWorkerEnv(async () => {
@@ -912,7 +912,13 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
             .set({ deadlineAt: new Date(Date.now() - 1_000) })
             .where(eq(aiWorkflowRun.id, run.id));
           const fixture = runtimeFixture();
-          await expect(executeAiRun(run.id, { hmsRuntime: fixture.runtime })).rejects.toThrow();
+          // The expired run is dead-lettered in band. The worker keeps running, and no lower I/O starts.
+          await expect(executeAiRun(run.id, { hmsRuntime: fixture.runtime })).resolves.toMatchObject({
+            runId: run.id,
+            state: 'dead_letter',
+          });
+          const [dead] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+          expect(dead).toMatchObject({ state: 'dead_letter', failureClass: 'RUN_DEADLINE' });
           expect(fixture.runtime.openReadSession).not.toHaveBeenCalled();
         } finally {
           clearCachedActiveReadRuntimeForTests();

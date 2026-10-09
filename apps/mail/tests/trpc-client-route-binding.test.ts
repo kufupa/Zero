@@ -6,7 +6,7 @@ import { quoteWorkflowFromTrpc } from '../lib/quote-workflow/backend-bind';
 import { staffQuoteFromTrpc } from '../lib/quote-workflow/staff-quote-bind';
 import { paneStayFromTrpc } from '../lib/quote-workflow/pane-stay-bind';
 import { amendCancelClientFromTrpc, amendCapabilitiesFromTrpc } from '../lib/quote-workflow/amend-cancel';
-import { amendFindClientFromTrpc, amendSearchClientFromTrpc } from '../lib/quote-workflow/amend-find';
+import { amendFindClientFromTrpc } from '../lib/quote-workflow/amend-find';
 import { partyFinderFromTrpc } from '../lib/quote-workflow/party-lookup';
 
 // The pane passes the real tRPC client, which is a function-backed proxy (typeof 'function').
@@ -28,7 +28,6 @@ describe('pane tRPC helpers bind routes off the real client', () => {
 
   it('binds pane stay lookup and cancel routes', () => {
     expect(amendFindClientFromTrpc(client)).not.toBeNull();
-    expect(amendSearchClientFromTrpc(client)).not.toBeNull();
     expect(amendCancelClientFromTrpc(client)).not.toBeNull();
     expect(amendCapabilitiesFromTrpc(client)).not.toBeNull();
     expect(paneStayFromTrpc(client)).toBeTruthy();

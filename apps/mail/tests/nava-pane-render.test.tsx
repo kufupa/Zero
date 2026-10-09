@@ -164,6 +164,13 @@ vi.mock('../providers/query-provider', () => ({
       },
       qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
     },
+    // The amendment panel's HMS job routes. These tests queue no job, so jobStatus has nothing to report.
+    paneStayLookup: {
+      queueFind: { mutate: async () => ({ runId: 'job-find-1' }) },
+      queueSearchGuest: { mutate: async () => ({ runId: 'job-search-1' }) },
+      jobStatus: { query: async () => null },
+      screenshot: { query: async () => null },
+    },
     quoteWorkflow: {
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
