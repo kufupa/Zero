@@ -61,7 +61,12 @@ export function VoucherFindCard({
   const [save, setSave] = useState<SaveStatus>('idle');
   const mounted = useRef(false);
   const [checkRound, setCheckRound] = useState(0);
+  // The sync's committed count as of the last commit this card has seen.
   const committedSeen = useRef(syncCommitted);
+  // True while the settled answer is unsynced. A later commit then starts one more check.
+  const showingUnsynced = useRef(false);
+  // The email the card last checked. A re-check of the same email keeps its answer on screen until the next one arrives.
+  const checkedFor = useRef<string | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -70,20 +75,35 @@ export function VoucherFindCard({
     };
   }, []);
 
-  // A new email starts clean: the last email's voucher, search and save state must not show under it.
-  // A new round (after a sync commit) starts the same way, and the cancelled round's answer is dropped.
   useEffect(() => {
-    setReply(null);
-    setSearch(null);
-    setSave('idle');
+    if (checkedFor.current !== internetMessageId) {
+      // A new email starts clean: the last email's voucher, search and save state must not show under it.
+      checkedFor.current = internetMessageId;
+      setReply(null);
+      setSearch(null);
+      setSave('idle');
+    }
+    showingUnsynced.current = false;
     if (!findClient || !internetMessageId) return;
     let live = true;
+    // The commit count when this check starts. A commit that lands while the check runs is compared when it answers.
+    const startedAt = committedSeen.current;
     findClient.check({ internetMessageId }).then(
       (next) => {
-        if (live) setReply(next);
+        if (!live) return;
+        // A commit during this check means an unsynced answer may predate it, so check once more. The running check
+        // is never restarted, so a slow read keeps its answer.
+        if (next.status === 'unsynced' && committedSeen.current !== startedAt) {
+          setCheckRound((round) => round + 1);
+          return;
+        }
+        showingUnsynced.current = next.status === 'unsynced';
+        setReply(next);
       },
       () => {
-        if (live) setReply({ status: 'not_voucher' });
+        if (!live) return;
+        showingUnsynced.current = false;
+        setReply({ status: 'not_voucher' });
       },
     );
     return () => {
@@ -91,13 +111,13 @@ export function VoucherFindCard({
     };
   }, [findClient, internetMessageId, checkRound]);
 
-  // An email the server has not stored yet is checked again when the sync commits. So is a check still in flight,
-  // because it may have read the store before the commit. A settled voucher or non-voucher is not checked again.
+  // A commit while an unsynced answer shows starts one more check. A commit during a running check is compared when
+  // that check answers, so the running check is left alone.
   useEffect(() => {
     if (committedSeen.current === syncCommitted) return;
     committedSeen.current = syncCommitted;
-    if (reply === null || reply.status === 'unsynced') setCheckRound((round) => round + 1);
-  }, [reply, syncCommitted]);
+    if (showingUnsynced.current) setCheckRound((round) => round + 1);
+  }, [syncCommitted]);
 
   if (!reply) return null;
   if (reply.status === 'unsynced') {

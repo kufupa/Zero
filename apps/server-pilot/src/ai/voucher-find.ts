@@ -166,7 +166,9 @@ const ARRIVAL_LABEL_START = /\b(?:arrival(?:\s+date)?|arrives?|arriving|check[\s
 // Known voucher labels that end a value on the same line. Only these, so a name such as "Mary Smith  Arrival:" is cut
 // after "Smith", and "Arrival: TBA  Departure: 15 Nov" gives no arrival.
 const KNOWN_LABELS =
-  'guest(?: name)?|lead guest|passenger(?: name)?|travell?er|surname|last name|name of guest|arrival(?: date)?|arrives?|arriving|check[ -]?in(?: date)?|departure(?: date)?|check[ -]?out(?: date)?|room(?: type)?|rate(?: plan)?|nights?|adults?|children|confirmation(?: number)?|reference|booking(?: number)?|voucher|company|agency|organi[sz]ation|contact|booked by';
+  'guest(?: name)?|lead guest|passenger(?: name)?|travell?er|surname|last name|name of guest|arrival(?: date)?|arrives?|arriving|check[ -]?in(?: date| time)?|departure(?: date)?|check[ -]?out(?: date| time)?|room(?: type| number)?|rooms|rate(?: plan| code| type)?|meal plan|board(?: basis)?|nights?|adults?|children|pax|number of (?:guests|rooms)|special requests?|remarks?|notes?|confirmation(?: number)?|booking(?: number| ref| reference)?|reservation(?: number)?|reference|voucher(?: number| no)?|company|agency|organi[sz]ation|hotel|property|status|total|balance|deposit|payment(?: method)?|price|amount|currency|e-?mail|phone|mobile|address|city|country|cancellation(?: policy)?|contact|booked by|created by|issued';
+// A "Label:" left in a value once the known labels are cut, so the value runs into a field this list does not know.
+const UNKNOWN_LABEL_COLON = /[A-Za-z]\s*:/;
 const NEXT_LABEL = new RegExp(`\\s+(?=(?:${KNOWN_LABELS})\\s*:)`, 'i');
 // Lines about the company, agency, contact or sender are not the guest, even when they say "name".
 const NOT_THE_GUEST =
@@ -216,23 +218,32 @@ export function extractVoucherGuest(input: {
   ];
   const surnames = new Map<string, string>();
   const days = new Set<string>();
+  // A guest value that runs into an unknown field may have its surname in the wrong word, so no surname is taken from it.
+  let guestUnclear = false;
   for (const line of sources.join('\n').split(/\r?\n/)) {
     if (!NOT_THE_GUEST.test(line)) {
       for (const value of labelledValues(line, GUEST_LABEL_START)) {
+        if (UNKNOWN_LABEL_COLON.test(value)) {
+          guestUnclear = true;
+          continue;
+        }
         const surname = surnameFrom(value);
         // The first spelling wins, so "Smith" and "SMITH" are one guest and keep the spelling read first.
         if (surname && !surnames.has(surname.toLowerCase())) surnames.set(surname.toLowerCase(), surname);
       }
     }
     for (const value of labelledValues(line, ARRIVAL_LABEL_START)) {
-      const day = dayFromText(value.slice(0, LABEL_TAIL_CHARS));
+      // Text after an unknown label is not the arrival, so a date beyond that label is never read.
+      const label = UNKNOWN_LABEL_COLON.exec(value);
+      const head = label ? value.slice(0, label.index) : value;
+      const day = dayFromText(head.slice(0, LABEL_TAIL_CHARS));
       if (day) days.add(day);
     }
   }
   const lastNames = [...surnames.values()];
   const arrivals = [...days];
   const guest: VoucherGuest = {
-    lastName: lastNames.length === 1 ? lastNames[0]! : null,
+    lastName: !guestUnclear && lastNames.length === 1 ? lastNames[0]! : null,
     arrival: arrivals.length === 1 ? arrivals[0]! : null,
   };
   if (lastNames.length > 1 || arrivals.length > 1) {

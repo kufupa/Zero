@@ -173,6 +173,36 @@ describe('guest and arrival from the voucher text', () => {
     ).toEqual({ lastName: 'Smith', arrival: '2026-11-12' });
   });
 
+  it('a known field after the guest name ends the value, so the surname is kept', () => {
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Smith Meal plan: Breakfast\nArrival: 12 Nov 2026',
+        attachmentTexts: [],
+      }),
+    ).toEqual({ lastName: 'Smith', arrival: '2026-11-12' });
+  });
+
+  it('an unknown field after the guest name leaves the surname null, and never takes a word from the next field', () => {
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Smith Dietary requirement: vegetarian\nArrival: 12 Nov 2026',
+        attachmentTexts: [],
+      }),
+    ).toEqual({ lastName: null, arrival: '2026-11-12' });
+  });
+
+  it('a date after an unknown field is not read as the arrival', () => {
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: Smith\nArrival: TBA Foo bar: 15 Nov 2026',
+        attachmentTexts: [],
+      }),
+    ).toEqual({ lastName: 'Smith', arrival: null });
+  });
+
   it('a value stops at the next label, so a departure date is never read as the arrival', () => {
     expect(
       extractVoucherGuest({

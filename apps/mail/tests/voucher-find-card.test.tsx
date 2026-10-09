@@ -251,11 +251,16 @@ describe('voucher find card: waiting for the sync', () => {
     expect(voucherFind).toHaveBeenCalledTimes(1);
   });
 
-  it('a check still in flight when the sync commits is run again, and its late answer cannot replace the new one', async () => {
+  it('keeps a check that is still running when the sync commits, and checks once more only when it answers unsynced', async () => {
     let settleFirst: (reply: VoucherFindReply) => void = () => undefined;
     const voucherFind = vi
       .fn<(input: { internetMessageId: string }) => Promise<VoucherFindReply>>()
-      .mockImplementationOnce(() => new Promise<VoucherFindReply>((resolve) => { settleFirst = resolve; }))
+      .mockImplementationOnce(
+        () =>
+          new Promise<VoucherFindReply>((resolve) => {
+            settleFirst = resolve;
+          }),
+      )
       .mockResolvedValue(VOUCHER);
     const trpc = {
       quoteWorkflow: { voucherFind: { query: voucherFind } },
@@ -265,14 +270,40 @@ describe('voucher find card: waiting for the sync', () => {
       <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={5} />,
     );
     await waitFor(() => expect(voucherFind).toHaveBeenCalledTimes(1));
-    rerender(
-      <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={6} />,
-    );
+    rerender(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={6} />);
+    expect(voucherFind).toHaveBeenCalledTimes(1);
+    settleFirst({ status: 'unsynced' });
     expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
     expect(voucherFind).toHaveBeenCalledTimes(2);
-    settleFirst({ status: 'unsynced' });
-    await waitFor(() => expect(screen.getByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy());
-    expect(screen.queryByText(VOUCHER_COPY.waitingForSync)).toBeNull();
+  });
+
+  it('a slow voucher answer is shown even when commits keep advancing while it runs', async () => {
+    let settleFirst: (reply: VoucherFindReply) => void = () => undefined;
+    const voucherFind = vi
+      .fn<(input: { internetMessageId: string }) => Promise<VoucherFindReply>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<VoucherFindReply>((resolve) => {
+            settleFirst = resolve;
+          }),
+      )
+      .mockResolvedValue({ status: 'not_voucher' });
+    const trpc = {
+      quoteWorkflow: { voucherFind: { query: voucherFind } },
+      paneStayLookup: { searchGuest: { mutate: vi.fn() } },
+    };
+    const { rerender } = render(
+      <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={5} />,
+    );
+    await waitFor(() => expect(voucherFind).toHaveBeenCalledTimes(1));
+    for (const committed of [6, 7, 8]) {
+      rerender(
+        <VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={committed} />,
+      );
+    }
+    settleFirst(VOUCHER);
+    expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
+    expect(voucherFind).toHaveBeenCalledTimes(1);
   });
 });
 
