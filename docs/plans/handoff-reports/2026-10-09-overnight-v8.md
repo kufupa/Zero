@@ -12,7 +12,7 @@ Plan: `docs/plans/2026-10-08-007-feat-overnight-v8-nava-pane-plan.md`. Teaching 
 - Proven live on EC2: rateshop reads (03:07), a Labtest create that was saved and cancelled (03:14), party lookups for 360, Woolworths and Tourvest (04:35, on the fix build), and the 1.0.17 installer served with a verified SHA.
 - Not proven yet: two full quotes with PDF and Excel (V3), and a clean viewer gate run (V1 failed 03:57 and was fixed in #88 at 04:42). The QUOTE_TRACE_ASYNC decision waits on V3.
 - Staff copy on main has no Luna text left (#72 and #82). The install doc still says Luna in places.
-- Go or no-go for today's pilot call (2026-10-09): **GO for quote + party picker + allowances + Excel + voucher find + links.** Create stays `off` until you set the flag (see Flags). Contract-rate quotes are merged but **not yet proven end to end** (see V3).
+- Go or no-go for today's pilot call (2026-10-09): **GO for quote + party picker + allowances + Excel + voucher find + links.** Create stays `off` until you set the flag (see Flags). Contract-rate quotes work end to end on the server path (Woolworths → NCOR2B R1,360, #93).
 
 ---
 
@@ -25,7 +25,7 @@ Clearly open items. Each needs Opus before the call.
 - **Preview gate (V1): PASS** after #88. Latest 20 emails: 20/20 analysed, 0 timeouts, 0 blocked writes (`gate-20261009T045007Z`). 8 real quote/booking/voucher threads: booking request pre-filled 13 fields (`gate-20261009T045320Z`). That run exposed a **P0** (a signature image `image001.jpg` blocked the quote) → fixed in #90, re-verified in `gate-20261009T053510Z` (no attachment blocker). Two voucher threads still showed "Nava is reading the email…" at the 90 s screenshot: voucher PDF analysis is slow.
 - **Party index sweep: NOT RUN.** It needs ~150 HMS lookups (~1 h+). Run it on a quiet morning: `cd /home/ubuntu/repos/zero && pnpm -C apps/server-pilot exec tsx scripts/party-index-sweep.ts --delay-ms 20000 --max-runs 150` (resumable).
 - **Deploys:** D3 `31ae92cb4` and D4 `4979df0f` both READY, health 200, pane 200, VPN OK. Prod flags: all unset → `RESERVATIONIST_PANE_SAVE` off, `HITL_LEDGER` off, `QUOTE_TRACE_ASYNC` off, `QUOTE_RATE_CONTEXT` on (applies only when staff pick a party).
-- **V3 (quotes) — server path proven live (06:00–06:25):** baseline STQN 1 adult → **BARRO R1,750** ✅; agency "360 degrees Travel" picked → **public fallback with the honest copy** ✅ (360 has no contract rates); company Woolworths picked → **public fallback** ❌ although HMS has Woolworths contract rows (BCO1B/NCOR2B contextual for every room in the rate shop). Cause: the party summary read returns 50 rows (runner cap) and the contract rows fall outside them. **Top follow-up:** fix contract-row selection. Lead: the staff path asks HMS to convert to ZAR (`convertFromPropertyCurrency: true`); the rate shop doesn't, and only the rate shop gets BCO1B/NCOR2B. PR #92 (room filter) was not enough — see its comments. Until then a picked party quotes BAR with "No contract rate found…" — safe, but staff should check contract rates in HMS for companies like Woolworths. PDF/Excel generation from a pane quote was not run tonight.
+- **V3 (quotes) — proven live:** baseline STQN → BARRO R1,750 ✅; agency "360 degrees Travel" → BAR with honest copy ✅ (no contract); **company Woolworths → contract NCOR2B R1,360 vs BAR R1,940 ✅** after #93 (06:55). Root cause was an exact-name match ("Woolworths" vs HMS "Woolworths Holdings"); now matched by HMS id. Corpus check: staff confirmed Woolworths at ZAR 1,360 B&B (Tourvest, 2026-08-26) — same price. PDF/Excel from a pane quote not run tonight.
 - **Gallery:** `aws s3 sync s3://nava-zero-mail-845242190536-af-south-1/nava-preview-gate/<run>/ ./gallery/` with run ids above (screenshots mask guest fields). Live viewer for you: https://nava.legacyhotels.co.za/nava-preview (sign in as usual).
 
 ---
@@ -115,7 +115,7 @@ From the plan's verification contract (lines 366–372), with the ledger's times
 |---|---|---|---|
 | V1 | Viewer run, 20 real emails: 0 crashes, intent shown, pre-fill on quote and booking emails, screenshots in the gallery | **PASS** after #88: 20/20 analysed, 0 timeouts, 0 blocked writes (`gate-20261009T045007Z`); booking request pre-filled 13 fields (`gate-20261009T045320Z`); signature-image blocker found + fixed (#90), re-verified (`gate-20261009T053510Z`) | S3 `nava-preview-gate/<run>/` |
 | V2 | Party: 360 → #113, Tourvest → Company #206, an org quote returns a non-BAR plan | **PASS** at 04:35 on the fix build: 360 → agency #113, Woolworths → org #49, Tourvest → org #206. Rateshop at 03:07 (D2b): org #49 flagged BCO1B×5 and NCOR2B×5; agency #113 flagged none (BAR) | run evidence `.private/playwright-quote/runs` on EC2 |
-| V3 | Quote: live quotes, totals, contract rates | **PARTIAL.** Server quote path live: baseline BARRO R1,750 ✅; agency 360 → BAR with copy ✅; Woolworths → BAR although contract rows exist ❌ (50-row cap). PDF/Excel from a pane quote not run | harness `scripts/v8-live-checks.ts quote` (#91) |
+| V3 | Quote: live quotes, totals, contract rates | **PASS (server path).** Baseline BARRO R1,750; agency 360 → BAR + copy; Woolworths → NCOR2B R1,360 (contract) after #93. PDF/Excel from a pane quote not run | harness `scripts/v8-live-checks.ts quote` (#91) |
 | V4 | Create: Labtest booked with agency, org and note; confirmation read back; no guest email; cancelled | **PASS (runner level)** at 03:14: Labtest 48315098-1 saved via `create-lab-stay.mjs` on EC2 with agency "360 degrees Travel", org "Woolworths", commission 10% auto; no guest email; cancelled via `cancel-stay.mjs` (penalty text recorded, not clicked). Not yet via the pane route; note field not visually confirmed | screenshots in ledger |
 | V5 | Add-in: 1.0.17 published, SHA matches, install doc updated | **PASS.** Artifact SHA matches the manifest and the served SHA (about 00:16 and 00:18 UTC, estimated). Pin and install doc merged (#59, 00:25) | addin PR #8; #59 |
 | V6 | Prod: 8788/8789 ok, pane 200, VPN ok, migration applied, flags as listed | **PASS** for D1 `4ab79674`, D2a `c469cbf3` (+0046), D2b `4435c5c3`, D2c, D3 `31ae92cb4`, D4 `4979df0f`; all READY + VPN OK; flags all unset (defaults) | ledger |
@@ -152,7 +152,7 @@ Bugs found live and fixed:
 
 ## Next steps
 
-1. Before the call (2026-10-10, 08:00 UK, 09:00 SA): set the flags per the owner's decision. `RESERVATIONIST_PANE_SAVE` stays off or goes to `lab`. `HITL_LEDGER` can go to `on`. `QUOTE_TRACE_ASYNC` stays off until V3 passes.
+1. Before the call (today, 2026-10-09): set the flags per the owner's decision. `RESERVATIONIST_PANE_SAVE` stays off or goes to `lab`. `HITL_LEDGER` can go to `on`. `QUOTE_TRACE_ASYNC` stays off until V3 passes.
 2. Opus: rerun the viewer gate on current main (V1). Record the result and the gallery URL.
 3. Opus: confirm D3 (31ae92cb4) for V6: health, pane, migration and flags.
 4. Opus: run one live full quote (PDF and Excel) to close V3. Then decide `QUOTE_TRACE_ASYNC`.

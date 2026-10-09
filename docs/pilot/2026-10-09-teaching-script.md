@@ -105,7 +105,7 @@ Then sign in:
 >
 > For the rate, leave **Rate type** on **BAR (best available rate)**.
 
-**Owner note:** **Find in HMS** is on main (#61, wired by #82). The contract-rate option and the "No contract rate found" message come from #79, which is still open. Contract rates (#79) are merged: when a company or agency is picked, the quote uses the rates HMS marks as contract; if none, it says "No contract rate found for <party>; this quote uses our best available rate." Tonight's live check: agency quotes fall back to best available rate correctly, but Woolworths still showed "No contract rate found" even though it has contract rates in HMS — so for company quotes, check the contract rate in HMS until this is fixed.
+**Owner note:** **Find in HMS** is on main (#61, wired by #82). The contract-rate option and the "No contract rate found" message come from #79, which is still open. Contract rates (#79) are merged: when a company or agency is picked, the quote uses the rates HMS marks as contract; if none, it says "No contract rate found for <party>; this quote uses our best available rate." Live check: Woolworths quoted its contract rate (NCOR2B R1,360 vs R1,940 best available); 360 degrees has no contract and says so.
 
 ---
 
