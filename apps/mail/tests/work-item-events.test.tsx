@@ -1,8 +1,10 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession } from '@/lib/quote-workflow/session';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
 import {
   fieldEventsFor,
@@ -11,6 +13,7 @@ import {
   storedDecision,
   useStoredWork,
   WORK_EVENT_DEBOUNCE_MS,
+  WORK_EVENT_RETRY_MS,
   type StoredPane,
 } from '@/lib/quote-workflow/use-work-item';
 
@@ -181,6 +184,64 @@ describe('useStoredWork', () => {
     );
   });
 
+  it('tries a failed send once more, then shows the save failure until a retry lands', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(result.current.pane.state).toBe('ready');
+      act(() => result.current.recordGroupPatch('g1', { quantity: 4 }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS);
+      });
+      expect(mutate).toHaveBeenCalledTimes(1);
+      expect(result.current.saveFailed).toBe(false);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WORK_EVENT_RETRY_MS);
+      });
+      expect(mutate).toHaveBeenCalledTimes(2);
+      expect(result.current.saveFailed).toBe(true);
+
+      mutate.mockResolvedValue({ aiValue: null, value: null });
+      await act(async () => {
+        result.current.retrySave();
+        await Promise.resolve();
+      });
+      expect(mutate).toHaveBeenCalledTimes(3);
+      expect(mutate).toHaveBeenLastCalledWith(
+        expect.objectContaining({ fieldPath: 'stays[st-1].rows[rw-1].count', value: 4 }),
+      );
+      expect(result.current.saveFailed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops a failed save when a newer edit to the same field replaces it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      act(() => result.current.recordGroupPatch('g1', { quantity: 4 }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS);
+      });
+      expect(result.current.saveFailed).toBe(true);
+      act(() => result.current.recordGroupPatch('g1', { quantity: 6 }));
+      expect(result.current.saveFailed).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('logs nothing for edits made while the read is live', async () => {
     const { trpc, mutate } = fakeTrpc(() => ({ status: 'none' }));
     const { result, unmount } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
@@ -188,5 +249,53 @@ describe('useStoredWork', () => {
     act(() => result.current.recordGroupPatch('g1', { quantity: 3 }));
     unmount();
     expect(mutate).not.toHaveBeenCalled();
+  });
+});
+
+describe('the form while Nava reads', () => {
+  it('shows an editable blank stay under the reading copy, and lays her edit over the read that lands', () => {
+    const onPatchGroup = vi.fn();
+    const reading = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_started' });
+    render(<QuoteWorkflowPanel session={reading} onPatchGroup={onPatchGroup} />);
+    expect(screen.getByText(/Nava is reading the email/i)).toBeDefined();
+    fireEvent.change(screen.getByLabelText(/Arrival/i), { target: { value: '2026-11-03' } });
+    expect(onPatchGroup).toHaveBeenCalledWith(DRAFT_GROUP_ID, expect.objectContaining({ arrivalDate: '2026-11-03' }));
+    cleanup();
+
+    const edited = reduceQuoteSession(reading, {
+      type: 'patch_group',
+      groupId: DRAFT_GROUP_ID,
+      patch: { arrivalDate: '2026-11-03' },
+    });
+    expect(edited.groups).toHaveLength(1);
+    expect(edited.groups[0]).toMatchObject({ id: DRAFT_GROUP_ID, arrivalDate: '2026-11-03' });
+    const landed = reduceQuoteSession(edited, {
+      type: 'analysis_ready',
+      analysis: {
+        intent: 'quote',
+        groups: [
+          { id: 'g1', arrivalDate: '2026-12-01', childrenAges: [], board: 'bb', specialRequests: [], fields: {} },
+        ],
+        secondaryAsks: [],
+        alternatives: [],
+      },
+    });
+    expect(landed.groups).toHaveLength(1);
+    expect(landed.groups[0]).toMatchObject({ id: 'g1', arrivalDate: '2026-11-03', board: 'bb' });
+    expect(landed.groups[0]!.fields.arrivalDate).toBe('staff_corrected');
+    expect(landed.inputRevision).toBeGreaterThan(edited.inputRevision);
+  });
+
+  it('keeps the blank stay editable after a failed read', () => {
+    const failed = reduceQuoteSession(reduceQuoteSession(initialQuoteSession(), { type: 'analysis_started' }), {
+      type: 'analysis_failed',
+      message: 'Nava ran out of time reading this email.',
+    });
+    const onRetryRead = vi.fn();
+    render(<QuoteWorkflowPanel session={failed} onPatchGroup={vi.fn()} onRetryRead={onRetryRead} />);
+    expect(screen.getByLabelText(/Arrival/i)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry reading this email' }));
+    expect(onRetryRead).toHaveBeenCalledTimes(1);
+    cleanup();
   });
 });

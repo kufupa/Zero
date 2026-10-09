@@ -426,7 +426,8 @@ describe('Outlook pane Nava analysis bind', () => {
       expect(screen.queryByText(/Nava is reading the email/i)).toBeNull();
     });
     expect(screen.getAllByText(/analyseSelection network down/i).length).toBeGreaterThan(0);
-    expect(screen.queryByLabelText('Arrival')).toBeNull();
+    // A failed read leaves a blank stay to type into, never a group guessed on the client.
+    expect(screen.getAllByLabelText('Arrival').map((input) => (input as HTMLInputElement).value)).toEqual(['']);
   }, 15_000);
 
   it('ignores a stale analyseSelection result after the selection changes', async () => {

@@ -406,6 +406,63 @@ describe('field events', () => {
     expect(aiValueAt(withoutStayOne, `stays[${STAY_ONE}].requested.arrival`)).toBeNull();
   });
 
+  it('pairs an edit on stay two with its own AI value after she deletes stay one', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'del1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'del1');
+      const base = { transportId: CENTURION, workItemId: work.workItemId, userId: USER, type: 'field.edit' as const };
+
+      expect(await recordFieldEvent(db, { ...base, fieldPath: `stays[${STAY_ONE}].removed`, value: true })).toEqual({
+        status: 'recorded',
+        aiValue: false,
+        value: true,
+      });
+      expect(
+        await recordFieldEvent(db, { ...base, fieldPath: `stays[${STAY_TWO}].requested.arrival`, value: '2027-11-16' }),
+      ).toEqual({ status: 'recorded', aiValue: '2027-11-17', value: '2027-11-16' });
+
+      const after = await readyWork(db, 'del1');
+      expect(after.analysis.groups.map((group) => group.id)).toEqual([ROW_STAY_TWO]);
+      expect(after.analysis.groups[0]!.arrivalDate).toBe('2027-11-16');
+      expect(after.refs[ROW_STAY_TWO]).toEqual({ stayId: STAY_TWO, rowId: ROW_STAY_TWO });
+    }));
+
+  it('brings back the stay and row she added and her edits on reopen, through a re-extraction', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'add1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'add1');
+      const base = { transportId: CENTURION, workItemId: work.workItemId, userId: USER, type: 'field.edit' as const };
+      const edits: Array<[string, unknown]> = [
+        [`stays[${STAY_ONE}].rows[${ROW_TWIN}].count`, 5],
+        [`stays[${STAY_ONE}].rows[${ROW_SINGLE}].removed`, true],
+        [`stays[${STAY_TWO}].rows[r_user01].roomType`, 'Family'],
+        [`stays[${STAY_TWO}].rows[r_user01].count`, 1],
+        ['stays[s_user01].requested.arrival', '2027-12-01'],
+        ['stays[s_user01].requested.departure', '2027-12-04'],
+        ['stays[s_user01].rows[r_user02].adults', 2],
+      ];
+      for (const [fieldPath, value] of edits) {
+        expect(await recordFieldEvent(db, { ...base, fieldPath, value })).toMatchObject({ status: 'recorded' });
+      }
+      const events = await eventsFor(db, work.workItemId);
+      expect(events.find((event) => event.fieldPath === 'stays[s_user01].requested.arrival')!.aiValue).toBeNull();
+
+      await insertRead(db, messageId, {
+        version: 'extract-v2',
+        payload: payload({ stayOneArrival: '2027-10-30' }),
+      });
+      const after = await readyWork(db, 'add1');
+      expect(after.workItemId).toBe(work.workItemId);
+      expect(after.analysis.groups.map((group) => group.id)).toEqual([ROW_TWIN, ROW_STAY_TWO, 'r_user01', 'r_user02']);
+      expect(after.analysis.groups[0]).toMatchObject({ quantity: 5, arrivalDate: '2027-10-30' });
+      expect(after.analysis.groups[2]).toMatchObject({ quantity: 1, roomPreference: 'Family', arrivalDate: '2027-11-17' });
+      expect(after.analysis.groups[3]).toMatchObject({ adults: 2, arrivalDate: '2027-12-01', departureDate: '2027-12-04' });
+      expect(after.refs.r_user02).toEqual({ stayId: 's_user01', rowId: 'r_user02' });
+      expect(after.analysis.luna.flags).toContain('multi_date');
+    }));
+
   it('keeps a person value through a re-extraction, and the work item stays the same', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'r1');
@@ -483,8 +540,15 @@ describe('field paths and values', () => {
       rowId: ROW_TWIN,
       field: 'board',
     });
+    expect(parseFieldPath(`stays[${STAY_ONE}].removed`)).toEqual({ stayId: STAY_ONE, rowId: null, field: 'removed' });
+    expect(parseFieldPath(`stays[${STAY_ONE}].rows[${ROW_TWIN}].removed`)).toEqual({
+      stayId: STAY_ONE,
+      rowId: ROW_TWIN,
+      field: 'removed',
+    });
     for (const path of [
       'approve',
+      `stays[${STAY_ONE}].requested.removed`,
       'stays[].requested.arrival',
       `stays[${STAY_ONE}].requested.checkout`,
       `stays[${STAY_ONE}].rows[${ROW_TWIN}].approve`,
@@ -505,6 +569,8 @@ describe('field paths and values', () => {
     expect(validFieldValue('arrival', '2027-02-30')).toBe(false);
     expect(validFieldValue('arrival', '2027-02-28')).toBe(true);
     expect(validFieldValue('departure', null)).toBe(true);
+    expect(validFieldValue('removed', true)).toBe(true);
+    expect(validFieldValue('removed', false)).toBe(false);
   });
 });
 
@@ -530,15 +596,33 @@ describe('dismiss and list', () => {
 });
 
 describe('work item route', () => {
-  it('rejects the approve event type', () =>
+  it('rejects the approve and review event types', () =>
     withDb(async () => {
-      await expect(
-        centurionCaller().workItems.recordEvent({
-          workItemId: '00000000-0000-4000-8000-000000000001',
-          type: 'approve' as never,
-          fieldPath: `stays[${STAY_ONE}].requested.arrival`,
-        }),
-      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      for (const type of ['approve', 'approval.granted', 'review.ok', 'review.flag', 'status.changed']) {
+        await expect(
+          centurionCaller().workItems.recordEvent({
+            workItemId: '00000000-0000-4000-8000-000000000001',
+            type: type as never,
+            fieldPath: `stays[${STAY_ONE}].requested.arrival`,
+          }),
+          type,
+        ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      }
+    }));
+
+  it('scopes every procedure to the session transport', () =>
+    withDb(async (db) => {
+      await addOtherTransport(db);
+      const messageId = await seedMail(db, 'tx1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'tx1');
+      const other = centurionCaller(OTHER).workItems;
+
+      expect(await other.getByMessage({ internetMessageId: '<tx1@example.com>' })).toEqual({ status: 'none' });
+      expect(await other.list({})).toEqual([]);
+      await expect(other.dismiss({ workItemId: work.workItemId })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      expect(await eventsFor(db, work.workItemId)).toHaveLength(0);
+      expect((await centurionCaller().workItems.list({})).map((item) => item.id)).toEqual([work.workItemId]);
     }));
 
   it('records an edit through the route, and refuses another transport', () =>
@@ -556,6 +640,8 @@ describe('work item route', () => {
         msSinceOpen: 900,
       });
       expect(recorded).toEqual({ aiValue: 4, value: 5 });
+      const [logged] = await eventsFor(db, work.workItemId);
+      expect(logged).toMatchObject({ actorKind: 'user', actorUserId: USER, aiSource: 'extract-v1', msSinceOpen: 900 });
 
       await expect(
         centurionCaller(OTHER).workItems.recordEvent({

@@ -11,10 +11,13 @@ import type { QuoteAnalysis, QuoteBoard, StayGroupRequirement } from './types';
 /**
  * The pane's stored read for the selected mail (U4). Ready shows the stored analysis with no model call. Reading is a
  * live read. Failed shows the stored reason until the person asks for a retry. Edits to dates and room fields are
- * logged as field events, one per field path after a quiet period, so five keystrokes make one event.
+ * logged as field events, one per field path after a quiet period, so five keystrokes make one event. A send that
+ * fails is tried once more, then kept and shown as "Couldn't save change" with a retry, so no edit is lost.
  */
 
 export const WORK_EVENT_DEBOUNCE_MS = 800;
+/** Wait before the one automatic re-send of a failed field event. */
+export const WORK_EVENT_RETRY_MS = 1500;
 /** A lookup slower than this reads live, so a slow lookup cannot hold the pane on its reading copy. */
 export const STORED_LOOKUP_TIMEOUT_MS = 4000;
 const MAX_MS_SINCE_OPEN = 86_400_000;
@@ -44,12 +47,12 @@ export function storedDecision(pane: StoredPane, overridden: boolean): StoredDec
 }
 
 type Lookup = { messageId: string; result: StoredWork | { status: 'unavailable' } };
-type PendingEvent = {
+type FieldSend = {
   workItemId: string;
   value: RecordFieldEventInput['value'];
   msSinceOpen: number;
-  timer: ReturnType<typeof setTimeout>;
 };
+type PendingEvent = FieldSend & { timer: ReturnType<typeof setTimeout> };
 export type FieldEvent = { path: string; value: RecordFieldEventInput['value'] };
 type Refs = Record<string, { stayId: string; rowId: string | null }>;
 
@@ -99,29 +102,65 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
   const [retries, setRetries] = useState<{ messageId: string | null; count: number }>({ messageId: null, count: 0 });
   const readyAt = useRef(0);
   const pending = useRef(new Map<string, PendingEvent>());
+  // The newest send per field path, so an older send's failure never stands in for a newer value.
+  const latest = useRef(new Map<string, FieldSend>());
+  // Sends that failed twice. Kept across mail changes until a retry or a newer edit to the same field.
+  const failed = useRef(new Map<string, FieldSend>());
+  const [saveFailed, setSaveFailed] = useState(false);
   const trpcRef = useRef(trpc);
 
   useEffect(() => {
     trpcRef.current = trpc;
   }, [trpc]);
 
-  const send = useCallback((path: string) => {
-    const entry = pending.current.get(path);
-    if (!entry) return;
-    clearTimeout(entry.timer);
-    pending.current.delete(path);
+  const post = useCallback((path: string, entry: FieldSend, retried: boolean) => {
     const recordEvent = workItemsFromTrpc(trpcRef.current).recordEvent;
-    // ponytail: a failed log is dropped, not retried. The next edit to the same field logs again.
-    void recordEvent
-      ?.mutate({
+    if (!recordEvent) return;
+    latest.current.set(path, entry);
+    recordEvent
+      .mutate({
         workItemId: entry.workItemId,
         type: 'field.edit',
         fieldPath: path,
         value: entry.value,
         msSinceOpen: entry.msSinceOpen,
       })
-      .catch(() => undefined);
+      .then(
+        () => {
+          if (latest.current.get(path) === entry) latest.current.delete(path);
+        },
+        () => {
+          if (latest.current.get(path) !== entry) return;
+          if (!retried) {
+            setTimeout(() => {
+              if (latest.current.get(path) === entry) post(path, entry, true);
+            }, WORK_EVENT_RETRY_MS);
+            return;
+          }
+          failed.current.set(path, entry);
+          setSaveFailed(true);
+        },
+      );
   }, []);
+
+  const send = useCallback(
+    (path: string) => {
+      const entry = pending.current.get(path);
+      if (!entry) return;
+      clearTimeout(entry.timer);
+      pending.current.delete(path);
+      post(path, { workItemId: entry.workItemId, value: entry.value, msSinceOpen: entry.msSinceOpen }, false);
+    },
+    [post],
+  );
+
+  /** Sends every failed change again. One that fails twice more shows the retry again. */
+  const retrySave = useCallback(() => {
+    const entries = [...failed.current];
+    failed.current.clear();
+    setSaveFailed(false);
+    for (const [path, entry] of entries) post(path, entry, false);
+  }, [post]);
 
   const flushAll = useCallback(() => {
     // send() deletes the entry it flushes, which a Map iterator allows.
@@ -132,6 +171,9 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
     (path: string, workItemId: string, value: RecordFieldEventInput['value']) => {
       const existing = pending.current.get(path);
       if (existing) clearTimeout(existing.timer);
+      // A newer value for the field replaces one that failed to save.
+      if (failed.current.delete(path)) setSaveFailed(failed.current.size > 0);
+      latest.current.delete(path);
       // The clock starts at the field's first change in the quiet window, so later keystrokes do not move it.
       const elapsed = Math.round(Date.now() - readyAt.current);
       const msSinceOpen = existing?.msSinceOpen ?? Math.min(MAX_MS_SINCE_OPEN, Math.max(0, elapsed));
@@ -218,5 +260,5 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
     [readyRefs],
   );
 
-  return { pane, key, retry, recordGroupPatch, siblingGroupIds };
+  return { pane, key, retry, recordGroupPatch, siblingGroupIds, saveFailed, retrySave };
 }

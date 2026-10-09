@@ -1167,6 +1167,15 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
               }
             />
 
+            {storedWork.saveFailed ? (
+              <p role="status" className="flex items-center gap-2 px-1 text-[11px] text-[#b45309]">
+                Couldn&apos;t save change.
+                <button type="button" className="font-semibold underline" onClick={storedWork.retrySave}>
+                  Retry
+                </button>
+              </p>
+            ) : null}
+
             {activeEmail && !quoteSession.staffQuote && quoteOrBookingEmail ? (
               <p className="px-1 text-[11px] text-[#64748b]">
                 Nava filled these in from the email. Check them before getting rates.
@@ -1190,7 +1199,8 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
                 }
                 storedWork.recordGroupPatch(groupId, patch);
               }}
-              onRetryRead={quoteSession.phase === 'failed' ? storedWork.retry : undefined}
+              // Shown only on a failed-read item, which stays listed after she starts typing in the form.
+              onRetryRead={storedWork.retry}
               onStayAction={(action) => {
                 if (action.type !== 'remove_stay') {
                   dispatchQuote(action);

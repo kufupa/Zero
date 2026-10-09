@@ -23,6 +23,7 @@ const fieldEventInput = z
         z.string().max(200),
         z.number(),
         z.null(),
+        z.literal(true),
         z.array(z.number().int().min(0).max(17)).max(9),
       ])
       .optional(),

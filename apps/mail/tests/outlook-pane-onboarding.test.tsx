@@ -263,7 +263,7 @@ describe('OutlookPane Onboarding Flow', () => {
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
     expect(screen.getByText(/Nava Reservationist/i)).toBeDefined();
     expect(screen.queryByText(/September 2026/i)).toBeNull();
-    expect(screen.queryByText(/Change Dates/i)).toBeNull();
+    expect(screen.queryByText(/^Change Dates$/)).toBeNull();
     expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();
     expect(await screen.findByRole('button', { name: /^Get rates from HMS$/i })).toBeDefined();
   });

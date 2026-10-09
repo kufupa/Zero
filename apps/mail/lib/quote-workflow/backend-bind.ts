@@ -186,7 +186,8 @@ export type RecordFieldEventInput = {
   workItemId: string;
   type: 'field.edit' | 'field.accept' | 'field.reject';
   fieldPath: string;
-  value?: string | number | number[] | null;
+  /** `true` only on a `.removed` path: the person deleted that stay or row. */
+  value?: string | number | number[] | true | null;
   msSinceOpen?: number;
 };
 

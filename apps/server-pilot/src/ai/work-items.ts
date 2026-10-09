@@ -3,7 +3,7 @@ import type { DB } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
-import type { MailExtractionPayload, MailKind } from './extraction/schema.js';
+import type { ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
 import {
   canonicalInternetMessageId,
   documentFailureItems,
@@ -16,19 +16,21 @@ import type { LunaAnalysis } from './reservationist-decision.js';
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
  * paths a person has touched, so a re-extraction never overwrites a person's value: every other value reads through
  * from the latest succeeded extraction. Paths use the extraction's stable ids (`stays[s_x].requested.arrival`,
- * `stays[s_x].rows[r_y].count`), so deleting one stay never shifts another stay's AI value.
+ * `stays[s_x].rows[r_y].count`), so deleting one stay never shifts another stay's AI value. A path on an id the
+ * extraction does not have is a stay or row the person added, and `stays[s_x].removed` / `...rows[r_y].removed`
+ * (true) is one she deleted. Both come back on reopen.
  */
 
 export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childAges', 'board'] as const;
 export type RowField = (typeof ROW_FIELDS)[number];
 export type FieldPath =
-  | { stayId: string; rowId: null; field: 'arrival' | 'departure' }
-  | { stayId: string; rowId: string; field: RowField };
+  | { stayId: string; rowId: null; field: 'arrival' | 'departure' | 'removed' }
+  | { stayId: string; rowId: string; field: RowField | 'removed' };
 export type WorkState = Record<string, unknown>;
 
 const ID = '[A-Za-z0-9_-]{1,40}';
 const PATH = new RegExp(
-  `^stays\\[(${ID})\\]\\.(?:requested\\.(arrival|departure)|rows\\[(${ID})\\]\\.(${ROW_FIELDS.join('|')}))$`,
+  `^stays\\[(${ID})\\]\\.(?:requested\\.(arrival|departure)|(removed)|rows\\[(${ID})\\]\\.(${ROW_FIELDS.join('|')}|removed))$`,
 );
 /** Row field to the extraction's key. The path names the form's word, the payload the model's. */
 const ROW_KEYS = {
@@ -43,9 +45,10 @@ const BOARDS = new Set(['room_only', 'bb', 'dbb']);
 export function parseFieldPath(path: string): FieldPath | null {
   const match = PATH.exec(path);
   if (!match) return null;
-  const [, stayId = '', dateField, rowId, rowField] = match;
+  const [, stayId = '', dateField, stayRemoved, rowId, rowField] = match;
   if (dateField) return { stayId, rowId: null, field: dateField as 'arrival' | 'departure' };
-  return { stayId, rowId: rowId ?? '', field: rowField as RowField };
+  if (stayRemoved) return { stayId, rowId: null, field: 'removed' };
+  return { stayId, rowId: rowId ?? '', field: rowField as RowField | 'removed' };
 }
 
 function isInt(value: unknown, min: number, max: number): boolean {
@@ -69,17 +72,50 @@ export function validFieldValue(field: FieldPath['field'], value: unknown): bool
       return Array.isArray(value) && value.length <= 9 && value.every((age) => isInt(age, 0, 17));
     case 'board':
       return typeof value === 'string' && BOARDS.has(value);
+    case 'removed':
+      return value === true;
   }
 }
 
-/** The extraction's value at a path, found by stable id. Null when the read has no such id (a user-made row). */
+/**
+ * The extraction's value at a path, found by stable id. Null when the read has no such id (a user-made stay or row).
+ * The extraction never removes, so `removed` on a stay or row it has reads false.
+ */
 export function aiValueAt(payload: MailExtractionPayload | null | undefined, path: string): unknown {
   const parsed = parseFieldPath(path);
   const stay = parsed ? payload?.stays.find((item) => item.id === parsed.stayId) : undefined;
   if (!parsed || !stay) return null;
-  if (parsed.rowId === null) return stay.requested[parsed.field];
+  if (parsed.rowId === null) return parsed.field === 'removed' ? false : stay.requested[parsed.field];
   const row = stay.rows.find((item) => item.id === parsed.rowId);
-  return row ? row[ROW_KEYS[parsed.field]] : null;
+  if (!row) return null;
+  return parsed.field === 'removed' ? false : row[ROW_KEYS[parsed.field]];
+}
+
+type FormStay = Pick<ExtractionStay, 'id' | 'requested' | 'rows'>;
+
+/**
+ * The stays and rows the form shows: the extraction's, then any the person added (ids only in `state`), less any she
+ * removed. Added ones start empty; their values come from `state` like every other field.
+ */
+export function formStays(payload: MailExtractionPayload, state: WorkState): FormStay[] {
+  const stays: FormStay[] = payload.stays.map((stay) => ({ ...stay, rows: [...stay.rows] }));
+  const removed = new Set<string>();
+  for (const key of Object.keys(state)) {
+    const path = parseFieldPath(key);
+    if (!path) continue;
+    let stay = stays.find((item) => item.id === path.stayId);
+    if (!stay) {
+      stay = { id: path.stayId, requested: { arrival: null, departure: null }, rows: [] };
+      stays.push(stay);
+    }
+    if (path.rowId !== null && !stay.rows.some((row) => row.id === path.rowId)) {
+      stay.rows.push({ id: path.rowId, roomType: null, rooms: null, adultsPerRoom: null, childAges: [], board: null });
+    }
+    if (path.field === 'removed' && state[key] === true) removed.add(path.rowId ?? path.stayId);
+  }
+  return stays
+    .filter((stay) => !removed.has(stay.id))
+    .map((stay) => ({ ...stay, rows: stay.rows.filter((row) => !removed.has(row.id)) }));
 }
 
 const WORKFLOW_BY_KIND: Partial<Record<MailKind, LunaAnalysis['workflow']>> = {
@@ -128,12 +164,13 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
   );
   const flags: LunaAnalysis['flags'] = [];
   if (failures.length) flags.push('attachment_unread');
-  if (payload.stays.length > 1) flags.push('multi_date');
+  const stays = formStays(payload, state);
+  if (stays.length > 1) flags.push('multi_date');
   if (kind === 'amendment' || kind === 'cancellation') flags.push('amendment_or_cancel');
 
   const order: Array<GroupRef & { groupId: string }> = [];
   const groups: LunaAnalysis['groups'] = [];
-  for (const stay of payload.stays) {
+  for (const stay of stays) {
     const dates = {
       arrival: pick(`stays[${stay.id}].requested.arrival`, stay.requested.arrival),
       departure: pick(`stays[${stay.id}].requested.departure`, stay.requested.departure),
@@ -158,7 +195,7 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
         ...dates,
         rooms: pick(at('count'), row.rooms),
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
-        childAges: pick(at('childAges'), row.childAges),
+        childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
         guestNames: [],
