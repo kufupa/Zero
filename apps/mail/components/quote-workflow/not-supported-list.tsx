@@ -44,13 +44,19 @@ export function NotSupportedList({
   flags,
   tasks,
   amendment,
+  unreadFiles = false,
 }: {
   flags?: LunaAnalysisWire['flags'];
   tasks?: LunaAnalysisWire['tasks'];
   /** The analysis amendment. When it is set, the change or cancel panel is shown. */
   amendment?: QuoteAmendment | null;
+  /** Each unread file already has its own notice, so the generic unread-attachment line is left out. */
+  unreadFiles?: boolean;
 }) {
-  const copies = (flags ?? []).map((flag) => flagCopy(flag, amendment)).filter(Boolean);
+  const copies = (flags ?? [])
+    .filter((flag) => !(unreadFiles && flag === 'attachment_unread'))
+    .map((flag) => flagCopy(flag, amendment))
+    .filter(Boolean);
   const extra = tasks ? tasksLine(tasks) : null;
   if (!copies.length && !extra) return null;
   return (

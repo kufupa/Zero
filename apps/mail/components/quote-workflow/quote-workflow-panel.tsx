@@ -893,7 +893,7 @@ export function QuoteWorkflowPanel({
         <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
         <Notice tone="info">Not a quote or booking. Change the type above if Nava got it wrong.</Notice>
         <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
-        <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} />
+        <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} unreadFiles={unreadFiles.length > 0} />
         {unreadFiles.map((item) => (
           <Notice key={item.id} tone="warn">
             {item.text}
@@ -904,6 +904,8 @@ export function QuoteWorkflowPanel({
   }
 
   const openItems = openReviewItems(session);
+  // Each unread file has its own notice in the items below, so the generic unread-attachment flag line is left out.
+  const hasUnreadFiles = (session.reviewItems ?? []).some((item) => item.kind === 'document_failure');
   const handledItems = (session.reviewItems ?? []).filter(
     (item) =>
       notNoise(item) &&
@@ -987,7 +989,7 @@ export function QuoteWorkflowPanel({
           <Disclosure summary={<span>Extras: allowances, contact, notes</span>} defaultOpen={hasExtras(header)}>
             <StaffExtraFields header={header} onPatch={onPatchStaffHeader} />
           </Disclosure>
-          <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} />
+          <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} unreadFiles={hasUnreadFiles} />
           <NeedsAnswerList missing={session.analysis?.luna?.missing} />
           <ItemsForYou
             openItems={openItems}

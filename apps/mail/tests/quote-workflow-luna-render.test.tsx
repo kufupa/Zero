@@ -167,6 +167,32 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     ).toBeDefined();
   });
 
+  it('shows one notice per unread file, and drops the generic unread-attachment line beside it', () => {
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [g1],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ flags: ['attachment_unread'] }),
+      reviewItems: [
+        {
+          id: 'unread:scan',
+          kind: 'document_failure',
+          rank: 'unread_source',
+          text: "Nava can't read scan.pdf (password-protected) — open it if it has booking details.",
+          sourceLabel: 'scan.pdf',
+          filename: 'scan.pdf',
+          blocking: false,
+        },
+      ],
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(
+      screen.getAllByText("Nava can't read scan.pdf (password-protected) — open it if it has booking details."),
+    ).toHaveLength(1);
+    expect(screen.queryByText('An attachment could not be read. Open it in Outlook and check it.')).toBeNull();
+  });
+
   it('lists conference and unread-attachment flag copy', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',

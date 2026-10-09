@@ -6,6 +6,7 @@
 import { S3ObjectTooLargeError, type S3Storage } from '../../storage/s3.js';
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { ToolResult } from '../../ai/draft-evidence.js';
+import { maskCardNumbers } from '../../ai/card-mask.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -53,6 +54,8 @@ export type AttachmentLocator = {
   mimeType: string;
   sizeBytes: number;
   messageId: string;
+  /** The DB sha256 of the stored object. Binds an Outlook-sync original key to its bytes. */
+  sha256?: string | null;
 };
 
 /**
@@ -70,6 +73,8 @@ export type SandboxResult = {
   stdout: Buffer;
   stderr: Buffer;
   exitCode: number;
+  /** Stdout passed the output cap, so the child was killed. The exit code then says nothing about the PDF. */
+  truncated?: boolean;
 };
 
 export type SandboxRunner = (
@@ -134,6 +139,50 @@ function normalizeUtf8Text(raw: string): string {
     .trim();
 }
 
+// Outlook-sync originals are sealed under a scope hash and named by the attachment's own sha256.
+const OUTLOOK_SYNC_KEY = /^outlook-sync-originals\/v1\/[0-9a-f]{64}\/([0-9a-f]{64})$/;
+
+/** The row's own message key, or a sealed Outlook-sync key whose name is the row's DB sha256. */
+function keyBelongsTo(locator: AttachmentLocator): boolean {
+  if (locator.s3Key.startsWith(`attachments/${locator.messageId}/`)) return true;
+  const sealed = OUTLOOK_SYNC_KEY.exec(locator.s3Key);
+  return sealed !== null && locator.sha256 === sealed[1];
+}
+
+/** A sealed key has no message prefix, so its bytes must hash to the DB sha256 that names them. */
+function sealedBytesMatch(locator: AttachmentLocator, body: Buffer): boolean {
+  return !OUTLOOK_SYNC_KEY.test(locator.s3Key) || sha256Hex(body) === locator.sha256;
+}
+
+/**
+ * Stored types that may hold this row's PDF. A generic octet-stream row counts only when its key is a .pdf, and the
+ * %PDF- magic is checked when the bytes are parsed.
+ */
+function storedPdfTypes(locator: Pick<AttachmentLocator, 'mimeType' | 's3Key'>): string[] {
+  if (locator.mimeType === 'application/pdf') return ['application/pdf'];
+  if (locator.mimeType === 'application/octet-stream' && /\.pdf$/i.test(locator.s3Key)) {
+    return ['application/octet-stream', 'application/pdf'];
+  }
+  return [];
+}
+
+/** The stored content type is one this row may hold: its declared type, or the PDF types of a PDF row. */
+function storedTypeOk(locator: Pick<AttachmentLocator, 'mimeType' | 's3Key'>, stored: string): boolean {
+  const pdfTypes = storedPdfTypes(locator);
+  return pdfTypes.length > 0 ? pdfTypes.includes(stored) : stored === locator.mimeType;
+}
+
+/** Image bytes by magic: PNG, JPEG, GIF or WebP. Logos and signature images are skipped, not reported. */
+export function sniffImageBytes(body: Buffer): boolean {
+  const head = body.subarray(0, 12);
+  return (
+    head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ||
+    head.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) ||
+    ['GIF87a', 'GIF89a'].includes(head.subarray(0, 6).toString('latin1')) ||
+    (head.subarray(0, 4).toString('latin1') === 'RIFF' && head.subarray(8, 12).toString('latin1') === 'WEBP')
+  );
+}
+
 function emptyEvidence(
   attachmentId: string,
   sourceHash: string | null,
@@ -184,11 +233,12 @@ function okResult(args: {
 }): ArtifactReadResult {
   return {
     status: 'ok',
-    // Artifact text is server-only candidate material. It is never model evidence.
+    // Artifact text is server-only candidate material. It is never model evidence. Card numbers and security
+    // codes are masked here, so no caller can hold or persist the unmasked text.
     draftReady: false,
     data: {
       mimeType: args.mimeType,
-      text: args.text,
+      text: maskCardNumbers(args.text),
       pageCount: args.pageCount,
       reason: 'text',
     },
@@ -296,10 +346,12 @@ export async function runPdfSandbox(
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let stdoutBytes = 0;
+    let truncated = false;
 
     child.stdout?.on('data', (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
       if (stdoutBytes > ARTIFACT_MAX_OUTPUT_BYTES) {
+        truncated = true;
         child.kill('SIGKILL');
       } else {
         stdout.push(chunk);
@@ -314,6 +366,7 @@ export async function runPdfSandbox(
         stdout: Buffer.concat(stdout),
         stderr: Buffer.concat(stderr),
         exitCode: exitCode ?? -1,
+        truncated,
       });
     });
   });
@@ -431,17 +484,9 @@ export async function extractEmbeddedPdfText(
       });
     }
 
+    // "Encrypted: yes" alone is not a refusal. An owner-only lock opens with no password, and pdftotext decides below:
+    // a user password fails there as "Incorrect password" and stays encrypted.
     const infoText = info.stdout.toString('utf8');
-    if (/^Encrypted:\s+yes/im.test(infoText)) {
-      return manualResult({
-        attachmentId,
-        mimeType,
-        reason: 'encrypted',
-        sourceHash,
-        now,
-      });
-    }
-
     const pageCount = Number(/^Pages:\s+(\d+)/im.exec(infoText)?.[1] ?? 0);
     if (!Number.isInteger(pageCount) || pageCount < 1) {
       return manualResult({
@@ -488,22 +533,23 @@ export async function extractEmbeddedPdfText(
       });
     }
 
-    if (textResult.exitCode !== 0) {
+    // Over the output cap the sandbox kills pdftotext, so report the size before the exit code, which is then -1.
+    if (textResult.truncated || textResult.stdout.byteLength > ARTIFACT_MAX_OUTPUT_BYTES) {
       return manualResult({
         attachmentId,
         mimeType,
-        reason: pdfFailureReason(textResult),
+        reason: 'too_large',
         sourceHash,
         pageCount,
         now,
       });
     }
 
-    if (textResult.stdout.byteLength > ARTIFACT_MAX_OUTPUT_BYTES) {
+    if (textResult.exitCode !== 0) {
       return manualResult({
         attachmentId,
         mimeType,
-        reason: 'too_large',
+        reason: pdfFailureReason(textResult),
         sourceHash,
         pageCount,
         now,
@@ -610,7 +656,7 @@ export async function readAuthorizedArtifact(input: {
     );
   }
 
-  if (!locator.s3Key.startsWith(`attachments/${locator.messageId}/`)) {
+  if (!keyBelongsTo(locator)) {
     return finish(
       manualResult({
         attachmentId: input.attachmentId,
@@ -652,7 +698,7 @@ export async function readAuthorizedArtifact(input: {
     );
   }
 
-  if (locator.mimeType !== 'text/plain' && locator.mimeType !== 'application/pdf') {
+  if (locator.mimeType !== 'text/plain' && storedPdfTypes(locator).length === 0) {
     return finish(
       manualResult({
         attachmentId: input.attachmentId,
@@ -670,13 +716,13 @@ export async function readAuthorizedArtifact(input: {
       if (
         !head ||
         head.sizeBytes !== locator.sizeBytes ||
-        (head.contentType && head.contentType !== locator.mimeType) ||
+        (head.contentType && !storedTypeOk(locator, head.contentType)) ||
         !(await input.revalidate())
       ) {
         return finish(
           manualResult({
             attachmentId: input.attachmentId,
-            mimeType: locator.mimeType,
+            mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
             reason: 'unsupported',
             sourceHash: null,
             now,
@@ -687,7 +733,7 @@ export async function readAuthorizedArtifact(input: {
       return finish(
         manualResult({
           attachmentId: input.attachmentId,
-          mimeType: locator.mimeType,
+          mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
           reason: 'unsupported',
           sourceHash: null,
           now,
@@ -704,7 +750,7 @@ export async function readAuthorizedArtifact(input: {
       return finish(
         manualResult({
           attachmentId: input.attachmentId,
-          mimeType: locator.mimeType,
+          mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
           reason: 'malformed',
           sourceHash: null,
           now,
@@ -719,7 +765,7 @@ export async function readAuthorizedArtifact(input: {
       return finish(
         manualResult({
           attachmentId: input.attachmentId,
-          mimeType: locator.mimeType,
+          mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
           reason,
           sourceHash: null,
           now,
@@ -729,11 +775,11 @@ export async function readAuthorizedArtifact(input: {
     throw err;
   }
 
-  if (locator.sizeBytes !== object.body.byteLength) {
+  if (locator.sizeBytes !== object.body.byteLength || !sealedBytesMatch(locator, object.body)) {
     return finish(
       manualResult({
         attachmentId: input.attachmentId,
-        mimeType: locator.mimeType,
+        mimeType: locator.mimeType === 'text/plain' ? 'text/plain' : 'application/pdf',
         reason: 'malformed',
         sourceHash: null,
         now,
@@ -799,14 +845,15 @@ export async function readAuthorizedArtifact(input: {
     );
   }
 
+  // The row's stored type must be one of its PDF types. extractEmbeddedPdfText then checks the %PDF- magic.
+  const pdfTypes = storedPdfTypes(locator);
   return finish(
     await extractEmbeddedPdfText(
       {
         body: object.body,
         declaredSize: locator.sizeBytes,
-        declaredMime: locator.mimeType,
-        objectMime:
-          object.contentType === 'application/pdf' ? 'application/pdf' : object.contentType,
+        declaredMime: 'application/pdf',
+        objectMime: pdfTypes.includes(object.contentType) ? 'application/pdf' : object.contentType,
       },
       {
         runner: input.runner,
@@ -837,6 +884,11 @@ export async function readAuthorizedArtifactBytes(input: {
   allowRaster?: boolean;
   /** Explicit trusted Office acquisition; only original DOCX bytes, no conversion here. */
   allowOffice?: boolean;
+  /**
+   * Logo check only: an octet-stream row returns its bytes so the caller can sniff the image magic. The bytes are
+   * never parsed as a PDF here.
+   */
+  allowSniff?: boolean;
   /** Revalidate current DB grant/source immediately before object bytes. */
   revalidate?: () => Promise<boolean>;
 }): Promise<AuthorizedArtifactBytes | null> {
@@ -848,7 +900,7 @@ export async function readAuthorizedArtifactBytes(input: {
   const locator = await input.resolveLocator(input.attachmentId);
   if (!locator) return null;
   if (input.expectedLocator && !sameLocator(locator, input.expectedLocator)) return null;
-  if (!locator.s3Key.startsWith(`attachments/${locator.messageId}/`)) return null;
+  if (!keyBelongsTo(locator)) return null;
   if (
     !Number.isInteger(locator.sizeBytes) ||
     locator.sizeBytes < 0 ||
@@ -864,7 +916,14 @@ export async function readAuthorizedArtifactBytes(input: {
     locator.s3Key.split('/').some(part => !part || part === '.' || part === '..'))) {
     return null;
   }
-  if (locator.mimeType !== 'text/plain' && locator.mimeType !== 'application/pdf' && !raster && !office) {
+  const sniff = input.allowSniff === true && locator.mimeType === 'application/octet-stream';
+  if (
+    locator.mimeType !== 'text/plain' &&
+    storedPdfTypes(locator).length === 0 &&
+    !raster &&
+    !office &&
+    !sniff
+  ) {
     return null;
   }
 
@@ -874,7 +933,7 @@ export async function readAuthorizedArtifactBytes(input: {
       if (
         !head ||
         head.sizeBytes !== locator.sizeBytes ||
-        (head.contentType && head.contentType !== locator.mimeType) ||
+        (head.contentType && !storedTypeOk(locator, head.contentType)) ||
         !(await input.revalidate())
       ) {
         return null;
@@ -896,7 +955,8 @@ export async function readAuthorizedArtifactBytes(input: {
     throw error;
   }
   if (!object || object.body.byteLength !== locator.sizeBytes) return null;
-  if (object.contentType && object.contentType !== locator.mimeType) return null;
+  if (object.contentType && !storedTypeOk(locator, object.contentType)) return null;
+  if (!sealedBytesMatch(locator, object.body)) return null;
 
   const sha256 = sha256Hex(object.body);
   if (input.expectedSha256 && sha256 !== input.expectedSha256) return null;
@@ -942,7 +1002,7 @@ export async function recheckAuthorizedArtifactIdentity(input: {
     current.sizeBytes < 0 ||
     current.sizeBytes > ARTIFACT_MAX_INPUT_BYTES ||
     !Number.isInteger(current.sizeBytes) ||
-    !current.s3Key.startsWith(`attachments/${current.messageId}/`)
+    !keyBelongsTo(current)
   ) {
     return false;
   }

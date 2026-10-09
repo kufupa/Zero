@@ -16,6 +16,8 @@ import {
   extractEmbeddedPdfText,
   recheckAuthorizedArtifactIdentity,
   readAuthorizedArtifact,
+  readAuthorizedArtifactBytes,
+  sniffImageBytes,
   type AttachmentLocator,
   type SandboxRunner,
   type SandboxResult,
@@ -56,7 +58,11 @@ function fixtureRunner(input: {
   pdfInfo?: string;
   text?: string;
   infoExit?: number;
+  infoStderr?: string;
   textExit?: number;
+  textStderr?: string;
+  /** The sandbox killed pdftotext for writing past its output cap. */
+  textTruncated?: boolean;
   hang?: boolean;
 }): SandboxRunner & { commands: () => string[]; killed: () => boolean } {
   const commands: string[] = [];
@@ -84,14 +90,15 @@ function fixtureRunner(input: {
       if (tool === 'pdfinfo') {
         return {
           stdout: Buffer.from(input.pdfInfo ?? 'Pages: 1\nEncrypted: no\n'),
-          stderr: Buffer.alloc(0),
+          stderr: Buffer.from(input.infoStderr ?? ''),
           exitCode: input.infoExit ?? 0,
         };
       }
       return {
         stdout: Buffer.from(input.text ?? 'Hello booking\n'),
-        stderr: Buffer.alloc(0),
+        stderr: Buffer.from(input.textStderr ?? ''),
         exitCode: input.textExit ?? 0,
+        ...(input.textTruncated ? { truncated: true } : {}),
       };
     },
     {
@@ -359,8 +366,11 @@ describe('readAuthorizedArtifact', () => {
         objectMime: 'application/pdf',
       },
       {
+        // A user password: pdftotext refuses with Poppler's exact diagnostic. Owner-only locks read (see below).
         runner: fixtureRunner({
           pdfInfo: 'Pages: 1\nEncrypted: yes\n',
+          textExit: 1,
+          textStderr: 'Command Line Error: Incorrect password\n',
         }),
       },
     );
@@ -671,5 +681,204 @@ describe('readAuthorizedArtifact', () => {
     expect(result.status).toBe('manual_required');
     expect(result.data.reason).toBe('malformed');
     expect(getSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('PDF read gates (U6)', () => {
+  const pdfInput = (body: Buffer) => ({
+    body,
+    declaredSize: body.byteLength,
+    declaredMime: 'application/pdf',
+    objectMime: 'application/pdf',
+  });
+
+  it('reads an owner-locked PDF with text, and masks the card and CVV on the way out', async () => {
+    const body = pdfFixtureBody('owner-locked');
+    const result = await extractEmbeddedPdfText(pdfInput(body), {
+      runner: fixtureRunner({
+        pdfInfo: 'Pages: 1\nEncrypted: yes (print:yes copy:no change:no addNotes:no algorithm:RC4)\n',
+        text: 'Guest: Mr John Smith\nVirtual card number: 4111 1111 1111 1111\nCVV: 123\n',
+      }),
+    });
+    expect(result).toMatchObject({ status: 'ok', data: { reason: 'text' } });
+    expect(result.data.text).toContain('Guest: Mr John Smith');
+    expect(result.data.text).toContain('[card ••••1111]');
+    expect(result.data.text).toContain('CVV: [code masked]');
+    expect(result.data.text).not.toContain('4111');
+    expect(result.data.text).not.toContain('123');
+  });
+
+  it('keeps a user-password PDF encrypted when pdfinfo itself refuses it', async () => {
+    const body = pdfFixtureBody('user-locked');
+    const result = await extractEmbeddedPdfText(pdfInput(body), {
+      runner: fixtureRunner({ infoExit: 1, infoStderr: 'Command Line Error: Incorrect password\n' }),
+    });
+    expect(result).toMatchObject({ status: 'manual_required', data: { reason: 'encrypted' } });
+  });
+
+  it('reads an octet-stream part named .pdf by its %PDF- magic, with card digits masked', async () => {
+    const body = pdfFixtureBody('voucher');
+    const s3 = new FakeS3Storage('artifact-test');
+    await s3.putObject({
+      key: 'attachments/msg-1/000-voucher.pdf',
+      body,
+      contentType: 'application/octet-stream',
+    });
+    const result = await readAuthorizedArtifact({
+      attachmentId: 'att-vch',
+      authorizedAttachmentIds: new Set(['att-vch']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator: resolveLocatorOf(
+        locator({
+          s3Key: 'attachments/msg-1/000-voucher.pdf',
+          mimeType: 'application/octet-stream',
+          sizeBytes: body.byteLength,
+        }),
+      ),
+      runner: fixtureRunner({ text: 'Virtual card 4111 1111 1111 1111\n' }),
+    });
+    expect(result).toMatchObject({ status: 'ok', data: { reason: 'text' } });
+    expect(result.data.text).toContain('[card ••••1111]');
+    expect(result.data.text).not.toContain('4111');
+  });
+
+  it('refuses an octet-stream part that is not named .pdf, before any S3 read', async () => {
+    const body = pdfFixtureBody('unnamed');
+    const s3 = new FakeS3Storage('artifact-test');
+    await s3.putObject({
+      key: 'attachments/msg-1/000-booking.bin',
+      body,
+      contentType: 'application/octet-stream',
+    });
+    const getSpy = vi.spyOn(s3, 'getObjectBounded');
+    const result = await readAuthorizedArtifact({
+      attachmentId: 'att-bin',
+      authorizedAttachmentIds: new Set(['att-bin']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator: resolveLocatorOf(
+        locator({
+          s3Key: 'attachments/msg-1/000-booking.bin',
+          mimeType: 'application/octet-stream',
+          sizeBytes: body.byteLength,
+        }),
+      ),
+      runner: fixtureRunner({}),
+    });
+    expect(result).toMatchObject({ status: 'manual_required', data: { reason: 'unsupported' } });
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+
+  it('binds an Outlook-sync original to its DB sha256: a matching sha is read, a mismatch is refused', async () => {
+    const body = pdfFixtureBody('sealed');
+    const sha = createHash('sha256').update(body).digest('hex');
+    const key = `outlook-sync-originals/v1/${'a'.repeat(64)}/${sha}`;
+    const s3 = new FakeS3Storage('artifact-test');
+    await s3.putObject({ key, body, contentType: 'application/pdf' });
+    const read = (dbSha: string) =>
+      readAuthorizedArtifact({
+        attachmentId: 'att-sealed',
+        authorizedAttachmentIds: new Set(['att-sealed']),
+        s3,
+        signal: AbortSignal.timeout(5_000),
+        resolveLocator: resolveLocatorOf(
+          locator({ s3Key: key, sizeBytes: body.byteLength, sha256: dbSha }),
+        ),
+        runner: fixtureRunner({ text: 'Booking ABC123\n' }),
+      });
+    expect(await read(sha)).toMatchObject({ status: 'ok', data: { reason: 'text' } });
+    expect(await read('b'.repeat(64))).toMatchObject({
+      status: 'manual_required',
+      data: { reason: 'unsupported' },
+    });
+  });
+
+  it('refuses an Outlook-sync original whose stored bytes do not hash to its key', async () => {
+    const body = pdfFixtureBody('sealed');
+    const swapped = pdfFixtureBody('swapped-bytes');
+    const sha = createHash('sha256').update(body).digest('hex');
+    const key = `outlook-sync-originals/v1/${'a'.repeat(64)}/${sha}`;
+    const s3 = new FakeS3Storage('artifact-test');
+    await s3.putObject({ key, body: swapped, contentType: 'application/pdf' });
+    const result = await readAuthorizedArtifact({
+      attachmentId: 'att-sealed',
+      authorizedAttachmentIds: new Set(['att-sealed']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator: resolveLocatorOf(
+        locator({ s3Key: key, sizeBytes: swapped.byteLength, sha256: sha }),
+      ),
+      runner: fixtureRunner({ text: 'Booking ABC123\n' }),
+    });
+    expect(result).toMatchObject({ status: 'manual_required', data: { reason: 'malformed' } });
+  });
+
+  it('reports pdftotext output past the 256 KiB cap as too_large, not as a parser failure', async () => {
+    const body = pdfFixtureBody('big');
+    const result = await extractEmbeddedPdfText(pdfInput(body), {
+      runner: fixtureRunner({
+        text: 'x'.repeat(ARTIFACT_MAX_OUTPUT_BYTES),
+        textExit: -1,
+        textTruncated: true,
+      }),
+    });
+    expect(result).toMatchObject({ status: 'manual_required', data: { reason: 'too_large' } });
+  });
+
+  it('sniffs an octet-stream logo: its bytes come back only when allowSniff is set, and image magic is an image', async () => {
+    const png = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(24),
+    ]);
+    const s3 = new FakeS3Storage('artifact-test');
+    await s3.putObject({
+      key: 'attachments/msg-1/000-logo.bin',
+      body: png,
+      contentType: 'application/octet-stream',
+    });
+    const request = {
+      attachmentId: 'att-logo',
+      authorizedAttachmentIds: new Set(['att-logo']),
+      s3,
+      signal: AbortSignal.timeout(5_000),
+      resolveLocator: resolveLocatorOf(
+        locator({
+          s3Key: 'attachments/msg-1/000-logo.bin',
+          mimeType: 'application/octet-stream',
+          sizeBytes: png.byteLength,
+        }),
+      ),
+    };
+    const sniffed = await readAuthorizedArtifactBytes({ ...request, allowSniff: true });
+    expect(sniffed && sniffImageBytes(sniffed.body)).toBe(true);
+    expect(await readAuthorizedArtifactBytes(request)).toBeNull();
+    expect(sniffImageBytes(Buffer.from('GIF89a\x01\x00\x01\x00', 'latin1'))).toBe(true);
+    expect(sniffImageBytes(pdfFixtureBody())).toBe(false);
+  });
+
+  // Real Poppler through the bwrap sandbox. Runs only on a host with the full toolchain, so it skips on a dev VPS.
+  const toolchainReady = (() => {
+    try {
+      assertPdfToolchain();
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  describe.skipIf(!toolchainReady)('real Poppler through the sandbox', () => {
+    const fixture = (name: string) => readFileSync(join(here, 'fixtures', name));
+
+    it('reads the owner-locked voucher (no user password, copy:no) and masks its card', async () => {
+      const result = await extractEmbeddedPdfText(pdfInput(fixture('voucher-owner-locked.pdf')), {});
+      expect(result).toMatchObject({ status: 'ok', data: { reason: 'text' } });
+      expect(result.data.text).toContain('[card ••••1111]');
+      expect(result.data.text).not.toContain('4111 1111');
+    });
+
+    it('keeps the user-password voucher encrypted', async () => {
+      const result = await extractEmbeddedPdfText(pdfInput(fixture('voucher-user-locked.pdf')), {});
+      expect(result).toMatchObject({ status: 'manual_required', data: { reason: 'encrypted' } });
+    });
   });
 });

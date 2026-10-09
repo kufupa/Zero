@@ -349,7 +349,7 @@ describe('quoteWorkflow.analyseSelection', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         blocking: false,
-        text: "Nava can't read rooming.docx yet — open it if it has booking details.",
+        text: "Nava can't read rooming.docx (not a PDF) — open it if it has booking details.",
       });
     }
   });
@@ -397,7 +397,7 @@ describe('quoteWorkflow.analyseSelection', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         blocking: false,
-        text: "Nava can't read rooming.docx yet — open it if it has booking details.",
+        text: "Nava can't read rooming.docx (not a PDF) — open it if it has booking details.",
       });
     }
   });

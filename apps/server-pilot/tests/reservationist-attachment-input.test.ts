@@ -125,13 +125,21 @@ it('handles bounded scanned, encrypted, malformed PDFs with existing sandbox ada
   });
   expect(scanned.status).toBe('admitted');
   expect(scanned.source?.pages).toBeNull();
+  // A user password: pdftotext refuses with Poppler's diagnostic, so the PDF stays encrypted.
   expect(
     (
       await admitReservationistAttachment({
         metadata: meta,
         scope,
         read: pdfRead,
-        runner: sandbox('Pages: 1\nEncrypted: yes'),
+        runner: async (tool: string) =>
+          tool === 'pdfinfo'
+            ? { stdout: Buffer.from('Pages: 1\nEncrypted: yes'), stderr: Buffer.alloc(0), exitCode: 0 }
+            : {
+                stdout: Buffer.alloc(0),
+                stderr: Buffer.from('Command Line Error: Incorrect password\n'),
+                exitCode: 1,
+              },
       })
     ).reason,
   ).toBe('encrypted');

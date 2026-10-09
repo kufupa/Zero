@@ -184,6 +184,47 @@ describe('readQuoteAttachments', () => {
     expect(result[1]).toMatchObject({ id: 'locked', bytesPresent: false, readFailure: 'encrypted' });
     expect(result[2]).toMatchObject({ id: 'boom', bytesPresent: false, readFailure: 'read failed' });
   });
+
+  it('drops an unknown-type part whose bytes are an image, and lists a non-image one as not a PDF', async () => {
+    const result = await readQuoteAttachments(
+      [
+        row({ id: 'logo', filename: 'attachment.bin', mimeType: 'application/octet-stream', sizeBytes: 30_000 }),
+        row({ id: 'blob', filename: 'export.dat', mimeType: 'application/octet-stream', sizeBytes: 30_000 }),
+      ],
+      async (attachment) =>
+        attachment.id === 'logo' ? { text: null, reason: 'image' } : { text: null, reason: 'not a PDF' },
+    );
+    expect(result).toEqual([
+      {
+        id: 'blob',
+        filename: 'export.dat',
+        mimeType: 'application/octet-stream',
+        byteSize: 30_000,
+        bytesPresent: false,
+        readFailure: 'not a PDF',
+      },
+    ]);
+  });
+
+  it('lets PDFs claim the file cap before an unknown part, so a logo cannot push a voucher out', async () => {
+    const read: string[] = [];
+    const result = await readQuoteAttachments(
+      [
+        row({ id: 'logo', filename: 'attachment.bin', mimeType: 'application/octet-stream', sizeBytes: 30_000 }),
+        row({ id: 'a' }),
+        row({ id: 'b' }),
+        row({ id: 'c' }),
+      ],
+      async (attachment) => {
+        read.push(attachment.id);
+        return { text: 'Voucher text' };
+      },
+    );
+    expect(read).toEqual(['a', 'b', 'c']);
+    expect(result.find((part) => part.id === 'logo')?.readFailure).toBe(
+      'over the 3 file / 5 MB analysis limit',
+    );
+  });
 });
 
 describe('orderCausalPreceding', () => {
