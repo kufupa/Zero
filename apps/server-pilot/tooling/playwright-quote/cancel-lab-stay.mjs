@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Cancel one lab Guest Stay. Aborts unless confirmation, name, and arrival match.
+import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,13 +21,6 @@ async function shot(page, dir, name) {
   const path = join(dir, name);
   await page.screenshot({ path, fullPage: true });
   return path;
-}
-
-async function menu(page, names) {
-  await page.locator('a.app-menu-trigger:visible').click();
-  for (const name of names) {
-    await page.locator('span.x-tree-node-text:visible').filter({ hasText: new RegExp(`^${name}$`) }).click();
-  }
 }
 
 async function readIdentity(page) {
@@ -174,7 +168,7 @@ async function main() {
   const result = { target: TARGET, cancelled: false };
   try {
     await login(page, secret);
-    await menu(page, ['Front Desk', 'Guest Stay']);
+    await openGuestStayScreen(page);
     await page.waitForTimeout(1500);
     await shot(page, dir, 'cancel-list.png');
     const opened = await openTarget(page);

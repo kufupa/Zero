@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Read-only Guest Stay code mining. Search + row open only. Never save/cancel.
+import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,13 +52,6 @@ function parseArgs(argv) {
   const capRaw = capIndex === -1 ? undefined : argv[capIndex + 1];
   const cap = capRaw && !capRaw.startsWith('--') ? Number(capRaw) : CAP;
   return { ok: true, input: value, cap: Number.isFinite(cap) && cap > 0 ? Math.min(100, cap) : CAP };
-}
-
-async function menu(page, names) {
-  await page.locator('a.app-menu-trigger:visible').click();
-  for (const name of names) {
-    await page.locator('span.x-tree-node-text:visible').filter({ hasText: new RegExp(`^${name}$`) }).click();
-  }
 }
 
 async function readIdentity(page) {
@@ -151,7 +145,7 @@ async function returnToList(page) {
     await search.click().catch(() => {});
     return;
   }
-  await menu(page, ['Front Desk', 'Guest Stay']);
+  await openGuestStayScreen(page);
 }
 
 function partyClassCounts(rows) {
@@ -338,7 +332,7 @@ async function main() {
       (response) => response.request().method() === 'POST' && /OSRESS\.search/i.test(response.url()),
       { timeout: 25000 },
     ).catch(() => null);
-    await menu(page, ['Front Desk', 'Guest Stay']);
+    await openGuestStayScreen(page);
     await page.getByPlaceholder(/Search by Name, Confirmation/i).first().waitFor({ timeout: 20000 });
     await listSearch;
     await page.waitForTimeout(1500);
