@@ -609,22 +609,48 @@ async function readAttachmentDescriptors(
   };
 }
 
+/** Longest evidence window the Centurion snapshot reader accepts. */
+export const CENTURION_MAX_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
+const UTC_INSTANT_PATTERN = /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z$/;
+
+function utcInstantMillis(value: string): number {
+  const match = UTC_INSTANT_PATTERN.exec(value);
+  const millis = match ? Date.parse(value) : Number.NaN;
+  // Date.parse rolls 2026-02-31 over to March; the calendar day must survive the round trip.
+  if (!match || !Number.isFinite(millis) || new Date(millis).toISOString().slice(0, 10) !== match[1]) {
+    throw new Error('Centurion window must be ISO UTC, ending in Z');
+  }
+  return millis;
+}
+
+/** Validates an ISO UTC half-open window and returns it in canonical millisecond form. */
+export function canonicalCenturionWindow(
+  startInclusive: string,
+  endExclusive: string,
+): { startInclusive: string; endExclusive: string } {
+  const start = utcInstantMillis(startInclusive);
+  const end = utcInstantMillis(endExclusive);
+  if (end <= start) throw new Error('Centurion window end must be after its start');
+  if (end - start > CENTURION_MAX_WINDOW_MS) {
+    throw new Error('Centurion window must not exceed 31 days');
+  }
+  return {
+    startInclusive: new Date(start).toISOString(),
+    endExclusive: new Date(end).toISOString(),
+  };
+}
+
 function centurionWindowFrom(
   request: CenturionCorpusSnapshotRequest = {},
 ): CenturionCorpusWindow {
   if (request.transportId !== undefined && request.transportId !== CENTURION_TRANSPORT_ID) {
     throw new Error('Centurion transport scope is fixed');
   }
-  if (
-    (request.startInclusive !== undefined &&
-      request.startInclusive !== CENTURION_WINDOW_START_UTC) ||
-    (request.endExclusive !== undefined && request.endExclusive !== CENTURION_WINDOW_END_UTC)
-  ) {
-    throw new Error('Centurion window is fixed');
-  }
   return {
-    startInclusive: CENTURION_WINDOW_START_UTC,
-    endExclusive: CENTURION_WINDOW_END_UTC,
+    ...canonicalCenturionWindow(
+      request.startInclusive ?? CENTURION_WINDOW_START_UTC,
+      request.endExclusive ?? CENTURION_WINDOW_END_UTC,
+    ),
     timezone: CENTURION_WINDOW_TIMEZONE,
   };
 }

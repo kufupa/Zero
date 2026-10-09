@@ -1,235 +1,23 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { CenturionCorpusMessageRow } from '../src/ops/centurion-thread-corpus-postgres-reader.js';
 import {
-  buildCases,
-  pickPhaseA,
-  scoreCase,
-  toIsoDay,
-  type BacktestCase,
-  type ToolCall,
+  STRATA,
+  cellOf,
+  pickSubset,
+  readGoldenSet,
+  replayRunners,
+  scoreFields,
+  scoreGoldenCase,
+  senderDomainOf,
+  summarizeGolden,
+  validateGoldenSet,
+  type GoldenRow,
+  type GoldenScoredCase,
   type RuntimeReplayAssertions,
 } from '../src/ai/reservationist-backtest.js';
-import { QUOTE_UNAVAILABLE, type ReservationistDecision } from '../src/ai/reservationist-agent.js';
-
-let seq = 0;
-function msg(p: Partial<CenturionCorpusMessageRow>): CenturionCorpusMessageRow {
-  seq += 1;
-  return {
-    id: `m${seq}`,
-    threadId: 't',
-    businessDirection: 'inbound',
-    confirmedOutbound: false,
-    scope: 'in_window',
-    eventAt: '2026-09-27T08:00:00.000Z',
-    subject: 's',
-    textBody: '',
-    htmlBody: '',
-    from: ['guest@example.test'],
-    ...p,
-  } as CenturionCorpusMessageRow;
-}
-
-function thread(id: string, day: string, ask: string, gold: string, extra: Partial<CenturionCorpusMessageRow> = {}) {
-  return [
-    msg({ threadId: id, messageId: `<ask-${id}>`, eventAt: `${day}T08:00:00.000Z`, textBody: ask, ...extra }),
-    msg({
-      threadId: id,
-      eventAt: `${day}T09:00:00.000Z`,
-      businessDirection: 'outbound',
-      inReplyTo: `<ask-${id}>`,
-      queueState: null,
-      textBody: gold,
-      from: ['reservations@centurion.test'],
-    }),
-  ];
-}
-
-const QUOTE = 'Please quote 2 adults check in 2 October 2026 check out 4 October 2026';
-const PARTY = 'Please quote for our company account ACME, corporate rate, check in 2 October 2026';
-const CREATE = 'Please book a room for Mr Smith, arriving 2 October 2026';
-const THANKS = 'Thank you, noted.';
-
-describe('buildCases', () => {
-  it('keeps sent in-window replies paired to the inbound they answer', () => {
-    const rows = [
-      ...thread('gold', '2026-09-28', QUOTE, 'Rate is R1 850 per night'),
-      msg({ threadId: 'no-gold', textBody: QUOTE }),
-      ...thread('queued', '2026-09-28', QUOTE, 'x').map((m) =>
-        m.businessDirection === 'outbound' ? { ...m, queueState: 'pending' } : m,
-      ),
-      ...thread('missing-trigger', '2026-09-28', QUOTE, 'x').map((m) =>
-        m.businessDirection === 'outbound' ? { ...m, inReplyTo: '<never-ingested>' } : m,
-      ),
-      ...thread('no-header', '2026-09-27', QUOTE, 'R1 000').map((m) => ({ ...m, inReplyTo: null, subject: 'RE: stay' })),
-      ...thread('staff-initiated', '2026-09-27', QUOTE, 'Group report').map((m) => ({ ...m, inReplyTo: null })),
-      msg({ threadId: 'later-reply', messageId: '<a1>', eventAt: '2026-09-26T07:00:00.000Z', textBody: QUOTE }),
-      msg({ threadId: 'later-reply', eventAt: '2026-09-26T08:00:00.000Z', businessDirection: 'outbound', subject: 'Report', textBody: 'FYI' }),
-      msg({ threadId: 'later-reply', eventAt: '2026-09-26T09:00:00.000Z', businessDirection: 'outbound', inReplyTo: '<a1>', textBody: 'R1 500' }),
-      msg({ threadId: 'split-in', messageId: '<s1>', eventAt: '2026-09-26T05:00:00.000Z', textBody: QUOTE }),
-      msg({ threadId: 'split-out', eventAt: '2026-09-26T06:00:00.000Z', businessDirection: 'outbound', inReplyTo: '<s1>', textBody: 'R1 700' }),
-      ...thread('empty-forward', '2026-09-28', 'Thank you', ' From: Guest\nSent: Monday\nRate R2 000'),
-    ];
-    const cases = buildCases(rows);
-    expect(cases).toHaveLength(9);
-    expect(cases.filter(c => c.goldId).map(c => c.threadId)).toEqual(['gold', 'no-header', 'later-reply', 'split-in']);
-    expect(cases.find((c) => c.threadId === 'split-in')?.goldText).toBe('R1 700');
-    expect(cases.find(c => c.threadId === 'gold')).toMatchObject({ stratum: 'quote_fit', oracle: { quote: true }, goldText: 'Rate is R1 850 per night' });
-  });
-
-  it('reads html-only bodies and strata from the oracle', () => {
-    const cases = buildCases([
-      ...thread('p', '2026-09-28', '', 'ok', { htmlBody: `<p>${PARTY}</p>` }),
-      ...thread('c', '2026-09-28', CREATE, 'Booked'),
-      ...thread('n', '2026-09-28', THANKS, 'Pleasure'),
-    ]);
-    expect(Object.fromEntries(cases.map((c) => [c.threadId, c.stratum]))).toEqual({
-      p: 'quote_party',
-      c: 'create',
-      n: 'no_tool',
-    });
-    const [agent] = buildCases(thread('a', '2026-09-28', 'Please quote our agent rate for 2 nights', 'R900'));
-    expect(agent?.stratum).toBe('quote_party');
-  });
-});
-describe('pickPhaseA', () => {
-  it('is deterministic, prefers the latest day, and caps quotes at 1 party + 3 fit', () => {
-    const rows = [];
-    for (let i = 0; i < 6; i += 1) rows.push(...thread(`fit28-${i}`, '2026-09-28', QUOTE, 'R1 000'));
-    for (let i = 0; i < 3; i += 1) rows.push(...thread(`fit26-${i}`, '2026-09-26', QUOTE, 'R1 000'));
-    for (let i = 0; i < 2; i += 1) rows.push(...thread(`party-${i}`, '2026-09-27', PARTY, 'R900'));
-    for (let i = 0; i < 5; i += 1) rows.push(...thread(`create-${i}`, '2026-09-26', CREATE, 'Booked'));
-    for (let i = 0; i < 8; i += 1) rows.push(...thread(`none-${i}`, '2026-09-27', THANKS, 'Pleasure'));
-    const cases = buildCases(rows);
-    const a = pickPhaseA(cases);
-    const b = pickPhaseA([...cases].reverse());
-    expect(a.picked.map((c) => c.threadId)).toEqual(b.picked.map((c) => c.threadId));
-    expect(a.picked).toHaveLength(15);
-    const by = (s: string) => a.picked.filter((c) => c.stratum === s);
-    expect(by('quote_party')).toHaveLength(1);
-    expect(by('quote_fit').map((c) => c.threadId)).toEqual(['fit28-0', 'fit28-1', 'fit28-2']);
-    expect(by('create').length).toBeGreaterThanOrEqual(2);
-    expect(by('no_tool').length).toBeGreaterThanOrEqual(2);
-    expect(a.emptyStrata).toEqual(['other']);
-  });
-});
-
-describe('toIsoDay', () => {
-  it('normalises SA date formats', () => {
-    expect(toIsoDay('2 October 2026')).toBe('2026-10-02');
-    expect(toIsoDay('02/10/2026')).toBe('2026-10-02');
-    expect(toIsoDay('2026-10-02')).toBe('2026-10-02');
-    expect(toIsoDay('Fri 2 Oct', '2026-09-27T08:00:00.000Z')).toBe('2026-10-02');
-    expect(toIsoDay('15 Jan', '2026-09-27T08:00:00.000Z')).toBe('2027-01-15');
-    expect(toIsoDay('soon')).toBeNull();
-  });
-});
-
-describe('scoreCase', () => {
-  const [quoteCase] = buildCases(thread('q', '2026-09-28', QUOTE, 'Rate is R1 850 per night')) as [BacktestCase];
-  quoteCase.approvedFacts = { requiredCalls: [{ toolName: 'quote_stay', args: {} }], bodyClauses: ['R1 850 per night'], moneyCents: [185000] };
-  const [noneCase] = buildCases(thread('n', '2026-09-28', THANKS, 'Pleasure')) as [BacktestCase];
-  const decision = (p: Partial<ReservationistDecision>): ReservationistDecision => ({
-    workflow: 'quote',
-    stayAsk: { arrivalDate: '2026-10-02', departureDate: '2026-10-04', adults: 2, children: 0, rooms: 1 },
-    missing: [],
-    replyDraft: '',
-    rationale: '',
-    ...p,
-  });
-  const live = (rate: number): ToolCall => ({
-    toolName: 'quote_stay',
-    args: {},
-    result: { outcome: 'quote', bookable: true, occupancyPriced: true, elapsedMs: 220000, groups: [{ options: [{ total: rate }] }] },
-  });
-
-  it('matches gold money and dates', () => {
-    const row = scoreCase(quoteCase, decision({ replyDraft: 'R1 850 per night' }), [live(1850)]);
-    expect(row).toMatchObject({ money: 'match', datesOk: true, paxOk: true, quoteLive: true, hmsElapsedMs: 220000, pass: true });
-  });
-
-  it('grounds draft amounts in HMS decimal-string rates', () => {
-    const call: ToolCall = { ...live(0), result: { outcome: 'quote', bookable: true, occupancyPriced: true, groups: [{ options: [{ amount: '1850.00' }] }] } };
-    expect(scoreCase(quoteCase, decision({ replyDraft: 'R1,850 (R7,400 for 4 nights)' }), [call]).money).toBe('extract_fail');
-    expect(scoreCase(quoteCase, decision({ replyDraft: 'R1,850' }), [call]).money).toBe('match');
-  });
-
-  it('grounds cents the same way on both sides', () => {
-    const call: ToolCall = { ...live(0), result: { outcome: 'quote', bookable: true, occupancyPriced: true, groups: [{ options: [{ amount: 1850.5 }] }] } };
-    expect(scoreCase(quoteCase, decision({ replyDraft: 'R1 850.50' }), [call]).money).toBe('rate_stale');
-  });
-
-  it('separates rate_stale from extract_fail', () => {
-    expect(scoreCase(quoteCase, decision({ replyDraft: 'R2 100' }), [live(2100)]).money).toBe('rate_stale');
-    const bad = scoreCase(quoteCase, decision({ replyDraft: 'R1 234' }), [live(2100)]);
-    expect(bad.money).toBe('extract_fail');
-    expect(bad.pass).toBe(false);
-  });
-
-  it('flags quote false positive on stub and quote miss', () => {
-    const fp = scoreCase(noneCase, decision({ workflow: 'quote' }), [
-      { toolName: 'quote_stay', args: {}, result: { status: QUOTE_UNAVAILABLE } },
-    ]);
-    expect(fp).toMatchObject({ quoteCalled: true, quoteLive: false, quoteFalsePositive: true, workflowOk: false, pass: false });
-    const miss = scoreCase(quoteCase, decision({ workflow: 'other' }), []);
-    expect(miss).toMatchObject({ quoteMiss: true, pass: false });
-    const skip = scoreCase(noneCase, decision({ workflow: 'skip', stayAsk: null }), []);
-    expect(skip).toMatchObject({ workflowOk: true, pass: true });
-  });
-});
-
-describe('chronological coverage and strict completion', () => {
-  it('retains every inbound, no-gold and split-thread pairing, and only prior context', () => {
-    const first = msg({ id: 'first', messageId: '<first>', textBody: QUOTE });
-    const second = msg({ id: 'second', messageId: '<second>', eventAt: '2026-09-27T08:30:00Z', textBody: QUOTE });
-    const gold = msg({ id: 'gold', threadId: 'split', businessDirection: 'outbound', inReplyTo: '<second>', eventAt: '2026-09-27T09:00:00Z', textBody: 'R100' });
-    const cases = buildCases([gold, second, first]);
-    expect(cases).toHaveLength(2);
-    expect(cases.find(c => c.trigger.id === 'first')?.goldId).toBe('');
-    expect(cases.find(c => c.trigger.id === 'second')?.context.map(m => m.id)).toEqual(['first']);
-    expect(cases.find(c => c.trigger.id === 'second')?.goldId).toBe('gold');
-  });
-  it('gold changes cannot change execution classification', () => {
-    const a = buildCases(thread('g', '2026-09-28', THANKS, 'Pleasure'))[0]!;
-    const b = buildCases(thread('g', '2026-09-28', THANKS, 'R900'))[0]!;
-    expect(a.oracle).toEqual(b.oracle);
-  });
-  it('unavailable quote and invalid create never pass', () => {
-    const c = buildCases(thread('q', '2026-09-28', QUOTE, 'R100'))[0]!;
-    const d = { workflow: 'quote', stayAsk: { arrivalDate: '2026-10-02', departureDate: '2026-10-04', adults: 2, children: 0, rooms: 1 }, missing: [], replyDraft: 'R100', rationale: '' } as ReservationistDecision;
-    expect(scoreCase(c, d, [{ toolName: 'quote_stay', args: {}, result: { outcome: 'unavailable' } }]).pass).toBe(false);
-    const create = buildCases(thread('c', '2026-09-28', CREATE, 'Booked'))[0]!;
-    expect(scoreCase(create, { ...d, workflow: 'create' }, [{ toolName: 'create_reservation_dry_run', args: {}, result: { ok: false } }]).pass).toBe(false);
-  });
-});
-
-describe('approved completion assertions', () => {
-  it('rejects partial payloads and one-cent body errors', () => {
-    const c = buildCases(thread('strict', '2026-09-28', QUOTE, 'R100'))[0]!;
-    const decision = { workflow: 'quote', stayAsk: { arrivalDate: '2026-10-02', departureDate: '2026-10-04', adults: 2, children: 0, rooms: 1 }, missing: [], replyDraft: 'R100.01', rationale: '' } as ReservationistDecision;
-    const call = { toolName: 'quote_stay', args: decision.stayAsk, result: { outcome: 'quote', bookable: false, occupancyPriced: true, groups: [{ options: [{ amount: '100.00' }] }] } };
-    expect(scoreCase(c, decision, [call]).pass).toBe(false);
-    expect(scoreCase(c, { ...decision, replyDraft: 'R100' }, [call]).pass).toBe(false);
-  });
-});
-
-describe('payload and artifact integrity', () => {
-  it('does not ground money from unrelated quantities and demands successful party lookup', () => {
-    const c = buildCases(thread('party', '2026-09-28', PARTY, 'R100'))[0]!;
-    const d = { workflow: 'quote', stayAsk: null, missing: [], replyDraft: 'R100', rationale: '' } as ReservationistDecision;
-    const q = { toolName: 'quote_stay', args: {}, result: { outcome: 'quote', bookable: true, occupancyPriced: true, groups: [{ options: [{ quantity: 100, amount: '50.00' }] }] } };
-    expect(scoreCase(c, d, [q, { toolName: 'party_lookup', args: {}, result: { outcome: 'unavailable' } }]).money).toBe('extract_fail');
-  });
-  it('empty PDF and invalid successful create packets cannot pass', () => {
-    const c = buildCases(thread('c', '2026-09-28', CREATE, 'Booked'))[0]!;
-    const d = { workflow: 'create', stayAsk: null, missing: [], replyDraft: 'Validated', rationale: '' } as ReservationistDecision;
-    expect(scoreCase(c, d, [{ toolName: 'create_reservation_dry_run', args: { request: {} }, result: { ok: true, dryRun: true, saved: false, errors: [] } }]).pass).toBe(false);
-  });
-});
-
-it('resolves yearless stay dates using Johannesburg causal day and rejects invalid dates', () => {
-  expect(toIsoDay('1 Oct', '2026-09-30T23:30:00Z')).toBe('2026-10-01');
-  expect(toIsoDay('31 February 2026')).toBeNull();
-});
+import type { ReservationistDecision } from '../src/ai/reservationist-agent.js';
 
 it('shared runtime scorer validates every obligation and never counts frozen work as qualification',async()=>{
  const {scoreRuntimeReplay}=await import('../src/ai/reservationist-backtest.js');
@@ -293,4 +81,185 @@ it('scores sourced pending amendment and cancellation actions against exact inde
  const cancelApproved={...approved,tasks:cancelTasks.map(({kind: _kind,...task})=>task),pendingActions:[cancelAction]};
  expect(scoreRuntimeReplay({...runtime,tasks:cancelTasks,packets:[cancel]},cancelApproved,'authoritative_source_replay').pass).toBe(true);
  expect(scoreRuntimeReplay({...runtime,tasks:cancelTasks,packets:[{...cancel,requested}]},cancelApproved,'authoritative_source_replay').pass).toBe(false);
+});
+
+const DOMAINS = ['d0.test', 'd1.test', 'd2.test', 'd3.test', 'd4.test', 'd5.test', 'd6.test', 'd7.test'];
+const ASK = { arrivalDate: '2026-10-12', departureDate: '2026-10-14', adults: 2, children: 0, rooms: 1 };
+
+function golden(index: number, split: 'dev' | 'holdout', from = `guest${index}@${DOMAINS[index % DOMAINS.length]}`): GoldenRow {
+  return {
+    id: `${split}-${index}`,
+    split,
+    type: STRATA[index % STRATA.length]!,
+    trigger: { id: `${split}-${index}-m`, direction: 'inbound', eventAt: '2026-10-06T08:00:00.000Z', from, subject: 'Enquiry', text: 'Synthetic request' },
+    context: [],
+    expected: { workflow: 'quote', ...ASK },
+    recordedReads: [],
+  };
+}
+
+/** The full 80 dev + 40 holdout shape; sender domains and types cycle so every split stays under the cap. */
+function fullSet(): GoldenRow[] {
+  return [
+    ...Array.from({ length: 80 }, (_, i) => golden(i, 'dev')),
+    ...Array.from({ length: 40 }, (_, i) => golden(80 + i, 'holdout')),
+  ];
+}
+
+function decision(stay: Partial<NonNullable<ReservationistDecision['stayAsk']>> | null, workflow: ReservationistDecision['workflow'] = 'quote'): ReservationistDecision {
+  return { workflow, stayAsk: stay === null ? null : { ...ASK, ...stay }, missing: [], replyDraft: '', rationale: '' };
+}
+
+describe('golden set field scoring', () => {
+  it('flags a wrong arrival and counts the other named fields as correct', () => {
+    const scored = scoreGoldenCase(golden(0, 'dev'), { decision: decision({ arrivalDate: '2026-10-13' }), replayMisses: 0 });
+    expect(scored.flags).toEqual(['wrong_arrival']);
+    expect(scored.fields.find((f) => f.field === 'arrivalDate')).toMatchObject({ status: 'wrong', expected: '2026-10-12', actual: '2026-10-13' });
+    expect([scored.correct, scored.scored]).toEqual([5, 6]);
+  });
+
+  it('penalises a hallucinated field that the row says must be absent', () => {
+    const row: GoldenRow = { ...golden(1, 'dev'), expected: { ...golden(1, 'dev').expected, children: null } };
+    const scored = scoreGoldenCase(row, { decision: decision({ children: 2 }), replayMisses: 0 });
+    expect(scored.flags).toEqual(['hallucinated_children']);
+    expect([scored.correct, scored.scored]).toEqual([5, 6]);
+  });
+
+  it('separates missing from correct, and leaves fields the row omits unscored', () => {
+    expect(
+      scoreFields(
+        { arrivalDate: '2026-10-12', adults: 2 },
+        { workflow: null, arrivalDate: null, departureDate: null, adults: 2, children: null, rooms: null },
+      ).fields.map((f) => [f.field, f.status]),
+    ).toEqual([
+      ['arrivalDate', 'missing'],
+      ['adults', 'correct'],
+    ]);
+    const row: GoldenRow = { ...golden(2, 'dev'), expected: { workflow: 'quote', arrivalDate: '2026-10-12' } };
+    expect(scoreGoldenCase(row, { decision: decision(null), replayMisses: 0 }).fields.map((f) => [f.field, f.status])).toEqual([
+      ['workflow', 'correct'],
+      ['arrivalDate', 'missing'],
+    ]);
+    const unscored = scoreGoldenCase({ ...row, expected: { arrivalDate: '2026-10-12' } }, { decision: decision({ children: 2 }), replayMisses: 0 });
+    expect(unscored.fields.map((f) => f.field)).toEqual(['arrivalDate']);
+    expect(unscored.scored).toBe(1);
+  });
+
+  it('scores a failed run as missing on every named field', () => {
+    expect(scoreGoldenCase(golden(3, 'dev'), { decision: null, replayMisses: 2, error: 'boom' })).toMatchObject({
+      correct: 0,
+      scored: 6,
+      replayMisses: 2,
+      error: true,
+    });
+  });
+
+  it('derives the sender domain and stratification cell from the first address', () => {
+    expect(senderDomainOf('Ann Guest <Ann@Example.CO.za>, other@x.test')).toBe('example.co.za');
+    expect(senderDomainOf('no address')).toBe('unknown');
+    expect(cellOf(golden(0, 'dev', 'x@Booking.Example.test'))).toBe(`${STRATA[0]}|booking.example.test`);
+  });
+});
+
+describe('golden set validation and subset', () => {
+  it('accepts the full set and rejects wrong counts, an over-cap domain, and duplicate ids', () => {
+    expect(validateGoldenSet(fullSet())).toEqual([]);
+    expect(validateGoldenSet(fullSet().slice(1))).toContainEqual('dev: 79 cases, need 80');
+    const crowded = fullSet().map((row, i) =>
+      row.split === 'dev' && i < 13 ? { ...row, trigger: { ...row.trigger, from: 'guest@big.test' } } : row,
+    );
+    expect(validateGoldenSet(crowded)).toContainEqual(expect.stringContaining('sender domain big.test holds 13 of 80'));
+    const dup = fullSet();
+    dup[1] = { ...dup[1]!, id: dup[0]!.id };
+    expect(validateGoldenSet(dup)).toContainEqual('duplicate id dev-0');
+  });
+
+  it('picks a deterministic 30 at 20 dev / 10 holdout, covering distinct cells', () => {
+    const rows = fullSet();
+    const subset = pickSubset(rows, 30);
+    const ids = subset.map((row) => row.id);
+    expect(new Set(ids).size).toBe(30);
+    expect(subset.filter((row) => row.split === 'dev')).toHaveLength(20);
+    expect(subset.filter((row) => row.split === 'holdout')).toHaveLength(10);
+    expect(new Set(subset.filter((row) => row.split === 'dev').map(cellOf)).size).toBe(20);
+    expect(pickSubset([...rows].reverse(), 30).map((row) => row.id)).toEqual(ids);
+  });
+});
+
+describe('golden set file', () => {
+  it('fails clearly when the operator file is absent and names a bad line without echoing it', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'golden-set-'));
+    try {
+      const file = path.join(dir, 'golden-set.jsonl');
+      expect(() => readGoldenSet(file)).toThrow(`golden set not found at ${file}`);
+      const bad = { ...golden(1, 'dev'), split: 'train', trigger: { text: 'private body' } };
+      writeFileSync(file, `${JSON.stringify(golden(0, 'dev'))}\n${JSON.stringify(bad)}\n`);
+      let message = '';
+      try {
+        readGoldenSet(file);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      expect(message).toMatch(/^golden set line 2 is invalid: split /);
+      expect(message).not.toContain('private body');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads back the rows it was given', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'golden-set-'));
+    try {
+      const file = path.join(dir, 'golden-set.jsonl');
+      const rows = [golden(0, 'dev'), golden(81, 'holdout')];
+      writeFileSync(file, rows.map((row) => JSON.stringify(row)).join('\n'));
+      expect(readGoldenSet(file)).toEqual(rows);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('overfit alarm', () => {
+  const part = (split: 'dev' | 'holdout', correct: number, scored: number): GoldenScoredCase => ({
+    id: `${split}-${correct}`,
+    split,
+    type: 'create',
+    senderDomain: 'd.test',
+    fields: [],
+    flags: [],
+    correct,
+    scored,
+    replayMisses: 0,
+    error: false,
+  });
+
+  it('fires only when dev beats holdout by more than 10 points', () => {
+    expect(summarizeGolden([part('dev', 100, 100), part('holdout', 90, 100)]).overfitAlarm).toBe(false);
+    expect(summarizeGolden([part('dev', 100, 100), part('holdout', 89, 100)])).toMatchObject({ gapPoints: 11, overfitAlarm: true });
+    expect(summarizeGolden([part('dev', 0, 0), part('holdout', 1, 2)]).overfitAlarm).toBe(false);
+  });
+});
+
+describe('replayed reads', () => {
+  it('serves recorded reads by request fingerprint and counts anything unrecorded as a miss', async () => {
+    const row: GoldenRow = {
+      ...golden(0, 'dev'),
+      recordedReads: [
+        {
+          toolName: 'quote_stay',
+          args: { schemaVersion: 2, propertyCode: 'HRCEN', arrivalDate: '2026-10-12' },
+          result: { outcome: 'quote', groups: [] },
+        },
+      ],
+    };
+    const replay = replayRunners(row);
+    expect(await replay.quote({ arrivalDate: '2026-10-12', propertyCode: 'HRCEN', schemaVersion: 2 })).toEqual({ outcome: 'quote', groups: [] });
+    expect(await replay.quote({ schemaVersion: 2, propertyCode: 'HRCEN', arrivalDate: '2026-10-13' })).toEqual({
+      status: 'tool_error',
+      message: 'replay_miss',
+    });
+    expect(await replay.party({ kind: 'organization', query: {} })).toEqual({ status: 'tool_error', message: 'replay_miss' });
+    expect(replay.misses()).toBe(2);
+  });
 });
