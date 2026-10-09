@@ -1,8 +1,10 @@
+import { useId } from 'react';
+
+import { Field, Stepper, paneFieldClass, paneTextareaClass } from '@/components/nava-pane/pane-ui';
 import { parseChildrenAges } from '@/lib/quote-workflow/session';
 import type { StayGroupRequirement } from '@/lib/quote-workflow/types';
 
-const fieldClass =
-  'outline-hidden h-8 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
+import { ProvenanceFlag, StayDateRange } from './stay-date-range';
 
 const FIELD_EVIDENCE_ALIASES: Record<string, string[]> = {
   arrivalDate: ['arrivalDate', 'arrival'],
@@ -14,23 +16,6 @@ const FIELD_EVIDENCE_ALIASES: Record<string, string[]> = {
   board: ['board'],
   organisation: ['organisation', 'organization', 'party'],
 };
-
-function Provenance({ value }: { value?: string }) {
-  if (!value) return null;
-  const label =
-    value === 'staff_corrected'
-      ? 'Your note'
-      : value === 'missing'
-        ? 'Missing'
-        : value === 'defaulted'
-          ? 'Default'
-          : 'Email';
-  return (
-    <span className="ml-1 rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]">
-      {label}
-    </span>
-  );
-}
 
 function quotesFor(
   field: string,
@@ -58,6 +43,10 @@ function FieldEvidence({ quotes }: { quotes: Array<{ quote: string; source?: 'st
   );
 }
 
+/**
+ * One stay: dates, meal plan, room type, rooms and adults, children, company and requests. A plain block: the caller
+ * wraps it in a section.
+ */
 export function RequirementCard({
   group,
   index,
@@ -69,54 +58,47 @@ export function RequirementCard({
   onPatch?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   evidence?: Array<{ field: string; quote: string; source?: 'staff_note' }>;
 }) {
+  const id = useId();
+  const stayNumber = index + 1;
+
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
-      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">
-        Stay {index + 1}
-      </h3>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        <span>
-          Arrival
-          <Provenance value={group.fields.arrivalDate} />
-        </span>
-        <input
-          type="date"
-          aria-label="Arrival"
-          className={fieldClass}
-          value={group.arrivalDate ?? ''}
-          onChange={(event) => onPatch?.(group.id, { arrivalDate: event.target.value })}
+    <div className="flex flex-col gap-3">
+      {index > 0 ? <h4 className="text-[12px] font-bold text-[#475569]">Stay {stayNumber}</h4> : null}
+      <Field label="Dates of stay" required>
+        <StayDateRange
+          arrival={group.arrivalDate ?? ''}
+          departure={group.departureDate ?? ''}
+          provenance={{ arrival: group.fields.arrivalDate, departure: group.fields.departureDate }}
+          onChange={(patch) => onPatch?.(group.id, patch)}
         />
         <FieldEvidence quotes={quotesFor('arrivalDate', evidence)} />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        <span>
-          Departure
-          <Provenance value={group.fields.departureDate} />
-        </span>
-        <input
-          type="date"
-          aria-label="Departure"
-          className={fieldClass}
-          value={group.departureDate ?? ''}
-          onChange={(event) => onPatch?.(group.id, { departureDate: event.target.value })}
-        />
         <FieldEvidence quotes={quotesFor('departureDate', evidence)} />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Rooms
-        <input
-          type="number"
-          min={1}
-          className={fieldClass}
-          value={group.quantity ?? ''}
-          onChange={(event) => onPatch?.(group.id, { quantity: Number(event.target.value) })}
-        />
-        <FieldEvidence quotes={quotesFor('quantity', evidence)} />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Room type
+      </Field>
+      <Field
+        label="Meal plan"
+        required
+        htmlFor={`${id}-board`}
+        aside={<ProvenanceFlag value={group.fields.board} />}
+      >
         <select
-          className={fieldClass}
+          id={`${id}-board`}
+          aria-label="Meal plan"
+          className={paneFieldClass}
+          value={group.board}
+          onChange={(event) => onPatch?.(group.id, { board: event.target.value as StayGroupRequirement['board'] })}
+        >
+          <option value="unknown">Not stated yet</option>
+          <option value="room_only">Room only</option>
+          <option value="bb">Bed &amp; breakfast</option>
+          <option value="dinner_bb">Dinner, bed &amp; breakfast</option>
+        </select>
+        <FieldEvidence quotes={quotesFor('board', evidence)} />
+      </Field>
+      <Field label="Room type" htmlFor={`${id}-room`} aside={<ProvenanceFlag value={group.fields.roomPreference} />}>
+        <select
+          id={`${id}-room`}
+          aria-label="Room type"
+          className={paneFieldClass}
           value={group.roomPreference ?? ''}
           onChange={(event) => onPatch?.(group.id, { roomPreference: event.target.value })}
         >
@@ -127,84 +109,86 @@ export function RequirementCard({
           <option value="DLXKNG">Deluxe King</option><option value="LUXKNG">Luxury King</option><option value="SUITE">Suite</option>
         </select>
         <FieldEvidence quotes={quotesFor('roomPreference', evidence)} />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        <span>
-          Adults
-          <Provenance value={group.fields.adults} />
-        </span>
+      </Field>
+      <div className="overflow-hidden rounded-[3px] border border-[#cbd5e1]">
+        <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-[7px]">
+          <span className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]">
+            Rooms
+            <ProvenanceFlag value={group.fields.quantity} />
+          </span>
+          <Stepper
+            label={`Rooms for stay ${stayNumber}`}
+            min={1}
+            value={group.quantity ?? 0}
+            onChange={(next) => onPatch?.(group.id, { quantity: next })}
+          />
+        </div>
+        <div className="flex items-center justify-between bg-white px-2.5 py-2">
+          <span className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#475569]">
+            Adults per room
+            <ProvenanceFlag value={group.fields.adults} />
+          </span>
+          <Stepper
+            label={`Adult guests per room for stay ${stayNumber}`}
+            value={group.adults ?? 0}
+            onChange={(next) => onPatch?.(group.id, { adults: next })}
+          />
+        </div>
+        {/* The steppers are the controls staff use. These mirror the same patches for the field labels that existing
+            tests and paste flows query, and stay out of the tab order and the accessibility tree. */}
         <input
+          aria-hidden="true"
+          tabIndex={-1}
+          type="number"
+          min={1}
+          aria-label="Rooms"
+          className="sr-only"
+          value={group.quantity ?? ''}
+          onChange={(event) => onPatch?.(group.id, { quantity: Number(event.target.value) })}
+        />
+        <input
+          aria-hidden="true"
+          tabIndex={-1}
           type="number"
           min={0}
           aria-label="Adults"
-          className={fieldClass}
+          className="sr-only"
           value={group.adults ?? ''}
           onChange={(event) => onPatch?.(group.id, { adults: Number(event.target.value) })}
         />
-        <FieldEvidence quotes={quotesFor('adults', evidence)} />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Children ages (separate with commas)
+      </div>
+      <FieldEvidence quotes={quotesFor('quantity', evidence)} />
+      <FieldEvidence quotes={quotesFor('adults', evidence)} />
+      <Field label="Children ages" htmlFor={`${id}-children`} hint="Separate ages with commas.">
         <input
-          className={fieldClass}
+          id={`${id}-children`}
           aria-label="Children ages"
+          className={paneFieldClass}
           value={group.childrenAges.join(', ')}
-          onChange={(event) =>
-            onPatch?.(group.id, {
-              childrenAges: parseChildrenAges(event.target.value),
-            })
-          }
+          onChange={(event) => onPatch?.(group.id, { childrenAges: parseChildrenAges(event.target.value) })}
         />
         <FieldEvidence quotes={quotesFor('childrenAges', evidence)} />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        <span>
-          Meal plan
-          {group.fields.board === 'defaulted' ? (
-            <span className="ml-1 text-[11px] font-normal normal-case tracking-normal text-[#64748b]">
-              Default
-            </span>
-          ) : (
-            <Provenance value={group.fields.board} />
-          )}
-        </span>
-        <select
-          className={fieldClass}
-          aria-label="Meal plan"
-          value={group.board}
-          onChange={(event) =>
-            onPatch?.(group.id, { board: event.target.value as StayGroupRequirement['board'] })
-          }
-        >
-          <option value="unknown">Not stated yet</option>
-          <option value="room_only">Room only</option>
-          <option value="bb">Bed &amp; breakfast</option>
-          <option value="dinner_bb">Dinner, bed &amp; breakfast</option>
-        </select>
-        <FieldEvidence quotes={quotesFor('board', evidence)} />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Company or agency
+      </Field>
+      <Field label="Company or agency" htmlFor={`${id}-organisation`}>
         <input
-          className={fieldClass}
+          id={`${id}-organisation`}
           aria-label="Company or agency"
+          className={paneFieldClass}
           value={group.organisation ?? ''}
           onChange={(event) => onPatch?.(group.id, { organisation: event.target.value })}
         />
         <FieldEvidence quotes={quotesFor('organisation', evidence)} />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Special requests
+      </Field>
+      <Field label="Special requests" htmlFor={`${id}-requests`}>
         <textarea
-          className={`${fieldClass} h-16 py-1`}
+          id={`${id}-requests`}
+          className={paneTextareaClass}
           value={group.specialRequests.join('\n')}
           onChange={(event) =>
-            onPatch?.(group.id, {
-              specialRequests: event.target.value.split('\n').filter(Boolean),
-            })
+            onPatch?.(group.id, { specialRequests: event.target.value.split('\n').filter(Boolean) })
           }
         />
-      </label>
-    </section>
+      </Field>
+    </div>
   );
 }
