@@ -92,8 +92,8 @@ describe('QuoteWorkflowPanel', () => {
         }), { type: 'analysis_ready', analysis: { intent: 'other', groups: [], secondaryAsks: [], alternatives: [] } })}
       />,
     );
-    expect(screen.getByText(/not a quote request/i)).toBeDefined();
-    expect(screen.queryByRole('button', { name: /Run next/i })).toBeNull();
+    expect(screen.getByText(/not a quote or booking/i)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Get rates from HMS/i })).toBeNull();
   });
 
   it('renders one editable card per stay group with month and year dates', () => {
@@ -131,7 +131,7 @@ describe('QuoteWorkflowPanel', () => {
     render(<QuoteWorkflowPanel session={session} onRunNext={onRunNext} onRunStep={onRunStep} />);
     expect(screen.getByText(/do not assume inventory is held/i)).toBeDefined();
     expect(screen.getByText(/Dates 2026-11-12 → 2026-11-14/i)).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: /Run next/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Get rates from HMS/i }));
     expect(onRunNext).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: /Run Search availability for 12–14 Nov/i }));
     expect(onRunStep).toHaveBeenCalledWith('quote-1');
@@ -191,11 +191,11 @@ describe('QuoteWorkflowPanel', () => {
     first.unmount();
     session = { ...session, selectedOfferIds: ['st-a'] };
     render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', true);
     session = { ...session, selectedOfferIds: ['st-a', 'st-b'] };
     cleanup();
     render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', true);
     expect(screen.getByText(/Each date search keeps its own quote and PDF/)).toBeDefined();
     expect(screen.queryByText(/Combined PDF is blocked/i)).toBeNull();
   });
@@ -210,7 +210,7 @@ describe('QuoteWorkflowPanel', () => {
       reviewedReplyHtml: '<p>Authorised</p>',
     };
     render(<QuoteWorkflowPanel session={{ ...session, selectedOfferIds: ['mix-a'] }} onSelectOffer={onSelectOffer} />);
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', true);
     cleanup();
     render(
       <QuoteWorkflowPanel
@@ -218,7 +218,7 @@ describe('QuoteWorkflowPanel', () => {
         onSelectOffer={onSelectOffer}
       />,
     );
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', false);
   });
 
   it('hides Items for you on a clean quote and on unsynced mail', () => {
@@ -330,7 +330,7 @@ describe('QuoteWorkflowPanel', () => {
       ],
     };
     render(<QuoteWorkflowPanel session={ready} />);
-    expect(screen.getByRole('button', { name: /Prepare quotation PDF/i })).toHaveProperty('disabled', false);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', false);
     expect(screen.getByText('Is an airport shuttle available?')).toBeDefined();
   });
 
@@ -472,7 +472,7 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.focus(dinner);
     fireEvent.change(dinner, { target: { value: '450,50x' } });
     expect(runButtons().every((button) => button.disabled)).toBe(true);
-    expect((screen.getByRole('button', { name: 'Run next' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Get rates from HMS' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getAllByText(/Fix the amounts before running this search\. Dinner allowance:/).length).toBeGreaterThan(0);
     expect(seen.latest?.staffHeader.dinnerAllowanceMinor).toBe(45_000);
     // Clearing the field drops the charge and unblocks the Run.
@@ -487,7 +487,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(runButtons().every((button) => button.disabled)).toBe(true);
   });
 
-  it('puts Download Excel beside the PDF button and passes the click on', () => {
+  it('puts Download Excel under the PDF button and passes the click on', () => {
     const onDownloadWorkbook = vi.fn();
     const ready = {
       ...sessionFromFixture('public-single'),
@@ -497,9 +497,9 @@ describe('QuoteWorkflowPanel', () => {
       reviewedReplyHtml: '<p>Full staff-edited reply</p>',
     };
     render(<QuoteWorkflowPanel session={ready} onDownloadWorkbook={onDownloadWorkbook} />);
-    const pdf = screen.getByRole('button', { name: /Prepare quotation PDF/i }) as HTMLButtonElement;
+    const pdf = screen.getByRole('button', { name: /^Prepare PDF$/i }) as HTMLButtonElement;
     const excel = screen.getByRole('button', { name: 'Download Excel' }) as HTMLButtonElement;
-    expect(excel.parentElement).toBe(pdf.parentElement);
+    expect(pdf.compareDocumentPosition(excel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(excel.disabled).toBe(false);
     fireEvent.click(excel);
     expect(onDownloadWorkbook).toHaveBeenCalledTimes(1);
@@ -538,7 +538,7 @@ describe('QuoteWorkflowPanel', () => {
     ).toBeDefined();
     const optionA = screen.getByRole('button', { name: 'Select date scope 2026-11-02 to 2026-11-04' });
     expect(optionA.textContent).toMatch(/Quoted R.*PDF not built/);
-    expect(screen.getByText('Finish the PDF for option A first, then run option B.')).toBeDefined();
+    expect(screen.getAllByText('Finish the PDF for option A first, then run option B.').length).toBeGreaterThan(0);
     const runB = screen.getByRole('button', { name: /^Run Search availability 2026-11-10/i }) as HTMLButtonElement;
     expect(runB.disabled).toBe(true);
     fireEvent.click(runB);

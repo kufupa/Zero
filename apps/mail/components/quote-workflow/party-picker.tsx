@@ -167,6 +167,8 @@ export function PartyPicker({
   indexSearch,
   autoLookup = false,
 }: {
+  /** Search HMS as staff type. Passed by the quote panel; this picker does not read it yet. */
+  autoLookup?: boolean;
   /** The text to search for: this field's company or agency name. */
   name: string;
   /** The kind this field holds. Omitted, the picker covers both kinds. */

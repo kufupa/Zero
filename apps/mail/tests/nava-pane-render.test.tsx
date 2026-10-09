@@ -300,14 +300,24 @@ describe('NavaPane', () => {
       await vi.advanceTimersByTimeAsync(ms);
     });
 
-  /** The Tell Nava box appears once the selected email's analysis lands. */
+  /** The Tell Nava note opens from its link once the selected email's analysis lands. */
   async function tellNavaBox(): Promise<HTMLTextAreaElement> {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const box = screen.queryByLabelText("Tell Nava what's wrong");
       if (box) return box as HTMLTextAreaElement;
+      const link = screen.queryByRole('button', { name: 'Something wrong? Tell Nava' });
+      if (link) fireEvent.click(link);
       await flush(0);
     }
     throw new Error('the Tell Nava box did not appear');
+  }
+
+  /** Opens the Tell Nava note from its link, unless it is already open. */
+  async function openTellNava(): Promise<HTMLTextAreaElement> {
+    if (!screen.queryByLabelText("Tell Nava what's wrong")) {
+      fireEvent.click(await screen.findByRole('button', { name: 'Something wrong? Tell Nava' }));
+    }
+    return (await screen.findByLabelText("Tell Nava what's wrong")) as HTMLTextAreaElement;
   }
 
   /** Production build, the served index carries LOADED_BUILD, and the server reports NEWER_BUILD. */
@@ -423,12 +433,12 @@ describe('NavaPane', () => {
 
   it('keeps an unsent Tell Nava note through a trip off the tool screen', async () => {
     render(<NavaPane bridge={fakeBridge} />);
-    const note = await screen.findByLabelText("Tell Nava what's wrong");
+    const note = await openTellNava();
     fireEvent.input(note, { target: { value: 'Three nights from 12 Nov' } });
 
     fireEvent.keyDown(openPaneMenuItem('Check connection'), { key: 'Enter' });
     fireEvent.click(await screen.findByRole('button', { name: /4\. Quote Tool/i }));
-    expect(((await screen.findByLabelText("Tell Nava what's wrong")) as HTMLTextAreaElement).value).toBe(
+    expect(((await openTellNava()) as HTMLTextAreaElement).value).toBe(
       'Three nights from 12 Nov',
     );
   });
@@ -512,7 +522,7 @@ describe('NavaPane', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
     expect(await screen.findByRole('region', { name: 'Find the booking' })).toBeDefined();
-    await screen.findByLabelText("Tell Nava what's wrong");
+    await openTellNava();
     expect(staffVisibleText()).not.toMatch(/luna/i);
   });
 });

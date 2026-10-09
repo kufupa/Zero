@@ -1,8 +1,8 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { WorkflowBadge } from '../components/quote-workflow/workflow-badge';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
@@ -50,24 +50,40 @@ function analysis(
 afterEach(() => cleanup());
 
 describe('WorkflowBadge', () => {
-  it('keeps the Quote, Booking and Other labels when no amendment is given', () => {
+  it('shows the reading as the selected type when no amendment is given', () => {
     const cases = [
-      ['quote', 'Quote'],
+      ['quote', 'Quote request'],
       ['create_booking', 'Booking'],
       ['other', 'Other'],
     ] as const;
-    for (const [workflow, text] of cases) {
-      const { unmount } = render(<WorkflowBadge analysis={analysis(workflow)} />);
-      expect(screen.getByText(text)).toBeDefined();
+    for (const [intent, text] of cases) {
+      const { unmount } = render(<WorkflowBadge analysis={analysis(intent)} intent={intent} />);
+      const picker = screen.getByLabelText('Nava reads this as') as HTMLSelectElement;
+      expect(picker.value).toBe(intent);
+      expect(picker.options[picker.selectedIndex]?.text).toBe(text);
       expect(screen.queryByText('Change to booking')).toBeNull();
       expect(screen.queryByText('Cancellation')).toBeNull();
       unmount();
     }
   });
 
+  it('offers quote and booking, and lists Other only while it is the reading', () => {
+    const { unmount } = render(<WorkflowBadge analysis={analysis('quote')} intent="quote" />);
+    const picker = screen.getByLabelText('Nava reads this as') as HTMLSelectElement;
+    expect(Array.from(picker.options).map((option) => option.value)).toEqual(['quote', 'create_booking']);
+    unmount();
+  });
+
+  it('reports a change of type to its owner', () => {
+    const onIntentChange = vi.fn();
+    render(<WorkflowBadge analysis={analysis('quote')} intent="quote" onIntentChange={onIntentChange} />);
+    fireEvent.change(screen.getByLabelText('Nava reads this as'), { target: { value: 'create_booking' } });
+    expect(onIntentChange).toHaveBeenCalledWith('create_booking');
+  });
+
   it('is unchanged when the amendment kind is null', () => {
-    render(<WorkflowBadge analysis={analysis('quote')} amendmentKind={null} />);
-    expect(screen.getByText('Quote')).toBeDefined();
+    render(<WorkflowBadge analysis={analysis('quote')} amendmentKind={null} intent="quote" />);
+    expect((screen.getByLabelText('Nava reads this as') as HTMLSelectElement).value).toBe('quote');
     expect(screen.queryByText('Change to booking')).toBeNull();
   });
 

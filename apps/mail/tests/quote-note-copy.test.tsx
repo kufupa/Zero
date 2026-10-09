@@ -49,9 +49,9 @@ describe('NotSupportedList', () => {
     expect(screen.queryByText(AMENDMENT_PANEL_COPY)).toBeNull();
   });
 
-  it('sends staff to the Quote header for extras, not to add them by hand', () => {
+  it('sends staff to the Extras section for extras, not to add them by hand', () => {
     render(<NotSupportedList flags={['extras']} />);
-    expect(screen.getByText(/set them in the Quote header before you make the PDF/)).toBeDefined();
+    expect(screen.getByText(/set them under Extras in Stay details before you make the PDF/)).toBeDefined();
     expect(screen.queryByText(/add these by hand/)).toBeNull();
   });
 });

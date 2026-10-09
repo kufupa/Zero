@@ -181,7 +181,7 @@ describe('HMS queue line in the quote workflow panel', () => {
       />,
     );
     const line = screen.getByText(/Luna is working in HMS – step 2 of 3/);
-    const steps = screen.getByText('Searches in HMS');
+    const steps = screen.getByText('HMS steps');
     expect(steps.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 

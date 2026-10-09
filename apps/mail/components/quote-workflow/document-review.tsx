@@ -1,6 +1,19 @@
 import { canCreateNativeDraft, canCreatePdf } from '@/lib/quote-workflow/session';
 import { staffHeaderFieldProblem, type QuoteSession } from '@/lib/quote-workflow/types';
+import { Field, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 
+/** Why the PDF cannot be made yet, or null when it can. Shown under the disabled PDF button. */
+export function pdfBlockReason(session: QuoteSession): string | null {
+  if (canCreatePdf(session)) return null;
+  const amountProblem = staffHeaderFieldProblem(session.staffHeader);
+  if (amountProblem) return `Fix the amounts first. ${amountProblem}`;
+  if (session.offers.length) {
+    return 'Pick a room option for every stay. Separate date searches do not prove that all stays are available together.';
+  }
+  return 'Get rates first.';
+}
+
+/** The quote documents: the PDF, the Excel export and the reply text that goes with them. The pane frames it as a step. */
 export function DocumentReview({
   session,
   onReplyChange,
@@ -17,53 +30,43 @@ export function DocumentReview({
 }) {
   const pdfReady = canCreatePdf(session);
   const nativeReady = canCreateNativeDraft(session);
-  const amountProblem = staffHeaderFieldProblem(session.staffHeader);
+  const pdfReason = pdfBlockReason(session);
+  const excelDisabled = !pdfReady || !onDownloadWorkbook || Boolean(workbookPending);
+  const excelReason = !pdfReady
+    ? 'Excel needs the same checks as the PDF.'
+    : workbookPending
+      ? 'Making the Excel file…'
+      : !onDownloadWorkbook
+        ? 'Excel is not available here.'
+        : null;
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
-      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quotation and reply</h3>
-      <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
-        Reply to the client (you can edit it)
-        <textarea
-          id="quote-reviewed-reply"
-          aria-label="Reviewed reply"
-          className="outline-hidden min-h-28 w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]"
-          value={session.reviewedReplyHtml}
-          onChange={(event) => onReplyChange?.(event.target.value)}
-        />
-      </label>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          disabled={!pdfReady}
-          onClick={onPreparePdf}
-          className="flex h-9 flex-1 items-center justify-center rounded-xs bg-[#1a4332] text-xs font-bold text-white hover:bg-[#123023] disabled:bg-slate-300"
-        >
-          Prepare quotation PDF
-        </button>
-        <button
-          type="button"
-          disabled={!pdfReady || !onDownloadWorkbook || workbookPending}
-          onClick={onDownloadWorkbook}
-          className="flex h-9 flex-1 items-center justify-center rounded-xs border border-[#1a4332] bg-white text-xs font-bold text-[#1a4332] hover:bg-[#f1f5f2] disabled:border-slate-300 disabled:text-slate-400"
-        >
-          Download Excel
-        </button>
-      </div>
-      {!pdfReady ? (
-        <p className="text-[11px] text-[#64748b]">
-          {amountProblem
-            ? `Fix the amounts before making the PDF or Excel. ${amountProblem}`
-            : 'Pick a room option for every stay before making the PDF. Separate date searches do not prove that all stays are available together.'}
-        </p>
-      ) : null}
+    <div className="flex flex-col gap-3">
+      <PrimaryButton disabled={!pdfReady} disabledReason={pdfReason} onClick={onPreparePdf}>
+        Prepare PDF
+      </PrimaryButton>
       {session.pdf ? (
-        <p className="text-[11px] text-[#1e293b]">
+        <p className="text-[11.5px] text-[#1e293b]">
           Prepared PDF {session.pdf.fileName}. The Outlook draft will attach this exact file. For several date options, Create one reply with all date options attaches each option&apos;s PDF.
         </p>
       ) : null}
+      <div className="flex flex-col gap-1.5">
+        <SecondaryButton className="w-full" disabled={excelDisabled} onClick={onDownloadWorkbook}>
+          Download Excel
+        </SecondaryButton>
+        {excelDisabled && excelReason ? <p className="text-center text-[11px] text-[#64748b]">{excelReason}</p> : null}
+      </div>
+      <Field label="Reply to the client (you can edit it)" htmlFor="quote-reviewed-reply">
+        <textarea
+          id="quote-reviewed-reply"
+          aria-label="Reviewed reply"
+          className="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+          value={session.reviewedReplyHtml}
+          onChange={(event) => onReplyChange?.(event.target.value)}
+        />
+      </Field>
       {nativeReady ? (
-        <p className="text-[11px] text-emerald-800">Reply and PDF are ready. Next, create the Outlook draft. It is not sent.</p>
+        <p className="text-[11.5px] text-emerald-800">Reply and PDF are ready. Next, create the Outlook draft. It is not sent.</p>
       ) : null}
-    </section>
+    </div>
   );
 }

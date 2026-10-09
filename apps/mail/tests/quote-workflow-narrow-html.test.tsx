@@ -97,6 +97,6 @@ describe('quote workflow narrow-pane HTML dump', () => {
     writeFileSync(outFile, html);
     expect(container.querySelector('#quote-workflow-narrow')).not.toBeNull();
     expect(container.textContent).toMatch(/not finished syncing/i);
-    expect(container.textContent).toMatch(/Run next|Prepare quotation PDF|Allocation/i);
+    expect(container.textContent).toMatch(/Get rates from HMS|Prepare PDF|Allocation/i);
   });
 });

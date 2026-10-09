@@ -252,7 +252,7 @@ describe('Outlook pane quote proposal PDF', () => {
     });
     render(<OutlookPanePage />);
     fireEvent.change(await screen.findByLabelText('Arrival'), { target: { value: '2026-11-13' } });
-    fireEvent.click(screen.getByRole('button', { name: /^Run next$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Get rates from HMS$/i }));
     await waitFor(() => expect(prepareDraftMutateMock).toHaveBeenCalledTimes(1));
     const sent = prepareDraftMutateMock.mock.calls[0]?.[0] as {
       analysis: { groups: Array<{ arrival: string | null; departure: string | null }> };
@@ -335,7 +335,7 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.outlookEmail = 'centurion@legacyhotels.co.za';
     sessionState.transportId = '';
     render(<OutlookPanePage />);
-    // Mailbox gate runs before HITL review. Run next is absent until a transport binds.
+    // Mailbox gate runs before HITL review. Get rates from HMS is absent until a transport binds.
     fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/select.*mailbox/i));

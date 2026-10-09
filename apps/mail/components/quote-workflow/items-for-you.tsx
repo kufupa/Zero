@@ -1,4 +1,5 @@
 import type { QuoteReviewItem } from '@/lib/quote-workflow/types';
+import { Notice } from '@/components/nava-pane/pane-ui';
 
 export function ItemsForYou({
   openItems,
@@ -17,15 +18,17 @@ export function ItemsForYou({
 }) {
   if (!openItems.length && !handledItems.length) return null;
   return (
-    <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3" aria-label="Check before sending">
-      <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Check before sending</h3>
-      <p className="text-[11px] text-[#64748b]">
-        Nava found these. Clear each one before you send the reply. Show in email finds the line in the email.
-        Edit reply opens the reply box. Mark as done hides the item here only.
-      </p>
+    <section className="flex flex-col gap-1.5" aria-label="Check before sending">
+      <Notice tone="warn">
+        <p className="font-semibold">Check before sending</p>
+        <p>
+          Nava found these. Clear each one before you send the reply. Show in email finds the line in the email.
+          Edit reply opens the reply box. Mark as done hides the item here only.
+        </p>
+      </Notice>
       {openItems.map((item) => (
-        <div key={item.id} className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2">
-          <p className="text-[12.5px] font-semibold text-[#1e293b]">{item.text}</p>
+        <div key={item.id} className="flex flex-col gap-1 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5">
+          <p className="text-[12px] font-semibold text-[#1e293b]">{item.text}</p>
           {item.reason ? <p className="text-[11px] text-[#475569]">{item.reason}</p> : null}
           <p className="text-[11px] text-[#64748b]">
             {item.sourceLabel}
@@ -38,10 +41,10 @@ export function ItemsForYou({
                 ? 'Needs review. Nava did not read this file.'
                 : 'Needs a reply. Not a price decision.'}
           </p>
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1.5">
             <button
               type="button"
-              className="h-7 rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+              className="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
               aria-label={`Show in email: ${item.text}`}
               onClick={() => onViewSource?.(item)}
             >
@@ -50,7 +53,7 @@ export function ItemsForYou({
             {item.kind === 'question' || item.kind === 'analysis_failure' ? (
               <button
                 type="button"
-                className="h-7 rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+                className="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
                 aria-label={`Edit reply for ${item.text}`}
                 onClick={() => onEditReply?.()}
               >
@@ -60,7 +63,7 @@ export function ItemsForYou({
             {!item.blocking && item.kind !== 'pricing_fact' ? (
               <button
                 type="button"
-                className="h-7 rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+                className="h-7 rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
                 aria-label={`Mark as done: ${item.text}`}
                 onClick={() => onHandle?.(item.id)}
               >
@@ -71,11 +74,11 @@ export function ItemsForYou({
         </div>
       ))}
       {handledItems.map((item) => (
-        <div key={`handled-${item.id}`} className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2">
+        <div key={`handled-${item.id}`} className="flex flex-col gap-1 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5">
           <p className="text-[11px] text-[#64748b]">Done: {item.text}</p>
           <button
             type="button"
-            className="h-7 self-start rounded-xs border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
+            className="h-7 self-start rounded-[3px] border border-[#cbd5e1] px-2 text-[11px] font-semibold text-[#1e293b]"
             aria-label={`Undo mark as done: ${item.text}`}
             onClick={() => onUndo?.(item.id)}
           >
