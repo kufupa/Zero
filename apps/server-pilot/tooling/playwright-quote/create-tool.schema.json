@@ -84,6 +84,16 @@
         }
       }
     },
+    "partyRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "description": "HMS party for an identity lookup field. name is typed into the lookup. nativeId is optional and carried for the audit and the preview digest; the runner does not select by id yet.",
+      "properties": {
+        "nativeId": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 }
+      }
+    },
     "request": {
       "type": "object",
       "additionalProperties": false,
@@ -230,12 +240,36 @@
         "agency": {
           "type": "string",
           "minLength": 1,
-          "description": "Optional Primary Booking Agency exact name (party-lookup candidate.displayName). The form field is a name lookup; nativeId is not accepted until picker-by-id selection exists. Not required."
+          "description": "Optional Primary Booking Agency exact name from the draft request (party-lookup candidate.displayName). The pane sends bookingAgency instead. Not required."
+        },
+        "bookingAgency": {
+          "$ref": "#/$defs/partyRef",
+          "description": "Optional Primary Booking Agency {nativeId?, name}. The runner types name into the lookup (ta1). nativeId is carried, not selected by. Not required."
         },
         "organization": {
+          "description": "Optional Organization: an exact name string (draft request) or {nativeId?, name} (pane). The runner types the name into the lookup (company). Not required.",
+          "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "$ref": "#/$defs/partyRef" }
+          ]
+        },
+        "reservationNote": {
           "type": "string",
           "minLength": 1,
-          "description": "Optional Organization exact name (party-lookup candidate.displayName). The form field is a name lookup; nativeId is not accepted until picker-by-id selection exists. Not required."
+          "maxLength": 2000,
+          "description": "Optional Reservation Note / Billing Instructions (reservationnote, multiline). HMS maxlength 2000. Not required."
+        },
+        "bookerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50,
+          "description": "Optional Booker Name (caller). HMS maxlength 50. Not required."
+        },
+        "bookerEmail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Optional Booker Contact (udfchar06). HMS maxlength 80. Not required."
         },
         "arAccount": {
           "type": "string",

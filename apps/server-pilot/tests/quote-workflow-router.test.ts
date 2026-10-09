@@ -1192,11 +1192,11 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
     paneStaySaveLoaders.spawn = null;
     paneStaySaveLoaders.lock = null;
     paneStaySaveLoaders.osressGuestDatesSearch = null;
-    paneStaySaveLoaders.enabled = null;
+    paneStaySaveLoaders.mode = null;
   });
 
   it('refuses preview and commit when RESERVATIONIST_PANE_SAVE is unset', async () => {
-    paneStaySaveLoaders.enabled = () => false;
+    paneStaySaveLoaders.mode = () => 'off';
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
@@ -1213,7 +1213,7 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
   });
 
   it('commit refuses when the OSRESS guest-date reader is parked', async () => {
-    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.osressGuestDatesSearch = null;
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
@@ -1226,8 +1226,36 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
     });
   });
 
+  it('passes the agency, organization, note and booker fields through to the save, and caps the note at 2000', async () => {
+    paneStaySaveLoaders.mode = () => 'lab';
+    paneStaySaveLoaders.lock = { withLock: async (fn) => fn() };
+    const seen: unknown[] = [];
+    paneStaySaveLoaders.spawn = async (input) => {
+      seen.push(input.stay);
+      return { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
+    };
+    const extras = {
+      bookingAgency: { name: 'XYZ TRAVEL' },
+      organization: { nativeId: '4411', name: 'Bidvest' },
+      reservationNote: 'Late arrival',
+      bookerName: 'Ann Booker',
+      bookerEmail: 'ann@example.invalid',
+    };
+    await expect(mailboxCaller().quoteWorkflow.previewStay({ ...paneStay, ...extras })).resolves.toMatchObject({
+      status: 'ok',
+      outcome: 'previewed',
+    });
+    expect(seen[0]).toMatchObject(extras);
+    await expect(
+      mailboxCaller().quoteWorkflow.previewStay({ ...paneStay, reservationNote: 'x'.repeat(2001) }),
+    ).rejects.toThrow();
+    await expect(
+      mailboxCaller().quoteWorkflow.previewStay({ ...paneStay, bookerName: 'b'.repeat(51) }),
+    ).rejects.toThrow();
+  });
+
   it('commitStay requires a 64-hex previewDigest at the schema', async () => {
-    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
@@ -1238,7 +1266,7 @@ describe('quoteWorkflow.previewStay / commitStay', () => {
   });
 
   it('previewStay returns previewDigest and commitStay commits only with it, once', async () => {
-    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = { withLock: async (fn) => fn() };
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'clear';
     paneStaySaveLoaders.spawn = async (input) =>

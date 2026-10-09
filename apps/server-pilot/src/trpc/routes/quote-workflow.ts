@@ -12,11 +12,32 @@ import {
   resolveAnalyseCacheDir,
 } from '../../ai/quote-workflow-analyse-selection.js';
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
-import { runPaneStay } from '../../ai/pane-stay-save.js';
+import {
+  PANE_BOOKER_EMAIL_MAX,
+  PANE_BOOKER_NAME_MAX,
+  PANE_PARTY_NAME_MAX,
+  PANE_PARTY_NATIVE_ID_MAX,
+  PANE_RESERVATION_NOTE_MAX,
+  runPaneStay,
+} from '../../ai/pane-stay-save.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
 export { hashSyncedQuoteSelection } from '../../ai/quote-workflow-analyse-selection.js';
+
+const paneParty = z.object({
+  nativeId: z.string().trim().min(1).max(PANE_PARTY_NATIVE_ID_MAX).optional(),
+  name: z.string().trim().min(1).max(PANE_PARTY_NAME_MAX),
+});
+
+// A blank optional text is the same as no text: the runner never types it and the digest never counts it.
+const paneOptionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .transform((value) => value || undefined)
+    .optional();
 
 const paneStayInput = z.object({
   firstName: z.string().min(1),
@@ -31,6 +52,11 @@ const paneStayInput = z.object({
   guaranteeType: z.string().min(1),
   childAges: z.array(z.number().int()).max(16).optional(),
   propertyCode: z.string().min(1).optional(),
+  bookingAgency: paneParty.optional(),
+  organization: paneParty.optional(),
+  reservationNote: paneOptionalText(PANE_RESERVATION_NOTE_MAX),
+  bookerName: paneOptionalText(PANE_BOOKER_NAME_MAX),
+  bookerEmail: paneOptionalText(PANE_BOOKER_EMAIL_MAX),
 });
 
 export type LoadSyncedSelection = (input: {

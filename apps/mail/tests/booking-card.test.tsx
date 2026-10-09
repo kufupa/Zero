@@ -22,7 +22,10 @@ import { bindExecuteStaffQuote } from '../lib/quote-workflow/staff-quote-bind';
 import {
   commitOutcome,
   paneRefusalMessage,
+  paneSaveModeOf,
+  paneStayFromTrpc,
   paneUnconfirmedMessage,
+  PANE_CHILDREN_COPY,
   PANE_COMMIT_UNREACHABLE_COPY,
   PANE_PREVIEW_FAILED_COPY,
   PANE_SAVE_LAB_GUARD_COPY,
@@ -209,7 +212,10 @@ function quotedSession(booking: BookingDraftReady | null = draftReady()): QuoteS
 describe('booking cards', () => {
   it('renders one card per room with the agency name', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
-    expect(screen.getAllByText('XYZ TRAVEL')).toHaveLength(2);
+    expect(screen.getAllByLabelText('Booking agency').map((field) => (field as HTMLInputElement).value)).toEqual([
+      'XYZ TRAVEL',
+      'XYZ TRAVEL',
+    ]);
     expect(screen.getByText(/Room 1/i)).toBeDefined();
     expect(screen.getByText(/Room 2/i)).toBeDefined();
     expect(screen.getAllByText('STQN')).toHaveLength(2);
@@ -249,19 +255,16 @@ describe('booking cards', () => {
     expect(screen.getByText(/Company rate not applied/)).toBeDefined();
   });
 
-  it('disables Save with the coming-next copy', () => {
+  it('shows copy-only with no save buttons while pane save is off', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
-    const save = screen.getByRole('button', { name: /save/i });
-    expect(save).toHaveProperty('disabled', true);
     expect(
-      screen.getByText('Saving from this pane is coming soon. For now, copy each field into HMS.'),
+      screen.getByText(
+        'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.',
+      ),
     ).toBeDefined();
-  });
-
-  it('disables Preview and Commit while pane save stays behind the flag', () => {
-    render(<QuoteWorkflowPanel session={quotedSession()} />);
-    expect(screen.getByRole('button', { name: 'Preview' })).toHaveProperty('disabled', true);
-    expect(screen.getByRole('button', { name: 'Book in HMS' })).toHaveProperty('disabled', true);
+    expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /save draft/i })).toBeNull();
   });
 
   it('keeps track/source/guarantee selects local-only', () => {
@@ -353,7 +356,7 @@ describe('booking card copy buttons', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
     let copiedFrom: string | undefined;
     const execCommand = stubExecCommand(() => {
-      copiedFrom = document.querySelector('textarea')?.value;
+      copiedFrom = (document.querySelector('textarea[readonly]') as HTMLTextAreaElement | null)?.value;
       return true;
     });
     render(<BookingCards draft={draftReady()} />);
@@ -361,7 +364,7 @@ describe('booking card copy buttons', () => {
     await flushClipboard();
     expect(execCommand).toHaveBeenCalledWith('copy');
     expect(copiedFrom).toBe('2026-11-12');
-    expect(document.querySelector('textarea')).toBeNull();
+    expect(document.querySelector('textarea[readonly]')).toBeNull();
     expect(screen.getByRole('button', { name: 'Copied Arrival for room 1' })).toBeDefined();
     expect(screen.queryByText('Copy failed – select the text')).toBeNull();
   });
@@ -426,7 +429,8 @@ function paneClient(overrides: Partial<PaneStayClient> = {}) {
   const preview = vi.fn<PaneStayClient['preview']>().mockResolvedValue(PREVIEW_OK);
   const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue(COMMIT_OK);
   const screenshot = vi.fn<PaneStayClient['screenshot']>(async (_runId, name) => `data:image/png;base64,${name}`);
-  const client: PaneStayClient = { preview, commit, screenshot, ...overrides };
+  // Default is the on mode. Tests that need lab or off override mode.
+  const client: PaneStayClient = { preview, commit, screenshot, mode: () => 'on', ...overrides };
   return { client, preview, commit, screenshot };
 }
 
@@ -479,6 +483,7 @@ describe('booking card pane save', () => {
       ratePlan: 'TAXYZ',
       track: 'COR',
       guaranteeType: 'Confirmation Received',
+      bookingAgency: { name: 'XYZ TRAVEL' },
     });
     expect(screen.getByRole('status').textContent).toBe('Luna is filling the booking in HMS… (about 2 minutes)');
     expect(bookButton(0)).toHaveProperty('disabled', true);
@@ -492,7 +497,8 @@ describe('booking card pane save', () => {
     render(<BookingCards draft={draftReady()} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
-    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna filled in HMS' }));
+    // Role queries are slow on the full card DOM, so this wait is longer than the 1 s default.
+    fireEvent.click(await screen.findByRole('button', { name: 'See what Luna filled in HMS' }, { timeout: 5000 }));
     expect(screen.getByRole('dialog', { name: 'See what Luna filled in HMS' })).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -636,6 +642,75 @@ describe('booking card pane save', () => {
   });
 });
 
+describe('booking card save modes and the note fields', () => {
+  it('names the Book action for the mode: lab-only in lab mode, Book in HMS in on mode', () => {
+    const lab = paneClient({ mode: () => 'lab' });
+    const { unmount } = render(<BookingCards draft={draftReady()} paneSave={lab.client} />);
+    expect(screen.getAllByRole('button', { name: 'Book (lab test only)' })).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
+    unmount();
+    const on = paneClient({ mode: () => 'on' });
+    render(<BookingCards draft={draftReady()} paneSave={on.client} />);
+    expect(screen.getAllByRole('button', { name: 'Book in HMS' })).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'Book (lab test only)' })).toBeNull();
+  });
+
+  it('shows copy buttons only, including the new fields, when the server mode is off', () => {
+    const { client } = paneClient({ mode: () => 'off' });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    expect(screen.queryAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(0);
+    expect(screen.queryAllByRole('button', { name: /^Book/ })).toHaveLength(0);
+    expect(screen.getAllByRole('button', { name: 'Copy Reservation note for room 1' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Copy Booking agency for room 2' })).toHaveLength(1);
+  });
+
+  it('a room with children is copy-only with the reason, and the other room can still save', () => {
+    const { client } = paneClient();
+    const draft = draftReady();
+    draft.draft.rooms[0]!.request.childAges = [5];
+    render(<BookingCards draft={draft} paneSave={client} />);
+    expect(screen.getByText(PANE_CHILDREN_COPY)).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
+  });
+
+  it('sends the agency, organization, note and booker the staff typed, and a note change asks for a new preview', async () => {
+    const { client, preview } = paneClient();
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.change(screen.getAllByLabelText('Organization')[0]!, { target: { value: '  Bidvest Bank ' } });
+    fireEvent.change(screen.getAllByLabelText('Reservation note')[0]!, { target: { value: 'Pay by EFT' } });
+    fireEvent.change(screen.getAllByLabelText('Booker name')[0]!, { target: { value: 'Ann Booker' } });
+    fireEvent.change(screen.getAllByLabelText('Booker contact (email)')[0]!, {
+      target: { value: 'ann@example.invalid' },
+    });
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingAgency: { name: 'XYZ TRAVEL' },
+        organization: { name: 'Bidvest Bank' },
+        reservationNote: 'Pay by EFT',
+        bookerName: 'Ann Booker',
+        bookerEmail: 'ann@example.invalid',
+      }),
+    );
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.change(screen.getAllByLabelText('Reservation note')[0]!, { target: { value: 'Early arrival' } });
+    expect(screen.getByText('You changed the booking – preview again.')).toBeDefined();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+  });
+
+  it('caps the reservation note at 2000 characters, and a prefilled agency over 100 characters waits for Preview', () => {
+    const { client, preview } = paneClient();
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    expect((screen.getAllByLabelText('Reservation note')[0] as HTMLTextAreaElement).maxLength).toBe(2000);
+    pickRoomChoices(0);
+    fireEvent.change(screen.getAllByLabelText('Booking agency')[0]!, { target: { value: 'A'.repeat(101) } });
+    expect(previewButton(0)).toHaveProperty('disabled', true);
+    expect(screen.getByText('Set agency name (100 characters at most) before you preview.')).toBeDefined();
+    expect(preview).not.toHaveBeenCalled();
+  });
+});
+
 describe('pane save helpers', () => {
   it('gives plain words with a next step for every refusal the server can return', () => {
     const generic = paneRefusalMessage('not_a_known_code');
@@ -644,6 +719,7 @@ describe('pane save helpers', () => {
       'pane_save_labtest_required',
       'pane_save_arrival_2027_required',
       'pane_save_property_mismatch',
+      'pane_save_children_unsupported',
       'osress_reader_parked',
       'osress_duplicate',
       'pane_save_preview_required',
@@ -719,6 +795,32 @@ describe('pane save helpers', () => {
       readPaneSaveFlag({ brain: { getCapabilities: { query: async () => ({ paneSave: true }) } } }),
     ).resolves.toBe(true);
     await expect(readPaneSaveFlag({})).resolves.toBe(false);
+  });
+
+  it('maps the server capabilities to a mode; a server with no mode name reads as lab', () => {
+    expect(paneSaveModeOf(null)).toBe('off');
+    expect(paneSaveModeOf({ paneSave: false, paneSaveMode: 'off' })).toBe('off');
+    expect(paneSaveModeOf({ paneSave: true })).toBe('lab');
+    expect(paneSaveModeOf({ paneSave: true, paneSaveMode: 'lab' })).toBe('lab');
+    expect(paneSaveModeOf({ paneSave: true, paneSaveMode: 'on' })).toBe('on');
+  });
+
+  it('remembers the mode on the tRPC client it read the flag through', async () => {
+    const trpc = { brain: { getCapabilities: { query: async () => ({ paneSave: true, paneSaveMode: 'on' }) } } };
+    expect(paneStayFromTrpc(trpc).mode?.()).toBeNull();
+    await expect(readPaneSaveFlag(trpc)).resolves.toBe(true);
+    expect(paneStayFromTrpc(trpc).mode?.()).toBe('on');
+  });
+
+  it('keeps the mode on the real tRPC client shape, a Proxy over a function', async () => {
+    // createFlatProxy in @trpc/server returns new Proxy(noop, ...), so typeof is 'function'.
+    const query = async () => ({ paneSave: true, paneSaveMode: 'lab' });
+    const trpc = new Proxy(() => {}, {
+      get: (_target, name) => (name === 'brain' ? { getCapabilities: { query } } : undefined),
+    });
+    expect(typeof trpc).toBe('function');
+    await expect(readPaneSaveFlag(trpc)).resolves.toBe(true);
+    expect(paneStayFromTrpc(trpc).mode?.()).toBe('lab');
   });
 });
 

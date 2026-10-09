@@ -65,6 +65,7 @@ function check(schema, data, path, errors, root) {
   }
   if (typeof data === 'string') {
     if (schema.minLength != null && data.length < schema.minLength) errors.push(`${path} minLength`);
+    if (schema.maxLength != null && data.length > schema.maxLength) errors.push(`${path} maxLength`);
     if (schema.pattern && !new RegExp(schema.pattern).test(data)) errors.push(`${path} pattern`);
   }
   if (typeof data === 'number') {
@@ -159,6 +160,19 @@ export function normalizeCreateLabels(data) {
   if (typeof next.roomType === 'string' && ROOM_LABELS[next.roomType]) next.roomType = ROOM_LABELS[next.roomType];
   if (typeof next.track === 'string' && TRACK_LABELS[next.track]) next.track = TRACK_LABELS[next.track];
   return next;
+}
+
+// Text the runner types into the optional New Record fields, keyed by native field name. The two lookups take the
+// exact party name. LIVE-UNVERIFIED: typed lookup text may not bind the HMS party; Opus checks the readback live.
+export function optionalPartyAndNoteFills(stay) {
+  const organization = typeof stay.organization === 'string' ? stay.organization : (stay.organization?.name ?? '');
+  return {
+    ta1: stay.bookingAgency?.name ?? stay.agency ?? '', // LIVE-UNVERIFIED Primary Booking Agency lookup
+    company: organization, // LIVE-UNVERIFIED Organization lookup
+    reservationnote: stay.reservationNote ?? '', // LIVE-UNVERIFIED multiline textarea
+    caller: stay.bookerName ?? '', // LIVE-UNVERIFIED Booker Name
+    udfchar06: stay.bookerEmail ?? '', // LIVE-UNVERIFIED Booker Contact
+  };
 }
 
 export function validateCreateRequest(data, schema) {

@@ -32,6 +32,16 @@ export const PANE_SCREENSHOT_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}\.png$/;
 // pane_save_unconfirmed, never as a plain failure, so staff check HMS before they press Book again.
 export const PANE_SAVE_UNCONFIRMED = 'pane_save_unconfirmed';
 const UNCONFIRMED_SAVE_OUTCOMES = new Set(['save_unconfirmed', 'save_failed']);
+// HMS field limits: the maxlength of the live New Record inputs (fixtures/stay-lookup/record-form-live.html).
+// create-tool.schema.json carries the same numbers, and a test keeps the two equal.
+export const PANE_RESERVATION_NOTE_MAX = 2000; // reservationnote (textarea)
+export const PANE_PARTY_NAME_MAX = 100; // ta1 Primary Booking Agency, company Organization
+export const PANE_PARTY_NATIVE_ID_MAX = 40;
+export const PANE_BOOKER_NAME_MAX = 50; // caller
+export const PANE_BOOKER_EMAIL_MAX = 80; // udfchar06 Booker Contact
+
+/** A party as the pane sends it. The runner types name into the lookup. nativeId is carried, not selected by. */
+export type PaneStayParty = { nativeId?: string; name: string };
 
 export type PaneStay = {
   firstName: string;
@@ -46,9 +56,17 @@ export type PaneStay = {
   guaranteeType: string;
   childAges?: number[];
   propertyCode?: string;
+  bookingAgency?: PaneStayParty;
+  organization?: PaneStayParty;
+  reservationNote?: string;
+  bookerName?: string;
+  bookerEmail?: string;
 };
 
 export type PaneStayMode = 'preview' | 'commit';
+
+/** off: copy-only. lab: saves Labtest stays arriving 2027 or later. on: saves real guests. */
+export type PaneSaveMode = 'off' | 'lab' | 'on';
 
 /** busy: the check could not get the property lock within the pane wait, so nothing was checked. */
 export type OsressDuplicateStatus = 'parked' | 'clear' | 'duplicate' | 'busy';
@@ -98,13 +116,13 @@ export const paneStaySaveLoaders: {
         departure: string;
       }) => Promise<OsressDuplicateStatus>)
     | null;
-  enabled: (() => boolean) | null;
+  mode: (() => PaneSaveMode) | null;
   now: (() => number) | null;
 } = {
   spawn: null,
   lock: null,
   osressGuestDatesSearch: null,
-  enabled: null,
+  mode: null,
   now: null,
 };
 
@@ -113,8 +131,16 @@ export function paneStayClock(): number {
   return paneStaySaveLoaders.now?.() ?? Date.now();
 }
 
+// RESERVATIONIST_PANE_SAVE: exactly 'lab' or 'on' opens the save path. Unset, 'off' or any other value is off.
+export function paneStaySaveMode(env: NodeJS.Dict<string> = process.env): PaneSaveMode {
+  const value = env.RESERVATIONIST_PANE_SAVE;
+  return value === 'lab' || value === 'on' ? value : 'off';
+}
+
+// The save path is open in lab and on. Cancel uses this same gate. Its own arrival floor and Labtest identity check
+// keep it to lab stays in every mode.
 export function paneStaySaveEnabled(env: NodeJS.Dict<string> = process.env): boolean {
-  return env.RESERVATIONIST_PANE_SAVE === 'on';
+  return paneStaySaveMode(env) !== 'off';
 }
 
 export function paneStayRequestBody(stay: PaneStay): Omit<PaneStay, 'propertyCode'> {
@@ -136,13 +162,38 @@ export function assertLabStayGuard(input: {
   }
 }
 
-// Canonical form of the stay: strings trimmed, undefined dropped, keys sorted. Equal stays give equal digests.
+// Refusals decided before the lock, in order: the mode, the Labtest guard in lab mode, and children, which are
+// entered by hand in HMS for now.
+export function paneStayModeRefusal(mode: PaneSaveMode, stay: PaneStay): string | null {
+  if (mode === 'off') return 'pane_save_flag_off';
+  if (stay.childAges?.length) return 'pane_save_children_unsupported';
+  if (mode === 'lab') {
+    try {
+      assertLabStayGuard({ lastName: stay.lastName, arrival: stay.arrival });
+    } catch (error) {
+      return (error as Error).message;
+    }
+  }
+  return null;
+}
+
+// Canonical form: strings trimmed, undefined and blank strings dropped, keys sorted at every level (so a party
+// object's key order does not change the digest). Equal stays give equal digests.
+function canonicalValue(value: unknown): unknown {
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value)
+      .filter(([, item]) => item !== undefined && !(typeof item === 'string' && item.trim() === ''))
+      .map(([key, item]) => [key, canonicalValue(item)] as const)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
 function canonicalStay(stay: PaneStay): string {
-  const entries = Object.entries(stay)
-    .filter(([, value]) => value !== undefined)
-    .map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value] as const)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return JSON.stringify(Object.fromEntries(entries));
+  return JSON.stringify(canonicalValue(stay));
 }
 
 export function paneStayDigest(stay: PaneStay): string {
@@ -289,14 +340,10 @@ export async function runPaneStay(input: {
 }): Promise<PaneStayResult> {
   // Runs that outlived their retention window are removed here too, not only when a screenshot is read.
   await pruneExpiredPaneRuns(paneStayClock());
-  const enabled = paneStaySaveLoaders.enabled ?? (() => paneStaySaveEnabled());
-  if (!enabled()) {
-    return { status: 'refused', reason: 'pane_save_flag_off' };
-  }
-  try {
-    assertLabStayGuard({ lastName: input.stay.lastName, arrival: input.stay.arrival });
-  } catch (error) {
-    return { status: 'refused', reason: (error as Error).message };
+  const mode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
+  const modeRefusal = paneStayModeRefusal(mode, input.stay);
+  if (modeRefusal) {
+    return { status: 'refused', reason: modeRefusal };
   }
   const propertyRefusal = paneStayPropertyRefusal(input.stay.propertyCode);
   if (propertyRefusal) {

@@ -22,6 +22,20 @@ import {
   runPaneStay,
 } from '../src/ai/pane-stay-save.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE, propertyReadLockKey } from '../src/hms/property-read-lock.js';
+import {
+  PANE_BOOKER_EMAIL_MAX,
+  PANE_BOOKER_NAME_MAX,
+  PANE_PARTY_NAME_MAX,
+  PANE_PARTY_NATIVE_ID_MAX,
+  PANE_RESERVATION_NOTE_MAX,
+  paneStayModeRefusal,
+  paneStaySaveMode,
+} from '../src/ai/pane-stay-save.js';
+import {
+  loadCreateToolSchema,
+  optionalPartyAndNoteFills,
+  validateCreateRequest,
+} from '../tooling/playwright-quote/create-request.mjs';
 
 const labStay = {
   firstName: 'Pat',
@@ -70,7 +84,7 @@ function cliSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnResult> {
 
 // Flag on, lock and reader passing, the CLI faked. Commit still needs a matching preview grant.
 function enableSave(): void {
-  paneStaySaveLoaders.enabled = () => true;
+  paneStaySaveLoaders.mode = () => 'lab';
   paneStaySaveLoaders.lock = passingLock();
   paneStaySaveLoaders.osressGuestDatesSearch = async () => 'clear';
   paneStaySaveLoaders.spawn = cliSpawn;
@@ -80,16 +94,25 @@ afterEach(() => {
   paneStaySaveLoaders.spawn = null;
   paneStaySaveLoaders.lock = null;
   paneStaySaveLoaders.osressGuestDatesSearch = null;
-  paneStaySaveLoaders.enabled = null;
+  paneStaySaveLoaders.mode = null;
   paneStaySaveLoaders.now = null;
   vi.unstubAllEnvs();
 });
 
 describe('pane stay save guards', () => {
-  it('is off unless RESERVATIONIST_PANE_SAVE is on', () => {
+  it('is off unless RESERVATIONIST_PANE_SAVE is exactly lab or on', () => {
     expect(paneStaySaveEnabled({})).toBe(false);
     expect(paneStaySaveEnabled({ RESERVATIONIST_PANE_SAVE: 'off' })).toBe(false);
+    expect(paneStaySaveEnabled({ RESERVATIONIST_PANE_SAVE: 'lab' })).toBe(true);
     expect(paneStaySaveEnabled({ RESERVATIONIST_PANE_SAVE: 'on' })).toBe(true);
+    expect(paneStaySaveMode({})).toBe('off');
+    expect(paneStaySaveMode({ RESERVATIONIST_PANE_SAVE: 'off' })).toBe('off');
+    expect(paneStaySaveMode({ RESERVATIONIST_PANE_SAVE: 'lab' })).toBe('lab');
+    expect(paneStaySaveMode({ RESERVATIONIST_PANE_SAVE: 'on' })).toBe('on');
+    // Any other spelling fails closed.
+    for (const value of ['ON', 'true', '1', ' on', 'lab ']) {
+      expect(paneStaySaveMode({ RESERVATIONIST_PANE_SAVE: value })).toBe('off');
+    }
   });
 
   it('requires Labtest last name and arrival in 2027 or later', () => {
@@ -104,8 +127,8 @@ describe('pane stay save guards', () => {
     ).toThrow(/2027/);
   });
 
-  it('refuses preview and commit when the flag is unset', async () => {
-    paneStaySaveLoaders.enabled = () => false;
+  it('refuses preview and commit when the mode is off', async () => {
+    paneStaySaveLoaders.mode = () => 'off';
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
     };
@@ -151,7 +174,7 @@ describe('pane stay save guards', () => {
 
   it('refuses an explicit propertyCode for another hotel before any lock or spawn', async () => {
     const locked: string[] = [];
-    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = passingLock(locked);
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
@@ -208,7 +231,7 @@ describe('pane stay save guards', () => {
   });
 
   it('treats a refused CLI outcome as refused, not ok', async () => {
-    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = { withLock: async (fn) => fn() };
     paneStaySaveLoaders.spawn = async () => ({
       outcome: 'refused_save_blank_required',
@@ -222,7 +245,7 @@ describe('pane stay save guards', () => {
 
   it('preview fills and checks availability under the property lock without saving', async () => {
     const seen: string[] = [];
-    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = passingLock(seen);
     paneStaySaveLoaders.spawn = async (input) => {
       seen.push(input.stopBefore ?? 'none');
@@ -235,7 +258,7 @@ describe('pane stay save guards', () => {
   });
 
   it('commit refuses when OSRESS finds a duplicate stay', async () => {
-    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = passingLock();
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'duplicate';
     paneStaySaveLoaders.spawn = async () => {
@@ -247,7 +270,7 @@ describe('pane stay save guards', () => {
   });
 
   it('commit refuses when the OSRESS guest-date reader is parked', async () => {
-    paneStaySaveLoaders.enabled = () => true;
+    paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.osressGuestDatesSearch = null;
     paneStaySaveLoaders.spawn = async () => {
       throw new Error('must not spawn');
@@ -552,5 +575,254 @@ describe('pane stay unconfirmed saves', () => {
     await expect(
       runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest: preview.previewDigest as string }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_unconfirmed' });
+  });
+});
+
+const realStay = {
+  ...labStay,
+  firstName: 'Ann',
+  lastName: 'Smith',
+  arrival: '2026-11-12',
+  departure: '2026-11-14',
+};
+
+describe('pane stay save modes', () => {
+  it('lab keeps the Labtest guard: a real surname or a 2026 arrival is refused before any spawn', async () => {
+    enableSave();
+    paneStaySaveLoaders.mode = () => 'lab';
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: realStay, owner: freshOwner() }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_labtest_required' });
+    await expect(
+      runPaneStay({
+        mode: 'preview',
+        stay: { ...labStay, arrival: '2026-12-31', departure: '2027-01-02' },
+        owner: freshOwner(),
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_arrival_2027_required' });
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: realStay,
+        owner: freshOwner(),
+        previewDigest: paneStayDigest(realStay),
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_labtest_required' });
+  });
+
+  it('on lets a real guest through preview and commit, under the same grant rules', async () => {
+    enableSave();
+    paneStaySaveLoaders.mode = () => 'on';
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: realStay, owner });
+    expect(preview).toMatchObject({
+      status: 'ok',
+      outcome: 'previewed',
+      previewDigest: paneStayDigest(realStay),
+    });
+    await expect(
+      runPaneStay({ mode: 'commit', stay: realStay, owner, previewDigest: paneStayDigest(realStay) }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
+  });
+
+  it('on still refuses a commit when the duplicate check finds the guest on those dates', async () => {
+    enableSave();
+    paneStaySaveLoaders.mode = () => 'on';
+    paneStaySaveLoaders.osressGuestDatesSearch = async () => 'duplicate';
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: realStay,
+        owner: freshOwner(),
+        previewDigest: paneStayDigest(realStay),
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'osress_duplicate' });
+  });
+
+  it('off refuses a real guest and a lab stay in both preview and commit, before any spawn', async () => {
+    paneStaySaveLoaders.mode = () => 'off';
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    for (const stay of [realStay, labStay]) {
+      await expect(runPaneStay({ mode: 'preview', stay, owner: freshOwner() })).resolves.toMatchObject({
+        status: 'refused',
+        reason: 'pane_save_flag_off',
+      });
+      await expect(
+        runPaneStay({ mode: 'commit', stay, owner: freshOwner(), previewDigest: paneStayDigest(stay) }),
+      ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_flag_off' });
+    }
+  });
+
+  it('refuses a commit whose agency, organization, note or booker differs from the previewed stay', async () => {
+    enableSave();
+    paneStaySaveLoaders.mode = () => 'on';
+    const owner = freshOwner();
+    const previewed = {
+      ...realStay,
+      bookingAgency: { name: 'XYZ TRAVEL' },
+      reservationNote: 'Late arrival',
+    };
+    const preview = await runPaneStay({ mode: 'preview', stay: previewed, owner });
+    const digest = preview.previewDigest as string;
+    for (const changed of [
+      { ...previewed, reservationNote: 'Early arrival' },
+      { ...previewed, bookingAgency: { name: 'ABC TRAVEL' } },
+      { ...previewed, organization: { name: 'Bidvest' } },
+      { ...previewed, bookerEmail: 'other@example.invalid' },
+    ]) {
+      await expect(
+        runPaneStay({ mode: 'commit', stay: changed, owner, previewDigest: digest }),
+      ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_digest_mismatch' });
+    }
+    // A mismatch does not spend the grant: the previewed stay still commits.
+    await expect(
+      runPaneStay({ mode: 'commit', stay: previewed, owner, previewDigest: digest }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed' });
+  });
+
+  it('the digest covers the new fields, ignores key order inside a party, and treats a blank note as absent', () => {
+    expect(paneStayDigest({ ...realStay, reservationNote: 'A' })).not.toBe(paneStayDigest(realStay));
+    expect(paneStayDigest({ ...realStay, bookingAgency: { name: 'XYZ' } })).not.toBe(
+      paneStayDigest(realStay),
+    );
+    expect(paneStayDigest({ ...realStay, bookerName: 'Ann' })).not.toBe(paneStayDigest(realStay));
+    expect(paneStayDigest({ ...realStay, bookingAgency: { name: 'XYZ', nativeId: '7' } })).toBe(
+      paneStayDigest({ ...realStay, bookingAgency: { nativeId: '7', name: '  XYZ ' } }),
+    );
+    expect(paneStayDigest({ ...realStay, reservationNote: '   ' })).toBe(paneStayDigest(realStay));
+  });
+
+  it('children are copy-only: a stay with child ages is refused before any spawn, in preview and commit', async () => {
+    enableSave();
+    paneStaySaveLoaders.mode = () => 'on';
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    const withChildren = { ...realStay, childAges: [5] };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: withChildren, owner: freshOwner() }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_children_unsupported' });
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: withChildren,
+        owner: freshOwner(),
+        previewDigest: paneStayDigest(withChildren),
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_children_unsupported' });
+    expect(paneStayModeRefusal('on', { ...realStay, childAges: [] })).toBeNull();
+  });
+
+  it('sends the agency, organization, note and booker fields to the runner request, and the request passes the schema', async () => {
+    enableSave();
+    paneStaySaveLoaders.mode = () => 'on';
+    const seen: PaneStaySpawnInput[] = [];
+    paneStaySaveLoaders.spawn = async (input) => {
+      seen.push(input);
+      return cliSpawn(input);
+    };
+    const full = {
+      ...realStay,
+      bookingAgency: { name: 'XYZ TRAVEL' },
+      organization: { nativeId: '4411', name: 'Bidvest Bank' },
+      reservationNote: 'Pay by EFT',
+      bookerName: 'Ann Booker',
+      bookerEmail: 'ann@example.invalid',
+      propertyCode: 'HRCEN',
+    };
+    await runPaneStay({ mode: 'preview', stay: full, owner: freshOwner() });
+    expect(seen[0]?.stay).toMatchObject({
+      bookingAgency: { name: 'XYZ TRAVEL' },
+      organization: { nativeId: '4411', name: 'Bidvest Bank' },
+      reservationNote: 'Pay by EFT',
+      bookerName: 'Ann Booker',
+      bookerEmail: 'ann@example.invalid',
+    });
+    const body = paneStayRequestBody(full);
+    expect(body).not.toHaveProperty('propertyCode');
+    expect(validateCreateRequest(body, await loadCreateToolSchema())).toMatchObject({ ok: true });
+  });
+});
+
+describe('create request schema for the pane fields', () => {
+  const base = {
+    arrival: '2026-11-12',
+    departure: '2026-11-14',
+    adults: 1,
+    sourceOfBusiness: 'Walk in',
+    roomType: 'STQN',
+    ratePlan: 'TAXYZ',
+    track: 'BAR',
+    firstName: 'Ann',
+    lastName: 'Smith',
+    guaranteeType: 'Awaiting Voucher',
+  };
+
+  it('keeps the schema caps equal to the server caps', async () => {
+    const schema = await loadCreateToolSchema();
+    const request = schema.$defs.request.properties;
+    expect(request.reservationNote.maxLength).toBe(PANE_RESERVATION_NOTE_MAX);
+    expect(request.bookerName.maxLength).toBe(PANE_BOOKER_NAME_MAX);
+    expect(request.bookerEmail.maxLength).toBe(PANE_BOOKER_EMAIL_MAX);
+    expect(schema.$defs.partyRef.properties.name.maxLength).toBe(PANE_PARTY_NAME_MAX);
+    expect(schema.$defs.partyRef.properties.nativeId.maxLength).toBe(PANE_PARTY_NATIVE_ID_MAX);
+  });
+
+  it('accepts a 2000-character reservation note and refuses 2001', async () => {
+    const schema = await loadCreateToolSchema();
+    expect(validateCreateRequest({ ...base, reservationNote: 'n'.repeat(2000) }, schema).ok).toBe(true);
+    expect(validateCreateRequest({ ...base, reservationNote: 'n'.repeat(2001) }, schema).ok).toBe(false);
+  });
+
+  it('still rejects keys the schema does not name, at the top level and inside a party', async () => {
+    const schema = await loadCreateToolSchema();
+    expect(validateCreateRequest({ ...base, mysteryKey: 'x' }, schema).ok).toBe(false);
+    expect(
+      validateCreateRequest({ ...base, bookingAgency: { name: 'XYZ', extra: 1 } }, schema).ok,
+    ).toBe(false);
+  });
+
+  it('takes the draft organization as a name and the pane organization as a party', async () => {
+    const schema = await loadCreateToolSchema();
+    expect(validateCreateRequest({ ...base, organization: 'Bidvest' }, schema).ok).toBe(true);
+    expect(validateCreateRequest({ ...base, organization: { name: 'Bidvest' } }, schema).ok).toBe(true);
+    expect(validateCreateRequest({ ...base, organization: { name: '' } }, schema).ok).toBe(false);
+  });
+
+  it('maps the pane fields onto the runner fills, and a blank stay fills nothing', () => {
+    expect(
+      optionalPartyAndNoteFills({
+        bookingAgency: { name: 'XYZ TRAVEL' },
+        organization: { name: 'Bidvest' },
+        reservationNote: 'Pay by EFT',
+        bookerName: 'Ann',
+        bookerEmail: 'ann@example.invalid',
+      }),
+    ).toEqual({
+      ta1: 'XYZ TRAVEL',
+      company: 'Bidvest',
+      reservationnote: 'Pay by EFT',
+      caller: 'Ann',
+      udfchar06: 'ann@example.invalid',
+    });
+    expect(optionalPartyAndNoteFills({ agency: 'CIDB', organization: 'Org' })).toMatchObject({
+      ta1: 'CIDB',
+      company: 'Org',
+    });
+    expect(optionalPartyAndNoteFills(base)).toEqual({
+      ta1: '',
+      company: '',
+      reservationnote: '',
+      caller: '',
+      udfchar06: '',
+    });
   });
 });

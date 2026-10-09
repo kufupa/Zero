@@ -149,14 +149,26 @@ describe('pilot inert legacy routers', () => {
       staleDraftWarning: true,
       catchupUpload: false,
       paneSave: false,
+      paneSaveMode: 'off',
     });
 
     const prevPaneSave = process.env.RESERVATIONIST_PANE_SAVE;
     try {
       process.env.RESERVATIONIST_PANE_SAVE = 'on';
-      await expect(caller.brain.getCapabilities()).resolves.toMatchObject({ paneSave: true });
+      await expect(caller.brain.getCapabilities()).resolves.toMatchObject({
+        paneSave: true,
+        paneSaveMode: 'on',
+      });
+      process.env.RESERVATIONIST_PANE_SAVE = 'lab';
+      await expect(caller.brain.getCapabilities()).resolves.toMatchObject({
+        paneSave: true,
+        paneSaveMode: 'lab',
+      });
       process.env.RESERVATIONIST_PANE_SAVE = 'off';
-      await expect(caller.brain.getCapabilities()).resolves.toMatchObject({ paneSave: false });
+      await expect(caller.brain.getCapabilities()).resolves.toMatchObject({
+        paneSave: false,
+        paneSaveMode: 'off',
+      });
     } finally {
       if (prevPaneSave === undefined) {
         delete process.env.RESERVATIONIST_PANE_SAVE;

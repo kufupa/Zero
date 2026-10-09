@@ -25,7 +25,7 @@ Staff will see these greyed out or as a note. The manager switches them on later
 - **Preview**, **Book in HMS** and **Save draft** on booking emails.
 - **Preview cancellation** and **Cancel booking in HMS** on cancellation emails.
 
-The switch is the server setting `RESERVATIONIST_PANE_SAVE`. It must be exactly `on`. Any other value, or no value, keeps it off. Off is the default.
+The switch is the server setting `RESERVATIONIST_PANE_SAVE`. Exactly `off` (or no value) keeps the pane copy-only, which is the default. Exactly `lab` saves only Labtest stays arriving 2027 or later. Exactly `on` saves real guests too. Any other value counts as off.
 
 When it is on:
 
@@ -70,7 +70,7 @@ Tick each line before 08:00. If a line fails, fix it or cut that part of the cal
 
 - [ ] Operator is online for the whole call, with the restricted operator shell ready (approved database access and the wrapping key in its environment). Never print the key.
 - [ ] Operator knows the one-use device code lasts **10 minutes**.
-- [ ] Operator has checked `RESERVATIONIST_PANE_SAVE` is not `on` unless the manager has decided otherwise. The call does not rely on it.
+- [ ] Operator has checked `RESERVATIONIST_PANE_SAVE` is not `on` (and not `lab`) unless the manager has decided otherwise. The call does not rely on it.
 - [ ] Operator has checked `LUNA_ANALYSE_WARMER=on` on the server, so the instant pane is on.
 
 ### Build and test data
@@ -204,7 +204,7 @@ These are facts from the repo that differ from, or limit, what the call would ot
 1. **Installer hash.** The version is 1.0.17. SHA-256 `0d25d56a5ce473e6bc2fe25f5d2d3ea8fc9c6e022ba9b6388be4fd7ce4c64bbc` (verified on the server).
 2. **Device code scope.** Device credentials and the one-use code are per Windows user (runbook step 6, and the operator README).
 3. **Shared-store reply blocker.** On a shared mailbox that is not the default Drafts store, the add-in refuses to create the reply draft, by design (runbook, order of operations, step 8). **Insert draft in Outlook is refused on non-default shared mailboxes.** Staff must reply by hand in Outlook for those mailboxes.
-4. **Book and cancel are off.** Preview and Book in HMS, and Preview and Cancel in HMS, stay off until `RESERVATIONIST_PANE_SAVE=on`. Cancel commits only for test stays (arrival on or after 2027-01-01).
+4. **Book and cancel are off.** Preview and Book in HMS, and Preview and Cancel in HMS, stay off until `RESERVATIONIST_PANE_SAVE` is `lab` or `on`. `lab` books only Labtest stays; `on` books real guests. Cancel commits only for test stays (arrival on or after 2027-01-01), in both modes.
 5. **Amber note with the change panel: fixed in code.** The server can set the `amendment_or_cancel` flag on a change or cancel email. While the change panel is on screen, the amber list no longer says "not supported yet". It reads "Luna can find the booking; make the change in HMS yourself." Confirm the build includes this fix before the call.
 6. **Multi-date.** The combined reply attaches one PDF per completed option. It is one email draft, not one PDF.
 7. **Windows is not tested here.** The repo's own onboarding doc says Linux tests and source reading do not prove Windows Outlook behaviour. The first real PC is the test.
