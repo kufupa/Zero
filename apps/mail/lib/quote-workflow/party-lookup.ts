@@ -16,18 +16,23 @@ export type PartyFindReply = {
     | 'refused_input_invalid'
     | 'refused_lock_unavailable'
     | 'refused_lock_busy';
+  /** Best first, at most five for a kind search. */
   results: PartyCandidate[];
   /** True when an HMS grid held its 50-row load or the list was capped. More matches may exist. */
   truncated: boolean;
+  /** The top row when it answers the typed name well. Null otherwise. Absent in a reply that predates it. */
+  best?: PartyCandidate | null;
+  /** The HMS search text that found the rows, or the last one tried. Null on a refusal or failure. */
+  searchedFor?: string | null;
 };
 
-/** One search for a name over HMS companies and agencies. */
-export type PartyFinder = (name: string) => Promise<PartyFindReply>;
+/** One search for a name over HMS companies and agencies, or over one kind when given. */
+export type PartyFinder = (name: string, kind?: StaffQuoteParty['kind']) => Promise<PartyFindReply>;
 
 type TrpcPanePartyRoutes = {
   panePartyLookup?: {
     findParty?: {
-      mutate: (input: { name: string }) => Promise<PartyFindReply>;
+      mutate: (input: { name: string; kind?: StaffQuoteParty['kind'] }) => Promise<PartyFindReply>;
     };
   };
 };
@@ -40,10 +45,10 @@ export function partyFinderFromTrpc(trpc: unknown): PartyFinder | null {
   if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const find = (trpc as TrpcPanePartyRoutes).panePartyLookup?.findParty;
   if (!find) return null;
-  return (name) => find.mutate({ name });
+  return (name, kind) => find.mutate(kind ? { name, kind } : { name });
 }
 
-/** The chip that replaces the Find in HMS button once staff pick a candidate. */
+/** The chip text for a picked party. */
 export function partyChipText(party: StaffQuoteParty): string {
   return `✓ ${party.name} (HMS)`;
 }
@@ -59,7 +64,7 @@ export const PARTY_TRUNCATED_NOTE = '50+ matches — type more of the name';
 /** What the picker says when a search gives no candidate to pick. The quote still runs. */
 export function partyNoCandidateNote(outcome: PartyFindReply['outcome']): string {
   if (outcome === 'no_match')
-    return 'No match in HMS. Quote will use BAR unless you pick a company or agency.';
+    return 'Not found in HMS — quote uses public rates';
   if (outcome === 'execution_failure') return "HMS search didn't apply — try again";
   if (outcome === 'refused_lock_busy')
     return 'HMS is busy with another run. Try again in a minute.';
@@ -112,15 +117,13 @@ export function partyFromSuggestion(suggestion: PartySuggestion): StaffQuotePart
 
 /**
  * The HMS list the sweep wrote, searched locally (panePartyLookup.typeahead). It never reaches HMS. Empty when there is
- * no list. A pick from it is only a candidate: the quote re-checks the id live in HMS before it binds. `listed` holds
- * the verified parties the name points at. They are offered as one-click chips with or without the list.
+ * no list. A pick from it is only a candidate: the quote re-checks the id live in HMS before it binds.
  */
 export type PartyIndexReply = {
   source: 'index';
   available: boolean;
   updatedAt: string | null;
   ageMs: number | null;
-  listed: PartyCandidate[];
   results: PartyCandidate[];
 };
 

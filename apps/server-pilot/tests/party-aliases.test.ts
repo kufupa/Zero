@@ -1,4 +1,4 @@
-import { extractPartyMentions, listedPartiesFor, suggestPartyFromSender } from '../src/ai/party-aliases.js';
+import { extractPartyMentions, suggestPartyFromSender } from '../src/ai/party-aliases.js';
 import { describe, expect, it } from 'vitest';
 
 describe('suggestPartyFromSender', () => {
@@ -106,37 +106,5 @@ describe('extractPartyMentions', () => {
     expect(extractPartyMentions('Rooms for all employees please.')).toEqual([]);
     expect(extractPartyMentions('Organization Details:   ')).toEqual([]);
     expect(extractPartyMentions(null)).toEqual([]);
-  });
-});
-
-describe('listedPartiesFor', () => {
-  const WOOLWORTHS = { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' };
-  const TOURVEST = { kind: 'company', nativeId: '206', name: 'TOURVEST TRAVEL SERVICES' };
-  const DEGREES_360 = { kind: 'agency', nativeId: '113', name: '360 degrees Travel' };
-
-  it('matches the name as the email gives it, with an alias, or with the legal suffix', () => {
-    expect(listedPartiesFor('Woolworths')).toEqual([WOOLWORTHS]);
-    expect(listedPartiesFor('woolworths sa')).toEqual([WOOLWORTHS]);
-    expect(listedPartiesFor('360 Degrees Travel (Pty) Ltd')).toEqual([DEGREES_360]);
-    expect(listedPartiesFor('Tourvest')).toEqual([TOURVEST]);
-  });
-
-  it('matches each 360 alias as a whole word, so 3600 finds nothing', () => {
-    expect(listedPartiesFor('360degrees')).toEqual([DEGREES_360]);
-    expect(listedPartiesFor('360 travel')).toEqual([DEGREES_360]);
-    expect(listedPartiesFor('3600 travel')).toEqual([]);
-  });
-
-  it('starts at three characters: "Wool" finds Woolworths, "Wo" and shorter find nothing', () => {
-    expect(listedPartiesFor('Wool')).toEqual([WOOLWORTHS]);
-    expect(listedPartiesFor('Wo')).toEqual([]);
-    expect(listedPartiesFor('ab')).toEqual([]);
-    expect(listedPartiesFor('')).toEqual([]);
-    expect(listedPartiesFor('  ! ')).toEqual([]);
-  });
-
-  it('offers nothing for a party the table does not list', () => {
-    expect(listedPartiesFor('Pick n Pay')).toEqual([]);
-    expect(listedPartiesFor('Nexus')).toEqual([]);
   });
 });

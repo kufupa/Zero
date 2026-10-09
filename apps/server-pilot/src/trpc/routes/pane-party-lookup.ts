@@ -4,11 +4,12 @@ import { typeaheadPartyIndex } from '../../ai/party-index.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
-// Read-only. strict(): no native id, kind or other key reaches the module. One name searches companies and agencies;
-// staff pick the candidate in the pane.
+// Read-only. strict(): no native id or other key reaches the module. One name searches companies and agencies, or one
+// kind when given; staff pick the candidate in the pane.
 const findPartyInput = z
   .object({
     name: z.string().max(256),
+    kind: z.enum(['company', 'agency']).optional(),
   })
   .strict();
 
@@ -19,7 +20,6 @@ export const panePartyLookupRouter = router({
   findParty: mailboxProcedure.input(findPartyInput).mutation(async ({ input }) => findParty(input)),
   // Read-only. Suggestions come from the sender's domain and the body's names; only HMS-listed ids are ever attached.
   suggest: mailboxProcedure.input(suggestInput).query(({ input }) => ({ suggestions: suggestPartiesFor(input) })),
-  // Read-only and local: the HMS list the sweep wrote, and the listed parties. It never reaches HMS. Without the
-  // list, only the listed parties come back.
+  // Read-only and local: the HMS list the sweep wrote. It never reaches HMS, and it is empty when there is no list.
   typeahead: mailboxProcedure.input(typeaheadInput).query(({ input }) => typeaheadPartyIndex(input.query)),
 });

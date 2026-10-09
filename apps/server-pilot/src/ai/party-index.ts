@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { listedPartiesFor } from './party-aliases.js';
 import { matchKey } from './party-match.js';
 
 /**
@@ -124,19 +123,16 @@ export type PartyIndexReply = {
   updatedAt: string | null;
   /** Milliseconds since the sweep wrote the index. The picker words it as "updated <age>". */
   ageMs: number | null;
-  /** The listed parties the name points at. Set with or without the index file. */
-  listed: PartyIndexEntry[];
   results: PartyIndexEntry[];
 };
 
-/** The typeahead answer for one query. Never reaches HMS: it reads the local file and the listed table. */
+/** The typeahead answer for one query. Never reaches HMS: it reads the local file only. */
 export async function typeaheadPartyIndex(
   query: string,
   options: { path?: string; now?: number } = {},
 ): Promise<PartyIndexReply> {
-  const listed = listedPartiesFor(query);
   const index = await loadPartyIndex(options.path);
-  if (!index) return { source: 'index', available: false, updatedAt: null, ageMs: null, listed, results: [] };
+  if (!index) return { source: 'index', available: false, updatedAt: null, ageMs: null, results: [] };
   const now = options.now ?? Date.now();
   const updated = Date.parse(index.generatedAt);
   return {
@@ -144,7 +140,6 @@ export async function typeaheadPartyIndex(
     available: true,
     updatedAt: index.generatedAt,
     ageMs: Math.max(0, now - updated),
-    listed,
     results: searchPartyIndex(index, query),
   };
 }
