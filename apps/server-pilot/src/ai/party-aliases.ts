@@ -9,8 +9,8 @@ export type PartyKind = 'company' | 'agency';
 export type PartySuggestion = {
   kind: PartyKind;
   name: string;
-  nativeId: string | null;
-  idStatus: 'listed' | 'unverified';
+  nativeId: null;
+  idStatus: 'unverified';
 };
 
 export type PartyMention = {
@@ -130,8 +130,8 @@ export type PartySuggestionView = {
   source: 'sender' | 'body';
   kind: PartyKind;
   name: string;
-  nativeId: string | null;
-  idStatus: 'listed' | 'unverified';
+  nativeId: null;
+  idStatus: 'unverified';
 };
 
 /**
