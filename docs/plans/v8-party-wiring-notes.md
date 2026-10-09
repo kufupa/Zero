@@ -32,6 +32,9 @@ The page owns the tRPC client and the selected email, so it must:
 2. When the selected email changes, call `partySuggesterFromTrpc(trpcClient)?.({ sender, body })` and keep the result as
    `partySuggestions` (`reply.suggestions`). Pass it to `<QuoteWorkflowPanel partySuggestions={...}>`. Do not pick
    anything from the result: staff click "Use" for a listed id, or search an unverified name.
+3. Bind the typeahead once, beside the finder: `const PANE_PARTY_INDEX = partyIndexFromTrpc(trpcClient);` and pass
+   `partyIndex={PANE_PARTY_INDEX}` to `<QuoteWorkflowPanel>`. Without it, or without the index file, the picker shows only
+   the live search.
 
 ## 3. Contract to keep (for the wiring lane and reviewers)
 
@@ -49,6 +52,8 @@ The page owns the tRPC client and the selected email, so it must:
   have no flagged rows, so their quotes price BAR with the note.
 - Confirm the picked-id re-check and the Rate Shop criteria read back both `organizationID` and `travelAgencyID`.
 - The "New Record" click in `party-lookup.mjs` predates this work; check it on the live form.
+- Index (section 7): after the sweep, type a name HMS has, check the matches and the age label, pick one, and confirm
+  the quote re-checks the id before it binds.
 
 ## 5. Changes from #48 (for the wiring lane)
 
@@ -63,7 +68,25 @@ The page owns the tRPC client and the selected email, so it must:
 ## 6. Open items
 
 - A filter read-back, a settled grid and the row check are proven only against a fake page. The live run confirms them.
-- The kill switch gates the quote path now. The header still shows Find in HMS when the switch is off, and the picker
+- The kill switch gates the quote path now. The header still shows Search HMS now when the switch is off, and the picker
   says rates are not checked.
 - Lookup timeouts: the per-run bound is 150 s, two runs per search. A re-check at quote time adds one more run per picked
   kind, inside the 20 min quote deadline.
+
+## 7. Party index: instant typeahead from the HMS list
+
+- Build (EC2, operator only; no staff action): `pnpm -C apps/server-pilot exec tsx scripts/party-index-sweep.ts --delay-ms 20000 --max-runs 150`.
+  It reads HMS one property-locked run at a time: A to Z per kind, then two-letter prefixes where a letter's grid was
+  truncated. Run it again to resume. Exit 0 index written; 3 paused at `--max-runs`, run again; 4 stopped on a run that was
+  not a clean answer, fix the cause (see the log) and run again; 2 configuration error. `--fresh` starts over.
+- Output: `.private/pms-pipeline/party-index/party-index.json`, mode 600, beside its progress file. `PARTY_INDEX_PATH`
+  chooses another file. The sweep never writes to HMS. The index is written only when the sweep completes.
+- Typeahead: the picker asks `panePartyLookup.typeahead` 250 ms after typing stops. The server answers from the file
+  only: top 10 per kind, accent- and case-insensitive, exact name first, then prefix, word start, containment.
+- The matches show under "From HMS list (updated <age>)". After 7 days the heading adds ", may be out of date".
+  "Search HMS now" still runs the live search.
+- A pick from the list is a candidate only. The quote re-checks its id in HMS before any rate binds (`verifyStaffParties`),
+  and an id HMS does not confirm is refused.
+- No file: no matches section, and the live search works as before.
+- Known limit: a two-letter prefix still truncated when the sweep ends cannot be listed further. The sweep reports how many
+  remain, and those names need the live search.

@@ -13,7 +13,7 @@ import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
-import type { PartyFinder, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
+import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type {
   QueueStatus,
   QuoteOffer,
@@ -249,6 +249,7 @@ function StaffHeaderFields({
   onPatch,
   findParty,
   partySuggestions,
+  partyIndex,
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
@@ -256,6 +257,8 @@ function StaffHeaderFields({
   findParty?: PartyFinder | null;
   /** Suggestions from the email, for staff to confirm. The pane computes them; nothing is picked by itself. */
   partySuggestions?: PartySuggestion[];
+  /** The HMS list searched while staff type. Null or absent leaves only the live search. */
+  partyIndex?: PartyIndexSearcher | null;
 }) {
   // An amount with no label is not dropped: the label is required and the quote raises a review item for it.
   const otherNeedsLabel = Boolean(header.other?.amountMinor) && !header.other?.label?.trim();
@@ -278,6 +281,7 @@ function StaffHeaderFields({
         parties={header.parties ?? {}}
         find={findParty}
         suggestions={partySuggestions}
+        indexSearch={partyIndex}
         onPick={(party) =>
           onPatch?.({
             parties:
@@ -743,11 +747,14 @@ export function QuoteWorkflowPanel({
   onLoadRunScreenshot,
   paneSave,
   partySuggestions,
+  partyIndex,
 }: {
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
   paneSave?: PaneStayClient | null;
   partySuggestions?: PartySuggestion[];
+  /** The HMS list searched while staff type. Null or absent leaves only the live search. */
+  partyIndex?: PartyIndexSearcher | null;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onRunNext?: () => void;
   onRunStep?: (stepId: string) => void;
@@ -869,6 +876,7 @@ export function QuoteWorkflowPanel({
           onPatch={onPatchStaffHeader}
           findParty={findParty}
           partySuggestions={partySuggestions}
+          partyIndex={partyIndex}
         />
       ) : null}
       {showWorkspace ? (

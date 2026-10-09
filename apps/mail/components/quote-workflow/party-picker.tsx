@@ -2,12 +2,15 @@ import {
   PARTY_TRUNCATED_NOTE,
   partyChipText,
   partyFromSuggestion,
+  partyIndexHeading,
   partyKindLabel,
   partyNoCandidateNote,
   partyNoKindNote,
   type PartyCandidate,
   type PartyFinder,
   type PartyFindReply,
+  type PartyIndexReply,
+  type PartyIndexSearcher,
   type PartySuggestion,
 } from '../../lib/quote-workflow/party-lookup';
 import type { StaffQuoteParties, StaffQuoteParty } from '../../lib/quote-workflow/types';
@@ -20,6 +23,9 @@ export const PARTY_PICKER_BUSY = 'Searching HMS for companies and agencies. This
 
 export const PARTY_SUGGESTION_HINT = 'Suggested from this email. Staff confirm before any rate is used.';
 
+/** How long the typing rests before the HMS list is searched. The list is local, so this only spares the server a call per key. */
+export const PARTY_INDEX_DEBOUNCE_MS = 250;
+
 // Every state names the query it belongs to, so a result for one name never shows for another.
 type PickerState =
   | { status: 'idle' }
@@ -28,6 +34,9 @@ type PickerState =
   | { status: 'none'; query: string; note: string };
 
 const IDLE: PickerState = { status: 'idle' };
+
+type IndexState = { status: 'idle' } | { status: 'ready'; query: string; reply: PartyIndexReply };
+const IDLE_INDEX: IndexState = { status: 'idle' };
 
 /** The note for a search that listed nothing in scope. A field with a kind says when HMS matched only the other kind. */
 function noCandidateNote(reply: PartyFindReply, kind: StaffQuoteParty['kind'] | undefined): string {
@@ -38,9 +47,10 @@ function noCandidateNote(reply: PartyFindReply, kind: StaffQuoteParty['kind'] | 
 
 /**
  * Find in HMS for one field of the quote header. A field with a kind (Company or Agency) searches its own text, and
- * shows only that kind: its results, its pick and its suggestions. Without a kind, one picker covers both kinds and each
- * result shows its kind. Staff pick a result; a pick shows as a chip with Clear. Suggestions from the email are offered
- * for staff to confirm. Only a suggestion HMS listed can be picked. An unverified one can only be searched.
+ * shows only that kind: its matches, its pick and its suggestions. Without a kind, one picker covers both kinds and each
+ * result shows its kind. The HMS list the sweep wrote is searched as staff type, and its matches are a candidate only:
+ * the live search and the quote's own check in HMS are what bind a party. Suggestions from the email are offered for
+ * staff to confirm. Only a suggestion HMS listed can be picked. An unverified one can only be searched.
  */
 export function PartyPicker({
   name,
@@ -51,6 +61,7 @@ export function PartyPicker({
   onClear,
   suggestions = [],
   onSearchName,
+  indexSearch,
 }: {
   /** The text to search for: this field's company or agency name. */
   name: string;
@@ -64,9 +75,13 @@ export function PartyPicker({
   suggestions?: PartySuggestion[];
   /** Puts an unverified suggestion's name in the matching field, so staff can search it in HMS. */
   onSearchName?: (name: string, kind: StaffQuoteParty['kind']) => void;
+  /** The HMS list the sweep wrote, searched locally while staff type. Null or absent keeps only the live search. */
+  indexSearch?: PartyIndexSearcher | null;
 }) {
   const query = name.trim();
   const [state, setState] = useState<PickerState>(IDLE);
+  const [index, setIndex] = useState<IndexState>(IDLE_INDEX);
+  const indexToken = useRef(0);
   // Each search takes the next number, and only the latest number may write a reply. A name change takes one too,
   // so a reply still in flight for the old name is dropped.
   const latest = useRef(0);
@@ -76,11 +91,32 @@ export function PartyPicker({
     setState(IDLE);
   }, [query]);
 
+  // Each typed name asks the local list once it rests. A reply for a name that has since changed is dropped.
+  useEffect(() => {
+    const token = ++indexToken.current;
+    setIndex(IDLE_INDEX);
+    if (!indexSearch || !query) return;
+    const timer = setTimeout(() => {
+      indexSearch(query)
+        .then((reply) => {
+          if (token === indexToken.current) setIndex({ status: 'ready', query, reply });
+        })
+        .catch(() => {
+          if (token === indexToken.current) setIndex(IDLE_INDEX);
+        });
+    }, PARTY_INDEX_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query, indexSearch]);
+
   // Results count only for the name typed now. A name change has already cleared them; this covers the render before
   // the effect runs.
   const shown: PickerState = state.status !== 'idle' && state.query === query ? state : IDLE;
+  const indexMatches: PartyIndexReply | null =
+    index.status === 'ready' && index.query === query && index.reply.available ? index.reply : null;
 
+  // With a kind, only that kind is in scope. Without one, every kind is.
   const inScope = (party: { kind: StaffQuoteParty['kind'] }) => !kind || party.kind === kind;
+  const indexResults = (indexMatches?.results ?? []).filter(inScope);
 
   const run = async () => {
     const token = ++latest.current;
@@ -152,6 +188,28 @@ export function PartyPicker({
           })}
         </div>
       ) : null}
+      {indexResults.length ? (
+        <section aria-label="Matches from the HMS list" className="flex flex-col gap-1">
+          <p className="text-[10.5px] font-semibold text-[#334155]">{partyIndexHeading(indexMatches?.ageMs ?? 0)}</p>
+          <ul className="flex flex-col gap-1">
+            {indexResults.map((candidate) => (
+              <li key={`${candidate.kind}:${candidate.nativeId}`} className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="text-left text-[11.5px] font-semibold text-[#0066cc] underline"
+                  onClick={() => {
+                    onPick({ kind: candidate.kind, nativeId: candidate.nativeId, name: candidate.name });
+                    setIndex(IDLE_INDEX);
+                  }}
+                >
+                  {candidate.name}
+                </button>
+                <span className="text-[10.5px] text-[#64748b]">{partyKindLabel(candidate.kind)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -159,7 +217,7 @@ export function PartyPicker({
           disabled={!query || shown.status === 'busy'}
           onClick={() => void run()}
         >
-          Find in HMS
+          Search HMS now
         </button>
         <span>{PARTY_PICKER_HINT}</span>
       </div>

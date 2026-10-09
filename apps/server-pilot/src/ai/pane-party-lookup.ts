@@ -171,7 +171,8 @@ export function mergePartyKindResults(
   };
 }
 
-async function defaultSpawn(input: { kind: PanePartyKind; name: string }): Promise<unknown> {
+/** One runner run for one kind and name. The sweep and the pane both call it, so both use the fail-closed runner. */
+export async function spawnPartyLookup(input: { kind: PanePartyKind; name: string }): Promise<unknown> {
   // mkdtemp makes the directory 0700. The request holds only the typed name, and the directory goes after the run.
   const dir = await mkdtemp(join(tmpdir(), 'pane-party-'));
   try {
@@ -216,7 +217,7 @@ export async function findParty(input: PanePartyFindInput): Promise<PanePartyFin
   if (!name || name.length > 256) return withoutResults('refused_input_invalid');
   const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
   if (!lock) return withoutResults('refused_lock_unavailable');
-  const spawn = panePartyLookupLoaders.spawn ?? defaultSpawn;
+  const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
   const perKind: PanePartyFindResult[] = [];
   for (const kind of PARTY_KINDS) {
     let raw: unknown;
@@ -272,7 +273,7 @@ export async function verifyPartyPick(pick: {
   if (!name || name.length > 256 || !pick.nativeId) return { ok: false, reason: 'not_found' };
   const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
   if (!lock) return { ok: false, reason: 'refused_lock_unavailable' };
-  const spawn = panePartyLookupLoaders.spawn ?? defaultSpawn;
+  const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
   let raw: unknown;
   try {
     raw = await lock.withLock(() => spawn({ kind: pick.kind, name }), acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
