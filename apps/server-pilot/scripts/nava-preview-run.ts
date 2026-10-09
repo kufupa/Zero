@@ -58,15 +58,18 @@ export function isPiiField(label: string): boolean {
  */
 export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'brain.getCapabilities',
+  'categories.list',
   'connections.getDefault',
   'connections.list',
   'drafts.get',
   'drafts.list',
+  'labels.list',
   'mail.get',
   'mail.listThreads',
   'paneStayCancel.paneStayScreenshot',
   'paneStayLookup.screenshot',
   'quoteWorkflow.voucherFind',
+  'settings.get',
   'workstation.getPriorStaffQuoteRequote',
   'workstation.hmsQueueStatus',
   'workstation.listThreadQuoteRevisions',
@@ -683,9 +686,29 @@ export function gateFailures(
   const counts = summarize(results, blockedOutsideThreads);
   if (counts.timeout > 0) failures.push(`${counts.timeout} thread(s) did not settle`);
   if (counts.error > 0) failures.push(`${counts.error} thread(s) showed a pane error`);
-  if (counts.blockedWrites > 0)
-    failures.push(`${counts.blockedWrites} write request(s) were blocked`);
+  // Only named writes are a pane failure. An unclassified block is a configuration error (configFailures).
+  const blocked = [...blockedOutsideThreads, ...results.flatMap((item) => item.blockedWrites)];
+  const writes = blocked.filter((name) => KNOWN_WRITE_PROCEDURES.has(name)).length;
+  if (writes > 0) failures.push(`${writes} write request(s) were blocked`);
   return failures;
+}
+
+/**
+ * Requests the viewer blocked that are not named writes: a read missing from READ_PROCEDURES, or an
+ * unknown call. That is a configuration error (exit 2), not a pane failure.
+ */
+export function configFailures(
+  results: readonly ThreadResult[],
+  blockedOutsideThreads: readonly string[] = [],
+): string[] {
+  const unclassified = new Set<string>();
+  for (const name of [...blockedOutsideThreads, ...results.flatMap((item) => item.blockedWrites)]) {
+    if (!KNOWN_WRITE_PROCEDURES.has(name)) unclassified.add(name);
+  }
+  if (unclassified.size === 0) return [];
+  return [
+    `${unclassified.size} request(s) were blocked as unclassified (${[...unclassified].sort().join(', ')}); add reads to READ_PROCEDURES`,
+  ];
 }
 
 function escapeHtml(value: string): string {
@@ -797,9 +820,12 @@ async function main(): Promise<void> {
   console.log(
     `intent=${counts.intent} fallback=${counts.fallback} error=${counts.error} unsynced=${counts.unsynced} timeout=${counts.timeout} blockedWrites=${counts.blockedWrites}`,
   );
+  const configErrors = configFailures(results, blockedOutsideThreads);
   const failures = gateFailures(results, blockedOutsideThreads);
+  for (const error of configErrors) console.error(`CONFIG: ${error}`);
   for (const failure of failures) console.error(`FAIL: ${failure}`);
-  process.exitCode = failures.length > 0 ? 1 : 0;
+  // 0 pass, 1 gate failure, 2 configuration or launch (the gate script keeps the same codes).
+  process.exitCode = configErrors.length > 0 ? 2 : failures.length > 0 ? 1 : 0;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

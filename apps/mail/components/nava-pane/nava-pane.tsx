@@ -240,8 +240,12 @@ function singleReplyDraft(draft: ReturnType<typeof requireReviewedNativeDraft>) 
     : null;
 }
 
-/** Pane body. The route calls useOutlookBridge() once and passes the result in as `bridge`. */
-export function NavaPane({ bridge }: { bridge: PaneBridge }) {
+/**
+ * Pane body. The route calls useOutlookBridge() once and passes the result in as `bridge`.
+ * `preview` (the /nava-preview viewer) starts on the quoting tool, skipping the welcome, connection
+ * and tour screens and their automatic ping. Analysis does not wait on the ping. Outlook passes nothing.
+ */
+export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; preview?: boolean }) {
   const {
     isConnected,
     activeEmail,
@@ -632,6 +636,8 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     }
     return 'welcome';
   });
+  // Preview starts on the quoting tool; the welcome, connection and tour screens never show there.
+  const shownScreen: PaneScreen = preview ? 'tool' : currentScreen;
   const [tourSlideIndex, setTourSlideIndex] = useState(0);
   const [pingState, setPingState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
@@ -1553,8 +1559,8 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
           </div>
         )}
 
-        {/* First-run steps only: the bar is gone once onboarding is done (replay from the ⋯ menu). */}
-        {currentScreen !== 'tool' && (
+        {/* First-run steps only: the bar is gone once onboarding is done (replay from the ⋯ menu). Preview never shows it. */}
+        {shownScreen !== 'tool' && (
         <div className="flex w-full items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-1.5 text-xs">
           <div className="flex items-center gap-1 font-semibold text-[#1e293b]">
             <span className="text-[11px] text-[#64748b]">Step</span>
@@ -1591,7 +1597,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
         )}
 
         {/* SCREEN 1: WELCOME & MAILBOX DETECTION */}
-        {currentScreen === 'welcome' && (
+        {shownScreen === 'welcome' && (
           <div className="animate-in fade-in flex flex-1 flex-col p-4 duration-150">
             <div className="my-auto flex flex-col items-center text-center">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eaf4ee] text-[#1a4332]">
@@ -1630,7 +1636,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
         )}
 
         {/* SCREEN 2: SYSTEM & NAVA AI SERVICES CHECK */}
-        {currentScreen === 'diagnostics' && (
+        {shownScreen === 'diagnostics' && (
           <div className="animate-in fade-in flex flex-1 flex-col p-4 duration-150">
             <div className="my-auto flex flex-col items-center text-center">
               <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#eff6ff] text-[#0066cc]">
@@ -1722,7 +1728,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
         )}
 
         {/* SCREEN 3: 3-SLIDE QUICK TOUR PRIMER */}
-        {currentScreen === 'tour' && (
+        {shownScreen === 'tour' && (
           <div className="animate-in fade-in flex flex-1 flex-col p-3 duration-150">
             <div className="my-auto flex flex-col items-center rounded-sm border border-[#e2e8f0] bg-white p-4 text-center">
               <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-[#f1f3f6] text-[#1a4332]">
@@ -1811,7 +1817,7 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
         )}
 
         {/* Scrollable Body: SCREEN 4 QUOTING TOOL */}
-        {currentScreen === 'tool' && (
+        {shownScreen === 'tool' && (
           <main className={`flex flex-1 flex-col gap-3.5 overflow-y-auto p-3.5 ${NATIVE_VISIBLE_SCROLLBAR_CLASSES}`}>
             {/* Email context for the selected email; until one is selected, an empty state. */}
             {activeEmail ? (
