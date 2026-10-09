@@ -1,6 +1,6 @@
 import { assertReservationistResultFreshForAction, DraftApprovalError } from './draft-approval.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
-import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
+import { occupiedDates, type Board, type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import {
   deriveAuthorizedExtraLines,
   type AuthorizedProposalFacts,
@@ -181,9 +181,13 @@ function qualifierFromLabel(label: string, base: string): string | undefined {
   return label.startsWith(`${base} (`) && label.endsWith(')') ? label.slice(base.length + 2, -1) : undefined;
 }
 
-/** Maps persisted staff extras back to header fields. Legacy dinner and shuttle rows keep their meaning. */
+/**
+ * Maps persisted staff extras back to header fields. Legacy dinner and shuttle rows keep their meaning.
+ * stayNights reads office transfer days stored before the daysExplicit flag existed.
+ */
 function extrasHeaderFromFacts(
   facts: AuthorizedProposalFacts | undefined,
+  stayNights: number,
 ): Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'company' | 'agency' | 'notes'> {
   const out: Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'company' | 'agency' | 'notes'> = {};
   for (const row of facts?.extras ?? []) {
@@ -197,7 +201,10 @@ function extrasHeaderFromFacts(
       if (qualifier) out.lunchAllowanceLabel = qualifier;
     } else if (row.service === 'office_transfer' && row.unitKind === 'person_service') {
       out.officeTransferMinor = row.unitMinor;
-      if (row.dates.length) out.officeTransferDays = row.dates.length;
+      // Only days staff typed are restored, so defaulted days follow the new stay. Facts stored before the
+      // flag count as typed when their dates differ from the stay's nights.
+      const typed = row.daysExplicit ?? (row.dates.length !== stayNights);
+      if (typed && row.dates.length) out.officeTransferDays = row.dates.length;
     } else if (row.service === 'shuttle' && row.unitKind === 'trip') {
       out.shuttleRequested = true;
       out.shuttleMinor = row.unitMinor;
@@ -231,6 +238,7 @@ export function priorStaffQuoteRequotePayload(
   ) {
     return null;
   }
+  const stay = revision.groups[0];
   return {
     groups: revision.groups.map((group) => ({
       id: group.id,
@@ -245,7 +253,10 @@ export function priorStaffQuoteRequotePayload(
     salesStrategy: staff.salesStrategy === 'Government' ? 'Government' : 'BAR',
     company: staff.header.company ?? '',
     agency: staff.header.agency ?? '',
-    ...extrasHeaderFromFacts(proposalFactsForRevision(run, revisionRef)),
+    ...extrasHeaderFromFacts(
+      proposalFactsForRevision(run, revisionRef),
+      stay ? occupiedDates(stay.arrivalDate, stay.departureDate).length : 0,
+    ),
     ...(staff.notes ? { notes: staff.notes } : {}),
   };
 }

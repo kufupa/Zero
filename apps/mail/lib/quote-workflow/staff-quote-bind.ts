@@ -127,6 +127,14 @@ export type QualifiedStaffPdfResult = {
   totalMinor: number;
 };
 
+/** workstation.quoteWorkbook: the Excel for the same approved revision the PDF uses. */
+export type QualifiedStaffWorkbookResult = {
+  fileName: string;
+  xlsxBase64: string;
+  totalMinor: number;
+  revisionId: string;
+};
+
 function bytesFromBase64(value: string): Uint8Array | null {
   try {
     const binary = atob(value);
@@ -732,6 +740,7 @@ type StaffQuoteClient = {
     query: (input: { runId: string; name: string }) => Promise<QuoteRunScreenshotResult>;
   };
   qualifiedQuoteProposalPdf?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffPdfResult> };
+  quoteWorkbook?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffWorkbookResult> };
   prepareBookingDraft?: { mutate: (input: PrepareBookingDraftInput) => Promise<PrepareBookingDraftResult> };
   listThreadQuoteRevisions?: {
     query: (input: { threadId: string }) => Promise<{ revisions?: Array<{ workflowRunId: string; revisionRef: string }> }>;

@@ -5,10 +5,12 @@ export function DocumentReview({
   session,
   onReplyChange,
   onPreparePdf,
+  onDownloadWorkbook,
 }: {
   session: QuoteSession;
   onReplyChange?: (html: string) => void;
   onPreparePdf?: () => void;
+  onDownloadWorkbook?: () => void;
 }) {
   const pdfReady = canCreatePdf(session);
   const nativeReady = canCreateNativeDraft(session);
@@ -26,14 +28,24 @@ export function DocumentReview({
           onChange={(event) => onReplyChange?.(event.target.value)}
         />
       </label>
-      <button
-        type="button"
-        disabled={!pdfReady}
-        onClick={onPreparePdf}
-        className="flex h-9 w-full items-center justify-center rounded-xs bg-[#1a4332] text-xs font-bold text-white hover:bg-[#123023] disabled:bg-slate-300"
-      >
-        Prepare quotation PDF
-      </button>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={!pdfReady}
+          onClick={onPreparePdf}
+          className="flex h-9 flex-1 items-center justify-center rounded-xs bg-[#1a4332] text-xs font-bold text-white hover:bg-[#123023] disabled:bg-slate-300"
+        >
+          Prepare quotation PDF
+        </button>
+        <button
+          type="button"
+          disabled={!pdfReady || !onDownloadWorkbook}
+          onClick={onDownloadWorkbook}
+          className="flex h-9 flex-1 items-center justify-center rounded-xs border border-[#1a4332] bg-white text-xs font-bold text-[#1a4332] hover:bg-[#f1f5f2] disabled:border-slate-300 disabled:text-slate-400"
+        >
+          Download Excel
+        </button>
+      </div>
       {!pdfReady ? (
         <p className="text-[11px] text-[#64748b]">
           {amountProblem
