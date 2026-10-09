@@ -449,6 +449,8 @@ describe('NavaPane', () => {
 
     expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
     expect(((await tellNavaBox()) as HTMLTextAreaElement).value).toBe('Three nights from 12 Nov');
+  });
+
   it('shows the Find the booking card for a voucher email, with the guest the voucher names', async () => {
     voucherFindQuery.mockResolvedValue({
       status: 'voucher',
