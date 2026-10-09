@@ -89,7 +89,7 @@ export async function readQuoteAttachments(
 }
 
 /** Locators come only from this mailbox's attachment rows; the caller never supplies keys. */
-function createArtifactReader(rows: QuoteAttachmentRow[], signal: AbortSignal): QuoteAttachmentReader {
+export function createArtifactReader(rows: QuoteAttachmentRow[], signal: AbortSignal): QuoteAttachmentReader {
   const s3 = getS3Storage();
   const byId = new Map(rows.map((row) => [row.id, row]));
   const authorizedAttachmentIds = new Set(byId.keys());
