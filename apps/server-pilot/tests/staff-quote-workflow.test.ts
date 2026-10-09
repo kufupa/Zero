@@ -203,15 +203,16 @@ describe('staff-approved quotation beneath native guards', () => {
     await expect(executeStaffQuote(f.prepared, services, async () => true)).rejects.toThrow(
       'approval_changed',
     );
+    // A company the staff typed and did not pick is text only: no party service is needed, nothing is looked up, and the
+    // quote goes out at public rates with no rate context.
     const other = await fixture();
     other.prepared.header.company = 'Company';
-    await expect(
-      executeStaffQuote(
-        other.prepared,
-        createReservationistBusinessServices(other.options, other.prepared.approval),
-        async () => true,
-      ),
-    ).rejects.toThrow('party_lookup');
+    await executeStaffQuote(
+      other.prepared,
+      createReservationistBusinessServices(other.options, other.prepared.approval),
+      async () => true,
+    );
+    expect(other.calls.at(-1)?.rateContext).toBeUndefined();
   });
   it('zero-priced native rooms cannot become a qualified quote', async () => {
     const f = await fixture(),

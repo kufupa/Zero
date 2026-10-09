@@ -15,6 +15,8 @@ import {
   deriveQuoteLines,
   type AuthorizedProposalFacts,
 } from '../quote-proposal/quote-lines.js';
+import { quoteRateContextEnabled } from './quote-rate-switch.js';
+import { PARTY_NO_CONTRACT_CODE, PARTY_SEARCH_INCOMPLETE_CODE, isPartyRateFailure } from './party-rate-failure.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -42,6 +44,23 @@ const staffLabel = z.string().trim().max(120);
 export const MAX_EXTRA_AMOUNT_MINOR = 100_000_000;
 const extraAmount = z.number().int().positive().max(MAX_EXTRA_AMOUNT_MINOR);
 /** Prices, native party IDs and qualification flags are deliberately not client inputs. */
+/** The HMS id a picked party carries: plain characters, as HMS shows them. */
+const partyNativeId = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
+const pickedCompany = z
+  .object({ kind: z.literal('company'), nativeId: partyNativeId, name: z.string().min(1).max(256) })
+  .strict();
+const pickedAgency = z
+  .object({ kind: z.literal('agency'), nativeId: partyNativeId, name: z.string().min(1).max(256) })
+  .strict();
+/**
+ * The company and agency staff picked with Find in HMS. Both may be picked on one quote. The server re-checks each
+ * one in HMS before any rate is bound to it (verifyPartyPick), so a client-sent id is never trusted on its own.
+ */
+export const staffQuoteParties = z
+  .object({ company: pickedCompany.optional(), agency: pickedAgency.optional() })
+  .strict();
+export type StaffQuoteParties = z.infer<typeof staffQuoteParties>;
+
 export const staffQuoteInput = z
   .object({
     messageId: z.string().min(1),
@@ -78,9 +97,97 @@ export const staffQuoteInput = z
       .optional(),
     /** Unpriced staff note, printed on the quotation as a note. */
     notes: z.string().trim().max(1000).optional(),
+    // The HMS company and/or agency the pane's Find in HMS picker chose. Absent means public rates, as before.
+    parties: staffQuoteParties.optional(),
   })
   .strict();
 export type StaffQuoteInput = z.infer<typeof staffQuoteInput>;
+
+export type StaffQuoteRates = 'party' | 'public';
+export type PartyRateRef = { nativeId: string; name: string };
+export type PartyRateContext = { organization?: PartyRateRef; agency?: PartyRateRef };
+
+/**
+ * The rate context for picked parties. A company is the organization, an agency is the agency: both when both were
+ * picked. Nothing else is sent, so no commission or A/R account reaches the quote.
+ */
+export function partyRateContext(parties: StaffQuoteParties | undefined): PartyRateContext | undefined {
+  const context: PartyRateContext = {};
+  if (parties?.company) context.organization = { nativeId: parties.company.nativeId, name: parties.company.name };
+  if (parties?.agency) context.agency = { nativeId: parties.agency.nativeId, name: parties.agency.name };
+  return Object.keys(context).length ? context : undefined;
+}
+
+export function partyNames(parties: StaffQuoteParties | undefined): string[] {
+  return [parties?.company?.name, parties?.agency?.name].filter((name): name is string => Boolean(name));
+}
+
+/** The public rate codes. Any other row is a contract row only when HMS flags it as negotiated; its name never decides. */
+const PUBLIC_RATE_CODES: ReadonlySet<string> = new Set(['BAR', 'BARRO']);
+export function isPublicRateCode(code: string): boolean {
+  return PUBLIC_RATE_CODES.has(code);
+}
+
+/** The review note when a party quote priced public rates because HMS flags no contract row for the party. */
+export function partyNoContractNote(names: readonly string[]): string {
+  return `No contract rate found for ${names.join(' and ')}; this quote uses our best available rate.`;
+}
+
+/**
+ * The review note for a party quote whose revision has no contract row, so it priced public rates. Null when a contract
+ * row was priced, or when no party was picked.
+ */
+export function partyContractReviewNote(
+  parties: StaffQuoteParties | undefined,
+  groups: readonly { rateCode: string }[],
+): string | null {
+  if (!parties) return null;
+  return groups.some((group) => !isPublicRateCode(group.rateCode)) ? null : partyNoContractNote(partyNames(parties));
+}
+
+export { isPartyRateFailure, PartyRateFailure } from './party-rate-failure.js';
+
+/** The review note for a quote that fell back to public rates because HMS could not apply the contract rate. */
+export function partyRateFallbackNote(names: readonly string[]): string {
+  return `HMS couldn't apply the contract rate for ${names.join(' and ')}, so these are public rates. Check in HMS.`;
+}
+
+/** The review note when HMS could not confirm the picked party's contract rates. The quote is public and says so. */
+export function partyUnconfirmedNote(names: readonly string[]): string {
+  return `Nava couldn't confirm contract rates for ${names.join(' and ')} — this quote uses our best available rate. Check HMS before sending.`;
+}
+
+/** The note a public retry carries. A complete no-contract retry has none: its review note on the public groups says so. */
+function fallbackNote(code: unknown, names: readonly string[]): string | null {
+  if (code === PARTY_NO_CONTRACT_CODE) return null;
+  if (code === PARTY_SEARCH_INCOMPLETE_CODE) return partyUnconfirmedNote(names);
+  return partyRateFallbackNote(names);
+}
+
+/**
+ * Quotes the picked parties first. When HMS cannot price them, quotes once more at public rates and says so in the
+ * note. Any other failure, and every quote without a picked party, fails as before.
+ */
+export async function quoteWithPartyFallback<T, P>(options: {
+  input: StaffQuoteInput;
+  first: P;
+  retry: () => P;
+  run: (attempt: P) => Promise<T>;
+}): Promise<{ prepared: P; result: T; note: string | null; fellBack: boolean }> {
+  try {
+    return { prepared: options.first, result: await options.run(options.first), note: null, fellBack: false };
+  } catch (error) {
+    if (!options.input.parties || !isPartyRateFailure(error)) throw error;
+    const retry = options.retry();
+    return {
+      prepared: retry,
+      result: await options.run(retry),
+      // A no-contract retry is said by the review note on its public groups, not by the fallback note.
+      note: fallbackNote((error as { code?: unknown }).code, partyNames(options.input.parties)),
+      fellBack: true,
+    };
+  }
+}
 export type StaffQuoteScope = {
   transportId: string;
   userId: string;
@@ -126,6 +233,7 @@ export function prepareStaffQuote(
   scope: StaffQuoteScope,
   signer: Pick<RevisionProposalHeader, 'signerName' | 'signerEmail'>,
   signal: AbortSignal,
+  rates: StaffQuoteRates = 'party',
 ) {
   input = staffQuoteInput.parse(input);
   signal.throwIfAborted();
@@ -149,6 +257,9 @@ export function prepareStaffQuote(
     }),
   );
   if (dates.size !== 1) throw new Error('staff_quote_separate_stay_required');
+  // The kill switch turns party rates off: QUOTE_RATE_CONTEXT=off sends no rate context at all.
+  const partyContext =
+    rates === 'party' && quoteRateContextEnabled() ? partyRateContext(input.parties) : undefined;
   const first = input.groups[0]!,
     request: NativeQuoteRequest = {
       propertyCode: scope.propertyCode,
@@ -179,6 +290,8 @@ export function prepareStaffQuote(
       },
       details: 'full',
       maxOptionsPerGroup: 50,
+      // Without a picked party the request is unchanged: no rateContext key at all.
+      ...(partyContext ? { rateContext: partyContext } : {}),
     };
   const inputDigest = quoteDigest({
       input,
@@ -242,7 +355,12 @@ export function prepareStaffQuote(
     header,
     inputDigest,
     authorizationId,
-    approval: { context, request, header } satisfies NonNullable<
+    approval: {
+      context,
+      request,
+      header,
+      rates: rates === 'party' && quoteRateContextEnabled() ? 'party' : 'public',
+    } satisfies NonNullable<
       Parameters<typeof createReservationistBusinessServices>[1]
     >,
   };

@@ -7,9 +7,14 @@ import {
   executeStaffQuote,
   attestStaffQuote,
   buildStaffProposalFacts,
+  partyContractReviewNote,
+  quoteWithPartyFallback,
   type StaffQuoteAttestation,
   type StaffQuoteInput,
+  type StaffQuoteParties,
 } from '../../ai/staff-quote-workflow.js';
+import { quoteRateContextEnabled } from '../../ai/quote-rate-switch.js';
+import { verifyPartyPick } from '../../ai/pane-party-lookup.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
 import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
 import {
@@ -193,6 +198,51 @@ export function staffQuoteFailureMessage(
   if (isHmsExecutionFailure(error, code, staffQuoteFailurePhase(error)))
     return HMS_NOT_RESPONDED_MESSAGE;
   return 'The requested allocation or rate could not be qualified; review stay inputs and party/rate evidence';
+}
+
+/** The review note when the rate lookup switch is off: picked parties are not checked and no party rate is sent. */
+export const PARTY_LOOKUP_OFF_NOTE =
+  'HMS rate lookup is turned off here, so company and agency rates are not checked. This quote uses public rates.';
+
+const PARTY_VERIFY_COPY: Record<string, string> = {
+  not_found: 'HMS did not confirm the picked company or agency. Search again and pick it.',
+  unverified: "Luna couldn't check the picked company or agency in HMS. Try again.",
+  refused_lock_busy: 'HMS is busy with another run. Try again in a minute.',
+  refused_lock_unavailable: "Luna can't reach HMS right now. Tell the Nava team.",
+  refused_flag_off: PARTY_LOOKUP_OFF_NOTE,
+};
+
+/**
+ * Re-checks each picked party in HMS and returns the HMS id and name. A pick HMS does not confirm is refused before any
+ * rate is bound, so an id the client made up never reaches a quote.
+ */
+async function verifyStaffParties(parties: StaffQuoteParties): Promise<StaffQuoteParties> {
+  const verified: StaffQuoteParties = {};
+  const refuse = (reason: string): never => {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: PARTY_VERIFY_COPY[reason] ?? PARTY_VERIFY_COPY.unverified!,
+    });
+  };
+  if (parties.company) {
+    const result = await verifyPartyPick({
+      kind: 'company',
+      nativeId: parties.company.nativeId,
+      name: parties.company.name,
+    });
+    if (!result.ok) refuse(result.reason);
+    if (result.ok) verified.company = { kind: 'company', nativeId: result.party.nativeId, name: result.party.name };
+  }
+  if (parties.agency) {
+    const result = await verifyPartyPick({
+      kind: 'agency',
+      nativeId: parties.agency.nativeId,
+      name: parties.agency.name,
+    });
+    if (!result.ok) refuse(result.reason);
+    if (result.ok) verified.agency = { kind: 'agency', nativeId: result.party.nativeId, name: result.party.name };
+  }
+  return verified;
 }
 
 export const workstationPingInput = z.object({
@@ -579,14 +629,22 @@ export const workstationRouter = router({
       propertyCode: config.owner.propertyCode,
     };
     const signal = AbortSignal.timeout(20 * 60000);
+    const signer = { signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email };
+    // A picked company or agency is re-checked in HMS before any rate is bound. The lookup runs before the quote lock,
+    // which the same property lock would otherwise block. With the switch off no lookup runs and no party rate is sent.
+    const notes: string[] = [];
+    let quoteInput: StaffQuoteInput = input;
+    if (input.parties) {
+      if (quoteRateContextEnabled()) {
+        quoteInput = { ...input, parties: await verifyStaffParties(input.parties) };
+      } else {
+        quoteInput = { ...input, parties: undefined };
+        notes.push(PARTY_LOOKUP_OFF_NOTE);
+      }
+    }
     let prepared: ReturnType<typeof prepareStaffQuote>;
     try {
-      prepared = prepareStaffQuote(
-        input,
-        scope,
-        { signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email },
-        signal,
-      );
+      prepared = prepareStaffQuote(quoteInput, scope, signer, signal);
     } catch {
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
@@ -666,37 +724,50 @@ export const workstationRouter = router({
         lockRun = lock.withLock(
           async () => {
             queued.setPhase(1);
-            const services = getInstalledStaffQuoteServices(
-              {
-                authorizationId: prepared.authorizationId,
-                authorizeContext: async (c) => c === prepared.context && (await stillCurrent()),
-                signer: {
-                  signerName: ctx.sessionUser.name ?? '',
-                  signerEmail: ctx.sessionUser.email,
+            // One attempt is one approval, with its own services and authorization. A party rate HMS cannot price is
+            // quoted once more at public rates, and the review says so.
+            const quoteAt = (attempt: ReturnType<typeof prepareStaffQuote>) => {
+              const services = getInstalledStaffQuoteServices(
+                {
+                  authorizationId: attempt.authorizationId,
+                  authorizeContext: async (c) => c === attempt.context && (await stillCurrent()),
+                  signer,
+                  onEvidenceDirectory: (directory) => {
+                    evidence.directory = directory;
+                  },
+                  onTraceFinish: (finished) => {
+                    traceFinishes.push(finished);
+                  },
                 },
-                onEvidenceDirectory: (directory) => {
-                  evidence.directory = directory;
+                attempt.approval,
+              );
+              return executeStaffQuote(
+                attempt,
+                {
+                  ...services,
+                  resolveQuoteTask:
+                    services.resolveQuoteTask &&
+                    (async (quoteContext) => {
+                      const resolved = await services.resolveQuoteTask!(quoteContext);
+                      queued.setPhase(2);
+                      return resolved;
+                    }),
                 },
-                onTraceFinish: (finished) => {
-                  traceFinishes.push(finished);
-                },
-              },
-              prepared.approval,
-            );
-            const quote = executeStaffQuote(
-              prepared,
-              {
-                ...services,
-                resolveQuoteTask:
-                  services.resolveQuoteTask &&
-                  (async (quoteContext) => {
-                    const resolved = await services.resolveQuoteTask!(quoteContext);
-                    queued.setPhase(2);
-                    return resolved;
-                  }),
-              },
-              stillCurrent,
-            );
+                stillCurrent,
+              );
+            };
+            const quote = quoteWithPartyFallback({
+              input: quoteInput,
+              first: prepared,
+              retry: () => prepareStaffQuote(quoteInput, scope, signer, signal, 'public'),
+              run: quoteAt,
+            }).then((attempt) => {
+              prepared = attempt.prepared;
+              const contractNote = partyContractReviewNote(quoteInput.parties, attempt.result.groups);
+              if (attempt.note) notes.push(attempt.note);
+              else if (contractNote) notes.push(contractNote);
+              return attempt.result;
+            });
             return traceAsync ? awaitProvisionalCapture(quote, traceFinishes, captured) : quote;
           },
           { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
@@ -788,7 +859,7 @@ export const workstationRouter = router({
         messageId: mail.id,
         threadId: mail.threadId,
         factRefs: proposal.factRefs,
-        extrasReviewItems: proposal.extrasReviewItems,
+        extrasReviewItems: [...notes, ...proposal.extrasReviewItems],
         selectionEpoch: input.selectionEpoch,
         inputRevision: input.inputRevision,
         inputDigest: prepared.inputDigest,

@@ -71,7 +71,7 @@ describe('PartyPicker', () => {
   it('shows the hint, and keeps Find in HMS disabled until a name is typed', () => {
     const find = vi.fn();
     render(
-      <PartyPicker name="  " party={undefined} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
+      <PartyPicker name="  " parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
     );
     expect(screen.getByText(PARTY_PICKER_HINT)).toBeTruthy();
     expect(
@@ -93,7 +93,7 @@ describe('PartyPicker', () => {
     );
     const onPick = vi.fn();
     render(
-      <PartyPicker name="ABC" party={undefined} find={find} onPick={onPick} onClear={vi.fn()} />,
+      <PartyPicker name="ABC" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     expect(screen.getByRole('status').textContent).toContain('about a minute');
@@ -113,7 +113,7 @@ describe('PartyPicker', () => {
     );
     const onPick = vi.fn();
     render(
-      <PartyPicker name="Nobody" party={undefined} find={find} onPick={onPick} onClear={vi.fn()} />,
+      <PartyPicker name="Nobody" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByText(/No match in HMS/)).toBeTruthy());
@@ -129,7 +129,7 @@ describe('PartyPicker', () => {
       }),
     );
     render(
-      <PartyPicker name="360" party={undefined} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
+      <PartyPicker name="360" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByText("HMS search didn't apply — try again")).toBeTruthy());
@@ -145,7 +145,7 @@ describe('PartyPicker', () => {
       }),
     );
     render(
-      <PartyPicker name="Tour" party={undefined} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
+      <PartyPicker name="Tour" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByText(PARTY_TRUNCATED_NOTE)).toBeTruthy());
@@ -157,7 +157,7 @@ describe('PartyPicker', () => {
       throw new Error('network down');
     });
     render(
-      <PartyPicker name="Safari" party={undefined} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
+      <PartyPicker name="Safari" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByText(/didn't apply/)).toBeTruthy());
@@ -168,16 +168,17 @@ describe('PartyPicker', () => {
     render(
       <PartyPicker
         name="ABC Travel (Pty) Ltd"
-        party={ABC}
+        parties={{ company: ABC }}
         find={vi.fn()}
         onPick={vi.fn()}
         onClear={onClear}
       />,
     );
     expect(screen.getByText('✓ ABC Travel (Pty) Ltd (HMS)')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeNull();
+    // Find stays: the other kind (agency) can still be picked alongside the company.
+    expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
-    expect(onClear).toHaveBeenCalledTimes(1);
+    expect(onClear).toHaveBeenCalledWith('company');
   });
 });
 
@@ -222,7 +223,7 @@ describe('executeStaffQuote party on the pane bind', () => {
       header: { ...emptyStaffQuoteHeader(), company: 'ABC Travel (Pty) Ltd' },
     });
     const sent = mutate.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(Object.keys(sent)).not.toContain('party');
+    expect(Object.keys(sent)).not.toContain('parties');
   });
 
   it('sends the picked party as kind, nativeId and name, and nothing else of the header', async () => {
@@ -233,13 +234,13 @@ describe('executeStaffQuote party on the pane bind', () => {
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [stay],
-      header: { ...emptyStaffQuoteHeader(), company: ABC.name, party: { ...ABC } },
+      header: { ...emptyStaffQuoteHeader(), company: ABC.name, parties: { company: { ...ABC } } },
     });
     expect(mutate.mock.calls[0]?.[0]).toMatchObject({
-      party: { kind: 'company', nativeId: '4411', name: ABC.name },
+      parties: { company: { kind: 'company', nativeId: '4411', name: ABC.name } },
     });
-    const sent = mutate.mock.calls[0]?.[0] as { party: object };
-    expect(Object.keys(sent.party).sort()).toEqual(['kind', 'name', 'nativeId']);
+    const sent = mutate.mock.calls[0]?.[0] as { parties: { company: object } };
+    expect(Object.keys(sent.parties.company).sort()).toEqual(['kind', 'name', 'nativeId']);
   });
 });
 
@@ -251,16 +252,16 @@ describe('the picked party in the session header', () => {
     });
     const picked = reduceQuoteSession(before, {
       type: 'patch_staff_header',
-      header: { party: { ...ABC }, company: ABC.name },
+      header: { parties: { company: { ...ABC } }, company: ABC.name },
     });
-    expect(picked.staffHeader.party).toEqual(ABC);
+    expect(picked.staffHeader.parties).toEqual({ company: ABC });
     expect(picked.staffHeader.company).toBe(ABC.name);
     expect(picked.inputRevision).toBe(before.inputRevision + 1);
     const cleared = reduceQuoteSession(picked, {
       type: 'patch_staff_header',
-      header: { party: undefined },
+      header: { parties: undefined },
     });
-    expect(cleared.staffHeader.party).toBeUndefined();
-    expect(emptyStaffQuoteHeader()).not.toHaveProperty('party');
+    expect(cleared.staffHeader.parties).toBeUndefined();
+    expect(emptyStaffQuoteHeader()).not.toHaveProperty('parties');
   });
 });

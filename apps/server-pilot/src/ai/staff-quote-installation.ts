@@ -14,6 +14,7 @@ import {
   type ReservationistPartyRead,
 } from './reservationist-business-services.js';
 import { createExistingOwnerNativeQuoteReader } from './reservationist-evaluation-composition.js';
+import { PartyRateFailure } from './party-rate-failure.js';
 import {
   PROVISIONAL_QUOTE_SCRIPT,
   quoteTraceAsyncEnabled,
@@ -664,7 +665,7 @@ export function getInstalledStaffQuoteServices(
       );
     } catch {
       signal.throwIfAborted();
-      throw new Error('staff_quote_party_unavailable');
+      throw new PartyRateFailure('staff_quote_party_unavailable');
     }
     const payload = JSON.parse(
       checkedPrivateFile(resultPath, ARTIFACT_MAX_INPUT_BYTES).toString(),
@@ -681,13 +682,13 @@ export function getInstalledStaffQuoteServices(
         (candidate) => !candidate.nativeId || !candidate.displayName || candidate.kind !== kind,
       )
     )
-      throw new Error('staff_quote_party_invalid');
+      throw new PartyRateFailure('staff_quote_party_invalid');
     const evidence = checkedPrivateFile(
       join(payload.evidenceDirectory, 'result.json'),
       ARTIFACT_MAX_INPUT_BYTES,
     );
     if (quoteDigest(JSON.parse(evidence.toString())) !== quoteDigest(payload))
-      throw new Error('staff_quote_party_changed');
+      throw new PartyRateFailure('staff_quote_party_changed');
     guard();
     signal.throwIfAborted();
     return {

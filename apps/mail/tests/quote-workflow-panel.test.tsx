@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { useState } from 'react';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
@@ -711,85 +711,53 @@ describe('the Find in HMS picker in the quote header', () => {
     );
   }
 
-  it('shows one Find in HMS picker when a finder is passed, and none without one', () => {
+  // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.
+  it('shows one Find in HMS picker per field when a finder is passed, and none without one', () => {
     const { unmount } = render(<QuoteWorkflowPanel session={headerSession({})} findParty={noMatch} />);
-    expect(screen.getAllByRole('button', { name: 'Find in HMS' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Find in HMS' })).toHaveLength(2);
     unmount();
     render(<QuoteWorkflowPanel session={headerSession({})} />);
     expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeNull();
   });
 
-  it('searches the typed company, and picking a result sets Company and the party', async () => {
-    const onPatchStaffHeader = vi.fn();
-    const find = vi.fn(async () => ({ outcome: 'resolved' as const, results: [ACME], truncated: false }));
-    render(
-      <QuoteWorkflowPanel
-        session={headerSession({ company: 'Acme', agency: '' })}
-        findParty={find}
-        onPatchStaffHeader={onPatchStaffHeader}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Acme Travel' }));
-    expect(find).toHaveBeenCalledWith('Acme');
-    expect(onPatchStaffHeader).toHaveBeenCalledWith({ party: ACME, company: 'Acme Travel' });
-  });
-
-  it('picking an agency sets Agency and leaves Company alone', async () => {
-    const onPatchStaffHeader = vi.fn();
-    const find = vi.fn(async () => ({ outcome: 'resolved' as const, results: [TRAVEL_HUB], truncated: false }));
-    render(
-      <QuoteWorkflowPanel
-        session={headerSession({ company: '', agency: 'Travel Hub' })}
-        findParty={find}
-        onPatchStaffHeader={onPatchStaffHeader}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Travel Hub' }));
-    expect(onPatchStaffHeader).toHaveBeenCalledWith({ party: TRAVEL_HUB, agency: 'Travel Hub' });
-  });
-
   it('drops a pick only when its own field is edited away from its name', () => {
     const seen: { latest: QuoteSession | null } = { latest: null };
     const { unmount } = render(
-      <PartyGate initial={headerSession({ company: 'Acme Travel', party: ACME })} seen={seen} findParty={noMatch} />,
+      <PartyGate
+        initial={headerSession({ company: 'Acme Travel', parties: { company: ACME } })}
+        seen={seen}
+        findParty={noMatch}
+      />,
     );
     fireEvent.change(screen.getByLabelText('Agency'), { target: { value: 'Hub' } });
-    expect(seen.latest?.staffHeader.party).toEqual(ACME);
+    expect(seen.latest?.staffHeader.parties?.company).toEqual(ACME);
     fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'Acme Travel Ltd' } });
-    expect(seen.latest?.staffHeader.party).toBeUndefined();
+    expect(seen.latest?.staffHeader.parties?.company).toBeUndefined();
     unmount();
 
     render(
       <PartyGate
-        initial={headerSession({ company: 'Acme Travel', agency: 'Travel Hub', party: TRAVEL_HUB })}
+        initial={headerSession({
+          company: 'Acme Travel',
+          agency: 'Travel Hub',
+          parties: { company: ACME, agency: TRAVEL_HUB },
+        })}
         seen={seen}
         findParty={noMatch}
       />,
     );
     fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'Acme Travel Ltd' } });
-    expect(seen.latest?.staffHeader.party).toEqual(TRAVEL_HUB);
+    expect(seen.latest?.staffHeader.parties?.company).toBeUndefined();
+    expect(seen.latest?.staffHeader.parties?.agency).toEqual(TRAVEL_HUB);
     fireEvent.change(screen.getByLabelText('Agency'), { target: { value: 'Travel Hub Ltd' } });
-    expect(seen.latest?.staffHeader.party).toBeUndefined();
-  });
-
-  it('shows the picked party as a chip, and Clear removes the pick and keeps the typed name', () => {
-    const seen: { latest: QuoteSession | null } = { latest: null };
-    render(
-      <PartyGate initial={headerSession({ company: 'Acme Travel', party: ACME })} seen={seen} findParty={noMatch} />,
-    );
-    const chip = screen.getByText('✓ Acme Travel (HMS)').parentElement as HTMLElement;
-    fireEvent.click(within(chip).getByRole('button', { name: 'Clear' }));
-    expect(seen.latest?.staffHeader.party).toBeUndefined();
-    expect(seen.latest?.staffHeader.company).toBe('Acme Travel');
+    expect(seen.latest?.staffHeader.parties?.agency).toBeUndefined();
   });
 
   it('says Nava, not Luna, in the picker hint and its search notes', async () => {
     const unavailable = async () => ({ outcome: 'external_system_unavailable' as const, results: [], truncated: false });
     render(<QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel' })} findParty={unavailable} />);
-    expect(screen.getByText(/Pick the exact company or agency so Nava can get their rate/)).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    expect(screen.getAllByText(/Pick the exact company or agency so Nava can get their rate/).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Find in HMS' })[0]!);
     expect(
       await screen.findByText("Nava couldn't check HMS for this name. Try again, or quote at public rates."),
     ).toBeDefined();

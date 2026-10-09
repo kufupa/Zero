@@ -13,6 +13,7 @@ import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
+import type { PartyFinder, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type {
   QueueStatus,
   QuoteOffer,
@@ -25,7 +26,6 @@ import type {
 } from '@/lib/quote-workflow/types';
 import { BookingCards } from './booking-card';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
-import type { PartyFinder } from '@/lib/quote-workflow/party-lookup';
 import { PartyPicker } from './party-picker';
 import { DocumentReview } from './document-review';
 import { HmsQueueStatusLine } from './hms-queue-status';
@@ -237,15 +237,25 @@ function withoutFieldErrors(
   return kept;
 }
 
+/** Editing a field away from its picked name drops that pick, so the quote never sends a party the text no longer names. */
+function pickClearedBy(kind: 'company' | 'agency', header: StaffQuoteHeader, text: string): Partial<StaffQuoteHeader> {
+  const picked = header.parties?.[kind];
+  if (!picked || text === picked.name) return {};
+  return { parties: { ...header.parties, [kind]: undefined } };
+}
+
 function StaffHeaderFields({
   header,
   onPatch,
   findParty,
+  partySuggestions,
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
-  /** HMS party search for the Find in HMS picker. Null or absent: no picker, and the header stays plain text. */
+  /** Find in HMS. Null or absent keeps the company and agency as plain text, as before. */
   findParty?: PartyFinder | null;
+  /** Suggestions from the email, for staff to confirm. The pane computes them; nothing is picked by itself. */
+  partySuggestions?: PartySuggestion[];
 }) {
   // An amount with no label is not dropped: the label is required and the quote raises a review item for it.
   const otherNeedsLabel = Boolean(header.other?.amountMinor) && !header.other?.label?.trim();
@@ -258,6 +268,38 @@ function StaffHeaderFields({
     else delete next[field];
     onPatch?.({ fieldErrors: next });
   };
+  // Each field's picker searches that field's own text and holds only that kind: its results, its pick and its suggestions.
+  // HOOK(#84, not on main): the HMS typeahead's onSearchName lands on the onSearchName prop below.
+  const partyPicker = (kind: 'company' | 'agency') =>
+    findParty ? (
+      <PartyPicker
+        kind={kind}
+        name={kind === 'company' ? header.company : header.agency}
+        parties={header.parties ?? {}}
+        find={findParty}
+        suggestions={partySuggestions}
+        onPick={(party) =>
+          onPatch?.({
+            parties:
+              party.kind === 'company'
+                ? { ...header.parties, company: party }
+                : { ...header.parties, agency: party },
+            ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
+          })
+        }
+        onClear={(cleared) =>
+          onPatch?.({
+            parties:
+              cleared === 'company'
+                ? { ...header.parties, company: undefined }
+                : { ...header.parties, agency: undefined },
+          })
+        }
+        onSearchName={(searched, searchKind) =>
+          onPatch?.(searchKind === 'company' ? { company: searched } : { agency: searched })
+        }
+      />
+    ) : null;
   return (
     <section className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
       <h3 className="text-xs font-bold uppercase tracking-wider text-[#475569]">Quote header</h3>
@@ -285,15 +327,11 @@ function StaffHeaderFields({
           className={fieldClass}
           value={header.company}
           onChange={(event) =>
-            onPatch?.({
-              company: event.target.value,
-              // Editing the company away from a picked company drops that pick,
-              // so the quote never sends a party the text does not name.
-              ...(header.party?.kind === 'company' && event.target.value !== header.party.name ? { party: undefined } : {}),
-            })
+            onPatch?.({ company: event.target.value, ...pickClearedBy('company', header, event.target.value) })
           }
         />
       </label>
+      {partyPicker('company')}
       <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Agency
         <input
@@ -301,32 +339,11 @@ function StaffHeaderFields({
           className={fieldClass}
           value={header.agency}
           onChange={(event) =>
-            onPatch?.({
-              agency: event.target.value,
-              ...(header.party?.kind === 'agency' && event.target.value !== header.party.name ? { party: undefined } : {}),
-            })
+            onPatch?.({ agency: event.target.value, ...pickClearedBy('agency', header, event.target.value) })
           }
         />
       </label>
-      {/*
-        One picker under Agency for both kinds.
-        HOOK(#79, not on main): #79 gives company and agency one picker each, on header.parties. This one goes.
-        HOOK(#84, not on main): the HMS typeahead's onSearchName lands on PartyPicker.
-      */}
-      {findParty ? (
-        <PartyPicker
-          name={header.company.trim() || header.agency.trim()}
-          party={header.party}
-          find={findParty}
-          onPick={(party) =>
-            onPatch?.({
-              party,
-              ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
-            })
-          }
-          onClear={() => onPatch?.({ party: undefined })}
-        />
-      ) : null}
+      {partyPicker('agency')}
       <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
         Attention
         <input
@@ -725,10 +742,12 @@ export function QuoteWorkflowPanel({
   hmsQueue,
   onLoadRunScreenshot,
   paneSave,
+  partySuggestions,
 }: {
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
   paneSave?: PaneStayClient | null;
+  partySuggestions?: PartySuggestion[];
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onRunNext?: () => void;
   onRunStep?: (stepId: string) => void;
@@ -849,6 +868,7 @@ export function QuoteWorkflowPanel({
           header={session.staffHeader ?? emptyStaffQuoteHeader()}
           onPatch={onPatchStaffHeader}
           findParty={findParty}
+          partySuggestions={partySuggestions}
         />
       ) : null}
       {showWorkspace ? (

@@ -1,87 +1,69 @@
-# v8 party picker: wiring notes
+# v8 party picker and contract rates: wiring notes
 
-Branch `feat/v8-party` supersedes PR #48 (`origin/feat/luna-v5-b`). It ports the party search and fixes the runner. It
-does not touch `outlook-pane/page.tsx`, `quote-workflow-panel.tsx`, `session.ts` or `staff-quote-workflow.ts`, which other
-lanes are editing. Until the wiring below lands, the picker is not shown and no quote sends a `party`.
+Branches: `feat/v8-party` (PR #61) ports the party search and the runner fixes. `feat/v8-party-rates` (stacked on #61)
+adds the quote path, the panel header and the suggestions. This file lives on `feat/v8-party-rates`.
 
-## 1. Ready on this branch (no wiring needed)
+## 1. What is wired now
 
-- Server route `panePartyLookup.findParty` takes `{ name }` (strict). It returns
-  `{ outcome, results: [{ kind: 'company'|'agency', nativeId, name }], truncated }`. It runs one HMS lookup per kind
-  (company, then agency) under the property lock, and merges them. Refused under `QUOTE_RATE_CONTEXT=off`.
-- `apps/mail/lib/quote-workflow/party-lookup.ts`: `partyFinderFromTrpc(trpcClient)` returns a `PartyFinder`
-  `(name) => Promise<PartyFindReply>`, or null when the route is missing. Also `partyNoCandidateNote`,
-  `PARTY_TRUNCATED_NOTE`, `partyChipText`, `partyKindLabel`.
-- `apps/mail/components/quote-workflow/party-picker.tsx`: `PartyPicker({ name, party, find, onPick, onClear })`. One
-  Find in HMS button covers both kinds. Each candidate shows its kind. A picked party shows as a chip with Clear.
-- `apps/mail/lib/quote-workflow/types.ts`: `StaffQuoteParty`, and `StaffQuoteHeader.party?`. An absent party means
-  public rates, as before.
-- `apps/mail/lib/quote-workflow/staff-quote-bind.ts`: `ExecuteStaffQuoteInput.party?`. The bind sends `party` only when
-  `header.party` is set.
-- `apps/server-pilot/src/ai/quote-rate-switch.ts`: `quoteRateContextEnabled()`. It moved out of `staff-quote-workflow.ts`,
-  which #48 imported it from.
-- `apps/server-pilot/src/ai/reservationist-business-services.ts`: from #48. It reads `staffApproval.rates`. When that is
-  absent, party lookup runs as it did before.
-- `apps/mail/lib/trpc-request-timeout.ts`: 6 minutes for `panePartyLookup.findParty`.
-- `apps/server-pilot/src/ai/party-aliases.ts`: `suggestPartyFromSender(sender)` and `extractPartyMentions(body)`. Not
-  called anywhere yet.
+- Panel header (`quote-workflow-panel.tsx`): when `findParty` is passed to `QuoteWorkflowPanel`, a `PartyPicker` shows
+  under each field. The Company picker searches the Company text and holds only companies; the Agency picker searches the
+  Agency text and holds only agencies. Each keeps its own results, pick and suggestions, and a pick sets `header.parties`
+  and its field's name. Editing a field away from its picked name drops that pick. Without `findParty` the header stays
+  plain text.
+- Quote path (`staff-quote-workflow.ts`, `workstation.ts`): `staffQuoteInput.parties` (company and/or agency, plain HMS
+  ids). The route re-checks each picked id in HMS before the quote lock (`verifyPartyPick`). A pick HMS does not return
+  is refused. With `QUOTE_RATE_CONTEXT=off` nothing is looked up and the quote is public, with a review note.
+- Rate context: `partyRateContext` sends `organization` for a company and `agency` for an agency, both when both are picked.
+  Nothing else (no commission, no A/R account) reaches the request.
+- Contract rows: `partyContractChoice` (business services) offers only HMS-flagged rows (`rateScope === 'contextual'`,
+  from `isNegotiatedRate`). With none flagged it offers the public BAR rows. Rate names never decide.
+- No contract: `partyContractReviewNote` adds "No contract rate found for <party>; this quote uses our best available
+  rate." to the review items. A fallback to public rates after an HMS pricing failure gets its own note.
+- Suggestions: `panePartyLookup.suggest({ sender, body })` (read-only) returns sender-alias and body-name suggestions.
+  Only a listed alias id is attached. A body name never has an id.
 
-## 2. Wiring for `outlook-pane/page.tsx` and `quote-workflow-panel.tsx`
+## 2. Still to wire (`outlook-pane/page.tsx`, not edited here)
 
-Source for the #48 versions: `git show origin/feat/luna-v5-b -- <file>` (diffs from merge-base 0fe5c894).
+The page owns the tRPC client and the selected email, so it must:
 
-1. `page.tsx`: import `partyFinderFromTrpc` from `@/lib/quote-workflow/party-lookup`. At module scope, next to
-   `PANE_STAY_CLIENT`, add `const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);`. Pass
-   `findParty={PANE_PARTY_FINDER}` to `<QuoteWorkflowPanel>`.
-2. `quote-workflow-panel.tsx`:
-   - Add a `findParty?: PartyFinder | null` prop to `QuoteWorkflowPanel` and to `StaffHeaderFields`. Pass it through.
-   - Render ONE `<PartyPicker>` (#48 used two, one per field, and that no longer applies). Put it under the Agency
-     field. Props: `name={header.company.trim() || header.agency.trim()}`, `party={header.party}`, `find={findParty}`,
-     `onPick={(party) => onPatch?.({ party, ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }) })}`,
-     `onClear={() => onPatch?.({ party: undefined })}`.
-   - On the Company and Agency `onChange`, drop the pick when the typed text no longer equals `party.name`. #48 did this
-     per field: `...(header.party && header.party.kind === 'company' && value !== header.party.name ? { party: undefined } : {})`.
-   - Render the picker only when `findParty` is non-null. Otherwise the header stays plain text.
+1. Bind the finder once at module scope, next to `PANE_STAY_CLIENT`:
+   `const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);` and pass `findParty={PANE_PARTY_FINDER}` to
+   `<QuoteWorkflowPanel>`.
+2. When the selected email changes, call `partySuggesterFromTrpc(trpcClient)?.({ sender, body })` and keep the result as
+   `partySuggestions` (`reply.suggestions`). Pass it to `<QuoteWorkflowPanel partySuggestions={...}>`. Do not pick
+   anything from the result: staff click "Use" for a listed id, or search an unverified name.
 
-## 3. Quote path: needed before a picked party changes any quote
+## 3. Contract to keep (for the wiring lane and reviewers)
 
-Not on this branch. These sit in `staff-quote-workflow.ts` and `workstation.ts`, which are out of bounds for this lane.
-Source: `git show origin/feat/luna-v5-b -- apps/server-pilot/src/ai/staff-quote-workflow.ts` (+89 lines) and the
-`executeStaffQuote` hunk in `apps/server-pilot/src/trpc/routes/workstation.ts`.
+- A picked id is always re-checked. `verifyPartyPick` binds HMS's own id and name. The quote validator compares the
+  name HMS reports, so the client's text never decides it.
+- Both ids go in one request. The Rate Shop applies organization and agency together.
+- Contract = `rateScope 'contextual'` only. A row named after the party but not flagged (for example NGD10B "Woolworths"
+  for org #49) is never offered as a contract, however cheap.
+- The public rows (`BAR`, `BARRO`) are offered only when no row is flagged.
+- Rates change nothing else: commission and A/R are not read or written by the quote.
 
-- `staffQuoteInput` is `.strict()`. Add `party: z.object({ kind: z.enum(['agency','company']), nativeId: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/), name: z.string().min(1).max(256) }).strict().optional()`.
-  Without it, the bind's `party` key is rejected. That only happens once a party is picked.
-- Import `quoteRateContextEnabled` from `./quote-rate-switch.js`, not from the workflow file.
-- Add the rate-context helpers: `StaffQuoteRates`, `partyRateContext`, `isPartyRateFailure`, `partyRateFallbackNote`,
-  `quoteWithPartyFallback`, and `prepareStaffQuote(..., rates = 'party')`. Its approval object sets `rates`.
-- `workstation.ts` `executeStaffQuote`: wrap the quote in `quoteWithPartyFallback` and carry its `note` into
-  `extrasReviewItems`. This hunk does not compile without the helpers above, so it was not ported.
+## 4. Live checks (Opus lane)
 
-## 4. Session
+- Org #49 (Woolworths): flagged rows BCO1B and NCOR2B. Agency #569: flagged WSF2B and BWS2B. Agencies #113, #290 and #27
+  have no flagged rows, so their quotes price BAR with the note.
+- Confirm the picked-id re-check and the Rate Shop criteria read back both `organizationID` and `travelAgencyID`.
+- The "New Record" click in `party-lookup.mjs` predates this work; check it on the live form.
 
-`patch_staff_header` already merges any header field, so `party` passes through. `emptyStaffQuoteHeader()` has no
-`party` key. `session.ts` needs no change for the picker.
+## 5. Changes from #48 (for the wiring lane)
 
-## 5. Contract changes from #48 (for the wiring lane)
-
-- `findParty` input: `{ name }`. There is no `kind`. The reply uses `results[].name`, not `displayName`. There is a new
-  `truncated` flag.
-- `PartyPicker` props: no `kind`. The copy says "about a minute", because the search runs two HMS lookups.
-- Runner output (`party-lookup.mjs`) keeps `candidates[].displayName`, because `quote-contract.mjs`, the agent
-  `party_lookup` tool and `staff-quote-installation.ts` read it. It adds a `truncated` boolean. The schema is updated.
-- A filter that did not reach the HMS window now returns `execution_failure` with
-  `issues[].reason = 'filter_not_applied'`. Before, the unfiltered grid could come back as `no_match`.
-  `staff-quote-installation.ts` calls `lookupParty` in-process and throws `staff_quote_party_invalid` for any outcome
-  other than `resolved`, `ambiguous` or `no_match`. That code is in #48's `PARTY_RATE_FAILURE_CODES`, so once section 3
-  lands, a picked party falls back to public rates with a review note. Before this change, a filter miss could read as
-  `no_match` and quote at BAR with no party.
+- `StaffQuoteHeader.party` is gone. It is `parties?: { company?, agency? }`. The bind sends `parties` only when a pick
+  with a plain HMS id exists, so an unverified suggestion is never sent.
+- `PartyPicker` props: `name`, `parties`, `find`, `onPick`, `onClear(kind)`, `suggestions?`, `onSearchName?(name, kind)`.
+- `findParty` input is `{ name }`. The reply is `results[].{kind,nativeId,name}` plus `truncated`.
+- Options carry `rateScope` (`public` | `contextual` | `unknown`). Fixture options in
+  `reservationist-business-services.test.ts` now carry it, as the runner emits it.
+- `StaffQuoteInput.parties` is `.strict()` at both levels. A stale client that still sends `party` is rejected, by design.
 
 ## 6. Open items
 
-- Live HMS checks are for Opus. The runner's DOM flow changed in three places: the filter is read back before Run, every
-  kind waits for the store, and a 50-row store is marked truncated.
-- Sender aliases: nothing calls `suggestPartyFromSender` or `extractPartyMentions` yet. Wire them as a text hint that
-  pre-fills the query. Never set `party` from an alias. Only the aliases with `idStatus: 'listed'` carry an HMS id. The
-  rest have `nativeId: null` and need Find in HMS.
-- Listed ids in `party-aliases.ts`: CWT JNB 290, Nexus 27, 360 degrees Travel 113, Tourvest 206. The others are
-  unverified.
+- A filter read-back, a settled grid and the row check are proven only against a fake page. The live run confirms them.
+- The kill switch gates the quote path now. The header still shows Find in HMS when the switch is off, and the picker
+  says rates are not checked.
+- Lookup timeouts: the per-run bound is 150 s, two runs per search. A re-check at quote time adds one more run per picked
+  kind, inside the 20 min quote deadline.

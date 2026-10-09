@@ -7,6 +7,7 @@ import type {RevisionProposalHeader} from '../quote-proposal/proposal-pdf.js';
 import {resolveReservationistAcceptedQuoteSource,type ReservationistAcceptedQuoteSource} from './reservationist-accepted-quote-source.js';
 import {ReservationistTaskEvidenceUnavailable,deriveStaffAnswerTopics,type ReservationistExecutionServices} from './reservationist-execution.js';
 import {isReservationistSignatureNoise} from './reservationist-attachment-input.js';
+import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partyReadingOf} from './party-rate-failure.js';
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
 export type NativeQuoteRequest=QuoteSourceRecord['request']&{search:{includeRestricted:false;includeAlternatives:false;salesStrategy:'Government'|'Preset'|'BAR'};details:'full';maxOptionsPerGroup:number};
 export type ReservationistPartyRead={ref:string;sha256:string;observedAt:string;kind:'organization'|'bookingAgency';query:string;outcome:'resolved'|'ambiguous'|'no_match';candidates:{nativeId:string;displayName:string;kind:string}[]};
@@ -61,6 +62,21 @@ export function deriveReservationistProposalHeader(ctx:Context,signer:Pick<Revis
  const parties=ctx.facts.filter(f=>f.kind==='party'&&f.verification==='text_verified'&&f.disclosure==='guest').map(f=>f.value as string),agency=parties.find(p=>/\b(?:travel|tours|tourism|agency)\b/i.test(p))??'',company=parties.find(p=>p!==agency)??'';
  return{attention:'',company,agency,clientEmail:'',clientTelephone:'',...signer};
 }
+/**
+ * A quote for picked parties offers only the rows HMS flags as negotiated (rateScope 'contextual', from isNegotiatedRate).
+ * With none flagged it offers the public BAR rows. Rate names never decide: a plan named after the party is offered only
+ * when HMS flags it. Without a party context the options pass through unchanged.
+ */
+export function partyContractChoice<O extends { rateScope?: string }>(
+  rateContext: Record<string, unknown> | undefined,
+  options: readonly O[],
+): O[] {
+  if (!rateContext || !Object.keys(rateContext).length) return [...options];
+  const contract = options.filter((option) => option.rateScope === 'contextual');
+  if (contract.length) return contract;
+  return options.filter((option) => option.rateScope === 'public');
+}
+
 /** Pick a requested qualified option by exact total cents; unqualified alternatives never win. */
 export function selectReservationistQuoteOptions(source:QuoteSourceRecord):{sourceRef:string;groupId:string;optionId:string}[]{
  return selectQuoteOptions(source,false);
@@ -68,7 +84,7 @@ export function selectReservationistQuoteOptions(source:QuoteSourceRecord):{sour
 function quoteOptionCandidates(source:QuoteSourceRecord){
  if(!source.request.rooms.length||source.request.rooms.length>64||new Set(source.request.rooms.map(r=>r.id)).size!==source.request.rooms.length||source.result.groups.length!==source.request.rooms.length||new Set(source.result.groups.map(g=>g.id)).size!==source.result.groups.length)missing('business_selected_scope_unavailable',['all requested room groups']);
  const dates=occupiedDates(source.request.arrivalDate,source.request.departureDate);
- const candidates=source.request.rooms.map(request=>{const group=source.result.groups.find(g=>g.id===request.id);if(!group||group.options.length>50||quoteDigest(group.request)!==quoteDigest(request)||group.completeness.search!=='complete'||group.completeness.requiredFacts!=='complete')missing('business_selected_scope_unavailable',['complete bounded native room source']);const qualified=group.options.filter(o=>o.eligibility==='verified'&&o.availability==='available'&&o.matchStatus==='match'&&o.held===false&&!!boards[norm(o.board??'')]&&Object.entries(source.request.rateContext??{}).every(([kind,wanted])=>{const got=(o.appliedContext as Record<string,{id?:string;code?:string;name?:string}>|undefined)?.[kind],ref=wanted as {nativeId?:string;code?:string;name?:string};return got&&(!ref.nativeId||String(got.id)===String(ref.nativeId))&&(!ref.code||got.code===ref.code)&&(!ref.name||got.name===ref.name);})&&(!request.required?.roomCodes||request.required.roomCodes.includes(o.room.code))&&(!request.required?.rateCodes||request.required.rateCodes.includes(o.rate.code))&&(!request.required?.boardBases||request.required.boardBases.includes(boards[norm(o.board??'')]))&&o.nightly.length===dates.length&&new Set(o.nightly.map(n=>n.date)).size===dates.length&&o.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory>=request.quantity&&exactMinor(n.price.amount)>0&&n.price.currency===source.request.requestedCurrency));
+ const candidates=source.request.rooms.map(request=>{const group=source.result.groups.find(g=>g.id===request.id);if(!group||group.options.length>50||quoteDigest(group.request)!==quoteDigest(request)||group.completeness.search!=='complete'||group.completeness.requiredFacts!=='complete')missing('business_selected_scope_unavailable',['complete bounded native room source']);const qualified=partyContractChoice(source.request.rateContext,group.options.filter(o=>o.eligibility==='verified'&&o.availability==='available'&&o.matchStatus==='match'&&o.held===false&&!!boards[norm(o.board??'')]&&Object.entries(source.request.rateContext??{}).every(([kind,wanted])=>{const got=(o.appliedContext as Record<string,{id?:string;code?:string;name?:string}>|undefined)?.[kind],ref=wanted as {nativeId?:string;code?:string;name?:string};return got&&(!ref.nativeId||String(got.id)===String(ref.nativeId))&&(!ref.code||got.code===ref.code)&&(!ref.name||got.name===ref.name);})&&(!request.required?.roomCodes||request.required.roomCodes.includes(o.room.code))&&(!request.required?.rateCodes||request.required.rateCodes.includes(o.rate.code))&&(!request.required?.boardBases||request.required.boardBases.includes(boards[norm(o.board??'')]))&&o.nightly.length===dates.length&&new Set(o.nightly.map(n=>n.date)).size===dates.length&&o.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory>=request.quantity&&exactMinor(n.price.amount)>0&&n.price.currency===source.request.requestedCurrency)));
  const totals=qualified.map(o=>({o,total:o.nightly.reduce((sum,n)=>sum+exactMinor(n.price.amount),0)*request.quantity})).filter(v=>Number.isSafeInteger(v.total)&&v.total>0).sort((a,b)=>a.total-b.total||a.o.id.localeCompare(b.o.id));if(!totals.length)missing('business_selected_price_unavailable',['qualified available option covering every requested room-night']);return{request,totals};});
  return candidates;
 }
@@ -98,8 +114,8 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  // Server-only admission: staff corrections are not relabelled as extracted mail facts.
  const staffDigest=staffApproval?quoteDigest({input:staffApproval.context.input,task:staffApproval.context.task,facts:staffApproval.context.facts,request:staffApproval.request,header:staffApproval.header}):null;
  const approved=(ctx:Context)=>{if(!staffApproval)return false;if(ctx!==staffApproval.context||ctx.task.kind!=='quote'||staffDigest!==quoteDigest({input:ctx.input,task:ctx.task,facts:ctx.facts,request:staffApproval.request,header:staffApproval.header}))throw new Error('staff_quote_approval_changed');return true;};
- // A staff quote at public rates looks up no party. A party the staff picked in HMS is bound by its native id below.
- const partyLookup=staffApproval?.rates!=='public';
+  // A staff quote never looks a party up by name. The parties the staff picked in HMS arrive as native ids in the
+  // approved request, verified before the lock. A typed company or agency is text for the PDF only.
  const internallyScopedRateExamples=new WeakSet<object>();
  const revisions=new Map<string,Set<string>>(),observations=new Map<string,QuoteSourceRecord>(),claimSources=new Map<string,{contextDigest:string;source:QuoteSourceRecord}>(),maxAge=options.maxSourceAgeMs??15*60000;
  const observationContextDigest=(ctx:Context)=>quoteDigest({requestId:ctx.input.requestId,scope:ctx.input.authorizationScope,propertyCode:ctx.input.propertyCode,trigger:ctx.input.trigger,messages:ctx.input.messages,causalAt:ctx.input.clock.causalAt});
@@ -116,7 +132,7 @@ export function createReservationistBusinessServices(options:{authorizationId:st
   if(offers.length>5)missing('business_quote_alternatives_bound_unavailable',['at most five independently qualified selected alternatives']);
   return{...offers[0]!,alternatives:offers.slice(1)};
  }
- const request=approved(ctx)?structuredClone(staffApproval!.request):deriveReservationistQuoteRequest(ctx),header=approved(ctx)?structuredClone(staffApproval!.header):deriveReservationistProposalHeader(ctx,options.signer);if(partyLookup&&staffApproval&&(header.company||header.agency)&&!options.readParty)missing('business_party_lookup_unavailable',['native party lookup']);if(partyLookup&&options.readParty){for(const [kind,name]of [['organization',header.company],['bookingAgency',header.agency]] as const){if(!name||(staffApproval&&request.rateContext?.[kind==='bookingAgency'?'agency':'organization']))continue;const party=await options.readParty(kind,name,ctx.signal);const partyAt=ctx.evaluateSourceAt?.()??ctx.input.clock.sourceAt;await guard(ctx);if(party.kind!==kind||party.query!==name||!/^[a-f0-9]{64}$/.test(party.sha256)||!party.ref||!['resolved','ambiguous','no_match'].includes(party.outcome)||!Number.isFinite(Date.parse(party.observedAt))||Date.parse(party.observedAt)>Date.parse(partyAt)||Date.parse(partyAt)-Date.parse(party.observedAt)>maxAge||party.candidates.some(p=>!p.nativeId||!p.displayName||p.kind!==kind))throw new Error('business_party_source_unbound');if(party.outcome==='resolved'&&party.candidates.length===1&&nativePartyLabelMatches(name,party.candidates[0]!.displayName)){request.rateContext??={};request.rateContext[kind==='bookingAgency'?'agency':'organization']={nativeId:party.candidates[0]!.nativeId,name:party.candidates[0]!.displayName};}else if(!(kind==='organization'&&party.outcome==='no_match'&&party.candidates.length===0&&(request.search.salesStrategy==='Government'||ctx.task.kind==='quote'&&request.search.salesStrategy==='BAR')))missing('business_party_identity_unavailable',['unique exact native party identity']);}}
+ const request=approved(ctx)?structuredClone(staffApproval!.request):deriveReservationistQuoteRequest(ctx),header=approved(ctx)?structuredClone(staffApproval!.header):deriveReservationistProposalHeader(ctx,options.signer);if(!staffApproval&&options.readParty){for(const [kind,name]of [['organization',header.company],['bookingAgency',header.agency]] as const){if(!name)continue;const party=await options.readParty(kind,name,ctx.signal);const partyAt=ctx.evaluateSourceAt?.()??ctx.input.clock.sourceAt;await guard(ctx);if(party.kind!==kind||party.query!==name||!/^[a-f0-9]{64}$/.test(party.sha256)||!party.ref||!['resolved','ambiguous','no_match'].includes(party.outcome)||!Number.isFinite(Date.parse(party.observedAt))||Date.parse(party.observedAt)>Date.parse(partyAt)||Date.parse(partyAt)-Date.parse(party.observedAt)>maxAge||party.candidates.some(p=>!p.nativeId||!p.displayName||p.kind!==kind))throw new Error('business_party_source_unbound');if(party.outcome==='resolved'&&party.candidates.length===1&&nativePartyLabelMatches(name,party.candidates[0]!.displayName)){request.rateContext??={};request.rateContext[kind==='bookingAgency'?'agency':'organization']={nativeId:party.candidates[0]!.nativeId,name:party.candidates[0]!.displayName};}else if(!(kind==='organization'&&party.outcome==='no_match'&&party.candidates.length===0&&(request.search.salesStrategy==='Government'||ctx.task.kind==='quote'&&request.search.salesStrategy==='BAR')))missing('business_party_identity_unavailable',['unique exact native party identity']);}}
  // Native Preset search requires an exact resolved party; public requests use BAR.
  if(request.search.salesStrategy!=='Government'&&request.rateContext)request.search.salesStrategy='Preset';
  const normalize=await import(pathToFileURL(fileURLToPath(new URL('../../tooling/playwright-quote/quote-contract.mjs',import.meta.url))).href) as {normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request:QuoteSourceRecord['request']}};
@@ -133,7 +149,10 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  const searchRequest={...request,details:'summary'},summary=await readBound(searchRequest);observations.set(observationContextDigest(ctx),structuredClone(summary.source));
  const alternativeRequest=staffApproval?false:requestedQuoteAlternatives(ctx);
  if(alternativeRequest&&request.rooms.length!==1)missing('business_quote_alternatives_scope_unavailable',['independently scoped alternatives for each requested room allocation']);
+ if(staffApproval&&partyReadingOf(summary.source.result.groups,request.rateContext)==='incomplete')throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
  const candidates=quoteOptionCandidates(summary.source);
+ // A staff quote with picked parties needs an HMS-flagged row for every requested room. Without one, the quote retries at public rates.
+ if(staffApproval&&request.rateContext&&!candidates.every(c=>c.totals.some(v=>v.o.rateScope==='contextual')))throw new PartyRateFailure(PARTY_NO_CONTRACT_CODE);
  // Price the cheapest qualified room for each observed board, as separate selected alternatives.
  // Remaining room labels are current observations, never individually priced promises.
  const byPair=new Map<string,(typeof candidates)[number]['totals'][number]>();

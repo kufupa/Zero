@@ -243,3 +243,48 @@ export async function findParty(input: PanePartyFindInput): Promise<PanePartyFin
   }
   return mergePartyKindResults(perKind, name);
 }
+
+export type VerifiedPartyResult =
+  | { ok: true; party: { kind: PanePartyKind; nativeId: string; name: string } }
+  | {
+      ok: false;
+      reason: 'refused_flag_off' | 'refused_lock_busy' | 'refused_lock_unavailable' | 'not_found' | 'unverified';
+    };
+
+function sameHmsName(left: string, right: string): boolean {
+  const key = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase();
+  return key(left) === key(right);
+}
+
+/**
+ * Re-checks a company or agency the pane sent, before any rate is bound to it. The server looks the name up in HMS of
+ * the same kind, and binds only a row with the same HMS id and the same name. The name bound is HMS's own, so the quote
+ * validator sees the name HMS reports. A client-sent id that HMS does not return is refused.
+ */
+export async function verifyPartyPick(pick: {
+  kind: PanePartyKind;
+  nativeId: string;
+  name: string;
+}): Promise<VerifiedPartyResult> {
+  const enabled = panePartyLookupLoaders.enabled ?? (() => quoteRateContextEnabled());
+  if (!enabled()) return { ok: false, reason: 'refused_flag_off' };
+  const name = typeof pick.name === 'string' ? pick.name.trim() : '';
+  if (!name || name.length > 256 || !pick.nativeId) return { ok: false, reason: 'not_found' };
+  const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
+  if (!lock) return { ok: false, reason: 'refused_lock_unavailable' };
+  const spawn = panePartyLookupLoaders.spawn ?? defaultSpawn;
+  let raw: unknown;
+  try {
+    raw = await lock.withLock(() => spawn({ kind: pick.kind, name }), acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+  } catch (error) {
+    if (isPropertyReadLockDeadline(error)) return { ok: false, reason: 'refused_lock_busy' };
+    warnPaneStaySpawnFailed('party', error);
+    return { ok: false, reason: 'unverified' };
+  }
+  const found = panePartyFindResultFromCli(pick.kind, raw);
+  const row = found.results.find(
+    (candidate) => candidate.kind === pick.kind && candidate.nativeId === pick.nativeId && sameHmsName(candidate.name, name),
+  );
+  if (!row) return { ok: false, reason: found.outcome === 'execution_failure' ? 'unverified' : 'not_found' };
+  return { ok: true, party: { kind: row.kind, nativeId: row.nativeId, name: row.name } };
+}

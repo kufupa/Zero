@@ -22,6 +22,8 @@ export type NativeOption = {
   rate: { code: string; label: string; bundleLabels?: {code?:string;label:string}[] };
   board: string | null;
   appliedContext: Record<string, unknown>;
+  /** From the Rate Shop read: 'contextual' only for a row HMS flags as negotiated (isNegotiatedRate). */
+  rateScope?: 'public' | 'contextual' | 'unknown';
   eligibility: string;
   availability: string;
   matchStatus: string;
