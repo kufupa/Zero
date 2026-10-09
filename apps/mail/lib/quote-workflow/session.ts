@@ -755,13 +755,27 @@ export function removedStayFor(session: QuoteSession, stayId: string): RemovedSt
   const rows = session.groups.filter((group) => stayIdOf(group) === stayId);
   if (!rows.length) return null;
   const keys = dateKeysOf(rows);
+  const groupIds = new Set(session.groups.filter((group) => keys.has(stayKeyForGroup(group))).map((group) => group.id));
+  const selected = Boolean(session.selectedStayKey && keys.has(session.selectedStayKey));
   return {
+    admission: session.binding ? admissionKey(session.binding) : null,
     rows,
     index: session.groups.findIndex((group) => stayIdOf(group) === stayId),
     inputRevision: session.inputRevision,
     staffQuotes: keepKeys(session.staffQuotes, keys, true),
     stayPdfs: keepKeys(session.stayPdfs, keys, true),
     offers: session.offers.filter((offer) => keys.has(offer.quoteRequestKey)),
+    rateOptions: (session.rateOptions ?? []).filter((option) => groupIds.has(option.groupId)),
+    evidence: session.evidence,
+    selection: selected
+      ? {
+          phase: session.phase,
+          selectedStayKey: session.selectedStayKey,
+          selectedOfferIds: session.selectedOfferIds,
+          staffQuote: session.staffQuote,
+          pdf: session.pdf,
+        }
+      : null,
   };
 }
 
@@ -1013,6 +1027,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     }
     case 'staff_quote_ready': {
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) return session;
+      if (action.stayRevision !== undefined && action.stayRevision !== session.stayRevision) return session;
       const source = session.staffSource;
       if (!source || source.sourceHash !== action.staffQuote.sourceHash) return session;
       if (source.messageId !== action.staffQuote.messageId) return session;
@@ -1074,6 +1089,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (!requestMatchesCurrent(session, action.payload.selectionEpoch, action.payload.inputRevision)) {
         return session;
       }
+      if (action.stayRevision !== undefined && action.stayRevision !== session.stayRevision) return session;
       const source = session.staffSource;
       if (!source || source.sourceHash !== action.sourceHash) return session;
       if (source.messageId !== action.payload.messageId) return session;
@@ -1183,6 +1199,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     }
     case 'restore_stay': {
       const { removal } = action;
+      // Undo belongs to the email the stay was removed from. Staff may have moved on before tapping it.
+      if ((session.binding ? admissionKey(session.binding) : null) !== removal.admission) return session;
       if (session.groups.some((group) => removal.rows.some((row) => row.id === group.id))) return session;
       const at = Math.min(removal.index, session.groups.length);
       const groups = [...session.groups.slice(0, at), ...removal.rows, ...session.groups.slice(at)];
@@ -1191,14 +1209,34 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       // The rates were got under one input revision. They come back only if no edit has moved it since.
       if (restored.inputRevision !== removal.inputRevision) return restored;
       const staffQuotes = { ...restored.staffQuotes, ...removal.staffQuotes };
+      const offers = [
+        ...restored.offers,
+        ...removal.offers.filter((offer) => !restored.offers.some((item) => item.id === offer.id)),
+      ];
+      const groupIds = new Set(groups.map((group) => group.id));
+      const rateOptions = [
+        ...(restored.rateOptions ?? []),
+        ...removal.rateOptions.filter(
+          (option) =>
+            groupIds.has(option.groupId) && !(restored.rateOptions ?? []).some((item) => item.id === option.id),
+        ),
+      ];
+      // The stay was the selected one and nothing has been selected since: its selection and PDF come back too.
+      const selection = removal.selection && !restored.staffQuote ? removal.selection : null;
       return {
         ...restored,
+        ...(selection
+          ? {
+              ...selection,
+              selectedOfferIds: selection.selectedOfferIds.filter((id) => offers.some((offer) => offer.id === id)),
+            }
+          : {}),
         staffQuotes,
         stayPdfs: { ...restored.stayPdfs, ...removal.stayPdfs },
-        offers: [
-          ...restored.offers,
-          ...removal.offers.filter((offer) => !restored.offers.some((item) => item.id === offer.id)),
-        ],
+        offers,
+        rateOptions,
+        // The removal dropped the evidence only if it took the last result. Same revision, so it still holds.
+        evidence: restored.evidence ?? removal.evidence,
         steps: rePlanSteps(restored, groups, staffQuotes, keys),
       };
     }

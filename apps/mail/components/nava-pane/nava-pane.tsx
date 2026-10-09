@@ -354,6 +354,8 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     const staff = staffQuoteFromTrpc(trpcClient);
     const selectionEpoch = binding.selectionEpoch;
     const inputRevision = quoteSession.inputRevision;
+    // A stay edit does not always move inputRevision, so the result is also tied to the rows it read.
+    const stayRevision = quoteSession.stayRevision;
     const header = quoteSession.staffHeader;
     const groupId = quoteSession.groups[0]?.id;
     const quantity = quoteSession.groups[0]?.quantity;
@@ -446,9 +448,11 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
         },
         selectionEpoch,
         inputRevision,
+        stayRevision,
       });
       dispatchQuote({
         type: 'booking_draft_ready',
+        stayRevision,
         payload: {
           draft: prior.payload.draft,
           options: prior.payload.options,
@@ -652,6 +656,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     }
     const selectionEpoch = binding.selectionEpoch;
     const inputRevision = session.inputRevision;
+    const stayRevision = session.stayRevision;
     const staff = staffQuoteFromTrpc(trpcClient);
     void bindGetPriorStaffQuoteRequote({
       query: staff.workstation.getPriorStaffQuoteRequote?.query,
@@ -690,6 +695,8 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
           extrasReviewItems: remote.extrasReviewItems,
           approvedHeader: header,
           groups,
+          // The run replaces the rows with the ones it read. A stay edit since then must not be overwritten.
+          stayRevision,
         });
         for (const item of remote.extrasReviewItems) toast.warning(item);
         return bindPrepareBookingDraft({
@@ -713,6 +720,8 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
             type: 'booking_draft_ready',
             payload: draftRemote.payload,
             sourceHash: source.sourceHash,
+            // Applying the run's rows above moved stayRevision by one.
+            stayRevision: stayRevision + (groups.length ? 1 : 0),
           });
         });
       });
@@ -842,6 +851,8 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
             type: 'booking_draft_ready',
             payload: draftRemote.payload,
             sourceHash: source.sourceHash,
+            // The draft carries every row as the run read it. Any stay edit since makes it stale.
+            stayRevision: quoteSession.stayRevision,
           });
         });
       }

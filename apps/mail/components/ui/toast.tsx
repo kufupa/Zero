@@ -24,12 +24,13 @@ const Toaster = () => {
           title: 'title flex-1 justify-center text-white! text-sm leading-none',
           description: 'text-white/80! text-xs',
           toast: 'p-1',
+          // The toast is a dark pill, so its buttons carry their own light text and a visible focus ring.
           actionButton:
-            'inline-flex h-5 items-center justify-between mr-1 gap-1 overflow-hidden rounded-md! border px-1 text-xs dark:border-none bg-[#E0E0E0]! dark:bg-[#424242]! pointer-events-auto cursor-pointer',
+            'inline-flex h-6 items-center justify-between mr-1 gap-1 overflow-hidden rounded-full! px-2.5 text-xs font-semibold text-white! bg-white/15! hover:bg-white/25! focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white pointer-events-auto cursor-pointer',
           cancelButton:
-            'inline-flex h-5 items-center justify-between mr-1 gap-1 overflow-hidden rounded-md! border px-1 text-xs dark:border-none bg-[#E0E0E0]! dark:bg-[#424242]!',
+            'inline-flex h-6 items-center justify-between mr-1 gap-1 overflow-hidden rounded-full! px-2.5 text-xs text-white! bg-white/15! hover:bg-white/25! focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white',
           closeButton:
-            'inline-flex h-5 items-center justify-between mr-1 gap-1 overflow-hidden rounded-md! border px-1 text-xs dark:border-none bg-[#E0E0E0]! dark:bg-[#424242]!',
+            'inline-flex h-6 items-center justify-between mr-1 gap-1 overflow-hidden rounded-full! px-2.5 text-xs text-white! bg-white/15! hover:bg-white/25! focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white',
           loading: 'pl-3 -mr-3 loading',
           loader: 'pl-3 loader -mr-3',
           icon: 'pl-3 icon mr-2',
