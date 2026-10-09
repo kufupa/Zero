@@ -3,6 +3,7 @@ import {
   buildOrphanOutboundIndex,
   detectConversationSignals,
   isConversationResponded,
+  isNoReplyAddress,
   type ConversationMessage,
   type IndexableMessage,
 } from '../src/mail/conversation-signals.js';
@@ -646,5 +647,43 @@ describe('isConversationResponded', () => {
   it('is true when any conversation signal is present', () => {
     expect(isConversationResponded(['quoted_hotel_phrase'])).toBe(true);
     expect(isConversationResponded([])).toBe(false);
+  });
+});
+
+describe('isNoReplyAddress', () => {
+  it('flags automated and do-not-reply mailboxes, with or without a display name', () => {
+    for (const address of [
+      'notifications@travelit.example',
+      'Travelit <notifications@travelit.example>',
+      'noreply@example.test',
+      'no-reply@example.test',
+      'do-not-reply@example.test',
+      'No_Reply+bookings@example.test',
+      'noreply-reservations@example.test',
+      'mailer-daemon@example.test',
+      'postmaster@example.test',
+      'bounces@example.test',
+      'Notification@example.test',
+    ]) {
+      expect(isNoReplyAddress(address), address).toBe(true);
+    }
+  });
+
+  it('leaves a guest or a missing sender unflagged', () => {
+    for (const address of [
+      'alerts.travel@agency.example',
+      'systemsupport@hotel.example',
+      'Ops <notifications.team@agency.example>',
+      'reply@agency.example',
+      'bouncer@agency.example',
+      'noreply',
+    ]) {
+      expect(isNoReplyAddress(address), address).toBe(false);
+    }
+    expect(isNoReplyAddress('ada@example.test')).toBe(false);
+    expect(isNoReplyAddress('Ada Smith <ada.smith@example.test>')).toBe(false);
+    expect(isNoReplyAddress('')).toBe(false);
+    expect(isNoReplyAddress(null)).toBe(false);
+    expect(isNoReplyAddress(undefined)).toBe(false);
   });
 });

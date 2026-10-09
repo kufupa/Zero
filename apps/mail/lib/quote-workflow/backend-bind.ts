@@ -61,6 +61,7 @@ export type AnalyseSelectionResult =
       aiUnavailable?: boolean;
       luna?: LunaAnalysisWire | null;
       amendment?: QuoteAmendment | null;
+      noReplySender?: boolean;
     };
 
 export type RunStepRequest = {
@@ -150,6 +151,7 @@ export async function bindAnalyseSelection(args: {
         ...(result.aiUnavailable !== undefined ? { aiUnavailable: result.aiUnavailable } : {}),
         ...(result.luna !== undefined ? { luna: result.luna } : {}),
         ...(result.amendment !== undefined ? { amendment: result.amendment } : {}),
+        ...(result.noReplySender !== undefined ? { noReplySender: result.noReplySender } : {}),
       },
     };
   } catch (error) {

@@ -74,19 +74,23 @@ const STAFF_RESPONDER_MAP: Readonly<Record<string, string>> = {
   'hotels@legacyhotels.co.za': 'hotels_shared',
 };
 
-const SYSTEM_LOCALPART_HINTS = [
+/** Whole local parts of mailboxes nobody answers. Compared without separators, so do-not-reply and no_reply match. */
+const NO_REPLY_LOCALPARTS = [
   'noreply',
   'no-reply',
   'donotreply',
   'mailer-daemon',
   'postmaster',
   'bounce',
+  'bounces',
   'notification',
   'notifications',
-  'alert',
-  'alerts',
-  'system',
 ] as const;
+
+const SYSTEM_LOCALPART_HINTS = [...NO_REPLY_LOCALPARTS, 'alert', 'alerts', 'system'] as const;
+
+const compactLocalPart = (local: string): string => local.replace(/[-._]/g, '');
+const NO_REPLY_COMPACT = new Set<string>(NO_REPLY_LOCALPARTS.map(compactLocalPart));
 
 const CHANNEL_BODY_SUBJECT = [
   'confirmation letter',
@@ -138,6 +142,23 @@ function emailParts(addr: string): [local: string, domain: string] {
   if (!email.includes('@')) return ['', email];
   const at = email.lastIndexOf('@');
   return [email.slice(0, at), email.slice(at + 1)];
+}
+
+/**
+ * True when the sender is an automated mailbox staff cannot answer (noreply, notifications, bounce and the like).
+ * The pane hides Insert draft for these. The whole local part must match, less any +tag, so a guest mailbox that
+ * only contains such a word (alerts.travel@, systemsupport@) keeps Insert draft. noreply-… and donotreply-… also match.
+ */
+export function isNoReplyAddress(address: string | null | undefined): boolean {
+  if (!address) return false;
+  const [local, domain] = emailParts(address);
+  if (!domain) return false;
+  const compact = compactLocalPart(local.split('+')[0] ?? '');
+  return (
+    NO_REPLY_COMPACT.has(compact) ||
+    compact.startsWith('noreply') ||
+    compact.startsWith('donotreply')
+  );
 }
 
 function emailAddr(raw: string): string {

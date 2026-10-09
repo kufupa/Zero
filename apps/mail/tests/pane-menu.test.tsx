@@ -77,3 +77,23 @@ describe('PaneMenu keyboard', () => {
     );
   });
 });
+
+describe('PaneMenu on the webmail preview', () => {
+  it('leaves out the connection check and tour replay, which only the Outlook pane can run', async () => {
+    render(
+      <PaneMenu
+        buildRelease={null}
+        onCheckConnection={vi.fn()}
+        onRunSystemCheck={vi.fn()}
+        onReplayTour={vi.fn()}
+        preview
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: 'More' });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    expect(await screen.findByRole('menuitem', { name: 'Run system check' })).toBeDefined();
+    expect(screen.queryByRole('menuitem', { name: 'Check connection' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Replay tour' })).toBeNull();
+  });
+});

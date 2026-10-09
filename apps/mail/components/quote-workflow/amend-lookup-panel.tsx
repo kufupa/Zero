@@ -163,6 +163,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const stay: StayRecordWire | null = found?.stay ?? null;
   // The number the stay on screen was found under: the email's own, the -1 form, or a row picked from a search.
   const foundNumber = found && lookup ? lookup.confirmation : null;
+  // The one HMS handoff row copies the number HMS holds the booking under, else the number in the email.
+  const handoffNumber = foundNumber ?? confirmationNumber;
   const diff: AmendDiff = stay ? amendDiffs(amendment, stay) : {};
   const canLookUp = Boolean(key && threadId && lookupable);
   const searchStatus = search && key && search.key === key ? search.status : null;
@@ -252,7 +254,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           <AskRow
             label="Confirmation"
             value={amendment.confirmationNumber ?? 'Not in the email'}
-            actions={confirmationNumber ? <HmsLinkActions confirmation={confirmationNumber} /> : null}
+            actions={handoffNumber ? <HmsLinkActions confirmation={handoffNumber} /> : null}
           />
           <AskRow label="Guest last name" value={amendment.guestLastName ?? 'Not in the email'} />
           <AskRow label="Arrival" value={amendment.arrival ? formatStayDate(amendment.arrival) : 'Not stated'} />
@@ -262,12 +264,6 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           <p className={headingClass}>Booking in HMS now</p>
           {stay ? (
             <>
-              <HmsRow
-                field="matched"
-                label="Matched on"
-                value={`confirmation number ${foundNumber ?? ''}`.trim()}
-                actions={foundNumber ? <HmsLinkActions confirmation={foundNumber} /> : null}
-              />
               <HmsRow field="guest" label="Guest" value={stayGuest(stay) ?? 'Not shown'} wants={diff.guest} />
               <HmsRow field="arrival" label="Arrival" value={shownDate(stay.arrival)} wants={diff.arrival} />
               <HmsRow field="departure" label="Departure" value={shownDate(stay.departure)} wants={diff.departure} />
@@ -297,20 +293,28 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
         </div>
       </div>
       <div className="flex flex-col gap-2">
-        <button
-          type="button"
-          className={buttonClass}
-          disabled={!canLookUp || busy}
-          onClick={() => {
-            if (key && threadId && hmsNumber) {
-              void runLookup(findClient, hmsNumber, findArrival, key);
-            }
-          }}
-        >
-          Find this booking in HMS
-        </button>
-        {lookupable ? null : <p className="text-[10.5px] font-semibold text-amber-900">{AMEND_FIND_COPY.noHmsNumber}</p>}
-        <p className="text-[10.5px] text-[#64748b]">Takes about 1–2 minutes. Quotes wait while it runs.</p>
+        {found ? null : (
+          <>
+            <button
+              type="button"
+              className={buttonClass}
+              disabled={!canLookUp || busy}
+              onClick={() => {
+                if (key && threadId && hmsNumber) {
+                  void runLookup(findClient, hmsNumber, findArrival, key);
+                }
+              }}
+            >
+              Find this booking in HMS
+            </button>
+            {lookupable ? null : (
+              <p className="text-[10.5px] font-semibold text-amber-900">
+                {AMEND_FIND_COPY.noHmsNumber}
+              </p>
+            )}
+            <p className="text-[10.5px] text-[#64748b]">{AMEND_FIND_COPY.lookupWait}</p>
+          </>
+        )}
         <div aria-live="polite">
           {note ? <p className={note.tone === 'warn' ? warnNoteClass : infoNoteClass}>{note.text}</p> : null}
         </div>

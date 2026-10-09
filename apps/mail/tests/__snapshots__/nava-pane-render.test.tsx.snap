@@ -313,6 +313,8 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
                 <select
                   aria-label="Nava reads this as"
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-amendment-kind="amend"
+                  title="Nava thinks the guest wants to change an existing booking."
                 >
                   <option
                     value="quote"
@@ -327,18 +329,11 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
                   <option
                     value="other"
                   >
-                    Other
+                    Amendment
                   </option>
                 </select>
               </div>
             </div>
-            <span
-              class="rounded-sm bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-900"
-              data-amendment-kind="amend"
-              title="Nava thinks the guest wants to change an existing booking."
-            >
-              Change to booking
-            </span>
           </div>
           <div
             class="rounded-[3px] border px-2.5 py-1.5 text-[11.5px] border-[#bfdbfe] bg-[#eff6ff] text-[#1e3a8a]"
