@@ -5,12 +5,12 @@ Auto-loaded via `CLAUDE.md`. Keep under 120 lines. Update at the end of every wo
 ## Product in one paragraph
 Nava is an AI reservationist for Legacy Hotels' Centurion property. Staff work in classic Outlook. The VSTO add-in (`kufupa/nava-outlook-addin`) hosts a WebView2 side pane served from our EC2 (`apps/mail` route `/outlook-pane`). The pane analyses the selected email (Luna = the model, never shown to staff; staff-facing name is "Nava"). It pre-fills fields and runs deterministic Infor HMS tools through Playwright (`apps/server-pilot/tooling/playwright-quote/`): quote, PDF, party lookup, stay lookup, create (flagged), cancel (lab only). Human in the loop on every write.
 
-## Current focus (2026-10-09, pilot call 2026-10-10)
-- Pilot call tomorrow, 2026-10-10 (08:00 UK, 09:00 SA). Teaching guide: `docs/pilot/2026-10-09-teaching-script.md`. Install and checklist: `docs/pilot/2026-10-08-install-and-onboarding.md`.
+## Current focus (2026-10-09, pilot call today)
+- Pilot call today, 2026-10-09 (she starts ~07:45 UTC). Teaching guide: `docs/pilot/2026-10-09-teaching-script.md`. Install and checklist: `docs/pilot/2026-10-08-install-and-onboarding.md`.
 - Pilot user: one Centurion reservationist, installing add-in 1.0.17 (SHA verified on EC2 downloads). Pilot day 1 (10-08) failed: her pane never loaded the fixed bundle (last load 12:56 UTC, fix deployed 13:22).
 - Live on EC2 (run ledger): rateshop reads (03:07 UTC), Labtest create saved and cancelled (03:14), party lookups 360, Woolworths and Tourvest (04:35, fix build). Not proven yet: two full quotes with PDF and Excel (V3), and a clean viewer gate run (V1).
 - Owner flags: `RESERVATIONIST_PANE_SAVE` unset (off; `lab` or `on` is the owner's call). `HITL_LEDGER` off, migration 0046 applied, can go `on`. `QUOTE_TRACE_ASYNC` stays off until V3 passes.
-- Still open: #79 contract rates, #84 party typeahead (stacked on #79), D3 deploy result (31ae92cb4), party index sweep. Handoff: `docs/plans/handoff-reports/2026-10-09-overnight-v8.md`.
+- Contract rates live (#79 + #93: Woolworths → NCOR2B R1,360). Still open: party index sweep (typeahead), Luna auto-binding a party (prefetch + constrained choice), pane PDF/Excel live proof. Handoff: `docs/plans/handoff-reports/2026-10-09-overnight-v8.md`.
 - Overnight plan: `docs/plans/2026-10-08-007-feat-overnight-v8-nava-pane-plan.md`. Earlier run ledger: `docs/context/ledger/2026-10-08-overnight.md`. Tonight's run ledger is outside the repo (not committed): `.superpowers/sdd/v8-progress.md` in the centurion-dashboard-tools worktree.
 
 ## Non-negotiable rules
