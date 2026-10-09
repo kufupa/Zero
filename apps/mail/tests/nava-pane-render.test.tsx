@@ -428,4 +428,22 @@ describe('NavaPane', () => {
       'Three nights from 12 Nov',
     );
   });
+
+  it('a bridge that drops and restores the selected email neither reloads nor clears the Tell Nava note', async () => {
+    vi.useFakeTimers();
+    servePendingBuild();
+    const noEmailBridge = { ...fakeBridge, activeEmail: null } as unknown as PaneBridge;
+    const { rerender } = render(<NavaPane bridge={fakeBridge} />);
+    const note = await tellNavaBox();
+    fireEvent.input(note, { target: { value: 'Three nights from 12 Nov' } });
+
+    rerender(<NavaPane bridge={noEmailBridge} />);
+    await flush(0);
+    expect(screen.queryByText('Loading the latest Nava pane…')).toBeNull();
+    rerender(<NavaPane bridge={fakeBridge} />);
+    await flush(0);
+
+    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
+    expect(((await tellNavaBox()) as HTMLTextAreaElement).value).toBe('Three nights from 12 Nov');
+  });
 });

@@ -665,8 +665,12 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
   const [staffNoteDraft, setStaffNoteDraft] = useState('');
   const [staffNoteSent, setStaffNoteSent] = useState('');
   const unsentStaffNote = staffNoteDraft.trim() !== '' && staffNoteDraft.trim() !== staffNoteSent.trim();
-  // A note belongs to the email it was written for. Selecting another email starts a clean note.
+  // A note belongs to the email it was written for. Selecting another email starts a clean note. A bridge gap (no
+  // email reported) and a return to the same email keep it.
+  const noteEmailRef = useRef(selectedIdentity);
   useEffect(() => {
+    if (selectedIdentity === null || selectedIdentity === noteEmailRef.current) return;
+    noteEmailRef.current = selectedIdentity;
     setStaffNoteDraft('');
     setStaffNoteSent('');
   }, [selectedIdentity]);
@@ -722,19 +726,22 @@ export function NavaPane({ bridge }: { bridge: PaneBridge }) {
     };
   }, [loadedBuild]);
 
-  // Email switch. A pending build loads before the new email renders, because panels reset on switch
-  // anyway. A mutation in flight keeps the pane on this build.
-  const renderedIdentityRef = useRef(selectedIdentity);
+  // Email switch. A pending build loads before the new email renders, because panels reset on switch anyway. A
+  // mutation in flight keeps the pane on this build. Only a new email counts: a bridge gap (null) is not a switch,
+  // so going to no email and back to the same one neither reloads nor clears the note.
+  const renderedIdentityRef = useRef(selectedIdentity); // the last email that was actually shown
+  const emailSwitched = selectedIdentity !== null && selectedIdentity !== renderedIdentityRef.current;
   const reloadForSwitch =
-    selectedIdentity !== renderedIdentityRef.current &&
-    reloadAtEmailSwitch({ pending: pendingBuild !== null, mutationsInFlight: mutationsInFlight() });
+    emailSwitched && reloadAtEmailSwitch({ pending: pendingBuild !== null, mutationsInFlight: mutationsInFlight() });
   const reloadForSwitchRef = useRef(false);
   reloadForSwitchRef.current = reloadForSwitch;
   // Sticky: once the switch reload is requested, the placeholder stays until the page is replaced.
   const [switchReloading, setSwitchReloading] = useState(false);
   useLayoutEffect(() => {
+    if (selectedIdentity === null) return;
+    const switched = selectedIdentity !== renderedIdentityRef.current;
     renderedIdentityRef.current = selectedIdentity;
-    if (!reloadForSwitchRef.current) return;
+    if (!switched || !reloadForSwitchRef.current) return;
     setSwitchReloading(true);
     reloadPane();
   }, [selectedIdentity]);
