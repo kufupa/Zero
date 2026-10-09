@@ -240,6 +240,14 @@
   @apply scrollbar scrollbar-w-0 scrollbar-thumb-accent/40 scrollbar-track-transparent hover:scrollbar-thumb-accent scrollbar-thumb-rounded-full;
 }
 
+/* The Outlook pane's scroll areas: an always-visible bar, so staff can see there is more below. Standard properties
+   (WebView2 is Chromium) win over the body's hidden webkit scrollbar. */
+.nava-pane-scroll {
+  scrollbar-width: auto;
+  scrollbar-color: #94a3b8 #f1f5f9;
+  scrollbar-gutter: stable;
+}
+
 @utility horizontal-fade-mask {
   @apply overflow-x-auto;
   position: relative;
