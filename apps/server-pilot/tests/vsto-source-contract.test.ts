@@ -68,7 +68,7 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
     expect(project).toContain('win-x64');
   });
 
-  it('aligns installer, manifests, assembly, and bridge versions at 1.0.16/v4', () => {
+  it('aligns installer, manifests, assembly, and bridge versions at 1.0.17/v4', () => {
     const dispatcher = read('OutlookBridgeDispatcher.cs');
     const assembly = read('Properties/AssemblyInfo.cs');
     const installer = readFileSync(path.join(nativeRoot, 'installer/setup.iss'), 'utf8');
@@ -77,12 +77,12 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
       'utf8',
     );
     expect(dispatcher).toContain('BRIDGE_VERSION = 4');
-    expect(dispatcher).toContain('ADDIN_VERSION = "1.0.16"');
-    expect(assembly).toContain('AssemblyVersion("1.0.16.0")');
-    expect(assembly).toContain('AssemblyFileVersion("1.0.16.0")');
-    expect(installer).toContain('AppVersion=1.0.16');
-    expect(workflow).toContain('-Version 1.0.16.0');
-    expect(workflow).toContain('-p:ApplicationVersion=1.0.16.0');
+    expect(dispatcher).toContain('ADDIN_VERSION = "1.0.17"');
+    expect(assembly).toContain('AssemblyVersion("1.0.17.0")');
+    expect(assembly).toContain('AssemblyFileVersion("1.0.17.0")');
+    expect(installer).toContain('AppVersion=1.0.17');
+    expect(workflow).toContain('-Version 1.0.17.0');
+    expect(workflow).toContain('-p:ApplicationVersion=1.0.17.0');
   });
 
   it('keeps the committed server golden fixture byte-identical to the exact native checkout', () => {
