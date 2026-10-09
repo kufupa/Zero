@@ -38,6 +38,7 @@ import type {
   QuoteSessionAction,
   QuoteToolStep,
   RateOption,
+  StaffQuoteAllocation,
 } from '../lib/quote-workflow/types';
 
 const bind = (over: Partial<QuoteSelectionBinding> = {}): QuoteSelectionBinding => ({
@@ -2483,6 +2484,102 @@ describe('stay edits: rows, stays and their rates', () => {
     const back = reduceQuoteSession(moved, { type: 'restore_stay', removal });
     expect(back.groups.map((group) => group.id)).toEqual(['a1', 'b1', 'b2']);
     expect(back.offers.some((offer) => offer.id === 'ob')).toBe(false);
+  });
+
+  it('undo of the selected stay brings back its rate cards, evidence, selection and PDF', () => {
+    const base = ratedSession([row('a1', dateA), row('b1', dateB)]);
+    const s: QuoteSession = {
+      ...base,
+      phase: 'review',
+      rateOptions: [rateCardFor('a1'), rateCardFor('b1')],
+      evidence: { kind: 'authorised', selectionEpoch: 0, inputRevision: base.inputRevision },
+      selectedStayKey: keyB,
+      selectedOfferIds: ['ob'],
+      staffQuote: base.staffQuotes[keyB]!,
+      pdf: base.stayPdfs[keyB]!,
+    };
+    const stayId = stayIdOf(s.groups[1]!);
+    const removal = removedStayFor(s, stayId)!;
+    const gone = reduceQuoteSession(s, { type: 'remove_stay', stayId });
+    expect(gone.staffQuote).toBeNull();
+    expect(gone.rateOptions?.map((option) => option.groupId)).toEqual(['a1']);
+    const back = reduceQuoteSession(gone, { type: 'restore_stay', removal });
+    expect(back.rateOptions?.map((option) => option.groupId).sort()).toEqual(['a1', 'b1']);
+    expect(back.selectedStayKey).toBe(keyB);
+    expect(back.selectedOfferIds).toEqual(['ob']);
+    expect(back.staffQuote).toBe(s.staffQuote);
+    expect(back.pdf).toBe(s.pdf);
+    expect(back.evidence).toEqual(s.evidence);
+    expect(back.phase).toBe('review');
+  });
+
+  it('undo after removing the only rated stay keeps the evidence the rates rest on', () => {
+    const base = ratedSession([row('b1', dateB)]);
+    const s: QuoteSession = {
+      ...base,
+      staffQuotes: { [keyB]: base.staffQuotes[keyB]! },
+      offers: base.offers.filter((offer) => offer.id === 'ob'),
+      evidence: { kind: 'authorised', selectionEpoch: 0, inputRevision: base.inputRevision },
+    };
+    const stayId = stayIdOf(s.groups[0]!);
+    const removal = removedStayFor(s, stayId)!;
+    const gone = reduceQuoteSession(s, { type: 'remove_stay', stayId });
+    expect(gone.evidence).toBeNull();
+    const back = reduceQuoteSession(gone, { type: 'restore_stay', removal });
+    expect(back.evidence).toEqual(s.evidence);
+    expect(Object.keys(back.staffQuotes)).toEqual([keyB]);
+  });
+
+  it('undo does nothing once staff have moved to another email', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = { ...ratedSession([row('a1', dateA), row('b1', dateB)]), binding: s.binding };
+    const stayId = stayIdOf(s.groups[1]!);
+    const removal = removedStayFor(s, stayId)!;
+    let other = reduceQuoteSession(s, { type: 'selection', binding: bind({ entryId: 'e2', selectionEpoch: 2 }) });
+    other = { ...other, groups: [row('x1', dateA)] };
+    expect(reduceQuoteSession(other, { type: 'restore_stay', removal })).toBe(other);
+  });
+
+  it('a run that read the rows before a stay edit cannot overwrite that edit', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = { ...s, phase: 'requirements', groups: [row('a1', dateA), row('b1', dateB)], staffSource: staffSource() };
+    const readAt = s.stayRevision;
+    const edited = reduceQuoteSession(s, { type: 'patch_group', groupId: 'b1', patch: { adults: 3 } });
+    expect(edited.inputRevision).toBe(s.inputRevision);
+    const ready = {
+      type: 'staff_quote_ready' as const,
+      offer: { ...offerFor('rev-1', keyA), nightly: [] },
+      staffQuote: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        factRefs: [],
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: STAFF_HASH,
+        selectionEpoch: 1,
+        inputRevision: s.inputRevision,
+        inputDigest: 'd',
+        totalMinor: 100,
+        currency: 'ZAR',
+        quoteRequestKey: keyA,
+        approvedHeader: {
+          salesStrategy: 'BAR',
+          company: '',
+          agency: '',
+          attention: '',
+          clientEmail: '',
+          clientTelephone: '',
+        },
+      } satisfies StaffQuoteAllocation,
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+      groups: [row('a1', dateA), row('b1', dateB)],
+    };
+    // Without the read revision the run would land and put the old row back.
+    expect(reduceQuoteSession(edited, ready).groups[1]?.adults).toBe(2);
+    const stale = reduceQuoteSession(edited, { ...ready, stayRevision: readAt });
+    expect(stale).toBe(edited);
+    expect(stale.groups[1]?.adults).toBe(3);
   });
 
   it('counts rooms and guests over every row', () => {
