@@ -1,11 +1,13 @@
 import {
   buildGalleryHtml,
   classifyTrpcRequest,
+  configFailures,
   gateFailures,
   isPiiField,
   outcomeOf,
   parseRunConfig,
   piiValuesOf,
+  READ_PROCEDURES,
   redactText,
   safeSegment,
   shapeResult,
@@ -204,6 +206,32 @@ describe('gate and summary', () => {
     expect(gateFailures([result({ blockedWrites: ['workstation.bridgeTicket'] })])).toEqual([
       '1 write request(s) were blocked',
     ]);
+  });
+});
+
+describe('blocked requests: pane failure or configuration error', () => {
+  const origin = 'https://nava.legacyhotels.co.za/api/trpc/';
+
+  it('reads the app shell asks for are allowed, so they never reach the block list', () => {
+    for (const name of ['settings.get', 'labels.list', 'categories.list']) {
+      expect(READ_PROCEDURES.has(name), name).toBe(true);
+      expect(classifyTrpcRequest(`${origin}${name}?batch=1`).allowed, name).toBe(true);
+    }
+  });
+
+  it('reports an unclassified block as a configuration error, not as a write', () => {
+    const unclassified = [result({ blockedWrites: ['mail.archive'] })];
+    expect(configFailures(unclassified)).toEqual([
+      '1 request(s) were blocked as unclassified (mail.archive); add reads to READ_PROCEDURES',
+    ]);
+    expect(gateFailures(unclassified)).toEqual([]);
+    expect(configFailures([], ['labels.unknown'])).toHaveLength(1);
+  });
+
+  it('keeps a named write a gate failure, with no configuration error', () => {
+    const writes = [result({ blockedWrites: ['workstation.bridgeTicket'] })];
+    expect(configFailures(writes)).toEqual([]);
+    expect(gateFailures(writes)).toEqual(['1 write request(s) were blocked']);
   });
 });
 

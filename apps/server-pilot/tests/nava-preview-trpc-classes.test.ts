@@ -31,6 +31,13 @@ const VIEWER_SOURCES = [
   'hooks/use-threads.ts',
   'hooks/use-connections.ts',
   'providers',
+  // App shell the (routes) layout mounts on every page, the viewer included: the hotkey
+  // providers and the settings, labels and categories hooks they read.
+  'app/(routes)/layout.tsx',
+  'hooks/use-settings.ts',
+  'hooks/use-labels.ts',
+  'hooks/use-categories.ts',
+  'lib/hotkeys',
 ];
 
 const procedureTypes = new Map<string, string>(
