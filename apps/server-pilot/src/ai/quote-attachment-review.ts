@@ -4,6 +4,9 @@
  * Signatures, invites, contact cards, inline parts and tiny files are skipped silently: they are not booking
  * documents, and a row for each one reads as an alarm on most emails. A PDF Nava could not read always counts,
  * because it may hold the booking. Office documents and larger unknown files count too.
+ *
+ * A Content-ID never skips a part on its own. Images are skipped by type and inline parts by disposition, with or
+ * without a cid. A document that the body refers to by cid is still a document.
  */
 
 export type AttachmentReviewFacts = {
@@ -12,8 +15,6 @@ export type AttachmentReviewFacts = {
   /** Size in bytes. An unknown size is never tiny, and never large. */
   byteSize?: number;
   isInline?: boolean;
-  /** Set on parts that the body refers to with cid:, such as signature images. */
-  contentId?: string | null;
 };
 
 const TINY_FILE_BYTES = 4 * 1024;
@@ -46,7 +47,6 @@ export function isPdfAttachment(facts: Pick<AttachmentReviewFacts, 'filename' | 
 export function attachmentMattersForReview(facts: AttachmentReviewFacts): boolean {
   if (facts.isInline) return false;
   if (isPdfAttachment(facts)) return true;
-  if (facts.contentId) return false;
   const mime = mimeOf(facts);
   if (mime.startsWith('image/') || IMAGE_FILE.test(facts.filename)) return false;
   if (CALENDAR_OR_CONTACT_MIME.has(mime) || CALENDAR_OR_CONTACT_FILE.test(facts.filename)) return false;

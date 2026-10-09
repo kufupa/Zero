@@ -110,6 +110,22 @@ describe('readQuoteAttachments', () => {
     expect(result).toEqual([]);
   });
 
+  it('keeps a document that carries a Content-ID: a cid never skips a document', async () => {
+    const result = await readQuoteAttachments(
+      [
+        row({
+          id: 'rooming',
+          filename: 'rooming.docx',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          sizeBytes: 50_000,
+          contentId: 'rooming-cid@x',
+        }),
+      ],
+      async () => ({ text: null }),
+    );
+    expect(result).toMatchObject([{ id: 'rooming', bytesPresent: false, readFailure: 'not a PDF' }]);
+  });
+
   it('lists the office documents and large unknown files it could not read, and keeps PDF failures', async () => {
     const result = await readQuoteAttachments(
       [

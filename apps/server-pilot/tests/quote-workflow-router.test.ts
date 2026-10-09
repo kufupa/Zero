@@ -2,6 +2,7 @@ import { quoteWorkflowLoaders, voucherLoaders } from '../src/trpc/routes/quote-w
 import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { analyseQuoteSources } from '../src/ai/quote-workflow-analyse.js';
 import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
+import { readQuoteAttachments } from '../src/ai/quote-workflow-synced-selection.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
@@ -344,6 +345,54 @@ describe('quoteWorkflow.analyseSelection', () => {
     if (result.status === 'ready') {
       expect(result.source).toBe('luna');
       expect(result.luna?.flags.filter((flag) => flag === 'attachment_unread')).toHaveLength(1);
+      const rows = result.reviewItems?.filter((item) => item.kind === 'document_failure') ?? [];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        blocking: false,
+        text: "Nava can't read rooming.docx yet — open it if it has booking details.",
+      });
+    }
+  });
+
+  it('lists a document that has a Content-ID as a non-blocking row, from the real loader filter', async () => {
+    const attachments = await readQuoteAttachments(
+      [
+        {
+          id: 'rooming',
+          filename: 'rooming.docx',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          sizeBytes: 50_000,
+          isInline: false,
+          contentId: 'rooming-cid@x',
+          s3Key: 'attachments/m1/rooming',
+          messageId: 'm1',
+        },
+      ],
+      async () => ({ text: null }),
+    );
+    quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+      subject: 'Rooms',
+      bodyText: 'Quote 1 room 2026-11-12 to 2026-11-14, 2 adults, B&B.',
+      preceding: [],
+      attachments,
+    });
+    quoteWorkflowLoaders.llmEnabled = () => true;
+    quoteWorkflowLoaders.adapter = {
+      invoke: async () => ({
+        modelId: 'gpt-6-luna',
+        output: lunaOutput(),
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 't' },
+      }),
+    };
+    const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+      internetMessageId: '<a@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      selectionEpoch: 4,
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') {
       const rows = result.reviewItems?.filter((item) => item.kind === 'document_failure') ?? [];
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({

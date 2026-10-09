@@ -42,7 +42,7 @@ export type QuoteAttachmentRow = {
   isInline: boolean;
   s3Key: string;
   messageId: string;
-  /** Content-ID of the part. Set on parts the body refers to with cid:, such as signature images. */
+  /** Content-ID of the part. A cid never skips a part on its own. */
   contentId?: string | null;
 };
 
@@ -60,7 +60,6 @@ function reviewFacts(row: QuoteAttachmentRow) {
     mimeType: row.mimeType,
     byteSize: row.sizeBytes,
     isInline: row.isInline,
-    contentId: row.contentId,
   };
 }
 
