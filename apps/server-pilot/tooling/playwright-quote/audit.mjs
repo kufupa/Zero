@@ -14,9 +14,10 @@ export async function createAudit(directory, {video=false,trace=true,secrets=[]}
   let sequence=0,page,context,tracing=false,recording=false,finished=false;
   const report={status:'not_started',captureBoundary:'after_verified_login',
     trace:{status:'not_started'},video:{requested:video,status:video?'not_started':'disabled'},screenshots:[],errors:[]};
-  const event=(phase)=>{
+  // Optional fields (for example phaseMs) are spread first, so the fixed keys always win.
+  const event=(phase,fields={})=>{
     if(!/^[a-z0-9_-]+$/.test(phase)) throw new Error('INVALID_AUDIT_PHASE');
-    const entry={sequence:++sequence,at:new Date().toISOString(),elapsedMs:Date.now()-started,phase};
+    const entry={...fields,sequence:++sequence,at:new Date().toISOString(),elapsedMs:Date.now()-started,phase};
     appendFileSync(join(directory,'events.jsonl'),JSON.stringify(entry)+'\n',{mode:0o600});
     return entry;
   };

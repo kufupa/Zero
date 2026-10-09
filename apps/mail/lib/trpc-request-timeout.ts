@@ -18,20 +18,21 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     // A pane save runs the duplicate read (up to 5 minutes) and the save (up to 20) under the hotel lock.
     if (routes.includes('quoteWorkflow.previewStay') || routes.includes('quoteWorkflow.commitStay'))
       return 27 * 60_000;
-    if (
-      routes.includes('workstation.qualifiedQuoteProposalPdf') ||
-      routes.includes('workstation.quoteWorkbook') ||
-      routes.includes('workstation.quoteProposalPdf') ||
-      routes.includes('workstation.prepareBookingDraft') ||
-      routes.includes('workstation.usePriorQuoteForBooking')
-    )
-      return 60_000;
-    // With QUOTE_TRACE_ASYNC the screenshot/choices wait for the background trace (about 45s).
+    // Each of these waits for the background trace of a provisional quote (QUOTE_TRACE_ASYNC=on; about 45s)
+    // before it runs, then does its own work. They need 120s; the 5s default would fail right after a quote.
     if (
       routes.includes('workstation.quoteRunScreenshot') ||
-      routes.includes('workstation.qualifiedProposalChoices')
+      routes.includes('workstation.qualifiedProposalChoices') ||
+      routes.includes('workstation.qualifiedQuoteProposalPdf') ||
+      routes.includes('workstation.quoteWorkbook') ||
+      routes.includes('workstation.prepareBookingDraft') ||
+      routes.includes('workstation.usePriorQuoteForBooking') ||
+      routes.includes('workstation.getPriorStaffQuoteRequote') ||
+      routes.includes('workstation.sourceQuoteProposalPdf')
     )
-      return 60_000;
+      return 120_000;
+    // After the 120s group, so a batch that also carries one of those routes keeps the longer deadline.
+    if (routes.includes('workstation.quoteProposalPdf')) return 60_000;
   } catch {
     // Malformed URLs do not receive an extended deadline.
   }
