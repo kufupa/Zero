@@ -330,7 +330,14 @@ export function buildExpiredPriorRequoteBindArgs(args: {
       },
     };
   }
-  return { groups: args.sessionGroups, header: args.sessionHeader };
+  // With several stays, re-quote only the session rows of the one stay this revision quoted. Every row in one run would
+  // merge the stays. When that stay's dates were edited away, or the revision spans stays, there is nothing safe to send.
+  if (new Set(args.sessionGroups.map(dateKeyOf)).size <= 1) {
+    return { groups: args.sessionGroups, header: args.sessionHeader };
+  }
+  const quoted = new Set(args.stored.groups.map(dateKeyOf));
+  const groups = quoted.size === 1 ? args.sessionGroups.filter((row) => quoted.has(dateKeyOf(row))) : [];
+  return { groups, header: args.sessionHeader };
 }
 
 /** The stay a row belongs to, by its dates. */

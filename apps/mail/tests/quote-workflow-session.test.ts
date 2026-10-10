@@ -1569,7 +1569,8 @@ describe('quote session staff review items', () => {
       pdf: quotePdf('quotes:abc', 1770000),
       selectionEpoch: 1,
       inputRevision: s.inputRevision,
-      selectedOfferIds: ['rev-b'],
+      // A combined PDF names the runs of every stay it was built from.
+      selectedOfferIds: ['rev-a', 'rev-b'],
     });
     expect(s.stayPdfs).toEqual({});
     expect(canCreatePdf(s)).toBe(true);

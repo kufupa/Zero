@@ -1,3 +1,12 @@
+import {
+  canCreatePdf,
+  groupsForQuoteStep,
+  initialQuoteSession,
+  ratedStayCount,
+  reduceQuoteSession,
+  requestedQuoteKeys,
+  rowsTakeOnceExtras,
+} from '../lib/quote-workflow/session';
 import type {
   BookingDraftReady,
   LunaAnalysisWire,
@@ -7,17 +16,15 @@ import type {
   StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 import {
+  bindExecuteStaffQuote,
+  bindQualifiedStaffProposalPdf,
+  type ExecuteStaffQuoteInput,
+} from '../lib/quote-workflow/staff-quote-bind';
+import {
   buildExpiredPriorRequoteBindArgs,
   overlayLunaGroupsFromStaff,
 } from '../lib/quote-workflow/booking-draft-bind';
-import {
-  canCreatePdf,
-  initialQuoteSession,
-  ratedStayCount,
-  reduceQuoteSession,
-} from '../lib/quote-workflow/session';
 import { combinedDocumentRequest } from '../lib/quote-workflow/quote-workbook-download';
-import { bindQualifiedStaffProposalPdf } from '../lib/quote-workflow/staff-quote-bind';
 import { requireMultiOptionDraft } from '../lib/quote-workflow/multi-option-draft';
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
@@ -163,7 +170,8 @@ function withCombinedPdf(session: QuoteSession): QuoteSession {
     },
     selectionEpoch: 1,
     inputRevision: session.inputRevision,
-    selectedOfferIds: session.selectedOfferIds,
+    // The pane names the stays' runs the combined PDF was built from.
+    selectedOfferIds: Object.values(session.staffQuotes).map((quote) => quote.revisionRef),
   });
 }
 
@@ -380,7 +388,266 @@ describe('booking drafts when one stay is edited', () => {
       ...twoQuotedStays(),
       bookingDrafts: { [NOV.key]: {} as never, [DEC.key]: {} as never },
     };
-    const edited = reduceQuoteSession(session, { type: 'patch_group', groupId: 'stay-b', patch: { adults: 2 } });
+    const edited = reduceQuoteSession(session, {
+      type: 'patch_group',
+      groupId: 'stay-b',
+      patch: { adults: 2 },
+    });
     expect(Object.keys(edited.bookingDrafts)).toEqual([NOV.key]);
+  });
+});
+
+describe('once-per-quote extras on a combined quote', () => {
+  const SHUTTLE = { shuttleRequested: true, shuttleMinor: 50000, shuttleTrips: 1 };
+  const ROOMS: Record<string, number> = { [NOV.key]: 272000, [DEC.key]: 136000 };
+
+  /** A server stand-in that prices each stay's rooms plus the shuttle and any flat "other" charge it is sent. */
+  function pricedMutate(sent: ExecuteStaffQuoteInput[]) {
+    return async (input: ExecuteStaffQuoteInput) => {
+      sent.push(input);
+      const group = input.groups[0]!;
+      const key = `${group.arrivalDate}:${group.departureDate}`;
+      const shuttle = input.shuttleRequested
+        ? (input.shuttleMinor ?? 0) * (input.shuttleTrips ?? 1)
+        : 0;
+      const other = input.other?.unit === 'item' ? input.other.amountMinor : 0;
+      return {
+        status: 'ready' as const,
+        workflowRunId: `run-${key}-${sent.length}`,
+        revisionRef: `rev-${key}-${sent.length}`,
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        factRefs: shuttle || other ? ['extras'] : [],
+        selectionEpoch: input.selectionEpoch,
+        inputRevision: input.inputRevision,
+        inputDigest: `digest-${sent.length}`,
+        totalMinor: ROOMS[key]! + shuttle + other,
+        currency: 'ZAR',
+        arrivalDate: group.arrivalDate,
+        departureDate: group.departureDate,
+        description: 'Standard King',
+      };
+    };
+  }
+
+  /** Runs one stay the way the pane does: that stay's rows, the session header, and the first-stay rule. */
+  async function runStay(
+    session: QuoteSession,
+    key: string,
+    sent: ExecuteStaffQuoteInput[],
+  ): Promise<QuoteSession> {
+    const step = session.steps.find((item) => item.shareKey === key)!;
+    const groups = groupsForQuoteStep(session, step).map((group) => ({
+      ...group,
+      roomCodes: ['SKNG'],
+    }));
+    const run = await bindExecuteStaffQuote({
+      mutate: pricedMutate(sent),
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: SOURCE_HASH },
+      selectionEpoch: 1,
+      inputRevision: session.inputRevision,
+      groups,
+      header: session.staffHeader,
+      onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(groups)),
+    });
+    if (run.status !== 'ok') throw new Error(run.reason);
+    return reduceQuoteSession(session, {
+      type: 'staff_quote_ready',
+      offer: run.offer,
+      staffQuote: run.staffQuote,
+      selectionEpoch: 1,
+      inputRevision: session.inputRevision,
+      approvedHeader: session.staffHeader,
+    });
+  }
+
+  function withHeader(
+    header: Parameters<typeof reduceQuoteSession>[1] & { type: 'patch_staff_header' },
+  ) {
+    return reduceQuoteSession(stayedSession(), header);
+  }
+
+  it('two stays and a R500 shuttle: the combined total has the shuttle once, on the first stay', async () => {
+    const sent: ExecuteStaffQuoteInput[] = [];
+    let session = withHeader({ type: 'patch_staff_header', header: SHUTTLE });
+    // The second stay runs first: it still leaves the shuttle to the first stay.
+    session = await runStay(session, DEC.key, sent);
+    session = await runStay(session, NOV.key, sent);
+    expect(
+      sent.map((input) => [input.groups[0]!.arrivalDate, input.shuttleRequested ?? false]),
+    ).toEqual([
+      [DEC.arrival, false],
+      [NOV.arrival, true],
+    ]);
+    const request = combinedDocumentRequest(session);
+    if (request.status !== 'ok') throw new Error(request.reason);
+    expect(request.expectedTotalMinor).toBe(272000 + 136000 + 50000);
+    // The first stay's run is the primary one, so its extras fact goes with it.
+    expect(request.input.factRefs).toEqual(['extras']);
+    expect(request.input.additionalStays?.[0]?.factRefs).toEqual([]);
+  });
+
+  it('a one-item "other" charge is made once, and a per-person one stays on every stay', async () => {
+    const sent: ExecuteStaffQuoteInput[] = [];
+    let session = withHeader({
+      type: 'patch_staff_header',
+      header: { other: { label: 'Conference pack', amountMinor: 20000, unit: 'item' } },
+    });
+    session = await runStay(session, NOV.key, sent);
+    session = await runStay(session, DEC.key, sent);
+    expect(sent.map((input) => input.other?.amountMinor ?? null)).toEqual([20000, null]);
+    const request = combinedDocumentRequest(session);
+    if (request.status !== 'ok') throw new Error(request.reason);
+    expect(request.expectedTotalMinor).toBe(272000 + 136000 + 20000);
+
+    const perPerson: ExecuteStaffQuoteInput[] = [];
+    let each = withHeader({
+      type: 'patch_staff_header',
+      header: { other: { label: 'Gala dinner', amountMinor: 30000, unit: 'per_person' } },
+    });
+    each = await runStay(each, NOV.key, perPerson);
+    each = await runStay(each, DEC.key, perPerson);
+    expect(perPerson.map((input) => input.other?.unit ?? null)).toEqual([
+      'per_person',
+      'per_person',
+    ]);
+  });
+
+  it('a second stay run that carries the shuttle is not current, so the total never counts it twice', () => {
+    const session = withHeader({ type: 'patch_staff_header', header: SHUTTLE });
+    const first = quoteStay(session, { revisionRef: 'rev-a', key: NOV.key, totalMinor: 322000 });
+    const carried = { ...staffRun(first, 'rev-b', DEC.key, 186000), onceExtras: true };
+    const both = reduceQuoteSession(first, {
+      type: 'staff_quote_ready',
+      offer: allocation('rev-b', DEC.key, 186000),
+      staffQuote: carried,
+      selectionEpoch: 1,
+      inputRevision: first.inputRevision,
+    });
+    // Stay 1's run here has no shuttle flag either, so neither stay is current until each runs again.
+    expect(ratedStayCount(both)).toEqual({ rated: 0, total: 2 });
+    expect(combinedDocumentRequest(both).status).toBe('unavailable');
+  });
+
+  it('one stay still sends the shuttle as before', async () => {
+    let session = reduceQuoteSession(initialQuoteSession(), {
+      type: 'selection',
+      binding: BINDING,
+    });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        intent: 'quote',
+        groups: [stayGroup('stay-a', NOV.arrival, NOV.departure)],
+        secondaryAsks: [],
+        alternatives: [],
+      },
+    });
+    session = reduceQuoteSession(session, {
+      type: 'staff_source_ready',
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: SOURCE_HASH },
+    });
+    session = reduceQuoteSession(session, { type: 'patch_staff_header', header: SHUTTLE });
+    const sent: ExecuteStaffQuoteInput[] = [];
+    session = await runStay(session, NOV.key, sent);
+    expect(sent[0]).toMatchObject({ shuttleRequested: true, shuttleMinor: 50000, shuttleTrips: 1 });
+    expect(session.staffQuotes[NOV.key]?.totalMinor).toBe(322000);
+  });
+});
+
+describe('the combined PDF while staff move between options', () => {
+  it('a combined PDF that lands after another option was selected is kept', () => {
+    const both = twoQuotedStays();
+    const building = reduceQuoteSession(both, { type: 'select_stay_key', stayKey: NOV.key });
+    expect(building.selectedStayKey).toBe(NOV.key);
+    const landed = withCombinedPdf(building);
+    expect(landed.pdf?.revisionId).toBe('quotes:both');
+    expect(requireMultiOptionDraft(landed)).not.toBeNull();
+  });
+
+  it('a combined PDF built from a stay run that was since replaced is dropped', () => {
+    const both = twoQuotedStays();
+    const pending = Object.values(both.staffQuotes).map((quote) => quote.revisionRef);
+    const requoted = quoteStay(both, { revisionRef: 'rev-b2', key: DEC.key, totalMinor: 150000 });
+    const landed = reduceQuoteSession(requoted, {
+      type: 'pdf_ready',
+      pdf: {
+        fileName: 'Quote - Standard King.pdf',
+        bytesBase64: COMBINED_BYTES,
+        pdfHash: 'cd'.repeat(32),
+        revisionId: 'quotes:both',
+        totalMinor: 408000,
+      },
+      selectionEpoch: 1,
+      inputRevision: requoted.inputRevision,
+      selectedOfferIds: pending,
+    });
+    expect(landed.pdf).toBeNull();
+  });
+});
+
+describe('re-quoting an expired stay after staff edits', () => {
+  const header = {
+    salesStrategy: 'BAR' as const,
+    company: '',
+    agency: '',
+    attention: '',
+    clientEmail: '',
+    clientTelephone: '',
+  };
+  const storedFor = (arrivalDate: string, departureDate: string) => ({
+    salesStrategy: 'BAR' as const,
+    company: '',
+    agency: '',
+    groups: [
+      {
+        id: 'old',
+        arrivalDate,
+        departureDate,
+        quantity: 1,
+        adults: 1,
+        childrenAges: [],
+        board: 'bb' as const,
+      },
+    ],
+  });
+
+  it('sends only the rows of the stay that quote was for, never every stay in one run', () => {
+    const sessionGroups = [
+      { ...stayGroup('stay-a', NOV.arrival, NOV.departure), stayId: 's1' },
+      { ...stayGroup('stay-a2', NOV.arrival, NOV.departure), stayId: 's1' },
+      { ...stayGroup('stay-b', DEC.arrival, DEC.departure), stayId: 's2' },
+    ];
+    const { groups } = buildExpiredPriorRequoteBindArgs({
+      stored: storedFor(DEC.arrival, DEC.departure),
+      sessionGroups,
+      sessionHeader: header,
+      staffEdited: true,
+    });
+    expect(groups.map((group) => group.id)).toEqual(['stay-b']);
+  });
+
+  it('sends nothing when staff moved that stay to other dates', () => {
+    const { groups } = buildExpiredPriorRequoteBindArgs({
+      stored: storedFor('2027-10-01', '2027-10-03'),
+      sessionGroups: [
+        stayGroup('stay-a', NOV.arrival, NOV.departure),
+        stayGroup('stay-b', DEC.arrival, DEC.departure),
+      ],
+      sessionHeader: header,
+      staffEdited: true,
+    });
+    expect(groups).toEqual([]);
+  });
+
+  it('a single stay still re-quotes the session rows as staff left them', () => {
+    const sessionGroups = [{ ...stayGroup('stay-a', NOV.arrival, '2027-11-15'), stayId: 's1' }];
+    const { groups } = buildExpiredPriorRequoteBindArgs({
+      stored: storedFor(NOV.arrival, NOV.departure),
+      sessionGroups,
+      sessionHeader: header,
+      staffEdited: true,
+    });
+    expect(groups).toBe(sessionGroups);
   });
 });

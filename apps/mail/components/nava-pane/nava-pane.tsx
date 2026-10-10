@@ -77,6 +77,7 @@ import {
   quoteRunBlockReason,
   reduceQuoteSession,
   removedStayFor,
+  rowsTakeOnceExtras,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -716,6 +717,10 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
         sessionHeader: session.staffHeader,
         staffEdited: hasStaffStayEdits(session),
       });
+      if (!groups.length) {
+        toast.warning('The stays changed since this quote. Run the search for that stay again.');
+        return;
+      }
       const run = bindExecuteStaffQuote({
         mutate: staff.workstation.executeStaffQuote?.mutate,
         source,
@@ -723,6 +728,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
         inputRevision,
         groups,
         header,
+        onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(groups)),
       });
       return trackStaffQuoteRun(run).then((remote) => {
         if (remote.status !== 'ok') {
@@ -830,6 +836,8 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
       inputRevision,
       groups: stayGroups,
       header: quoteSession.staffHeader,
+      // A combined quote charges the shuttle and flat "other" charges once, on its first stay.
+      onceExtras: rowsTakeOnceExtras(quoteSession, requestedQuoteKeys(stayGroups)),
     });
     void trackStaffQuoteRun(run).then((remote) => {
       if (remote.status !== 'ok') {
@@ -935,7 +943,12 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
       pdfInFlight.current = true;
       const selectionEpoch = session.binding?.selectionEpoch ?? 0;
       const inputRevision = session.inputRevision;
-      const selectedOfferIds = session.selectedOfferIds;
+      // The combined PDF is bound to the stays' runs, not to the selected option, so selecting another option while it
+      // builds keeps it.
+      const selectedOfferIds = [
+        request.input.revisionRef,
+        ...(request.input.additionalStays ?? []).map((stay) => stay.revisionRef),
+      ];
       const staff = staffQuoteFromTrpc(trpcClient);
       void bindQualifiedStaffProposalPdf({
         mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,

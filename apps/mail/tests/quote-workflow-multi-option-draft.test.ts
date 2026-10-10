@@ -136,7 +136,8 @@ function withCombinedPdf(session: QuoteSession, pdf: QuotePdf): QuoteSession {
     pdf,
     selectionEpoch: 1,
     inputRevision: session.inputRevision,
-    selectedOfferIds: session.selectedOfferIds,
+    // The pane names the stays' runs the combined PDF was built from.
+    selectedOfferIds: Object.values(session.staffQuotes).map((quote) => quote.revisionRef),
   });
 }
 
