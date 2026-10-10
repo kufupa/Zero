@@ -783,11 +783,13 @@ describe('NavaPane screen states', () => {
     expect(screen.queryByRole('button', { name: 'Insert draft in Outlook' })).toBeNull();
   });
 
-  it('preview: the webmail reply says it is preview only, not that the add-in is too old', async () => {
+  it('preview: the webmail reply saves to the thread, not that the add-in is too old', async () => {
     render(<NavaPane bridge={fakeBridge} preview />);
+    // The webmail reply saves the thread's draft (U22), so it waits for sync rather than pointing at Outlook.
     expect(
-      await screen.findByText('Preview only: copy the reply or download the PDF.'),
+      await screen.findByText('Wait for this email to sync, then select it again'),
     ).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Save reply' })).toBeDefined();
     expect(screen.queryByText(/add-in is too old/)).toBeNull();
   });
 });

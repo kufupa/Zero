@@ -44,11 +44,12 @@ import { readAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
 import { DEFAULT_AI_MODEL_ID, enqueueAiRun } from '../../ai/run-ledger.js';
 import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
+import { sanitizeHtmlBodyForStorage } from '../../mail/sanitize-email-html.js';
 import { parseDraftSearchQueryOrThrow } from '../../mail/search/trpc.js';
 import { buildDraftSearchConditions } from '../../mail/search/query.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
-import { and, eq, desc, inArray, sql } from 'drizzle-orm';
+import { and, eq, desc, inArray, like, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
@@ -1039,6 +1040,13 @@ export async function enqueueHmsCandidateRefresh(input: {
   };
 }
 
+/**
+ * Revisions written by saveReply carry this id prefix. Their kind stays honest ('created' or 'edited', a human action),
+ * so eval data never reads a saved reply as AI output. The prefix tells an untouched saved reply from a hand edit
+ * without a migration, the same way follow-up drafts are told apart by their draft id.
+ */
+const SAVED_REPLY_REVISION_PREFIX = 'saved-reply:';
+
 export const draftsRouter = tRouter({
   getArtifact: mailboxProcedure
     .input(z.object({ draftId: z.string(), artifactRef: z.string().max(160) }))
@@ -1757,4 +1765,180 @@ export const draftsRouter = tRouter({
       );
     return { deleted: true };
   }),
+
+  /**
+   * Save the pane's reply to the thread's one active draft, as a revision. Any other active draft (an AI draft,
+   * someone else's, or one edited by hand since the last save) is replaced only with replaceExisting (the UI asks
+   * first). Replacing discards it and starts a new draft; it is never overwritten.
+   */
+  saveReply: mailboxProcedure
+    .input(
+      z.object({
+        threadId: z.string(),
+        replyToMessageId: z.string(),
+        to: z.array(z.string()).max(50).default([]),
+        subject: z.string().max(998).default(''),
+        html: z.string(),
+        attachments: z.array(serializedAttachmentInput).max(32).default([]),
+        replaceExisting: z.boolean().default(false),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const decodedAttachments = decodeStaffAttachments(input.attachments);
+      const db = getDb();
+      const transportId = ctx.activeTransportId;
+      await requireThreadForTransport(db, input.threadId, transportId);
+      const replyParent = await requireMessageForTransport(db, input.replyToMessageId, transportId);
+      if (replyParent.threadId !== input.threadId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'REPLY_PARENT_THREAD_MISMATCH' });
+      }
+      const html = sanitizeHtmlBodyForStorage(input.html) ?? '';
+      try {
+        return await db.transaction(async (tx) => {
+          const [prior] = await tx
+            .select()
+            .from(mailDraft)
+            .where(
+              and(
+                eq(mailDraft.transportId, transportId),
+                eq(mailDraft.threadId, input.threadId),
+                eq(mailDraft.isSent, false),
+                eq(mailDraft.status, 'active'),
+              ),
+            )
+            .limit(1)
+            .for('update');
+          let untouchedSavedReply = false;
+          if (prior) {
+            const [latest] = await tx
+              .select({ id: mailDraftRevision.id, actorUserId: mailDraftRevision.actorUserId })
+              .from(mailDraftRevision)
+              .where(eq(mailDraftRevision.draftId, prior.id))
+              .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
+              .limit(1);
+            untouchedSavedReply =
+              latest?.id.startsWith(SAVED_REPLY_REVISION_PREFIX) === true &&
+              latest.actorUserId === ctx.sessionUser.id;
+            if (!untouchedSavedReply && !input.replaceExisting) {
+              throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_REPLACE_CONFIRM_REQUIRED' });
+            }
+            if (!untouchedSavedReply) {
+              // Replace = discard, the status delete gives it (as useFollowUp does). The old draft keeps its
+              // origin, generationId and revisions, so an AI draft's version stays for eval.
+              await tx
+                .update(mailDraft)
+                .set({ status: 'discarded', updatedAt: new Date() })
+                .where(and(eq(mailDraft.id, prior.id), eq(mailDraft.transportId, transportId)));
+            }
+          }
+          const updateInPlace = prior !== undefined && untouchedSavedReply;
+          const draftId = updateInPlace ? prior.id : randomUUID();
+          const attachments = await persistStaffAttachments(
+            decodedAttachments,
+            transportId,
+            draftId,
+            updateInPlace ? prior.attachments : [],
+          );
+          const content = {
+            threadId: input.threadId,
+            replyToMessageId: input.replyToMessageId,
+            toAddresses: input.to,
+            ccAddresses: [],
+            bccAddresses: [],
+            subject: input.subject || null,
+            textBody: html,
+            htmlBody: html,
+            attachments,
+            updatedAt: new Date(),
+          };
+          if (updateInPlace) {
+            await tx
+              .update(mailDraft)
+              .set(content)
+              .where(and(eq(mailDraft.id, draftId), eq(mailDraft.transportId, transportId)));
+          } else {
+            await tx.insert(mailDraft).values({
+              id: draftId,
+              transportId,
+              createdByUserId: ctx.sessionUser.id,
+              isSent: false,
+              status: 'active',
+              // Human-reviewed pane reply: no AI approval gate, and no generation to go stale.
+              origin: 'manual',
+              ...content,
+            });
+          }
+          await tx.insert(mailDraftRevision).values({
+            id: `${SAVED_REPLY_REVISION_PREFIX}${randomUUID()}`,
+            draftId,
+            actorUserId: ctx.sessionUser.id,
+            kind: updateInPlace ? 'edited' : 'created',
+            toAddresses: input.to,
+            ccAddresses: [],
+            bccAddresses: [],
+            subject: input.subject || null,
+            textBody: html,
+            htmlBody: html,
+            attachments,
+          });
+          return { id: draftId, replaced: prior !== undefined && !untouchedSavedReply };
+        });
+      } catch (error) {
+        if (isPostgresUniqueViolation(error)) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
+        }
+        throw error;
+      }
+    }),
+
+  /** The thread's saved reply (saveReply) with its PDFs, or null. Feeds the Outlook pane's Insert saved reply. */
+  savedReply: mailboxProcedure
+    .input(z.object({ threadId: z.string() }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      const transportId = ctx.activeTransportId;
+      await requireThreadForTransport(db, input.threadId, transportId);
+      const [draft] = await db
+        .select()
+        .from(mailDraft)
+        .where(
+          and(
+            eq(mailDraft.transportId, transportId),
+            eq(mailDraft.threadId, input.threadId),
+            eq(mailDraft.isSent, false),
+            eq(mailDraft.status, 'active'),
+            eq(mailDraft.origin, 'manual'),
+          ),
+        )
+        .limit(1);
+      if (!draft) return null;
+      const [saved] = await db
+        .select({ id: mailDraftRevision.id })
+        .from(mailDraftRevision)
+        .where(
+          and(
+            eq(mailDraftRevision.draftId, draft.id),
+            like(mailDraftRevision.id, `${SAVED_REPLY_REVISION_PREFIX}%`),
+          ),
+        )
+        .limit(1);
+      if (!saved) return null;
+      if (draft.attachments.length && !generatedArtifactStorage) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'ARTIFACT_STORAGE_UNAVAILABLE' });
+      }
+      const attachments: { fileName: string; pdfBase64: string }[] = [];
+      for (const raw of draft.attachments) {
+        const a = raw as typeof raw & { sourceHash?: string };
+        const body = await generatedArtifactStorage!.read(a.s3Key);
+        if (
+          !body ||
+          body.length !== a.sizeBytes ||
+          createHash('sha256').update(body).digest('hex') !== a.sourceHash
+        ) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'ARTIFACT_CHANGED_OR_MISSING' });
+        }
+        attachments.push({ fileName: a.filename, pdfBase64: body.toString('base64') });
+      }
+      return { id: draft.id, html: draft.htmlBody ?? '', attachments };
+    }),
 });

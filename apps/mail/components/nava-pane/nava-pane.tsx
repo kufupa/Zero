@@ -99,7 +99,7 @@ import { FollowUpCard } from './blocks/follow-up-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
 import { SystemCheckResultsBlock } from './blocks/system-check-results';
 import { ReplyBody } from './reply-body';
-import { useInsertAiDraft } from './use-insert-ai-draft';
+import { useInsertAiDraft, type ReviewedReply } from './use-insert-ai-draft';
 import { useSystemCheck } from './use-system-check';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
@@ -195,6 +195,7 @@ export function NavaPane({
   const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
   const {
     trackedDraft,
+    trackedSave,
     isDraftPending,
     draftStatus,
     draftedDetails,
@@ -211,6 +212,26 @@ export function NavaPane({
     sendCommand,
     supportsAction,
   });
+  // The thread's saved reply (Save reply on the webmail panel), offered for Insert in Outlook. Read per thread.
+  const savedReplyThreadId = preview ? null : (quoteSession.staffSource?.threadId ?? null);
+  const [savedReply, setSavedReply] = useState<ReviewedReply | null>(null);
+  useEffect(() => {
+    setSavedReply(null);
+    if (!savedReplyThreadId) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const saved = await trpcClient.drafts.savedReply.query({ threadId: savedReplyThreadId });
+        if (alive) setSavedReply(saved ? { html: saved.html, attachments: saved.attachments } : null);
+      } catch {
+        // ponytail: a failed read hides Insert saved reply rather than showing an error. The normal Insert draft button still works.
+        if (alive) setSavedReply(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [savedReplyThreadId]);
   const { testing, testResults, runComprehensiveTest, resetTestResults } = useSystemCheck({
     activeEmail,
     capabilities,
@@ -1076,6 +1097,8 @@ export function NavaPane({
       isDraftPending={isDraftPending}
       statusMessage={draftStatusMessage}
       onDraft={trackedDraft}
+      onSaveReply={preview ? trackedSave : undefined}
+      onInsertSaved={savedReply ? () => trackedDraft('saved', savedReply) : null}
       preview={preview}
     />
   );

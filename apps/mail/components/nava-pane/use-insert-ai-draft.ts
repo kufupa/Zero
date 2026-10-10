@@ -6,6 +6,7 @@ import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { requireMultiOptionDraft, type CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
+import { trpcClient } from '@/providers/query-provider';
 
 const MAX_UNRESOLVED_REPLY_OPERATIONS = 256;
 const MAX_EXPIRED_REPLY_OUTCOMES = 256;
@@ -38,8 +39,45 @@ function confirmNewReplyAfterUncertainOutcome(): boolean {
   } catch { return false; }
 }
 
-/** 'selected' is one date option's reply; 'all' is one reply carrying every completed option. */
-export type ReplyDraftScope = 'selected' | 'all';
+function confirmReplaceDraft(): boolean {
+  try {
+    // Intentional blocking question: a saved reply must not silently replace an AI, someone else's or a hand-edited draft.
+    // oxlint-disable-next-line no-alert
+    return window.confirm(
+      'Replace current draft? This thread already has a draft: an AI draft, one someone else wrote, or one edited by hand. It is set aside, not deleted.',
+    );
+  } catch { return false; }
+}
+
+/** The server's refusal to replace an AI, other-person or hand-edited draft without a confirm (see drafts.saveReply). */
+function isReplaceDraftRequired(error: unknown): boolean {
+  const maybe = error as { data?: { code?: string }; message?: string };
+  return maybe.data?.code === 'CONFLICT' && maybe.message === 'DRAFT_REPLACE_CONFIRM_REQUIRED';
+}
+
+/** 'selected' is one date option's reply; 'all' is one reply carrying every completed option; 'saved' is the thread's saved reply. */
+export type ReplyDraftScope = 'selected' | 'all' | 'saved';
+
+/** A reply and its PDFs: what Insert puts into Outlook and what Save reply stores as the thread's draft. */
+export type ReviewedReply = { html: string; attachments: Array<{ fileName: string; pdfBase64: string }> };
+
+/** Reply subject as the webmail composer makes it: "Re: " once, never "Re: Re:". */
+function replySubject(subject: string): string {
+  const base = subject.replace(/\s+/g, ' ').trim() || 'Quotation';
+  return /^re:/i.test(base) ? base : `Re: ${base}`;
+}
+
+/** One PDF in the shape drafts.saveReply takes, the same upload the composer sends. */
+function pdfUploadInput(pdf: { fileName: string; pdfBase64: string }) {
+  const padding = pdf.pdfBase64.endsWith('==') ? 2 : pdf.pdfBase64.endsWith('=') ? 1 : 0;
+  return {
+    name: pdf.fileName,
+    type: 'application/pdf',
+    size: (pdf.pdfBase64.length / 4) * 3 - padding,
+    lastModified: Date.now(),
+    base64: pdf.pdfBase64,
+  };
+}
 
 type PendingReplyOperation = {
   operationId: string;
@@ -119,6 +157,7 @@ export function useInsertAiDraft({
   const unresolvedReplyConfirmationKey = useRef<string | null>(null);
   const replyMarkerBelongsToCurrentScope = useRef(false);
   const replyInFlight = useRef(false);
+  const saveInFlight = useRef(false);
   const scopeRef = useRef(currentScope);
   scopeRef.current = currentScope;
   const [isDraftPending, setIsDraftPending] = useState(false);
@@ -130,12 +169,12 @@ export function useInsertAiDraft({
   const currentSenderEmail = activeEmail?.senderEmail || 'guest@example.com';
 
   // The reply draft is a write to Outlook. It counts as in flight until it settles, like a tRPC mutation.
-  const trackedDraft = (scope: ReplyDraftScope) => {
+  const trackedDraft = (scope: ReplyDraftScope, saved?: ReviewedReply) => {
     beginMutation();
-    void handleInsertAiDraft(scope).finally(endMutation);
+    void handleInsertAiDraft(scope, saved).finally(endMutation);
   };
 
-  const handleInsertAiDraft = async (scope: ReplyDraftScope = 'selected') => {
+  const handleInsertAiDraft = async (scope: ReplyDraftScope = 'selected', saved?: ReviewedReply) => {
     if (replyInFlight.current || !activeEmail?.entryId) return;
     const startedScope = currentScope;
     const startedScopeEpoch = contextRevision.current.scopeEpoch;
@@ -246,14 +285,18 @@ export function useInsertAiDraft({
       previousAttempt = undefined;
     }
     const reviewedDraft =
-      scope === 'all'
-        ? requireMultiOptionDraft(quoteSession, combinedEdit)
-        : singleReplyDraft(requireReviewedNativeDraft(quoteSession));
+      scope === 'saved'
+        ? saved ?? null
+        : scope === 'all'
+          ? requireMultiOptionDraft(quoteSession, combinedEdit)
+          : singleReplyDraft(requireReviewedNativeDraft(quoteSession));
     if (!reviewedDraft) {
       toast.error(
-        scope === 'all'
-          ? `${replyLabel}Rate every stay and prepare the quote first. The quote must match every stay's run.`
-          : 'Make the PDF and finish the reply before creating the draft. Sample rates are never used.',
+        scope === 'saved'
+          ? `${replyLabel}The saved reply could not be loaded. Select the email again.`
+          : scope === 'all'
+            ? `${replyLabel}Rate every stay and prepare the quote first. The quote must match every stay's run.`
+            : 'Make the PDF and finish the reply before creating the draft. Sample rates are never used.',
       );
       return;
     }
@@ -369,7 +412,7 @@ export function useInsertAiDraft({
         sender: currentSender,
         senderEmail: currentSenderEmail,
         planName: pdfs.map((item) => item.fileName).join(', '),
-        ...(attempt.scope === 'all' ? { previewHtml: quotationHtml } : {}),
+        ...(attempt.scope === 'all' || attempt.scope === 'saved' ? { previewHtml: quotationHtml } : {}),
       });
       const opened = replyResult.displayed === true;
       const details = [
@@ -425,6 +468,69 @@ export function useInsertAiDraft({
     }
   };
 
+  // Webmail Save reply: the same reply and PDFs become the thread's one active draft (drafts.saveReply).
+  // Nothing is sent and nothing goes to Outlook. Another person's or a hand-edited draft needs a confirm.
+  const trackedSave = (scope: ReplyDraftScope) => {
+    beginMutation();
+    void handleSaveReply(scope).finally(endMutation);
+  };
+
+  const handleSaveReply = async (scope: ReplyDraftScope) => {
+    const staffSource = quoteSession.staffSource;
+    if (saveInFlight.current || !activeEmail?.entryId) return;
+    const key = `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`;
+    if (!staffSource) {
+      toast.error('This email is not ready to save yet. Select it again.');
+      return;
+    }
+    const reviewedDraft =
+      scope === 'all'
+        ? requireMultiOptionDraft(quoteSession, combinedEdit)
+        : singleReplyDraft(requireReviewedNativeDraft(quoteSession));
+    if (!reviewedDraft) {
+      toast.error('Make the PDF and finish the reply before saving it. Sample rates are never used.');
+      return;
+    }
+    const saveDraft = (replaceExisting: boolean) =>
+      trpcClient.drafts.saveReply.mutate({
+        threadId: staffSource.threadId,
+        replyToMessageId: staffSource.messageId,
+        to: activeEmail.senderEmail ? [activeEmail.senderEmail] : [],
+        subject: replySubject(activeEmail.subject),
+        html: reviewedDraft.html,
+        attachments: reviewedDraft.attachments.map(pdfUploadInput),
+        replaceExisting,
+      });
+    saveInFlight.current = true;
+    setIsDraftPending(true);
+    setDraftStatus(null);
+    try {
+      let saved: Awaited<ReturnType<typeof saveDraft>>;
+      try {
+        saved = await saveDraft(false);
+      } catch (error) {
+        if (!isReplaceDraftRequired(error)) throw error;
+        if (!confirmReplaceDraft()) return;
+        saved = await saveDraft(true);
+      }
+      const message = saved.replaced
+        ? 'Replaced this thread\'s draft with the reply and PDF. Nothing is sent.'
+        : 'Saved the reply and PDF as this thread\'s draft. Nothing is sent.';
+      setDraftStatus({ key, message });
+      toast.success(message);
+    } catch (error) {
+      const draftChanged = (error as { message?: string }).message === 'DRAFT_CHANGED';
+      toast.error(
+        draftChanged
+          ? 'The draft changed while saving. Save the reply again.'
+          : 'Could not save the reply. Try again.',
+      );
+    } finally {
+      saveInFlight.current = false;
+      setIsDraftPending(false);
+    }
+  };
+
   // A scope change (sign-in or mailbox switch) drops every in-memory reply operation and its prompts.
   const resetReplyDraft = () => {
     replyRetries.current.clear();
@@ -441,6 +547,7 @@ export function useInsertAiDraft({
 
   return {
     trackedDraft,
+    trackedSave,
     isDraftPending,
     draftStatus,
     draftedDetails,
