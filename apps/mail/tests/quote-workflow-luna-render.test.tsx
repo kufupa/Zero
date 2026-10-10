@@ -320,9 +320,10 @@ describe('QuoteWorkflowPanel Nava extras', () => {
   });
 
   it('treats one quote task per stay as one multi-stay quote, not work to do by hand', () => {
+    const g2: StayGroupRequirement = { ...g1, id: 'g2', arrivalDate: '2026-12-01', departureDate: '2026-12-03' };
     const session = sessionWithAnalysis({
       intent: 'quote',
-      groups: [g1],
+      groups: [g1, g2],
       secondaryAsks: [],
       alternatives: [],
       luna: lunaWire({
@@ -334,11 +335,32 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.queryByText(/This email asks for/i)).toBeNull();
+    expect(screen.queryByText(/This email asks for \d+ things/i)).toBeNull();
     expect(screen.queryByText(/Do the rest by hand/i)).toBeNull();
     expect(screen.queryByText(/PDF before running the next/i)).toBeNull();
     expect(
       screen.getByText('Several stays: get rates for each one. Prepare quote puts every stay in one proposal.'),
+    ).toBeDefined();
+  });
+
+  it('still counts each cancellation, since the pane handles one booking at a time', () => {
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [g1],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({
+        tasks: [
+          { kind: 'cancel', groupIndexes: [], note: '' },
+          { kind: 'cancel', groupIndexes: [], note: '' },
+        ],
+      }),
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(
+      screen.getByText(
+        'This email asks for 2 things: a cancellation, a cancellation. This pane handles the first. Do the rest by hand.',
+      ),
     ).toBeDefined();
   });
 
@@ -353,7 +375,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.queryByText(/This email asks for/i)).toBeNull();
+    expect(screen.queryByText(/This email asks for \d+ things/i)).toBeNull();
   });
 });
 

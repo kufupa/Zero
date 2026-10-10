@@ -36,8 +36,9 @@ function flagCopy(
 }
 
 function tasksLine(tasks: LunaAnalysisWire['tasks']): string | null {
-  // Luna emits one quote task per date set, and the pane quotes every stay in one proposal, so a kind counts once.
-  const kinds = [...new Set(tasks.map((task) => task.kind))];
+  // Luna emits one quote task per date set, and the pane quotes every stay in one proposal, so quotes count once.
+  // Other work (two bookings, two cancellations) is not combined, so each one still counts.
+  const kinds = tasks.map((task) => task.kind).filter((kind, i, all) => kind !== 'quote' || all.indexOf(kind) === i);
   if (kinds.length <= 1) return null;
   const words = kinds.map((kind) => TASK_KIND_WORDS[kind] ?? kind).join(', ');
   return `This email asks for ${kinds.length} things: ${words}. This pane handles the first. Do the rest by hand.`;
