@@ -33,6 +33,28 @@ export const AE1_TEXT = [
   'www.horizontrailtours.example',
 ].join('\n');
 
+/**
+ * A staff forward of an outside request, with invented names: a sales manager on the mailbox's own domain passes the
+ * tour operator's AE1 request on to colleagues with a short note above it. The read is the operator's request.
+ */
+export const STAFF_FORWARD_FROM = 'Sam Ndlovu <sam@legacyhotels.co.za>';
+export const STAFF_FORWARD_SUBJECT = `FW: ${AE1_SUBJECT}`;
+export const STAFF_FORWARD_TEXT = [
+  'With the tour dates out - please can we co-ordinate all bookings centrally on the right rates, with a spread of agents. Keep rooms for regulars.',
+  'Lee / Kim - please manage this for all hotels.',
+  'Thanks',
+  'Sam',
+  '',
+  'Sam Ndlovu | Group Sales | Grand Hotel Group',
+  '',
+  'From: Priya Naidoo <priya@horizontrailtours.example>',
+  'Sent: 08 October 2026 09:14',
+  'To: Reservations <reservations@legacyhotels.co.za>',
+  `Subject: ${AE1_SUBJECT}`,
+  '',
+  AE1_TEXT,
+].join('\n');
+
 export const AE2_TEXT = [
   'De : Marie Dupont <marie.dupont@example.fr>',
   'Objet : Modification de la réservation 57291630-1',

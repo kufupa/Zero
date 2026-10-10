@@ -4,6 +4,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getDb, type DB } from '../../db/client.js';
 import {
   aiWorkflowRun,
+  mailboxTransport,
   mailCategory,
   mailThread,
   mailThreadCategory,
@@ -235,8 +236,10 @@ export async function runInboundExtraction(
       threadId: message.threadId,
       direction: message.direction,
       fromAddress: message.fromAddress,
+      mailbox: mailboxTransport.email,
     })
     .from(message)
+    .leftJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
     .where(and(eq(message.id, run.triggerMessageId), eq(message.transportId, run.transportId)))
     .limit(1);
   if (!trigger || trigger.direction !== 'inbound') return 'skipped';
@@ -282,6 +285,7 @@ export async function runInboundExtraction(
     selection,
     messageId: run.triggerMessageId,
     from: trigger.fromAddress,
+    mailbox: trigger.mailbox,
     signal: deps.signal,
     deadlineMs: deps.extractionDeadlineMs ?? EXTRACTION_DEADLINE_MS,
   });

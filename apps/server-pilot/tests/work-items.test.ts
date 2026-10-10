@@ -451,6 +451,38 @@ describe('work item upsert', () => {
       expect(item!.extractionId).toBe(second);
     }));
 
+  it('a new-version read that changes the kind (an internal forward read again as a quote) is what the pane shows', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'fw1');
+      const lookup = { transportId: CENTURION, internetMessageId: '<fw1@example.com>' };
+      const old = await insertRead(db, messageId, {
+        version: 'extract-v1',
+        kind: 'other',
+        payload: { ...payload(), agency: 'Grand Hotel Group' },
+      });
+      await db
+        .update(mailExtraction)
+        .set({ createdAt: new Date(Date.now() - 60_000) })
+        .where(eq(mailExtraction.id, old));
+      const before = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect((await storedWorkFor(db, lookup)) as { analysis: { intent: string } }).toMatchObject({
+        extractionId: old,
+        analysis: { intent: 'other' },
+      });
+
+      // The re-read the extractor change queues (same message, new version) lands as the latest succeeded read.
+      const next = await insertRead(db, messageId, { version: 'extract-v2', kind: 'quote', payload: payload() });
+      const after = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(after?.id).not.toBe(before?.id);
+      expect(after?.extractionId).toBe(next);
+      const work = await storedWorkFor(db, lookup);
+      if (work.status !== 'ready') throw new Error(`expected ready, got ${work.status}`);
+      expect(work.extractionId).toBe(next);
+      expect(work.workItemId).toBe(after?.id);
+      expect(work.analysis.intent).toBe('quote');
+      expect(work.analysis.groups[0]!.organisation).toBe('Horizon Trail Tours');
+    }));
+
   it('never moves the work item back to an older read a slow caller still holds', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'up2');
