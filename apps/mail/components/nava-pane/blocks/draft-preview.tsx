@@ -24,7 +24,7 @@ export function DraftPreviewBlock({
   return (
     <div className="animate-in fade-in rounded-sm border border-[#cbd5e1] bg-white p-3 text-xs leading-relaxed text-[#1e293b] duration-200">
       <div className="mb-2 flex items-start justify-between border-b border-[#e2e8f0] pb-2 text-[11px] text-[#64748b]">
-        <div>
+        <div data-pii>
           <strong>To:</strong> {details.sender} &lt;
           {details.senderEmail}&gt;
           <br />

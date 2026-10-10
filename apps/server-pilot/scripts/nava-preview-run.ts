@@ -397,10 +397,16 @@ export function outcomeOf(read: PaneRead): Outcome | null {
 }
 
 /**
- * Page-side, run before each screenshot. Masks guest fields (by label or test id), any unlabelled
- * or unknown text field (the default), the thread list's subject and snippet (email text), and any
- * text or value holding an email or a phone-like number. Selects and plain number, date and
- * amount fields stay visible. Business names stay visible. Runs only in the page.
+ * The pane marks every element that shows a guest detail (a name, a booking number, the email's sender or subject)
+ * with this attribute. The runner masks each one, so a new render site is covered by marking it, not by a rule here.
+ */
+export const PII_SELECTOR = '[data-pii]';
+
+/**
+ * Page-side, run before each screenshot. Masks every element the pane marks as guest detail (PII_SELECTOR), guest
+ * fields (by label or test id), any unlabelled or unknown text field (the default), the thread list's subject and
+ * snippet (email text), and any text or value holding an email or a phone-like number. Selects and plain number, date
+ * and amount fields stay visible. Business names stay visible. Runs only in the page.
  */
 export const MARK_PII_JS = `() => {
   const pii = new RegExp(${JSON.stringify(PII_LABEL.source)}, 'i');
@@ -433,6 +439,7 @@ export const MARK_PII_JS = `() => {
     if (plainTypes.includes(type) || mode === 'numeric' || mode === 'decimal') continue;
     mark(el);
   }
+  for (const el of document.querySelectorAll(${JSON.stringify(PII_SELECTOR)})) mark(el);
   for (const el of document.querySelectorAll('aside a[data-thread-id] span')) mark(el);
   for (const el of document.querySelectorAll('body *')) {
     if (el.matches('input, textarea, select')) {

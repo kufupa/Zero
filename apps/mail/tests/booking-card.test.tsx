@@ -3,6 +3,7 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { unmaskedPii } from './helpers/pii-marks';
 import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import {
@@ -541,6 +542,20 @@ function previewButton(index: number): HTMLButtonElement {
 function bookButton(index: number): HTMLButtonElement {
   return screen.getAllByRole('button', { name: 'Book in HMS' })[index] as HTMLButtonElement;
 }
+
+describe('booking card marks guest details for the preview gate (H6b)', () => {
+  it('marks the guest names, the booking summary and the HMS confirmation with data-pii', async () => {
+    const { client } = paneClient();
+    const { container } = render(<BookingCards draft={draftReady()} paneSave={client} />);
+    expect(unmaskedPii(container, ['Smith', 'Doe'])).toEqual([]);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    expect((await screen.findByText(JOHN_SMITH_PREVIEW)).hasAttribute('data-pii')).toBe(true);
+    fireEvent.click(bookButton(0));
+    await screen.findByText('Booked in HMS – confirmation 98765-1');
+    expect(unmaskedPii(container, ['Smith', 'Doe', '98765-1'])).toEqual([]);
+  });
+});
 
 describe('booking card pane save', () => {
   it('keeps Preview in HMS out of the card while the server flag is off', () => {

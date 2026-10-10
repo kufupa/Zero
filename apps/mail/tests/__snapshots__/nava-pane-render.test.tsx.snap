@@ -96,11 +96,13 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
             >
               <span
                 class="truncate text-[13px] font-bold text-[#1e293b]"
+                data-pii="true"
               >
                 Suite Availability Request
               </span>
               <span
                 class="truncate text-[11px] text-[#64748b]"
+                data-pii="true"
               >
                 David Miller &lt;guest@example.com&gt;
               </span>
@@ -165,6 +167,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-name"
                   maxlength="200"
                   value=""
@@ -209,6 +212,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-endClient"
                   maxlength="200"
                   value=""
@@ -231,6 +235,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-email"
                   maxlength="200"
                   value=""
@@ -253,6 +258,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-phone"
                   maxlength="200"
                   value=""
@@ -312,6 +318,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
                 </p>
                 <p
                   class="text-[12.5px] text-[#1e293b]"
+                  data-pii="true"
                 >
                   57291630-1
                 </p>
@@ -349,6 +356,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
                 </p>
                 <p
                   class="text-[12.5px] text-[#1e293b]"
+                  data-pii="true"
                 >
                   Smith
                 </p>
@@ -975,11 +983,13 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
             >
               <span
                 class="truncate text-[13px] font-bold text-[#1e293b]"
+                data-pii="true"
               >
                 Suite Availability Request
               </span>
               <span
                 class="truncate text-[11px] text-[#64748b]"
+                data-pii="true"
               >
                 David Miller &lt;guest@example.com&gt;
               </span>
@@ -1044,6 +1054,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-name"
                   maxlength="200"
                   value=""
@@ -1088,6 +1099,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-endClient"
                   maxlength="200"
                   value=""
@@ -1110,6 +1122,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-email"
                   maxlength="200"
                   value=""
@@ -1132,6 +1145,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-phone"
                   maxlength="200"
                   value=""
@@ -2822,11 +2836,13 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
             >
               <span
                 class="truncate text-[13px] font-bold text-[#1e293b]"
+                data-pii="true"
               >
                 Suite Availability Request
               </span>
               <span
                 class="truncate text-[11px] text-[#64748b]"
+                data-pii="true"
               >
                 David Miller &lt;guest@example.com&gt;
               </span>
@@ -2891,6 +2907,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-name"
                   maxlength="200"
                   value=""
@@ -2935,6 +2952,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-endClient"
                   maxlength="200"
                   value=""
@@ -2957,6 +2975,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-email"
                   maxlength="200"
                   value=""
@@ -2979,6 +2998,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-phone"
                   maxlength="200"
                   value=""
@@ -4864,11 +4884,13 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
             >
               <span
                 class="truncate text-[13px] font-bold text-[#1e293b]"
+                data-pii="true"
               >
                 Suite Availability Request
               </span>
               <span
                 class="truncate text-[11px] text-[#64748b]"
+                data-pii="true"
               >
                 David Miller &lt;guest@example.com&gt;
               </span>
@@ -4933,6 +4955,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-name"
                   maxlength="200"
                   value=""
@@ -4977,6 +5000,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-endClient"
                   maxlength="200"
                   value=""
@@ -4999,6 +5023,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-email"
                   maxlength="200"
                   value=""
@@ -5021,6 +5046,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-phone"
                   maxlength="200"
                   value=""
@@ -5052,6 +5078,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
             </p>
             <p
               class="text-[12.5px] font-semibold text-[#1e293b]"
+              data-pii="true"
             >
               Guest Smith · arriving 12 Nov 2026
             </p>
@@ -6604,11 +6631,13 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
             >
               <span
                 class="truncate text-[13px] font-bold text-[#1e293b]"
+                data-pii="true"
               >
                 Suite Availability Request
               </span>
               <span
                 class="truncate text-[11px] text-[#64748b]"
+                data-pii="true"
               >
                 David Miller &lt;guest@example.com&gt;
               </span>
@@ -6673,6 +6702,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-name"
                   maxlength="200"
                   value=""
@@ -6717,6 +6747,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-endClient"
                   maxlength="200"
                   value=""
@@ -6739,6 +6770,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-email"
                   maxlength="200"
                   value=""
@@ -6761,6 +6793,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 </div>
                 <input
                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                  data-pii="true"
                   id="quote-contact-phone"
                   maxlength="200"
                   value=""
@@ -6792,6 +6825,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
             </p>
             <p
               class="text-[12.5px] font-semibold text-[#1e293b]"
+              data-pii="true"
             >
               arriving 12 Nov 2026
             </p>

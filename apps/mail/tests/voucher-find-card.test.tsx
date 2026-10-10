@@ -16,9 +16,10 @@ import {
   type GuestSearchReply,
   type HmsJobView,
 } from '../lib/quote-workflow/amend-find';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { VoucherFindCard } from '../components/quote-workflow/voucher-find-card';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { unmaskedPii } from './helpers/pii-marks';
 
 afterEach(() => cleanup());
 
@@ -465,5 +466,41 @@ describe('voucher find card: a voucher PDF that could not be read', () => {
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
     expect(await screen.findByText(`${VOUCHER_COPY.conflictLastNames} Smith, Jones.`)).toBeTruthy();
     expect(screen.queryByText(VOUCHER_COPY.missingGuest)).toBeNull();
+  });
+});
+
+describe('voucher find card: guest details are marked for the preview gate (H6b)', () => {
+  it('marks the guest line, the file name and each HMS row with data-pii', async () => {
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    const { container } = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+    const search = await screen.findByRole('button', { name: VOUCHER_COPY.search });
+    // Let the job hook's resume effect run first, or it clears the search the click starts.
+    await act(async () => {});
+    fireEvent.click(search);
+    await screen.findByText('John Smith · 57291630-1');
+    expect(screen.getByText(`Guest Smith · arriving ${formatStayDate('2026-11-12')}`).hasAttribute('data-pii')).toBe(true);
+    expect(unmaskedPii(container, ['Smith', 'John', '57291630-1'])).toEqual([]);
+  });
+
+  it('marks the conflicting surnames and a search with no match', async () => {
+    const reply: VoucherFindReply = {
+      status: 'voucher',
+      messageId: 'm1',
+      guest: { lastName: null, arrival: '2026-11-12', conflicts: { lastNames: ['Smith', 'Jones'], arrivals: [] } },
+      file: VOUCHER.file,
+    };
+    const conflict = render(<VoucherFindCard internetMessageId="abc@host" trpc={fakeTrpc({ reply }).trpc} download={vi.fn()} />);
+    await screen.findByText(`${VOUCHER_COPY.conflictLastNames} Smith, Jones.`);
+    expect(unmaskedPii(conflict.container, ['Smith', 'Jones'])).toEqual([]);
+    conflict.unmount();
+
+    const { trpc } = fakeTrpc({ reply: VOUCHER, search: { outcome: 'ok', rows: [], screenshots: [], runId: null } });
+    const { container } = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+    const search = await screen.findByRole('button', { name: VOUCHER_COPY.search });
+    // Let the job hook's resume effect run first, or it clears the search the click starts.
+    await act(async () => {});
+    fireEvent.click(search);
+    await screen.findByText(noSearchMatchCopy('Smith', '2026-11-12'));
+    expect(unmaskedPii(container, ['Smith'])).toEqual([]);
   });
 });

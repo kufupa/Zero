@@ -6,6 +6,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { StoredContact, StoredWork } from '@/lib/quote-workflow/backend-bind';
 import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SelectedEmailBlock } from '@/components/nava-pane/blocks/selected-email';
+import { unmaskedPii } from './helpers/pii-marks';
 
 afterEach(() => cleanup());
 
@@ -131,4 +133,21 @@ describe('contact edits through the stored work', () => {
     expect((screen.getByLabelText('Phone') as HTMLInputElement).value).toBe('+27 82 555 0100');
     expect(mutate).not.toHaveBeenCalled();
   }, 10_000);
+});
+
+describe('contact and selected email mark guest details for the preview gate (H6b)', () => {
+  it('marks the guest contact fields, and leaves the company or agency unmarked', () => {
+    const { container } = render(<ContactBlock contact={PRIYA} onEdit={vi.fn()} />);
+    expect(unmaskedPii(container, ['Priya', 'Tailormade', 'priya@example.com', '+27 11 000 0000'])).toEqual([]);
+    expect(container.querySelector('#quote-contact-company')?.hasAttribute('data-pii')).toBe(false);
+  });
+
+  it('marks the selected email subject and sender', () => {
+    const { container } = render(
+      <SelectedEmailBlock
+        activeEmail={{ subject: 'Booking for Mr Fixturemann', senderName: 'Priya Naidoo', senderEmail: 'priya@example.com' } as never}
+      />,
+    );
+    expect(unmaskedPii(container, ['Fixturemann', 'Priya', 'priya@example.com'])).toEqual([]);
+  });
 });
