@@ -95,6 +95,7 @@ import { SelectedEmailBlock } from './blocks/selected-email';
 import { ContactBlock } from './blocks/contact-block';
 import { TranslationBox } from './blocks/translation-box';
 import { BookingVoucherCard } from './blocks/booking-voucher-card';
+import { FollowUpCard } from './blocks/follow-up-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
 import { SystemCheckResultsBlock } from './blocks/system-check-results';
 import { ReplyBody } from './reply-body';
@@ -1287,6 +1288,13 @@ export function NavaPane({
                 onRetry={storedWork.retryTranslation}
               />
             ) : null}
+            {/* The quote follow-up on this thread, when the server holds one (R10). Keyed by the email, like the voucher card. */}
+            <FollowUpCard
+              key={activeEmail?.internetMessageId ?? 'no-email'}
+              bridge={bridge}
+              preview={preview}
+              trpc={trpcClient}
+            />
 
             {/* Booking and voucher block: a change or cancellation card, then the Find the booking card. */}
             <BookingVoucherCard

@@ -6,13 +6,16 @@ import {
   type AiRunFence,
 } from './run-ledger.js';
 import { mailboxTransport, mailDraft, mailDraftRevision, message } from '../db/schema/mail.js';
-import { and, asc, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { deriveReplySubject } from './workflows/candidate-draft.js';
 import { workEvent, workItem } from '../db/schema/work.js';
+import { canonicalInternetMessageId } from './quote-workflow-analyse-selection.js';
 import { textToSafeHtml } from './draft-evidence.js';
 import { getDb, type DB } from '../db/client.js';
 import { NAVA_USER_ID } from '../db/seed.js';
 import { alias } from 'drizzle-orm/pg-core';
+import { appendWorkEvent } from './work-events.js';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Quote follow-ups (R10). When a quote request's thread gets an outbound message (with or without the quote attached),
@@ -22,6 +25,10 @@ import { alias } from 'drizzle-orm/pg-core';
  */
 
 export const QUOTE_FOLLOWUP_PROMPT_VERSION = 'quote-followup/1';
+/** Every follow-up draft id starts with this. With the system author and origin manual, it marks the sweep's drafts. */
+export const QUOTE_FOLLOWUP_DRAFT_PREFIX = 'quote-followup:';
+/** work_event field path for the suggestion as a whole. Not a stay path, so the field-event route never writes it. */
+const FOLLOW_UP_FIELD_PATH = 'followUp.draft';
 const FOLLOW_UP_BUSINESS_DAYS = 3;
 const SWEEP_BATCH = 200;
 const DEFER_MS = 5 * 60 * 1000;
@@ -30,6 +37,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const SA_OFFSET_MS = 2 * 60 * 60 * 1000;
 // Only open items get follow-ups. A done or dismissed item was closed by a person.
 const OPEN_STATUSES = ['needs_you', 'review'] as const;
+/** The sweep's drafts: written as the system author, origin manual, under the id prefix (see writeFollowUp). */
+const IS_FOLLOW_UP_DRAFT = and(
+  eq(mailDraft.createdByUserId, NAVA_USER_ID),
+  eq(mailDraft.origin, 'manual'),
+  like(mailDraft.id, `${QUOTE_FOLLOWUP_DRAFT_PREFIX}%`),
+);
 
 // ponytail: static South African public holidays for 2026-2027, including Sunday-observed Monday substitutes. Extend it
 // each December. One-off proclamations (for example an election day) are not in the list, so a due day can land on one.
@@ -136,6 +149,44 @@ function clientRepliedAfter(thread: ThreadMessage[], sentAtMs: number): boolean 
   return thread.some((m) => m.direction === 'inbound' && arrivedTime(m) > sentAtMs);
 }
 
+/** Staff sent something else on the thread after the quote, so a follow-up is no longer needed. */
+function staffRepliedAfter(thread: ThreadMessage[], sentAtMs: number): boolean {
+  return thread.some((m) => m.direction === 'outbound' && sentTime(m) > sentAtMs);
+}
+
+/**
+ * Discards a candidate that a client or staff reply has overtaken. A used (active) draft is staff's to keep, so this
+ * never touches it. The sent message the draft replies to is the quote the follow-up is about.
+ */
+async function discardOvertakenFollowUps(db: DB, now: Date): Promise<number> {
+  const candidates = await db
+    .select({
+      id: mailDraft.id,
+      transportId: mailDraft.transportId,
+      threadId: mailDraft.threadId,
+      replyToMessageId: mailDraft.replyToMessageId,
+    })
+    .from(mailDraft)
+    .where(and(eq(mailDraft.status, 'candidate'), IS_FOLLOW_UP_DRAFT))
+    .limit(SWEEP_BATCH);
+  let discarded = 0;
+  for (const draft of candidates) {
+    if (!draft.threadId || !draft.replyToMessageId) continue;
+    const thread = await threadMessages(db, draft.transportId, draft.threadId);
+    const sent = thread.find((m) => m.id === draft.replyToMessageId);
+    if (!sent) continue;
+    const sentAt = sentTime(sent);
+    if (!clientRepliedAfter(thread, sentAt) && !staffRepliedAfter(thread, sentAt)) continue;
+    const [row] = await db
+      .update(mailDraft)
+      .set({ status: 'discarded', updatedAt: now })
+      .where(and(eq(mailDraft.id, draft.id), eq(mailDraft.status, 'candidate')))
+      .returning({ id: mailDraft.id });
+    if (row) discarded++;
+  }
+  return discarded;
+}
+
 /**
  * One sweep pass. Links each unlinked quote item to its first outbound since the request arrived, cancels a due date
  * once a client has replied, and queues one run per item whose due date has passed. The enqueue and the cleared due
@@ -143,12 +194,14 @@ function clientRepliedAfter(thread: ThreadMessage[], sentAtMs: number): boolean 
  */
 export async function runQuoteFollowupSweep(
   input: { db?: DB; env?: NodeJS.ProcessEnv; now?: Date } = {},
-): Promise<{ linked: number; cancelled: number; queued: number }> {
-  const counts = { linked: 0, cancelled: 0, queued: 0 };
+): Promise<{ linked: number; cancelled: number; queued: number; discarded: number }> {
+  const counts = { linked: 0, cancelled: 0, queued: 0, discarded: 0 };
   const env = input.env ?? process.env;
-  if (!quoteFollowupsEnabled(env)) return counts;
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
+  // Runs even when the flag is off: a suggestion a reply has overtaken must never stay on offer.
+  counts.discarded = await discardOvertakenFollowUps(db, now);
+  if (!quoteFollowupsEnabled(env)) return counts;
   const since = quoteFollowupsSince(env);
 
   const source = alias(message, 'source');
@@ -293,6 +346,7 @@ async function writeFollowUp(
   const sent = thread.find((m) => m.id === run.triggerMessageId && m.direction === 'outbound');
   if (!sent) return 'no_sent_message';
   if (clientRepliedAfter(thread, sentTime(sent))) return 'client_replied';
+  if (staffRepliedAfter(thread, sentTime(sent))) return 'staff_replied';
 
   const [transport] = await db
     .select({ displayName: mailboxTransport.displayName })
@@ -300,7 +354,7 @@ async function writeFollowUp(
     .where(eq(mailboxTransport.id, run.transportId))
     .limit(1);
   const text = followUpText(transport?.displayName ?? null, new Date(sentTime(sent)));
-  const draftId = `quote-followup:${sent.id}`;
+  const draftId = `${QUOTE_FOLLOWUP_DRAFT_PREFIX}${sent.id}`;
   const now = new Date();
   const fields = {
     toAddresses: sent.toAddresses,
@@ -397,4 +451,221 @@ export async function executeQuoteFollowupRun(input: {
     db,
   );
   return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
+}
+
+type FollowUpDraft = typeof mailDraft.$inferSelect;
+
+function isUniqueViolation(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  if ((error as { code?: unknown }).code === '23505') return true;
+  return isUniqueViolation((error as { cause?: unknown }).cause);
+}
+
+/** The quote work item a follow-up belongs to: the one whose first outbound the draft replies to. */
+async function followUpWorkItemId(db: DB, draft: FollowUpDraft): Promise<string | null> {
+  if (!draft.threadId || !draft.replyToMessageId) return null;
+  const [row] = await db
+    .select({ id: workItem.id })
+    .from(workItem)
+    .where(
+      and(
+        eq(workItem.transportId, draft.transportId),
+        eq(workItem.threadId, draft.threadId),
+        eq(workItem.kind, 'quote'),
+        eq(workItem.sentMessageId, draft.replyToMessageId),
+      ),
+    )
+    .limit(1);
+  return row?.id ?? null;
+}
+
+/** A follow-up as the pane shows it. The body is stored HTML; the pane sanitises it before it renders. */
+export type FollowUpWire = {
+  state: 'suggested' | 'in_reply';
+  id: string;
+  subject: string | null;
+  htmlBody: string;
+  replyToMessageId: string | null;
+};
+
+export function followUpWire(state: FollowUpWire['state'], draft: FollowUpDraft): FollowUpWire {
+  return {
+    state,
+    id: draft.id,
+    subject: draft.subject,
+    htmlBody: draft.htmlBody ?? '',
+    replyToMessageId: draft.replyToMessageId,
+  };
+}
+
+/**
+ * The follow-up on the thread of this mail: a suggestion she has not used, else the draft she used and has not sent.
+ * Null when there is neither.
+ */
+export async function followUpForMessage(
+  db: DB,
+  input: { transportId: string; internetMessageId: string },
+): Promise<FollowUpWire | null> {
+  const internetMessageId = canonicalInternetMessageId(input.internetMessageId);
+  if (!internetMessageId) return null;
+  const found = await db
+    .select({ threadId: message.threadId })
+    .from(message)
+    .where(
+      and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, internetMessageId)),
+    )
+    .limit(2);
+  const threadId = found.length === 1 ? found[0]?.threadId : null;
+  if (!threadId) return null;
+  const drafts = await db
+    .select()
+    .from(mailDraft)
+    .where(
+      and(
+        eq(mailDraft.transportId, input.transportId),
+        eq(mailDraft.threadId, threadId),
+        inArray(mailDraft.status, ['candidate', 'active']),
+        IS_FOLLOW_UP_DRAFT,
+      ),
+    )
+    .orderBy(desc(mailDraft.updatedAt), desc(mailDraft.id))
+    .limit(5);
+  const suggested = drafts.find((draft) => draft.status === 'candidate');
+  if (suggested) return followUpWire('suggested', suggested);
+  const used = drafts.find((draft) => draft.status === 'active');
+  return used ? followUpWire('in_reply', used) : null;
+}
+
+export type UseFollowUpResult =
+  | { status: 'used'; draft: FollowUpDraft }
+  | { status: 'active_exists' }
+  | { status: 'not_found' };
+
+/**
+ * Makes a suggestion the thread's reply draft. It keeps origin manual, so it is sent like a reply she wrote; nothing
+ * here sends it. If another active draft holds the thread's slot, this refuses (active_exists) unless replaceActive is
+ * set, which discards that draft first, the same status delete gives it. The accept is logged in the same transaction.
+ */
+export async function useFollowUpDraft(
+  db: DB,
+  input: { transportId: string; userId: string; draftId: string; replaceActive: boolean; now?: Date },
+): Promise<UseFollowUpResult> {
+  const now = input.now ?? new Date();
+  try {
+    return await db.transaction(async (tx) => {
+      const [draft] = await tx
+        .select()
+        .from(mailDraft)
+        .where(
+          and(
+            eq(mailDraft.id, input.draftId),
+            eq(mailDraft.transportId, input.transportId),
+            eq(mailDraft.status, 'candidate'),
+            IS_FOLLOW_UP_DRAFT,
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!draft?.threadId) return { status: 'not_found' as const };
+      const workItemId = await followUpWorkItemId(tx as unknown as DB, draft);
+      if (!workItemId) return { status: 'not_found' as const };
+      const [active] = await tx
+        .select({ id: mailDraft.id })
+        .from(mailDraft)
+        .where(
+          and(
+            eq(mailDraft.transportId, input.transportId),
+            eq(mailDraft.threadId, draft.threadId),
+            eq(mailDraft.status, 'active'),
+            eq(mailDraft.isSent, false),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (active && !input.replaceActive) return { status: 'active_exists' as const };
+      if (active) {
+        await tx
+          .update(mailDraft)
+          .set({ status: 'discarded', updatedAt: now })
+          .where(eq(mailDraft.id, active.id));
+      }
+      const [used] = await tx
+        .update(mailDraft)
+        .set({ status: 'active', updatedAt: now })
+        .where(and(eq(mailDraft.id, draft.id), eq(mailDraft.status, 'candidate')))
+        .returning();
+      if (!used) return { status: 'not_found' as const };
+      await tx.insert(mailDraftRevision).values({
+        id: randomUUID(),
+        draftId: draft.id,
+        actorUserId: input.userId,
+        kind: 'promoted',
+        toAddresses: draft.toAddresses,
+        ccAddresses: draft.ccAddresses,
+        bccAddresses: draft.bccAddresses,
+        subject: draft.subject,
+        textBody: draft.textBody,
+        htmlBody: draft.htmlBody,
+        attachments: draft.attachments,
+        createdAt: now,
+      });
+      await appendWorkEvent(tx as unknown as DB, {
+        workItemId,
+        type: 'field.accept',
+        actorUserId: input.userId,
+        fieldPath: FOLLOW_UP_FIELD_PATH,
+        aiValue: draft.textBody,
+        value: draft.textBody,
+        aiSource: QUOTE_FOLLOWUP_PROMPT_VERSION,
+      });
+      return { status: 'used' as const, draft: used };
+    });
+  } catch (error) {
+    // Two suggestions on one thread can race for the active slot. The loser finds the slot taken.
+    if (isUniqueViolation(error)) return { status: 'active_exists' as const };
+    throw error;
+  }
+}
+
+/**
+ * Discards a suggestion she does not want, and logs the reject in the same transaction. Only an unused suggestion can
+ * be dismissed. The work item keeps its status: the quote may still need her.
+ */
+export async function dismissFollowUpDraft(
+  db: DB,
+  input: { transportId: string; userId: string; draftId: string; now?: Date },
+): Promise<'dismissed' | 'not_found'> {
+  const now = input.now ?? new Date();
+  return db.transaction(async (tx) => {
+    const [draft] = await tx
+      .select()
+      .from(mailDraft)
+      .where(
+        and(
+          eq(mailDraft.id, input.draftId),
+          eq(mailDraft.transportId, input.transportId),
+          eq(mailDraft.status, 'candidate'),
+          IS_FOLLOW_UP_DRAFT,
+        ),
+      )
+      .limit(1)
+      .for('update');
+    if (!draft) return 'not_found' as const;
+    const workItemId = await followUpWorkItemId(tx as unknown as DB, draft);
+    if (!workItemId) return 'not_found' as const;
+    await tx
+      .update(mailDraft)
+      .set({ status: 'discarded', updatedAt: now })
+      .where(and(eq(mailDraft.id, draft.id), eq(mailDraft.status, 'candidate')));
+    await appendWorkEvent(tx as unknown as DB, {
+      workItemId,
+      type: 'field.reject',
+      actorUserId: input.userId,
+      fieldPath: FOLLOW_UP_FIELD_PATH,
+      aiValue: draft.textBody,
+      value: null,
+      aiSource: QUOTE_FOLLOWUP_PROMPT_VERSION,
+    });
+    return 'dismissed' as const;
+  });
 }
