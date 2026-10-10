@@ -61,22 +61,33 @@ export type SavedRatesState = {
   archive: (id: string) => Promise<void>;
 };
 
-/** The saved rates for the pane. Reloaded after each change, so every row's picker shows the same list. */
-export function useSavedRates(client: SavedRatesClient | null): SavedRatesState {
+/**
+ * The saved rates for the pane. Reloaded after each change, so every row's picker shows the same list. Saved rates
+ * belong to a mailbox: when `scope` (the mailbox) changes the list is cleared and read again, and a list that was asked
+ * for under the old mailbox is dropped.
+ */
+export function useSavedRates(client: SavedRatesClient | null, scope: string | null = null): SavedRatesState {
   const [rates, setRates] = useState<SavedRate[]>([]);
   const [status, setStatus] = useState<SavedRatesState['status']>(client ? 'loading' : 'unavailable');
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const reload = useCallback(async () => {
     if (!client) return;
+    const askedIn = scopeRef.current;
     try {
-      setRates(await client.list());
+      const list = await client.list();
+      if (scopeRef.current !== askedIn) return;
+      setRates(list);
       setStatus('ready');
     } catch {
-      setStatus('failed');
+      if (scopeRef.current === askedIn) setStatus('failed');
     }
   }, [client]);
   useEffect(() => {
+    setRates([]);
+    if (client) setStatus('loading');
     void reload();
-  }, [reload]);
+  }, [reload, client, scope]);
   const writer = (): SavedRatesClient => {
     if (!client) throw new Error('Saved rates are not available here.');
     return client;

@@ -300,6 +300,8 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
         ['adults', `${rowPath}.adults`],
         ['board', `${rowPath}.board`],
       );
+      // "Not stated yet" saves null. Mapping fills a null board with the default, so her cleared choice is put back.
+      if (Object.hasOwn(state, `${rowPath}.board`) && state[`${rowPath}.board`] === null) group.board = 'unknown';
     }
     for (const [key, path] of corrected) {
       if (Object.hasOwn(state, path)) group.fields[key] = 'staff_corrected';
@@ -327,11 +329,71 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
 
 export type StoredAnalysis = ReturnType<typeof storedAnalysis>['analysis'];
 
-export type WorkItemRef = { id: string; status: string; state: WorkState };
+export type WorkItemRef = { id: string; status: string; state: WorkState; extractionId: string | null };
+
+function sameDates(a: { arrival: string | null; departure: string | null }, b: typeof a): boolean {
+  return a.arrival === b.arrival && a.departure === b.departure;
+}
 
 /**
- * Upserts the work item for (thread, kind, source message) and points it at this extraction. Only the extraction link
- * moves. `state` is never written here, so a person's values survive a re-read.
+ * Whether an entry keeps its meaning under the same id in the next read. Ids come from positions, so a read that drops
+ * or reorders entries gives an id to another entry. An entry whose own value is now under another id, or whose id now
+ * holds another old entry's value, has moved. Same id with a re-read value (a corrected date) is the same entry.
+ */
+function sameSlot<T extends { id: string }>(id: string, before: T[], after: T[], same: (a: T, b: T) => boolean): boolean {
+  const was = before.find((item) => item.id === id);
+  if (!was) return true; // a stay or row she added: its id is hers, not a position
+  const now = after.find((item) => item.id === id);
+  if (!now) return false;
+  if (same(was, now)) return true;
+  if (after.some((item) => item.id !== id && same(item, was))) return false;
+  return !before.some((item) => item.id !== id && same(item, now));
+}
+
+/**
+ * Whether her saved stay and row values still land on the same stays and rows in the next read. When a read drops or
+ * reorders entries they would land on another stay, so the work item stays on the read she corrected.
+ */
+export function correctionsCarryTo(
+  before: MailExtractionPayload,
+  after: MailExtractionPayload,
+  state: WorkState,
+): boolean {
+  for (const key of Object.keys(state)) {
+    const path = parseFieldPath(key);
+    if (!path) continue;
+    if (!sameSlot(path.stayId, before.stays, after.stays, (a, b) => sameDates(a.requested, b.requested))) return false;
+    if (path.rowId === null) continue;
+    const rowsBefore = before.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
+    const rowsAfter = after.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
+    if (!sameSlot(path.rowId, rowsBefore, rowsAfter, (a, b) => a.roomType === b.roomType)) return false;
+  }
+  return true;
+}
+
+/**
+ * Whether the item moves from its read to `nextId`. Never to an older read (a slow caller can hold an old one), and
+ * never when her saved values would land on other stays or rows in the next read.
+ */
+async function shouldRelink(db: DB, fromId: string | null, nextId: string, state: WorkState): Promise<boolean> {
+  if (!fromId) return true;
+  const reads = await db
+    .select({ id: mailExtraction.id, createdAt: mailExtraction.createdAt, payload: mailExtraction.payload })
+    .from(mailExtraction)
+    .where(inArray(mailExtraction.id, [fromId, nextId]));
+  const from = reads.find((read) => read.id === fromId);
+  const next = reads.find((read) => read.id === nextId);
+  if (!next) return false;
+  if (!from) return true;
+  if (next.createdAt < from.createdAt) return false;
+  if (!from.payload || !next.payload) return true;
+  return correctionsCarryTo(from.payload as MailExtractionPayload, next.payload as MailExtractionPayload, state);
+}
+
+/**
+ * Upserts the work item for (thread, kind, source message) and points it at this extraction when it is newer and her
+ * saved values still fit it (see shouldRelink). Only the extraction link moves. `state` is never written here, so a
+ * person's values survive a re-read. Returns the read the item is on.
  */
 export async function ensureWorkItem(
   db: DB,
@@ -356,30 +418,41 @@ export async function ensureWorkItem(
       ...(input.status ? { status: input.status } : {}),
     })
     .onConflictDoNothing({ target: [workItem.threadId, workItem.kind, workItem.sourceMessageId] });
-  const [row] = await db
-    .select({
-      id: workItem.id,
-      status: workItem.status,
-      state: workItem.state,
-      extractionId: workItem.extractionId,
-    })
-    .from(workItem)
+  const select = () =>
+    db
+      .select({
+        id: workItem.id,
+        status: workItem.status,
+        state: workItem.state,
+        extractionId: workItem.extractionId,
+      })
+      .from(workItem)
+      .where(
+        and(
+          eq(workItem.threadId, input.threadId),
+          eq(workItem.kind, input.kind),
+          eq(workItem.sourceMessageId, input.messageId),
+        ),
+      )
+      .limit(1);
+  const [row] = await select();
+  if (!row) throw new Error('work item missing after upsert');
+  if (row.extractionId === input.extractionId) return row;
+  if (!(await shouldRelink(db, row.extractionId, input.extractionId, row.state))) return row;
+  // Moves only from the read it was checked against, so a concurrent move is never undone.
+  const [moved] = await db
+    .update(workItem)
+    .set({ extractionId: input.extractionId, updatedAt: new Date() })
     .where(
       and(
-        eq(workItem.threadId, input.threadId),
-        eq(workItem.kind, input.kind),
-        eq(workItem.sourceMessageId, input.messageId),
+        eq(workItem.id, row.id),
+        row.extractionId ? eq(workItem.extractionId, row.extractionId) : isNull(workItem.extractionId),
       ),
     )
-    .limit(1);
-  if (!row) throw new Error('work item missing after upsert');
-  if (row.extractionId !== input.extractionId) {
-    await db
-      .update(workItem)
-      .set({ extractionId: input.extractionId, updatedAt: new Date() })
-      .where(eq(workItem.id, row.id));
-  }
-  return { id: row.id, status: row.status, state: row.state };
+    .returning({ id: workItem.id });
+  if (moved) return { ...row, extractionId: input.extractionId };
+  const [now] = await select();
+  return now ?? row;
 }
 
 /**
@@ -405,11 +478,18 @@ export function messageArrivedAt(m: { receivedAt: Date | null; createdAt: Date; 
 /** SQL twin of messageArrivedAt, for a `message` row. */
 export const MESSAGE_ARRIVED_AT = sql`case when ${message.pop3Uidl} is null then coalesce(${message.receivedAt}, ${message.createdAt}) else ${message.createdAt} end`;
 
-async function latestSucceededRead(db: DB, messageId: string) {
+/** The message's latest succeeded read, or the one with `id` when given. */
+async function succeededRead(db: DB, messageId: string, id?: string) {
   const [row] = await db
     .select()
     .from(mailExtraction)
-    .where(and(eq(mailExtraction.messageId, messageId), eq(mailExtraction.status, 'succeeded')))
+    .where(
+      and(
+        eq(mailExtraction.messageId, messageId),
+        eq(mailExtraction.status, 'succeeded'),
+        id ? eq(mailExtraction.id, id) : undefined,
+      ),
+    )
     .orderBy(desc(mailExtraction.createdAt))
     .limit(1);
   if (!row?.kind || !row.payload) return null;
@@ -443,7 +523,7 @@ export async function ensureWorkItemForMessage(
     .from(message)
     .where(and(eq(message.id, input.messageId), eq(message.transportId, input.transportId)))
     .limit(1);
-  const latest = await latestSucceededRead(db, input.messageId);
+  const latest = await succeededRead(db, input.messageId);
   if (!msg || !latest || latest.kind === 'spam') return null;
   const [reply] = await db
     .select({ id: message.id })
@@ -533,7 +613,7 @@ export async function storedWorkFor(
     .limit(2);
   const msg = found[0];
   if (!msg || found.length !== 1) return { status: 'none' };
-  const latest = await latestSucceededRead(db, msg.id);
+  const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg.id);
   const item = await ensureWorkItem(db, {
     transportId: input.transportId,
@@ -542,17 +622,22 @@ export async function storedWorkFor(
     kind: latest.kind,
     extractionId: latest.id,
   });
-  const stored = storedAnalysis(latest, item.state);
+  // The item can stay on an earlier read (see ensureWorkItem). Her saved values belong to that read's stays.
+  const read =
+    item.extractionId && item.extractionId !== latest.id
+      ? ((await succeededRead(db, msg.id, item.extractionId)) ?? latest)
+      : latest;
+  const stored = storedAnalysis(read, item.state);
   return {
     status: 'ready',
     workItemId: item.id,
     workItemStatus: item.status,
-    extractionId: latest.id,
+    extractionId: read.id,
     refs: stored.refs,
     analysis: stored.analysis,
-    contact: storedContact(latest.payload, item.state),
-    language: latest.language,
-    translation: storedTranslation(latest.translation),
+    contact: storedContact(read.payload, item.state),
+    language: read.language,
+    translation: storedTranslation(read.translation),
   };
 }
 

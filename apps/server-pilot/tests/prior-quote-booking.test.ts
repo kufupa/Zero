@@ -5,6 +5,7 @@ import {
   priorStaffQuoteRequotePayload,
   proposalFactRefsForRevision,
   resolvePriorQuoteForBooking,
+  revisionCarriesOnceExtras,
 } from '../src/ai/prior-quote-booking.js';
 import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
 import { buildStaffProposalFacts, staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
@@ -505,6 +506,38 @@ describe('priorStaffQuoteRequotePayload', () => {
     };
     expect(proposalFactRefsForRevision(run, revision.id)).toEqual(['extras-dinner']);
     expect(proposalFactRefsForRevision(run, 'missing')).toEqual([]);
+  });
+});
+
+describe('revisionCarriesOnceExtras', () => {
+  function runWith(revisionId: string, extras: Array<Record<string, unknown>>) {
+    return {
+      transportId: 't1',
+      threadId: 'thread-1',
+      state: 'succeeded' as const,
+      metrics: { reservationistResult: { proposalFacts: [{ ref: 'extras', facts: { revisionId, extras } }] } },
+    };
+  }
+  const extra = (service: string, unitKind: string, chargeUnit?: string) => ({
+    id: service,
+    label: service,
+    quantity: 1,
+    units: 1,
+    unitKind,
+    unitMinor: 10_000,
+    service,
+    persons: [],
+    dates: [],
+    ...(chargeUnit ? { chargeUnit } : {}),
+  });
+
+  it('says a reused quote has its once-per-quote charges only when its stored facts do', () => {
+    expect(revisionCarriesOnceExtras(runWith('rev-1', [extra('shuttle', 'trip')]) as never, 'rev-1')).toBe(true);
+    expect(revisionCarriesOnceExtras(runWith('rev-1', [extra('other', 'item', 'item')]) as never, 'rev-1')).toBe(true);
+    expect(
+      revisionCarriesOnceExtras(runWith('rev-1', [extra('dinner_allowance', 'person_service')]) as never, 'rev-1'),
+    ).toBe(false);
+    expect(revisionCarriesOnceExtras(runWith('rev-1', [extra('shuttle', 'trip')]) as never, 'rev-2')).toBe(false);
   });
 });
 

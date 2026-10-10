@@ -42,6 +42,14 @@ describe('StayCard rooms', () => {
     expect(onPatch).toHaveBeenLastCalledWith('g1', { adults: 3 });
   });
 
+  it('keeps adults per room between 1 and 9, the values a work item can save', () => {
+    renderStay([stay({ id: 'g1', adults: 9 }), stay({ id: 'g2', adults: 1 })]);
+    const more = screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' });
+    const fewer = screen.getByRole('button', { name: 'Fewer: Adult guests per room for stay 1, room 2' });
+    expect((more as HTMLButtonElement).disabled).toBe(true);
+    expect((fewer as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('keeps the rooms and adults fields reachable by label', () => {
     const { onPatch } = renderStay([stay()]);
     fireEvent.change(screen.getByLabelText('Rooms'), { target: { value: '3' } });

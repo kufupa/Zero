@@ -50,8 +50,12 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     // Replaces the default quote analysis for one test (an amendment email, for example).
     analysisOverride: null as null | Record<string, unknown>,
     analyseCalls: 0,
+    // While true, the live read rejects, as a model or network failure does.
+    analyseFails: false,
     // A stored read for the mail. Null leaves the workItems route out, so the pane reads live as before.
     storedWork: null as null | Record<string, unknown>,
+    // While set, the stored-read lookup waits for it, as a slow lookup does.
+    storedLookupGate: null as null | Promise<void>,
     recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
     retryTranslation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'capped', translation: null })),
   },
@@ -180,7 +184,12 @@ vi.mock('../providers/query-provider', () => ({
       const stored = bridgeMockState.storedWork;
       if (!stored) return undefined;
       return {
-        getByMessage: { query: async () => stored },
+        getByMessage: {
+          query: async () => {
+            await bridgeMockState.storedLookupGate;
+            return stored;
+          },
+        },
         recordEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
         retryTranslation: { mutate: (input: unknown) => bridgeMockState.retryTranslation(input) },
       };
@@ -190,6 +199,7 @@ vi.mock('../providers/query-provider', () => ({
       analyseSelection: {
         mutate: async () => {
           bridgeMockState.analyseCalls += 1;
+          if (bridgeMockState.analyseFails) throw new Error('Nava could not read this email.');
           return bridgeMockState.analysisOverride ?? ({
             status: 'ready' as const,
             intent: 'quote' as const,
@@ -568,7 +578,9 @@ describe('NavaPane screen states', () => {
   afterEach(() => {
     bridgeMockState.analysisOverride = null;
     bridgeMockState.analyseCalls = 0;
+    bridgeMockState.analyseFails = false;
     bridgeMockState.storedWork = null;
+    bridgeMockState.storedLookupGate = null;
     bridgeMockState.recordEvent.mockReset();
     bridgeMockState.recordEvent.mockResolvedValue({ aiValue: null, value: null });
     localStorage.clear();
@@ -800,6 +812,43 @@ describe('NavaPane screen states', () => {
     ).toBeDefined();
     expect(screen.getByRole('button', { name: 'Save reply' })).toBeDefined();
     expect(screen.queryByText(/add-in is too old/)).toBeNull();
+  });
+
+  // These render the pane after the snapshots above, so the useId values in those snapshots do not shift.
+  it('retry read runs the read again after a failed re-read with her note', async () => {
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect(bridgeMockState.analyseCalls).toBe(1));
+    bridgeMockState.analyseFails = true;
+    fireEvent.click(await screen.findByRole('button', { name: 'Something wrong? Tell Nava' }));
+    fireEvent.input(await screen.findByLabelText("Tell Nava what's wrong"), { target: { value: 'Two rooms, not one' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Re-read with my note' }));
+    const retry = await screen.findByRole('button', { name: 'Retry reading this email' }, { timeout: 3000 });
+    const calls = bridgeMockState.analyseCalls;
+    bridgeMockState.analyseFails = false;
+    fireEvent.click(retry);
+    await waitFor(() => expect(bridgeMockState.analyseCalls).toBe(calls + 1));
+  });
+
+  it('stored: what she types while the stored read loads is laid over it and logged, so it is there on reopen', async () => {
+    bridgeMockState.storedWork = STORED_READY;
+    let release = () => {};
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    render(<NavaPane bridge={fakeBridge} />);
+    const arrival = await screen.findByLabelText(/Arrival/i);
+    fireEvent.change(arrival, { target: { value: '2026-11-04' } });
+    release();
+    await waitFor(
+      () =>
+        expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ workItemId: 'wi-1', fieldPath: 'stays[s_1].requested.arrival', value: '2026-11-04' }),
+        ),
+      { timeout: 3000 },
+    );
+    expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(1);
+    expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-04');
+    expect((screen.getAllByLabelText(/Departure/i)[0] as HTMLInputElement).value).toBe('2026-11-05');
   });
 });
 

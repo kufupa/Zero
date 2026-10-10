@@ -263,6 +263,27 @@ describe('row price controls in the quote panel', () => {
     await waitFor(() => expect(within(after).queryByRole('option', { name: /Standard summer/ })).toBeNull());
   });
 
+  it('a mailbox switch reloads the saved rates, and the old mailbox\'s list never comes back', async () => {
+    const WINTER: SavedRate = { id: '7a1e2d3c-4b5a-4968-8a7b-9c0d1e2f3a4b', name: 'Other mailbox winter', amountMinor: 99000 };
+    let mailbox = 't1';
+    const rates = fakeRates([SUMMER]);
+    vi.mocked(rates.list).mockImplementation(async () => (mailbox === 't1' ? [SUMMER] : [WINTER]));
+    const session = readySession();
+    const { rerender } = render(<QuoteWorkflowPanel session={session} rates={rates} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
+    await waitFor(() =>
+      expect(within(screen.getByLabelText('Saved rate for Room 1')).getByRole('option', { name: /Standard summer/ })).toBeDefined(),
+    );
+
+    // The pane stays mounted; the binding moves to the other mailbox's transport.
+    mailbox = 't2';
+    rerender(<QuoteWorkflowPanel session={{ ...session, binding: { ...session.binding!, transportId: 't2' } }} rates={rates} />);
+    await waitFor(() =>
+      expect(within(screen.getByLabelText('Saved rate for Room 1')).getByRole('option', { name: /Other mailbox winter/ })).toBeDefined(),
+    );
+    expect(within(screen.getByLabelText('Saved rate for Room 1')).queryByRole('option', { name: /Standard summer/ })).toBeNull();
+  });
+
   it('a duplicate saved rate name is refused with a clear message', async () => {
     const rates = fakeRates([SUMMER]);
     render(<PinnedPanel initial={readySession()} rates={rates} runs={[]} seen={{ session: null }} />);

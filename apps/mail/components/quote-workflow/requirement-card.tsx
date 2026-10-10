@@ -206,6 +206,8 @@ export function RequirementCard({
             </span>
             <Stepper
               label={`Adult guests per room for ${where}`}
+              min={1}
+              max={9}
               value={group.adults ?? null}
               onChange={(next) => onPatch?.(group.id, { adults: next })}
             />

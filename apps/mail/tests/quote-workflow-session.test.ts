@@ -704,6 +704,11 @@ describe('quote session', () => {
     expect(parseChildrenAges('  , ')).toEqual([]);
     expect(parseChildrenAges('5,')).toEqual([5]);
     expect(parseChildrenAges('0')).toEqual([0]);
+  });
+
+  it('keeps only the child ages a work item can save: whole years 0 to 17, at most 9', () => {
+    expect(parseChildrenAges('5, 18, 3.5, 2, -1')).toEqual([5, 2]);
+    expect(parseChildrenAges('1,2,3,4,5,6,7,8,9,10')).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(formatQuoteStepInputs({ organisation: 'Treasury', quoteRequestKey: '2026-12-01:2026-12-03' })).toMatch(
       /Company Treasury/,
     );
@@ -2238,6 +2243,16 @@ describe('staff dinner B&B fallback', () => {
     expect(quoteRunIsCurrent(session, { selectionEpoch: 1, inputRevision: 3 })).toBe(false);
   });
 
+  it('treats the dinner fallback as stale once a row was edited after its run, though the input revision held', () => {
+    const before = dinnerSession();
+    const run = { selectionEpoch: before.binding?.selectionEpoch ?? 0, inputRevision: before.inputRevision, stayRevision: before.stayRevision };
+    expect(quoteRunIsCurrent(before, run)).toBe(true);
+    const groupId = before.groups[0]!.id;
+    const edited = reduceQuoteSession(before, { type: 'patch_group', groupId, patch: { board: 'room_only' } });
+    expect(edited.inputRevision).toBe(before.inputRevision);
+    expect(quoteRunIsCurrent(edited, run)).toBe(false);
+  });
+
   it('records which groups fell back, so the allowance can be charged to those guests only', () => {
     const after = reduceQuoteSession(dinnerSession(), {
       type: 'staff_dinner_bb_fallback',
@@ -2566,6 +2581,78 @@ describe('stay edits: rows, stays and their rates', () => {
     const stale = reduceQuoteSession(edited, { ...ready, stayRevision: readAt });
     expect(stale).toBe(edited);
     expect(stale.groups[1]?.adults).toBe(3);
+  });
+
+  it('undo does not bring back the rates of dates whose other stay changed since the removal', () => {
+    // Two stays on the same dates share one run. Remove one, change the other's occupancy, then undo.
+    const s = ratedSession([row('a1', dateA), row('b1', dateB, { stayId: 's_b1' }), row('b2', dateB, { stayId: 's_b2' })]);
+    const removal = removedStayFor(s, 's_b2')!;
+    const gone = reduceQuoteSession(s, { type: 'remove_stay', stayId: 's_b2' });
+    const changed = reduceQuoteSession(gone, { type: 'patch_group', groupId: 'b1', patch: { adults: 3 } });
+    expect(changed.inputRevision).toBe(s.inputRevision);
+    const back = reduceQuoteSession(changed, { type: 'restore_stay', removal });
+    expect(back.groups.map((group) => group.id)).toEqual(['a1', 'b1', 'b2']);
+    expect(back.offers.map((offer) => offer.id)).toEqual(['oa']);
+    expect(Object.keys(back.staffQuotes)).toEqual([keyA]);
+    expect(Object.keys(back.stayPdfs)).toEqual([keyA]);
+  });
+
+  it('a copied room or stay keeps the dinner allowance of the row it was copied from', () => {
+    const base = ratedSession([row('a1', dateA), row('b1', dateB)]);
+    const s = { ...base, staffHeader: { ...base.staffHeader, dinnerAllowanceRequired: true, dinnerAllowanceGroupIds: ['a1'] } };
+    const rowCopy = reduceQuoteSession(s, { type: 'duplicate_row', groupId: 'a1', token: 'c1' });
+    expect(rowCopy.staffHeader.dinnerAllowanceGroupIds).toEqual(['a1', 'r_c1']);
+    const stayCopy = reduceQuoteSession(s, { type: 'duplicate_stay', stayId: stayIdOf(s.groups[0]!), token: 'c2' });
+    expect(stayCopy.staffHeader.dinnerAllowanceGroupIds).toEqual(['a1', 'r_c2_0']);
+    const other = reduceQuoteSession(s, { type: 'duplicate_row', groupId: 'b1', token: 'c3' });
+    expect(other.staffHeader.dinnerAllowanceGroupIds).toEqual(['a1']);
+  });
+
+  it('removing the stay that carried the shuttle drops the other stay\'s run that left it out', () => {
+    const base = ratedSession([row('a1', dateA), row('b1', dateB)]);
+    const s: QuoteSession = {
+      ...base,
+      staffHeader: { ...base.staffHeader, shuttleRequested: true, shuttleMinor: 45_000, shuttleTrips: 1 },
+      staffQuotes: {
+        [keyA]: { ...base.staffQuotes[keyA]!, onceExtras: true },
+        [keyB]: { ...base.staffQuotes[keyB]!, onceExtras: false },
+      },
+    };
+    // With both stays, each run is where the shuttle belongs, so an edit elsewhere keeps them.
+    const kept = reduceQuoteSession(s, { type: 'add_row', stayId: stayIdOf(s.groups[1]!), token: 'n' });
+    expect(Object.keys(kept.staffQuotes)).toEqual([keyA]);
+    const gone = reduceQuoteSession(s, { type: 'remove_stay', stayId: stayIdOf(s.groups[0]!) });
+    expect(gone.groups.map((group) => group.id)).toEqual(['b1']);
+    expect(gone.staffQuotes).toEqual({});
+    expect(gone.offers).toEqual([]);
+    expect(gone.steps.find((step) => step.shareKey === keyB)?.status).toBe('ready');
+  });
+
+  it('keeps a booking draft that lands after another stay was edited', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = { ...ratedSession([row('a1', dateA), row('b1', dateB)]), binding: s.binding, staffSource: staffSource() };
+    const preparedAt = s.stayRevision;
+    const edited = reduceQuoteSession(s, { type: 'patch_group', groupId: 'b1', patch: { adults: 3 } });
+    expect(edited.stayRevision).not.toBe(preparedAt);
+    const payload = {
+      draft: { rooms: [] },
+      options: {},
+      messageId: 'mail-1',
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+      revisionRef: 'oa',
+    } as unknown as Extract<QuoteSessionAction, { type: 'booking_draft_ready' }>['payload'];
+    // The pane used to send the whole session's stay revision from when it asked, which any edit moved.
+    const asked = { type: 'booking_draft_ready', payload, sourceHash: STAFF_HASH, stayRevision: preparedAt };
+    const landed = reduceQuoteSession(edited, asked as QuoteSessionAction);
+    expect(Object.keys(landed.bookingDrafts)).toEqual([keyA]);
+    // A draft for the stay that was edited has no run left, so it is dropped.
+    const stale = reduceQuoteSession(edited, {
+      type: 'booking_draft_ready',
+      payload: { ...payload, revisionRef: 'ob' },
+      sourceHash: STAFF_HASH,
+    });
+    expect(stale).toBe(edited);
   });
 
   it('counts rooms and guests over every row', () => {

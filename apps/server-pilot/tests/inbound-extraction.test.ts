@@ -737,6 +737,24 @@ describe('translation retry', () => {
       expect((await rowFor(db, messageId))!.translation).toMatchObject({ status: 'failed', reason: 'timeout' });
     }));
 
+  it('keeps a translation another retry saved while this one was failing, and returns it', () =>
+    withIngestionDb(async ({ db }) => {
+      const { messageId, workItemId } = await frenchReadWithFailedTranslation(db);
+      const item = { transportId: TRANSPORT, workItemId };
+      // Two tabs retry at once: the slow one times out after the quick one has saved its translation.
+      const slow = retryInboundTranslation(item, {
+        db,
+        env: ON,
+        adapter: fakeModel(() => hangingResponder()).adapter,
+        translationDeadlineMs: 300,
+      });
+      const quick = await retryInboundTranslation(item, { db, env: ON, adapter: fakeModel(echoTranslation).adapter });
+      expect(quick).toMatchObject({ status: 'done', translation: { status: 'succeeded' } });
+
+      expect(await slow).toMatchObject({ status: 'done', translation: { status: 'succeeded', sourceLanguage: 'fr' } });
+      expect((await rowFor(db, messageId))!.translation).toMatchObject({ status: 'succeeded' });
+    }));
+
   it('makes no call for an English read', () =>
     withIngestionDb(async ({ db }) => {
       const messageId = await seedMail(db, 'thread-retry-en', AE1_TEXT);

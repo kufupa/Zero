@@ -57,9 +57,10 @@ export function storedDecision(pane: StoredPane, overridden: boolean): StoredDec
   return { kind: 'live' };
 }
 
-type Lookup = { messageId: string; result: StoredWork | { status: 'unavailable' } };
+type Lookup = { key: string; result: StoredWork | { status: 'unavailable' } };
 type FieldSend = {
   workItemId: string;
+  path: string;
   value: RecordFieldEventInput['value'];
   msSinceOpen: number;
 };
@@ -103,6 +104,14 @@ function rowFieldsAt(row: string, group: StayGroupRequirement): FieldEvent[] {
   ];
 }
 
+/**
+ * The row id for room values on a stay the read gave dates but no rows. It is made from the stay id, so every edit to
+ * that stay lands on the same row, and on reopen the stay comes back with that row.
+ */
+export function stayRowId(stayId: string): string {
+  return `${stayId}_row`;
+}
+
 function sameValue(a: FieldEvent['value'] | undefined, b: FieldEvent['value']): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
@@ -139,7 +148,12 @@ export function fieldEventsBetween(
     const oldStay = old ?? priorStay.get(ref.stayId);
     if (!oldStay) events.push({ path: `${stay}.removed`, value: null });
     changed(datesAt(stay, group), oldStay ? datesAt(stay, oldStay) : null);
-    if (!ref.rowId) continue;
+    if (!ref.rowId) {
+      // A stay with dates and no rows still shows room controls. Her values there go on the stay's own row.
+      const rowId = stayRowId(ref.stayId);
+      if (old && STABLE_ID.test(rowId)) changed(rowFieldsAt(`${stay}.rows[${rowId}]`, group), rowFieldsAt(`${stay}.rows[${rowId}]`, old));
+      continue;
+    }
     const row = `${stay}.rows[${ref.rowId}]`;
     if (!old) events.push({ path: `${row}.removed`, value: null });
     changed(rowFieldsAt(row, group), old ? rowFieldsAt(row, old) : null);
@@ -155,15 +169,30 @@ export function fieldEventsBetween(
   return events;
 }
 
-export function useStoredWork(args: { trpc: unknown; internetMessageId: string | null }) {
+/** One save slot: a field of one work item, so the same field on two mails never shares a pending or failed save. */
+function saveKey(workItemId: string, path: string): string {
+  return `${workItemId}\n${path}`;
+}
+
+export function useStoredWork(args: {
+  trpc: unknown;
+  internetMessageId: string | null;
+  /** The signed-in user, session and mailbox. A mailbox switch looks the mail up again in the new mailbox. */
+  scope?: string | null;
+}) {
   const { trpc, internetMessageId } = args;
+  const scope = args.scope ?? '';
+  // The lookup is for this mail in this mailbox. Either changing makes the last lookup someone else's.
+  const lookupKey = internetMessageId ? `${scope}\n${internetMessageId}` : null;
   const [lookup, setLookup] = useState<Lookup | null>(null);
   // Retries asked for on the mail on screen. A retry reads live, so the stored failure stops showing for that mail.
   const [retries, setRetries] = useState<{ messageId: string | null; count: number }>({ messageId: null, count: 0 });
   const readyAt = useRef(0);
   const pending = useRef(new Map<string, PendingEvent>());
-  // The newest send per field path, so an older send's failure never stands in for a newer value.
+  // The newest send per save slot, so an older send's failure never stands in for a newer value.
   const latest = useRef(new Map<string, FieldSend>());
+  // The send in flight per save slot. The next one waits for it, so an older value never lands after a newer one.
+  const inFlight = useRef(new Map<string, Promise<void>>());
   // Sends that failed twice. Kept across mail changes until a retry or a newer edit to the same field.
   const failed = useRef(new Map<string, FieldSend>());
   const [saveFailed, setSaveFailed] = useState(false);
@@ -175,72 +204,84 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
     trpcRef.current = trpc;
   }, [trpc]);
 
-  const post = useCallback((path: string, entry: FieldSend, retried: boolean) => {
+  const post = useCallback((entry: FieldSend, retried: boolean) => {
     const recordEvent = workItemsFromTrpc(trpcRef.current).recordEvent;
     if (!recordEvent) return;
-    latest.current.set(path, entry);
-    recordEvent
-      .mutate({
-        workItemId: entry.workItemId,
-        type: 'field.edit',
-        fieldPath: path,
-        value: entry.value,
-        msSinceOpen: entry.msSinceOpen,
-      })
-      .then(
-        () => {
-          if (latest.current.get(path) === entry) latest.current.delete(path);
-        },
-        () => {
-          if (latest.current.get(path) !== entry) return;
-          if (!retried) {
-            setTimeout(() => {
-              if (latest.current.get(path) === entry) post(path, entry, true);
-            }, WORK_EVENT_RETRY_MS);
-            return;
-          }
-          failed.current.set(path, entry);
-          setSaveFailed(true);
-        },
-      );
+    const key = saveKey(entry.workItemId, entry.path);
+    latest.current.set(key, entry);
+    const send = async () => {
+      // A newer value queued behind this one is sent instead.
+      if (latest.current.get(key) !== entry) return;
+      try {
+        await recordEvent.mutate({
+          workItemId: entry.workItemId,
+          type: 'field.edit',
+          fieldPath: entry.path,
+          value: entry.value,
+          msSinceOpen: entry.msSinceOpen,
+        });
+        if (latest.current.get(key) === entry) latest.current.delete(key);
+      } catch {
+        if (latest.current.get(key) !== entry) return;
+        if (!retried) {
+          setTimeout(() => {
+            if (latest.current.get(key) === entry) post(entry, true);
+          }, WORK_EVENT_RETRY_MS);
+          return;
+        }
+        failed.current.set(key, entry);
+        setSaveFailed(true);
+      }
+    };
+    // Nothing in flight: send now, so an unmount flush reaches the server before the pane goes.
+    const prior = inFlight.current.get(key);
+    const run = prior ? prior.then(send) : send();
+    inFlight.current.set(key, run);
+    void run.finally(() => {
+      if (inFlight.current.get(key) === run) inFlight.current.delete(key);
+    });
   }, []);
 
   const send = useCallback(
-    (path: string) => {
-      const entry = pending.current.get(path);
+    (key: string) => {
+      const entry = pending.current.get(key);
       if (!entry) return;
       clearTimeout(entry.timer);
-      pending.current.delete(path);
-      post(path, { workItemId: entry.workItemId, value: entry.value, msSinceOpen: entry.msSinceOpen }, false);
+      pending.current.delete(key);
+      post(
+        { workItemId: entry.workItemId, path: entry.path, value: entry.value, msSinceOpen: entry.msSinceOpen },
+        false,
+      );
     },
     [post],
   );
 
   /** Sends every failed change again. One that fails twice more shows the retry again. */
   const retrySave = useCallback(() => {
-    const entries = [...failed.current];
+    const entries = [...failed.current.values()];
     failed.current.clear();
     setSaveFailed(false);
-    for (const [path, entry] of entries) post(path, entry, false);
+    for (const entry of entries) post(entry, false);
   }, [post]);
 
   const flushAll = useCallback(() => {
     // send() deletes the entry it flushes, which a Map iterator allows.
-    for (const path of pending.current.keys()) send(path);
+    for (const key of pending.current.keys()) send(key);
   }, [send]);
 
   const schedule = useCallback(
     (path: string, workItemId: string, value: RecordFieldEventInput['value']) => {
-      const existing = pending.current.get(path);
+      const key = saveKey(workItemId, path);
+      const existing = pending.current.get(key);
       if (existing) clearTimeout(existing.timer);
       // A newer value for the field replaces one that failed to save.
-      if (failed.current.delete(path)) setSaveFailed(failed.current.size > 0);
-      latest.current.delete(path);
+      if (failed.current.delete(key)) setSaveFailed(failed.current.size > 0);
+      latest.current.delete(key);
       // The clock starts at the field's first change in the quiet window, so later keystrokes do not move it.
       const elapsed = Math.round(Date.now() - readyAt.current);
       const msSinceOpen = existing?.msSinceOpen ?? Math.min(MAX_MS_SINCE_OPEN, Math.max(0, elapsed));
-      const timer = setTimeout(() => send(path), WORK_EVENT_DEBOUNCE_MS);
-      pending.current.set(path, { workItemId, value, msSinceOpen, timer });
+      const timer = setTimeout(() => send(key), WORK_EVENT_DEBOUNCE_MS);
+      pending.current.set(key, { workItemId, path, value, msSinceOpen, timer });
     },
     [send],
   );
@@ -248,9 +289,9 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
   // Without a stored-read route the pane reads live at once, with no extra render before the live read.
   const canLookUp = Boolean(workItemsFromTrpc(trpc).getByMessage);
 
-  // One lookup per mail. Switching mails or unmounting sends the last mail's pending edits first.
+  // One lookup per mail and mailbox. Switching either or unmounting sends the last mail's pending edits first.
   useEffect(() => {
-    if (!internetMessageId || !canLookUp) return;
+    if (!internetMessageId || !lookupKey || !canLookUp) return;
     let current = true;
     let settled = false;
     const settle = (result: Lookup['result']) => {
@@ -258,7 +299,7 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
       settled = true;
       clearTimeout(timer);
       if (result.status === 'ready') readyAt.current = Date.now();
-      setLookup({ messageId: internetMessageId, result });
+      setLookup({ key: lookupKey, result });
     };
     const timer = setTimeout(() => settle({ status: 'unavailable' }), STORED_LOOKUP_TIMEOUT_MS);
     setLookup(null);
@@ -268,9 +309,9 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
       clearTimeout(timer);
       flushAll();
     };
-  }, [internetMessageId, canLookUp, flushAll]);
+  }, [internetMessageId, lookupKey, canLookUp, flushAll]);
 
-  const stored = lookup && lookup.messageId === internetMessageId ? lookup.result : null;
+  const stored = lookup && lookup.key === lookupKey ? lookup.result : null;
   const retried = retries.messageId === internetMessageId ? retries.count : 0;
   let pane: StoredPane;
   if (!internetMessageId || !canLookUp) pane = { state: 'reading' };
@@ -352,6 +393,8 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
   return {
     pane,
     key,
+    /** How many times the person asked to read this mail again. A live read with a treat-as re-runs on it. */
+    retryCount: retried,
     retry,
     recordGroups,
     recordContact,

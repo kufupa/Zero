@@ -1768,8 +1768,10 @@ export const draftsRouter = tRouter({
 
   /**
    * Save the pane's reply to the thread's one active draft, as a revision. Any other active draft (an AI draft,
-   * someone else's, or one edited by hand since the last save) is replaced only with replaceExisting (the UI asks
-   * first). Replacing discards it and starts a new draft; it is never overwritten.
+   * someone else's, or one edited by hand since the last save) is refused with DRAFT_REPLACE_CONFIRM_REQUIRED:<token>,
+   * the token naming that draft and its latest revision. The UI asks, then sends the token back as replaceDraft, and the
+   * draft is replaced only if it is still that draft at that revision (else DRAFT_CHANGED). Replacing discards it and
+   * starts a new draft; it is never overwritten.
    */
   saveReply: mailboxProcedure
     .input(
@@ -1780,7 +1782,7 @@ export const draftsRouter = tRouter({
         subject: z.string().max(998).default(''),
         html: z.string(),
         attachments: z.array(serializedAttachmentInput).max(32).default([]),
-        replaceExisting: z.boolean().default(false),
+        replaceDraft: z.string().max(200).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -1819,8 +1821,13 @@ export const draftsRouter = tRouter({
             untouchedSavedReply =
               latest?.id.startsWith(SAVED_REPLY_REVISION_PREFIX) === true &&
               latest.actorUserId === ctx.sessionUser.id;
-            if (!untouchedSavedReply && !input.replaceExisting) {
-              throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_REPLACE_CONFIRM_REQUIRED' });
+            // The confirm names the draft as staff saw it. Someone else's newer work since then asks again.
+            const replaceToken = `${prior.id}:${latest?.id ?? ''}`;
+            if (!untouchedSavedReply && input.replaceDraft === undefined) {
+              throw new TRPCError({ code: 'CONFLICT', message: `DRAFT_REPLACE_CONFIRM_REQUIRED:${replaceToken}` });
+            }
+            if (!untouchedSavedReply && input.replaceDraft !== replaceToken) {
+              throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
             }
             if (!untouchedSavedReply) {
               // Replace = discard, the status delete gives it (as useFollowUp does). The old draft keeps its

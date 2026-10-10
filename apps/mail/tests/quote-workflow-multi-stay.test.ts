@@ -332,6 +332,18 @@ describe('one booking draft and one set of guests per stay', () => {
     expect(overlay[0]?.guestNames).toEqual(['Mr John Smith']);
   });
 
+  it('gives the stay left after a removal and a date change no other stay\'s guests', () => {
+    // The read had two stays. Staff removed November and moved December, so one row is left matching neither.
+    const luna = {
+      groups: [
+        lunaRow(NOV.arrival, NOV.departure, ['Mr John Smith']),
+        lunaRow(DEC.arrival, DEC.departure, ['Ms Jane Doe']),
+      ],
+    } as unknown as LunaAnalysisWire;
+    const overlay = overlayLunaGroupsFromStaff(luna, [stayGroup('stay-b', '2027-12-05', '2027-12-07')]);
+    expect(overlay[0]?.guestNames).toEqual([]);
+  });
+
   it('re-binds an expired prior quote row to the session row of the same stay', () => {
     const sessionGroups = [
       stayGroup('stay-a', NOV.arrival, NOV.departure),

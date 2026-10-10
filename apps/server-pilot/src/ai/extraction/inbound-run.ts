@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getDb, type DB } from '../../db/client.js';
 import {
@@ -573,14 +573,29 @@ export async function retryInboundTranslation(
     deadlineMs: deps.translationDeadlineMs ?? TRANSLATE_DEADLINE_MS,
   });
   const translation = done?.translation ?? null;
-  await db
+  // Two retries can overlap. One that did not succeed never replaces a translation another retry saved meanwhile.
+  const [saved] = await db
     .update(mailExtraction)
     .set({
       translation,
       usage: { ...read.usage, ...(done ? { translation: done.usage } : {}) },
     })
-    .where(eq(mailExtraction.id, read.id));
-  return { status: 'done', translation };
+    .where(
+      and(
+        eq(mailExtraction.id, read.id),
+        translation?.status === 'succeeded'
+          ? undefined
+          : sql`coalesce(${mailExtraction.translation}->>'status', '') <> 'succeeded'`,
+      ),
+    )
+    .returning({ id: mailExtraction.id });
+  if (saved) return { status: 'done', translation };
+  const [kept] = await db
+    .select({ translation: mailExtraction.translation })
+    .from(mailExtraction)
+    .where(eq(mailExtraction.id, read.id))
+    .limit(1);
+  return { status: 'done', translation: (kept?.translation as InboundTranslation | null | undefined) ?? null };
 }
 
 /**

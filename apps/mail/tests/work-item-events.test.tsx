@@ -109,9 +109,15 @@ describe('fieldEventsBetween', () => {
     ]);
   });
 
-  it('logs stay dates only for a stay with no row, and an unknown board or empty date as null', () => {
+  it('logs a stay with no row by its dates and its own row, and an unknown board or empty date as null', () => {
     expect(fieldEventsBetween(READY.refs, [G3], [{ ...G3, departureDate: '', quantity: 3 }])).toEqual([
       { path: 'stays[st-2].requested.departure', value: null },
+      { path: 'stays[st-2].rows[st-2_row].count', value: 3 },
+    ]);
+    // Every later edit to that stay's room controls lands on the same row.
+    expect(fieldEventsBetween(READY.refs, [G3], [{ ...G3, roomPreference: 'Family', adults: 3 }])).toEqual([
+      { path: 'stays[st-2].rows[st-2_row].adults', value: 3 },
+      { path: 'stays[st-2].rows[st-2_row].roomType', value: 'Family' },
     ]);
     expect(fieldEventsBetween(READY.refs, [G2], [{ ...G2, board: 'unknown' }])).toEqual([
       { path: 'stays[st-1].rows[rw-2].board', value: null },
@@ -275,6 +281,84 @@ describe('useStoredWork', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('sends one field\'s edits in order, so a slow older save never lands after a newer one', async () => {
+    const { trpc, mutate } = fakeTrpc(() => READY);
+    const done: Array<() => void> = [];
+    mutate.mockImplementation(
+      (_input: unknown) => new Promise((resolve) => done.push(() => resolve({ aiValue: null, value: null }))),
+    );
+    const { result, unmount } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
+    await waitFor(() => expect(result.current.pane.state).toBe('ready'));
+    act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1), { timeout: WORK_EVENT_DEBOUNCE_MS + 2000 });
+    // The first save is still out when the next quiet period ends.
+    act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 5 }]));
+    unmount();
+    expect(mutate).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      done[0]!();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2));
+    expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({ fieldPath: 'stays[st-1].rows[rw-1].count', value: 5 }));
+  });
+
+  it('keeps a failed save on one mail when the same field is edited on another', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      const { result, rerender } = renderHook(
+        ({ id }: { id: string }) => useStoredWork({ trpc, internetMessageId: id }),
+        { initialProps: { id: 'm-1' } },
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      act(() => result.current.recordContact('phone', '+27 82 555 0100'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS);
+      });
+      expect(result.current.saveFailed).toBe(true);
+
+      // Mail B is another work item. Editing its phone must not drop mail A's unsaved phone.
+      const other = { ...READY, workItemId: 'wi-2' };
+      (trpc.workItems.getByMessage.query as ReturnType<typeof vi.fn>).mockImplementation(async () => other);
+      rerender({ id: 'm-2' });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-2' });
+      act(() => result.current.recordContact('phone', '+27 11 000 0000'));
+      expect(result.current.saveFailed).toBe(true);
+
+      mutate.mockResolvedValue({ aiValue: null, value: null });
+      await act(async () => {
+        result.current.retrySave();
+        await Promise.resolve();
+      });
+      expect(mutate).toHaveBeenCalledWith(
+        expect.objectContaining({ workItemId: 'wi-1', fieldPath: 'contact.phone', value: '+27 82 555 0100' }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('looks the mail up again when the mailbox changes, so another mailbox\'s work item is never shown', async () => {
+    const { trpc, query } = fakeTrpc(() => READY);
+    const { result, rerender } = renderHook(
+      ({ scope }: { scope: string }) => useStoredWork({ trpc, internetMessageId: 'm-1', scope }),
+      { initialProps: { scope: 'user:session:transport-a' } },
+    );
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
+    query.mockImplementation(async () => ({ ...READY, workItemId: 'wi-b' }));
+    rerender({ scope: 'user:session:transport-b' });
+    expect(result.current.pane.state).toBe('loading');
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-b' }));
+    expect(query).toHaveBeenCalledTimes(2);
   });
 
   it('drops a failed save when a newer edit to the same field replaces it', async () => {

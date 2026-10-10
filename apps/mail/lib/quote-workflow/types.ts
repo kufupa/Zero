@@ -574,6 +574,8 @@ export type RemovedStay = {
   rows: StayGroupRequirement[];
   index: number;
   inputRevision: number;
+  /** The other stays' rows on the same dates when it was removed. Their rates come back only if these are unchanged. */
+  sharedRows: StayGroupRequirement[];
   staffQuotes: Record<string, StaffQuoteAllocation>;
   stayPdfs: Record<string, QuotePdf>;
   offers: QuoteOffer[];
@@ -628,7 +630,7 @@ export type QuoteSessionAction =
        */
       stayRevision?: number;
     }
-  | { type: 'booking_draft_ready'; payload: BookingDraftReady; sourceHash: string; stayRevision?: number }
+  | { type: 'booking_draft_ready'; payload: BookingDraftReady; sourceHash: string }
   | { type: 'analysis_unsupported'; message: string }
   | { type: 'patch_group'; groupId: string; patch: Partial<StayGroupRequirement> }
   | { type: 'staff_dinner_bb_fallback'; groupIds: string[] }
