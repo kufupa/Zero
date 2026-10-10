@@ -1,0 +1,378 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+import { chromium } from 'playwright';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  ae1Failures,
+  DOCUMENTS_SECTION,
+  RATES_SECTION,
+  READ_ROWS_JS,
+  RUN_STEP,
+  AE1_WRITE_PROCEDURES,
+  classifyAe1Request,
+  documentStayCount,
+  newAe1GuardState,
+  parseAe1Config,
+  pickRoomOption,
+  planRoomRows,
+  stayKeyOfRatesInput,
+  type Ae1Summary,
+  type PaneRoomRow,
+  type SelectOption,
+} from '../scripts/nava-ae1-rates-proof';
+import { KNOWN_WRITE_PROCEDURES } from '../scripts/nava-preview-run';
+
+const BASE = 'https://nava.example.test';
+const here = dirname(fileURLToPath(import.meta.url));
+const mailRoot = join(here, '..', '..', 'mail');
+const mail = (...parts: string[]) => readFileSync(join(mailRoot, ...parts), 'utf8');
+const chromiumBinary = [
+  chromium.executablePath(),
+  '/home/orca/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell',
+].find(existsSync);
+const url = (procedures: string) => `${BASE}/api/trpc/${procedures}?batch=1`;
+const body = (...inputs: unknown[]) =>
+  JSON.stringify(Object.fromEntries(inputs.map((input, index) => [String(index), { json: input }])));
+const stay = (arrival: string, departure: string, extra: Record<string, unknown> = {}) => ({
+  messageId: 'm1',
+  groups: [
+    { id: 'g1', arrivalDate: arrival, departureDate: departure },
+    { id: 'g2', arrivalDate: arrival, departureDate: departure },
+  ],
+  ...extra,
+});
+
+/** The room select as requirement-card.tsx renders it: blank, the email's ask, then the HMS room types. */
+const ROOM_OPTIONS = (asked?: string): SelectOption[] => [
+  { value: '', label: 'Choose a room type' },
+  ...(asked ? [{ value: asked, label: `Email asked for ${asked} — pick a room type` }] : []),
+  { value: 'STWN', label: 'Standard Twin (STWN)' },
+  { value: 'STQN', label: 'Standard Queen (STQN)' },
+  { value: 'SKNG', label: 'Standard King (SKNG)' },
+  { value: 'DLXTWN', label: 'Deluxe Twin (DLXTWN)' },
+  { value: 'SUITE', label: 'Suite (SUITE)' },
+];
+
+let dir: string;
+let statePath: string;
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'nava-ae1-'));
+  statePath = join(dir, 'state.json');
+  writeFileSync(statePath, JSON.stringify({ cookies: [], origins: [] }));
+});
+afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+describe('request guard', () => {
+  it('lets reads, the analysis, the edit events and the documents through', () => {
+    const state = newAe1GuardState();
+    expect(classifyAe1Request(url('mail.get,workItems.getByMessage'), null, state).allowed).toBe(true);
+    expect(classifyAe1Request(url('quoteWorkflow.analyseSelection'), null, state).allowed).toBe(true);
+    expect(classifyAe1Request(url('workItems.open,workItems.recordEvent'), null, state).allowed).toBe(true);
+    const combined = { workflowRunId: 'r1', additionalStays: [{ workflowRunId: 'r2' }] };
+    expect(classifyAe1Request(url('workstation.qualifiedQuoteProposalPdf'), body(combined), state).allowed).toBe(true);
+    expect(classifyAe1Request(url('workstation.quoteWorkbook'), body(combined), state).allowed).toBe(true);
+    expect(state).toMatchObject({ pdfs: 1, workbooks: 1, pdfStays: 2, workbookStays: 2, ratedStayKeys: [] });
+  });
+
+  it('allows one rates run per stay, only once the stays are known', () => {
+    const state = newAe1GuardState();
+    const first = body(stay('2026-10-26', '2026-10-27'));
+    expect(classifyAe1Request(url('workstation.executeStaffQuote'), first, state).blocked).toEqual([
+      { procedure: 'workstation.executeStaffQuote', reason: 'stays_unknown' },
+    ]);
+    state.expectedStays = 2;
+    expect(classifyAe1Request(url('workstation.executeStaffQuote'), first, state).allowed).toBe(true);
+    expect(classifyAe1Request(url('workstation.executeStaffQuote'), first, state).blocked[0]?.reason).toBe(
+      'stay_already_rated',
+    );
+    const second = body(stay('2026-11-17', '2026-11-18'));
+    expect(classifyAe1Request(url('workstation.executeStaffQuote'), second, state).allowed).toBe(true);
+    const third = body(stay('2026-12-01', '2026-12-02'));
+    expect(classifyAe1Request(url('workstation.executeStaffQuote'), third, state).blocked[0]?.reason).toBe(
+      'extra_rates_run',
+    );
+    expect(state.ratedStayKeys).toEqual(['2026-10-26:2026-10-27', '2026-11-17:2026-11-18']);
+  });
+
+  it('refuses a rates run without one stay, and counts the party checks a run carries', () => {
+    const state = { ...newAe1GuardState(), expectedStays: 2 };
+    const spanning = { groups: [{ arrivalDate: '2026-10-26', departureDate: '2026-10-27' }, { arrivalDate: '2026-11-17', departureDate: '2026-11-18' }] };
+    expect(classifyAe1Request(url('workstation.executeStaffQuote'), body(spanning), state).blocked[0]?.reason).toBe(
+      'rates_without_stay',
+    );
+    expect(classifyAe1Request(url('workstation.executeStaffQuote'), null, state).blocked[0]?.reason).toBe(
+      'rates_without_stay',
+    );
+    const withAgency = stay('2026-10-26', '2026-10-27', { parties: { agency: { kind: 'agency', nativeId: '7', name: 'Org' } } });
+    expect(classifyAe1Request(url('workstation.executeStaffQuote'), body(withAgency), state).allowed).toBe(true);
+    expect(state.partyChecks).toBe(1);
+  });
+
+  it('allows one party search and one of each document', () => {
+    const state = newAe1GuardState();
+    expect(classifyAe1Request(url('panePartyLookup.findParty'), null, state).allowed).toBe(true);
+    expect(classifyAe1Request(url('panePartyLookup.findParty'), null, state).blocked[0]?.reason).toBe('second_party_lookup');
+    expect(classifyAe1Request(url('workstation.quoteWorkbook'), null, state).allowed).toBe(true);
+    expect(classifyAe1Request(url('workstation.quoteWorkbook'), null, state).blocked[0]?.reason).toBe('second_document');
+    expect(state.partyLookups).toBe(1);
+  });
+
+  it('counts nothing from a batch it blocks', () => {
+    const state = { ...newAe1GuardState(), expectedStays: 2 };
+    const decision = classifyAe1Request(
+      url('workstation.executeStaffQuote,drafts.saveReply'),
+      body(stay('2026-10-26', '2026-10-27'), {}),
+      state,
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.blocked).toEqual([{ procedure: 'drafts.saveReply', reason: 'write' }]);
+    expect(state.ratedStayKeys).toEqual([]);
+  });
+
+  it('blocks every HMS and mailbox write and unknown calls', () => {
+    const writes = [...KNOWN_WRITE_PROCEDURES].filter((name) => !AE1_WRITE_PROCEDURES.has(name));
+    expect(writes).toEqual(
+      expect.arrayContaining([
+        'quoteWorkflow.commitStay',
+        'hmsApproval.approve',
+        'paneStayCancel.commitCancel',
+        'workstation.prepareBookingDraft',
+        'workstation.bridgeTicket',
+        'drafts.saveReply',
+        'paneStayLookup.queueFind',
+      ]),
+    );
+    for (const name of writes) {
+      const decision = classifyAe1Request(url(name), null, newAe1GuardState());
+      expect(decision.allowed, name).toBe(false);
+      expect(decision.blocked[0]?.reason).toBe('write');
+    }
+    expect(classifyAe1Request(url('secret.thing'), null, newAe1GuardState()).blocked[0]?.reason).toBe('unknown');
+    expect(classifyAe1Request(`${BASE}/api/trpc/`, null, newAe1GuardState()).allowed).toBe(false);
+  });
+
+  it('reads the stay of a rates run and the stays of a document request', () => {
+    expect(stayKeyOfRatesInput(stay('2026-10-26', '2026-10-27'))).toBe('2026-10-26:2026-10-27');
+    expect(stayKeyOfRatesInput({ groups: [] })).toBeNull();
+    expect(stayKeyOfRatesInput(undefined)).toBeNull();
+    expect(documentStayCount({ workflowRunId: 'r' })).toBe(1);
+    expect(documentStayCount({ additionalStays: [{}, {}] })).toBe(3);
+    expect(documentStayCount(undefined)).toBeNull();
+  });
+});
+
+describe('room types', () => {
+  it('picks the first listed type the ask names, then its usual bed', () => {
+    expect(pickRoomOption('Double/Twin', ROOM_OPTIONS('Double/Twin'))?.value).toBe('STWN');
+    expect(pickRoomOption('double or twin room', ROOM_OPTIONS())?.value).toBe('STWN');
+    expect(pickRoomOption('Single', ROOM_OPTIONS('Single'))?.value).toBe('STQN');
+    expect(pickRoomOption('SGL', ROOM_OPTIONS())?.value).toBe('STQN');
+    expect(pickRoomOption('King', ROOM_OPTIONS())?.value).toBe('SKNG');
+    expect(pickRoomOption('Family room', ROOM_OPTIONS())).toBeNull();
+    // The email's own option is never a pick, even though its label carries the asked words.
+    expect(pickRoomOption('Twin', [{ value: 'Twin', label: 'Email asked for Twin — pick a room type' }])).toBeNull();
+  });
+});
+
+describe('room rows', () => {
+  const row = (extra: Partial<PaneRoomRow>): PaneRoomRow => ({
+    stay: 1,
+    room: 1,
+    roomValue: '',
+    roomOptions: ROOM_OPTIONS(),
+    rooms: null,
+    adults: null,
+    board: 'unknown',
+    ...extra,
+  });
+  const inputs = { roomSplit: [15, 15], adultsSplit: [], board: 'bb' as const };
+
+  it('fills the AE1 rows with 15 + 15 per stay and records what it used', () => {
+    const rows = [1, 2].flatMap((stayNumber) => [
+      row({ stay: stayNumber, room: 1, roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single') }),
+      row({ stay: stayNumber, room: 2, roomValue: 'Double/twin', roomOptions: ROOM_OPTIONS('Double/twin'), board: 'bb' }),
+    ]);
+    const { plans, split } = planRoomRows(rows, inputs);
+    expect(split.rule).toBe('15/15 rooms per stay where the pane has none');
+    expect(split.rows.map((used) => [used.stay, used.room, used.askedType, used.roomType, used.rooms, used.adults, used.board])).toEqual([
+      [1, 1, 'Single', 'STQN', 15, 1, 'bb'],
+      [1, 2, 'Double/twin', 'STWN', 15, 2, 'bb'],
+      [2, 1, 'Single', 'STQN', 15, 1, 'bb'],
+      [2, 2, 'Double/twin', 'STWN', 15, 2, 'bb'],
+    ]);
+    expect(split.rows[1]).toMatchObject({ roomTypeFilled: true, roomsFilled: true, boardFilled: false });
+    expect(plans[0]).toEqual({ index: 0, roomType: 'STQN', rooms: 15, adults: 1, board: 'bb' });
+    expect(plans[1]).toEqual({ index: 1, roomType: 'STWN', rooms: 15, adults: 2, board: null });
+  });
+
+  it('keeps what the pane already has', () => {
+    const { plans, split } = planRoomRows([row({ roomValue: 'SKNG', rooms: 4, adults: 3, board: 'dinner_bb' })], inputs);
+    expect(plans).toEqual([{ index: 0, roomType: null, rooms: null, adults: null, board: null }]);
+    expect(split.rows[0]).toMatchObject({ askedType: null, roomType: 'SKNG', rooms: 4, adults: 3, board: 'dinner_bb' });
+  });
+
+  it('takes adults from NAVA_AE1_ADULTS when given', () => {
+    const { split } = planRoomRows([row({ roomValue: 'STQN' })], { ...inputs, adultsSplit: [2] });
+    expect(split.rows[0]?.adults).toBe(2);
+  });
+
+  it('stops on a row it cannot fill', () => {
+    expect(() => planRoomRows([row({})], inputs)).toThrow('stay 1 room 1 has no room type and the email names none');
+    expect(() => planRoomRows([row({ roomValue: 'Family', roomOptions: ROOM_OPTIONS('Family') })], inputs)).toThrow(
+      'no listed HMS room type matches "Family"',
+    );
+    expect(() => planRoomRows([row({ room: 3, roomValue: 'STQN' })], inputs)).toThrow('NAVA_AE1_ROOMS gives only 2 counts');
+  });
+});
+
+describe('config', () => {
+  const env = (extra: Record<string, string> = {}) => ({
+    NAVA_PREVIEW_BASE_URL: BASE,
+    NAVA_PREVIEW_STORAGE_STATE: statePath,
+    ...extra,
+  });
+
+  it('defaults to 15/15 rooms and bed and breakfast', () => {
+    const config = parseAe1Config(['--threads', 't-1', '--out', dir], env(), dir);
+    expect(config.threadId).toBe('t-1');
+    expect(config.inputs).toEqual({ roomSplit: [15, 15], adultsSplit: [], board: 'bb' });
+  });
+
+  it('reads the split and refuses bad inputs', () => {
+    expect(parseAe1Config(['--threads', 'a'], env({ NAVA_AE1_ROOMS: '20/10', NAVA_AE1_ADULTS: '1/2' }), dir).inputs).toMatchObject({
+      roomSplit: [20, 10],
+      adultsSplit: [1, 2],
+    });
+    expect(() => parseAe1Config(['--threads', 'a,b'], env(), dir)).toThrow('exactly one thread');
+    expect(() => parseAe1Config(['--threads', 'a'], env({ NAVA_AE1_ROOMS: 'half' }), dir)).toThrow('NAVA_AE1_ROOMS');
+    expect(() => parseAe1Config(['--threads', 'a'], env({ NAVA_AE1_ROOMS: '0/30' }), dir)).toThrow('1 to 99');
+    expect(() => parseAe1Config(['--threads', 'a'], env({ NAVA_AE1_ADULTS: '12' }), dir)).toThrow('1 to 9');
+    expect(() => parseAe1Config(['--threads', 'a'], env({ NAVA_AE1_BOARD: 'all' }), dir)).toThrow('NAVA_AE1_BOARD');
+  });
+});
+
+describe('verdict', () => {
+  const passing: Omit<Ae1Summary, 'ok' | 'failures'> = {
+    run: 'ae1-rates-x',
+    threadId: 't',
+    storedWorkflow: 'quote',
+    stays: 2,
+    paneRows: 4,
+    staysRated: 2,
+    ratesRuns: 2,
+    hmsReads: 3,
+    partyLookups: 1,
+    partyChecks: 0,
+    pdf: true,
+    pdfStays: 2,
+    xlsx: true,
+    xlsxStays: 2,
+    xlsxRows: 4,
+    expectedXlsxRows: 4,
+    xlsxExtraRows: 0,
+    xlsxTotalRow: true,
+    roomSplitUsed: { rule: '15/15 rooms per stay where the pane has none', rows: [] },
+    screenshots: { rates: true, documents: true, pane: true },
+    workflowRunIds: ['r1', 'r2'],
+    blocked: ['panePartyLookup.findParty (second_party_lookup)'],
+    blocker: null,
+  };
+
+  it('passes only when every AE1 point holds', () => {
+    expect(ae1Failures(passing)).toEqual([]);
+    expect(ae1Failures({ ...passing, ratesRuns: 1, staysRated: 1 })).toEqual([
+      'expected one rates run per stay (2), saw 1',
+      '1 of 2 stays rated',
+    ]);
+    expect(ae1Failures({ ...passing, xlsxRows: 2 })).toEqual(['the Excel has 2 stay x room rows, expected 4']);
+    expect(ae1Failures({ ...passing, xlsxTotalRow: false })).toEqual(['the Excel has no single total row that adds up']);
+    expect(ae1Failures({ ...passing, pdfStays: 1 })).toEqual(['the PDF covers 1 of 2 stays']);
+    expect(ae1Failures({ ...passing, pdf: false, xlsx: false })).toEqual(['no PDF', 'no Excel']);
+    expect(ae1Failures({ ...passing, stays: 1, ratesRuns: 1, staysRated: 1, pdfStays: 1, xlsxStays: 1 })).toEqual([
+      'AE1 needs at least two stays; the pane shows 1',
+    ]);
+    expect(ae1Failures({ ...passing, screenshots: { rates: false, documents: true, pane: true } })).toEqual([
+      'a screenshot is missing',
+    ]);
+  });
+
+  it('fails on any block the pane should not have caused', () => {
+    expect(ae1Failures({ ...passing, blocked: ['workstation.executeStaffQuote (stay_already_rated)'] })).toEqual([
+      'the guard blocked: workstation.executeStaffQuote (stay_already_rated)',
+    ]);
+  });
+
+  it('reports a blocker', () => {
+    expect(ae1Failures({ ...passing, blocker: 'Get rates from HMS is disabled: x' })[0]).toBe(
+      'blocker: Get rates from HMS is disabled: x',
+    );
+  });
+});
+
+describe('the pane markup the driver reads', () => {
+  it('matches the mail code', () => {
+    const panel = mail('components', 'quote-workflow', 'quote-workflow-panel.tsx');
+    const card = mail('components', 'quote-workflow', 'requirement-card.tsx');
+    const steps = mail('components', 'quote-workflow', 'tool-step-list.tsx');
+    const session = mail('lib', 'quote-workflow', 'session.ts');
+    const documents = mail('components', 'quote-workflow', 'document-review.tsx');
+    const ui = mail('components', 'nava-pane', 'pane-ui.tsx');
+    expect(ui).toContain('<section id={id} aria-label={title}');
+    expect(ui).toContain('<div role="group" aria-label={label}');
+    expect(panel).toContain('<Section step={1} title="Stay details">');
+    expect(RATES_SECTION).toContain('aria-label="Rates from HMS"');
+    expect(panel).toContain('<Section step={2} title="Rates from HMS">');
+    expect(DOCUMENTS_SECTION).toContain('aria-label="Quote documents"');
+    expect(panel).toContain('<Section step={3} title="Quote documents">');
+    expect(panel).toContain('Get rates from HMS');
+    expect(panel).toContain('{`${rated} of ${total} stays rated`}');
+    expect(card).toContain('const where = `stay ${stayNumber}, room ${roomNumber}`;');
+    expect(card).toContain('label={`Rooms for ${where}`}');
+    expect(card).toContain('Email asked for {unknownValue} — pick a room type');
+    for (const label of ['Room type', 'Rooms', 'Adults', 'Meal plan']) expect(card).toContain(`aria-label="${label}"`);
+    expect(steps).toContain('Run {step.title}');
+    expect(session).toContain("title: `Search availability ${key.replace(':', ' → ')}`");
+    expect(RUN_STEP.test('Run Search availability 2026-10-26 → 2026-10-27')).toBe(true);
+    expect(documents).toContain("{isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF'}");
+    expect(documents).toContain('Download Excel');
+  });
+
+  it.skipIf(!chromiumBinary)(
+    'reads each room row with its stay, its room type options and its counts',
+    async () => {
+      const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
+      try {
+        const page = await browser.newPage();
+        const roomRow = (stayNumber: number, roomNumber: number, asked: string, rooms: string) => `
+          <div><select aria-label="Room type">
+            <option value="">Choose a room type</option>
+            <option value="${asked}" selected>Email asked for ${asked} — pick a room type</option>
+            <option value="STWN">Standard Twin (STWN)</option><option value="STQN">Standard Queen (STQN)</option>
+          </select>
+          <div role="group" aria-label="Rooms for stay ${stayNumber}, room ${roomNumber}"></div>
+          <input aria-hidden="true" type="number" aria-label="Rooms" class="sr-only" value="${rooms}">
+          <input aria-hidden="true" type="number" aria-label="Adults" class="sr-only" value="">
+          <select aria-label="Meal plan"><option value="unknown" selected>Not stated yet</option><option value="bb">B&amp;B</option></select></div>`;
+        await page.setContent(`<div data-preview-pane><section aria-label="Stay details">
+          ${roomRow(1, 1, 'Single', '')}${roomRow(1, 2, 'Double/twin', '')}${roomRow(2, 1, 'Single', '4')}
+        </section><section aria-label="Rates from HMS"><input aria-label="Rooms" value="9"></section></div>`);
+        const read = (await page.evaluate(`(${READ_ROWS_JS})()`)) as {
+          counts: number[];
+          rows: Array<{ stay: number; room: number; roomValue: string; roomOptions: SelectOption[]; rooms: string; board: string }>;
+        };
+        expect(read.counts).toEqual([3, 3, 3, 3, 3]);
+        expect(read.rows.map((row) => [row.stay, row.room, row.roomValue, row.rooms, row.board])).toEqual([
+          [1, 1, 'Single', '', 'unknown'],
+          [1, 2, 'Double/twin', '', 'unknown'],
+          [2, 1, 'Single', '4', 'unknown'],
+        ]);
+        expect(pickRoomOption('Double/twin', read.rows[1]!.roomOptions)?.value).toBe('STWN');
+      } finally {
+        await browser.close();
+      }
+    },
+    30_000,
+  );
+});

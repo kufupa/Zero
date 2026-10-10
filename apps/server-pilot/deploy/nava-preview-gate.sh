@@ -14,12 +14,23 @@
 #   nava-preview-gate.sh --dry-run                          plan and config check only
 #   nava-preview-gate.sh --summarize <results.json | run>   summary of an existing run
 #   nava-preview-gate.sh --ae4 <thread-id> [--dry-run]      AE4 discount-override proof on one thread
+#   nava-preview-gate.sh --ae1-rates <thread-id> [--dry-run] AE1 multi-stay rates proof on one thread
+#   nava-preview-gate.sh --ae2-find <thread-id> [--dry-run]  AE2 amendment find proof on one thread
 #
 # --ae4 drives scripts/nava-ae4-override-proof.ts with the same sign-in: it sets the type to Quote, types one 2027 stay,
 # saves an NCOR1B override, prepares the PDF and the Excel and screenshots the row's review. Unlike the viewer gate it
 # writes: the work item and its field and rate events, one rates run (the one HMS call, a read) and the documents. No
 # HMS or mailbox write can pass its guard. Its last stdout line is the AE4 summary as one JSON line. Use an internal,
 # non-guest thread whose stored read is a quote request; NAVA_AE4_ALLOW_NO_EVENT=1 runs on any thread without the event.
+#
+# --ae1-rates drives scripts/nava-ae1-rates-proof.ts: on a multi-stay quote it fills missing room counts with the split
+# NAVA_AE1_ROOMS (default 15/15 per stay) and picks a listed room type for "Email asked for X", runs each stay's rates
+# search once, prepares the combined quote PDF and downloads the Excel. HMS: one rates read per stay, at most one party
+# search, no write. Writes: field.edit work events, per stay one ai_draft_generation and ai_workflow_run, the documents.
+#
+# --ae2-find drives scripts/nava-ae2-find-proof.ts: on an amendment thread it clicks "Find this booking in HMS" once and
+# reports which of the email's dates the find sent and what HMS holds. HMS: one read-only find, no write. Writes: the
+# queued find job (one ai_workflow_run). Both print their summary as the last stdout line, one JSON line.
 #
 # Secrets: the pilot password comes from Secrets Manager (or PLAYWRIGHT_REAL_MAIL_PASSWORD)
 # and goes to node on stdin only. No secret is printed, echoed, or put on a command line.
@@ -39,6 +50,9 @@ if [ -n "${NAVA_PREVIEW_THREADS:-}" ]; then SELECTION=(--threads "$NAVA_PREVIEW_
 RUNNER_TIMEOUT_MS=90000
 # The AE4 rates run reads HMS (about 2 minutes); the runner waits up to its maximum for it.
 AE4_TIMEOUT_MS=600000
+# AE1 waits up to this for each stay's rates run; AE2 for the queued find job.
+AE1_TIMEOUT_MS=600000
+AE2_TIMEOUT_MS=600000
 PILOT_EMAIL="navaai@legacyhotels.co.za"
 PILOT_SECRET_ID="nava-zero/server-pilot/pilot-users"
 # NAVA_PREVIEW_OUT_ROOT is for tests and dry runs only; the EC2 run keeps the default.
@@ -53,6 +67,7 @@ MODE="run"
 SUMMARIZE_TARGET=""
 AE4_THREAD=""
 AE4_DRY=0
+PROOF_USAGE="--ae4 | --ae1-rates | --ae2-find <thread-id> [--dry-run]"
 case "${1:-}" in
   "") ;;
   --dry-run) MODE="dry-run" ;;
@@ -64,25 +79,30 @@ case "${1:-}" in
       exit 2
     fi
     ;;
-  --ae4)
-    MODE="ae4"
+  --ae4 | --ae1-rates | --ae2-find)
+    # One proof thread for every proof mode. AE4_THREAD and AE4_DRY name it for all three.
+    case "$1" in
+      --ae4) MODE="ae4" ;;
+      --ae1-rates) MODE="ae1" ;;
+      --ae2-find) MODE="ae2" ;;
+    esac
     AE4_THREAD="${2:-}"
     # The same id shape nava-preview-run.ts accepts for --threads.
     if ! [[ "$AE4_THREAD" =~ ^[A-Za-z0-9_.:~@-]{1,128}$ ]]; then
-      echo "usage: $0 --ae4 <thread-id> [--dry-run]" >&2
+      echo "usage: $0 $1 <thread-id> [--dry-run]" >&2
       exit 2
     fi
     case "${3:-}" in
       "") ;;
       --dry-run) AE4_DRY=1 ;;
       *)
-        echo "usage: $0 --ae4 <thread-id> [--dry-run]" >&2
+        echo "usage: $0 $1 <thread-id> [--dry-run]" >&2
         exit 2
         ;;
     esac
     ;;
   *)
-    echo "usage: $0 [--dry-run | --summarize <results.json | run-dir> | --ae4 <thread-id> [--dry-run]]" >&2
+    echo "usage: $0 [--dry-run | --summarize <results.json | run-dir> | ${PROOF_USAGE}]" >&2
     exit 2
     ;;
 esac
@@ -153,7 +173,11 @@ if [ "$MODE" = "summarize" ]; then
 fi
 
 RUN_PREFIX="gate"
-if [ "$MODE" = "ae4" ]; then RUN_PREFIX="ae4"; fi
+case "$MODE" in
+  ae4) RUN_PREFIX="ae4" ;;
+  ae1) RUN_PREFIX="ae1-rates" ;;
+  ae2) RUN_PREFIX="ae2-find" ;;
+esac
 
 S3_BUCKET_NAME="${S3_BUCKET:-$(read_env_value S3_BUCKET "$ENV_FILE")}"
 AWS_REGION_NAME="${AWS_REGION:-$(read_env_value AWS_REGION "$ENV_FILE")}"
@@ -178,6 +202,13 @@ if [ "$MODE" = "dry-run" ] || [ "$AE4_DRY" = "1" ]; then
   if [ "$MODE" = "ae4" ]; then
     echo "proof:       AE4 discount override on thread ${AE4_THREAD}, ${AE4_TIMEOUT_MS} ms for the rates run"
     echo "hms:         one rates read (workstation.executeStaffQuote); every HMS write is blocked"
+  elif [ "$MODE" = "ae1" ]; then
+    echo "proof:       AE1 multi-stay rates on thread ${AE4_THREAD}, ${AE1_TIMEOUT_MS} ms per stay's rates run"
+    echo "rooms:       ${NAVA_AE1_ROOMS:-15/15} per stay where the pane has no count (NAVA_AE1_ROOMS)"
+    echo "hms:         one rates read per stay (workstation.executeStaffQuote), at most one party search; every HMS write is blocked"
+  elif [ "$MODE" = "ae2" ]; then
+    echo "proof:       AE2 amendment find on thread ${AE4_THREAD}, ${AE2_TIMEOUT_MS} ms for the find job"
+    echo "hms:         one read-only find (paneStayLookup.queueFind); every HMS and mailbox write is blocked"
   else
     echo "selection:   ${SELECTION[*]}, ${RUNNER_TIMEOUT_MS} ms per thread"
   fi
@@ -295,6 +326,16 @@ if [ "$MODE" = "ae4" ]; then
   RESULT_FILE="summary.json"
   # The AE4 run dir holds only the proof's own files: the summary, two screenshots, the PDF and the Excel.
   UPLOAD=(--exclude '*' --include 'summary.json' --include '*.png' --include 'quote.pdf' --include 'quote.xlsx')
+elif [ "$MODE" = "ae1" ]; then
+  RUNNER=(scripts/nava-ae1-rates-proof.ts --threads "$AE4_THREAD" --out "$OUT_DIR" --timeout-ms "$AE1_TIMEOUT_MS")
+  RESULT_FILE="summary.json"
+  # The summary, the rates, documents and pane screenshots, the PDF and the Excel.
+  UPLOAD=(--exclude '*' --include 'summary.json' --include '*.png' --include 'quote.pdf' --include 'quote.xlsx')
+elif [ "$MODE" = "ae2" ]; then
+  RUNNER=(scripts/nava-ae2-find-proof.ts --threads "$AE4_THREAD" --out "$OUT_DIR" --timeout-ms "$AE2_TIMEOUT_MS")
+  RESULT_FILE="summary.json"
+  # The summary and the amendment card and pane screenshots.
+  UPLOAD=(--exclude '*' --include 'summary.json' --include '*.png')
 else
   RUNNER=(scripts/nava-preview-run.ts "${SELECTION[@]}" --out "$OUT_DIR" --timeout-ms "$RUNNER_TIMEOUT_MS")
   RESULT_FILE="results.json"
@@ -310,8 +351,8 @@ pnpm --dir apps/server-pilot exec tsx "${RUNNER[@]}"
 RUN_EXIT=$?
 set -e
 
-# The AE4 runner prints its own one-line summary.
-if [ "$MODE" != "ae4" ]; then
+# A proof runner prints its own one-line summary.
+if [ "$MODE" = "run" ]; then
   set +e
   summarize_run "$OUT_DIR"
   set -e
@@ -332,8 +373,9 @@ else
   echo "gallery: local only in ${OUT_DIR}"
 fi
 
-if [ "$MODE" = "ae4" ]; then
-  echo "runner exit: ${RUN_EXIT} (0 AE4 pass, 1 AE4 failed, 2 blocked, config or launch)"
+if [ "$MODE" = "ae4" ] || [ "$MODE" = "ae1" ] || [ "$MODE" = "ae2" ]; then
+  PROOF_NAME="$(printf '%s' "$MODE" | tr '[:lower:]' '[:upper:]')"
+  echo "runner exit: ${RUN_EXIT} (0 ${PROOF_NAME} pass, 1 ${PROOF_NAME} failed, 2 blocked, config or launch)"
 else
   echo "runner exit: ${RUN_EXIT} (0 pass, 1 gate failure, 2 config or launch)"
 fi
