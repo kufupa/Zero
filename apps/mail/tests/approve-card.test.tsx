@@ -2,6 +2,7 @@
  * @vitest-environment happy-dom
  */
 import {
+  HMS_WRITE_IDLE_POLL_MS,
   HMS_WRITE_POLL_MS,
   hmsApprovalFromTrpc,
   refusalCopy,
@@ -395,6 +396,34 @@ describe('BookingVoucherCard write card', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(container.querySelector('section')).toBeNull();
+  });
+
+  it('shows an attach prepared while the mail is open, without a reopen', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      paneWrite.view = viewWith();
+      const { container } = render(
+        <BookingVoucherCard
+          session={initialQuoteSession()}
+          internetMessageId={null}
+          syncCommitted={null}
+          syncPending={false}
+          workItemId={WORK_ITEM}
+          writesEnabled
+        />,
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+      expect(container.querySelector('section')).toBeNull();
+      paneWrite.view = viewWith({ form: attachForm, before: null });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HMS_WRITE_IDLE_POLL_MS);
+      });
+      expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('offers Try again when the first read fails, then shows the stored attach once a read lands', async () => {

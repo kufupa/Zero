@@ -2,6 +2,7 @@ import {
   HMS_NOTE_MAX,
   HMS_NOTE_MIN,
   HMS_WRITE_COPY,
+  HMS_WRITE_IDLE_POLL_MS,
   HMS_WRITE_POLL_MS,
   isGuestWriteRow,
   isStoredWrite,
@@ -64,8 +65,11 @@ export function ApproveCard({
   );
 }
 
-/** The write's state for one work item. Re-read after each action, and every few seconds while a run is moving. */
-function useHmsWriteState(client: HmsApprovalClient, workItemId: string) {
+/**
+ * The write's state for one work item. Re-read after each action, every few seconds while a run is moving, and now and
+ * then while a card that needs a stored write has none, so a write prepared while the mail is open shows up.
+ */
+function useHmsWriteState(client: HmsApprovalClient, workItemId: string, requireStoredWrite: boolean) {
   const [loaded, setLoaded] = useState<{ workItemId: string; view: HmsWriteView } | null>(null);
   const [failed, setFailed] = useState(false);
   // Counts each read that settled, success or failure, so a moving write is polled again after a failed read too.
@@ -73,6 +77,7 @@ function useHmsWriteState(client: HmsApprovalClient, workItemId: string) {
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick((count) => count + 1), []);
   const moving = loaded !== null && writeStatusOf(loaded.view).phase === 'running';
+  const waiting = requireStoredWrite && loaded !== null && !isStoredWrite(loaded.view);
 
   useEffect(() => {
     let live = true;
@@ -95,10 +100,10 @@ function useHmsWriteState(client: HmsApprovalClient, workItemId: string) {
   }, [client, workItemId, tick]);
 
   useEffect(() => {
-    if (!moving) return;
-    const timer = setTimeout(refresh, HMS_WRITE_POLL_MS);
+    if (!moving && !waiting) return;
+    const timer = setTimeout(refresh, moving ? HMS_WRITE_POLL_MS : HMS_WRITE_IDLE_POLL_MS);
     return () => clearTimeout(timer);
-  }, [moving, reads, refresh]);
+  }, [moving, waiting, reads, refresh]);
 
   return { view: loaded?.workItemId === workItemId ? loaded.view : null, failed, refresh };
 }
@@ -114,7 +119,7 @@ function LiveWriteCard({
   confirmation: string | null;
   requireStoredWrite: boolean;
 }) {
-  const { view, failed, refresh } = useHmsWriteState(client, workItemId);
+  const { view, failed, refresh } = useHmsWriteState(client, workItemId, requireStoredWrite);
   // Hidden only once a read shows no stored write. A failed first read shows Try again: it may hide a pending write.
   if (requireStoredWrite && (view ? !isStoredWrite(view) : !failed)) return null;
   const loadFailed = (
