@@ -1,0 +1,336 @@
+/**
+ * @vitest-environment happy-dom
+ */
+import {
+  hmsApprovalFromTrpc,
+  refusalCopy,
+  writeRowsOf,
+  writeStatusOf,
+  type HmsApprovalClient,
+  type HmsApproved,
+  type HmsReviewed,
+  type HmsWriteView,
+} from '../lib/quote-workflow/hms-write';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { ApproveCard } from '../components/quote-workflow/approve-card';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+const WORK_ITEM = '3f8a2c1e-9b7d-4e6f-8a1b-2c3d4e5f6a7b';
+const CONFIRMATION = 'LAB-40417';
+const READ_AT = '2026-10-10T09:00:00.000Z';
+const EVENT_ID = '7b1e2d3c-4f5a-4b6c-8d7e-9f0a1b2c3d4e';
+
+const APPROVED: HmsApproved = {
+  grantId: 'grant-1',
+  runId: 'run-2',
+  hmsReadAt: READ_AT,
+  expiresAt: READ_AT,
+};
+const REVIEWED: HmsReviewed = { runId: 'run-1', status: 'done', reread: null };
+
+type Run = NonNullable<HmsWriteView['run']>;
+
+function viewWith(patch: Partial<HmsWriteView> = {}): HmsWriteView {
+  return {
+    status: 'needs_you',
+    form: { arrival: '2026-11-02', board: 'bb' },
+    before: { arrival: '2026-11-01', board: 'room_only' },
+    snapshot: { readAt: READ_AT, stale: false },
+    grant: null,
+    run: null,
+    needsCheck: false,
+    ...patch,
+  };
+}
+
+function runWith(state: string, patch: Partial<Run> = {}): Run {
+  return {
+    runId: 'run-1',
+    state,
+    failureClass: null,
+    lastError: null,
+    evidence: [],
+    reviewed: null,
+    ...patch,
+  };
+}
+
+function fakeClient(view: HmsWriteView): HmsApprovalClient {
+  return {
+    writeState: vi.fn(async () => view),
+    approve: vi.fn(async () => APPROVED),
+    review: vi.fn(async () => REVIEWED),
+    resolveNeedsCheck: vi.fn(async () => ({ runId: 'run-1', resolution: 'staff_checked' })),
+    evidence: vi.fn(async () => ({
+      status: 'unavailable' as const,
+      reason: 'evidence_unavailable',
+    })),
+  };
+}
+
+function renderCard(
+  client: HmsApprovalClient,
+  patch: Partial<Parameters<typeof ApproveCard>[0]> = {},
+) {
+  return render(
+    <ApproveCard
+      client={client}
+      workItemId={WORK_ITEM}
+      writesEnabled
+      confirmation={CONFIRMATION}
+      {...patch}
+    />,
+  );
+}
+
+afterEach(() => cleanup());
+
+describe('ApproveCard approval', () => {
+  it('lists each changed value as before to after, with one Approve button', async () => {
+    renderCard(fakeClient(viewWith()));
+    const list = await screen.findByRole('list', { name: 'Values to write' });
+    expect(list.textContent).toContain('Arrival');
+    expect(list.textContent).toContain('1 Nov 2026');
+    expect(list.textContent).toContain('2 Nov 2026');
+    expect(list.textContent).toContain('Room only');
+    expect(list.textContent).toContain('Bed & breakfast');
+    const approve = screen.getByRole('button', { name: 'Approve these values' });
+    expect(approve.hasAttribute('disabled')).toBe(false);
+    expect(screen.getAllByRole('button', { name: /approve/i })).toHaveLength(1);
+  });
+
+  it('shows the re-approve state when an edit changed the form after approval', async () => {
+    const client = fakeClient(
+      viewWith({ grant: { grantId: 'grant-1', consumed: false, fingerprintMatches: false } }),
+    );
+    renderCard(client);
+    expect(await screen.findByText('Changed since approval — approve again')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Approve again' })).toBeTruthy();
+  });
+
+  it('blocks approval on a stale HMS read and offers a re-read only when a callback is wired', async () => {
+    const stale = viewWith({ snapshot: { readAt: READ_AT, stale: true } });
+    const first = renderCard(fakeClient(stale));
+    expect(await screen.findByText(/Re-read HMS first/)).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Approve these values' }).hasAttribute('disabled'),
+    ).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Re-read HMS' })).toBeNull();
+    first.unmount();
+
+    const onRereadHms = vi.fn(async () => {});
+    const client = fakeClient(stale);
+    renderCard(client, { onRereadHms });
+    fireEvent.click(await screen.findByRole('button', { name: 'Re-read HMS' }));
+    await waitFor(() => expect(onRereadHms).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(client.writeState).toHaveBeenCalledTimes(2));
+  });
+
+  it('treats a missing HMS read the same as a stale one', async () => {
+    renderCard(fakeClient(viewWith({ snapshot: null })));
+    expect(await screen.findByText(/Re-read HMS first/)).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Approve these values' }).hasAttribute('disabled'),
+    ).toBe(true);
+  });
+
+  it('approves with the work item only, then reads the state again', async () => {
+    const client = fakeClient(viewWith());
+    renderCard(client);
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve these values' }));
+    await waitFor(() => expect(client.approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM }));
+    await waitFor(() => expect(client.writeState).toHaveBeenCalledTimes(2));
+  });
+
+  it('says in words why a refused approval did not go through', async () => {
+    const client = fakeClient(viewWith());
+    vi.mocked(client.approve).mockRejectedValueOnce(new Error('write_in_flight'));
+    renderCard(client);
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve these values' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByText(/still running/)).toBeTruthy();
+  });
+});
+
+describe('ApproveCard write states', () => {
+  it.each([
+    ['queued', /Queued in HMS\./],
+    ['claimed', /Running in HMS\./],
+    ['running', /Running in HMS\./],
+    ['retry_wait', /Retrying in HMS\./],
+  ])('shows a run in state %s as moving, with no approve control', async (state, copy) => {
+    renderCard(fakeClient(viewWith({ run: runWith(state) })));
+    expect(await screen.findByText(copy)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+  });
+
+  it('shows a succeeded write with its screenshots, and review and no approve', async () => {
+    const client = fakeClient(
+      viewWith({
+        grant: { grantId: 'grant-1', consumed: true, fingerprintMatches: true },
+        run: runWith('succeeded', {
+          evidence: [{ eventId: EVENT_ID, name: '02-result.png', expired: false }],
+        }),
+      }),
+    );
+    renderCard(client);
+    expect(await screen.findByText(/Written in HMS\./)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Review OK' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Flag' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+    await waitFor(() =>
+      expect(client.evidence).toHaveBeenCalledWith({ workItemId: WORK_ITEM, eventId: EVENT_ID }),
+    );
+  });
+
+  it('shows a failed-partial write with what is confirmed, and review', async () => {
+    renderCard(
+      fakeClient(
+        viewWith({
+          run: runWith('dead_letter', {
+            failureClass: 'TRANSIENT_NETWORK',
+            evidence: [{ eventId: EVENT_ID, name: '01-search.png', expired: false }],
+          }),
+        }),
+      ),
+    );
+    expect(
+      await screen.findByText(/Stopped part way\. A connection problem stopped the write\./),
+    ).toBeTruthy();
+    expect(screen.getByText(/Confirmed in HMS: the screenshots below/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Review OK' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+  });
+
+  it('shows a stop with nothing saved as not confirmed, and lets her approve again', async () => {
+    renderCard(fakeClient(viewWith({ run: runWith('dead_letter', { failureClass: 'AUTH' }) })));
+    expect(
+      await screen.findByText(/Nava could not sign in to HMS\. Nothing was confirmed in HMS\./),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Approve again' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Review OK' })).toBeNull();
+  });
+
+  it('puts a needs check in words and asks what she checked in HMS', async () => {
+    renderCard(
+      fakeClient(
+        viewWith({
+          needsCheck: true,
+          run: runWith('dead_letter', { failureClass: 'NEEDS_CHECK', lastError: 'hms_changed' }),
+        }),
+      ),
+    );
+    expect(
+      await screen.findByText('HMS changed after Nava read the booking. Nothing was written.'),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'I checked in HMS' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Review OK' })).toBeNull();
+  });
+
+  it('blocks an empty needs-check note, then sends the trimmed note', async () => {
+    const client = fakeClient(
+      viewWith({
+        needsCheck: true,
+        run: runWith('dead_letter', { failureClass: 'LEASE_LOST', lastError: 'LEASE_LOST' }),
+      }),
+    );
+    renderCard(client);
+    fireEvent.click(await screen.findByRole('button', { name: 'I checked in HMS' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByText('Say what you checked in HMS first.')).toBeTruthy();
+    expect(client.resolveNeedsCheck).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('What did you check in HMS?'), {
+      target: { value: '  Arrival is 2 Nov in HMS  ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'I checked in HMS' }));
+    await waitFor(() =>
+      expect(client.resolveNeedsCheck).toHaveBeenCalledWith({
+        workItemId: WORK_ITEM,
+        note: 'Arrival is 2 Nov in HMS',
+      }),
+    );
+  });
+});
+
+describe('ApproveCard gated off', () => {
+  it('renders no write controls in prod and keeps the Copy confirmation handoff', async () => {
+    const client = fakeClient(viewWith({ run: runWith('dead_letter', { failureClass: 'AUTH' }) }));
+    renderCard(client, { writesEnabled: false });
+    expect(screen.getByText(/Saving is only switched on for test bookings right now/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
+    expect(
+      screen.queryByRole('button', { name: /approve|review|flag|checked|re-read/i }),
+    ).toBeNull();
+    expect(client.writeState).not.toHaveBeenCalled();
+  });
+
+  it('renders nothing when the hmsApproval routes are not on the client', () => {
+    const { container } = renderCard(fakeClient(viewWith()), { client: null });
+    expect(container.textContent).toBe('');
+  });
+});
+
+describe('hmsApprovalFromTrpc and refusals', () => {
+  it('binds all five routes, and is null while any is missing', async () => {
+    expect(hmsApprovalFromTrpc({})).toBeNull();
+    expect(hmsApprovalFromTrpc({ hmsApproval: { writeState: { query: vi.fn() } } })).toBeNull();
+
+    const approve = vi.fn(async () => APPROVED);
+    const client = hmsApprovalFromTrpc({
+      hmsApproval: {
+        writeState: { query: vi.fn(async () => viewWith()) },
+        approve: { mutate: approve },
+        review: { mutate: vi.fn(async () => REVIEWED) },
+        resolveNeedsCheck: { mutate: vi.fn(async () => ({})) },
+        evidence: { query: vi.fn(async () => ({ status: 'unavailable' as const, reason: 'x' })) },
+      },
+    });
+    expect(client).not.toBeNull();
+    await client?.approve({ workItemId: WORK_ITEM });
+    expect(approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM });
+  });
+
+  it('turns a refusal name into words, and an unknown one into a generic line', () => {
+    expect(refusalCopy(new Error('snapshot_stale'))).toMatch(/Re-read HMS first/);
+    expect(refusalCopy(new Error('no_such_refusal'))).toBe('Nava could not do that. Try again.');
+    expect(refusalCopy('not an error')).toBe('Nava could not do that. Try again.');
+  });
+});
+
+describe('writeRowsOf and writeStatusOf', () => {
+  it('leaves out unchanged values, and reads a missing snapshot as not read', () => {
+    expect(writeRowsOf({ form: { adults: 2 }, before: { adults: 2 } })).toEqual([]);
+    expect(writeRowsOf({ form: { arrival: '2026-11-02' }, before: null })).toEqual([
+      { key: 'arrival', label: 'Arrival', before: 'Not read', after: '2 Nov 2026' },
+    ]);
+  });
+
+  it('labels each stay in a multi-stay form, and joins list values', () => {
+    const rows = writeRowsOf({
+      form: {
+        stays: { a: { arrival: '2026-11-02', childAges: [5, 7] } },
+        other: { arrival: '2026-11-05' },
+      },
+      before: null,
+    });
+    expect(rows.map((row) => [row.label, row.after])).toEqual([
+      ['Stay 1: Arrival', '2 Nov 2026'],
+      ['Stay 1: Child ages', '5, 7'],
+      ['Arrival', '5 Nov 2026'],
+    ]);
+  });
+
+  it('opens approval only when nothing is moving, no check is open, and no executed write awaits review', () => {
+    expect(writeStatusOf(viewWith()).approve).toBe(true);
+    expect(writeStatusOf(viewWith({ run: runWith('running') })).approve).toBe(false);
+    expect(writeStatusOf(viewWith({ run: runWith('succeeded') })).approve).toBe(false);
+    expect(
+      writeStatusOf(viewWith({ run: runWith('succeeded', { reviewed: 'flag' }) })).approve,
+    ).toBe(true);
+    expect(writeStatusOf(viewWith({ status: 'done' })).approve).toBe(false);
+  });
+});
