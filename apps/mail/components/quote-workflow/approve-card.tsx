@@ -3,6 +3,7 @@ import {
   HMS_NOTE_MIN,
   HMS_WRITE_COPY,
   HMS_WRITE_POLL_MS,
+  isGuestWriteRow,
   isStoredWrite,
   refusalCopy,
   writeRowsOf,
@@ -211,9 +212,13 @@ function WriteRows({ rows }: { rows: WriteRow[] }) {
       {rows.map((row) => (
         <li key={row.key} className="flex flex-wrap items-baseline gap-x-2">
           <span className="font-medium text-[#334155]">{row.label}</span>
-          <span className="text-[#64748b] line-through">{row.before}</span>
+          <span data-pii={isGuestWriteRow(row.key) || undefined} className="text-[#64748b] line-through">
+            {row.before}
+          </span>
           <span>→</span>
-          <span className="font-semibold text-[#1e293b]">{row.after}</span>
+          <span data-pii={isGuestWriteRow(row.key) || undefined} className="font-semibold text-[#1e293b]">
+            {row.after}
+          </span>
         </li>
       ))}
     </ul>

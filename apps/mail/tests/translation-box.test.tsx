@@ -6,6 +6,7 @@ import type { StoredTranslation, StoredWork } from '@/lib/quote-workflow/backend
 import { TranslationBox } from '@/components/nava-pane/blocks/translation-box';
 import { useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { unmaskedPii } from './helpers/pii-marks';
 
 afterEach(() => cleanup());
 
@@ -48,6 +49,14 @@ describe('TranslationBox', () => {
     expect(screen.getByText(SEGMENTS[1]!.clean)).toBeDefined();
     expect(screen.queryByText(SEGMENTS[0]!.literal)).toBeNull();
     expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(tab('Clean').id);
+  });
+
+  it('marks the translated email text data-pii, so the preview gate masks it', () => {
+    const { container } = render(
+      <TranslationBox language="fr" translation={TRANSLATED} busy={false} onRetry={vi.fn()} />,
+    );
+    expect(unmaskedPii(container, [SEGMENTS[0]!.clean, SEGMENTS[1]!.clean])).toEqual([]);
+    expect(screen.getByText('Written in French. Replies stay in English.').closest('[data-pii]')).toBeNull();
   });
 
   it('shows the word-for-word segments for the same pairs when that tab is chosen', () => {

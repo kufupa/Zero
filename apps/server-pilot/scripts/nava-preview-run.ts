@@ -101,7 +101,7 @@ export const HMS_READ_PROCEDURES: ReadonlySet<string> = new Set(['panePartyLooku
 /**
  * Mutations the pane references, named so a block reads as a write. Any other name is blocked as unknown.
  * workItems.getByMessage is a query that writes: it inserts or updates a work-item row when the mail has a stored read.
- * It stays blocked, and is named here so the block counts as a write (see BLOCKED_BY_DESIGN).
+ * It stays blocked, and is named here so the block counts as a write.
  */
 export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'drafts.saveReply',
@@ -643,10 +643,12 @@ async function viewThread(
   const pagePath = join(dir, 'page.png');
   await fitPaneToContent(page);
   await page.evaluate(`(${MARK_PII_JS})()`).catch(() => 0);
-  const mask = [page.locator('[data-runner-mask]')];
+  // [data-pii] is matched live at each capture, so a node the pane renders after the marking pass is still masked.
+  const mask = [page.locator(`[data-runner-mask], ${PII_SELECTOR}`)];
   await panel.screenshot({ path: panePath, mask, timeout: 15_000 }).catch(() => undefined);
-  // The page keeps the size staff see. Only the pane capture is taller.
+  // The page keeps the size staff see. Only the pane capture is taller. The resize can re-render, so mark again.
   await page.setViewportSize(VIEWPORT).catch(() => undefined);
+  await page.evaluate(`(${MARK_PII_JS})()`).catch(() => 0);
   await page
     .screenshot({ path: pagePath, fullPage: true, mask, timeout: 15_000 })
     .catch(() => undefined);

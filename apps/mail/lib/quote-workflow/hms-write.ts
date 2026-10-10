@@ -365,6 +365,14 @@ function labelsOf(keys: readonly string[]): Map<string, string> {
   return labels;
 }
 
+/** Leaves that name the guest or their booking (a confirmation, a name, a file name). The preview gate masks them. */
+const GUEST_LEAF = /^confirmation$|name$|email$|phone$|^guest/i;
+
+/** True when a write row shows a guest detail, so the pane marks it data-pii. */
+export function isGuestWriteRow(key: string): boolean {
+  return GUEST_LEAF.test(leafName(key));
+}
+
 /**
  * The values the write changes, as before → after rows. A value that is the same before and after is left out. With no
  * stored read, the before side reads "Not read", so approval still shows what would be written.
