@@ -1,8 +1,8 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DocumentReview } from '../components/quote-workflow/document-review';
 import { AMENDMENT_PANEL_COPY, NotSupportedList } from '../components/quote-workflow/not-supported-list';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
@@ -104,5 +104,44 @@ describe('quote panel notes', () => {
     expect(screen.getByText(/Prepared PDF Quote-option-A\.pdf\./)).toBeDefined();
     expect(screen.getByText(/The Outlook draft will attach this exact file\./)).toBeDefined();
     expect(screen.queryByText(/attaches each option's PDF/)).toBeNull();
+  });
+});
+
+describe('the HMS no-building check on the quote documents', () => {
+  const run = (jointRoomsChecked?: boolean) => ({
+    revisionRef: 'rev-a',
+    quoteRequestKey: '2026-11-12:2026-11-14',
+    poolBasis: 'property_room_type',
+    ...(jointRoomsChecked === undefined ? {} : { jointRoomsChecked }),
+  });
+  const session = (quote: object | null) =>
+    ({
+      ...initialQuoteSession(),
+      selectedStayKey: '2026-11-12:2026-11-14',
+      staffQuote: quote,
+      staffQuotes: quote ? { '2026-11-12:2026-11-14': quote } : {},
+    }) as never;
+
+  it('shows the caution and a tick that reports the run it is for', () => {
+    const onJointRoomsChecked = vi.fn();
+    render(<DocumentReview session={session(run())} onJointRoomsChecked={onJointRoomsChecked} />);
+    expect(
+      screen.getByText('HMS has no building for these rooms. Check in HMS that they can be booked together before you send.'),
+    ).toBeDefined();
+    const tick = screen.getByRole('checkbox', { name: 'I checked these rooms together in HMS' }) as HTMLInputElement;
+    expect(tick.checked).toBe(false);
+    fireEvent.click(tick);
+    expect(onJointRoomsChecked).toHaveBeenCalledWith('rev-a', true);
+  });
+
+  it('shows the tick as given, and nothing for a run HMS did not flag', () => {
+    render(<DocumentReview session={session(run(true))} />);
+    expect((screen.getByRole('checkbox', { name: 'I checked these rooms together in HMS' }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    cleanup();
+    render(<DocumentReview session={session({ ...run(), poolBasis: undefined })} />);
+    expect(screen.queryByText(/HMS has no building/)).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
   });
 });

@@ -20,6 +20,7 @@ import {
   analysisRetryKey,
   hasStaffStayEdits,
   dinnerAllowanceStillRequired,
+  jointRoomsToCheck,
   groupStays,
   removedStayFor,
   rowRoomCode,
@@ -2821,5 +2822,56 @@ describe('why the PDF cannot be made: the reason names the check that failed', (
     const s = reduceQuoteSession(authorisedResults(), { type: 'select_offers', offerIds: ['o1'] });
     expect(canCreatePdf(s)).toBe(true);
     expectBlocked({ ...s, selectedStayKey: STAY_B }, 'no_stay', 'Pick the stay to quote first.');
+  });
+
+  describe('HMS gave no building for two room types: staff check them together in HMS', () => {
+    function flagged(action: QuoteSessionAction): QuoteSessionAction {
+      if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+      return { ...action, staffQuote: { ...action.staffQuote, poolBasis: 'property_room_type' } };
+    }
+    const reason = 'Check in HMS that these rooms can be booked together, then tick the box above.';
+
+    it('blocks the PDF, Excel and reply until staff tick the check, and unticking blocks again', () => {
+      const base = withStaffSource(analysisReady());
+      const s = reduceQuoteSession(base, flagged(staffQuoteFor(STAY_A, 'rev-1', 850000, base.inputRevision)));
+      expect(jointRoomsToCheck(s).map((run) => run.revisionRef)).toEqual(['rev-1']);
+      expectBlocked(s, 'joint_rooms_unchecked', reason);
+      expect(canCreateNativeDraft({ ...s, pdf: quotePdf('rev-1'), reviewedReplyHtml: '<p>Hi</p>' })).toBe(false);
+      const ticked = reduceQuoteSession(s, { type: 'joint_rooms_checked', revisionRef: 'rev-1', checked: true });
+      expect(pdfBlocker(ticked)).toBeNull();
+      expect(ticked.staffQuotes[STAY_A]?.jointRoomsChecked).toBe(true);
+      const unticked = reduceQuoteSession(ticked, { type: 'joint_rooms_checked', revisionRef: 'rev-1', checked: false });
+      expectBlocked(unticked, 'joint_rooms_unchecked', reason);
+    });
+
+    it('a new run starts unticked, and a tick for another run changes nothing', () => {
+      const base = withStaffSource(analysisReady());
+      const s = reduceQuoteSession(base, flagged(staffQuoteFor(STAY_A, 'rev-1', 850000, base.inputRevision)));
+      const ticked = reduceQuoteSession(s, { type: 'joint_rooms_checked', revisionRef: 'rev-1', checked: true });
+      const rerun = reduceQuoteSession(ticked, flagged(staffQuoteFor(STAY_A, 'rev-2', 850000, base.inputRevision)));
+      expect(pdfBlocker(rerun)?.kind).toBe('joint_rooms_unchecked');
+      const wrong = reduceQuoteSession(rerun, { type: 'joint_rooms_checked', revisionRef: 'rev-1', checked: true });
+      expect(pdfBlocker(wrong)?.kind).toBe('joint_rooms_unchecked');
+    });
+
+    it('a single room type needs no check and takes no tick', () => {
+      const s = ratedSingleStay();
+      expect(jointRoomsToCheck(s)).toEqual([]);
+      const tick = reduceQuoteSession(s, { type: 'joint_rooms_checked', revisionRef: 'rev-1', checked: true });
+      expect(tick.staffQuotes[STAY_A]?.jointRoomsChecked).toBeUndefined();
+      expect(pdfBlocker(tick)).toBeNull();
+    });
+
+    it('a combined quote needs the tick on every flagged stay', () => {
+      const base = twoDateSession();
+      let s = reduceQuoteSession(base, flagged(staffQuoteFor(STAY_A, 'rev-a', 272000, base.inputRevision)));
+      s = reduceQuoteSession(s, flagged(staffQuoteFor(STAY_B, 'rev-b', 272000, base.inputRevision)));
+      expect(jointRoomsToCheck(s).map((run) => run.revisionRef)).toEqual(['rev-a', 'rev-b']);
+      expectBlocked(s, 'joint_rooms_unchecked', reason);
+      s = reduceQuoteSession(s, { type: 'joint_rooms_checked', revisionRef: 'rev-a', checked: true });
+      expect(pdfBlocker(s)?.kind).toBe('joint_rooms_unchecked');
+      s = reduceQuoteSession(s, { type: 'joint_rooms_checked', revisionRef: 'rev-b', checked: true });
+      expect(pdfBlocker(s)).toBeNull();
+    });
   });
 });

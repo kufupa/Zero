@@ -261,6 +261,10 @@ export type StaffQuoteAllocation = {
   rateOptions?: RateOption[];
   /** Each row's charged rate from this run, with the HMS comment for an override. */
   rowRates?: StaffRowRate[];
+  /** HMS gave no building for 2+ room types, so it does not prove they can be booked together. Staff check that in HMS. */
+  poolBasis?: 'property_room_type';
+  /** Staff ticked that they checked these rooms together in HMS. A new run starts unticked. */
+  jointRoomsChecked?: boolean;
 };
 
 /** The HMS company or agency staff picked with Find in HMS. nativeId is HMS's id; the server re-checks it before any rate. */
@@ -613,6 +617,7 @@ export type QuoteSessionAction =
   | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[] }
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
   | { type: 'select_stay_key'; stayKey: string }
+  | { type: 'joint_rooms_checked'; revisionRef: string; checked: boolean }
   | {
       type: 'staff_quote_ready';
       offer: QuoteOffer;

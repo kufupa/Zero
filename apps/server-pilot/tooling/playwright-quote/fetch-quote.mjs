@@ -815,7 +815,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
     groups,allocation,issues,searchCompleteness:{status:groups.every(g=>g.completeness.search==='complete')?'complete':'partial',searchCount,distinctSignatures:cache.size},
     publicReset:publicReset?{status:'verified',evidence:'public-reset.json'}:{status:'controls_reset'},
     limitations:['Displayed-rate sums are not PMS payable totals.','No hold, booking or price lock.',
-      'Joint allocation uses proven property/building/room-type identity only; sequential occupancy searches are not an atomic hold.'],
+      'Joint allocation uses property/building/room-type pools, or property/room-type pools when HMS gives no building; sequential occupancy searches are not an atomic hold.'],
     screenshots:copiedShots};
 }
 

@@ -1,6 +1,13 @@
-import { canCreateNativeDraft, canCreatePdf, isMultiStay, pdfBlocker, ratedStayCount } from '@/lib/quote-workflow/session';
+import {
+  canCreateNativeDraft,
+  canCreatePdf,
+  isMultiStay,
+  jointRoomsToCheck,
+  pdfBlocker,
+  ratedStayCount,
+} from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
-import { Field, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
+import { Field, Notice, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 
 /** "1 of 2 stays rated" while a multi-stay quote still lacks a stay's run. Null once every stay is rated. */
 export function ratedStaysReason(session: QuoteSession): string | null {
@@ -39,7 +46,39 @@ export function pdfBlockReason(session: QuoteSession): string | null {
       return 'A picked room option is no longer in the results. Pick again.';
     case 'occupancy':
       return 'The picked rooms do not match the rooms and guests asked for. Pick rooms that match.';
+    case 'joint_rooms_unchecked':
+      return 'Check in HMS that these rooms can be booked together, then tick the box above.';
   }
+}
+
+/** HMS gave no building for these room types: a caution, and the tick staff give after checking them together in HMS. */
+export function JointRoomsCheck({
+  session,
+  onCheckedChange,
+}: {
+  session: QuoteSession;
+  onCheckedChange?: (revisionRef: string, checked: boolean) => void;
+}) {
+  const runs = jointRoomsToCheck(session);
+  if (!runs.length) return null;
+  return (
+    <Notice tone="warn" role="status">
+      <p>HMS has no building for these rooms. Check in HMS that they can be booked together before you send.</p>
+      {runs.map((run) => (
+        <label key={run.revisionRef} className="mt-1.5 flex items-center gap-2 font-semibold">
+          <input
+            type="checkbox"
+            checked={Boolean(run.jointRoomsChecked)}
+            disabled={!onCheckedChange}
+            onChange={(event) => onCheckedChange?.(run.revisionRef, event.target.checked)}
+          />
+          {runs.length > 1
+            ? `I checked these rooms together in HMS (${run.quoteRequestKey.replace(':', ' → ')})`
+            : 'I checked these rooms together in HMS'}
+        </label>
+      ))}
+    </Notice>
+  );
 }
 
 /** The quote documents: the PDF, the Excel export and the reply text that goes with them. The pane frames it as a step. */
@@ -49,8 +88,11 @@ export function DocumentReview({
   onPreparePdf,
   onDownloadWorkbook,
   workbookPending,
+  onJointRoomsChecked,
 }: {
   session: QuoteSession;
+  /** Staff ticked or unticked that they checked a run's rooms together in HMS. */
+  onJointRoomsChecked?: (revisionRef: string, checked: boolean) => void;
   onReplyChange?: (html: string) => void;
   onPreparePdf?: () => void;
   onDownloadWorkbook?: () => void;
@@ -70,6 +112,7 @@ export function DocumentReview({
         : null;
   return (
     <div className="flex flex-col gap-3">
+      <JointRoomsCheck session={session} onCheckedChange={onJointRoomsChecked} />
       <PrimaryButton disabled={!pdfReady} disabledReason={pdfReason} onClick={onPreparePdf}>
         {isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF'}
       </PrimaryButton>

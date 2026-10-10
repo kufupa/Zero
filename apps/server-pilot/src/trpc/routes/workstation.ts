@@ -68,7 +68,7 @@ import {
 } from '../../outlook-security/authorization.js';
 import { buildQuoteProposalPdf, ProposalInputError } from '../../quote-proposal/proposal-pdf.js';
 import type { QuoteRevision, ImportedOffer } from '../../quote-proposal/quote-revision.js';
-import { quoteDigest } from '../../quote-proposal/quote-revision.js';
+import { propertyPoolBasis, quoteDigest } from '../../quote-proposal/quote-revision.js';
 import {
   classifyBookingDraft,
   classifyPdf,
@@ -185,9 +185,9 @@ export function staffQuoteFailureLog(error: unknown): {
   return { code: staffQuoteFailureCode(error), phase: staffQuoteFailurePhase(error), ...(detail ? { detail } : {}) };
 }
 
-/** The staff message when HMS priced every room but gave no building, so Nava cannot prove the rooms fit together. */
+/** The staff message when HMS priced every room but gave an unreadable building, so Nava has no pool to check them in. */
 export const SHARED_INVENTORY_GAP_MESSAGE =
-  "HMS priced each room, but Nava can't yet confirm the rooms are available together (HMS gives no building). Quote each room type separately for now.";
+  "HMS priced each room, but Nava can't confirm the rooms are available together (HMS gave an unreadable building). Quote each room type separately for now.";
 
 function isHmsExecutionFailure(error: unknown, code: string, phase: string): boolean {
   if (HMS_EXECUTION_CODES.has(code) || HMS_EXECUTION_PHASE.test(phase)) return true;
@@ -1111,6 +1111,8 @@ export const workstationRouter = router({
           .join('; '),
         // Per row: the HMS rate, the rate charged, and for an override the code and note for "Copy for HMS comments".
         rowRates: rowRatesFor(revision, rowPrices),
+        // HMS gave no building for 2+ room types: the pane asks staff to check in HMS that they book together.
+        ...(propertyPoolBasis(revision) ? { poolBasis: 'property_room_type' as const } : {}),
         runId,
         screenshots: runId ? await listQuoteRunScreenshots(config.outputDir, runId) : [],
       });

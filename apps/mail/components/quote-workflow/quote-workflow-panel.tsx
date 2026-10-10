@@ -827,6 +827,7 @@ export function QuoteWorkflowPanel({
   onPreparePdf,
   onDownloadWorkbook,
   workbookPending,
+  onJointRoomsChecked,
   onHandleReviewItem,
   onUndoReviewItem,
   onRetryRead,
@@ -865,6 +866,8 @@ export function QuoteWorkflowPanel({
   onDownloadWorkbook?: () => void;
   /** An Excel export is being made; the Excel button is disabled meanwhile. */
   workbookPending?: boolean;
+  /** Staff ticked or unticked that they checked a run's rooms together in HMS. */
+  onJointRoomsChecked?: (revisionRef: string, checked: boolean) => void;
   onHandleReviewItem?: (itemId: string) => void;
   onUndoReviewItem?: (itemId: string) => void;
   /** Runs the read again after an analysis failure. Absent when there is nothing to retry. */
@@ -1230,6 +1233,7 @@ export function QuoteWorkflowPanel({
             onPreparePdf={onPreparePdf}
             onDownloadWorkbook={onDownloadWorkbook}
             workbookPending={workbookPending}
+            onJointRoomsChecked={onJointRoomsChecked}
           />
         </Section>
       ) : null}

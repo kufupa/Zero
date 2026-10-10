@@ -445,6 +445,23 @@ describe('staff quote execute/PDF header bind', () => {
     });
   });
 
+  it('carries the HMS no-building pool flag onto the staff run, and only that value', async () => {
+    const run = async (poolBasis: unknown) => {
+      const result = await bindExecuteStaffQuote({
+        mutate: async () => ({ ...readyResult, poolBasis }) as never,
+        source,
+        selectionEpoch: 1,
+        inputRevision: 1,
+        groups: [{ ...stay, roomPreference: 'STWN' }],
+        header: government,
+      });
+      return result.status === 'ok' ? result.staffQuote : null;
+    };
+    expect((await run('property_room_type'))?.poolBasis).toBe('property_room_type');
+    expect((await run(undefined))?.poolBasis).toBeUndefined();
+    expect((await run('anything'))?.poolBasis).toBeUndefined();
+  });
+
   it('sends staff-confirmed dinner and shuttle extras on executeStaffQuote', async () => {
     const mutate = vi.fn(async () => readyResult);
     const result = await bindExecuteStaffQuote({

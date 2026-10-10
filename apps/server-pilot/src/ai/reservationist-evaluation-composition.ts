@@ -151,13 +151,13 @@ export function isReservationistCleanNoMatch(source:unknown,expectedRequest:Quot
  try{return capture.schemaVersion===2&&capture.audit?.status==='complete'&&(capture.propertyCode===undefined||capture.propertyCode===expectedRequest.propertyCode)&&capture.requested?.propertyCode===expectedRequest.propertyCode&&quoteDigest(capture.requested)===quoteDigest(expectedRequest)&&capture.outcome==='no_match'&&capture.searchCompleteness?.status==='complete'&&Array.isArray(capture.issues)&&capture.issues.length===0&&Array.isArray(capture.groups)&&capture.groups.length===expectedRequest.rooms.length&&new Set(capture.groups.map(group=>group.id)).size===capture.groups.length&&capture.groups.every(group=>['quote','no_match'].includes(group.outcome)&&group.completeness?.search==='complete'&&Array.isArray(group.issues)&&group.issues.length===0&&expectedRequest.rooms.some(room=>room.id===group.id&&quoteDigest(room)===quoteDigest(group.request)))&&capture.groups.some(group=>group.outcome==='no_match');}catch{return false;}
 }
 /** Why a multi-room capture cannot be quoted, for staff logs: statuses and HMS codes only (no guest data, no prices). */
-export type NativeQuoteGapDetail={allocationStatus:string;allocationReason:string;sharedInventoryPoolGap:boolean;rows:{row:number;outcome:string;roomCode:string|null;rateCode:string|null;buildingCode:'present'|'null'}[];evidenceRun:string|null};
+export type NativeQuoteGapDetail={allocationStatus:string;allocationReason:string;sharedInventoryPoolGap:boolean;rows:{row:number;outcome:string;roomCode:string|null;rateCode:string|null;buildingCode:'present'|'null'|'malformed'}[];evidenceRun:string|null};
 const SAFE_CODE=/^[A-Za-z0-9_.-]{1,40}$/,SAFE_REASON=/^[A-Za-z0-9 .,;:'()-]{1,200}$/;
 const safeCode=(value:unknown)=>typeof value==='string'&&SAFE_CODE.test(value)?value:null;
 /**
  * The shared-inventory gap behind native_quote_business_evidence_unavailable: per row the outcome and the offer the
  * allocation would pick (the requested room and rate code that HMS matched, else the first offer) with whether HMS gave
- * its building. A null building is why no shared pool id can be built (quote-contract.mjs composeAllocation).
+ * its building. A null building pools by room type (quote-contract.mjs composeAllocation); only a malformed one leaves no pool id.
  */
 export function nativeQuoteGapDetail(capture:{allocation?:{status?:unknown;reason?:unknown};groups?:unknown},evidenceDirectory:string|null):NativeQuoteGapDetail{
  const groups=Array.isArray(capture.groups)?capture.groups as {outcome?:unknown;request?:{required?:{roomCodes?:unknown;rateCodes?:unknown}};options?:unknown}[]:[];
@@ -167,11 +167,11 @@ export function nativeQuoteGapDetail(capture:{allocation?:{status?:unknown;reaso
   const wanted=Array.isArray(roomCodes)&&roomCodes.length===1&&Array.isArray(rateCodes)&&rateCodes.length===1?{room:roomCodes[0],rate:rateCodes[0]}:null;
   const picked=(wanted&&options.find(option=>option.room?.code===wanted.room&&option.rate?.code===wanted.rate&&option.matchStatus==='match'&&option.eligibility==='verified'&&option.availability==='available'))||options[0];
   const building=picked?.room?.buildingCode;
-  return{row:index+1,outcome:safeCode(group.outcome)??'unknown',roomCode:safeCode(picked?.room?.code),rateCode:safeCode(picked?.rate?.code),buildingCode:typeof building==='string'&&building?'present' as const:'null' as const};
+  return{row:index+1,outcome:safeCode(group.outcome)??'unknown',roomCode:safeCode(picked?.room?.code),rateCode:safeCode(picked?.rate?.code),buildingCode:typeof building==='string'&&building?'present' as const:building===null?'null' as const:'malformed' as const};
  });
  const allocationStatus=safeCode(capture.allocation?.status)??'unknown',reason=capture.allocation?.reason,allocationReason=typeof reason==='string'&&SAFE_REASON.test(reason)?reason:'';
  const run=evidenceDirectory?basename(evidenceDirectory):'';
- return{allocationStatus,allocationReason,sharedInventoryPoolGap:allocationStatus==='unknown'&&rows.length>1&&(/shared inventory-pool identity/.test(allocationReason)||rows.some(row=>row.buildingCode==='null')),rows,evidenceRun:/^[A-Za-z0-9_.:-]{1,120}$/.test(run)?run:null};
+ return{allocationStatus,allocationReason,sharedInventoryPoolGap:allocationStatus==='unknown'&&rows.length>1&&/shared inventory-pool identity/.test(allocationReason)&&rows.some(row=>row.buildingCode==='malformed'),rows,evidenceRun:/^[A-Za-z0-9_.:-]{1,120}$/.test(run)?run:null};
 }
 type NativeSummaryCapture={schemaVersion:number;outcome:string;propertyCode:string;observedAt:string;requested:QuoteSourceRecord['request'];groups:(Omit<QuoteSourceRecord['result']['groups'][number],'options'>&{outcome:string;issues:unknown[];options:(QuoteSourceRecord['result']['groups'][number]['options'][number]&{issues:unknown[];details?:{status:string}})[]})[];allocation:{status:string;reason?:string};issues:unknown[];searchCompleteness:{status:string};audit:{status:string};evidenceDirectory:string};
 export type ExistingOwnerNativeQuoteOptions={owner:{cdpUrl:string;browserOwnership:'borrowed';propertyCode:string;secretPath:string};outputDir:string;dispatch?:(input:{executable:string;args:string[];env:NodeJS.ProcessEnv;signal:AbortSignal;timeout:number})=>Promise<{stdout:string;traceFinish?:'pending'}>};
@@ -205,12 +205,14 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
    if(reading==='incomplete')throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
    // Intact full captures with unqualified business facts need staff evidence, never quote admission.
    const fullBusinessGap=isReservationistAuditedFullBusinessGap(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation);
-   // Deliberate block (handoff-reports/2026-10-06-quote-pilot-landing.md): only the diagnostics say which gap it is.
+   // A null HMS building no longer lands here (property room-type pools); the diagnostics say which gap is left.
    if(fullBusinessGap)throw new ReservationistTaskEvidenceUnavailable('native_quote_business_evidence_unavailable',['qualified rate eligibility and proven shared room inventory'],['room_options'],nativeQuoteGapDetail(source,evidence));
    // A clean audited no-match means HMS has no rate for this meal plan; it is not invalid capture evidence.
    if(isReservationistCleanNoMatch(source,normalized.request as QuoteSourceRecord['request']))throw new Error('native_quote_no_matching_rate');
    throw new Error('native_quote_capture_scope_or_completeness_invalid');
   }
+  // A multi-room quote is admitted only with the allocation the contract recomputes from the same rows.
+  if(source.outcome==='quote'&&source.groups.length>1&&(source.allocation?.status!=='verified_at_observation'||quoteDigest(source.allocation)!==quoteDigest(normalize.composeAllocation(source.groups,request.propertyCode))))throw new Error('native_quote_capture_scope_or_completeness_invalid');
   return{ref:`native-quote:${createHash('sha256').update(bytes).digest('hex')}`,sha256:createHash('sha256').update(bytes).digest('hex'),toolVersion:`fetch-quote-v2:${toolHash}`,observedAt:source.observedAt,request:structuredClone(source.requested) as QuoteSourceRecord['request'],result:{outcome:source.outcome,propertyCode:source.requested.propertyCode,groups:source.groups}};
  };
 }

@@ -526,7 +526,22 @@ export type PdfBlocker =
   /** A picked option is no longer in the results, or is not a priced room. */
   | { kind: 'pick_gone' }
   /** The picked rooms do not match the rooms, guests, dates or meal plan asked for. */
-  | { kind: 'occupancy' };
+  | { kind: 'occupancy' }
+  /** HMS gave no building for these room types, and staff have not ticked that they checked them together in HMS. */
+  | { kind: 'joint_rooms_unchecked' };
+
+/**
+ * The current runs whose 2+ room types HMS gave no building for: HMS does not prove they can be booked together, so
+ * staff check it in HMS and tick each one. One stay: its run. A combined quote: every stay's current run.
+ */
+export function jointRoomsToCheck(session: QuoteSession): StaffQuoteAllocation[] {
+  const runs = isMultiStay(session) ? (combinedStayRuns(session) ?? []) : [staffQuoteForStay(session)];
+  return runs.filter((run): run is StaffQuoteAllocation => run?.poolBasis === 'property_room_type');
+}
+
+function jointRoomsBlocker(session: QuoteSession): PdfBlocker | null {
+  return jointRoomsToCheck(session).every((run) => run.jointRoomsChecked) ? null : { kind: 'joint_rooms_unchecked' };
+}
 
 export function pdfBlocker(session: QuoteSession): PdfBlocker | null {
   // An unreadable amount means the saved one is not what staff see: no PDF, Excel or reply until it is fixed.
@@ -541,7 +556,7 @@ export function pdfBlocker(session: QuoteSession): PdfBlocker | null {
   }
   // A combined quote is one document for every stay: each stay needs its current run, not one selection.
   if (isMultiStay(session)) {
-    if (combinedStayRuns(session) !== null) return null;
+    if (combinedStayRuns(session) !== null) return jointRoomsBlocker(session);
     return { kind: 'stays_unrated', ...ratedStayCount(session) };
   }
   const selectedKeys = new Set(
@@ -556,7 +571,7 @@ export function pdfBlocker(session: QuoteSession): PdfBlocker | null {
       return ratedOptionOnlyMismatch(session, quote) ? { kind: 'rated_option_not_picked' } : { kind: 'rates_stale' };
     }
     const scoped = session.groups.filter((group) => stayKeyForGroup(group) === session.selectedStayKey);
-    return scoped.length > 0 ? null : { kind: 'no_stay' };
+    return scoped.length > 0 ? jointRoomsBlocker(session) : { kind: 'no_stay' };
   }
   const selected = session.selectedOfferIds
     .map((id) => session.offers.find((offer) => offer.id === id))
@@ -1249,6 +1264,16 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         selectedOfferIds: quote ? [quote.revisionRef] : [],
         // A combined PDF covers every stay, so it stays when the selection moves between them.
         pdf: isMultiStay(session) ? session.pdf : (session.stayPdfs[action.stayKey] ?? null),
+      };
+    }
+    case 'joint_rooms_checked': {
+      // Only a run HMS flagged takes the tick. The same run can sit in staffQuote and in staffQuotes.
+      const mark = (quote: StaffQuoteAllocation): StaffQuoteAllocation =>
+        quote.revisionRef === action.revisionRef && quote.poolBasis ? { ...quote, jointRoomsChecked: action.checked } : quote;
+      return {
+        ...session,
+        staffQuote: session.staffQuote ? mark(session.staffQuote) : null,
+        staffQuotes: Object.fromEntries(Object.entries(session.staffQuotes).map(([key, quote]) => [key, mark(quote)])),
       };
     }
     case 'staff_quote_ready': {

@@ -104,7 +104,7 @@ function selectQuoteOptions(source:QuoteSourceRecord,forFullRead:boolean):{sourc
  const candidates=quoteOptionCandidates(source);
  // A summary candidate narrows native codes only; it never certifies joint inventory.
  if(forFullRead)return candidates.map(({request,totals})=>({sourceRef:source.ref,groupId:request.id,optionId:totals[0]!.o.id}));
- // Use the same real building/room/date pools that the revision validator checks.
+ // Use the same building/room/date pools that the revision validator checks. No HMS building: one pool per room type.
  // Bound search and refuse an unresolved allocation instead of returning a partial optimum.
  const minimumRemaining=candidates.map((_,i)=>candidates.slice(i).reduce((sum,c)=>sum+c.totals[0]!.total,0));
  let visited=0,bestTotal=Infinity,best:{sourceRef:string;groupId:string;optionId:string}[]|undefined;
@@ -113,7 +113,7 @@ function selectQuoteOptions(source:QuoteSourceRecord,forFullRead:boolean):{sourc
   if(!Number.isSafeInteger(total)||total>=bestTotal||index<candidates.length&&total+minimumRemaining[index]!>=bestTotal)return;
   if(index===candidates.length){bestTotal=total;best=selected;return;}
   const {request,totals}=candidates[index]!;
-  for(const {o,total:optionTotal}of totals){if(!o.room.buildingCode&&(o.room.buildingCode!==null||candidates.length!==1))continue;const pool=o.room.buildingCode?`${source.request.propertyCode}:${o.room.buildingCode}:${o.room.code}`:`${source.request.propertyCode}:source:${source.ref}:${request.id}:${o.room.code}`,next=new Map(pools);let feasible=true;
+  for(const {o,total:optionTotal}of totals){if(!o.room.buildingCode&&o.room.buildingCode!==null)continue;const pool=o.room.buildingCode?`${source.request.propertyCode}:${o.room.buildingCode}:${o.room.code}`:candidates.length===1?`${source.request.propertyCode}:source:${source.ref}:${request.id}:${o.room.code}`:`${source.request.propertyCode}:property:${o.room.code}`,next=new Map(pools);let feasible=true;
    for(const n of o.nightly){const key=`${pool}|${n.date}`,old=next.get(key),demand=(old?.demand??0)+request.quantity;if(old&&old.supply!==n.inventory||!Number.isSafeInteger(demand)||demand>n.inventory){feasible=false;break;}next.set(key,{demand,supply:n.inventory});}
    if(feasible)choose(index+1,total+optionTotal,next,[...selected,{sourceRef:source.ref,groupId:request.id,optionId:o.id}]);
   }

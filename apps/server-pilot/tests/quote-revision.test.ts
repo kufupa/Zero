@@ -1,6 +1,7 @@
 import {
   resolveQuoteRevision,
   assessQuoteAcceptance,
+  propertyPoolBasis,
   type QuoteSourceRecord,
 } from '../src/quote-proposal/quote-revision.js';
 import { describe, expect, it } from 'vitest';
@@ -418,9 +419,29 @@ it('uses a source-scoped room pool for one selected group when native building i
  const r=await resolveQuoteRevision({propertyCode:'HRCEN',authoredDate:'2026-10-04',selections:[{sourceRef:s.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'}],resolveSource:async()=>s,resolvePolicy:async()=>policy,admission:admission([s])});
  expect(r.totalMinor).toBe(220002);expect(r.groups[0].poolId).toContain('source-1');
 });
-it('does not merge independent unknown-building pools across selected groups',async()=>{
- const a=source(),b=source();a.result.groups[0].options[0].room.buildingCode=null;b.ref='source-2';b.request.rooms[0].id='g2';b.result.groups[0].id='g2';b.result.groups[0].request.id='g2';b.result.groups[0].options[0].room.buildingCode=null;
- await expect(resolveQuoteRevision({propertyCode:'HRCEN',authoredDate:'2026-10-04',selections:[{sourceRef:a.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'},{sourceRef:b.ref,groupId:'g2',optionId:'HRCEN:STQN:BAR'}],resolveSource:async ref=>ref===a.ref?a:b,resolvePolicy:async()=>policy,admission:admission([a,b])})).rejects.toThrow('inventory_pool_unknown');
+function secondRow(room:string,building:unknown){
+ const b=source();b.ref='source-2';b.request.rooms[0].id='g2';b.result.groups[0].id='g2';b.result.groups[0].request.id='g2';const o=b.result.groups[0].options[0];o.id=`HRCEN:${room}:BAR`;o.room.code=room;(o.room as {buildingCode:unknown}).buildingCode=building;return b;
+}
+function twoRows(a:QuoteSourceRecord,b:QuoteSourceRecord){
+ return resolveQuoteRevision({propertyCode:'HRCEN',authoredDate:'2026-10-04',selections:[{sourceRef:a.ref,groupId:'g1',optionId:a.result.groups[0].options[0].id},{sourceRef:b.ref,groupId:'g2',optionId:b.result.groups[0].options[0].id}],resolveSource:async ref=>ref===a.ref?a:b,resolvePolicy:async()=>policy,admission:admission([a,b])});
+}
+it('sums same-type unknown-building rows against one property-wide pool across selected groups',async()=>{
+ const a=source();a.result.groups[0].options[0].room.buildingCode=null;
+ await expect(twoRows(a,secondRow('STQN',null))).rejects.toThrow('joint_inventory_insufficient');
+});
+it('pools unknown-building room types separately and flags the mix for a staff check',async()=>{
+ const a=source();a.result.groups[0].options[0].room.buildingCode=null;
+ const r=await twoRows(a,secondRow('STWN',null));
+ expect(r.groups.map(g=>g.poolId)).toEqual(['HRCEN:property:STQN','HRCEN:property:STWN']);expect(propertyPoolBasis(r)).toBe('property_room_type');
+});
+it('keeps building pools and no staff-check flag when HMS gives the building',async()=>{
+ const r=await twoRows(source(),secondRow('STWN','MAIN'));
+ expect(r.groups.map(g=>g.poolId)).toEqual(['HRCEN:MAIN:STQN','HRCEN:MAIN:STWN']);expect(propertyPoolBasis(r)).toBeNull();
+ const one=source();one.result.groups[0].options[0].room.buildingCode=null;expect(propertyPoolBasis(await revision(one))).toBeNull();
+});
+it('rejects a malformed building instead of pooling it',async()=>{
+ const a=source();a.result.groups[0].options[0].room.buildingCode=null;
+ await expect(twoRows(a,secondRow('STWN',''))).rejects.toThrow('inventory_pool_unknown');
 });
 
 it('preserves source publication provenance without inventing an invoice-authored date',async()=>{

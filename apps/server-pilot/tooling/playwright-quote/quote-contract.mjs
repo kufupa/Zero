@@ -627,15 +627,18 @@ export function composeAllocation(groups = [], propertyCode) {
         && row.matchStatus === 'match' && row.eligibility === 'verified' && row.availability === 'available')
       : undefined;
     const building = option?.room?.buildingCode;
-    const poolId = typeof propertyCode === 'string' && propertyCode && option?.room?.code
-      && typeof building === 'string' && building
-      ? `${propertyCode}:${building}:${option.room.code}` : undefined;
+    // HMS gives no building at some properties: pool by room type across the property. A malformed building stays unknown.
+    const scope = typeof building === 'string' && building ? building : building === null ? 'property' : undefined;
+    const poolId = typeof propertyCode === 'string' && propertyCode && option?.room?.code && scope
+      ? `${propertyCode}:${scope}:${option.room.code}` : undefined;
     return {
       id: group.id,
       quantity,
       required,
       matchStatus: option?.matchStatus ?? group.matchStatus,
       poolId,
+      propertyPool: Boolean(poolId) && scope === 'property',
+      roomCode: option?.room?.code,
       nightly: option?.nightly,
     };
   });
@@ -660,7 +663,11 @@ export function composeAllocation(groups = [], propertyCode) {
     const nights = (group.nightly ?? []).map((night) => ({ date: night.date, supply: night.inventory }));
     if (nights.length) sourcePools.push({ id: group.poolId, nights });
   }
-  return evaluateAllocation(selected, sourcePools);
+  const allocation = evaluateAllocation(selected, sourcePools);
+  // HMS proves each room type's own availability, not that different room types can be booked together.
+  return allocation.pools.length && selected.some((group) => group.propertyPool)
+    && new Set(selected.map((group) => group.roomCode)).size > 1
+    ? { ...allocation, poolBasis: 'property_room_type' } : allocation;
 }
 
 export function evaluateAllocation(groups = [], sourcePools = []) {

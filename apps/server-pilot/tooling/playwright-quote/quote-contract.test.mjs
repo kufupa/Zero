@@ -538,7 +538,7 @@ test('orderOptions ranks preferred hits inside a match class before displayed-ni
   assert.deepEqual(orderOptions(options).map((option) => option.roomCode), ['STWN', 'STQN']);
 });
 
-test('composeAllocation uses proven building/room pools and never invents identity', () => {
+test('composeAllocation uses building/room pools, else property/room-type pools, and never invents identity', () => {
   const night = (inventory) => [{ date: '2026-09-24', inventory }];
   const group = (id, quantity, roomCode, rateCode, buildingCode, inventory, matchStatus = 'match', eligibility = 'verified', availability = 'available') => ({
     id,
@@ -562,10 +562,55 @@ test('composeAllocation uses proven building/room pools and never invents identi
   ], 'HRCEN');
   assert.equal(split.status, 'verified_at_observation');
   assert.equal(split.pools.length, 2);
-  assert.equal(composeAllocation([
+  // No building from HMS: one room type shares one property-wide pool, so its rows sum against that type's supply.
+  const sameType = composeAllocation([
     group('a', 1, 'STQN', 'BAR', null, 5),
     group('b', 1, 'STQN', 'BARRO', null, 5),
-  ], 'HRCEN').status, 'unknown');
+  ], 'HRCEN');
+  assert.equal(sameType.status, 'verified_at_observation');
+  assert.deepEqual(sameType.pools.map((pool) => pool.id), ['HRCEN:property:STQN']);
+  assert.equal(sameType.pools[0].nights[0].demand, 2);
+  assert.equal(sameType.poolBasis, undefined);
+  const sameTypeOver = composeAllocation([
+    group('a', 3, 'STQN', 'BAR', null, 5),
+    group('b', 3, 'STQN', 'BARRO', null, 5),
+  ], 'HRCEN');
+  assert.equal(sameTypeOver.status, 'insufficient');
+  assert.equal(sameTypeOver.pools[0].nights[0].demand, 6);
+  assert.equal(sameTypeOver.pools[0].nights[0].supply, 5);
+  // Different room types are separate pools. HMS does not prove they can be booked together, so the allocation says so.
+  const mixed = composeAllocation([
+    group('a', 15, 'STQN', 'BAR', null, 40),
+    group('b', 15, 'STWN', 'BAR', null, 20),
+  ], 'HRCEN');
+  assert.equal(mixed.status, 'verified_at_observation');
+  assert.deepEqual(mixed.pools.map((pool) => pool.id), ['HRCEN:property:STQN', 'HRCEN:property:STWN']);
+  assert.equal(mixed.poolBasis, 'property_room_type');
+  assert.equal(composeAllocation([
+    group('a', 15, 'STQN', 'BAR', null, 40),
+    group('b', 21, 'STWN', 'BAR', null, 20),
+  ], 'HRCEN').status, 'insufficient');
+  // A building HMS did give keeps the building pool, with no flag.
+  const built = composeAllocation([
+    group('a', 1, 'STQN', 'BAR', 'H1', 5),
+    group('b', 1, 'STWN', 'BAR', 'H1', 5),
+  ], 'HRCEN');
+  assert.deepEqual(built.pools.map((pool) => pool.id), ['HRCEN:H1:STQN', 'HRCEN:H1:STWN']);
+  assert.equal(built.poolBasis, undefined);
+  // A building that is present but not a code is malformed: no pool is invented.
+  for (const malformed of ['', 7, {}, undefined]) {
+    const result = composeAllocation([
+      group('a', 1, 'STQN', 'BAR', malformed, 5),
+      group('b', 1, 'STWN', 'BAR', null, 5),
+    ], 'HRCEN');
+    assert.equal(result.status, 'unknown');
+    assert.equal(result.reason, 'Source did not prove a shared inventory-pool identity.');
+    assert.equal(result.poolBasis, undefined);
+  }
+  assert.equal(composeAllocation([
+    group('a', 1, 'STQN', 'BAR', null, 5),
+    group('b', 1, 'STWN', 'BAR', null, 5),
+  ], '').status, 'unknown');
   assert.equal(composeAllocation([
     group('a', 1, 'STQN', 'BAR', 'H1', 5),
     group('b', 1, 'STQN', 'BARRO', 'H1', 4),

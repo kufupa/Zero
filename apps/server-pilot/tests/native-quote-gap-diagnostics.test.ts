@@ -15,9 +15,9 @@ import {
 } from '../src/trpc/routes/workstation.js';
 
 /**
- * A staff quote with two room rows: HMS prices both, but every room option has buildingCode null, so composeAllocation
- * cannot build a shared pool id and the capture stays partial. The block is deliberate; these tests pin only what the
- * failure says about itself.
+ * A staff quote with two room rows (STQN and STWN). HMS prices both and, at this property, gives buildingCode null for
+ * every room. composeAllocation then pools each room type property-wide and flags that joint availability across the
+ * types is for staff to check in HMS. Only a malformed building still leaves no pool and blocks with its diagnostics.
  */
 
 const contractPath = fileURLToPath(new URL('../tooling/playwright-quote/quote-contract.mjs', import.meta.url));
@@ -45,7 +45,7 @@ type Contract = {
   composeAllocation: (groups: unknown[], propertyCode: string) => { status: string; reason: string };
 };
 
-function option(room: string, building: string | null) {
+function option(room: string, building: unknown) {
   return {
     id: `HRCEN:${room}:BAR`,
     room: { code: room, label: `Standard ${room}`, buildingCode: building },
@@ -67,8 +67,8 @@ afterEach(async () => {
   root = '';
 });
 
-/** The capture fetch-quote leaves for this request: audited, complete, partial only because the allocation is unknown. */
-async function jointInventoryCapture(building: string | null) {
+/** The capture fetch-quote leaves for this request: audited and complete; partial only while the allocation is unknown. */
+async function jointInventoryCapture(building: unknown, tamper?: (allocation: Record<string, unknown>) => void) {
   const contract = (await import(contractPath)) as Contract;
   const normalized = contract.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
   const groups = normalized.rooms.map((room, index) => ({
@@ -82,14 +82,16 @@ async function jointInventoryCapture(building: string | null) {
   root = join(privateRoot, `test-${randomUUID()}`);
   const evidence = join(root, 'out', 'run-2026-11-12T08-00-00Z');
   await mkdir(evidence, { recursive: true });
+  const allocation = contract.composeAllocation(groups, 'HRCEN') as unknown as Record<string, unknown>;
+  tamper?.(allocation);
   const capture = {
     schemaVersion: 2,
-    outcome: 'partial',
+    outcome: allocation.status === 'verified_at_observation' ? 'quote' : 'partial',
     propertyCode: 'HRCEN',
     observedAt: new Date(Date.now() - 1000).toISOString(),
     requested: normalized,
     groups,
-    allocation: contract.composeAllocation(groups, 'HRCEN'),
+    allocation,
     issues: [],
     searchCompleteness: { status: 'complete' },
     audit: { status: 'complete' },
@@ -99,21 +101,47 @@ async function jointInventoryCapture(building: string | null) {
   return { evidence, capture };
 }
 
-async function readerFailure(): Promise<unknown> {
-  const { evidence } = await jointInventoryCapture(null);
+async function readCapture(building: unknown, tamper?: (allocation: Record<string, unknown>) => void) {
+  const { evidence } = await jointInventoryCapture(building, tamper);
   const read = createExistingOwnerNativeQuoteReader({
     owner,
     outputDir: join(root, 'out'),
     dispatch: async () => ({ stdout: `Evidence: ${evidence}\n` }),
   });
-  return read(request as never, new AbortController().signal).then(
+  return read(request as never, new AbortController().signal);
+}
+
+async function readerFailure(building: unknown = ''): Promise<unknown> {
+  return readCapture(building).then(
     () => null,
     (error: unknown) => error,
   );
 }
 
+describe('no HMS building: property-wide room-type pools', () => {
+  it('admits the two-room-type quote, with the allocation flagged for a staff check', async () => {
+    const { capture } = await jointInventoryCapture(null);
+    expect(capture.allocation).toMatchObject({ status: 'verified_at_observation', poolBasis: 'property_room_type' });
+    expect((capture.allocation.pools as Array<{ id: string }>).map((pool) => pool.id)).toEqual([
+      'HRCEN:property:STQN',
+      'HRCEN:property:STWN',
+    ]);
+    const record = await readCapture(null);
+    expect(record.result.outcome).toBe('quote');
+    expect(record.result.groups.map((group) => group.options[0]!.room.buildingCode)).toEqual([null, null]);
+  });
+
+  it('refuses a quote whose allocation is not the one the contract recomputes', async () => {
+    await expect(
+      readCapture(null, (allocation) => {
+        delete allocation.poolBasis;
+      }),
+    ).rejects.toThrow('native_quote_capture_scope_or_completeness_invalid');
+  });
+});
+
 describe('the joint-inventory block carries its diagnostics', () => {
-  it('stays blocked, and says the allocation is unknown because HMS gave no building for each priced row', async () => {
+  it('stays blocked when the building is malformed, and says the allocation is unknown for that reason', async () => {
     const error = await readerFailure();
     expect(error).toBeInstanceOf(ReservationistTaskEvidenceUnavailable);
     const gap = error as ReservationistTaskEvidenceUnavailable;
@@ -123,8 +151,8 @@ describe('the joint-inventory block carries its diagnostics', () => {
       allocationReason: 'Source did not prove a shared inventory-pool identity.',
       sharedInventoryPoolGap: true,
       rows: [
-        { row: 1, outcome: 'quote', roomCode: 'STQN', rateCode: 'BAR', buildingCode: 'null' },
-        { row: 2, outcome: 'quote', roomCode: 'STWN', rateCode: 'BAR', buildingCode: 'null' },
+        { row: 1, outcome: 'quote', roomCode: 'STQN', rateCode: 'BAR', buildingCode: 'malformed' },
+        { row: 2, outcome: 'quote', roomCode: 'STWN', rateCode: 'BAR', buildingCode: 'malformed' },
       ],
       evidenceRun: 'run-2026-11-12T08-00-00Z',
     });
@@ -140,10 +168,10 @@ describe('the joint-inventory block carries its diagnostics', () => {
       phase: 'qualification',
       detail: { allocationStatus: 'unknown', sharedInventoryPoolGap: true, evidenceRun: 'run-2026-11-12T08-00-00Z' },
     });
-    expect(log.detail?.rows.map((row) => row.buildingCode)).toEqual(['null', 'null']);
+    expect(log.detail?.rows.map((row) => row.buildingCode)).toEqual(['malformed', 'malformed']);
     expect(staffQuoteFailureMessage(error)).toBe(SHARED_INVENTORY_GAP_MESSAGE);
     expect(SHARED_INVENTORY_GAP_MESSAGE).toBe(
-      "HMS priced each room, but Nava can't yet confirm the rooms are available together (HMS gives no building). Quote each room type separately for now.",
+      "HMS priced each room, but Nava can't confirm the rooms are available together (HMS gave an unreadable building). Quote each room type separately for now.",
     );
   });
 });
@@ -156,6 +184,16 @@ describe('nativeQuoteGapDetail', () => {
       evidence,
     );
     expect(detail.rows.map((row) => row.buildingCode)).toEqual(['present', 'present']);
+    expect(detail.sharedInventoryPoolGap).toBe(false);
+  });
+
+  it('does not call a null building a pool gap: null buildings pool by room type', async () => {
+    const { capture, evidence } = await jointInventoryCapture(null);
+    const detail = nativeQuoteGapDetail(
+      { ...capture, allocation: { status: 'unknown', reason: 'Source did not prove a shared inventory-pool identity.' } },
+      evidence,
+    );
+    expect(detail.rows.map((row) => row.buildingCode)).toEqual(['null', 'null']);
     expect(detail.sharedInventoryPoolGap).toBe(false);
   });
 

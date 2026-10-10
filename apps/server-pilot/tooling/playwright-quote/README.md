@@ -226,8 +226,12 @@ Broad searches return useful options with `allocation.status: not_selected`.
 A complete multi-group `quote` requires every group to select exactly one
 room code and one rate code via `rooms[].required.roomCodes` /
 `rateCodes`. Joint demand uses proven `property:building:roomCode` pools when
-`buildingCode` is present on the source room. Missing pool identity stays
-`unknown`, never an invented allotment. Sequential occupancy searches are not
+`buildingCode` is present on the source room. When HMS returns `buildingCode:
+null`, rows of one room type share one property-wide pool (`HRCEN:property:STQN`); with two
+or more room types the allocation carries `poolBasis: property_room_type`
+because HMS does not prove different room types can be booked together (staff
+check it in HMS). A malformed building stays `unknown`, never an invented
+allotment. Sequential occupancy searches are not
 an atomic hold. Alternatives are never summed. Displayed-nightly sums use
 exact decimals and `official:false`; they are not PMS payable totals.
 

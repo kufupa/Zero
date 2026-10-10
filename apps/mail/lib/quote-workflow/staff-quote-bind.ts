@@ -111,6 +111,8 @@ export type ExecuteStaffQuoteResult = {
   rateOptions?: RateOption[];
   /** Optional: an older server sends none. */
   rowRates?: StaffRowRate[];
+  /** Set when HMS gave no building for 2+ room types. Staff then check in HMS that they can be booked together. */
+  poolBasis?: 'property_room_type';
 };
 
 export type StaffQuoteSourceResult =
@@ -774,6 +776,7 @@ export async function bindExecuteStaffQuote(args: {
         : [],
       ...(rateOptions.length ? { rateOptions } : {}),
       ...(rowRates.length ? { rowRates } : {}),
+      ...(result.poolBasis === 'property_room_type' ? { poolBasis: result.poolBasis } : {}),
     };
     return {
       status: 'ok',

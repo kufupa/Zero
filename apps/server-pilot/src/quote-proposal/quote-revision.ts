@@ -143,6 +143,14 @@ export function quoteDigest(value: unknown): string {
     .update(JSON.stringify(stable(value)))
     .digest('hex');
 }
+/**
+ * 'property_room_type' when rows of 2+ room types were pooled property-wide because HMS gave no building: HMS proves
+ * each type's availability, not that the types can be booked together, so staff check that in HMS. Else null.
+ */
+export function propertyPoolBasis(revision: Pick<QuoteRevision, 'propertyCode' | 'groups'>): 'property_room_type' | null {
+  const pooled = revision.groups.some((g) => g.poolId === `${revision.propertyCode}:property:${g.roomCode}`);
+  return pooled && new Set(revision.groups.map((g) => g.roomCode)).size > 1 ? 'property_room_type' : null;
+}
 export function occupiedDates(arrival: string, departure: string): string[] {
   const parse = (s: string) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error('invalid_calendar');
@@ -359,7 +367,7 @@ export async function resolveQuoteRevision(input: {
         req.childAges.some((age) => !policy.childMealEntitlement!.childAges.includes(age)))
     )
       throw new Error('child_meal_entitlement_unproven');
-    if (!o.room.buildingCode && (o.room.buildingCode!==null||input.selections.length!==1)) throw new Error('inventory_pool_unknown');
+    if (!o.room.buildingCode && o.room.buildingCode!==null) throw new Error('inventory_pool_unknown');
     groups.push({
       id: selection.groupId,
       sourceRef: s.ref,
@@ -396,7 +404,8 @@ export async function resolveQuoteRevision(input: {
         vat: policy.vat,
         levy: policy.levy,
       },
-      poolId: o.room.buildingCode?`${input.propertyCode}:${o.room.buildingCode}:${o.room.code}`:`${input.propertyCode}:source:${s.ref}:${selection.groupId}:${o.room.code}`,
+      // No HMS building: one row keeps its own source pool; several rows share one pool per room type.
+      poolId: o.room.buildingCode?`${input.propertyCode}:${o.room.buildingCode}:${o.room.code}`:input.selections.length===1?`${input.propertyCode}:source:${s.ref}:${selection.groupId}:${o.room.code}`:`${input.propertyCode}:property:${o.room.code}`,
     });
   }
   const pools = new Map<string, { demand: number; supply: number }>();
