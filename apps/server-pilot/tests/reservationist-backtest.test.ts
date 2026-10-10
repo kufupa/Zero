@@ -8,6 +8,7 @@ import {
   pickSubset,
   readGoldenSet,
   replayRunners,
+  runProductionTarget,
   scoreFields,
   scoreGoldenCase,
   senderDomainOf,
@@ -18,6 +19,9 @@ import {
   type RuntimeReplayAssertions,
 } from '../src/ai/reservationist-backtest.js';
 import type { ReservationistDecision } from '../src/ai/reservationist-agent.js';
+import type { ModelAdapter, ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
+import { EXTRACTION_RULES } from '../src/ai/extraction/extract.js';
+import { K2_MAPPING } from '../src/ai/quote-workflow-llm.js';
 
 it('shared runtime scorer validates every obligation and never counts frozen work as qualification',async()=>{
  const {scoreRuntimeReplay}=await import('../src/ai/reservationist-backtest.js');
@@ -261,5 +265,155 @@ describe('replayed reads', () => {
     });
     expect(await replay.party({ kind: 'organization', query: {} })).toEqual({ status: 'tool_error', message: 'replay_miss' });
     expect(replay.misses()).toBe(2);
+  });
+});
+
+/** A fake model: records each request and answers with `output`. */
+function fakeAdapter(output: Record<string, unknown>) {
+  const calls: ModelInvokeInput[] = [];
+  const adapter: ModelAdapter = {
+    async invoke(input) {
+      calls.push(input);
+      return {
+        modelId: 'fake',
+        output,
+        usage: { inputTokens: 1000, outputTokens: 200, totalTokens: 1200, latencyMs: 1, estimatedCostUsd: 0.0002, rateTableVersion: 't' },
+      };
+    },
+  };
+  return { adapter, calls };
+}
+
+const lunaGroup = (over: Record<string, unknown> = {}) => ({
+  arrival: '2026-10-12',
+  departure: '2026-10-14',
+  rooms: 1,
+  adultsPerRoom: 2,
+  childAges: [],
+  board: null,
+  roomPreference: null,
+  guestNames: [],
+  ...over,
+});
+const luna = (over: Record<string, unknown> = {}) => ({
+  workflow: 'quote',
+  flags: [],
+  groups: [lunaGroup()],
+  party: { kind: null, name: null, reference: null },
+  rateClaims: [],
+  missing: [],
+  evidence: [],
+  tasks: [],
+  ...over,
+});
+const extraction = (over: Record<string, unknown> = {}) => ({
+  sourceLanguage: 'en',
+  kind: 'quote',
+  agency: null,
+  endClient: null,
+  contact: { name: null, email: null, phone: null },
+  confirmationNumbers: [],
+  stays: [
+    {
+      hotel: null,
+      requested: { arrival: '2026-10-12', departure: '2026-10-14' },
+      booked: null,
+      totalRooms: null,
+      rows: [{ roomType: null, rooms: 1, adultsPerRoom: 2, childAges: [], board: null }],
+    },
+  ],
+  missing: [],
+  ...over,
+});
+const statuses = (scored: GoldenScoredCase) => Object.fromEntries(scored.fields.map((f) => [f.field, f.status]));
+
+describe('production targets', () => {
+  const row: GoldenRow = {
+    ...golden(0, 'dev'),
+    context: [{ id: 'c1', direction: 'outbound', eventAt: '2026-10-05T08:00:00.000Z', from: 'desk@hotel.test', subject: 'Re', text: 'Earlier thread body' }],
+  };
+
+  it('pane: sends the production analyse prompt and scores the mapped groups', async () => {
+    const { adapter, calls } = fakeAdapter(luna());
+    const trace = await runProductionTarget('pane', row, adapter);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.systemPrompt).toContain(K2_MAPPING);
+    expect(calls[0]!.userPrompt).toContain('Synthetic request');
+    expect(calls[0]!.userPrompt).toContain('Earlier thread body');
+    expect(trace.usage).toMatchObject({ inputTokens: 1000, outputTokens: 200 });
+    const scored = scoreGoldenCase(row, trace);
+    expect([scored.correct, scored.scored, scored.error]).toEqual([6, 6, false]);
+  });
+
+  it('pane: folds create and skip onto its own labels, totals adults over rooms, and flags a wrong arrival', async () => {
+    const create = { ...row, expected: { workflow: 'create' as const, rooms: 3, adults: 6 } };
+    const answer = luna({ workflow: 'create_booking', groups: [lunaGroup({ rooms: 3, adultsPerRoom: 2 })] });
+    expect(statuses(scoreGoldenCase(create, await runProductionTarget('pane', create, fakeAdapter(answer).adapter)))).toEqual({
+      workflow: 'correct',
+      adults: 'correct',
+      rooms: 'correct',
+    });
+    const skip = { ...row, expected: { workflow: 'skip' as const, arrivalDate: null } };
+    expect(statuses(scoreGoldenCase(skip, await runProductionTarget('pane', skip, fakeAdapter(luna({ workflow: 'other' })).adapter)))).toEqual({
+      workflow: 'correct',
+      arrivalDate: 'correct',
+    });
+    const wrong = await runProductionTarget('pane', row, fakeAdapter(luna({ groups: [lunaGroup({ arrival: '2026-10-13' })] })).adapter);
+    expect(scoreGoldenCase(row, wrong).flags).toEqual(['wrong_arrival']);
+  });
+
+  it('pane: scores an amendment as requested vs booked dates, and counts distinct stays', async () => {
+    const amend = {
+      ...row,
+      expected: { workflow: 'amend' as const, arrivalDate: '2026-10-11', departureDate: '2026-10-14', bookedArrivalDate: '2026-10-12', bookedDepartureDate: '2026-10-14', stays: 1 },
+    };
+    const answer = luna({ workflow: 'amend', groups: [], arrival: '2026-10-12', departure: '2026-10-14', requestedArrival: '2026-10-11', requestedDeparture: '2026-10-14' });
+    const scored = scoreGoldenCase(amend, await runProductionTarget('pane', amend, fakeAdapter(answer).adapter));
+    expect([scored.correct, scored.scored]).toEqual([6, 6]);
+    const multi = { ...row, expected: { stays: 2, rooms: 2 } };
+    const two = luna({ groups: [lunaGroup(), lunaGroup({ adultsPerRoom: 1 }), lunaGroup({ arrival: '2026-11-17', departure: '2026-11-18' })] });
+    expect(statuses(scoreGoldenCase(multi, await runProductionTarget('pane', multi, fakeAdapter(two).adapter)))).toEqual({ stays: 'correct', rooms: 'correct' });
+  });
+
+  it('pane: an invalid model answer is a failed case, every named field missing', async () => {
+    const trace = await runProductionTarget('pane', row, fakeAdapter({ workflow: 'nonsense' }).adapter);
+    expect(trace.error).toBe('invalid_output');
+    expect(scoreGoldenCase(row, trace)).toMatchObject({ correct: 0, scored: 6, error: true });
+  });
+
+  it('extract: sends the production extraction prompt and scores kind, requested and booked dates, rows and stays', async () => {
+    const { adapter, calls } = fakeAdapter(extraction());
+    const trace = await runProductionTarget('extract', row, adapter);
+    expect(calls[0]!.systemPrompt).toContain(EXTRACTION_RULES);
+    expect(calls[0]!.userPrompt).toContain(`From: ${row.trigger.from}`);
+    expect(scoreGoldenCase(row, trace)).toMatchObject({ correct: 6, scored: 6, error: false });
+
+    const amend = {
+      ...row,
+      expected: { workflow: 'amend' as const, arrivalDate: '2026-10-11', bookedArrivalDate: '2026-10-12', adults: 3, rooms: 2, stays: 2 },
+    };
+    const answer = extraction({
+      kind: 'amendment',
+      stays: [
+        {
+          hotel: null,
+          requested: { arrival: '2026-10-11', departure: '2026-10-14' },
+          booked: { arrival: '2026-10-12', departure: '2026-10-14' },
+          totalRooms: null,
+          rows: [
+            { roomType: 'Single', rooms: 1, adultsPerRoom: 1, childAges: [], board: null },
+            { roomType: 'Double', rooms: 1, adultsPerRoom: 2, childAges: [], board: null },
+          ],
+        },
+        { hotel: null, requested: { arrival: '2026-11-01', departure: '2026-11-02' }, booked: null, totalRooms: null, rows: [] },
+      ],
+    });
+    const scored = scoreGoldenCase(amend, await runProductionTarget('extract', amend, fakeAdapter(answer).adapter));
+    expect([scored.correct, scored.scored]).toEqual([6, 6]);
+  });
+
+  it('agent: leaves the booked-date and stay-count fields unscored, since its decision cannot state them', () => {
+    const amend = { ...golden(0, 'dev'), expected: { workflow: 'quote' as const, bookedArrivalDate: '2026-10-12', stays: 1 } };
+    expect(scoreGoldenCase(amend, { decision: decision({}), replayMisses: 0 }).fields.map((f) => f.field)).toEqual(['workflow']);
   });
 });
