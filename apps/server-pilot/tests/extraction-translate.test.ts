@@ -1,11 +1,16 @@
-import { describe, expect, it } from 'vitest';
 import {
   splitSegments,
   TRANSLATE_DEADLINE_MS,
   TRANSLATE_RULES,
   translateInboundBody,
 } from '../src/ai/extraction/translate.js';
-import { AE2_TEXT, echoTranslation, fakeModel, hangingResponder } from './fixtures/inbound-extraction.js';
+import {
+  AE2_TEXT,
+  echoTranslation,
+  fakeModel,
+  hangingResponder,
+} from './fixtures/inbound-extraction.js';
+import { describe, expect, it } from 'vitest';
 
 const CARD_DIGITS = /4111[ -]?1111[ -]?1111[ -]?1111/;
 
@@ -21,6 +26,28 @@ describe('splitSegments', () => {
     const { segments, truncated } = splitSegments('x'.repeat(2500));
     expect(segments[0]).toHaveLength(2000);
     expect(truncated).toBe(true);
+  });
+
+  it('packs a mail of many short lines into at most 25 groups, in order and without loss', () => {
+    const lines = Array.from({ length: 164 }, (_, index) => `Umugqa ${index + 1} wencwadi.`);
+    const { segments, truncated } = splitSegments(lines.join('\n\n'));
+    expect(segments.length).toBeGreaterThan(1);
+    expect(segments.length).toBeLessThanOrEqual(25);
+    expect(segments.join('\n').split('\n')).toEqual(lines);
+    expect(truncated).toBe(false);
+  });
+
+  it('keeps up to 30 segments as they are', () => {
+    const lines = Array.from({ length: 30 }, (_, index) => `Ligne ${index + 1}.`);
+    expect(splitSegments(lines.join('\n\n')).segments).toEqual(lines);
+  });
+
+  it('keeps a long segment alone when packing', () => {
+    const long = 'z'.repeat(1500);
+    const lines = [...Array.from({ length: 40 }, (_, index) => `L${index}`), long];
+    const { segments } = splitSegments(lines.join('\n\n'));
+    expect(segments.at(-1)).toBe(long);
+    expect(segments.length).toBeLessThanOrEqual(25);
   });
 
   it('drops the tail past 12000 characters and marks the result truncated', () => {
@@ -115,7 +142,11 @@ describe('translateInboundBody', () => {
   it('gives the call its own translation deadline when none is passed', async () => {
     const model = fakeModel(echoTranslation);
     const before = Date.now();
-    await translateInboundBody({ adapter: model.adapter, bodyText: 'Bonjour.', sourceLanguage: 'fr' });
+    await translateInboundBody({
+      adapter: model.adapter,
+      bodyText: 'Bonjour.',
+      sourceLanguage: 'fr',
+    });
     const deadlineAt = model.calls[0]?.deadlineAt ?? 0;
     expect(deadlineAt - before).toBeGreaterThanOrEqual(TRANSLATE_DEADLINE_MS - 1_000);
     expect(deadlineAt - before).toBeLessThanOrEqual(TRANSLATE_DEADLINE_MS + 1_000);

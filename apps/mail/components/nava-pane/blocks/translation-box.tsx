@@ -140,7 +140,10 @@ export function TranslationBox({
                 {/* The email's own text, translated: it names the guest, so the preview gate masks it (data-pii). */}
                 <ol data-pii className="flex flex-col gap-2">
                   {keyedSegments(succeeded.segments).map((segment) => (
-                    <li key={segment.key} className="text-[12.5px] leading-snug text-[#1e293b]">
+                    <li
+                      key={segment.key}
+                      className="whitespace-pre-line text-[12.5px] leading-snug text-[#1e293b]"
+                    >
                       {view === 'clean' ? segment.clean : segment.literal}
                     </li>
                   ))}
