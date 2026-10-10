@@ -716,6 +716,35 @@ describe('PDF read gates (U6)', () => {
     expect(result).toMatchObject({ status: 'manual_required', data: { reason: 'encrypted' } });
   });
 
+  it('reports a sandbox that cannot start as a reader failure, never as a damaged PDF', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const body = pdfFixtureBody('owner-locked');
+      // AppArmor's userns restriction on an unconfined service: bubblewrap fails before Poppler runs.
+      const result = await extractEmbeddedPdfText(pdfInput(body), {
+        runner: fixtureRunner({ infoExit: 1, infoStderr: 'bwrap: setting up uid map: Permission denied\n' }),
+      });
+      expect(result).toMatchObject({ status: 'manual_required', data: { reason: 'parser_failure' } });
+      expect(warn).toHaveBeenCalledWith('pdf_sandbox_unavailable', {
+        tool: 'pdfinfo',
+        error: 'bwrap: setting up uid map: Permission denied',
+      });
+
+      const textStep = await extractEmbeddedPdfText(pdfInput(body), {
+        runner: fixtureRunner({ textExit: 1, textStderr: 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n' }),
+      });
+      expect(textStep).toMatchObject({ status: 'manual_required', data: { reason: 'parser_failure' } });
+
+      // Poppler's own non-password error on a real parse is still "malformed".
+      const broken = await extractEmbeddedPdfText(pdfInput(body), {
+        runner: fixtureRunner({ infoExit: 1, infoStderr: 'Syntax Error: Couldn\'t find trailer dictionary\n' }),
+      });
+      expect(broken).toMatchObject({ status: 'manual_required', data: { reason: 'malformed' } });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('reads an octet-stream part named .pdf by its %PDF- magic, with card digits masked', async () => {
     const body = pdfFixtureBody('voucher');
     const s3 = new FakeS3Storage('artifact-test');
