@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -185,6 +186,52 @@ describe('nava-preview-gate.sh --ae4', () => {
     expect(script).toContain(
       "UPLOAD=(--exclude '*' --include 'summary.json' --include '*.png' --include 'quote.pdf' --include 'quote.xlsx')",
     );
+  });
+});
+
+describe('nava-preview-gate.sh --ae1-rates and --ae2-find', () => {
+  it('plans the AE1 proof with the room split and one rates read per stay', () => {
+    const env = envFile(['S3_BUCKET=test-bucket-xyz', 'BETTER_AUTH_URL=https://nava.legacyhotels.co.za']);
+    const result = gateRun(['--ae1-rates', 'thread-ae1', '--dry-run'], { ENV_FILE: env });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('AE1 multi-stay rates on thread thread-ae1');
+    expect(result.stdout).toContain('15/15 per stay where the pane has no count');
+    expect(result.stdout).toContain('one rates read per stay (workstation.executeStaffQuote)');
+    expect(result.stdout).toContain('/opt/nava/shared/nava-preview/ae1-rates-<UTC run id>/');
+    expect(result.stdout).toContain('s3://test-bucket-xyz/nava-preview-gate/<run id>/');
+  });
+
+  it('plans the AE2 proof with one read-only find', () => {
+    const env = envFile(['BETTER_AUTH_URL=https://nava.legacyhotels.co.za']);
+    const result = gateRun(['--ae2-find', 'thread-ae2', '--dry-run'], { ENV_FILE: env });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('AE2 amendment find on thread thread-ae2');
+    expect(result.stdout).toContain('one read-only find (paneStayLookup.queueFind)');
+    expect(result.stdout).toContain('/opt/nava/shared/nava-preview/ae2-find-<UTC run id>/');
+  });
+
+  it('refuses a missing or malformed thread id and an unknown trailing flag', () => {
+    for (const mode of ['--ae1-rates', '--ae2-find']) {
+      for (const args of [[mode], [mode, 'bad id;rm'], [mode, 'thread-x', '--now']]) {
+        const result = gateRun(args);
+        expect(result.status, args.join(' ')).toBe(2);
+        expect(result.stderr).toContain(`usage: `);
+        expect(result.stderr).toContain(mode);
+      }
+    }
+  });
+
+  it('runs each proof runner and uploads only its own files', () => {
+    const script = readFileSync(gate, 'utf8');
+    expect(script).toContain(
+      'RUNNER=(scripts/nava-ae1-rates-proof.ts --threads "$AE4_THREAD" --out "$OUT_DIR" --timeout-ms "$AE1_TIMEOUT_MS")',
+    );
+    expect(script).toContain(
+      'RUNNER=(scripts/nava-ae2-find-proof.ts --threads "$AE4_THREAD" --out "$OUT_DIR" --timeout-ms "$AE2_TIMEOUT_MS")',
+    );
+    expect(script).toContain("UPLOAD=(--exclude '*' --include 'summary.json' --include '*.png')");
+    expect(existsSync(join(here, '..', 'scripts', 'nava-ae1-rates-proof.ts'))).toBe(true);
+    expect(existsSync(join(here, '..', 'scripts', 'nava-ae2-find-proof.ts'))).toBe(true);
   });
 });
 

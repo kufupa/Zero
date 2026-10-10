@@ -1,4 +1,5 @@
 import {
+  ANALYSING_TEXT,
   BLOCKED_BY_DESIGN,
   buildGalleryHtml,
   classifyTrpcRequest,
@@ -666,12 +667,27 @@ describe('the pane read in a browser (H6b outcome labels)', () => {
 
         const loading = await read('<p role="status">Searching HMS…</p>');
         expect(outcomeOf(loading)).toBeNull();
+
+        // The AE4 run settled while the pane still said "Nava is reading the email…" (the regex knew only Luna).
+        for (const copy of ['Nava is reading the email…', 'Nava is re-reading with your note…', 'Luna is reading the email…']) {
+          const reading = await read(`${TYPE_PICKER('quote')}<p aria-live="polite">${copy}</p>`);
+          expect(reading.analysing, copy).toBe(true);
+          expect(outcomeOf(reading), copy).toBeNull();
+        }
       } finally {
         await browser.close();
       }
     },
     30_000,
   );
+
+  it('waits on the reading copy the pane shows', () => {
+    const panel = readFileSync(join(mailRoot, 'components', 'quote-workflow', 'quote-workflow-panel.tsx'), 'utf8');
+    const copies = [...panel.matchAll(/'(\w+ is (?:reading the email|re-reading with your note)…)'/g)].map((m) => m[1]!);
+    expect(copies).toEqual(['Nava is re-reading with your note…', 'Nava is reading the email…']);
+    for (const copy of copies) expect(ANALYSING_TEXT.test(copy), copy).toBe(true);
+    expect(READ_PANE_JS).toContain(JSON.stringify(ANALYSING_TEXT.source));
+  });
 
   it('the probes match the pane markup in the mail code', () => {
     const badge = readFileSync(join(mailRoot, 'components', 'quote-workflow', 'workflow-badge.tsx'), 'utf8');

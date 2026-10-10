@@ -176,7 +176,7 @@ export function trpcProcedures(url: string): string[] {
 }
 
 /** The input of one batched call (superjson body {"0":{"json":...}}), or undefined. */
-function batchInput(postData: string | null, index: number): unknown {
+export function batchInput(postData: string | null, index: number): unknown {
   if (!postData) return undefined;
   try {
     const body = JSON.parse(postData) as Record<string, { json?: unknown } | undefined>;
@@ -376,7 +376,7 @@ export function textHasNote(text: string, note: string): boolean {
   return noteFragments(note).some((fragment) => haystack.includes(` ${fragment} `));
 }
 
-function decodeXml(text: string): string {
+export function decodeXml(text: string): string {
   return text
     .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(Number(dec)))
@@ -492,7 +492,8 @@ export function ae4Failures(summary: Omit<Ae4Summary, 'ok' | 'failures'>, allowN
 // ---------------------------------------------------------------------------------------------------------------------
 // Browser run
 
-class Blocker extends Error {}
+/** A step the proof cannot pass. Its message becomes the summary's blocker. */
+export class Blocker extends Error {}
 
 const SETTLE_MS = 120_000;
 const STEP_MS = 30_000;
@@ -500,12 +501,12 @@ const POLL_MS = 1_000;
 const DOC_MS = 180_000;
 const VIEWPORT = { width: 1600, height: 1000 };
 
-type Captured = {
+export type Captured = {
   outcomes: TrpcOutcome[];
   blocked: string[];
 };
 
-async function waitFor<T>(what: string, timeoutMs: number, probe: () => Promise<T | null | undefined>): Promise<T> {
+export async function waitFor<T>(what: string, timeoutMs: number, probe: () => Promise<T | null | undefined>): Promise<T> {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const value = await probe().catch((error: unknown) => {
@@ -518,14 +519,14 @@ async function waitFor<T>(what: string, timeoutMs: number, probe: () => Promise<
   throw new Blocker(`timed out: ${what}`);
 }
 
-function latestOutcome(captured: Captured, procedure: string, after = 0): TrpcOutcome | null {
+export function latestOutcome(captured: Captured, procedure: string, after = 0): TrpcOutcome | null {
   for (let i = captured.outcomes.length - 1; i >= after; i--) {
     if (captured.outcomes[i]!.procedure === procedure) return captured.outcomes[i]!;
   }
   return null;
 }
 
-async function readPane(page: Page, threadId: string): Promise<PaneRead | null> {
+export async function readPane(page: Page, threadId: string): Promise<PaneRead | null> {
   return page
     .evaluate(`(${READ_PANE_JS})(${JSON.stringify(threadId)})`)
     .then((value) => value as PaneRead)
@@ -533,7 +534,7 @@ async function readPane(page: Page, threadId: string): Promise<PaneRead | null> 
 }
 
 /** The disabled reason the pane shows next to a button, for a blocker line. Product copy only, scrubbed anyway. */
-async function visibleText(page: Page, selector: string): Promise<string> {
+export async function visibleText(page: Page, selector: string): Promise<string> {
   const text = await page
     .locator(selector)
     .first()

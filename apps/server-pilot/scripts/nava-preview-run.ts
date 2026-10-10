@@ -339,6 +339,12 @@ const PANE_OVERFLOW_JS = `() => {
 /** The voucher Find the booking card (voucher-find-card.tsx). A voucher-only pane has no intent but has settled. */
 export const VOUCHER_CARD_SELECTOR = '#quote-voucher-find';
 
+/**
+ * The pane's "still reading" copy (quote-workflow-panel.tsx analysingCopy). The pane says Nava; Luna is the older name, kept so
+ * a page from before the rename still counts as reading. While it shows, the thread has not settled.
+ */
+export const ANALYSING_TEXT = /(Luna|Nava) is (reading the email|re-reading with your note)/;
+
 /** Browser-side: reads the pane and the list row for one thread. Plain JS, no DOM types. */
 export const READ_PANE_JS = `(threadId) => {
   const clean = (value) => String(value == null ? '' : value).replace(/\\s+/g, ' ').trim();
@@ -368,7 +374,7 @@ export const READ_PANE_JS = `(threadId) => {
     subject: row ? clean(row.querySelector('.font-medium') ? row.querySelector('.font-medium').textContent : row.textContent) : null,
     paneStatus: status ? status.getAttribute('data-preview-status') : 'missing',
     unsyncedReason: status ? status.getAttribute('data-preview-reason') : null,
-    analysing: /Luna is (reading the email|re-reading with your note)/.test(text),
+    analysing: new RegExp(${JSON.stringify(ANALYSING_TEXT.source)}).test(text),
     intent: picked ? clean(picked.textContent) : null,
     amendment: amendment ? clean(amendment.getAttribute('data-amendment-kind')) || null : null,
     voucher: Boolean(panel && panel.querySelector(${JSON.stringify(VOUCHER_CARD_SELECTOR)})),
