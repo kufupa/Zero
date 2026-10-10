@@ -16,7 +16,7 @@ import { NAVA_USER_ID } from '../db/seed.js';
 import { alias } from 'drizzle-orm/pg-core';
 import { appendWorkEvent } from './work-events.js';
 import { randomUUID } from 'node:crypto';
-import { messageArrivedAt } from './work-items.js';
+import { messageArrivedAt, OUTLOOK_SYNCED } from './work-items.js';
 
 /**
  * Quote follow-ups (R10). When a quote request's thread gets an outbound message (with or without the quote attached),
@@ -137,6 +137,7 @@ async function threadMessages(db: DB, transportId: string, threadId: string) {
       createdAt: message.createdAt,
       historyOnly: message.historyOnly,
       pop3Uidl: message.pop3Uidl,
+      outlookSynced: OUTLOOK_SYNCED,
     })
     .from(message)
     .where(and(eq(message.transportId, transportId), eq(message.threadId, threadId)));

@@ -576,6 +576,36 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       expect(again?.status).toBe('needs_you');
     }));
 
+  it('an imported request POP3 matched later keeps its Outlook arrival, so a reply sent before the import answers it', () =>
+    withIngestionDb(async ({ db }) => {
+      retire();
+      // Delivered 4 Oct (Outlook's time), answered 5 Oct, imported 7 Oct, then matched by POP3, which adds only its uidl.
+      const request = await persistOutlookHistory(db, history('u5-pop3-matched'));
+      await db
+        .update(message)
+        .set({ createdAt: new Date('2026-10-07T09:00:00Z'), pop3Uidl: 'uidl-u5-pop3-matched' })
+        .where(eq(message.id, request.messageId));
+      await admit(db, request.messageId);
+      const reply = await persistOutlookHistory(
+        db,
+        history('u5-pop3-matched-reply', {
+          direction: 'outbound',
+          fromAddress: 'centurion@legacyhotels.co.za',
+          toAddresses: ['guest@example.test'],
+          authoredAt: new Date('2026-10-05T09:00:00Z'),
+          sentAt: new Date('2026-10-05T09:00:00Z'),
+          inReplyTo: 'u5-pop3-matched@example.test',
+        }),
+      );
+      expect(reply.threadId).toBe(request.threadId);
+      await readWith(db, request.messageId, AE1_TEXT, AE1_OUTPUT);
+      const [item] = await db
+        .select({ status: workItem.status })
+        .from(workItem)
+        .where(eq(workItem.sourceMessageId, request.messageId));
+      expect(item?.status).toBe('done');
+    }));
+
   it('a reply counts only once sent, and by mail date: a queued send or an older imported send leaves the item open', () =>
     withIngestionDb(async ({ db }) => {
       retire();
