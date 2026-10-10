@@ -25,7 +25,12 @@ const paneWrite = vi.hoisted(() => ({ view: null as unknown }));
 vi.mock('@/providers/query-provider', () => ({
   trpcClient: {
     hmsApproval: {
-      writeState: { query: async () => paneWrite.view },
+      writeState: {
+        query: async () => {
+          if (paneWrite.view instanceof Error) throw paneWrite.view;
+          return paneWrite.view;
+        },
+      },
       approve: { mutate: async () => ({}) },
       review: { mutate: async () => ({}) },
       resolveNeedsCheck: { mutate: async () => ({}) },
@@ -367,6 +372,24 @@ describe('BookingVoucherCard write card', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(container.querySelector('section')).toBeNull();
+  });
+
+  it('offers Try again when the first read fails, then shows the stored attach once a read lands', async () => {
+    paneWrite.view = new Error('network');
+    render(
+      <BookingVoucherCard
+        session={initialQuoteSession()}
+        internetMessageId={null}
+        syncCommitted={null}
+        syncPending={false}
+        workItemId={WORK_ITEM}
+        writesEnabled
+      />,
+    );
+    expect(await screen.findByText('Nava could not load this write.')).toBeTruthy();
+    paneWrite.view = viewWith({ form: attachForm, before: null });
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
   });
 });
 

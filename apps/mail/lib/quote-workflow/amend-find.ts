@@ -165,7 +165,7 @@ export type HmsJobClient = {
   findStay?: (input: FindStayInput) => Promise<FindStayReply>;
   searchGuest?: (input: GuestSearchInput) => Promise<GuestSearchReply>;
   jobStatus: (
-    input: { runId: string } | { threadId: string; kind: HmsJobKind; confirmation?: string; arrival?: string },
+    input: { runId: string } | { threadId: string; kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string },
   ) => Promise<HmsJobView | null>;
   screenshot: (input: ScreenshotInput) => Promise<ScreenshotReply>;
 };
@@ -174,7 +174,7 @@ export type HmsJobClient = {
 export type HmsJobTransport = {
   queue: (request: HmsJobRequest) => Promise<HmsJobStart>;
   status: (
-    input: { runId: string } | { kind: HmsJobKind; confirmation?: string; arrival?: string },
+    input: { runId: string } | { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string },
   ) => Promise<HmsJobView | null>;
 };
 

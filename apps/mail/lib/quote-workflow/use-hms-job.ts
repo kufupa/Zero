@@ -75,6 +75,7 @@ export function useHmsJob(input: {
     const query = {
       kind: resumeKind,
       ...(resumeConfirmation ? { confirmation: resumeConfirmation } : {}),
+      ...(resumeLastName ? { lastName: resumeLastName } : {}),
       ...(resumeArrival ? { arrival: resumeArrival } : {}),
     };
     transport.status(query).then(

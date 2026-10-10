@@ -114,7 +114,8 @@ function LiveWriteCard({
   requireStoredWrite: boolean;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId);
-  if (requireStoredWrite && !(view && isStoredWrite(view))) return null;
+  // Hidden only once a read shows no stored write. A failed first read shows Try again: it may hide a pending write.
+  if (requireStoredWrite && (view ? !isStoredWrite(view) : !failed)) return null;
   const loadFailed = (
     <div role="alert" className="flex flex-wrap items-center gap-2 text-[12px] text-[#334155]">
       <span>{HMS_WRITE_COPY.loadFailed}</span>

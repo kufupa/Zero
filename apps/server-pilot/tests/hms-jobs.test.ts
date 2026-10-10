@@ -222,6 +222,28 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(remounted?.asOf).toEqual(expect.any(String));
     }));
 
+  it('a remount on a thread with two guests reads back the search for the asked surname, whatever its case', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      const search = (lastName: string) =>
+        queueUserHmsJob(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            threadId,
+            request: { kind: 'search_guest', lastName, arrival: '2026-10-12' },
+          },
+          db,
+        );
+      const smith = await search('Smith');
+      const jones = await search('Jones');
+      const resume = (lastName: string) =>
+        readHmsJobView({ transportId: TRANSPORT_ID, threadId, kind: 'search_guest', lastName, arrival: '2026-10-12' }, db);
+      expect((await resume(' smith '))?.runId).toBe(smith!.id);
+      expect((await resume('JONES'))?.runId).toBe(jones!.id);
+      expect(await resume('Brown')).toBeNull();
+    }));
+
   it('queued user jobs report their position in the lane', () =>
     withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
