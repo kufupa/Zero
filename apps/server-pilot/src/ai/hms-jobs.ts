@@ -270,7 +270,7 @@ async function countRecentPrefetches(
 }
 
 /**
- * Prefetch after a live inbound triage succeeds. Validated confirmation
+ * Prefetch after a live inbound extraction succeeds. Validated confirmation
  * numbers become low-priority jobs, capped per transport per hour. Backfill
  * and sent-copy triage never prefetch. Returns how many jobs were created.
  */
@@ -282,9 +282,9 @@ export async function prefetchHmsConfirmations(
   if (!env.HMS_PREFETCH_ENABLED || !hmsJobQueueEnabled()) return 0;
   // Live admission stamps an admission snapshot; backfill and imports do not.
   if (
-    run.runKind !== 'inbound_triage' ||
+    run.runKind !== 'inbound_extraction' ||
     !run.admissionSnapshotId ||
-    !run.idempotencyKey.startsWith('inbound-triage:')
+    !run.idempotencyKey.startsWith('inbound-extraction:')
   ) {
     return 0;
   }
@@ -329,7 +329,7 @@ export async function prefetchHmsConfirmations(
   return created;
 }
 
-/** Fire-and-forget from the worker after a triage commit. Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1. */
+/** Fire-and-forget from the worker after an inbound_extraction run succeeds. Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1. */
 export function schedulePrefetchForInbound(run: AiWorkflowRun): void {
   void prefetchHmsConfirmations(run).catch(() => undefined);
 }

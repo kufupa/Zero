@@ -29,6 +29,27 @@ export const AI_PRIMARY_CATEGORY_SLUGS = LEGACY_PRIMARY_CATEGORY_SLUGS;
 
 export const AI_OVERLAY_CATEGORY_SLUGS = ['urgent'] as const;
 
+/**
+ * Pill slug for an inbound read's kind. It stands in for the retired classifier's folder when a thread has no triage
+ * rows. Spam has no pill: it lives in the spam folder. The mapping is a product call, so review it with the pill copy.
+ */
+export function pillSlugForExtractionKind(kind: string): string | null {
+  switch (kind) {
+    case 'quote':
+    case 'booking':
+      return 'bookings';
+    case 'amendment':
+    case 'cancellation':
+      return 'manage-stay';
+    case 'voucher_pop':
+      return 'documents-delivery';
+    case 'other':
+      return 'unknown-review';
+    default:
+      return null;
+  }
+}
+
 /** Workflow primaries not already represented by a legacy slug. */
 const AI_WORKFLOW_ONLY_PRIMARY_SLUGS = [
   'bookings',

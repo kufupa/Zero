@@ -16,6 +16,7 @@ import {
   enqueueInboundExtraction,
   inboundExtractionEnabled,
 } from '../../ai/extraction/inbound-run.js';
+import { isInboundTriageClassifierEnabled } from '../../env.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
 import { lockCanonicalMailbox } from './canonical-identity.js';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
@@ -425,26 +426,34 @@ export async function admitLiveMessage(
       }
     }
   }
-  await enqueueAiRun(
-    {
-      transportId: input.transportId,
-      threadId: trigger.threadId,
-      triggerMessageId: trigger.id,
-      runKind: 'inbound_triage',
-      idempotencyKey:
-        trigger.direction === 'outbound'
-          ? `external-sent-baseline:${trigger.id}`
-          : `inbound-triage:${trigger.id}`,
-      modelId: DEFAULT_AI_MODEL_ID,
-      promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
-      admissionSnapshotId: id,
-      admissionSnapshotHash: snapshotHash,
-    },
-    db,
-  );
+  // The inbound folder/label classifier is retired by INBOUND_TRIAGE_CLASSIFIER=off. Sent copies keep their baseline run.
+  if (trigger.direction === 'outbound' || isInboundTriageClassifierEnabled(process.env))
+    await enqueueAiRun(
+      {
+        transportId: input.transportId,
+        threadId: trigger.threadId,
+        triggerMessageId: trigger.id,
+        runKind: 'inbound_triage',
+        idempotencyKey:
+          trigger.direction === 'outbound'
+            ? `external-sent-baseline:${trigger.id}`
+            : `inbound-triage:${trigger.id}`,
+        modelId: DEFAULT_AI_MODEL_ID,
+        promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
+        admissionSnapshotId: id,
+        admissionSnapshotHash: snapshotHash,
+      },
+      db,
+    );
   if (trigger.direction === 'inbound' && inboundExtractionEnabled(process.env))
     await enqueueInboundExtraction(
-      { transportId: input.transportId, threadId: trigger.threadId, messageId: trigger.id },
+      {
+        transportId: input.transportId,
+        threadId: trigger.threadId,
+        messageId: trigger.id,
+        admissionSnapshotId: id,
+        admissionSnapshotHash: snapshotHash,
+      },
       db,
     );
   if (trigger.direction === 'inbound')

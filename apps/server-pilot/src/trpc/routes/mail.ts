@@ -58,6 +58,8 @@ import {
   DEFAULT_FEEDBACK_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import { pillSlugForExtractionKind } from '../../ai/categories.js';
+import { mailExtraction } from '../../db/schema/work.js';
 import {
   parseFromEmail,
   sendInput,
@@ -276,6 +278,42 @@ async function loadCategoryIdsByThreadIds(
     const existing = categoryIdsByThread.get(row.threadId) ?? [];
     existing.push(row.categoryId);
     categoryIdsByThread.set(row.threadId, existing);
+  }
+
+  // With the classifier retired, a thread has no triage rows. Its pill comes from the latest succeeded inbound read.
+  const unlabelled = threadIds.filter((threadId) => !categoryIdsByThread.has(threadId));
+  if (unlabelled.length === 0) return categoryIdsByThread;
+  const reads = await db
+    .select({ threadId: message.threadId, kind: mailExtraction.kind })
+    .from(mailExtraction)
+    .innerJoin(message, eq(message.id, mailExtraction.messageId))
+    .where(
+      and(
+        eq(message.transportId, transportId),
+        eq(message.direction, 'inbound'),
+        inArray(message.threadId, unlabelled),
+        eq(mailExtraction.status, 'succeeded'),
+      ),
+    )
+    .orderBy(desc(mailExtraction.createdAt));
+  const latestKindByThread = new Map<string, string>();
+  for (const read of reads) {
+    if (read.kind && !latestKindByThread.has(read.threadId)) {
+      latestKindByThread.set(read.threadId, read.kind);
+    }
+  }
+  const pillSlugs = [...latestKindByThread.values()]
+    .map(pillSlugForExtractionKind)
+    .filter((slug): slug is string => slug !== null);
+  if (pillSlugs.length === 0) return categoryIdsByThread;
+  const pillCategories = await db
+    .select({ id: mailCategory.id, slug: mailCategory.slug })
+    .from(mailCategory)
+    .where(and(eq(mailCategory.transportId, transportId), inArray(mailCategory.slug, pillSlugs)));
+  const idBySlug = new Map(pillCategories.map((row) => [row.slug, row.id]));
+  for (const [threadId, kind] of latestKindByThread) {
+    const categoryId = idBySlug.get(pillSlugForExtractionKind(kind) ?? '');
+    if (categoryId) categoryIdsByThread.set(threadId, [categoryId]);
   }
   return categoryIdsByThread;
 }

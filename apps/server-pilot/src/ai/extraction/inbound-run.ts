@@ -1,22 +1,33 @@
 import { createHash } from 'node:crypto';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getDb, type DB } from '../../db/client.js';
 import { mailCategory, mailThread, mailThreadCategory, message } from '../../db/schema/mail.js';
 import { mailExtraction, workItem } from '../../db/schema/work.js';
 import { getSenderPreference } from '../../mail/sender-preference.js';
+import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../../metrics/mail-baseline.js';
+import { persistMailBaselineProjection } from '../../metrics/mail-baseline-projection.js';
+import { parseMailboxMeasurementConfig } from '../../metrics/mail-measurement-config.js';
 import type { ModelAdapter } from '../bedrock/adapter.js';
 import { AI_DURABLE_PRIMARY_CATEGORY_SLUGS } from '../categories.js';
 import { isAutoTriageNeverSpam } from '../never-spam.js';
+import {
+  extractMailBaselineWithApprovedRoute,
+  resolveMailBaselineExtractionRoute,
+  type MailBaselineExtractionRoute,
+} from '../mail-baseline-extraction.js';
 import { canonicalInternetMessageId, resolveAdapter } from '../quote-workflow-analyse-selection.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-selection.js';
 import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
+import { resolveTriageEventClock } from '../triage-input.js';
+import { TRIAGE_REVIEWER_VERSION } from '../triage.js';
 import { ensureWorkItemForMessage } from '../work-items.js';
 import {
   enqueueAiRun,
   markAiRunDeadLetter,
   markAiRunRetry,
   markAiRunSucceeded,
+  mailBaselineGenerationKey,
   type AiRunFence,
   type AiWorkflowRun,
 } from '../run-ledger.js';
@@ -94,9 +105,19 @@ export function __resetInboundExtractionCapForTests(): void {
   modelCallStarts = [];
 }
 
-/** Queues the read for one admitted inbound mail. Called inside the admission transaction. */
+/**
+ * Queues the read for one inbound mail. Called inside the admission transaction (live, with its snapshot) or by the
+ * backfill (no snapshot, staggered by nextRunAt). The key is the same for both, so a repeat is a no-op.
+ */
 export async function enqueueInboundExtraction(
-  input: { transportId: string; threadId: string; messageId: string },
+  input: {
+    transportId: string;
+    threadId: string;
+    messageId: string;
+    admissionSnapshotId?: string;
+    admissionSnapshotHash?: string;
+    nextRunAt?: Date;
+  },
   db: DB = getDb(),
 ) {
   return enqueueAiRun(
@@ -108,6 +129,9 @@ export async function enqueueInboundExtraction(
       idempotencyKey: `inbound-extraction:${input.messageId}:${EXTRACTION_VERSION}`,
       modelId: EXTRACTION_MODEL_ID,
       promptVersion: EXTRACTION_VERSION,
+      admissionSnapshotId: input.admissionSnapshotId,
+      admissionSnapshotHash: input.admissionSnapshotHash,
+      nextRunAt: input.nextRunAt,
     },
     db,
   );
@@ -284,7 +308,60 @@ export async function runInboundExtraction(
         ),
       );
   }
+  if (env.AI_WRITE_GATE_ENABLED === 'true' && SPAM_LIFTING_KINDS.has(extraction.kind)) {
+    await liftSpamOnLatestInbound(db, run, trigger);
+  }
   return 'stored';
+}
+
+/** Hotel business reads. Only these lift a spam mark. An 'other' or 'spam' read never does. */
+const SPAM_LIFTING_KINDS: ReadonlySet<string> = new Set([
+  'quote',
+  'booking',
+  'amendment',
+  'cancellation',
+  'voucher_pop',
+]);
+
+/**
+ * Un-spam, which the retired classifier used to do on the next mail. The thread's latest inbound read decides. A
+ * person's lock and a sender the person blocked both keep the mark.
+ */
+async function liftSpamOnLatestInbound(
+  db: DB,
+  run: Pick<AiWorkflowRun, 'transportId' | 'triggerMessageId'>,
+  trigger: { threadId: string; fromAddress: string },
+): Promise<void> {
+  const [latest] = await db
+    .select({ id: message.id })
+    .from(message)
+    .where(
+      and(
+        eq(message.threadId, trigger.threadId),
+        eq(message.transportId, run.transportId),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .orderBy(desc(message.createdAt), desc(message.id))
+    .limit(1);
+  if (latest?.id !== run.triggerMessageId) return;
+  const preference = await getSenderPreference({
+    db,
+    transportId: run.transportId,
+    emailRaw: trigger.fromAddress,
+  });
+  if (preference === 'block') return;
+  await db
+    .update(mailThread)
+    .set({ spamAt: null, updatedAt: new Date() })
+    .where(
+      and(
+        eq(mailThread.id, trigger.threadId),
+        eq(mailThread.transportId, run.transportId),
+        isNotNull(mailThread.spamAt),
+        isNull(mailThread.spamUserLockedAt),
+      ),
+    );
 }
 
 /**
@@ -328,7 +405,10 @@ async function spamWriteAllowed(
   return !staffReply;
 }
 
-/** Worker entry for an `inbound_extraction` run. Maps the outcome onto the run's state. */
+/**
+ * Worker entry for an `inbound_extraction` run. Maps the outcome onto the run's state. The mail baseline is projected
+ * here too, after the read outcome, so it no longer depends on the old triage run.
+ */
 export async function executeInboundExtractionRun(input: {
   run: AiWorkflowRun;
   fence: AiRunFence;
@@ -337,6 +417,8 @@ export async function executeInboundExtractionRun(input: {
   db?: DB;
   env?: NodeJS.ProcessEnv;
   loadSelection?: InboundExtractionDeps['loadSelection'];
+  /** The worker's approved local baseline route. Absent means source observations only. */
+  mailBaselineRoute?: MailBaselineExtractionRoute;
 }): Promise<{ runId: string; state: 'succeeded' | 'retry_wait' | 'dead_letter' }> {
   const { run, fence } = input;
   const db = input.db ?? getDb();
@@ -369,6 +451,14 @@ export async function executeInboundExtractionRun(input: {
     );
     return { runId: run.id, state: 'retry_wait' };
   }
+  // The baseline reads the message and the approved route, not the extraction model. It runs for every outcome that is
+  // not deferred, so a missing extraction model never stops it.
+  const mailBaseline = await projectInboundMailBaseline(
+    db,
+    run,
+    input.mailBaselineRoute ?? resolveMailBaselineExtractionRoute({ approvedRoute: null }),
+    input.signal,
+  );
   if (outcome === 'stale_version' || outcome === 'unconfigured') {
     await markAiRunDeadLetter(
       {
@@ -383,7 +473,13 @@ export async function executeInboundExtractionRun(input: {
     return { runId: run.id, state: 'dead_letter' };
   }
   const marked = await markAiRunSucceeded(
-    { ...claim, metrics: { inboundExtraction: { outcome } } },
+    {
+      ...claim,
+      metrics: {
+        inboundExtraction: { outcome },
+        ...(mailBaseline ? { mailBaseline } : {}),
+      },
+    },
     db,
   );
   return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
@@ -449,4 +545,131 @@ export async function retryInboundTranslation(
     })
     .where(eq(mailExtraction.id, read.id));
   return { status: 'done', translation };
+}
+
+/**
+ * Mail baseline for one inbound message. It reads the message and the approved local route, never the classifier, so
+ * it runs the same with INBOUND_TRIAGE_CLASSIFIER on or off. Insert-only per generation, so a retry is a no-op.
+ * Returns the metrics, or null when the message is not inbound.
+ */
+async function projectInboundMailBaseline(
+  db: DB,
+  run: Pick<AiWorkflowRun, 'transportId' | 'threadId' | 'triggerMessageId' | 'createdAt'>,
+  route: MailBaselineExtractionRoute,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown> | null> {
+  const [row] = await db
+    .select({
+      id: message.id,
+      direction: message.direction,
+      fromAddress: message.fromAddress,
+      toAddresses: message.toAddresses,
+      ccAddresses: message.ccAddresses,
+      bccAddresses: message.bccAddresses,
+      subject: message.subject,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      createdAt: message.createdAt,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+      messageIdHeader: message.messageIdHeader,
+      inReplyTo: message.inReplyTo,
+      references: message.references,
+    })
+    .from(message)
+    .where(and(eq(message.id, run.triggerMessageId), eq(message.transportId, run.transportId)))
+    .limit(1);
+  if (!row || row.direction !== 'inbound') return null;
+  const clock = resolveTriageEventClock({
+    id: row.id,
+    from: row.fromAddress,
+    subject: row.subject ?? undefined,
+    body: row.textBody ?? row.htmlBody ?? '',
+    direction: 'inbound',
+    createdAt: row.createdAt,
+    receivedAt: row.receivedAt,
+    sentAt: row.sentAt,
+    to: row.toAddresses ?? [],
+    cc: row.ccAddresses ?? [],
+    bcc: row.bccAddresses ?? [],
+    messageIdHeader: row.messageIdHeader,
+    inReplyTo: row.inReplyTo,
+    references: row.references,
+  });
+  const routed = await extractMailBaselineWithApprovedRoute(
+    {
+      sourceVintage: run.createdAt.toISOString(),
+      observationCutoff: run.createdAt,
+      interpretationVersion: MAIL_BASELINE_INTERPRETATION_VERSION,
+      classifierVersion: route.available
+        ? 'mail-baseline-semantic-v1'
+        : 'mail-baseline-observation-v1',
+      reviewerVersion: TRIAGE_REVIEWER_VERSION,
+      message: {
+        id: row.id,
+        transportId: run.transportId,
+        threadId: run.threadId,
+        direction: 'inbound',
+        fromAddress: row.fromAddress,
+        toAddresses: row.toAddresses ?? [],
+        ccAddresses: row.ccAddresses ?? [],
+        bccAddresses: row.bccAddresses ?? [],
+        subject: row.subject ?? null,
+        textBody: row.textBody ?? row.htmlBody ?? '',
+        receivedAt: row.receivedAt,
+        sentAt: row.sentAt,
+        createdAt: row.createdAt,
+        messageIdHeader: row.messageIdHeader,
+        inReplyTo: row.inReplyTo,
+        references: row.references,
+        source: 'mail_event',
+        sourceBasis: clock.basis,
+      },
+    },
+    route,
+    { signal },
+  );
+  const { extraction } = routed;
+  const configured = parseMailboxMeasurementConfig(process.env.MAIL_MEASUREMENT_CONFIG_JSON);
+  const producerMeasurement = configured?.transportId === run.transportId ? configured : null;
+  const generationId = mailBaselineGenerationKey({
+    transportId: run.transportId,
+    threadId: run.threadId,
+    sourceMessageId: row.id,
+    sourceVintage: run.createdAt.toISOString(),
+    interpretationVersion: extraction.interpretationVersion,
+  });
+  const persisted = await persistMailBaselineProjection(db, {
+    transportId: run.transportId,
+    threadId: run.threadId,
+    generationId,
+    sourceVintage: extraction.sourceVintage,
+    interpretationVersion: extraction.interpretationVersion,
+    reviewerVersion: TRIAGE_REVIEWER_VERSION,
+    observationCutoff: run.createdAt,
+    measurementStartAt: producerMeasurement?.measurementStartAt ?? null,
+    coverage: {
+      configVersion: producerMeasurement ? String(producerMeasurement.version) : null,
+      startAt: producerMeasurement?.measurementStartAt ?? null,
+      endAt: run.createdAt.toISOString(),
+      basis: producerMeasurement?.captureAssumptionBasis ?? 'coverage_unconfigured',
+      complete: producerMeasurement !== null && producerMeasurement.measurementStartAt !== null,
+      confirmedGapIntervals: producerMeasurement?.confirmedGapIntervals ?? [],
+    },
+    evidence: extraction.evidence,
+  });
+  return {
+    status:
+      routed.semanticRoute === 'approved_local_extraction'
+        ? 'persisted_semantic_projection'
+        : 'persisted_source_observation',
+    routeStatus: route.available ? 'available' : 'unavailable',
+    routeId: route.route,
+    ...(route.reason ? { reason: route.reason } : {}),
+    extraction: routed.semanticRoute,
+    generationId,
+    inserted: persisted.inserted,
+    evidenceCount: extraction.evidence.length,
+    ...(routed.modelUsage ? { modelUsage: routed.modelUsage } : {}),
+  };
 }
