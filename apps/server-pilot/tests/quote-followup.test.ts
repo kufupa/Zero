@@ -511,6 +511,33 @@ describe('follow-up suggestions are discarded once a reply overtakes them', () =
     });
   });
 
+  it('the discard touches only the follow-up suggestion, never other drafts or waiting suggestions', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const { draftId } = await suggestionFor(db, 'thread-mixed');
+      const waiting = await suggestionFor(db, 'thread-waiting');
+      await db.insert(user).values({ id: STAFF, name: 'Staff', email: 'staff@example.com', emailVerified: true });
+      const other = { transportId: TRANSPORT, threadId: 'thread-mixed', subject: 'Re: Quote request' };
+      await db.insert(mailDraft).values([
+        { ...other, id: 'ai-candidate-mixed', createdByUserId: NAVA_USER_ID, textBody: 'AI.', status: 'candidate', origin: 'ai' },
+        { ...other, id: 'staff-candidate-mixed', createdByUserId: STAFF, textBody: 'Mine.', status: 'candidate', origin: 'manual' },
+        { ...other, id: 'staff-active-mixed', createdByUserId: STAFF, textBody: 'Open.', status: 'active', origin: 'manual' },
+      ]);
+      await clientReplies(db, 'thread-mixed', 'in-mixed', new Date('2026-10-12T07:00:00Z'));
+
+      expect(await runQuoteFollowupSweep({ db, env: OFF, now: WED_DUE })).toMatchObject({ discarded: 1 });
+      expect((await threadDrafts(db, 'thread-mixed')).map((d) => [d.id, d.status]).sort()).toEqual([
+        ['ai-candidate-mixed', 'candidate'],
+        [draftId, 'discarded'],
+        ['staff-active-mixed', 'active'],
+        ['staff-candidate-mixed', 'candidate'],
+      ]);
+      expect((await threadDrafts(db, 'thread-waiting')).map((d) => [d.id, d.status])).toEqual([
+        [waiting.draftId, 'candidate'],
+      ]);
+    });
+  });
+
   it('a suggestion that was used is kept when the client replies', async () => {
     await withIngestionDb(async ({ db }) => {
       await seedNavaUser(db);

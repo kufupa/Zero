@@ -167,7 +167,20 @@ async function discardOvertakenFollowUps(db: DB, now: Date): Promise<number> {
       replyToMessageId: mailDraft.replyToMessageId,
     })
     .from(mailDraft)
-    .where(and(eq(mailDraft.status, 'candidate'), IS_FOLLOW_UP_DRAFT))
+    .where(
+      and(
+        eq(mailDraft.status, 'candidate'),
+        IS_FOLLOW_UP_DRAFT,
+        // Only threads with a message later than the quote. Waiting suggestions never fill the batch, so an overtaken
+        // one is always reached. The exact client/staff check below decides.
+        sql`exists (
+          select 1 from ${message} m join ${message} s on s.id = ${mailDraft.replyToMessageId}
+          where m.transport_id = ${mailDraft.transportId} and m.thread_id = ${mailDraft.threadId} and m.id <> s.id
+            and greatest(m.sent_at, m.received_at, m.created_at) > coalesce(s.sent_at, s.received_at, s.created_at)
+        )`,
+      ),
+    )
+    .orderBy(asc(mailDraft.updatedAt), asc(mailDraft.id))
     .limit(SWEEP_BATCH);
   let discarded = 0;
   for (const draft of candidates) {
