@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { DB } from '../src/db/client.js';
+import { __setDbForTests, type DB } from '../src/db/client.js';
+import { appRouter } from '../src/trpc/router.js';
 import { aiWorkflowRun, attachment } from '../src/db/schema/mail.js';
 import { workEvent, workItem, type WorkEventType } from '../src/db/schema/work.js';
 import {
@@ -607,6 +608,56 @@ describe('pane HMS write (U26)', () => {
       expect((await stateOf(db, workItemId)).hmsSnapshot).toMatchObject({
         digest: hmsStateDigest(LAB_STAY),
       });
+    });
+  });
+
+  it('a flag drops the pre-write snapshot, and the reread procedure stores a fresh read the next approval binds (U18)', async () => {
+    await withIngestionDb(async ({ db, sql }) => {
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
+      await prepare(db, workItemId);
+      await approve(db, workItemId);
+      const run = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toMatchObject({
+        status: 'succeeded',
+      });
+      const caller = appRouter.createCaller({
+        auth: null as never,
+        reqHeaders: new Headers({ 'x-zero-active-transport': TRANSPORT_ID }),
+        sessionUser: { id: USER, email: 'staff@example.invalid', name: 'Staff' },
+        activeTransportId: TRANSPORT_ID,
+        accessRole: 'owner',
+        transportEmail: TRANSPORT_EMAIL,
+      } as never);
+      __setDbForTests({ db, conn: sql } as never);
+      const previousMode = process.env.RESERVATIONIST_PANE_AMEND;
+      try {
+        await caller.hmsApproval.review({ workItemId, decision: 'flag', note: 'Wrong document' });
+        expect((await stateOf(db, workItemId)).hmsSnapshot).toBeUndefined();
+        await expect(approve(db, workItemId)).rejects.toMatchObject({
+          refusal: 'snapshot_missing',
+        });
+
+        delete process.env.RESERVATIONIST_PANE_AMEND;
+        await expect(caller.hmsApproval.reread({ workItemId })).resolves.toEqual({
+          status: 'refused',
+          reason: 'refused_flag_off',
+        });
+        process.env.RESERVATIONIST_PANE_AMEND = 'lab';
+        hmsStay = { ...LAB_STAY, departure: '2027-09-17' };
+        const reread = await caller.hmsApproval.reread({ workItemId });
+        expect(reread).toMatchObject({ status: 'stored' });
+        expect((await stateOf(db, workItemId)).hmsSnapshot).toMatchObject({
+          digest: hmsStateDigest(hmsStay),
+        });
+        const again = await approve(db, workItemId);
+        const [grant] = await db.select().from(workEvent).where(eq(workEvent.id, again.grantId));
+        expect(grant?.value).toMatchObject({ hmsBeforeDigest: hmsStateDigest(hmsStay) });
+      } finally {
+        if (previousMode === undefined) delete process.env.RESERVATIONIST_PANE_AMEND;
+        else process.env.RESERVATIONIST_PANE_AMEND = previousMode;
+        __setDbForTests(null);
+      }
     });
   });
 });

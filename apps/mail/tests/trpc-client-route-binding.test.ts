@@ -9,6 +9,7 @@ import { amendCancelClientFromTrpc, amendCapabilitiesFromTrpc } from '../lib/quo
 import { amendFindClientFromTrpc } from '../lib/quote-workflow/amend-find';
 import { partyFinderFromTrpc } from '../lib/quote-workflow/party-lookup';
 import { savedRatesFromTrpc } from '../components/quote-workflow/rate-controls';
+import { hmsApprovalFromTrpc } from '../lib/quote-workflow/hms-write';
 
 // The pane passes the real tRPC client, which is a function-backed proxy (typeof 'function').
 // Plain-object mocks hid the bug where every helper returned empty routes in production.
@@ -40,6 +41,10 @@ describe('pane tRPC helpers bind routes off the real client', () => {
 
   it('binds the saved-rate routes off the real client', () => {
     expect(savedRatesFromTrpc(client)).not.toBeNull();
+  });
+
+  it('binds the HMS approve, review and re-read routes off the real client', () => {
+    expect(hmsApprovalFromTrpc(client)).not.toBeNull();
   });
 
   it('still refuses a missing client', () => {

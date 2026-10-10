@@ -14,7 +14,12 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     )
       return 45_000;
     // Browser runs under the hotel lock: a find or name search takes about 1-2 minutes; the server bounds it at 5.
-    if (routes.includes('paneStayLookup.findStay') || routes.includes('paneStayLookup.searchGuest'))
+    // hmsApproval.reread is one such find, stored as the write's snapshot.
+    if (
+      routes.includes('paneStayLookup.findStay') ||
+      routes.includes('paneStayLookup.searchGuest') ||
+      routes.includes('hmsApproval.reread')
+    )
       return 6 * 60_000;
     // The party search runs one lookup per kind (company, agency) under the same lock: the server bounds each run at
     // 150 s, so the pair stays inside this six-minute wait.
