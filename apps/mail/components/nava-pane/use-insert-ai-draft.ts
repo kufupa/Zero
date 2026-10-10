@@ -180,6 +180,29 @@ export function useInsertAiDraft({
     void handleInsertAiDraft(scope, saved).finally(endMutation);
   };
 
+  /**
+   * Insert saved reply: reads the thread's saved reply, then inserts it. The insert is in flight from the click, so a
+   * second click while the read is out does nothing and the button stays off. `read` returns null to stop (it says why).
+   */
+  const trackedInsertSaved = (read: () => Promise<ReviewedReply | null>) => {
+    if (replyInFlight.current) return;
+    const startedScopeEpoch = contextRevision.current.scopeEpoch;
+    replyInFlight.current = true;
+    setIsDraftPending(true);
+    beginMutation();
+    void read()
+      .catch(() => null)
+      .then((saved) => {
+        // A scope change already cleared the flag, and a reply in the new scope may hold it now.
+        if (contextRevision.current.scopeEpoch !== startedScopeEpoch) return;
+        // Handed straight to the insert, which takes the flag back before anything else can run.
+        replyInFlight.current = false;
+        setIsDraftPending(false);
+        if (saved) return handleInsertAiDraft('saved', saved);
+      })
+      .finally(endMutation);
+  };
+
   const handleInsertAiDraft = async (scope: ReplyDraftScope = 'selected', saved?: ReviewedReply) => {
     if (replyInFlight.current || !activeEmail?.entryId) return;
     const startedScope = currentScope;
@@ -555,6 +578,7 @@ export function useInsertAiDraft({
 
   return {
     trackedDraft,
+    trackedInsertSaved,
     trackedSave,
     isDraftPending,
     draftStatus,

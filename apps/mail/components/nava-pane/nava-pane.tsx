@@ -197,6 +197,7 @@ export function NavaPane({
   const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
   const {
     trackedDraft,
+    trackedInsertSaved,
     trackedSave,
     isDraftPending,
     draftStatus,
@@ -813,23 +814,24 @@ export function NavaPane({
   };
 
   /** Inserts the thread's saved reply as it is now. Webmail may have replaced it since the button appeared. */
-  const insertSavedReply = async () => {
-    const threadId = savedReplyThreadId;
-    let current: Awaited<ReturnType<typeof savedReply.readCurrent>>;
-    try {
-      current = await savedReply.readCurrent();
-    } catch {
-      toast.error('Could not read the saved reply. Try again.');
-      return;
-    }
-    // The reply belongs to the thread it was read for. Staff may have moved to another email meanwhile.
-    if (quoteSessionRef.current.staffSource?.threadId !== threadId) return;
-    if (!current) {
-      toast.warning('This thread has no saved reply any more. Save it again in webmail.');
-      return;
-    }
-    trackedDraft('saved', current);
-  };
+  const insertSavedReply = () =>
+    trackedInsertSaved(async () => {
+      const threadId = savedReplyThreadId;
+      let current: Awaited<ReturnType<typeof savedReply.readCurrent>>;
+      try {
+        current = await savedReply.readCurrent();
+      } catch {
+        toast.error('Could not read the saved reply. Try again.');
+        return null;
+      }
+      // The reply belongs to the thread it was read for. Staff may have moved to another email meanwhile.
+      if (quoteSessionRef.current.staffSource?.threadId !== threadId) return null;
+      if (!current) {
+        toast.warning('This thread has no saved reply any more. Save it again in webmail.');
+        return null;
+      }
+      return current;
+    });
 
   const runQuoteStep = (stepId: string) => {
     const step = quoteSession.steps.find((item) => item.id === stepId);
@@ -1114,7 +1116,7 @@ export function NavaPane({
       statusMessage={draftStatusMessage}
       onDraft={trackedDraft}
       onSaveReply={preview ? trackedSave : undefined}
-      onInsertSaved={savedReply.available ? () => void insertSavedReply() : null}
+      onInsertSaved={savedReply.available ? insertSavedReply : null}
       preview={preview}
     />
   );

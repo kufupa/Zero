@@ -219,6 +219,26 @@ describe('Insert saved reply in Outlook', () => {
     expect(saveReplyMutate).not.toHaveBeenCalled();
   });
 
+  it('a double click reads and inserts the saved reply once, with the button off from the click', async () => {
+    const sendCommand = outlookSendCommand();
+    const { result } = renderInsertHook(sendCommand);
+    let land: (reply: { html: string; attachments: { fileName: string; pdfBase64: string }[] }) => void = () => {};
+    const read = vi.fn(() => new Promise<Parameters<typeof land>[0]>((resolve) => (land = resolve)));
+
+    act(() => {
+      result.current.trackedInsertSaved(read);
+      result.current.trackedInsertSaved(read);
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(result.current.isDraftPending).toBe(true);
+
+    await act(async () => {
+      land({ html: SAVED_HTML, attachments: [{ fileName: 'Quotation.pdf', pdfBase64: SAVED_PDF }] });
+    });
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(sendCommand.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT')).toHaveLength(1);
+  });
+
   it('shows the saved-reply button only when the thread has a saved reply', () => {
     const insertSaved = vi.fn();
     const shared = {
