@@ -48,7 +48,7 @@ import { sanitizeHtmlBodyForStorage } from '../../mail/sanitize-email-html.js';
 import { parseDraftSearchQueryOrThrow } from '../../mail/search/trpc.js';
 import { buildDraftSearchConditions } from '../../mail/search/query.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
-import { JOINT_ROOMS_UNCHECKED, uncheckedJointRoomRuns } from '../../ai/joint-rooms-check.js';
+import { JOINT_ROOMS_UNCHECKED, ReplyQuoteRunUnavailable, uncheckedReplyRuns } from '../../ai/joint-rooms-check.js';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { and, eq, desc, inArray, like, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
@@ -1788,6 +1788,11 @@ export const draftsRouter = tRouter({
         html: z.string(),
         attachments: z.array(serializedAttachmentInput).max(32).default([]),
         replaceDraft: z.string().max(200).optional(),
+        // The staff quote runs the reply's PDF was made from, one per stay. Each is checked as the PDF route checks it.
+        quoteRuns: z
+          .array(z.object({ workflowRunId: z.string().min(1), revisionRef: z.string().min(1) }).strict())
+          .max(64)
+          .default([]),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -1799,17 +1804,24 @@ export const draftsRouter = tRouter({
       if (replyParent.threadId !== input.threadId) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'REPLY_PARENT_THREAD_MISMATCH' });
       }
-      // HMS gave no building for a current quote's room types: no saved reply until staff record the check in HMS.
-      const unchecked = await uncheckedJointRoomRuns(db, {
-        transportId,
-        threadId: input.threadId,
-        messageId: input.replyToMessageId,
-        userId: ctx.sessionUser.id,
-      });
-      if (unchecked.length) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: JOINT_ROOMS_UNCHECKED });
       const html = sanitizeHtmlBodyForStorage(input.html) ?? '';
       try {
         return await db.transaction(async (tx) => {
+          // HMS gave no building for a carried quote's room types: no saved reply until staff record the HMS check.
+          let unchecked: Awaited<ReturnType<typeof uncheckedReplyRuns>>;
+          try {
+            unchecked = await uncheckedReplyRuns(tx as unknown as DB, {
+              transportId,
+              threadId: input.threadId,
+              userId: ctx.sessionUser.id,
+              runs: input.quoteRuns,
+            });
+          } catch (error) {
+            if (error instanceof ReplyQuoteRunUnavailable)
+              throw new TRPCError({ code: 'PRECONDITION_FAILED', message: error.message });
+            throw error;
+          }
+          if (unchecked.length) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: JOINT_ROOMS_UNCHECKED });
           const [prior] = await tx
             .select()
             .from(mailDraft)

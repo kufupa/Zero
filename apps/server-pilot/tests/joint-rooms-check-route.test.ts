@@ -52,14 +52,12 @@ async function seedRequest(db: DB, options: { workItem: boolean }) {
     })
     .returning();
   if (options.workItem)
-    await db
-      .insert(workItem)
-      .values({
-        transportId: 'transport-centurion',
-        threadId,
-        sourceMessageId: messageId,
-        kind: 'quote',
-      });
+    await db.insert(workItem).values({
+      transportId: 'transport-centurion',
+      threadId,
+      sourceMessageId: messageId,
+      kind: 'quote',
+    });
   const row = (id: string, adults: number, roomCode: string) => ({
     id,
     arrivalDate: '2026-11-12',
@@ -171,6 +169,19 @@ function installFixture(db: DB, building: string | null = null) {
   );
 }
 
+function onDates(
+  input: StaffQuoteInput,
+  inputRevision: number,
+  arrivalDate: string,
+  departureDate: string,
+) {
+  return {
+    ...input,
+    inputRevision,
+    groups: input.groups.map((group) => ({ ...group, arrivalDate, departureDate })),
+  };
+}
+
 function pdfInput(quote: { workflowRunId: string; revisionRef: string; messageId: string }) {
   return {
     workflowRunId: quote.workflowRunId,
@@ -238,6 +249,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           threadId: request.threadId,
           replyToMessageId: request.mail.id,
           html: '<p>Your quote.</p>',
+          quoteRuns: [{ workflowRunId: quote.workflowRunId, revisionRef: quote.revisionRef }],
         };
         await expect(
           api.workstation.qualifiedQuoteProposalPdf(pdfInput(quote)),
@@ -272,7 +284,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await expect(
           api.workstation.qualifiedQuoteProposalPdf(pdfInput(quote)),
         ).rejects.toMatchObject(refused);
+        await expect(api.workstation.quoteWorkbook(pdfInput(quote))).rejects.toMatchObject(refused);
         await expect(api.drafts.saveReply(reply)).rejects.toMatchObject(refused);
+        // A reply that carries no quote run is not a quote reply; a run that is not this user's is refused.
+        expect(await api.drafts.saveReply({ ...reply, quoteRuns: [] })).toMatchObject({
+          id: expect.any(String),
+        });
+        await expect(
+          api.drafts.saveReply({
+            ...reply,
+            quoteRuns: [{ workflowRunId: randomUUID(), revisionRef: quote.revisionRef }],
+          }),
+        ).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          message: 'Proposal source not found',
+        });
       });
     });
 
@@ -344,6 +370,123 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           code: 'PRECONDITION_FAILED',
           message: 'joint_rooms_check_unavailable',
         });
+      });
+    });
+
+    it('scopes the saved reply to the runs it carries: an old unticked date run does not block a ticked new one', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const request = await seedRequest(db, { workItem: true }),
+          api = caller();
+        const old = await api.workstation.executeStaffQuote(
+          onDates(request.input, 1, '2026-11-12', '2026-11-14'),
+        );
+        const current = await api.workstation.executeStaffQuote(
+          onDates(request.input, 2, '2026-11-13', '2026-11-15'),
+        );
+        await api.workstation.recordJointRoomsCheck({
+          workflowRunId: current.workflowRunId,
+          revisionRef: current.revisionRef,
+          threadId: request.threadId,
+          checked: true,
+        });
+        const reply = (run: { workflowRunId: string; revisionRef: string }) => ({
+          threadId: request.threadId,
+          replyToMessageId: request.mail.id,
+          html: '<p>Your quote.</p>',
+          quoteRuns: [{ workflowRunId: run.workflowRunId, revisionRef: run.revisionRef }],
+        });
+        expect(await api.workstation.qualifiedQuoteProposalPdf(pdfInput(current))).toMatchObject({
+          revisionId: current.revisionRef,
+        });
+        expect(await api.drafts.saveReply(reply(current))).toMatchObject({
+          id: expect.any(String),
+        });
+        await expect(api.drafts.saveReply(reply(old))).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          message: 'joint_rooms_unchecked',
+        });
+      });
+    });
+
+    it('a tick on an earlier run does not carry to a new run of the same stay', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const request = await seedRequest(db, { workItem: true }),
+          api = caller();
+        const first = await api.workstation.executeStaffQuote(request.input);
+        await api.workstation.recordJointRoomsCheck({
+          workflowRunId: first.workflowRunId,
+          revisionRef: first.revisionRef,
+          threadId: request.threadId,
+          checked: true,
+        });
+        const rerun = await api.workstation.executeStaffQuote({
+          ...request.input,
+          inputRevision: 2,
+        });
+        expect(rerun.workflowRunId).not.toBe(first.workflowRunId);
+        await expect(
+          api.workstation.qualifiedQuoteProposalPdf(pdfInput(rerun)),
+        ).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          message: 'joint_rooms_unchecked',
+        });
+      });
+    });
+
+    it('a combined quote needs the tick on every flagged stay', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const request = await seedRequest(db, { workItem: true }),
+          api = caller();
+        const november = await api.workstation.executeStaffQuote(
+          onDates(request.input, 1, '2026-11-12', '2026-11-14'),
+        );
+        const december = await api.workstation.executeStaffQuote(
+          onDates(request.input, 2, '2026-12-01', '2026-12-03'),
+        );
+        const combined = {
+          ...pdfInput(november),
+          additionalStays: [
+            {
+              workflowRunId: december.workflowRunId,
+              revisionRef: december.revisionRef,
+              factRefs: [],
+            },
+          ],
+        };
+        const tick = (run: { workflowRunId: string; revisionRef: string }) =>
+          api.workstation.recordJointRoomsCheck({
+            workflowRunId: run.workflowRunId,
+            revisionRef: run.revisionRef,
+            threadId: request.threadId,
+            checked: true,
+          });
+        const refused = { code: 'PRECONDITION_FAILED', message: 'joint_rooms_unchecked' };
+        await tick(november);
+        await expect(api.workstation.qualifiedQuoteProposalPdf(combined)).rejects.toMatchObject(
+          refused,
+        );
+        await expect(api.workstation.quoteWorkbook(combined)).rejects.toMatchObject(refused);
+        const reply = {
+          threadId: request.threadId,
+          replyToMessageId: request.mail.id,
+          html: '<p>Your quote.</p>',
+          quoteRuns: [november, december].map((run) => ({
+            workflowRunId: run.workflowRunId,
+            revisionRef: run.revisionRef,
+          })),
+        };
+        await expect(api.drafts.saveReply(reply)).rejects.toMatchObject(refused);
+        await tick(december);
+        expect(await api.workstation.qualifiedQuoteProposalPdf(combined)).toMatchObject({
+          revisionId: expect.stringMatching(/^quotes:/),
+        });
+        expect(await api.workstation.quoteWorkbook(combined)).toMatchObject({
+          revisionId: expect.stringMatching(/^quotes:/),
+        });
+        expect(await api.drafts.saveReply(reply)).toMatchObject({ id: expect.any(String) });
       });
     });
   },

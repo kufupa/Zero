@@ -5,6 +5,7 @@ import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-fligh
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { requireMultiOptionDraft, type CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
+import { documentRuns } from '@/lib/quote-workflow/session';
 import { jointRoomsRefusal } from '@/lib/quote-workflow/staff-quote-bind';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { trpcClient } from '@/providers/query-provider';
@@ -529,6 +530,11 @@ export function useInsertAiDraft({
         subject: replySubject(activeEmail.subject),
         html: reviewedDraft.html,
         attachments: reviewedDraft.attachments.map(pdfUploadInput),
+        // The runs the PDF was made from: the server checks each as it checked the PDF.
+        quoteRuns: documentRuns(quoteSession).map((run) => ({
+          workflowRunId: run.workflowRunId,
+          revisionRef: run.revisionRef,
+        })),
         ...(replaceDraft === undefined ? {} : { replaceDraft }),
       });
     saveInFlight.current = true;

@@ -439,6 +439,12 @@ it('keeps building pools and no staff-check flag when HMS gives the building',as
  expect(r.groups.map(g=>g.poolId)).toEqual(['HRCEN:MAIN:STQN','HRCEN:MAIN:STWN']);expect(propertyPoolBasis(r)).toBeNull();
  const one=source();one.result.groups[0].options[0].room.buildingCode=null;expect(propertyPoolBasis(await revision(one))).toBeNull();
 });
+it('pools one room type property-wide when HMS gave its building on one row and none on another',async()=>{
+ const a=source();a.result.groups[0].options[0].room.buildingCode=null;
+ await expect(twoRows(a,secondRow('STQN','MAIN'))).rejects.toThrow('joint_inventory_insufficient');
+ const b=source();const flipped=secondRow('STQN',null);
+ await expect(twoRows(b,flipped)).rejects.toThrow('joint_inventory_insufficient');
+});
 it('rejects a malformed building instead of pooling it',async()=>{
  const a=source();a.result.groups[0].options[0].room.buildingCode=null;
  await expect(twoRows(a,secondRow('STWN',''))).rejects.toThrow('inventory_pool_unknown');

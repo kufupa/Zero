@@ -590,6 +590,21 @@ test('composeAllocation uses building/room pools, else property/room-type pools,
     group('a', 15, 'STQN', 'BAR', null, 40),
     group('b', 21, 'STWN', 'BAR', null, 20),
   ], 'HRCEN').status, 'insufficient');
+  // One room type with a building on one row and none on another is one property-wide pool, so the rows still sum.
+  const mixedBuilding = composeAllocation([
+    group('a', 3, 'STQN', 'BAR', 'H1', 5),
+    group('b', 3, 'STQN', 'BARRO', null, 5),
+  ], 'HRCEN');
+  assert.equal(mixedBuilding.status, 'insufficient');
+  assert.deepEqual(mixedBuilding.pools.map((pool) => pool.id), ['HRCEN:property:STQN']);
+  assert.equal(mixedBuilding.poolBasis, undefined);
+  const mixedTypes = composeAllocation([
+    group('a', 1, 'STQN', 'BAR', 'H1', 5),
+    group('b', 1, 'STQN', 'BARRO', null, 5),
+    group('c', 1, 'STWN', 'BAR', 'H1', 5),
+  ], 'HRCEN');
+  assert.deepEqual(mixedTypes.pools.map((pool) => pool.id), ['HRCEN:property:STQN', 'HRCEN:H1:STWN']);
+  assert.equal(mixedTypes.poolBasis, 'property_room_type');
   // A building HMS did give keeps the building pool, with no flag.
   const built = composeAllocation([
     group('a', 1, 'STQN', 'BAR', 'H1', 5),

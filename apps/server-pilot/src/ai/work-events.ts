@@ -117,8 +117,11 @@ export async function recordJointRoomsCheck(
   db: DB,
   args: { workItemId: string; actorUserId: string; workflowRunId: string; revisionRef: string; checked: boolean },
 ): Promise<void> {
-  // clock_timestamp, not the transaction's now(): a tick and an untick in one transaction must still order.
-  await db.insert(workEvent).values({
+  // The update lock orders this against a saved reply's share lock (uncheckedReplyRuns) on the same work item.
+  await db.transaction(async (tx) => {
+    await tx.select({ id: workItem.id }).from(workItem).where(eq(workItem.id, args.workItemId)).for('update');
+    // clock_timestamp, not the transaction's now(): a tick and an untick in one transaction must still order.
+    await tx.insert(workEvent).values({
     workItemId: args.workItemId,
     at: sql`clock_timestamp()`,
     actorKind: 'user',
@@ -127,6 +130,7 @@ export async function recordJointRoomsCheck(
     fieldPath: 'quote.jointRooms',
     value: { workflowRunId: args.workflowRunId, revisionRef: args.revisionRef },
     aiSource: args.workflowRunId,
+    });
   });
 }
 

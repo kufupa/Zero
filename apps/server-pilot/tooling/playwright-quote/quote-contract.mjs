@@ -629,19 +629,24 @@ export function composeAllocation(groups = [], propertyCode) {
     const building = option?.room?.buildingCode;
     // HMS gives no building at some properties: pool by room type across the property. A malformed building stays unknown.
     const scope = typeof building === 'string' && building ? building : building === null ? 'property' : undefined;
-    const poolId = typeof propertyCode === 'string' && propertyCode && option?.room?.code && scope
-      ? `${propertyCode}:${scope}:${option.room.code}` : undefined;
     return {
       id: group.id,
       quantity,
       required,
       matchStatus: option?.matchStatus ?? group.matchStatus,
-      poolId,
-      propertyPool: Boolean(poolId) && scope === 'property',
+      scope,
       roomCode: option?.room?.code,
       nightly: option?.nightly,
     };
   });
+  // A room type HMS gave no building for on any selected row is one property-wide pool for every row of that type.
+  const unbuilt = new Set(selected.filter((group) => group.scope === 'property').map((group) => group.roomCode));
+  for (const group of selected) {
+    if (group.scope && unbuilt.has(group.roomCode)) group.scope = 'property';
+    group.poolId = typeof propertyCode === 'string' && propertyCode && group.roomCode && group.scope
+      ? `${propertyCode}:${group.scope}:${group.roomCode}` : undefined;
+    group.propertyPool = Boolean(group.poolId) && group.scope === 'property';
+  }
   const supplyByNight = new Map();
   for (const group of selected) {
     if (!group.poolId || !Array.isArray(group.nightly)) continue;

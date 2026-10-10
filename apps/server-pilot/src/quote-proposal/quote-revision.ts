@@ -221,7 +221,8 @@ export async function resolveQuoteRevision(input: {
     ) => { ok: boolean; perRoom?: { amount: string }; forQuantity?: { amount: string } };
   };
   const groups: SelectedQuoteGroup[] = [],
-    seen = new Set<string>();
+    seen = new Set<string>(),
+    unbuilt = new Set<string>();
   for (const selection of input.selections) {
     const key = `${selection.sourceRef}|${selection.groupId}`;
     if (seen.has(key)) throw new Error('duplicate_selection');
@@ -407,7 +408,11 @@ export async function resolveQuoteRevision(input: {
       // No HMS building: one row keeps its own source pool; several rows share one pool per room type.
       poolId: o.room.buildingCode?`${input.propertyCode}:${o.room.buildingCode}:${o.room.code}`:input.selections.length===1?`${input.propertyCode}:source:${s.ref}:${selection.groupId}:${o.room.code}`:`${input.propertyCode}:property:${o.room.code}`,
     });
+    if (o.room.buildingCode === null) unbuilt.add(o.room.code);
   }
+  // A room type HMS gave no building for on any selected row is one property-wide pool for every row of that type.
+  if (input.selections.length > 1)
+    for (const g of groups) if (unbuilt.has(g.roomCode)) g.poolId = `${input.propertyCode}:property:${g.roomCode}`;
   const pools = new Map<string, { demand: number; supply: number }>();
   for (const g of groups)
     for (const n of g.nightly) {

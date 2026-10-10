@@ -108,12 +108,14 @@ function selectQuoteOptions(source:QuoteSourceRecord,forFullRead:boolean):{sourc
  // Bound search and refuse an unresolved allocation instead of returning a partial optimum.
  const minimumRemaining=candidates.map((_,i)=>candidates.slice(i).reduce((sum,c)=>sum+c.totals[0]!.total,0));
  let visited=0,bestTotal=Infinity,best:{sourceRef:string;groupId:string;optionId:string}[]|undefined;
+ // A room type with any unbuilt option is one property-wide pool for every option of that type.
+ const unbuilt=new Set(candidates.length>1?candidates.flatMap(c=>c.totals.filter(t=>t.o.room.buildingCode===null).map(t=>t.o.room.code)):[]);
  const choose=(index:number,total:number,pools:Map<string,{demand:number;supply:number}>,selected:{sourceRef:string;groupId:string;optionId:string}[])=>{
   if(++visited>10000)missing('business_selected_allocation_limit',['a bounded jointly qualified room allocation']);
   if(!Number.isSafeInteger(total)||total>=bestTotal||index<candidates.length&&total+minimumRemaining[index]!>=bestTotal)return;
   if(index===candidates.length){bestTotal=total;best=selected;return;}
   const {request,totals}=candidates[index]!;
-  for(const {o,total:optionTotal}of totals){if(!o.room.buildingCode&&o.room.buildingCode!==null)continue;const pool=o.room.buildingCode?`${source.request.propertyCode}:${o.room.buildingCode}:${o.room.code}`:candidates.length===1?`${source.request.propertyCode}:source:${source.ref}:${request.id}:${o.room.code}`:`${source.request.propertyCode}:property:${o.room.code}`,next=new Map(pools);let feasible=true;
+  for(const {o,total:optionTotal}of totals){if(!o.room.buildingCode&&o.room.buildingCode!==null)continue;const pool=o.room.buildingCode&&!unbuilt.has(o.room.code)?`${source.request.propertyCode}:${o.room.buildingCode}:${o.room.code}`:candidates.length===1?`${source.request.propertyCode}:source:${source.ref}:${request.id}:${o.room.code}`:`${source.request.propertyCode}:property:${o.room.code}`,next=new Map(pools);let feasible=true;
    for(const n of o.nightly){const key=`${pool}|${n.date}`,old=next.get(key),demand=(old?.demand??0)+request.quantity;if(old&&old.supply!==n.inventory||!Number.isSafeInteger(demand)||demand>n.inventory){feasible=false;break;}next.set(key,{demand,supply:n.inventory});}
    if(feasible)choose(index+1,total+optionTotal,next,[...selected,{sourceRef:source.ref,groupId:request.id,optionId:o.id}]);
   }

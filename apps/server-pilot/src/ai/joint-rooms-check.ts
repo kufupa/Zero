@@ -1,9 +1,10 @@
 import { propertyPoolBasis, type QuoteRevision } from '../quote-proposal/quote-revision.js';
-import { approvedStaySpan, type StaffQuoteAttestation } from './staff-quote-workflow.js';
 import { aiDraftGeneration, aiWorkflowRun } from '../db/schema/mail.js';
+import type { StaffQuoteAttestation } from './staff-quote-workflow.js';
 import { jointRoomsChecked } from './work-events.js';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { workItem } from '../db/schema/work.js';
 import type { DB } from '../db/client.js';
+import { and, eq } from 'drizzle-orm';
 
 /** The refusal code when HMS gave no building for 2+ room types and staff have not ticked that they checked them in HMS. */
 export const JOINT_ROOMS_UNCHECKED = 'joint_rooms_unchecked';
@@ -29,58 +30,73 @@ export async function jointRoomsUnchecked(
   }));
 }
 
+/** A run the saved reply carries cannot be bound to this user, transport and thread, or has no approved revision. */
+export class ReplyQuoteRunUnavailable extends Error {
+  constructor() {
+    super('Proposal source not found');
+  }
+}
+
 /**
- * The user's current staff quote runs on this message (newest per stay dates, as the combined quote counts them) that
- * need the joint-rooms check and lack it. A saved reply on this message is refused while any is left.
+ * The quote runs a saved reply carries (the same stays its PDF names) that need the joint-rooms check and lack it.
+ * Each run must be this user's staff quote on this transport and thread. Run inside the save's transaction: it holds a
+ * share lock on each run's work item, and recordJointRoomsCheck takes an update lock on it, so an untick that races
+ * the save is ordered before or after it, never between the check and the commit.
  */
-export async function uncheckedJointRoomRuns(
+export async function uncheckedReplyRuns(
   db: DB,
-  scope: { transportId: string; threadId: string; messageId: string; userId: string },
+  scope: {
+    transportId: string;
+    threadId: string;
+    userId: string;
+    runs: readonly { workflowRunId: string; revisionRef: string }[];
+  },
 ): Promise<{ workflowRunId: string; revisionRef: string }[]> {
-  const rows = await db
-    .select({ run: aiWorkflowRun })
-    .from(aiDraftGeneration)
-    .innerJoin(aiWorkflowRun, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
-    .where(
-      and(
-        eq(aiDraftGeneration.transportId, scope.transportId),
-        eq(aiDraftGeneration.threadId, scope.threadId),
-        eq(aiDraftGeneration.requestedByUserId, scope.userId),
-        eq(aiDraftGeneration.model, 'staff-approved-native'),
-        sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([scope.messageId])}::jsonb`,
-      ),
-    )
-    .orderBy(desc(aiDraftGeneration.createdAt));
-  const approvals = rows.map(({ run }) => {
-    const staff = run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
-    const result = run.metrics?.reservationistResult as
+  const unchecked: { workflowRunId: string; revisionRef: string }[] = [];
+  for (const request of scope.runs) {
+    const [bound] = await db
+      .select({ run: aiWorkflowRun })
+      .from(aiWorkflowRun)
+      .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+      .where(
+        and(
+          eq(aiDraftGeneration.requestedByUserId, scope.userId),
+          eq(aiWorkflowRun.id, request.workflowRunId),
+          eq(aiWorkflowRun.transportId, scope.transportId),
+          eq(aiWorkflowRun.threadId, scope.threadId),
+        ),
+      )
+      .limit(1);
+    const staff = bound?.run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
+    const result = bound?.run.metrics?.reservationistResult as
       | { quoteRevisions?: QuoteRevision[] }
       | undefined;
-    const revision = result?.quoteRevisions?.find(
-      (candidate) => candidate.id === staff?.revisionIds?.[0],
-    );
-    return { run, revision, span: revision ? approvedStaySpan(revision) : null };
-  });
-  const unchecked: { workflowRunId: string; revisionRef: string }[] = [];
-  for (const [index, approval] of approvals.entries()) {
-    if (!approval.revision) continue;
-    // A newer approved revision for the same dates (or for unknown dates) supersedes this one. A failed run does not.
-    if (
-      approvals
-        .slice(0, index)
-        .some((newer) => newer.revision && (newer.span === null || newer.span === approval.span))
-    )
-      continue;
+    const revision = staff?.revisionIds?.includes(request.revisionRef)
+      ? result?.quoteRevisions?.find((candidate) => candidate.id === request.revisionRef)
+      : undefined;
+    if (!bound || !revision) throw new ReplyQuoteRunUnavailable();
+    if (!propertyPoolBasis(revision)) continue;
+    await db
+      .select({ id: workItem.id })
+      .from(workItem)
+      .where(
+        and(
+          eq(workItem.transportId, scope.transportId),
+          eq(workItem.threadId, bound.run.threadId),
+          eq(workItem.sourceMessageId, bound.run.triggerMessageId),
+        ),
+      )
+      .for('share');
     if (
       await jointRoomsUnchecked(db, {
         transportId: scope.transportId,
-        threadId: scope.threadId,
-        messageId: approval.run.triggerMessageId,
-        workflowRunId: approval.run.id,
-        revision: approval.revision,
+        threadId: bound.run.threadId,
+        messageId: bound.run.triggerMessageId,
+        workflowRunId: bound.run.id,
+        revision,
       })
     )
-      unchecked.push({ workflowRunId: approval.run.id, revisionRef: approval.revision.id });
+      unchecked.push({ workflowRunId: bound.run.id, revisionRef: revision.id });
   }
   return unchecked;
 }

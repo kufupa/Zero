@@ -535,8 +535,13 @@ export type PdfBlocker =
  * staff check it in HMS and tick each one. One stay: its run. A combined quote: every stay's current run.
  */
 export function jointRoomsToCheck(session: QuoteSession): StaffQuoteAllocation[] {
+  return documentRuns(session).filter((run) => run.poolBasis === 'property_room_type');
+}
+
+/** The staff runs the quote documents are made from: the selected stay's run, or every stay's current run when combined. */
+export function documentRuns(session: QuoteSession): StaffQuoteAllocation[] {
   const runs = isMultiStay(session) ? (combinedStayRuns(session) ?? []) : [staffQuoteForStay(session)];
-  return runs.filter((run): run is StaffQuoteAllocation => run?.poolBasis === 'property_room_type');
+  return runs.filter((run): run is StaffQuoteAllocation => run !== null);
 }
 
 function jointRoomsBlocker(session: QuoteSession): PdfBlocker | null {

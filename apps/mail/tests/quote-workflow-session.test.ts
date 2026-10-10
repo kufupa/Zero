@@ -21,6 +21,7 @@ import {
   hasStaffStayEdits,
   dinnerAllowanceStillRequired,
   jointRoomsToCheck,
+  documentRuns,
   groupStays,
   removedStayFor,
   rowRoomCode,
@@ -2857,6 +2858,7 @@ describe('why the PDF cannot be made: the reason names the check that failed', (
     it('a single room type needs no check and takes no tick', () => {
       const s = ratedSingleStay();
       expect(jointRoomsToCheck(s)).toEqual([]);
+      expect(documentRuns(s).map((run) => run.revisionRef)).toEqual(['rev-1']);
       const tick = reduceQuoteSession(s, { type: 'joint_rooms_checked', revisionRef: 'rev-1', checked: true });
       expect(tick.staffQuotes[STAY_A]?.jointRoomsChecked).toBeUndefined();
       expect(pdfBlocker(tick)).toBeNull();
@@ -2867,6 +2869,8 @@ describe('why the PDF cannot be made: the reason names the check that failed', (
       let s = reduceQuoteSession(base, flagged(staffQuoteFor(STAY_A, 'rev-a', 272000, base.inputRevision)));
       s = reduceQuoteSession(s, flagged(staffQuoteFor(STAY_B, 'rev-b', 272000, base.inputRevision)));
       expect(jointRoomsToCheck(s).map((run) => run.revisionRef)).toEqual(['rev-a', 'rev-b']);
+      // Save reply sends the same runs, so the server checks the stays the PDF was made from.
+      expect(documentRuns(s).map((run) => run.revisionRef)).toEqual(['rev-a', 'rev-b']);
       expectBlocked(s, 'joint_rooms_unchecked', reason);
       s = reduceQuoteSession(s, { type: 'joint_rooms_checked', revisionRef: 'rev-a', checked: true });
       expect(pdfBlocker(s)?.kind).toBe('joint_rooms_unchecked');
