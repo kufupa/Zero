@@ -4,9 +4,10 @@ export const PAN_CANDIDATE_PATTERN = /(?<!\d)(?:\d[ -]?){13,19}(?!\d)/g;
 /**
  * A security-code label and its 3–4 digit value: "CVV: 123", "CVC 1234", "security code 123". Only the value goes.
  * The gap never crosses a bracket, so a masked card token that follows a label stays whole. It may cross up to two
- * line breaks, as extracted PDF text puts a form label and its value on separate lines.
+ * line breaks, as extracted PDF text puts a form label and its value on separate lines, but a later line holds no
+ * letters before the value: a blank CVV field never takes the next line's labelled date, phone or reference.
  */
-const SECURITY_CODE = /\b(cvv2?|cvc2?|cvn|csc|security\s+code)\b([^\d\n[\]]{0,16}?(?:\n[^\d\n[\]]{0,16}?){0,2})\d{3,4}(?!\d)/gi;
+const SECURITY_CODE = /\b(cvv2?|cvc2?|cvn|csc|security\s+code)\b([^\d\n[\]]{0,16}?(?:\n[^\da-z\n[\]]{0,16}?){0,2})\d{3,4}(?!\d)/gi;
 
 export function isLuhnValid(value: string): boolean {
   let sum = 0;

@@ -29,6 +29,13 @@ describe('maskCardNumbers', () => {
     expect(maskCardNumbers('CVV:\n123')).toBe('CVV:\n[code masked]');
     expect(maskCardNumbers('Security code\r\n\r\n 4567 ')).toBe('Security code\r\n\r\n [code masked] ');
     expect(maskCardNumbers('CVV:\n\n\n123')).toBe('CVV:\n\n\n123');
+    expect(maskCardNumbers('CVV |\n| 123')).toBe('CVV |\n| [code masked]');
+  });
+
+  it('leaves a labelled number on the line after a blank security-code field alone', () => {
+    expect(maskCardNumbers('CVV:\nConf# 1234')).toBe('CVV:\nConf# 1234');
+    expect(maskCardNumbers('Security code:\nTel: 021 555 1234')).toBe('Security code:\nTel: 021 555 1234');
+    expect(maskCardNumbers('CVV:\nArrival: 2026-10-12')).toBe('CVV:\nArrival: 2026-10-12');
   });
 
   it('leaves a bare number and a two-digit value after a security label alone', () => {
