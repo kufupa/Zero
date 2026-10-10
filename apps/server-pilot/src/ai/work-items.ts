@@ -572,13 +572,61 @@ export async function ensureWorkItemForMessage(
     extractionId: latest.id,
     status: reply ? 'done' : undefined,
   });
+  const current =
+    item.status === 'dismissed'
+      ? await restoreSupersededItem(db, { workItemId: item.id, status: reply ? 'done' : 'needs_you', latestId: latest.id })
+      : item;
   await dismissSupersededItems(db, {
     transportId: input.transportId,
     threadId: msg.threadId,
     messageId: input.messageId,
     latest,
   });
-  return item;
+  return current;
+}
+
+/** The reason on a system dismissal of an item a kind-changing re-read replaced. */
+const SUPERSEDED_READ = 'superseded_read';
+
+/**
+ * A later read can come back to a kind an earlier re-read moved away from (quote, other, quote). The item for that kind
+ * was dismissed as superseded, so it is put back, with a system event, unless its last status change was someone's
+ * own: a person's dismissal stands.
+ */
+async function restoreSupersededItem(
+  db: DB,
+  input: { workItemId: string; status: 'needs_you' | 'done'; latestId: string },
+): Promise<WorkItemRef> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
+      .from(workItem)
+      .where(eq(workItem.id, input.workItemId))
+      .limit(1)
+      .for('update');
+    if (!row) throw new Error('work item missing');
+    if (row.status !== 'dismissed') return row;
+    const [last] = await tx
+      .select({ actorKind: workEvent.actorKind, value: workEvent.value })
+      .from(workEvent)
+      .where(and(eq(workEvent.workItemId, row.id), eq(workEvent.type, 'status.changed')))
+      .orderBy(desc(workEvent.at), desc(workEvent.id))
+      .limit(1);
+    const superseded =
+      last?.actorKind === 'system' && (last.value as { reason?: unknown } | null)?.reason === SUPERSEDED_READ;
+    if (!superseded) return row;
+    await tx
+      .update(workItem)
+      .set({ status: input.status, updatedAt: new Date() })
+      .where(eq(workItem.id, row.id));
+    await tx.insert(workEvent).values({
+      workItemId: row.id,
+      actorKind: 'system',
+      type: 'status.changed',
+      value: { from: 'dismissed', to: input.status, reason: 'kind_returned', extractionId: input.latestId },
+    });
+    return { ...row, status: input.status };
+  });
 }
 
 /**
@@ -633,7 +681,7 @@ async function dismissSupersededItems(
         workItemId,
         actorKind: 'system' as const,
         type: 'status.changed' as const,
-        value: { from: 'needs_you', to: 'dismissed', reason: 'superseded_read', extractionId: input.latest.id },
+        value: { from: 'needs_you', to: 'dismissed', reason: SUPERSEDED_READ, extractionId: input.latest.id },
       })),
     );
   });

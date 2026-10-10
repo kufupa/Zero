@@ -499,6 +499,46 @@ describe('work item upsert', () => {
       expect(await eventsFor(db, before!.id)).toHaveLength(1);
     }));
 
+  it('a read that returns to an earlier kind brings its item back, unless she dismissed it herself', () =>
+    withDb(async (db) => {
+      const ago = (ms: number) => new Date(Date.now() - ms);
+      const read = async (messageId: string, version: string, kind: 'quote' | 'other', age: number) => {
+        const id = await insertRead(db, messageId, { version, kind, payload: payload() });
+        await db.update(mailExtraction).set({ createdAt: ago(age) }).where(eq(mailExtraction.id, id));
+        return id;
+      };
+      const status = async (id: string) =>
+        (await db.select({ status: workItem.status }).from(workItem).where(eq(workItem.id, id)))[0]!.status;
+
+      // quote, then other, then quote again: the quote item comes back on the newest read, the other item goes.
+      const messageId = await seedMail(db, 'fw4');
+      await read(messageId, 'extract-v1', 'quote', 30_000);
+      const quote = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      await read(messageId, 'extract-v2', 'other', 20_000);
+      const other = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(await status(quote!.id)).toBe('dismissed');
+      const third = await read(messageId, 'extract-v3', 'quote', 10_000);
+      const back = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(back).toMatchObject({ id: quote!.id, status: 'needs_you', extractionId: third });
+      expect(await status(other!.id)).toBe('dismissed');
+      const open = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(open.map((row) => row.id)).toEqual([quote!.id]);
+
+      // Her own dismissal stands when the kind comes back.
+      const mine = await seedMail(db, 'fw5');
+      await read(mine, 'extract-v1', 'quote', 30_000);
+      const kept = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: mine });
+      expect(await dismissWorkItem(db, { transportId: CENTURION, workItemId: kept!.id, userId: USER })).toEqual({
+        status: 'dismissed',
+      });
+      await read(mine, 'extract-v2', 'other', 20_000);
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: mine });
+      await read(mine, 'extract-v3', 'quote', 10_000);
+      const again = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: mine });
+      expect(again?.id).toBe(kept!.id);
+      expect(await status(kept!.id)).toBe('dismissed');
+    }));
+
   it('a kind-changing re-read never dismisses an older item she has edited, or one already done', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'fw2');
