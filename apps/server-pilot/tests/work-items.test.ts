@@ -6,6 +6,7 @@ import { EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/i
 import type { MailExtractionPayload } from '../src/ai/extraction/schema.js';
 import {
   aiValueAt,
+  correctionsCarryTo,
   dismissWorkItem,
   ensureWorkItem,
   ensureWorkItemForMessage,
@@ -462,6 +463,26 @@ describe('work item upsert', () => {
         ['Double/Twin', '2027-11-17'],
       ]);
     }));
+});
+
+describe('corrections carry to a re-read', () => {
+  it('keeps her row value off a same-type row that a re-read swapped in', () => {
+    const before = payload();
+    before.stays[0]!.rows.push({ id: 'r_bbbb3333', roomType: 'Double/Twin', rooms: 1, adultsPerRoom: 1, childAges: [], board: 'bb' });
+    const after = payload();
+    const [single, twin] = after.stays[0]!.rows;
+    after.stays[0]!.rows = [
+      single!,
+      { ...twin!, rooms: 1, adultsPerRoom: 1 },
+      { ...twin!, id: 'r_bbbb3333' },
+    ];
+    const state = { [`stays[${STAY_ONE}].rows[${ROW_TWIN}].adults`]: 3 };
+    expect(correctionsCarryTo(before, after, state)).toBe(false);
+    expect(correctionsCarryTo(before, before, state)).toBe(true);
+    const reRead = payload();
+    reRead.stays[0]!.rows[1] = { ...reRead.stays[0]!.rows[1]!, adultsPerRoom: 3 };
+    expect(correctionsCarryTo(payload(), reRead, state)).toBe(true);
+  });
 });
 
 describe('field events', () => {

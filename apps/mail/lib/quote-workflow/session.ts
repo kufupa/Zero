@@ -1382,6 +1382,16 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (restored.inputRevision !== removal.inputRevision) return restored;
       const sharedNow = session.groups.filter((group) => keys.has(stayKeyForGroup(group)));
       if (JSON.stringify(sharedNow) !== JSON.stringify(removal.sharedRows ?? [])) return restored;
+      // A run priced the once-per-quote extras for where its stay stood then. If the stays left now put them elsewhere
+      // (say it is now the only stay), the run's total is wrong, so its rates and PDF stay gone.
+      const placed = { groups, staffHeader: restored.staffHeader };
+      if (
+        Object.entries(removal.staffQuotes).some(
+          ([key, run]) => Boolean(run.onceExtras) !== runCarriesOnceExtras(placed, key),
+        )
+      ) {
+        return restored;
+      }
       const staffQuotes = { ...restored.staffQuotes, ...removal.staffQuotes };
       const offers = [
         ...restored.offers,

@@ -3,7 +3,7 @@ import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailThread, message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
-import type { ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
+import type { ExtractionRow, ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
 import {
   canonicalInternetMessageId,
   documentFailureItems,
@@ -329,6 +329,8 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
 
 export type StoredAnalysis = ReturnType<typeof storedAnalysis>['analysis'];
 
+type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
+
 export type WorkItemRef = { id: string; status: string; state: WorkState; extractionId: string | null };
 
 function sameDates(a: { arrival: string | null; departure: string | null }, b: typeof a): boolean {
@@ -350,6 +352,17 @@ function sameSlot<T extends { id: string }>(id: string, before: T[], after: T[],
   return !before.some((item) => item.id !== id && same(item, now));
 }
 
+/** Two rows of one type can differ only in occupancy or board, so a row is matched on every value the read gives it. */
+function sameRow(a: ExtractionRow, b: ExtractionRow): boolean {
+  return (
+    a.roomType === b.roomType &&
+    a.rooms === b.rooms &&
+    a.adultsPerRoom === b.adultsPerRoom &&
+    a.board === b.board &&
+    a.childAges.join(',') === b.childAges.join(',')
+  );
+}
+
 /**
  * Whether her saved stay and row values still land on the same stays and rows in the next read. When a read drops or
  * reorders entries they would land on another stay, so the work item stays on the read she corrected.
@@ -366,7 +379,7 @@ export function correctionsCarryTo(
     if (path.rowId === null) continue;
     const rowsBefore = before.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
     const rowsAfter = after.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
-    if (!sameSlot(path.rowId, rowsBefore, rowsAfter, (a, b) => a.roomType === b.roomType)) return false;
+    if (!sameSlot(path.rowId, rowsBefore, rowsAfter, sameRow)) return false;
   }
   return true;
 }
@@ -375,7 +388,7 @@ export function correctionsCarryTo(
  * Whether the item moves from its read to `nextId`. Never to an older read (a slow caller can hold an old one), and
  * never when her saved values would land on other stays or rows in the next read.
  */
-async function shouldRelink(db: DB, fromId: string | null, nextId: string, state: WorkState): Promise<boolean> {
+async function shouldRelink(db: WorkTx, fromId: string | null, nextId: string, state: WorkState): Promise<boolean> {
   if (!fromId) return true;
   const reads = await db
     .select({ id: mailExtraction.id, createdAt: mailExtraction.createdAt, payload: mailExtraction.payload })
@@ -418,8 +431,8 @@ export async function ensureWorkItem(
       ...(input.status ? { status: input.status } : {}),
     })
     .onConflictDoNothing({ target: [workItem.threadId, workItem.kind, workItem.sourceMessageId] });
-  const select = () =>
-    db
+  const select = (tx: WorkTx) =>
+    tx
       .select({
         id: workItem.id,
         status: workItem.status,
@@ -435,24 +448,22 @@ export async function ensureWorkItem(
         ),
       )
       .limit(1);
-  const [row] = await select();
-  if (!row) throw new Error('work item missing after upsert');
-  if (row.extractionId === input.extractionId) return row;
-  if (!(await shouldRelink(db, row.extractionId, input.extractionId, row.state))) return row;
-  // Moves only from the read it was checked against, so a concurrent move is never undone.
-  const [moved] = await db
-    .update(workItem)
-    .set({ extractionId: input.extractionId, updatedAt: new Date() })
-    .where(
-      and(
-        eq(workItem.id, row.id),
-        row.extractionId ? eq(workItem.extractionId, row.extractionId) : isNull(workItem.extractionId),
-      ),
-    )
-    .returning({ id: workItem.id });
-  if (moved) return { ...row, extractionId: input.extractionId };
-  const [now] = await select();
-  return now ?? row;
+  const [current] = await select(db);
+  if (!current) throw new Error('work item missing after upsert');
+  if (current.extractionId === input.extractionId) return current;
+  // The row lock holds off a field save (recordFieldEvent locks the same row) between the check and the move, so a
+  // value she saves meanwhile is never carried onto a read it was not checked against.
+  return db.transaction(async (tx) => {
+    const [row] = await select(tx).for('update');
+    if (!row) throw new Error('work item missing after upsert');
+    if (row.extractionId === input.extractionId) return row;
+    if (!(await shouldRelink(tx, row.extractionId, input.extractionId, row.state))) return row;
+    await tx
+      .update(workItem)
+      .set({ extractionId: input.extractionId, updatedAt: new Date() })
+      .where(eq(workItem.id, row.id));
+    return { ...row, extractionId: input.extractionId };
+  });
 }
 
 /**

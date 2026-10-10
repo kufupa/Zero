@@ -1683,62 +1683,66 @@ export const draftsRouter = tRouter({
       if (input.html !== undefined) patch.htmlBody = input.html || null;
       if (input.threadId !== undefined) patch.threadId = input.threadId || null;
       if (input.replyToMessageId !== undefined) patch.replyToMessageId = input.replyToMessageId;
-      const [updated] = await db
-        .update(mailDraft)
-        .set(patch)
-        .where(
-          and(
-            eq(mailDraft.id, input.id),
-            eq(mailDraft.transportId, transportId),
-            eq(mailDraft.isSent, false),
-            eq(mailDraft.status, 'active'),
-          ),
-        )
-        .returning({ id: mailDraft.id });
-      if (!updated) {
-        throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
-      }
+      // The body and its revision commit together. saveReply locks this row and reads the latest revision, so a hand
+      // edit is never saved without the revision that tells a confirmed replace the draft changed.
+      await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(mailDraft)
+          .set(patch)
+          .where(
+            and(
+              eq(mailDraft.id, input.id),
+              eq(mailDraft.transportId, transportId),
+              eq(mailDraft.isSent, false),
+              eq(mailDraft.status, 'active'),
+            ),
+          )
+          .returning({ id: mailDraft.id });
+        if (!updated) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
+        }
 
-      const mergedRows = await db
-        .select()
-        .from(mailDraft)
-        .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
-        .limit(1);
-      const merged = mergedRows[0]!;
-      const latestRevision = await db
-        .select()
-        .from(mailDraftRevision)
-        .where(eq(mailDraftRevision.draftId, input.id))
-        .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
-        .limit(1);
+        const mergedRows = await tx
+          .select()
+          .from(mailDraft)
+          .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
+          .limit(1);
+        const merged = mergedRows[0]!;
+        const latestRevision = await tx
+          .select()
+          .from(mailDraftRevision)
+          .where(eq(mailDraftRevision.draftId, input.id))
+          .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
+          .limit(1);
 
-      const changed =
-        latestRevision[0]?.subject !== merged.subject ||
-        latestRevision[0]?.textBody !== merged.textBody ||
-        latestRevision[0]?.htmlBody !== merged.htmlBody ||
-        JSON.stringify(latestRevision[0]?.toAddresses ?? []) !==
-          JSON.stringify(merged.toAddresses ?? []) ||
-        JSON.stringify(latestRevision[0]?.ccAddresses ?? []) !==
-          JSON.stringify(merged.ccAddresses ?? []) ||
-        JSON.stringify(latestRevision[0]?.bccAddresses ?? []) !==
-          JSON.stringify(merged.bccAddresses ?? []);
+        const changed =
+          latestRevision[0]?.subject !== merged.subject ||
+          latestRevision[0]?.textBody !== merged.textBody ||
+          latestRevision[0]?.htmlBody !== merged.htmlBody ||
+          JSON.stringify(latestRevision[0]?.toAddresses ?? []) !==
+            JSON.stringify(merged.toAddresses ?? []) ||
+          JSON.stringify(latestRevision[0]?.ccAddresses ?? []) !==
+            JSON.stringify(merged.ccAddresses ?? []) ||
+          JSON.stringify(latestRevision[0]?.bccAddresses ?? []) !==
+            JSON.stringify(merged.bccAddresses ?? []);
 
-      if (changed) {
-        await db.insert(mailDraftRevision).values({
-          id: randomUUID(),
-          draftId: input.id,
-          generationId: merged.generationId,
-          actorUserId: ctx.sessionUser.id,
-          kind: 'edited',
-          toAddresses: merged.toAddresses,
-          ccAddresses: merged.ccAddresses,
-          bccAddresses: merged.bccAddresses,
-          subject: merged.subject,
-          textBody: merged.textBody,
-          htmlBody: merged.htmlBody,
-          attachments: merged.attachments ?? [],
-        });
-      }
+        if (changed) {
+          await tx.insert(mailDraftRevision).values({
+            id: randomUUID(),
+            draftId: input.id,
+            generationId: merged.generationId,
+            actorUserId: ctx.sessionUser.id,
+            kind: 'edited',
+            toAddresses: merged.toAddresses,
+            ccAddresses: merged.ccAddresses,
+            bccAddresses: merged.bccAddresses,
+            subject: merged.subject,
+            textBody: merged.textBody,
+            htmlBody: merged.htmlBody,
+            attachments: merged.attachments ?? [],
+          });
+        }
+      });
       return { id: input.id };
     }),
 

@@ -2628,6 +2628,26 @@ describe('stay edits: rows, stays and their rates', () => {
     expect(gone.steps.find((step) => step.shareKey === keyB)?.status).toBe('ready');
   });
 
+  it('undo does not bring back a run without the shuttle once its stay is the only one left', () => {
+    const base = ratedSession([row('a1', dateA), row('b1', dateB)]);
+    const s: QuoteSession = {
+      ...base,
+      staffHeader: { ...base.staffHeader, shuttleRequested: true, shuttleMinor: 45_000, shuttleTrips: 1 },
+      staffQuotes: {
+        [keyA]: { ...base.staffQuotes[keyA]!, onceExtras: true },
+        [keyB]: { ...base.staffQuotes[keyB]!, onceExtras: false },
+      },
+    };
+    const stayB = stayIdOf(s.groups[1]!);
+    const removal = removedStayFor(s, stayB)!;
+    const withoutB = reduceQuoteSession(s, { type: 'remove_stay', stayId: stayB });
+    const empty = reduceQuoteSession(withoutB, { type: 'remove_stay', stayId: stayIdOf(s.groups[0]!) });
+    const back = reduceQuoteSession(empty, { type: 'restore_stay', removal });
+    expect(back.groups.map((group) => group.id)).toEqual(['b1']);
+    expect(back.staffQuotes[keyB]).toBeUndefined();
+    expect(back.stayPdfs[keyB]).toBeUndefined();
+  });
+
   it('keeps a booking draft that lands after another stay was edited', () => {
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = { ...ratedSession([row('a1', dateA), row('b1', dateB)]), binding: s.binding, staffSource: staffSource() };
