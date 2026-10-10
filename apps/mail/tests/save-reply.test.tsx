@@ -51,6 +51,7 @@ const activeEmail = {
 
 const quoteSession = {
   staffSource: { messageId: 'message-db-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
+  groups: [],
 } as unknown as QuoteSession;
 
 function outlookSendCommand() {
