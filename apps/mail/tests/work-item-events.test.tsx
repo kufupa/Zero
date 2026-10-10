@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession } from '@/lib/quote-workflow/session';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
+import { setMailCacheScope, transportForCall } from '@/lib/mail/mail-cache-scope';
 import type { StayGroupRequirement } from '@/lib/quote-workflow/types';
 import {
   fieldEventsBetween,
@@ -62,7 +63,7 @@ const G3 = row('g3', 'st-2', { arrivalDate: '2026-11-01', departureDate: '2026-1
 
 function fakeTrpc(lookup: () => unknown) {
   const query = vi.fn(async (_input: unknown) => lookup());
-  const mutate = vi.fn(async (_input: unknown) => ({ aiValue: null, value: null }));
+  const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ aiValue: null, value: null }));
   return { trpc: { workItems: { getByMessage: { query }, recordEvent: { mutate } } }, query, mutate };
 }
 
@@ -375,6 +376,44 @@ describe('useStoredWork', () => {
     });
     await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2));
     expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({ fieldPath: 'stays[st-1].rows[rw-1].count', value: 5 }));
+  });
+
+  it('saves a correction queued across a mailbox switch to the mailbox that owns its work item', async () => {
+    setMailCacheScope({ userId: 'user', activeTransportId: 'transport-a' });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      const done: Array<() => void> = [];
+      mutate.mockImplementation(
+        (_input: unknown) => new Promise((resolve) => done.push(() => resolve({ aiValue: null, value: null }))),
+      );
+      const { result, rerender } = renderHook(
+        ({ scope }: { scope: string }) => useStoredWork({ trpc, internetMessageId: 'm-1', scope }),
+        { initialProps: { scope: 'user:session:transport-a' } },
+      );
+      await waitFor(() => expect(result.current.pane.state).toBe('ready'));
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
+      await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1), { timeout: WORK_EVENT_DEBOUNCE_MS + 2000 });
+      // The first save is still out; she corrects the field again, then switches mailbox, which flushes it.
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 5 }]));
+      setMailCacheScope({ userId: 'user', activeTransportId: 'transport-b' });
+      rerender({ scope: 'user:session:transport-b' });
+      await act(async () => {
+        done[0]!();
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2));
+      expect(mutate.mock.calls[1]).toEqual([
+        expect.objectContaining({ workItemId: 'wi-1', value: 5 }),
+        { context: { activeTransportId: 'transport-a' } },
+      ]);
+      // When the call goes out, its pinned mailbox wins over the active one; an unpinned call uses the active one.
+      expect(transportForCall((mutate.mock.calls[1]![1] as { context: Record<string, unknown> }).context)).toBe(
+        'transport-a',
+      );
+      expect(transportForCall({})).toBe('transport-b');
+    } finally {
+      setMailCacheScope({ userId: null, activeTransportId: null });
+    }
   });
 
   it('keeps a failed save on one mail when the same field is edited on another', async () => {

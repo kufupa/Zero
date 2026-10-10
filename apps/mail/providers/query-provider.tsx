@@ -3,6 +3,7 @@ import {
   idbCacheKeyForScope,
   setMailCacheScope,
   subscribeMailCacheScope,
+  transportForCall,
 } from '@/lib/mail/mail-cache-scope';
 import {
   PersistQueryClientProvider,
@@ -302,12 +303,13 @@ export const trpcClient: TRPCClient<AppRouter> = isFrontendOnlyDemo()
           url: getUrl(),
           methodOverride: 'POST',
           maxItems: 1,
+          // maxItems 1: one call per request, so the call's own mailbox (inMailbox) can go in the header.
+          headers: ({ opList }) => {
+            const transportId = transportForCall(opList[0].context);
+            return transportId ? { 'x-zero-active-transport': transportId } : {};
+          },
           fetch: (url, options) => {
             const headers = new Headers(options?.headers);
-            const transportId = getMailCacheScope().activeTransportId;
-            if (transportId) {
-              headers.set('x-zero-active-transport', transportId);
-            }
             return fetchWithTimeout(url, { ...options, headers, credentials: 'include' }).then(
               (res) => {
                 const currentPath = new URL(window.location.href).pathname;
