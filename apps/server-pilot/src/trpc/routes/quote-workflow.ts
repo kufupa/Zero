@@ -48,11 +48,13 @@ export const quoteWorkflowRouter = router({
     if (!synced) {
       return { status: 'unsynced' as const };
     }
-    const missing = synced.attachments
-      .filter((attachment) => !attachment.bytesPresent && !attachment.text)
-      .map((attachment) => attachment.id);
+    const unread = synced.attachments.filter((attachment) => !attachment.bytesPresent && !attachment.text);
+    const missing = unread.map((attachment) => attachment.id);
     if (missing.length) {
-      return { status: 'missing_source' as const, missing };
+      return { status: 'missing_source' as const, missing, documentFailures: unread.map((attachment) => ({
+        filename: attachment.filename, sourceRef: attachment.id, sourceKind: 'attachment' as const,
+        reason: 'Content unavailable; review the original attachment.',
+      })) };
     }
     const analysis = analyseQuoteSources({
       subject: synced.subject,

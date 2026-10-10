@@ -94,6 +94,7 @@ describe('quoteWorkflow.analyseSelection', () => {
     expect(result).toEqual({
       status: 'missing_source',
       missing: ['att-rooming-list'],
+      documentFailures: [{ filename: 'rooming-list.pdf', sourceRef: 'att-rooming-list', sourceKind: 'attachment', reason: 'Content unavailable; review the original attachment.' }],
     });
   });
 

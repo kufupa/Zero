@@ -38,6 +38,8 @@ export type StayGroupRequirement = {
   departureDate?: string;
   quantity?: number;
   roomPreference?: string;
+  /** Explicit native room-type codes. Labels never belong here. */
+  roomCodes?: string[];
   adults?: number;
   childrenAges: number[];
   board: QuoteBoard;
@@ -267,6 +269,8 @@ export type QuoteSession = {
   partyLookup: PartyLookupRef | null;
   staffSource: StaffQuoteSource | null;
   staffQuote: StaffQuoteAllocation | null;
+  /** Per-date authentic execute revisions. Combined PDF must not sum these. */
+  staffQuotes: Record<string, StaffQuoteAllocation>;
   staffHeader: StaffQuoteHeader;
   staffActions: ReservationistStaffAction[];
   selectedStayKey: string | null;

@@ -66,11 +66,17 @@ export function RequirementCard({
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
         Room preference
-        <input
+        <select
           className={fieldClass}
           value={group.roomPreference ?? ''}
           onChange={(event) => onPatch?.(group.id, { roomPreference: event.target.value })}
-        />
+        >
+          <option value="">Any room type — no stated preference</option>
+          {group.roomPreference && !['STWN','STQN','SKNG','EXKNG','DLXTWN','DLXQN','DLXKNG','LUXKNG','SUITE'].includes(group.roomPreference) && <option value={group.roomPreference}>Requested: {group.roomPreference} — choose a room type</option>}
+          <option value="STWN">Standard Twin</option><option value="STQN">Standard Queen</option><option value="SKNG">Standard King</option>
+          <option value="EXKNG">Executive King</option><option value="DLXTWN">Deluxe Twin</option><option value="DLXQN">Deluxe Queen</option>
+          <option value="DLXKNG">Deluxe King</option><option value="LUXKNG">Luxury King</option><option value="SUITE">Suite</option>
+        </select>
       </label>
       <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
         <span>

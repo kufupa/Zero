@@ -16,7 +16,7 @@ import {
   staffSourceReady,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
-import type { QuoteOffer, QuoteReviewItem, QuoteSelectionBinding } from '../lib/quote-workflow/types';
+import type { QuoteAnalysis, QuoteOffer, QuoteReviewItem, QuoteSelectionBinding } from '../lib/quote-workflow/types';
 
 const bind = (over: Partial<QuoteSelectionBinding> = {}): QuoteSelectionBinding => ({
   transportId: 't1',
@@ -42,7 +42,7 @@ function withStaffSource(session: ReturnType<typeof initialQuoteSession>) {
   return reduceQuoteSession(session, { type: 'staff_source_ready', source: staffSource() });
 }
 
-const quoteAnalysis = {
+const quoteAnalysis: QuoteAnalysis = {
   intent: 'quote' as const,
   groups: [
     {
@@ -599,7 +599,7 @@ describe('quote session', () => {
     s = reduceQuoteSession(s, { type: 'select_offers', offerIds: nextSelectedOfferIds(s, 'st-b') });
     expect(s.selectedOfferIds).toEqual(['st-a', 'st-b']);
     s = withStaffSource(s);
-    expect(canCreatePdf(s)).toBe(true);
+    expect(canCreatePdf(s)).toBe(false);
     expect(nextSelectedOfferIds(s, 'alt-ro')).toEqual(['st-a', 'st-b']);
   });
 
@@ -879,6 +879,17 @@ const authorisedOffer: QuoteOffer = {
   adults: 1,
 };
 
+function emptyHeader() {
+  return {
+    salesStrategy: 'BAR' as const,
+    company: '',
+    agency: '',
+    attention: '',
+    clientEmail: '',
+    clientTelephone: '',
+  };
+}
+
 function analysisReady(analysis = quoteAnalysis) {
   return reduceQuoteSession(
     reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() }),
@@ -921,7 +932,9 @@ describe('quote session staff review items', () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: 'document_failure',
+          text: 'Unread: rooming-list.pdf',
           filename: 'rooming-list.pdf',
+          sourceLabel: 'Unread attachment',
           reason: 'Authorised attachment content is missing. Filenames are not document bytes.',
           blocking: false,
         }),
@@ -1113,7 +1126,10 @@ describe('quote session staff review items', () => {
       'document:attachment:att-1:rooming-list.pdf',
       'document:attachment:att-2:rooming-list.pdf',
     ]);
-    expect(new Set(items.map((item) => item.id)).size).toBe(2);
+    expect(items.map((item) => item.text)).toEqual([
+      'Unread: rooming-list.pdf',
+      'Unread: rooming-list.pdf',
+    ]);
   });
 
   it('merges extra document failures with explicit review items instead of dropping them', () => {
@@ -1273,5 +1289,107 @@ describe('quote session staff review items', () => {
     const changed = reduceQuoteSession(s, { type: 'patch_staff_header', header: { company: 'Other company' } });
     expect(changed.staffQuote).toBeNull();
     expect(canCreatePdf(changed)).toBe(false);
+  });
+
+  it('does not let delayed analysis overwrite staff stay edits', () => {
+    let s = analysisReady();
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 4 } });
+    expect(s.groups[0]?.adults).toBe(4);
+    expect(s.inputRevision).toBe(2);
+    const analysis = s.analysis;
+    s = reduceQuoteSession(s, {
+      type: 'analysis_ready',
+      analysis: {
+        ...quoteAnalysis,
+        groups: [{ ...quoteAnalysis.groups[0]!, adults: 1 }],
+      },
+    });
+    expect(s.groups[0]?.adults).toBe(4);
+    expect(s.inputRevision).toBe(2);
+    expect(s.analysis).toBe(analysis);
+  });
+
+  it('clears quote authority on a new submission and never restores an old stay', () => {
+    const g2 = {
+      ...quoteAnalysis.groups[0]!,
+      id: 'g2',
+      arrivalDate: '2026-12-01',
+      departureDate: '2026-12-03',
+    };
+    let s = analysisReady({
+      intent: 'quote',
+      groups: [quoteAnalysis.groups[0]!, g2],
+      secondaryAsks: [],
+      alternatives: [],
+    });
+    s = withStaffSource(s);
+    const firstOffer: QuoteOffer = {
+      ...authorisedOffer,
+      id: 'rev-a',
+      sourceRef: 'rev-a',
+      nightly: [],
+      stayTotalMinor: 850000,
+      quoteRequestKey: '2026-11-12:2026-11-14',
+    };
+    s = reduceQuoteSession(s, {
+      type: 'staff_quote_ready',
+      offer: firstOffer,
+      staffQuote: {
+        workflowRunId: 'run-a',
+        revisionRef: 'rev-a',
+        factRefs: [],
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: STAFF_HASH,
+        selectionEpoch: 1,
+        inputRevision: s.inputRevision,
+        inputDigest: 'digest-a',
+        totalMinor: 850000,
+        currency: 'ZAR',
+        quoteRequestKey: '2026-11-12:2026-11-14',
+        approvedHeader: emptyHeader(),
+      },
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+    });
+    expect(Object.keys(s.staffQuotes)).toEqual(['2026-11-12:2026-11-14']);
+    const switched = reduceQuoteSession(s, { type: 'select_stay_key', stayKey: '2026-12-01:2026-12-03' });
+    expect(switched.staffQuote).toBeNull();
+    expect(switched.staffQuotes).toEqual({});
+    expect(switched.offers).toEqual([]);
+    expect(switched.pdf).toBeNull();
+  });
+
+  it('keeps the full reply on repricing but requires a reviewed current PDF', () => {
+    let s = analysisReady({ intent: 'quote', groups: quoteAnalysis.groups, secondaryAsks: [], alternatives: [] });
+    s = withStaffSource(s);
+    s = reduceQuoteSession(s, { type: 'set_reviewed_reply', html: '<p>Full staff-edited reply</p>' });
+    s = reduceQuoteSession(s, {
+      type: 'staff_quote_ready',
+      offer: { ...authorisedOffer, id: 'rev-1', sourceRef: 'rev-1', nightly: [], stayTotalMinor: 850000 },
+      staffQuote: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        factRefs: [],
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: STAFF_HASH,
+        selectionEpoch: 1,
+        inputRevision: s.inputRevision,
+        inputDigest: 'digest',
+        totalMinor: 850000,
+        currency: 'ZAR',
+        quoteRequestKey: '2026-11-12:2026-11-14',
+        approvedHeader: emptyHeader(),
+      },
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+    });
+    expect(s.reviewedReplyHtml).toBe('<p>Full staff-edited reply</p>');
+    s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 2 } });
+    expect(s.reviewedReplyHtml).toBe('<p>Full staff-edited reply</p>');
+    expect(s.pdf).toBeNull();
+    expect(s.staffQuote).toBeNull();
+    expect(canCreateNativeDraft(s)).toBe(false);
   });
 });

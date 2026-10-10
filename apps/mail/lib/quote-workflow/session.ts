@@ -8,6 +8,7 @@ import type {
   QuoteSelectionBinding,
   QuoteStepInputs,
   QuoteToolStep,
+  StaffQuoteAllocation,
   StayGroupRequirement,
 } from './types';
 import { emptyStaffQuoteHeader } from './types';
@@ -188,6 +189,10 @@ export function selectionDigest(binding: QuoteSelectionBinding): string {
   ].join('|');
 }
 
+export function admissionKey(binding: QuoteSelectionBinding): string {
+  return `${selectionDigest(binding)}|${binding.selectionEpoch}|${binding.scopeEpoch}`;
+}
+
 export function initialQuoteSession(): QuoteSession {
   return {
     phase: 'idle',
@@ -208,6 +213,7 @@ export function initialQuoteSession(): QuoteSession {
     partyLookup: null,
     staffSource: null,
     staffQuote: null,
+    staffQuotes: {},
     staffHeader: emptyStaffQuoteHeader(),
     staffActions: [],
     selectedStayKey: null,
@@ -264,6 +270,14 @@ function occupancySatisfied(group: StayGroupRequirement, covering: readonly Quot
   return haveQty === group.quantity;
 }
 
+export function staffQuoteForStay(
+  session: Pick<QuoteSession, 'staffQuote' | 'staffQuotes' | 'selectedStayKey'>,
+  stayKey = session.selectedStayKey,
+): StaffQuoteAllocation | null {
+  if (!stayKey) return null;
+  return session.staffQuotes[stayKey] ?? (session.staffQuote?.quoteRequestKey === stayKey ? session.staffQuote : null);
+}
+
 export function staffSourceReady(session: Pick<QuoteSession, 'staffSource'>): boolean {
   const source = session.staffSource;
   return Boolean(
@@ -279,9 +293,10 @@ export function reviewSourceKey(session: QuoteSession): string {
 }
 
 export function staffQuoteMatchesSession(session: QuoteSession): boolean {
-  const quote = session.staffQuote;
+  const quote = staffQuoteForStay(session);
   const source = session.staffSource;
   if (!quote || !source || !session.binding) return false;
+  if (quote.totalMinor <= 0) return false;
   if (quote.selectionEpoch !== session.binding.selectionEpoch) return false;
   if (quote.inputRevision !== session.inputRevision) return false;
   if (quote.sourceHash !== source.sourceHash) return false;
@@ -291,6 +306,12 @@ export function staffQuoteMatchesSession(session: QuoteSession): boolean {
   const offer = session.offers.find((item) => item.id === quote.revisionRef);
   if (!offer || offer.kind !== 'allocation' || offer.stayTotalMinor !== quote.totalMinor) return false;
   if (offer.nightly.length) return false;
+  const selectedKeys = new Set(
+    session.selectedOfferIds
+      .map((id) => session.offers.find((item) => item.id === id)?.quoteRequestKey)
+      .filter((key): key is string => Boolean(key)),
+  );
+  if (selectedKeys.size !== 1) return false;
   const current = approvedExecuteHeader(session.staffHeader);
   const approved = quote.approvedHeader;
   if (!approved) return false;
@@ -302,7 +323,13 @@ export function staffQuoteMatchesSession(session: QuoteSession): boolean {
 export function canCreatePdf(session: QuoteSession): boolean {
   if (!staffSourceReady(session)) return false;
   if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') return false;
-  if (session.staffQuote) {
+  const selectedKeys = new Set(
+    session.selectedOfferIds
+      .map((id) => session.offers.find((item) => item.id === id)?.quoteRequestKey)
+      .filter((key): key is string => Boolean(key)),
+  );
+  if (selectedKeys.size > 1) return false;
+  if (staffQuoteForStay(session)) {
     if (!staffQuoteMatchesSession(session)) return false;
     const scoped = session.groups.filter((group) => stayKeyForGroup(group) === session.selectedStayKey);
     return scoped.length > 0;
@@ -319,7 +346,15 @@ export function canCreatePdf(session: QuoteSession): boolean {
 }
 
 export function canCreateNativeDraft(session: QuoteSession): boolean {
-  return Boolean(session.pdf && session.reviewedReplyHtml.trim() && canCreatePdf(session));
+  if (!session.pdf || !session.reviewedReplyHtml.trim() || !canCreatePdf(session)) return false;
+  const quote = staffQuoteForStay(session);
+  if (!quote) return true;
+  return (
+    session.pdf.revisionId === quote.revisionRef &&
+    session.pdf.totalMinor === quote.totalMinor &&
+    typeof session.pdf.pdfHash === 'string' &&
+    /^[a-f0-9]{64}$/.test(session.pdf.pdfHash)
+  );
 }
 
 function clearDownstream(session: QuoteSession): QuoteSession {
@@ -330,10 +365,10 @@ function clearDownstream(session: QuoteSession): QuoteSession {
     pdf: null,
     runningStepId: null,
     evidence: null,
-    reviewedReplyHtml: '',
     errorMessage: null,
     partyLookup: null,
     staffQuote: null,
+    staffQuotes: {},
   };
 }
 
@@ -374,6 +409,13 @@ function provenanceMatches(
   return true;
 }
 
+function hasStaffStayEdits(session: QuoteSession): boolean {
+  if (session.inputRevision > 1) return true;
+  return session.groups.some((group) =>
+    Object.values(group.fields).some((provenance) => provenance === 'staff_corrected'),
+  );
+}
+
 function applyGroupPatch(
   group: StayGroupRequirement,
   patch: Partial<StayGroupRequirement>,
@@ -391,7 +433,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     case 'selection': {
       const current = session.binding ? selectionDigest(session.binding) : null;
       const next = selectionDigest(action.binding);
-      if (current === next && session.analysis && session.phase !== 'idle') {
+      if (current === next) {
         return { ...session, binding: action.binding };
       }
       return {
@@ -402,6 +444,20 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     case 'analysis_started':
       return { ...session, phase: 'analysing', errorMessage: null };
     case 'analysis_ready': {
+      if (hasStaffStayEdits(session)) {
+        const extras = session.reviewItems.filter(
+          (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
+        );
+        return {
+          ...session,
+          reviewItems: projectQuoteReviewItems(
+            session.analysis,
+            session.groups,
+            extras,
+            session.staffActions,
+          ),
+        };
+      }
       if (action.analysis.intent !== 'quote') {
         return {
           ...session,
@@ -483,18 +539,19 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       };
     }
     case 'staff_actions_ready': {
-      const analysis = session.analysis
-        ? { ...session.analysis, staffActions: action.actions }
-        : session.analysis;
       const extras = session.reviewItems.filter(
         (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
       );
-      const reviewItems = projectQuoteReviewItems(analysis, session.groups, extras, action.actions);
-      const sourceKey = reviewSourceKey({ ...session, staffActions: action.actions, analysis });
+      const reviewItems = projectQuoteReviewItems(
+        session.analysis,
+        session.groups,
+        extras,
+        action.actions,
+      );
+      const sourceKey = reviewSourceKey({ ...session, staffActions: action.actions });
       const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
       return {
         ...session,
-        analysis,
         staffActions: action.actions,
         reviewItems,
         handledSourceKey: sourceKey || session.handledSourceKey,
@@ -515,23 +572,16 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     case 'select_stay_key': {
       if (!session.groups.some((group) => stayKeyForGroup(group) === action.stayKey)) return session;
       if (session.selectedStayKey === action.stayKey) return session;
-      const quotedKeys = new Set(
-        session.offers.filter((offer) => offer.kind === 'allocation').map((offer) => offer.quoteRequestKey),
-      );
-      const match = session.offers.find(
-        (offer) => offer.kind === 'allocation' && offer.quoteRequestKey === action.stayKey,
-      );
-      const staffQuote = session.staffQuote?.quoteRequestKey === action.stayKey ? session.staffQuote : null;
       return {
         ...session,
         selectedStayKey: action.stayKey,
-        selectedOfferIds: match ? [match.id] : [],
-        pdf: staffQuote ? session.pdf : null,
-        staffQuote,
-        evidence: staffQuote ? session.evidence : null,
-        steps: planQuoteSteps(session.groups, action.stayKey).map((step) =>
-          quotedKeys.has(step.shareKey ?? '') ? { ...step, status: 'succeeded' as const } : step,
-        ),
+        selectedOfferIds: [],
+        offers: [],
+        pdf: null,
+        staffQuote: null,
+        staffQuotes: {},
+        evidence: null,
+        steps: planQuoteSteps(session.groups, action.stayKey),
         runningStepId: null,
       };
     }
@@ -543,16 +593,19 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (action.offer.kind !== 'allocation') return session;
       if (action.offer.id !== action.staffQuote.revisionRef) return session;
       if (action.offer.stayTotalMinor !== action.staffQuote.totalMinor) return session;
+      if (action.staffQuote.totalMinor <= 0) return session;
       if (action.offer.nightly.length) return session;
       const stayKey = action.offer.quoteRequestKey;
-      const kept = session.offers.filter((offer) => offer.quoteRequestKey !== stayKey);
+      const staffQuote = { ...action.staffQuote, quoteRequestKey: stayKey };
+      const stayCount = requestedQuoteKeys(session.groups).length;
       return {
         ...session,
-        phase: 'results',
-        offers: [...kept, action.offer],
+        phase: stayCount > 1 ? 'tools' : 'results',
+        offers: [action.offer],
         selectedOfferIds: [action.offer.id],
         selectedStayKey: stayKey,
-        staffQuote: { ...action.staffQuote, quoteRequestKey: stayKey },
+        staffQuote,
+        staffQuotes: { [stayKey]: staffQuote },
         pdf: null,
         evidence: {
           kind: 'authorised',
@@ -563,10 +616,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         runningStepId: null,
         reviewedReplyHtml: action.reviewedReplyHtml ?? session.reviewedReplyHtml,
         steps: planQuoteSteps(session.groups, stayKey).map((step) =>
-          step.shareKey === stayKey ||
-          session.offers.some((offer) => offer.kind === 'allocation' && offer.quoteRequestKey === step.shareKey)
-            ? { ...step, status: 'succeeded' as const }
-            : step,
+          step.shareKey === stayKey ? { ...step, status: 'succeeded' as const } : step,
         ),
       };
     }
@@ -679,23 +729,16 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
-      const failedKey = session.steps.find((step) => step.id === action.stepId)?.shareKey ?? session.selectedStayKey;
-      const keptOffers = failedKey
-        ? session.offers.filter((offer) => offer.quoteRequestKey !== failedKey)
-        : session.offers;
-      const keptQuote =
-        session.staffQuote && session.staffQuote.quoteRequestKey !== failedKey ? session.staffQuote : null;
       return {
         ...session,
         phase: 'tools',
         runningStepId: null,
-        offers: keptOffers,
-        selectedOfferIds: keptOffers
-          .filter((offer) => offer.kind === 'allocation' && offer.quoteRequestKey === session.selectedStayKey)
-          .map((offer) => offer.id),
-        pdf: keptQuote ? session.pdf : null,
-        staffQuote: keptQuote,
-        evidence: keptQuote ? session.evidence : null,
+        offers: [],
+        selectedOfferIds: [],
+        pdf: null,
+        staffQuote: null,
+        staffQuotes: {},
+        evidence: null,
         errorMessage: action.reason,
         steps: session.steps.map((step) =>
           step.id === action.stepId

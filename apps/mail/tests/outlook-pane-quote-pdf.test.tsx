@@ -57,6 +57,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       storeId: 'store-1',
       folderEntryId: 'folder-inbox',
       subject: 'Suite Availability Request',
+      internetMessageId: '<suite-availability@example.invalid>',
       senderEmail: 'guest@example.com',
       senderName: 'David Miller',
       receivedTime: '2026-09-17T12:00:00Z',
@@ -94,6 +95,42 @@ vi.mock('../providers/query-provider', () => ({
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
       quoteProposalPdf: { mutate: quotePdfMutateMock },
+      staffQuoteSource: {
+        query: async () => ({
+          status: 'ready' as const,
+          messageId: 'mail-1',
+          threadId: 'thread-1',
+          sourceHash: 'ab'.repeat(32),
+        }),
+      },
+      executeStaffQuote: {
+        mutate: async (input: {
+          selectionEpoch: number;
+          inputRevision: number;
+          groups: Array<{ arrivalDate: string; departureDate: string }>;
+        }) => ({
+          status: 'ready' as const,
+          workflowRunId: 'run-1',
+          revisionRef: 'rev-auth',
+          messageId: 'mail-1',
+          threadId: 'thread-1',
+          factRefs: [],
+          selectionEpoch: input.selectionEpoch,
+          inputRevision: input.inputRevision,
+          inputDigest: 'digest',
+          totalMinor: 272000,
+          currency: 'ZAR',
+          arrivalDate: input.groups[0]?.arrivalDate,
+          departureDate: input.groups[0]?.departureDate,
+          description: 'Selected allocation',
+        }),
+      },
+      qualifiedQuoteProposalPdf: {
+        mutate: async () => AUTHORISED_QUOTE_PDF,
+      },
+    },
+    drafts: {
+      list: { query: async () => [] },
     },
     quoteWorkflow: {
       runStep: {

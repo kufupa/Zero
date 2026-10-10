@@ -70,8 +70,8 @@ export function documentFailureItems(documents: QuoteDocumentFailure[]): QuoteRe
     id: documentFailureIdentity(document),
     kind: 'document_failure',
     rank: 'unread_source',
-    text: document.filename,
-    sourceLabel: document.sourceKind === 'email' ? 'Email source' : 'Attachment',
+    text: `Unread: ${document.filename}`,
+    sourceLabel: document.sourceKind === 'email' ? 'Unread email source' : 'Unread attachment',
     filename: document.filename,
     reason: document.reason,
     sourceRef: document.sourceRef,
@@ -119,7 +119,10 @@ export function mapStaffActions(actions: readonly ReservationistStaffAction[] | 
       id: action.id,
       kind,
       rank,
-      text: action.kind === 'business_document_failure' && action.filename ? action.filename : action.text.trim(),
+      text:
+        action.kind === 'business_document_failure' && action.filename
+          ? `Unread: ${action.filename}`
+          : action.text.trim(),
       sourceLabel,
       sourceRef: action.sourceRef,
       sourceHash: action.sourceHash,

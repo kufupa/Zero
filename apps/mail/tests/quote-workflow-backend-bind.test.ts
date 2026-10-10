@@ -12,6 +12,8 @@ import {
   bindExecuteStaffQuote,
   bindQualifiedStaffProposalPdf,
   nativeRoomCodes,
+  resolveNativeRoomCodes,
+  sha256HexOfBytes,
 } from '../lib/quote-workflow/staff-quote-bind';
 import { emptyStaffQuoteHeader } from '../lib/quote-workflow/types';
 
@@ -125,7 +127,7 @@ describe('quote workflow backend bind', () => {
   });
 
   it('does not treat quote_stay ok without offers as authorised inventory', async () => {
-    const mutate = vi.fn(async () => ({ status: 'ok' as const }));
+    const mutate = vi.fn(async () => ({ status: 'ok' as const, offers: [] }));
     const result = await bindRunStep({
       mutate,
       stepId: 'quote-stay',
@@ -142,6 +144,7 @@ describe('quote workflow backend bind', () => {
   it('refuses a separate party execute even when a party mutate is present', async () => {
     const mutate = vi.fn(async () => ({
       status: 'ok' as const,
+      offers: [],
       party: { organisation: 'Provincial Treasury', partyRef: 'party-treasury-1' },
     }));
     const result = await bindRunStep({
@@ -320,72 +323,94 @@ describe('staff quote execute/PDF header bind', () => {
     specialRequests: [] as string[],
     fields: {},
   };
+  const government = {
+    salesStrategy: 'Government' as const,
+    company: 'Provincial Treasury',
+    agency: 'Travel Desk',
+    attention: 'Ms. Naidoo',
+    clientEmail: 'quotes@example.invalid',
+    clientTelephone: '0110000000',
+  };
+  const readyResult = {
+    status: 'ready' as const,
+    workflowRunId: 'run-1',
+    revisionRef: 'rev-1',
+    messageId: source.messageId,
+    threadId: source.threadId,
+    factRefs: [],
+    selectionEpoch: 1,
+    inputRevision: 1,
+    inputDigest: 'digest',
+    totalMinor: 850000,
+    currency: 'ZAR',
+    arrivalDate: '2026-11-12',
+    departureDate: '2026-11-14',
+    description: 'STWN NGOVDB',
+  };
 
-  it('sends native room codes only and keeps blank agency as empty string', async () => {
-    expect(nativeRoomCodes('STWN')).toEqual(['STWN']);
-    expect(nativeRoomCodes('SKNG')).toEqual(['SKNG']);
-    expect(nativeRoomCodes('SUITE')).toBeUndefined();
-    expect(nativeRoomCodes('standard king')).toBeUndefined();
-    expect(approvedExecuteHeader(emptyStaffQuoteHeader()).agency).toBe('');
-    const mutate = vi.fn(async (_input) => ({
-      status: 'ready' as const,
-      workflowRunId: 'run-1',
-      revisionRef: 'rev-1',
-      messageId: source.messageId,
-      threadId: source.threadId,
-      factRefs: [],
+  it('sends staff-approved Government/contact and the actual native room-code set', async () => {
+    expect(nativeRoomCodes('SUITE')).toEqual(['SUITE']);
+    expect(nativeRoomCodes('DLXKNG')).toEqual(['DLXKNG']);
+    expect(nativeRoomCodes('SINGLE')).toBeUndefined();
+    expect(resolveNativeRoomCodes({ roomPreference: 'SINGLE' })).toEqual({
+      status: 'unresolved',
+      label: 'SINGLE',
+    });
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    const labelled = await bindExecuteStaffQuote({
+      mutate,
+      source,
       selectionEpoch: 1,
       inputRevision: 1,
-      inputDigest: 'digest',
-      totalMinor: 850000,
-      currency: 'ZAR',
-      arrivalDate: '2026-11-12',
-      departureDate: '2026-11-14',
-      description: 'STWN NGOVDB',
-    }));
+      groups: [{ ...stay, roomPreference: 'SINGLE' }],
+      header: government,
+    });
+    expect(labelled.status).toBe('unavailable');
+    if (labelled.status === 'unavailable') {
+      expect(labelled.reason).toMatch(/Room preference "SINGLE"/);
+      expect(labelled.reason).toMatch(/DLXTWN/);
+    }
+    expect(mutate).not.toHaveBeenCalled();
     const result = await bindExecuteStaffQuote({
       mutate,
       source,
       selectionEpoch: 1,
       inputRevision: 1,
-      groups: [{ ...stay, roomPreference: 'suite' }],
-      header: { ...emptyStaffQuoteHeader(), company: 'Provincial Treasury', agency: '' },
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: government,
     });
     expect(result.status).toBe('ok');
     expect(mutate.mock.calls[0]?.[0]).toMatchObject({
+      salesStrategy: 'Government',
       company: 'Provincial Treasury',
-      agency: '',
-      salesStrategy: 'BAR',
+      agency: 'Travel Desk',
+      attention: 'Ms. Naidoo',
+      clientEmail: 'quotes@example.invalid',
+      clientTelephone: '0110000000',
+      groups: [expect.objectContaining({ roomCodes: ['STWN'] })],
     });
-    expect(mutate.mock.calls[0]?.[0].groups[0]).not.toHaveProperty('roomCodes');
-    if (result.status === 'ok') {
-      expect(result.staffQuote.approvedHeader).toEqual({
-        salesStrategy: 'BAR',
-        company: 'Provincial Treasury',
-        agency: '',
-        attention: '',
-        clientEmail: '',
-        clientTelephone: '',
-      });
-    }
-    const native = await bindExecuteStaffQuote({
-      mutate,
+  });
+
+  it('rejects a zero total and requires PDF hash to match actual bytes', async () => {
+    const mutateQuote = vi.fn(async () => ({ ...readyResult, totalMinor: 0 }));
+    const zero = await bindExecuteStaffQuote({
+      mutate: mutateQuote,
       source,
       selectionEpoch: 1,
       inputRevision: 1,
-      groups: [{ ...stay, roomPreference: 'STWN' }],
+      groups: [{ ...stay, roomPreference: 'SKNG' }],
       header: emptyStaffQuoteHeader(),
     });
-    expect(native.status).toBe('ok');
-    expect(mutate.mock.calls[1]?.[0].groups[0].roomCodes).toEqual(['STWN']);
-  });
-
-  it('passes approved execute company/agency into PDF, including empty agency', async () => {
+    expect(zero.status).toBe('unavailable');
+    const pdfBase64 = 'JVBERi0xLjQK';
+    const bytes = Uint8Array.from(atob(pdfBase64), (c) => c.charCodeAt(0));
+    const pdfHash = await sha256HexOfBytes(bytes);
+    expect(pdfHash).toMatch(/^[a-f0-9]{64}$/);
     const mutate = vi.fn(async () => ({
       revisionId: 'rev-1',
-      pdfHash: 'hash-1',
+      pdfHash: pdfHash!,
       fileName: 'Quote.pdf',
-      pdfBase64: 'JVBERi0xLjQK',
+      pdfBase64,
       totalMinor: 850000,
     }));
     const pdf = await bindQualifiedStaffProposalPdf({
@@ -405,9 +430,29 @@ describe('staff quote execute/PDF header bind', () => {
       expectedTotalMinor: 850000,
     });
     expect(pdf.status).toBe('ok');
-    expect(mutate).toHaveBeenCalledWith(
-      expect.objectContaining({ company: 'Provincial Treasury', agency: '' }),
-    );
+    const mismatched = await bindQualifiedStaffProposalPdf({
+      mutate: vi.fn(async () => ({
+        revisionId: 'rev-1',
+        pdfHash: 'ab'.repeat(32),
+        fileName: 'Quote.pdf',
+        pdfBase64,
+        totalMinor: 850000,
+      })),
+      input: {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        messageId: 'mail-1',
+        outlookEmail: 'centurion@legacyhotels.co.za',
+        factRefs: [],
+        company: 'Provincial Treasury',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      expectedTotalMinor: 850000,
+    });
+    expect(mismatched.status).toBe('unavailable');
     const missingAgency = await bindQualifiedStaffProposalPdf({
       mutate,
       input: {

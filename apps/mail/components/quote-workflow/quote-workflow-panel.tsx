@@ -325,7 +325,7 @@ export function QuoteWorkflowPanel({
             Selected allocation total {money(allocationTotal(session.offers.filter((o) => session.selectedOfferIds.includes(o.id))))}.
             Alternatives are not summed as if booked.
             {new Set(session.offers.filter((o) => o.kind === 'allocation').map((o) => o.quoteRequestKey)).size > 1
-              ? ' Separate date searches do not prove joint availability.'
+              ? ' Separate date searches keep their own revisions. Combined PDF is blocked; prepare PDF for the selected stay only.'
               : ''}
           </p>
           {session.offers.map((offer) => (
