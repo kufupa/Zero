@@ -1,12 +1,20 @@
-import { canCreateNativeDraft, canCreatePdf } from '@/lib/quote-workflow/session';
+import { canCreateNativeDraft, canCreatePdf, isMultiStay, ratedStayCount } from '@/lib/quote-workflow/session';
 import { staffHeaderFieldProblem, type QuoteSession } from '@/lib/quote-workflow/types';
 import { Field, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
+
+/** "1 of 2 stays rated" while a multi-stay quote still lacks a stay's run. Null once every stay is rated. */
+export function ratedStaysReason(session: QuoteSession): string | null {
+  const { rated, total } = ratedStayCount(session);
+  return rated < total ? `${rated} of ${total} stays rated` : null;
+}
 
 /** Why the PDF cannot be made yet, or null when it can. Shown under the disabled PDF button. */
 export function pdfBlockReason(session: QuoteSession): string | null {
   if (canCreatePdf(session)) return null;
   const amountProblem = staffHeaderFieldProblem(session.staffHeader);
   if (amountProblem) return `Fix the amounts first. ${amountProblem}`;
+  const ratedReason = isMultiStay(session) ? ratedStaysReason(session) : null;
+  if (ratedReason) return ratedReason;
   if (session.offers.length) {
     return 'Pick a room option for every stay. Separate date searches do not prove that all stays are available together.';
   }
@@ -42,11 +50,13 @@ export function DocumentReview({
   return (
     <div className="flex flex-col gap-3">
       <PrimaryButton disabled={!pdfReady} disabledReason={pdfReason} onClick={onPreparePdf}>
-        Prepare PDF
+        {isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF'}
       </PrimaryButton>
       {session.pdf ? (
         <p className="text-[11.5px] text-[#1e293b]">
-          Prepared PDF {session.pdf.fileName}. The Outlook draft will attach this exact file. For several date options, Create one reply with all date options attaches each option&apos;s PDF.
+          {isMultiStay(session)
+            ? `Prepared quote ${session.pdf.fileName} for all stays. The Outlook draft will attach this exact file.`
+            : `Prepared PDF ${session.pdf.fileName}. The Outlook draft will attach this exact file.`}
         </p>
       ) : null}
       <div className="flex flex-col gap-1.5">
@@ -55,15 +65,18 @@ export function DocumentReview({
         </SecondaryButton>
         {excelDisabled && excelReason ? <p className="text-center text-[11px] text-[#64748b]">{excelReason}</p> : null}
       </div>
-      <Field label="Reply to the client (you can edit it)" htmlFor="quote-reviewed-reply">
-        <textarea
-          id="quote-reviewed-reply"
-          aria-label="Reviewed reply"
-          className="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-          value={session.reviewedReplyHtml}
-          onChange={(event) => onReplyChange?.(event.target.value)}
-        />
-      </Field>
+      {/* A combined reply is built from every stay's quote, so the one-stay reply box would be ignored. */}
+      {isMultiStay(session) ? null : (
+        <Field label="Reply to the client (you can edit it)" htmlFor="quote-reviewed-reply">
+          <textarea
+            id="quote-reviewed-reply"
+            aria-label="Reviewed reply"
+            className="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+            value={session.reviewedReplyHtml}
+            onChange={(event) => onReplyChange?.(event.target.value)}
+          />
+        </Field>
+      )}
       {nativeReady ? (
         <p className="text-[11.5px] text-emerald-800">Reply and PDF are ready. Next, create the Outlook draft. It is not sent.</p>
       ) : null}

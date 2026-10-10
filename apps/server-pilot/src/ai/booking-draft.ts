@@ -269,11 +269,16 @@ export async function buildBookingDrafts(input: {
   const validate = input.validate ?? defaultValidateCreate;
   const rooms: BookingDraftRoom[] = [];
   const missing: BookingDraftMissing[] = [];
+  const lunaStayKeys = new Set(
+    input.analysis.groups.map((group) => `${group.arrival}:${group.departure}`),
+  );
+  const stayUnclear = lunaStayKeys.size > 1;
   for (const [gi, group] of revision.groups.entries()) {
+    // A position only names a row when the analysis has one stay. With several, that row belongs to another stay.
     const lunaGroup =
       input.analysis.groups.find(
         (row) => row.arrival === group.arrivalDate && row.departure === group.departureDate,
-      ) ?? input.analysis.groups[gi];
+      ) ?? (stayUnclear ? undefined : input.analysis.groups[gi]);
     const names = lunaGroup?.guestNames ?? [];
     const party = partyFromContext(group.context);
     for (let roomIndex = 1; roomIndex <= group.quantity; roomIndex++) {
@@ -320,10 +325,6 @@ export async function buildBookingDrafts(input: {
   if (revision.groups.length > 1 && roomCodes.size > 1) {
     flags.push('joint_inventory_unproven');
   }
-  const lunaStayKeys = new Set(
-    input.analysis.groups.map((group) => `${group.arrival}:${group.departure}`),
-  );
-  const stayUnclear = lunaStayKeys.size > 1;
   return {
     rooms,
     rateCheck: input.analysis.rateClaims.map((claim) => {

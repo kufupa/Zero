@@ -235,10 +235,10 @@ export function useInsertAiDraft({
     }
 
     if (previousAttempt && previousAttempt.scope !== scope) {
-      // An attempt that may already have reached Outlook is retried with its own button only.
+      // An attempt that may already have reached Outlook is retried with its own scope only.
       if (previousAttempt.replyPayload) {
         toast.error(
-          `${replyLabel}An earlier reply for this email may already be in Outlook Drafts. Retry it with its own button, or check Drafts first.`,
+          `${replyLabel}An earlier reply for this email may already be in Outlook Drafts. Check Drafts before creating another reply.`,
         );
         return;
       }
@@ -252,7 +252,7 @@ export function useInsertAiDraft({
     if (!reviewedDraft) {
       toast.error(
         scope === 'all'
-          ? `${replyLabel}Prepare a PDF for each date option first. Each PDF must match its own run.`
+          ? `${replyLabel}Rate every stay and prepare the quote first. The quote must match every stay's run.`
           : 'Make the PDF and finish the reply before creating the draft. Sample rates are never used.',
       );
       return;

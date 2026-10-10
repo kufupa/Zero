@@ -1538,7 +1538,7 @@ describe('quote session staff review items', () => {
     expect(switched.pdf).toBeNull();
   });
 
-  it('keeps option A when option B runs, and B waits until A has its PDF', () => {
+  it('keeps option A when option B runs, and B is not held back by a PDF for A', () => {
     let s = twoDateSession();
     expect(s.steps.map((step) => step.status)).toEqual(['ready', 'ready']);
     expect(canRunQuoteStep(stepFor(s, STAY_B), s.steps, stepFor(s, STAY_A).id)).toBe(false);
@@ -1546,60 +1546,51 @@ describe('quote session staff review items', () => {
 
     s = reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-a', 850000, s.inputRevision));
     expect(stepFor(s, STAY_A).status).toBe('succeeded');
+    // Both options end in one combined quote, so no option waits for a PDF of its own.
     expect(stepFor(s, STAY_B).status).toBe('ready');
-    expect(quoteRunBlockReason(s, stepFor(s, STAY_B))).toBe(
-      'Finish the PDF for option A first, then run option B.',
-    );
-
-    s = reduceQuoteSession(s, {
-      type: 'pdf_ready',
-      pdf: quotePdf('rev-a'),
-      selectionEpoch: 1,
-      inputRevision: s.inputRevision,
-      selectedOfferIds: ['rev-a'],
-    });
     expect(quoteRunBlockReason(s, stepFor(s, STAY_B))).toBeNull();
 
     s = reduceQuoteSession(s, staffQuoteFor(STAY_B, 'rev-b', 920000, s.inputRevision));
     expect(stepFor(s, STAY_A).status).toBe('succeeded');
     expect(stepFor(s, STAY_B).status).toBe('succeeded');
     expect(s.staffQuotes[STAY_A]?.revisionRef).toBe('rev-a');
-    expect(s.stayPdfs[STAY_A]?.revisionId).toBe('rev-a');
+    expect(s.stayPdfs).toEqual({});
     expect(s.offers.map((offer) => offer.id).sort()).toEqual(['rev-a', 'rev-b']);
     expect(s.selectedStayKey).toBe(STAY_B);
     expect(s.pdf).toBeNull();
   });
 
-  it('selecting a date option keeps every result and shows only that option PDF', () => {
+  it('selecting a date option keeps every result and the one combined PDF', () => {
     let s = twoDateSession();
     s = reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-a', 850000, s.inputRevision));
+    s = reduceQuoteSession(s, staffQuoteFor(STAY_B, 'rev-b', 920000, s.inputRevision));
     s = reduceQuoteSession(s, {
       type: 'pdf_ready',
-      pdf: quotePdf('rev-a'),
+      pdf: quotePdf('quotes:abc', 1770000),
       selectionEpoch: 1,
       inputRevision: s.inputRevision,
-      selectedOfferIds: ['rev-a'],
+      selectedOfferIds: ['rev-b'],
     });
-    s = reduceQuoteSession(s, staffQuoteFor(STAY_B, 'rev-b', 920000, s.inputRevision));
+    expect(s.stayPdfs).toEqual({});
+    expect(canCreatePdf(s)).toBe(true);
 
     const toA = reduceQuoteSession(s, { type: 'select_stay_key', stayKey: STAY_A });
     expect(Object.keys(toA.staffQuotes).sort()).toEqual([STAY_A, STAY_B]);
     expect(toA.offers.map((offer) => offer.id).sort()).toEqual(['rev-a', 'rev-b']);
     expect(toA.staffQuote?.revisionRef).toBe('rev-a');
     expect(toA.selectedOfferIds).toEqual(['rev-a']);
-    expect(toA.pdf?.revisionId).toBe('rev-a');
-    expect(stepFor(toA, STAY_A).status).toBe('succeeded');
-    expect(stepFor(toA, STAY_B).status).toBe('succeeded');
-    const reviewed = reduceQuoteSession(toA, { type: 'set_reviewed_reply', html: '<p>Reply for A</p>' });
-    expect(canCreateNativeDraft(reviewed)).toBe(true);
+    // The combined PDF covers every stay, so it stays on screen whichever option is selected.
+    expect(toA.pdf?.revisionId).toBe('quotes:abc');
+    expect(reduceQuoteSession(toA, { type: 'select_stay_key', stayKey: STAY_B }).pdf?.revisionId).toBe('quotes:abc');
+    expect(canCreateNativeDraft(toA)).toBe(true);
 
-    const toB = reduceQuoteSession(toA, { type: 'select_stay_key', stayKey: STAY_B });
-    expect(toB.staffQuote?.revisionRef).toBe('rev-b');
-    expect(toB.pdf).toBeNull();
-    expect(canCreateNativeDraft(reduceQuoteSession(toB, { type: 'set_reviewed_reply', html: '<p>B</p>' }))).toBe(false);
+    // A re-quote of one stay makes the combined PDF stale, so it is cleared.
+    const requoted = reduceQuoteSession(toA, staffQuoteFor(STAY_A, 'rev-a2', 850000, toA.inputRevision));
+    expect(requoted.pdf).toBeNull();
+    expect(Object.keys(requoted.staffQuotes).sort()).toEqual([STAY_A, STAY_B]);
 
     // Re-reading the same email must not reopen option A.
-    const reread = reduceQuoteSession(toB, { type: 'analysis_ready', analysis: twoDateAnalysis() });
+    const reread = reduceQuoteSession(toA, { type: 'analysis_ready', analysis: twoDateAnalysis() });
     expect(stepFor(reread, STAY_A).status).toBe('succeeded');
     expect(Object.keys(reread.staffQuotes).sort()).toEqual([STAY_A, STAY_B]);
   });
@@ -1607,13 +1598,6 @@ describe('quote session staff review items', () => {
   it('a failed later option keeps the earlier option result', () => {
     let s = twoDateSession();
     s = reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-a', 850000, s.inputRevision));
-    s = reduceQuoteSession(s, {
-      type: 'pdf_ready',
-      pdf: quotePdf('rev-a'),
-      selectionEpoch: 1,
-      inputRevision: s.inputRevision,
-      selectedOfferIds: ['rev-a'],
-    });
     const stepB = stepFor(s, STAY_B).id;
     s = reduceQuoteSession(s, { type: 'step_running', stepId: stepB });
     s = reduceQuoteSession(s, {
@@ -1626,7 +1610,6 @@ describe('quote session staff review items', () => {
     expect(stepFor(s, STAY_B).status).toBe('failed');
     expect(stepFor(s, STAY_A).status).toBe('succeeded');
     expect(s.staffQuotes[STAY_A]?.revisionRef).toBe('rev-a');
-    expect(s.stayPdfs[STAY_A]).toBeDefined();
     expect(s.errorMessage).toBe('HMS did not answer. Run option B again.');
     expect(quoteRunBlockReason(s, stepFor(s, STAY_B))).toBeNull();
     expect(canRunQuoteStep(stepFor(s, STAY_B), s.steps, null)).toBe(true);
@@ -1720,22 +1703,24 @@ describe('quote session staff review items', () => {
     expect(session.treatAs).toBe('create_booking');
   });
 
-  it('starts with a null bookingDraft and clears it downstream', () => {
-    expect(initialQuoteSession().bookingDraft).toBeNull();
+  it('starts with no booking drafts and clears them downstream', () => {
+    expect(initialQuoteSession().bookingDrafts).toEqual({});
     let s = analysisReady();
     s = {
       ...s,
-      bookingDraft: {
-        draft: { rooms: [], rateCheck: [], missing: [], flags: [] },
-        options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
-        messageId: 'mail-1',
-        selectionEpoch: 1,
-        inputRevision: 1,
-        revisionRef: 'rev-1',
+      bookingDrafts: {
+        [STAY_A]: {
+          draft: { rooms: [], rateCheck: [], missing: [], flags: [] },
+          options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
+          messageId: 'mail-1',
+          selectionEpoch: 1,
+          inputRevision: 1,
+          revisionRef: 'rev-1',
+        },
       },
     };
     s = reduceQuoteSession(s, { type: 'patch_group', groupId: 'g1', patch: { adults: 3 } });
-    expect(s.bookingDraft).toBeNull();
+    expect(s.bookingDrafts).toEqual({});
   });
 
   it('accepts a matching booking_draft_ready and ignores a stale selectionEpoch', () => {
@@ -1792,21 +1777,21 @@ describe('quote session staff review items', () => {
       payload: { ...payload, selectionEpoch: 9 },
       sourceHash: STAFF_HASH,
     });
-    expect(stale.bookingDraft).toBeNull();
+    expect(stale.bookingDrafts).toEqual({});
     const ready = reduceQuoteSession(s, {
       type: 'booking_draft_ready',
       payload,
       sourceHash: STAFF_HASH,
     });
-    expect(ready.bookingDraft?.draft.rooms).toHaveLength(1);
+    expect(ready.bookingDrafts[STAY_A]?.draft.rooms).toHaveLength(1);
     const otherRevision = reduceQuoteSession(s, {
       type: 'booking_draft_ready',
       payload: { ...payload, revisionRef: 'rev-other' },
       sourceHash: STAFF_HASH,
     });
-    expect(otherRevision.bookingDraft).toBeNull();
+    expect(otherRevision.bookingDrafts).toEqual({});
     const patched = reduceQuoteSession(ready, { type: 'patch_group', groupId: 'g1', patch: { adults: 3 } });
-    expect(patched.bookingDraft).toBeNull();
+    expect(patched.bookingDrafts).toEqual({});
   });
 
   it('prefills government party into company and salesStrategy when header is empty', () => {
@@ -2297,7 +2282,7 @@ describe('type changed after rates', () => {
     const after = reduceQuoteSession(withRates, { type: 'treat_as', treatAs: 'create_booking' });
     expect(after.treatAs).toBe('create_booking');
     expect(after.staffQuote).toBeNull();
-    expect(after.bookingDraft).toBeNull();
+    expect(after.bookingDrafts).toEqual({});
     expect(after.phase).toBe('requirements');
     expect(after.inputRevision).toBe(withRates.inputRevision + 1);
     expect(after.groups).toEqual(groups);

@@ -1,18 +1,11 @@
-import {
-  evidenceMatchesSession,
-  optionLetter,
-  requestedQuoteKeys,
-  staffSourceReady,
-} from './session';
-import type { QuoteOffer, QuotePdf, QuoteSession, StaffQuoteAllocation } from './types';
-import { approvedExecuteHeader } from './staff-quote-bind';
 import { FIXTURE_PDF } from './fixtures';
+import { canCreatePdf, currentStayRun, isMultiStay, optionLetter, requestedQuoteKeys } from './session';
+import type { QuoteOffer, QuoteSession, StaffQuoteAllocation } from './types';
 import { withStaffNote } from './native-draft';
-import { staffHeaderFieldProblem } from './types';
 
 /**
- * One unsent reply that covers every date option staff completed. Each option keeps its own
- * staff run and PDF; this module only decides which options are complete and writes the body.
+ * The one unsent reply for a multi-stay quote. Every stay is quoted in one combined PDF, so this module checks that the
+ * PDF is still the one the current stay runs make, and writes the body that lists every stay.
  */
 
 export type CompletedDateOption = {
@@ -20,7 +13,6 @@ export type CompletedDateOption = {
   letter: string;
   quote: StaffQuoteAllocation;
   offer: QuoteOffer;
-  pdf: QuotePdf;
 };
 
 export type MultiOptionDraft = {
@@ -32,84 +24,58 @@ export type MultiOptionDraft = {
 const PDF_HASH = /^[a-f0-9]{64}$/;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const BOARD_LABELS: Record<string, string> = { bb: 'Bed & breakfast', room_only: 'Room only' };
-const INTRO =
-  'Please see the date options below. Each option is quoted separately and has its own quotation PDF attached.';
-const CLOSING = 'Each option is a separate quotation and is not a booking.';
+const INTRO = 'Please see the quote below for each date option. One quotation PDF covers all of them.';
+const CLOSING = 'The options are quotes only and are not bookings.';
 
-/** Options in email date order whose staff run, allocation and PDF all belong to the current input. */
+/** Every date option in email date order whose staff run still matches the session, with its allocation. */
 export function completedDateOptions(session: QuoteSession): CompletedDateOption[] {
-  const source = session.staffSource;
-  const binding = session.binding;
-  if (!source || !staffSourceReady(session) || !binding) return [];
-  if (session.evidence?.kind !== 'authorised' || !evidenceMatchesSession(session)) return [];
-  let header: ReturnType<typeof approvedExecuteHeader>;
-  try {
-    header = approvedExecuteHeader(session.staffHeader);
-  } catch {
-    return [];
-  }
-  const options: CompletedDateOption[] = [];
-  requestedQuoteKeys(session.groups).forEach((key, index) => {
-    const quote = session.staffQuotes[key];
-    const pdf = session.stayPdfs[key];
+  return requestedQuoteKeys(session.groups).flatMap((key, index) => {
+    const quote = currentStayRun(session, key);
     const offer = quote
       ? session.offers.find((item) => item.id === quote.revisionRef && item.kind === 'allocation')
       : undefined;
-    if (!quote || !pdf || !offer) return;
-    const current =
-      quote.totalMinor > 0 &&
-      quote.quoteRequestKey === key &&
-      quote.selectionEpoch === binding.selectionEpoch &&
-      quote.inputRevision === session.inputRevision &&
-      quote.sourceHash === source.sourceHash &&
-      quote.messageId === source.messageId &&
-      quote.threadId === source.threadId &&
-      quote.approvedHeader.salesStrategy === header.salesStrategy &&
-      quote.approvedHeader.company === header.company &&
-      quote.approvedHeader.agency === header.agency &&
-      offer.stayTotalMinor === quote.totalMinor &&
-      offer.nightly.length === 0 &&
-      pdf.revisionId === quote.revisionRef &&
-      pdf.totalMinor === quote.totalMinor &&
-      PDF_HASH.test(pdf.pdfHash ?? '') &&
-      pdf.bytesBase64.trim() !== '' &&
-      pdf.fileName !== FIXTURE_PDF.fileName;
-    if (current) options.push({ key, letter: optionLetter(index), quote, offer, pdf });
+    return quote && offer ? [{ key, letter: optionLetter(index), quote, offer }] : [];
   });
-  return options;
 }
 
-/** What staff wrote in the combined reply, and the completed options it was written for. */
+/** What staff wrote in the combined reply, and the stays it was written for. */
 export type CombinedReplyEdit = { signature: string; html: string };
 
-/** Identifies the completed options: an edit is used only while they are still the same runs and PDFs. */
+/** Identifies the combined reply: an edit is used only while the stays' runs, the PDF and the note are unchanged. */
 export function multiOptionSignature(session: QuoteSession): string | null {
+  if (!isMultiStay(session) || !session.pdf) return null;
   const options = completedDateOptions(session);
-  if (options.length < 2) return null;
+  if (options.length !== requestedQuoteKeys(session.groups).length) return null;
   // The note is part of the reply, so changing it makes an earlier edited combined reply stale.
   const note = session.staffHeader?.notes?.trim() ?? '';
   return options
-    .map((option) => `${option.letter}:${option.key}:${option.quote.totalMinor}:${option.pdf.pdfHash ?? ''}`)
-    .concat(`note:${note}`)
+    .map((option) => `${option.letter}:${option.key}:${option.quote.totalMinor}:${option.quote.revisionRef}`)
+    .concat(`pdf:${session.pdf.pdfHash ?? ''}`, `note:${note}`)
     .join('|');
 }
 
-/** The one reply covering all completed options, or null unless at least two are complete. */
+/** The one reply covering every stay, or null until every stay is rated and the combined PDF is the current one. */
 export function requireMultiOptionDraft(
   session: QuoteSession,
   edit?: CombinedReplyEdit | null,
 ): MultiOptionDraft | null {
+  const pdf = session.pdf;
+  if (!isMultiStay(session) || !pdf || !canCreatePdf(session)) return null;
   const options = completedDateOptions(session);
-  if (options.length < 2) return null;
-  // The options' PDFs may predate an unreadable amount. Their old charges must not reach a reply.
-  if (staffHeaderFieldProblem(session.staffHeader)) return null;
+  if (options.length !== requestedQuoteKeys(session.groups).length) return null;
+  // The PDF may predate a stay edit or an unreadable amount. Its old charges must not reach a reply.
+  const total = options.reduce((sum, option) => sum + option.quote.totalMinor, 0);
+  const current =
+    (pdf.revisionId ?? '').startsWith('quotes:') &&
+    pdf.totalMinor === total &&
+    PDF_HASH.test(pdf.pdfHash ?? '') &&
+    pdf.bytesBase64.trim() !== '' &&
+    pdf.fileName !== FIXTURE_PDF.fileName;
+  if (!current) return null;
   const edited = edit && edit.signature === multiOptionSignature(session) ? edit.html : null;
   return {
     html: withStaffNote(edited ?? multiOptionDraftHtml(options), session.staffHeader?.notes),
-    attachments: options.map((option) => ({
-      fileName: optionAttachmentName(option.pdf.fileName, option.letter),
-      pdfBase64: option.pdf.bytesBase64,
-    })),
+    attachments: [{ fileName: pdf.fileName, pdfBase64: pdf.bytesBase64 }],
     letters: options.map((option) => option.letter),
   };
 }
@@ -136,13 +102,8 @@ export function multiOptionDraftHtml(options: readonly CompletedDateOption[]): s
       `<p><strong>Option ${option.letter} total: ${escapeHtml(amount)}</strong></p>`,
     ].join('');
   });
-  return `<div><p>${INTRO}</p>${sections.join('')}<p>${CLOSING}</p></div>`;
-}
-
-/** Outlook keeps attachments by name, so each option's PDF gets its letter even when the server names match. */
-export function optionAttachmentName(fileName: string, letter: string): string {
-  const base = fileName.trim().replace(/\.pdf$/i, '') || 'Quotation';
-  return `${base} - Option ${letter}.pdf`;
+  const total = draftMoney(options.reduce((sum, option) => sum + option.quote.totalMinor, 0));
+  return `<div><p>${INTRO}</p>${sections.join('')}<p><strong>Total for all options: ${escapeHtml(total)}</strong></p><p>${CLOSING}</p></div>`;
 }
 
 /** Same shape as the quotation PDF total (for example R2,720.00), so the draft and attachment agree. */

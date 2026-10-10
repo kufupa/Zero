@@ -106,6 +106,13 @@ export type StaffQuoteSourceResult =
   | { status: 'ready'; messageId: string; threadId: string; sourceHash: string }
   | { status: 'message_not_synced' };
 
+/** One further stay of a combined quote: its own attested run. */
+export type QualifiedStayRun = {
+  workflowRunId: string;
+  revisionRef: string;
+  factRefs: string[];
+};
+
 export type QualifiedStaffPdfInput = {
   workflowRunId: string;
   revisionRef: string;
@@ -117,6 +124,8 @@ export type QualifiedStaffPdfInput = {
   clientEmail: string;
   clientTelephone: string;
   agency: string;
+  /** A combined quote: the other stays' runs. Absent for one stay. */
+  additionalStays?: QualifiedStayRun[];
 };
 
 export type QualifiedStaffPdfResult = {
@@ -691,6 +700,14 @@ export async function bindExecuteStaffQuote(args: {
   }
 }
 
+/**
+ * The revision id a document must carry. One stay's document is named by that stay's revision. A combined document is
+ * named by the set of its stays' revisions (quotes:...), which the client cannot rebuild, so it is checked by prefix.
+ */
+export function revisionMatchesRequest(input: QualifiedStaffPdfInput, revisionId: string): boolean {
+  return input.additionalStays?.length ? revisionId.startsWith('quotes:') : revisionId === input.revisionRef;
+}
+
 export type BoundStaffPdf =
   | { status: 'unavailable'; reason: string }
   | { status: 'ok'; pdf: QualifiedStaffPdfResult };
@@ -725,6 +742,7 @@ export async function bindQualifiedStaffProposalPdf(args: {
       clientEmail: args.input.clientEmail,
       clientTelephone: args.input.clientTelephone,
       agency: args.input.agency,
+      ...(args.input.additionalStays?.length ? { additionalStays: args.input.additionalStays } : {}),
     });
     if (
       !pdf ||
@@ -735,7 +753,7 @@ export async function bindQualifiedStaffProposalPdf(args: {
       typeof pdf.pdfHash !== 'string' ||
       !/^[a-f0-9]{64}$/.test(pdf.pdfHash) ||
       typeof pdf.revisionId !== 'string' ||
-      pdf.revisionId !== args.input.revisionRef ||
+      !revisionMatchesRequest(args.input, pdf.revisionId) ||
       !Number.isSafeInteger(pdf.totalMinor) ||
       pdf.totalMinor <= 0 ||
       pdf.totalMinor !== args.expectedTotalMinor

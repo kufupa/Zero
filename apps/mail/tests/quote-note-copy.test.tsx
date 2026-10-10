@@ -86,10 +86,10 @@ describe('quote panel notes', () => {
     session = reduceQuoteSession(session, fixtureResultsReady(fixture.offers) as never);
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.queryByText(/combined PDF is blocked/)).toBeNull();
-    expect(screen.getByText(/Create one reply with all date options puts them in one draft/)).toBeDefined();
+    expect(screen.getByText(/Every date option goes into one quote/)).toBeDefined();
   });
 
-  it('says the draft attaches each option PDF through the combined reply', () => {
+  it('says a single stay draft attaches its own PDF, not one per option', () => {
     const session = {
       ...initialQuoteSession(),
       pdf: {
@@ -102,6 +102,7 @@ describe('quote panel notes', () => {
     } as never;
     render(<DocumentReview session={session} />);
     expect(screen.getByText(/Prepared PDF Quote-option-A\.pdf\./)).toBeDefined();
-    expect(screen.getByText(/Create one reply with all date options attaches each option's PDF/)).toBeDefined();
+    expect(screen.getByText(/The Outlook draft will attach this exact file\./)).toBeDefined();
+    expect(screen.queryByText(/attaches each option's PDF/)).toBeNull();
   });
 });

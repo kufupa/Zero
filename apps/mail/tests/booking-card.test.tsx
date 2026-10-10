@@ -295,7 +295,7 @@ describe('booking cards', () => {
     const track = screen.getAllByLabelText('Track')[0]!;
     fireEvent.change(track, { target: { value: 'COR' } });
     expect((track as HTMLSelectElement).value).toBe('COR');
-    expect(session.bookingDraft?.draft.rooms[0]?.request.track).toBeUndefined();
+    expect(Object.values(session.bookingDrafts)[0]?.draft.rooms[0]?.request.track).toBeUndefined();
   });
 
   it('renders room type as a select with the draft options and the quoted room type', () => {
