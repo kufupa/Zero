@@ -197,6 +197,10 @@ export function parseChildrenAges(raw: string): number[] {
     .slice(0, 9);
 }
 
+/**
+ * One HMS step's inputs in a line. A step searches one stay (one set of dates), so its groups are that stay's rooms:
+ * "Dates 2026-11-02 → 2026-11-06 · Room 1: 15 × STQN, 1 adult · Room 2: 15 × STWN, 2 adults".
+ */
 export function formatQuoteStepInputs(inputs: Record<string, unknown>): string {
   const bits: string[] = [];
   if (typeof inputs.organisation === 'string' && inputs.organisation.trim()) {
@@ -213,8 +217,9 @@ export function formatQuoteStepInputs(inputs: Record<string, unknown>): string {
       const room = typeof group.roomPreference === 'string' && group.roomPreference.trim()
         ? group.roomPreference
         : 'any room';
-      const adults = typeof group.adults === 'number' ? `${group.adults} adults` : 'adults not set';
-      bits.push(`Stay ${index + 1}: ${qty} × ${room}, ${adults}`);
+      const adults =
+        typeof group.adults === 'number' ? `${group.adults} ${group.adults === 1 ? 'adult' : 'adults'}` : 'adults not set';
+      bits.push(`Room ${index + 1}: ${qty} × ${room}, ${adults}`);
     }
   }
   return bits.length ? bits.join(' · ') : 'Nothing to search yet';
