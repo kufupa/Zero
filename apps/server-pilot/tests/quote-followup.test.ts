@@ -22,7 +22,10 @@ import { and, eq } from 'drizzle-orm';
 
 const TRANSPORT = 'transport-centurion';
 const TRANSPORT_EMAIL = 'centurion@legacyhotels.co.za';
-const ON = { QUOTE_FOLLOWUPS: 'on' } as NodeJS.ProcessEnv;
+const ON = {
+  QUOTE_FOLLOWUPS: 'on',
+  QUOTE_FOLLOWUPS_SINCE: '2026-10-01T00:00:00Z',
+} as NodeJS.ProcessEnv;
 const OFF = { QUOTE_FOLLOWUPS: 'off' } as NodeJS.ProcessEnv;
 // Mon 2026-10-05 09:00 SAST: the quote request arrives.
 const REQUEST_AT = new Date('2026-10-05T07:00:00Z');
@@ -45,6 +48,18 @@ describe('addSaBusinessDays', () => {
   it("skips a Sunday holiday and its Monday substitute (Women's Day, 9-10 August 2026)", () => {
     expect(addSaBusinessDays(new Date('2026-08-07T08:00:00Z'), 3).toISOString()).toBe(
       '2026-08-13T08:00:00.000Z',
+    );
+  });
+
+  it('skips Easter 2027 (Good Friday 26 March, Family Day 29 March)', () => {
+    expect(addSaBusinessDays(new Date('2027-03-25T08:00:00Z'), 3).toISOString()).toBe(
+      '2027-04-01T08:00:00.000Z',
+    );
+  });
+
+  it('skips Day of Goodwill 2027 (Sunday 26 December) on its Monday substitute', () => {
+    expect(addSaBusinessDays(new Date('2027-12-24T08:00:00Z'), 3).toISOString()).toBe(
+      '2027-12-30T08:00:00.000Z',
     );
   });
 
@@ -357,6 +372,68 @@ describe('quote follow-up drafts', () => {
       expect(await threadDrafts(db, 'thread-off')).toHaveLength(0);
       const [row] = await followUpRuns(db, itemId);
       expect(row).toMatchObject({ state: 'retry_wait', failureClass: 'POLICY_BLOCK' });
+    });
+  });
+
+  it('sends before QUOTE_FOLLOWUPS_SINCE are never followed up; a later send is', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const old = await quoteRequest(db, 'thread-old', REQUEST_AT);
+      const fresh = await quoteRequest(db, 'thread-fresh', REQUEST_AT);
+      await sendReply(db, { id: 'out-old', threadId: 'thread-old', sentAt: FRI_SEND });
+      await sendReply(db, { id: 'out-old-2', threadId: 'thread-fresh', sentAt: FRI_SEND });
+      const afterCutoff = new Date('2026-10-12T08:00:00Z');
+      await sendReply(db, { id: 'out-fresh', threadId: 'thread-fresh', sentAt: afterCutoff });
+      const env = { QUOTE_FOLLOWUPS: 'on', QUOTE_FOLLOWUPS_SINCE: '2026-10-10T00:00:00Z' };
+
+      const late = new Date('2026-11-30T08:00:00Z');
+      expect(await runQuoteFollowupSweep({ db, env, now: late })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 1,
+      });
+      expect((await loadItem(db, old)).sentMessageId).toBeNull();
+      expect(await followUpRuns(db, old)).toHaveLength(0);
+      expect((await loadItem(db, fresh)).sentMessageId).toBe('out-fresh');
+
+      // A send linked before the cutoff moved forward (flag toggled) is not queued either.
+      await db
+        .update(workItem)
+        .set({ sentMessageId: 'out-old', sentAt: FRI_SEND, followUpDueAt: WED_DUE })
+        .where(eq(workItem.id, old));
+      await runQuoteFollowupSweep({ db, env, now: late });
+      expect(await followUpRuns(db, old)).toHaveLength(0);
+    });
+  });
+
+  it('without QUOTE_FOLLOWUPS_SINCE, sends before the process started are not followed up', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-nosince', REQUEST_AT);
+      await sendReply(db, { id: 'out-nosince', threadId: 'thread-nosince', sentAt: FRI_SEND });
+      const env = { QUOTE_FOLLOWUPS: 'on' };
+
+      expect(
+        await runQuoteFollowupSweep({ db, env, now: new Date('2027-01-01T08:00:00Z') }),
+      ).toEqual({ linked: 0, cancelled: 0, queued: 0 });
+      expect((await loadItem(db, itemId)).sentMessageId).toBeNull();
+    });
+  });
+
+  it('a quote dismissed after its run was queued gets no draft', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-dismissed', REQUEST_AT);
+      await sendReply(db, { id: 'out-dismissed', threadId: 'thread-dismissed', sentAt: FRI_SEND });
+      await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE });
+      await db.update(workItem).set({ status: 'dismissed' }).where(eq(workItem.id, itemId));
+      const { run, fence } = await claimRun(db, itemId);
+
+      await executeQuoteFollowupRun({ run, fence, db, env: ON });
+
+      expect(await threadDrafts(db, 'thread-dismissed')).toHaveLength(0);
+      expect(await runOutcome(db, run.id)).toBe('closed');
+      expect((await loadItem(db, itemId)).status).toBe('dismissed');
     });
   });
 

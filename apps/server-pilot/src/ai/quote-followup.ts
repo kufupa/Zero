@@ -6,8 +6,8 @@ import {
   type AiRunFence,
 } from './run-ledger.js';
 import { mailboxTransport, mailDraft, mailDraftRevision, message } from '../db/schema/mail.js';
+import { and, asc, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { deriveReplySubject } from './workflows/candidate-draft.js';
-import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { workEvent, workItem } from '../db/schema/work.js';
 import { textToSafeHtml } from './draft-evidence.js';
 import { getDb, type DB } from '../db/client.js';
@@ -64,6 +64,26 @@ const ZA_NON_BUSINESS_DAYS = new Set([
 
 export function quoteFollowupsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.QUOTE_FOLLOWUPS === 'on';
+}
+
+const PROCESS_STARTED_AT = new Date();
+let warnedNoSince = false;
+
+/**
+ * Only sends at or after this instant get a follow-up, so turning the flag on does not flood her with drafts for old
+ * quotes. QUOTE_FOLLOWUPS_SINCE is an ISO timestamp; unset or invalid falls back to the process start time.
+ */
+export function quoteFollowupsSince(env: NodeJS.ProcessEnv = process.env): Date {
+  const raw = env.QUOTE_FOLLOWUPS_SINCE?.trim();
+  const parsed = raw ? new Date(raw) : null;
+  if (parsed && Number.isFinite(parsed.getTime())) return parsed;
+  if (!warnedNoSince) {
+    warnedNoSince = true;
+    console.warn(
+      'QUOTE_FOLLOWUPS_SINCE unset or invalid; following up only sends after process start',
+    );
+  }
+  return PROCESS_STARTED_AT;
 }
 
 function isSaBusinessDay(at: Date): boolean {
@@ -125,11 +145,16 @@ export async function runQuoteFollowupSweep(
   input: { db?: DB; env?: NodeJS.ProcessEnv; now?: Date } = {},
 ): Promise<{ linked: number; cancelled: number; queued: number }> {
   const counts = { linked: 0, cancelled: 0, queued: 0 };
-  if (!quoteFollowupsEnabled(input.env ?? process.env)) return counts;
+  const env = input.env ?? process.env;
+  if (!quoteFollowupsEnabled(env)) return counts;
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
+  const since = quoteFollowupsSince(env);
 
   const source = alias(message, 'source');
+  // Only items with an outbound sent after both the request and the cutoff, so items that never qualify do not fill
+  // the batch on every pass.
+  const firstEligibleAt = sql`greatest(${since.toISOString()}::timestamp, coalesce(${source.receivedAt}, ${source.createdAt}))`;
   const unlinked = await db
     .select({
       id: workItem.id,
@@ -146,14 +171,18 @@ export async function runQuoteFollowupSweep(
         inArray(workItem.status, OPEN_STATUSES),
         isNull(workItem.sentMessageId),
         isNotNull(workItem.threadId),
+        sql`exists (select 1 from ${message} where ${message.transportId} = ${workItem.transportId}
+          and ${message.threadId} = ${workItem.threadId} and ${message.direction} = 'outbound'
+          and coalesce(${message.sentAt}, ${message.receivedAt}, ${message.createdAt}) >= ${firstEligibleAt})`,
       ),
     )
     .limit(SWEEP_BATCH);
   for (const item of unlinked) {
     if (!item.threadId) continue;
     const requestedAt = (item.requestReceivedAt ?? item.requestCreatedAt).getTime();
+    const firstEligible = Math.max(requestedAt, since.getTime());
     const sent = (await threadMessages(db, item.transportId, item.threadId))
-      .filter((m) => m.direction === 'outbound' && sentTime(m) >= requestedAt)
+      .filter((m) => m.direction === 'outbound' && sentTime(m) >= firstEligible)
       .sort((a, b) => sentTime(a) - sentTime(b))[0];
     if (!sent) continue;
     const sentAt = new Date(sentTime(sent));
@@ -186,8 +215,10 @@ export async function runQuoteFollowupSweep(
         inArray(workItem.status, OPEN_STATUSES),
         isNotNull(workItem.sentMessageId),
         isNotNull(workItem.followUpDueAt),
+        gte(workItem.sentAt, since),
       ),
     )
+    .orderBy(asc(workItem.followUpDueAt))
     .limit(SWEEP_BATCH);
   for (const item of linkedItems) {
     const { id, transportId, threadId, sentMessageId, sentAt, followUpDueAt } = item;
