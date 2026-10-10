@@ -16,6 +16,7 @@
  *   pnpm --dir apps/server-pilot exec tsx scripts/nava-preview-run.ts --threads id1,id2 --out out/run-1
  *
  * Output: <out>/results.json, <out>/index.html (gallery), <out>/threads/<id>/{pane,page}.png
+ * pane.png is the whole pane, every section (the viewport grows to fit it). page.png is the page at its normal size.
  */
 import { chromium, type Browser, type Page, type Route } from 'playwright';
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
@@ -31,6 +32,10 @@ const POLL_MS = 1_000;
 const MAX_FIELDS = 60;
 const MAX_BANNERS = 12;
 const MAX_BLOCKED = 20;
+/** The window each thread is read at. The pane capture grows it to the pane's full height (fitPaneToContent). */
+const VIEWPORT = { width: 1600, height: 1000 };
+/** Chromium cannot capture past 16384 px a side, so a longer pane is cut at this height. */
+const MAX_CAPTURE_HEIGHT = 16_000;
 /**
  * Guest-identifying fields (names, contact details, free-text notes). Their values never reach
  * results.json, index.html or the screenshots. Business names (company, agency) stay visible.
@@ -63,15 +68,22 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'connections.list',
   'drafts.get',
   'drafts.list',
+  'drafts.savedReply',
+  'hmsApproval.evidence',
+  'hmsApproval.writeState',
   'labels.list',
   'mail.get',
   'mail.listThreads',
   'panePartyLookup.suggest',
   'panePartyLookup.typeahead',
   'paneStayCancel.paneStayScreenshot',
+  'paneStayLookup.jobStatus',
   'paneStayLookup.screenshot',
   'quoteWorkflow.voucherFind',
+  'rates.list',
   'settings.get',
+  'workItems.followUpByMessage',
+  'workItems.list',
   'workstation.getPriorStaffQuoteRequote',
   'workstation.hmsQueueStatus',
   'workstation.listThreadQuoteRevisions',
@@ -86,13 +98,35 @@ export const ANALYSIS_PROCEDURES: ReadonlySet<string> = new Set(['quoteWorkflow.
  * Blocked by default. A proof run opts in with NAVA_PREVIEW_ALLOW_HMS_READS=1; it never allows an HMS write.
  */
 export const HMS_READ_PROCEDURES: ReadonlySet<string> = new Set(['panePartyLookup.findParty']);
-/** Mutations the pane references. Named so a block reads as a write. Any other name is blocked as unknown. */
+/**
+ * Mutations the pane references, named so a block reads as a write. Any other name is blocked as unknown.
+ * workItems.getByMessage is a query that writes: it inserts or updates a work-item row when the mail has a stored read.
+ * It stays blocked, and is named here so the block counts as a write.
+ */
 export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
+  'drafts.saveReply',
+  'hmsApproval.approve',
+  'hmsApproval.resolveNeedsCheck',
+  'hmsApproval.review',
+  'hmsApproval.reread',
   'panePartyLookup.findParty',
+  'paneStayCancel.commitCancel',
+  'paneStayCancel.previewCancel',
   'paneStayLookup.findStay',
+  'paneStayLookup.queueFind',
+  'paneStayLookup.queueSearchGuest',
   'paneStayLookup.searchGuest',
   'quoteWorkflow.commitStay',
   'quoteWorkflow.previewStay',
+  'rates.archive',
+  'rates.create',
+  'rates.update',
+  'workItems.dismiss',
+  'workItems.dismissFollowUp',
+  'workItems.getByMessage',
+  'workItems.recordEvent',
+  'workItems.retryTranslation',
+  'workItems.useFollowUp',
   'workstation.bridgeTicket',
   'workstation.executeStaffQuote',
   'workstation.outlookSync.activate',
@@ -286,6 +320,14 @@ export function parseRunConfig(
     allowHmsReads: env.NAVA_PREVIEW_ALLOW_HMS_READS?.trim() === '1',
   };
 }
+
+/** The pane's scroll body, the only scroller inside the pane (nava-pane.tsx renders it with this class). */
+export const PANE_BODY_SELECTOR = '[data-preview-pane] .nava-pane-scroll';
+/** Browser-side: how far the body's content runs past its visible height. Plain JS, no DOM types. */
+const PANE_OVERFLOW_JS = `() => {
+  const body = document.querySelector(${JSON.stringify(PANE_BODY_SELECTOR)});
+  return body ? Math.max(0, body.scrollHeight - body.clientHeight) : 0;
+}`;
 
 /** Browser-side: reads the pane and the list row for one thread. Plain JS, no DOM types. */
 const READ_PANE_JS = `(threadId) => {
@@ -514,6 +556,26 @@ async function listLatest(page: Page, count: number): Promise<string[]> {
   return ids.slice(0, count);
 }
 
+/**
+ * Grows the viewport so the whole pane shows in the capture. The pane is as tall as the viewport and its body is the
+ * only scroller, so the viewport grows by the body's overflow. Nothing is clicked or scrolled.
+ */
+async function fitPaneToContent(page: Page): Promise<void> {
+  await page.setViewportSize(VIEWPORT).catch(() => undefined);
+  const overflow = await page
+    .evaluate(`(${PANE_OVERFLOW_JS})()`)
+    .then((value) => Number(value) || 0)
+    .catch(() => 0);
+  if (overflow > 0) {
+    await page
+      .setViewportSize({
+        width: VIEWPORT.width,
+        height: Math.min(VIEWPORT.height + overflow, MAX_CAPTURE_HEIGHT),
+      })
+      .catch(() => undefined);
+  }
+}
+
 async function viewThread(
   page: Page,
   baseUrl: string,
@@ -553,9 +615,12 @@ async function viewThread(
   const panel = page.locator('[data-preview-pane]');
   const panePath = join(dir, 'pane.png');
   const pagePath = join(dir, 'page.png');
+  await fitPaneToContent(page);
   await page.evaluate(`(${MARK_PII_JS})()`).catch(() => 0);
   const mask = [page.locator('[data-runner-mask]')];
   await panel.screenshot({ path: panePath, mask, timeout: 15_000 }).catch(() => undefined);
+  // The page keeps the size staff see. Only the pane capture is taller.
+  await page.setViewportSize(VIEWPORT).catch(() => undefined);
   await page
     .screenshot({ path: pagePath, fullPage: true, mask, timeout: 15_000 })
     .catch(() => undefined);
@@ -620,7 +685,7 @@ export async function runPreview(
   try {
     const context = await browser.newContext({
       storageState: config.storageStatePath,
-      viewport: { width: 1600, height: 1000 },
+      viewport: VIEWPORT,
       acceptDownloads: false,
       ...(config.transportId
         ? { extraHTTPHeaders: { 'x-zero-active-transport': config.transportId } }

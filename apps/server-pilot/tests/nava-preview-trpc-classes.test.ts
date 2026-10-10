@@ -40,6 +40,15 @@ const VIEWER_SOURCES = [
   'lib/hotkeys',
 ];
 
+/**
+ * Namespaces the viewer reaches through typed accessors (`workItemsFromTrpc(trpc).list`, `routes?.jobStatus`). The literal
+ * scan cannot see those calls, so every procedure in these namespaces counts as referenced. A new one must be classified
+ * before this passes. A new namespace reached only through an accessor must be added here.
+ */
+const ACCESSOR_NAMESPACES = ['workItems', 'rates', 'paneStayLookup', 'paneStayCancel', 'hmsApproval'];
+/** Queries that write a row when they run. The runner blocks them as writes, so they are named with the writes. */
+const WRITING_QUERIES = new Set(['workItems.getByMessage']);
+
 const procedureTypes = new Map<string, string>(
   Object.entries(appRouter._def.procedures as Record<string, { _def: { type: string } }>).map(
     ([name, procedure]) => [name, procedure._def.type],
@@ -67,6 +76,9 @@ function referencedProcedures(): Set<string> {
       }
     }
   }
+  for (const name of procedureTypes.keys()) {
+    if (ACCESSOR_NAMESPACES.includes(name.split('.')[0] ?? '')) found.add(name);
+  }
   return found;
 }
 
@@ -87,9 +99,21 @@ describe('viewer tRPC classification', () => {
     }
   });
 
-  it('every known write is a mutation on the router', () => {
+  it('every known write is a mutation on the router, or a query that writes', () => {
     for (const name of KNOWN_WRITE_PROCEDURES) {
-      expect(procedureTypes.get(name), name).toBe('mutation');
+      expect(procedureTypes.get(name), name).toBe(
+        WRITING_QUERIES.has(name) ? 'query' : 'mutation',
+      );
+    }
+  });
+
+  it('every accessor namespace exists on the router, so a typo cannot quietly skip it', () => {
+    const names = [...procedureTypes.keys()];
+    for (const namespace of ACCESSOR_NAMESPACES) {
+      expect(
+        names.some((name) => name.startsWith(`${namespace}.`)),
+        namespace,
+      ).toBe(true);
     }
   });
 

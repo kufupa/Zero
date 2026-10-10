@@ -5,6 +5,7 @@ import {
   gateFailures,
   isPiiField,
   outcomeOf,
+  PANE_BODY_SELECTOR,
   parseRunConfig,
   piiValuesOf,
   READ_PROCEDURES,
@@ -18,7 +19,8 @@ import {
 } from '../scripts/nava-preview-run';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
 let dir: string;
@@ -40,6 +42,9 @@ const env = (overrides: Record<string, string | undefined> = {}) =>
     NAVA_PREVIEW_STORAGE_STATE: statePath,
     ...overrides,
   }) as NodeJS.ProcessEnv;
+
+const here = dirname(fileURLToPath(import.meta.url));
+const mailRoot = join(here, '..', '..', 'mail');
 
 describe('parseRunConfig', () => {
   it('reads a latest-N selection with a default timeout and an out directory under cwd', () => {
@@ -437,6 +442,60 @@ describe('classifyTrpcRequest', () => {
       procedures: [],
       blocked: [{ procedure: '(none)', reason: 'unknown' }],
     });
+  });
+});
+
+describe('classifyTrpcRequest: verified pane reads and named writes', () => {
+  const origin = 'https://nava.legacyhotels.co.za/api/trpc/';
+  // Each read was read through to its helpers in src/trpc/routes and src/ai: selects only, or a stored-bytes fetch.
+  const VERIFIED_READS = [
+    'workItems.list',
+    'workItems.followUpByMessage',
+    'rates.list',
+    'paneStayLookup.jobStatus',
+    'drafts.savedReply',
+    'hmsApproval.evidence',
+    'hmsApproval.writeState',
+  ];
+  // workItems.getByMessage is a query, but its read inserts a work item when the mail has a stored read. It stays blocked.
+  const WRITES = [
+    'workItems.getByMessage',
+    'rates.create',
+    'paneStayLookup.queueFind',
+    'hmsApproval.reread',
+    'drafts.saveReply',
+  ];
+
+  it('allows each verified read the pane calls on load', () => {
+    for (const name of VERIFIED_READS) {
+      expect(READ_PROCEDURES.has(name), name).toBe(true);
+      expect(classifyTrpcRequest(`${origin}${name}?batch=1`).allowed, name).toBe(true);
+    }
+  });
+
+  it('blocks each write and names it as a write, not as unknown', () => {
+    for (const name of WRITES) {
+      expect(READ_PROCEDURES.has(name), name).toBe(false);
+      expect(classifyTrpcRequest(`${origin}${name}?batch=1`).blocked, name).toEqual([
+        { procedure: name, reason: 'write' },
+      ]);
+    }
+  });
+
+  it('blocks a batch that carries a write alongside verified reads', () => {
+    const decision = classifyTrpcRequest(`${origin}workItems.list,workItems.getByMessage?batch=1`);
+    expect(decision.allowed).toBe(false);
+    expect(decision.blocked).toEqual([{ procedure: 'workItems.getByMessage', reason: 'write' }]);
+  });
+});
+
+describe('pane capture contract', () => {
+  it('the capture selector matches the pane markup in the viewer code', () => {
+    expect(PANE_BODY_SELECTOR).toBe('[data-preview-pane] .nava-pane-scroll');
+    const pane = readFileSync(join(mailRoot, 'components', 'nava-pane', 'nava-pane.tsx'), 'utf8');
+    const page = readFileSync(join(mailRoot, 'app', '(routes)', 'nava-preview', 'page.tsx'), 'utf8');
+    expect(pane).toContain('nava-pane-scroll');
+    expect(page).toContain('data-preview-pane');
   });
 });
 
