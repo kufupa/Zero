@@ -47,7 +47,7 @@ const VIEWER_SOURCES = [
  */
 const ACCESSOR_NAMESPACES = ['workItems', 'rates', 'paneStayLookup', 'paneStayCancel', 'hmsApproval'];
 /** Queries that write a row when they run. The runner blocks them as writes, so they are named with the writes. */
-const WRITING_QUERIES = new Set(['workItems.getByMessage']);
+const WRITING_QUERIES = new Set<string>();
 
 const procedureTypes = new Map<string, string>(
   Object.entries(appRouter._def.procedures as Record<string, { _def: { type: string } }>).map(

@@ -582,8 +582,9 @@ export type StoredWork =
   | { status: 'failed'; reason: string }
   | {
       status: 'ready';
-      workItemId: string;
-      workItemStatus: string;
+      /** Null when the read has no work item yet. The pane then opens one (openStoredWork) before it logs edits. */
+      workItemId: string | null;
+      workItemStatus: string | null;
       extractionId: string;
       refs: Record<string, GroupRef>;
       analysis: StoredAnalysis;
@@ -607,23 +608,84 @@ async function failureFor(db: DB, messageId: string): Promise<StoredWork> {
   return { status: 'failed', reason: copy ?? 'Nava could not read this email.' };
 }
 
-/**
- * What the pane shows for one mail: the latest succeeded read with its work item, the latest failed read as a reason,
- * or nothing (the pane then reads the mail live). Makes no model call.
- */
-export async function storedWorkFor(
-  db: DB,
-  input: { transportId: string; internetMessageId: string },
-): Promise<StoredWork> {
+/** The one message in this transport with this Message-ID, or null (none, or not unique). */
+async function messageFor(db: DB, input: { transportId: string; internetMessageId: string }) {
   const internetMessageId = canonicalInternetMessageId(input.internetMessageId);
-  if (!internetMessageId) return { status: 'none' };
+  if (!internetMessageId) return null;
   const found = await db
     .select({ id: message.id, threadId: message.threadId })
     .from(message)
     .where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, internetMessageId)))
     .limit(2);
-  const msg = found[0];
-  if (!msg || found.length !== 1) return { status: 'none' };
+  return found.length === 1 ? found[0]! : null;
+}
+
+type ReadyRead = NonNullable<Awaited<ReturnType<typeof succeededRead>>>;
+
+/** The pane's ready view of a read with her saved values. The item can stay on an earlier read (see ensureWorkItem). */
+async function readyView(
+  db: DB,
+  messageId: string,
+  latest: ReadyRead,
+  item: Pick<WorkItemRef, 'id' | 'status' | 'state' | 'extractionId'> | null,
+): Promise<StoredWork> {
+  const read =
+    item?.extractionId && item.extractionId !== latest.id
+      ? ((await succeededRead(db, messageId, item.extractionId)) ?? latest)
+      : latest;
+  const state = item?.state ?? {};
+  const stored = storedAnalysis(read, state);
+  return {
+    status: 'ready',
+    workItemId: item?.id ?? null,
+    workItemStatus: item?.status ?? null,
+    extractionId: read.id,
+    refs: stored.refs,
+    analysis: stored.analysis,
+    contact: storedContact(read.payload, state),
+    language: read.language,
+    translation: storedTranslation(read.translation),
+  };
+}
+
+/**
+ * What the pane shows for one mail: the latest succeeded read with its work item, the latest failed read as a reason,
+ * or nothing (the pane then reads the mail live). A read only: no model call, and no row is written. The inbound run
+ * makes the work item when it stores the read; a read without one comes back with a null workItemId.
+ */
+export async function storedWorkFor(
+  db: DB,
+  input: { transportId: string; internetMessageId: string },
+): Promise<StoredWork> {
+  const msg = await messageFor(db, input);
+  if (!msg) return { status: 'none' };
+  const latest = await succeededRead(db, msg.id);
+  if (!latest) return failureFor(db, msg.id);
+  const [item] = await db
+    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
+    .from(workItem)
+    .where(
+      and(
+        eq(workItem.transportId, input.transportId),
+        eq(workItem.threadId, msg.threadId),
+        eq(workItem.kind, latest.kind),
+        eq(workItem.sourceMessageId, msg.id),
+      ),
+    )
+    .limit(1);
+  return readyView(db, msg.id, latest, item ?? null);
+}
+
+/**
+ * The same view, after making sure the read has its work item and points it at the latest read it can (ensureWorkItem).
+ * The pane calls this once, only when storedWorkFor found a read with no work item, so her edits have an item to land on.
+ */
+export async function openStoredWork(
+  db: DB,
+  input: { transportId: string; internetMessageId: string },
+): Promise<StoredWork> {
+  const msg = await messageFor(db, input);
+  if (!msg) return { status: 'none' };
   const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg.id);
   const item = await ensureWorkItem(db, {
@@ -633,23 +695,7 @@ export async function storedWorkFor(
     kind: latest.kind,
     extractionId: latest.id,
   });
-  // The item can stay on an earlier read (see ensureWorkItem). Her saved values belong to that read's stays.
-  const read =
-    item.extractionId && item.extractionId !== latest.id
-      ? ((await succeededRead(db, msg.id, item.extractionId)) ?? latest)
-      : latest;
-  const stored = storedAnalysis(read, item.state);
-  return {
-    status: 'ready',
-    workItemId: item.id,
-    workItemStatus: item.status,
-    extractionId: read.id,
-    refs: stored.refs,
-    analysis: stored.analysis,
-    contact: storedContact(read.payload, item.state),
-    language: read.language,
-    translation: storedTranslation(read.translation),
-  };
+  return readyView(db, msg.id, latest, item);
 }
 
 export type FieldEventResult =

@@ -177,6 +177,43 @@ describe('useStoredWork', () => {
     expect(query).toHaveBeenCalledWith({ internetMessageId: 'm-1' });
   });
 
+  it('opens a work item once for a stored read that has none, then logs edits against it', async () => {
+    const { trpc, query, mutate } = fakeTrpc(() => ({ ...READY, workItemId: null, workItemStatus: null }));
+    const open = vi.fn(async (_input: unknown) => READY);
+    const routes = { workItems: { ...trpc.workItems, open: { mutate: open } } };
+    const { result, unmount } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith({ internetMessageId: 'm-1' });
+    act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 3 }]));
+    unmount();
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'wi-1', value: 3 }));
+  });
+
+  it('never opens a work item for a read that has one', async () => {
+    const { trpc } = fakeTrpc(() => READY);
+    const open = vi.fn(async (_input: unknown) => READY);
+    const routes = { workItems: { ...trpc.workItems, open: { mutate: open } } };
+    const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+    await waitFor(() => expect(result.current.pane.state).toBe('ready'));
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it('still shows the stored read when its work item cannot be opened, and logs no edit', async () => {
+    const { trpc, mutate } = fakeTrpc(() => ({ ...READY, workItemId: null, workItemStatus: null }));
+    const open = vi.fn(async (_input: unknown) => {
+      throw new Error('blocked by the preview');
+    });
+    const routes = { workItems: { ...trpc.workItems, open: { mutate: open } } };
+    const { result, unmount } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
+    act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 3 }]));
+    act(() => result.current.recordContact('phone', '+27 82 555 0100'));
+    unmount();
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
   it('reads live when nothing is stored', async () => {
     const { trpc } = fakeTrpc(() => ({ status: 'none' }));
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
@@ -209,6 +246,29 @@ describe('useStoredWork', () => {
         vi.advanceTimersByTime(STORED_LOOKUP_TIMEOUT_MS);
       });
       expect(result.current.pane.state).toBe('reading');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the stored read when opening its work item is slow, and logs no edit', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => ({ ...READY, workItemId: null, workItemStatus: null }));
+      const open = vi.fn((_input: unknown) => new Promise<never>(() => undefined));
+      const routes = { workItems: { ...trpc.workItems, open: { mutate: open } } };
+      const { result, unmount } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(open).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(STORED_LOOKUP_TIMEOUT_MS * 2);
+      });
+      expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null });
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 3 }]));
+      unmount();
+      expect(mutate).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

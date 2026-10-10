@@ -12,6 +12,7 @@ import {
   ensureWorkItemForMessage,
   formStays,
   listWorkItems,
+  openStoredWork,
   parseFieldPath,
   recordFieldEvent,
   storedTranslation,
@@ -139,10 +140,11 @@ async function insertRead(
   return row!.id;
 }
 
+/** The pane's open of a mail with a stored read: the work item is made or moved to the read (openStoredWork). */
 async function readyWork(db: DB, id: string) {
-  const work = await storedWorkFor(db, { transportId: CENTURION, internetMessageId: `<${id}@example.com>` });
-  if (work.status !== 'ready') throw new Error(`expected a ready read, got ${work.status}`);
-  return work;
+  const work = await openStoredWork(db, { transportId: CENTURION, internetMessageId: `<${id}@example.com>` });
+  if (work.status !== 'ready' || !work.workItemId) throw new Error(`expected a ready read, got ${work.status}`);
+  return { ...work, workItemId: work.workItemId };
 }
 
 async function eventsFor(db: DB, workItemId: string) {
@@ -188,6 +190,45 @@ describe('stored read for the pane', () => {
       expect(work.analysis.groups.map((group) => group.stayId)).toEqual([STAY_ONE, STAY_ONE, STAY_TWO]);
       expect(work.analysis.reviewItems?.map((item) => item.id)).toContain('missing:rooms:0');
       expect(work.workItemStatus).toBe('needs_you');
+    }));
+
+  it('reads a stored read without writing: no work item is made or moved until the pane opens one', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'ro1');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const lookup = { transportId: CENTURION, internetMessageId: '<ro1@example.com>' };
+
+      const unopened = await storedWorkFor(db, lookup);
+      expect(unopened).toMatchObject({ status: 'ready', workItemId: null, workItemStatus: null, extractionId: first });
+      expect(unopened.status === 'ready' && unopened.analysis.groups).toHaveLength(3);
+      expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(0);
+
+      const opened = await openStoredWork(db, lookup);
+      expect(opened).toMatchObject({ status: 'ready', workItemId: expect.any(String), workItemStatus: 'needs_you' });
+      expect(await storedWorkFor(db, lookup)).toEqual(opened);
+
+      // A newer read is linked by the inbound run, not by the lookup.
+      const [before] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
+      const second = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
+      expect(await storedWorkFor(db, lookup)).toMatchObject({ extractionId: first });
+      const [after] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
+      expect(after).toEqual(before);
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(await storedWorkFor(db, lookup)).toMatchObject({ extractionId: second });
+    }));
+
+  it('the open route makes the work item, and the lookup route only reads', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'ro2');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const caller = centurionCaller();
+      expect(await caller.workItems.getByMessage({ internetMessageId: '<ro2@example.com>' })).toMatchObject({
+        workItemId: null,
+      });
+      const opened = await caller.workItems.open({ internetMessageId: '<ro2@example.com>' });
+      expect(opened).toMatchObject({ status: 'ready', workItemId: expect.any(String) });
+      expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(1);
+      expect(await caller.workItems.getByMessage({ internetMessageId: '<ro2@example.com>' })).toEqual(opened);
     }));
 
   it('returns none for an unknown mail and for a mail with no read', () =>

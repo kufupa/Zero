@@ -33,7 +33,8 @@ export type StoredPane =
   | {
       state: 'ready';
       analysis: QuoteAnalysis;
-      workItemId: string;
+      /** Null when the read has no work item (it could not be opened): the read shows, edits are not logged. */
+      workItemId: string | null;
       contact: StoredContact;
       language: string | null;
       translation: StoredTranslation;
@@ -303,7 +304,15 @@ export function useStoredWork(args: {
     };
     const timer = setTimeout(() => settle({ status: 'unavailable' }), STORED_LOOKUP_TIMEOUT_MS);
     setLookup(null);
-    void bindStoredWork({ query: workItemsFromTrpc(trpcRef.current).getByMessage, internetMessageId }).then(settle);
+    const routes = workItemsFromTrpc(trpcRef.current);
+    // The deadline covers the stored read. Once it is in, a slow open shows that read rather than reading live.
+    void bindStoredWork({
+      query: routes.getByMessage,
+      open: routes.open,
+      internetMessageId,
+      onRead: () => clearTimeout(timer),
+      openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS,
+    }).then(settle);
     return () => {
       current = false;
       clearTimeout(timer);
@@ -333,7 +342,7 @@ export function useStoredWork(args: {
   const key = [
     internetMessageId ?? '',
     pane.state,
-    pane.state === 'ready' ? pane.workItemId : '',
+    pane.state === 'ready' ? (pane.workItemId ?? '') : '',
     pane.state === 'failed' ? pane.reason : '',
     String(retried),
   ].join('|');
