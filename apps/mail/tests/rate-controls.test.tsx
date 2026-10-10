@@ -16,6 +16,7 @@ import {
   type SavedRatesClient,
 } from '../components/quote-workflow/rate-controls';
 import { draftMoney } from '../lib/quote-workflow/multi-option-draft';
+import { buildExpiredPriorRequoteBindArgs } from '../lib/quote-workflow/booking-draft-bind';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import {
   bindExecuteStaffQuote,
@@ -27,6 +28,7 @@ import {
 import {
   emptyStaffQuoteHeader,
   type QuoteSession,
+  type RateOption,
   type RowPriceChoice,
   type StaffRowRate,
   type StayGroupRequirement,
@@ -105,7 +107,7 @@ function stepOf(session: QuoteSession): string {
 
 /** The quote after HMS priced it. A row price is set before the run, as the pane sets it, and the run carries it. */
 async function pricedSession(
-  options: { rowPrice?: RowPriceChoice; rowRates?: StaffRowRate[] } = {},
+  options: { rowPrice?: RowPriceChoice; rowRates?: StaffRowRate[]; rateOptions?: RateOption[] } = {},
 ): Promise<QuoteSession> {
   let session = readySession();
   if (options.rowPrice) {
@@ -117,6 +119,7 @@ async function pricedSession(
       selectionEpoch: input.selectionEpoch,
       inputRevision: input.inputRevision,
       ...(options.rowRates ? { rowRates: options.rowRates } : {}),
+      ...(options.rateOptions ? { rateOptions: options.rateOptions } : {}),
     }),
     source,
     selectionEpoch: 1,
@@ -374,6 +377,103 @@ describe('row price controls in the quote panel', () => {
         rowPrices: [{ groupId: 'g1', source: 'override', rateCode: 'NCOR1B', overrideRate: 185000, note: NOTE }],
       }),
     );
+  });
+});
+
+describe('row price changes that race or replace each other', () => {
+  /** An HMS rate option for g1. */
+  function option(id: string, rateCode: string, selected: boolean): RateOption {
+    return {
+      id,
+      groupId: 'g1',
+      board: 'bb',
+      boardLabel: 'Bed & breakfast',
+      rateCode,
+      rateLabel: rateCode,
+      roomCode: 'STWN',
+      roomLabel: 'Standard Twin',
+      contract: false,
+      onlyContract: false,
+      matchesRequest: true,
+      perNightMinor: 215000,
+      totalMinor: 430000,
+      currency: 'ZAR',
+      priced: 'full',
+      selected,
+    };
+  }
+
+  it('picking an HMS rate card returns a priced row to the HMS rate, so the run charges the card', async () => {
+    const runs: string[] = [];
+    const seen = { session: null as QuoteSession | null };
+    const session = await pricedSession({
+      rowPrice: { source: 'one_off', amountMinor: 120000 },
+      rateOptions: [option('o-ncor', 'NCOR', true), option('o-bar', 'BAR', false)],
+    });
+    render(<PinnedPanel initial={session} runs={runs} seen={seen} />);
+    const cards = within(screen.getByRole('group', { name: 'Room rates from HMS' })).getAllByRole('button');
+    fireEvent.click(cards[1]!);
+
+    expect(seen.session!.groups[0]!.rateCode).toBe('BAR');
+    expect(seen.session!.groups[0]!.rowPrice).toBeUndefined();
+    expect(rowPricesFor(seen.session!.groups)).toEqual([]);
+    expect(runs).toEqual([stepOf(session)]);
+    expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('back on the HMS rate'));
+  });
+
+  it('a saved-rate edit that lands after the row moved to a typed rate keeps the typed rate', async () => {
+    let finishUpdate: (() => void) | undefined;
+    const rates = fakeRates([SUMMER]);
+    const update = rates.update;
+    rates.update = vi.fn(
+      (input: { id: string; name: string; amountMinor: number }) =>
+        new Promise<SavedRate>((resolve) => {
+          finishUpdate = () => void update(input).then(resolve);
+        }),
+    );
+    const runs: string[] = [];
+    const seen = { session: null as QuoteSession | null };
+    const session = reduceQuoteSession(readySession(), {
+      type: 'patch_group',
+      groupId: 'g1',
+      patch: { rowPrice: savedPrice(SUMMER) },
+    });
+    render(<PinnedPanel initial={session} rates={rates} runs={runs} seen={seen} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Manage saved rates' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Standard summer' }));
+    fireEvent.change(screen.getByLabelText('Saved rate per night (R)'), { target: { value: '1,900' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(rates.update).toHaveBeenCalled());
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Type a rate' }));
+    fireEvent.change(screen.getByLabelText('Rate per night (R)'), { target: { value: '1,200' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Use this rate' }));
+    expect(seen.session!.groups[0]!.rowPrice).toEqual({ source: 'one_off', amountMinor: 120000 });
+
+    finishUpdate!();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
+    expect(seen.session!.groups[0]!.rowPrice).toEqual({ source: 'one_off', amountMinor: 120000 });
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it('an expired re-quote asks for the row prices the stored quote was run with', () => {
+    const { groups } = buildExpiredPriorRequoteBindArgs({
+      stored: {
+        groups: [{ id: 'stored-1', arrivalDate: stay.arrivalDate!, departureDate: stay.departureDate!, quantity: 1, adults: 2, childrenAges: [], board: 'bb' }],
+        salesStrategy: 'BAR',
+        company: '',
+        agency: '',
+        rowPrices: [{ groupId: 'stored-1', source: 'override', rateCode: 'NCOR1B', overrideRate: 185000, note: NOTE }],
+      },
+      sessionGroups: [stay],
+      sessionHeader: emptyStaffQuoteHeader(),
+      staffEdited: false,
+    });
+    expect(rowPricesFor(groups)).toEqual([
+      { groupId: 'g1', source: 'override', rateCode: 'NCOR1B', overrideRate: 185000, note: NOTE },
+    ]);
   });
 });
 
