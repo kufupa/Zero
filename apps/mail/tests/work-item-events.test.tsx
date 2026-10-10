@@ -21,6 +21,8 @@ type Ready = Extract<StoredWork, { status: 'ready' }>;
 
 const ANALYSIS = { intent: 'quote', groups: [], secondaryAsks: [], alternatives: [] } as unknown as Ready['analysis'];
 
+const NO_CONTACT = { name: null, company: null, endClient: null, email: null, phone: null };
+
 const READY: Ready = {
   status: 'ready',
   workItemId: 'wi-1',
@@ -32,6 +34,9 @@ const READY: Ready = {
     g3: { stayId: 'st-2', rowId: null },
   },
   analysis: ANALYSIS,
+  contact: NO_CONTACT,
+  language: null,
+  translation: null,
 };
 
 /** One pane row. Stored rows carry the read's stay id, as the stored analysis gives them. */
@@ -62,7 +67,14 @@ function fakeTrpc(lookup: () => unknown) {
 }
 
 describe('storedDecision', () => {
-  const ready: StoredPane = { state: 'ready', analysis: ANALYSIS, workItemId: 'wi-1' };
+  const ready: StoredPane = {
+    state: 'ready',
+    analysis: ANALYSIS,
+    workItemId: 'wi-1',
+    contact: NO_CONTACT,
+    language: null,
+    translation: null,
+  };
 
   it('reads live whenever the person asked for a treat-as or a staff note', () => {
     expect(storedDecision(ready, true)).toEqual({ kind: 'live' });

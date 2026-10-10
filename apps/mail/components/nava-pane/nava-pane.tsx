@@ -85,6 +85,8 @@ import { WelcomeScreen } from './screens/welcome';
 import { DiagnosticsScreen } from './screens/diagnostics';
 import { TourScreen } from './screens/tour';
 import { SelectedEmailBlock } from './blocks/selected-email';
+import { ContactBlock } from './blocks/contact-block';
+import { TranslationBox } from './blocks/translation-box';
 import { BookingVoucherCard } from './blocks/booking-voucher-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
 import { SystemCheckResultsBlock } from './blocks/system-check-results';
@@ -1161,6 +1163,24 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
           <main className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
             {/* Email context for the selected email; until one is selected, an empty state. */}
             <SelectedEmailBlock activeEmail={activeEmail} />
+
+            {/* Contact block (U16): the core details, pre-filled. Then the translation, only for mail not in English. */}
+            {activeEmail ? (
+              <ContactBlock
+                key={`${activeEmail.internetMessageId ?? ''}|${storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : ''}`}
+                contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
+                onEdit={storedWork.recordContact}
+              />
+            ) : null}
+            {storedWork.pane.state === 'ready' ? (
+              <TranslationBox
+                key={storedWork.pane.workItemId}
+                language={storedWork.pane.language}
+                translation={storedWork.pane.translation}
+                busy={storedWork.translationBusy}
+                onRetry={storedWork.retryTranslation}
+              />
+            ) : null}
 
             {/* Booking and voucher block: a change or cancellation card, then the Find the booking card. */}
             <BookingVoucherCard

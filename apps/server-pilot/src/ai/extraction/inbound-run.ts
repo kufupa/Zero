@@ -3,7 +3,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getDb, type DB } from '../../db/client.js';
 import { mailCategory, mailThread, mailThreadCategory, message } from '../../db/schema/mail.js';
-import { mailExtraction } from '../../db/schema/work.js';
+import { mailExtraction, workItem } from '../../db/schema/work.js';
 import { getSenderPreference } from '../../mail/sender-preference.js';
 import type { ModelAdapter } from '../bedrock/adapter.js';
 import { AI_DURABLE_PRIMARY_CATEGORY_SLUGS } from '../categories.js';
@@ -387,4 +387,66 @@ export async function executeInboundExtractionRun(input: {
     db,
   );
   return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
+}
+
+export type TranslationRetry =
+  | { status: 'done'; translation: InboundTranslation | null }
+  | { status: 'not_found' | 'not_needed' | 'disabled' | 'unconfigured' | 'capped' };
+
+/**
+ * Translates a stored non-English read again (U16 Retry). The stored read is updated in place, so this makes one model
+ * call now rather than queuing a run. It takes a slot on the same hourly cap as the extraction run, and it runs only
+ * when the extraction flag is on. The translation is read from the message's text, as the extraction read it.
+ */
+export async function retryInboundTranslation(
+  input: { transportId: string; workItemId: string },
+  deps: InboundExtractionDeps = {},
+): Promise<TranslationRetry> {
+  const env = deps.env ?? process.env;
+  const db = deps.db ?? getDb();
+  const [item] = await db
+    .select({ extractionId: workItem.extractionId })
+    .from(workItem)
+    .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+    .limit(1);
+  if (!item?.extractionId) return { status: 'not_found' };
+  if (!inboundExtractionEnabled(env)) return { status: 'disabled' };
+  const [read] = await db
+    .select({
+      id: mailExtraction.id,
+      messageId: mailExtraction.messageId,
+      language: mailExtraction.language,
+      usage: mailExtraction.usage,
+    })
+    .from(mailExtraction)
+    .where(and(eq(mailExtraction.id, item.extractionId), eq(mailExtraction.status, 'succeeded')))
+    .limit(1);
+  if (!read) return { status: 'not_found' };
+  if (!read.language || read.language === 'en') return { status: 'not_needed' };
+  const [source] = await db
+    .select({ textBody: message.textBody })
+    .from(message)
+    .where(and(eq(message.id, read.messageId), eq(message.transportId, input.transportId)))
+    .limit(1);
+  if (!source) return { status: 'not_found' };
+  const adapter = deps.adapter === undefined ? resolveAdapter(true, null).adapter : deps.adapter;
+  if (!adapter) return { status: 'unconfigured' };
+  const clock = deps.now ?? Date.now;
+  if (!takeCallSlot(inboundExtractionMaxPerHour(env), clock())) return { status: 'capped' };
+  const done = await translateInboundBody({
+    adapter,
+    bodyText: source.textBody ?? '',
+    sourceLanguage: read.language,
+    signal: deps.signal,
+    deadlineMs: deps.translationDeadlineMs ?? TRANSLATE_DEADLINE_MS,
+  });
+  const translation = done?.translation ?? null;
+  await db
+    .update(mailExtraction)
+    .set({
+      translation,
+      usage: { ...read.usage, ...(done ? { translation: done.usage } : {}) },
+    })
+    .where(eq(mailExtraction.id, read.id));
+  return { status: 'done', translation };
 }
