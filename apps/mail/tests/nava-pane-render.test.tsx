@@ -924,6 +924,13 @@ describe('NavaPane contact and translation on both surfaces', () => {
       expect(screen.queryByRole('region', { name: 'Translation' })).toBeNull();
     });
 
+    it(`${surface}: a read whose work item could not be opened still fills the contact`, async () => {
+      bridgeMockState.storedWork = { ...STORED_FRENCH, workItemId: null, workItemStatus: null };
+      render(<NavaPane bridge={fakeBridge} preview={preview} />);
+      await waitFor(() => expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('marie.dupont@example.fr'));
+      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Marie Dupont');
+    });
+
     it(`${surface}: a failed translation says so and retries from the pane`, async () => {
       bridgeMockState.storedWork = { ...STORED_FRENCH, translation: { status: 'failed' } };
       bridgeMockState.retryTranslation.mockResolvedValueOnce({ status: 'done', translation: FRENCH_TRANSLATION });
