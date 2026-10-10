@@ -207,10 +207,24 @@ export type RecordFieldEventInput = {
 /** The outcome of a translation retry. Only `done` carries a translation; the rest say why it did not run. */
 export type TranslationRetryResult = { status: string; translation?: StoredTranslation };
 
+/** One open item on the Needs-you list. The chip is derived from the item's latest run (KTD14). */
+export type NeedsYouRow = {
+  id: string;
+  kind: string;
+  status: 'needs_you' | 'review';
+  chip: 'needs_you' | 'queued' | 'in_hms' | 'review';
+  threadId: string | null;
+  sender: string | null;
+  subject: string | null;
+  receivedAt: Date | null;
+};
+
 type WorkItemsClient = {
   getByMessage?: { query: (input: { internetMessageId: string }) => Promise<StoredWork> };
   recordEvent?: { mutate: (input: RecordFieldEventInput) => Promise<unknown> };
   retryTranslation?: { mutate: (input: { workItemId: string }) => Promise<TranslationRetryResult> };
+  list?: { query: (input: { limit?: number }) => Promise<NeedsYouRow[]> };
+  dismiss?: { mutate: (input: { workItemId: string }) => Promise<unknown> };
 };
 
 export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {

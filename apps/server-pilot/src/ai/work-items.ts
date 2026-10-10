@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailThread, message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
 import type { ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
@@ -395,7 +395,10 @@ async function latestSucceededRead(db: DB, messageId: string) {
   };
 }
 
-/** Points the message's work item at its latest succeeded read. A message with no succeeded read has none. */
+/**
+ * Points the message's work item at its latest succeeded read. A message with no succeeded read has none, and spam
+ * never gets one (nobody has work to do on it).
+ */
 export async function ensureWorkItemForMessage(
   db: DB,
   input: { transportId: string; messageId: string },
@@ -406,7 +409,7 @@ export async function ensureWorkItemForMessage(
     .where(and(eq(message.id, input.messageId), eq(message.transportId, input.transportId)))
     .limit(1);
   const latest = await latestSucceededRead(db, input.messageId);
-  if (!msg || !latest) return null;
+  if (!msg || !latest || latest.kind === 'spam') return null;
   return ensureWorkItem(db, {
     transportId: input.transportId,
     threadId: msg.threadId,
@@ -601,13 +604,26 @@ export async function dismissWorkItem(
   });
 }
 
-/** Work items in this transport with the given statuses, most recently changed first. */
+/** The chips on a Needs-you row (KTD14), in list order: the list sorts by this index, then by age. */
+export const NEEDS_YOU_CHIPS = ['needs_you', 'review', 'queued', 'in_hms'] as const;
+export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
+
+/**
+ * Work items in this transport with the given statuses, the Needs-you list. Spam, trashed and deleted threads are left
+ * out. Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run
+ * never moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
+ * NEEDS_YOU_CHIPS order, then the oldest mail first.
+ */
 export async function listWorkItems(
   db: DB,
   input: { transportId: string; statuses: readonly string[]; limit: number },
 ) {
   if (input.statuses.length === 0) return [];
-  return db
+  const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.workItemId} = ${workItem.id} and ${aiWorkflowRun.executorLane} = 'hms' order by ${aiWorkflowRun.createdAt} desc limit 1)`;
+  const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
+    .mapWith(Number)
+    .as('chip_rank');
+  const rows = await db
     .select({
       id: workItem.id,
       kind: workItem.kind,
@@ -615,14 +631,31 @@ export async function listWorkItems(
       threadId: workItem.threadId,
       sourceMessageId: workItem.sourceMessageId,
       updatedAt: workItem.updatedAt,
+      sender: message.fromAddress,
       subject: message.subject,
       receivedAt: message.receivedAt,
+      chipRank,
     })
     .from(workItem)
+    .innerJoin(mailThread, eq(mailThread.id, workItem.threadId))
     .leftJoin(message, eq(message.id, workItem.sourceMessageId))
     .where(
-      and(eq(workItem.transportId, input.transportId), inArray(workItem.status, [...input.statuses])),
+      and(
+        eq(workItem.transportId, input.transportId),
+        inArray(workItem.status, [...input.statuses]),
+        ne(workItem.kind, 'spam'),
+        isNull(mailThread.spamAt),
+        isNull(mailThread.trashedAt),
+      ),
     )
-    .orderBy(desc(workItem.updatedAt))
+    .orderBy(
+      sql`chip_rank`,
+      asc(sql`coalesce(${message.receivedAt}, ${workItem.createdAt})`),
+      asc(workItem.id),
+    )
     .limit(input.limit);
+  return rows.map(({ chipRank: rank, ...row }) => ({
+    ...row,
+    chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
+  }));
 }
