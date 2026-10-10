@@ -3,8 +3,13 @@ import {occupiedDates,quoteDigest} from '../quote-proposal/quote-revision.js';
 import { existsSync, readFileSync } from 'node:fs';
 import type { CenturionCorpusMessageRow } from '../ops/centurion-thread-corpus-postgres-reader.js';
 import { type ReservationistDecision } from './reservationist-agent.js';
-import { reservationistDecisionSchema } from './reservationist-decision.js';
+import { reservationistDecisionSchema, type LunaAnalysis } from './reservationist-decision.js';
 import { z } from 'zod';
+import type { ModelAdapter } from './bedrock/adapter.js';
+import { extractInboundMail } from './extraction/extract.js';
+import type { SanitizedExtraction } from './extraction/schema.js';
+import { amendmentFromAnalysis, analyseQuoteSelection, mapLlmDecision } from './quote-workflow-llm.js';
+import { orderCausalPreceding, type SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
 
 export const STRATA = ['quote_party', 'quote_fit', 'create', 'no_tool', 'other'] as const;
 export type Stratum = (typeof STRATA)[number];
@@ -87,9 +92,28 @@ export function scoreRuntimeReplay(runtime:Record<string,any>|undefined,approved
 // One goldenRowSchema object per line: 80 dev and 40 holdout cases.
 
 export const GOLDEN_TARGETS = { dev: 80, holdout: 40, maxDomainShare: 0.15, overfitGapPoints: 10 } as const;
-const GOLDEN_FIELDS = ['workflow', 'arrivalDate', 'departureDate', 'adults', 'children', 'rooms'] as const;
+const GOLDEN_FIELDS = [
+  'workflow',
+  'arrivalDate',
+  'departureDate',
+  'adults',
+  'children',
+  'rooms',
+  'bookedArrivalDate',
+  'bookedDepartureDate',
+  'stays',
+] as const;
 export type GoldenField = (typeof GOLDEN_FIELDS)[number];
 type Scalar = string | number | null;
+/** A target's answer. A field the target cannot express is left out, and is then unscored for that target. */
+export type GoldenFields = Partial<Record<GoldenField, Scalar>>;
+
+/**
+ * What a run scores. `pane` is the Nava pane analysis (lunaAnalysisSchema), `extract` the inbound mail extraction,
+ * and `agent` the reservationist agent decision. pane and extract call the production prompt builders directly.
+ */
+export const BACKTEST_TARGETS = ['pane', 'extract', 'agent'] as const;
+export type BacktestTarget = (typeof BACKTEST_TARGETS)[number];
 
 const caseMessageSchema = z.object({
   id: z.string().min(1),
@@ -116,6 +140,11 @@ const goldenRowSchema = z.object({
       adults: z.number().int().nullable(),
       children: z.number().int().nullable(),
       rooms: z.number().int().nullable(),
+      // Amend and cancel rows: the booking as it stands. arrivalDate and departureDate are then the requested stay.
+      bookedArrivalDate: isoDay,
+      bookedDepartureDate: isoDay,
+      // Distinct date sets the mail asks for (multi-stay mails).
+      stays: z.number().int().nullable(),
     })
     .partial(),
   // Recorded HMS reads, each keyed by the runner request it answered (see replayRunners).
@@ -223,7 +252,7 @@ export function readGoldenSet(path: string): GoldenRow[] {
 export type FieldStatus = 'correct' | 'wrong' | 'missing' | 'hallucinated';
 export type FieldResult = { field: GoldenField; status: FieldStatus; expected: Scalar; actual: Scalar };
 
-export function actualFields(decision: ReservationistDecision | null): Record<GoldenField, Scalar> {
+export function actualFields(decision: ReservationistDecision | null): GoldenFields {
   const stay = decision?.stayAsk;
   return {
     workflow: decision?.workflow ?? null,
@@ -241,10 +270,10 @@ export function actualFields(decision: ReservationistDecision | null): Record<Go
  * hallucinated field costs accuracy. Fields the row leaves out are unscored. `answered: false` (a failed run)
  * scores every named field as missing.
  */
-export function scoreFields(expected: GoldenRow['expected'], actual: Record<GoldenField, Scalar>, answered = true) {
-  const fields = GOLDEN_FIELDS.filter((field) => field in expected).map((field): FieldResult => {
+export function scoreFields(expected: GoldenRow['expected'], actual: GoldenFields, answered = true) {
+  const fields = GOLDEN_FIELDS.filter((field) => field in expected && field in actual).map((field): FieldResult => {
     const want = expected[field] ?? null;
-    const got = actual[field];
+    const got = actual[field] ?? null;
     const status: FieldStatus = !answered
       ? 'missing'
       : want === null
@@ -267,11 +296,101 @@ export function scoreFields(expected: GoldenRow['expected'], actual: Record<Gold
   return { fields, flags, correct: fields.filter((f) => f.status === 'correct').length, scored: fields.length };
 }
 
-export type GoldenTrace = { decision: ReservationistDecision | null; replayMisses: number; error?: string };
+type Occupancy = { rooms: number | null; adultsPerRoom: number | null; children: number };
+const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+
+/** Totals over the rows of one stay. Adults are total adults; a lone row with no room count is the stay's total rooms, else one. */
+function occupancyOf(rows: Occupancy[], totalRooms: number | null = null): Pick<GoldenFields, 'rooms' | 'adults' | 'children'> {
+  if (!rows.length) return { rooms: totalRooms, adults: null, children: null };
+  const adultsKnown = rows.every((r) => r.adultsPerRoom !== null && (r.rooms !== null || rows.length === 1));
+  return {
+    rooms: totalRooms ?? (rows.every((r) => r.rooms !== null) ? sum(rows.map((r) => r.rooms!)) : null),
+    // A lone row with no room count takes the stay's total rooms when the extraction gives one.
+    adults: adultsKnown
+      ? sum(rows.map((r) => (r.rooms ?? (rows.length === 1 ? totalRooms : null) ?? 1) * r.adultsPerRoom!))
+      : null,
+    children: sum(rows.map((r) => r.children)),
+  };
+}
+
+/**
+ * What the pane shows for an analysis: the mapped quote groups (mapLlmDecision), or the amendment card
+ * (amendmentFromAnalysis), whose requested stay is scored as arrival/departure. The first stay's groups are scored.
+ */
+export function paneFields(analysis: LunaAnalysis | null): GoldenFields {
+  const amendment = analysis ? amendmentFromAnalysis(analysis) : null;
+  const groups = (analysis && !amendment ? mapLlmDecision(analysis).groups : []).filter(
+    (g) => g.arrivalDate || g.departureDate || g.quantity !== undefined || g.adults !== undefined,
+  );
+  const first = groups[0];
+  const stay = groups.filter((g) => g.arrivalDate === first?.arrivalDate && g.departureDate === first?.departureDate);
+  const requested = amendment && (amendment.requestedArrival || amendment.requestedDeparture);
+  return {
+    workflow: analysis?.workflow ?? null,
+    arrivalDate: (amendment ? amendment.requestedArrival : first?.arrivalDate) ?? null,
+    departureDate: (amendment ? amendment.requestedDeparture : first?.departureDate) ?? null,
+    ...occupancyOf(stay.map((g) => ({ rooms: g.quantity ?? null, adultsPerRoom: g.adults ?? null, children: g.childrenAges.length }))),
+    bookedArrivalDate: amendment?.arrival ?? null,
+    bookedDepartureDate: amendment?.departure ?? null,
+    stays: (requested ? 1 : new Set(groups.map((g) => `${g.arrivalDate}|${g.departureDate}`)).size) || null,
+  };
+}
+
+export type GoldenExtraction = Pick<SanitizedExtraction, 'kind' | 'payload'>;
+
+/** The stored mail_extraction payload: kind, and the first stay's requested and booked dates and rows. */
+export function extractFields(extraction: GoldenExtraction | null): GoldenFields {
+  const stay = extraction?.payload.stays[0];
+  return {
+    workflow: extraction?.kind ?? null,
+    arrivalDate: stay?.requested.arrival ?? null,
+    departureDate: stay?.requested.departure ?? null,
+    ...occupancyOf(
+      (stay?.rows ?? []).map((r) => ({ rooms: r.rooms, adultsPerRoom: r.adultsPerRoom, children: r.childAges.length })),
+      stay?.totalRooms ?? null,
+    ),
+    bookedArrivalDate: stay?.booked?.arrival ?? null,
+    bookedDepartureDate: stay?.booked?.departure ?? null,
+    stays: extraction?.payload.stays.length || null,
+  };
+}
+
+/**
+ * Each prompt names workflows its own way. Gold (agent vocabulary) and answer both fold onto the labels the target
+ * can tell apart, so a target is not marked wrong for a distinction its schema cannot make.
+ */
+const WORKFLOW_FOLD: Record<BacktestTarget, Record<string, string>> = {
+  agent: {},
+  // K2_MAPPING: create is create_booking; skip and spam are other.
+  pane: { create_booking: 'create', skip: 'other', spam: 'other' },
+  // EXTRACTION_RULES: create is booking, amend amendment, cancel cancellation, skip other. A voucher or POP is other.
+  extract: { booking: 'create', amendment: 'amend', cancellation: 'cancel', voucher_pop: 'other', skip: 'other' },
+};
+
+/** A trace without a target is an agent trace (runs recorded before targets existed). */
+export type GoldenTrace = { replayMisses: number; error?: string } & (
+  | { target?: 'agent'; decision: ReservationistDecision | null }
+  | { target: 'pane'; analysis: LunaAnalysis | null }
+  | { target: 'extract'; extraction: GoldenExtraction | null }
+);
+
+function traceAnswer(trace: GoldenTrace): { target: BacktestTarget; fields: GoldenFields; answered: boolean } {
+  if (trace.target === 'pane') return { target: 'pane', fields: paneFields(trace.analysis), answered: trace.analysis !== null };
+  if (trace.target === 'extract') return { target: 'extract', fields: extractFields(trace.extraction), answered: trace.extraction !== null };
+  return { target: 'agent', fields: actualFields(trace.decision), answered: trace.decision !== null };
+}
 
 export function scoreGoldenCase(row: GoldenRow, trace: GoldenTrace) {
-  const answered = trace.decision !== null && !trace.error;
-  const { fields, flags, correct, scored } = scoreFields(row.expected, actualFields(trace.decision), answered);
+  const answer = traceAnswer(trace);
+  const fold = (value: Scalar | undefined) =>
+    typeof value === 'string' ? (WORKFLOW_FOLD[answer.target][value] ?? value) : value;
+  const expected = 'workflow' in row.expected ? { ...row.expected, workflow: fold(row.expected.workflow) } : row.expected;
+  const actual = 'workflow' in answer.fields ? { ...answer.fields, workflow: fold(answer.fields.workflow) } : answer.fields;
+  const { fields, flags, correct, scored } = scoreFields(
+    expected as GoldenRow['expected'],
+    actual,
+    answer.answered && !trace.error,
+  );
   return {
     id: row.id,
     split: row.split,
@@ -331,4 +450,50 @@ export function replayRunners(row: GoldenRow) {
       return { status: 'tool_error', message: 'replay_miss' };
     };
   return { quote: serve('quote_stay'), party: serve('party_lookup'), misses: () => misses };
+}
+
+/**
+ * The golden row as the synced selection prod builds from the mailbox. The thread goes through prod's own causal
+ * filter (orderCausalPreceding), so a later reply in the row's context never reaches the prompt.
+ */
+export function goldenSelection(row: GoldenRow): SyncedQuoteSelection {
+  const at = (eventAt: string | null) => (eventAt ? new Date(eventAt) : null);
+  return {
+    subject: row.trigger.subject,
+    bodyText: row.trigger.text,
+    ...(row.trigger.eventAt ? { receivedAt: row.trigger.eventAt } : {}),
+    preceding: orderCausalPreceding(
+      { id: row.trigger.id, receivedAt: at(row.trigger.eventAt) },
+      row.context.map((message) => ({ id: message.id, textBody: message.text, receivedAt: at(message.eventAt) })),
+    ),
+    attachments: [],
+    messageId: row.trigger.id,
+    fromAddress: row.trigger.from,
+  };
+}
+
+export type GoldenUsage = { inputTokens?: number; outputTokens?: number; costUsd?: number } | null;
+
+/**
+ * Runs one row through the production pane analysis (analyseQuoteSelection) or inbound extraction
+ * (extractInboundMail) with their own prompts and deadlines. Neither path reads HMS, so nothing is replayed.
+ */
+export async function runProductionTarget(
+  target: 'pane' | 'extract',
+  row: GoldenRow,
+  adapter: ModelAdapter,
+): Promise<GoldenTrace & { usage: GoldenUsage }> {
+  const selection = goldenSelection(row);
+  if (target === 'pane') {
+    const res = await analyseQuoteSelection({ selection, adapter, enabled: true });
+    const usage = res.telemetry?.usage ?? null;
+    return res.source === 'luna'
+      ? { target, analysis: res.analysis, replayMisses: 0, usage }
+      : { target, analysis: null, replayMisses: 0, usage, error: res.fallbackReason };
+  }
+  const res = await extractInboundMail({ adapter, selection, messageId: row.trigger.id, from: row.trigger.from });
+  const usage = { inputTokens: res.usage.inputTokens, outputTokens: res.usage.outputTokens, costUsd: res.usage.costUsd };
+  return res.ok
+    ? { target, extraction: { kind: res.kind, payload: res.payload }, replayMisses: 0, usage }
+    : { target, extraction: null, replayMisses: 0, usage, error: res.reason };
 }

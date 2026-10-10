@@ -2,7 +2,11 @@
  * Reservationist backtest on the operator's golden set (R20, U27).
  *
  *   check                          validate the set: 80 dev + 40 holdout, no sender domain over 15% of a split
- *   run [--subset 30] [--run-id]   run the agent: medium reasoning, 8 in flight, HMS quote/party reads replayed
+ *   run [--target pane|extract|agent] [--subset 30] [--run-id]
+ *                                  run one target, 8 in flight. pane: the Nava pane analysis (lunaAnalysisSchema).
+ *                                  extract: the inbound mail extraction. Both use the production prompt, adapter and
+ *                                  deadline and read no HMS. agent: the reservationist agent at medium reasoning,
+ *                                  HMS quote/party reads replayed. Default pane.
  *   score --run-id ID              field-level accuracy per split and the overfit alarm (dev - holdout > 10 points)
  *
  * Input: apps/server-pilot/.private/reservationist-backtest/golden-set.jsonl (gitignored). It is not exported from
@@ -23,19 +27,24 @@ import {
   type ReservationistContext,
   type ReservationistDecision,
 } from '../src/ai/reservationist-agent.js';
+import { resolveAdapter } from '../src/ai/quote-workflow-analyse-selection.js';
 import {
+  BACKTEST_TARGETS,
   GOLDEN_TARGETS,
   cellOf,
   pickSubset,
   readGoldenSet,
   replayRunners,
+  runProductionTarget,
   scoreGoldenCase,
   senderDomainOf,
   summarizeGolden,
   tally,
   validateGoldenSet,
+  type BacktestTarget,
   type CaseMessage,
   type GoldenRow,
+  type GoldenTrace,
   type ToolCall,
 } from '../src/ai/reservationist-backtest.js';
 import { validateRunId } from '../src/ai/reservationist-replay.js';
@@ -46,18 +55,16 @@ const REASONING = 'medium' as const;
 const CONCURRENCY = 8;
 const MAX_STEPS = 10;
 const MAX_MESSAGE_CHARS = 20_000;
-const USAGE = 'usage: run-reservationist-backtest.ts check | run [--subset 30] [--run-id ID] | score --run-id ID';
+const USAGE =
+  'usage: run-reservationist-backtest.ts check | run [--target pane|extract|agent] [--subset 30] [--run-id ID] | score --run-id ID';
 
-type Trace = {
+type Trace = GoldenTrace & {
   id: string;
   split: GoldenRow['split'];
   type: GoldenRow['type'];
-  decision: ReservationistDecision | null;
-  toolCalls: ToolCall[];
-  replayMisses: number;
+  toolCalls?: ToolCall[];
   usage: unknown;
   ms: number;
-  error?: string;
 };
 
 const writePrivate = (path: string, text: string) => writeFileSync(path, text, { mode: 0o600 });
@@ -120,19 +127,26 @@ function check(): number {
   return problems.length ? 1 : 0;
 }
 
-async function run(runId: string, subset?: number): Promise<number> {
+async function run(runId: string, target: BacktestTarget, subset?: number): Promise<number> {
   const rows = loadValidGolden();
   const picked = subset ? pickSubset(rows, subset) : rows;
   const dir = join(ROOT, runId);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const manifestPath = join(dir, 'manifest.json');
+  if (existsSync(manifestPath)) {
+    const previous = (JSON.parse(readFileSync(manifestPath, 'utf8')) as { target?: BacktestTarget }).target ?? 'agent';
+    if (previous !== target) throw new Error(`run ${runId} is a ${previous} run; resume it with --target ${previous}`);
+  }
   const tracesPath = join(dir, 'traces.jsonl');
   const done = new Set(latestTraces(tracesPath).filter((trace) => !trace.error).map((trace) => trace.id));
   writePrivate(
-    join(dir, 'manifest.json'),
+    manifestPath,
     JSON.stringify(
       {
         runId,
-        reasoning: REASONING,
+        target,
+        // pane and extract run at the production adapter's own reasoning effort.
+        reasoning: target === 'agent' ? REASONING : 'production',
         subset: subset ?? null,
         cases: picked.map((row) => ({ id: row.id, split: row.split, type: row.type, senderDomain: senderDomainOf(row.trigger.from) })),
       },
@@ -141,7 +155,8 @@ async function run(runId: string, subset?: number): Promise<number> {
     ),
   );
   const todo = picked.filter((row) => !done.has(row.id));
-  console.log(JSON.stringify({ runId, cases: picked.length, todo: todo.length }));
+  console.log(JSON.stringify({ runId, target, cases: picked.length, todo: todo.length }));
+  if (target !== 'agent') return runProduction(target, todo, tracesPath);
 
   const model = createAzureLunaModel();
   const defaults = createDefaultRunners({
@@ -175,6 +190,7 @@ async function run(runId: string, subset?: number): Promise<number> {
         id: row.id,
         split: row.split,
         type: row.type,
+        target,
         decision: (res.object as ReservationistDecision | undefined) ?? null,
         toolCalls: res.steps.flatMap((step) =>
           step.toolResults.map(({ payload }) => ({
@@ -192,6 +208,7 @@ async function run(runId: string, subset?: number): Promise<number> {
         id: row.id,
         split: row.split,
         type: row.type,
+        target,
         decision: null,
         toolCalls: [],
         replayMisses: replay.misses(),
@@ -208,12 +225,35 @@ async function run(runId: string, subset?: number): Promise<number> {
         of: todo.length,
         id: row.id,
         type: row.type,
-        workflow: trace.decision?.workflow ?? null,
+        workflow: 'decision' in trace ? (trace.decision?.workflow ?? null) : null,
         replayMisses: trace.replayMisses,
         ms: trace.ms,
         error: trace.error ? 'yes' : undefined,
       }),
     );
+  });
+  return 0;
+}
+
+/** pane and extract: the production adapter, prompt and deadline for every row. */
+async function runProduction(target: 'pane' | 'extract', todo: GoldenRow[], tracesPath: string): Promise<number> {
+  const { adapter } = resolveAdapter(true, null);
+  if (!adapter) throw new Error('AZURE_OPENAI_BASE_URL and AZURE_FOUNDRY_API_KEY required');
+  let finished = 0;
+  await mapLimit(todo, CONCURRENCY, async (row) => {
+    const started = Date.now();
+    let trace: Trace;
+    try {
+      trace = { id: row.id, split: row.split, type: row.type, ...(await runProductionTarget(target, row, adapter)), ms: Date.now() - started };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      const empty = target === 'pane' ? { target, analysis: null } : { target, extraction: null };
+      trace = { id: row.id, split: row.split, type: row.type, ...empty, replayMisses: 0, usage: null, ms: Date.now() - started, error };
+    }
+    appendPrivate(tracesPath, trace);
+    finished += 1;
+    const workflow = 'analysis' in trace ? trace.analysis?.workflow : 'extraction' in trace ? trace.extraction?.kind : null;
+    console.log(JSON.stringify({ n: finished, of: todo.length, id: row.id, type: row.type, workflow: workflow ?? null, ms: trace.ms, error: trace.error }));
   });
   return 0;
 }
@@ -226,7 +266,8 @@ function score(runId: string): number {
     const row = golden.get(trace.id);
     return row ? [scoreGoldenCase(row, trace)] : [];
   });
-  const summary = { ...summarizeGolden(rows), scored: rows.length, traced: traces.length };
+  const target = traces[0]?.target ?? 'agent';
+  const summary = { target, ...summarizeGolden(rows), scored: rows.length, traced: traces.length };
   writePrivate(join(dir, 'fields.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
   writePrivate(join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
   console.log(JSON.stringify(summary, null, 2));
@@ -240,7 +281,7 @@ async function main(argv: string[]): Promise<number> {
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { subset: { type: 'string' }, 'run-id': { type: 'string' } },
+    options: { subset: { type: 'string' }, 'run-id': { type: 'string' }, target: { type: 'string' } },
   });
   const [command, ...extra] = positionals;
   if (extra.length) {
@@ -250,12 +291,13 @@ async function main(argv: string[]): Promise<number> {
   if (command === 'check') return check();
   if (command === 'run') {
     const subset = values.subset === undefined ? undefined : Number(values.subset);
-    if (subset !== undefined && (!Number.isInteger(subset) || subset < 1)) {
+    const target = (values.target ?? 'pane') as BacktestTarget;
+    if ((subset !== undefined && (!Number.isInteger(subset) || subset < 1)) || !BACKTEST_TARGETS.includes(target)) {
       console.error(USAGE);
       return 2;
     }
     const runId = values['run-id'] ?? `${new Date().toISOString().slice(0, 10)}-${randomUUID().slice(0, 8)}`;
-    return run(validateRunId(runId), subset);
+    return run(validateRunId(runId), target, subset);
   }
   if (command === 'score' && values['run-id']) return score(validateRunId(values['run-id']));
   console.error(USAGE);
