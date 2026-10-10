@@ -30,7 +30,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('list keyset pagination', () =
         }));
         await db.insert(mailThread).values(threadRows);
 
-        const { mail } = await callerFor('user-navaai', { db });
+        const { mail } = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
         const page1 = await mail.listThreads({ folder: 'all', limit: 50 });
         expect(page1.threads.length).toBe(50);
         expect(page1.nextPageToken).toBeTruthy();
@@ -87,7 +87,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('list keyset pagination', () =
           },
         ]);
 
-        const { mail } = await callerFor('user-navaai', { db });
+        const { mail } = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
         const byQuery = await mail.listThreads({
           folder: 'all',
           q: 'alpha',
@@ -124,7 +124,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('list keyset pagination', () =
         }));
         await db.insert(mailDraft).values(draftRows);
 
-        const { drafts } = await callerFor('user-navaai', { db });
+        const { drafts } = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: TRANSPORT_ID,
+        });
         const page1 = await drafts.list({ limit: 50 });
         expect(page1.threads.length).toBe(50);
         expect(page1.nextPageToken).toBeTruthy();

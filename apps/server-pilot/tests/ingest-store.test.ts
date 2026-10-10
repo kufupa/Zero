@@ -923,7 +923,8 @@ describe('parseRawMessage (no DB)', () => {
       storage,
     });
     expect(parsed.ownerHeaderValue).toBe('centurion@legacyhotel.com');
-    expect(parsed.fromAddress).toBe('guest1@example.com');
+    // fromAddress keeps the display name (parse-message.ts); bare address is Sender-override only.
+    expect(parsed.fromAddress).toBe('"Guest One" <guest1@example.com>');
     expect(parsed.toAddresses).toContain('centurion@legacyhotel.com');
     expect(parsed.ccAddresses).toContain('frontdesk@legacyhotel.com');
     expect(parsed.subject).toBe('Centurion booking confirmation #4471');
@@ -1011,7 +1012,7 @@ describe('parseRawMessage (no DB)', () => {
       messageId: generateMessageId(),
       storage,
     });
-    expect(parsed.fromAddress).toBe('guest1@example.com');
+    expect(parsed.fromAddress).toBe('"Guest One" <guest1@example.com>');
   });
 
   it('keeps From when Sender equals From', async () => {
@@ -1028,7 +1029,7 @@ describe('parseRawMessage (no DB)', () => {
       messageId: generateMessageId(),
       storage,
     });
-    expect(parsed.fromAddress).toBe('guest1@example.com');
+    expect(parsed.fromAddress).toBe('"Guest One" <guest1@example.com>');
   });
 });
 

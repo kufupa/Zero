@@ -107,7 +107,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('sender preference (seeded)', 
         fromAddress: sender,
       });
 
-      const caller = await callerFor('user-navaai', { db });
+      const caller = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
       const result = await caller.mail.moveThreads({ threadIds: [threadId], destination: 'spam' });
 
       expect(result.preferences).toEqual([{ email: sender, kind: 'block' }]);
@@ -132,7 +132,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('sender preference (seeded)', 
         .set({ spamAt: new Date() })
         .where(eq(mailThread.id, threadId));
 
-      const caller = await callerFor('user-navaai', { db });
+      const caller = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
       const result = await caller.mail.moveThreads({ threadIds: [threadId], destination: 'inbox' });
 
       expect(result.preferences).toEqual([{ email: sender, kind: 'allow' }]);

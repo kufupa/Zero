@@ -65,6 +65,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
           toAddresses: ['guest@example.com'],
           subject: 'Re: Booking',
           textBody: 'Human draft',
+          // Pin order: drafts.list sorts by updatedAt desc, then id (random here).
+          updatedAt: new Date('2026-07-06T10:05:00Z'),
         },
         {
           id: candidateDraftId,
@@ -78,10 +80,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('thread draft contract', () =>
           toAddresses: ['guest@example.com'],
           subject: 'Re: Booking',
           textBody: 'AI candidate',
+          updatedAt: new Date('2026-07-06T10:00:00Z'),
         },
       ]);
 
-      const { mail, drafts } = await callerFor('user-navaai', { db });
+      const { mail, drafts } = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: TRANSPORT_ID,
+      });
       const thread = await mail.get({ id: threadId });
       expect(thread.messages).toHaveLength(1);
       expect(thread.messages.some((m) => m.isDraft)).toBe(false);

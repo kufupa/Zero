@@ -210,7 +210,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
         { db, storage },
       );
 
-      const caller = await callerFor('user-navaai', { db });
+      const caller = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: 'transport-centurion',
+      });
       const list = await caller.mail.listThreads({ folder: 'inbox' });
       expect(list.threads.length).toBeGreaterThan(0);
     });
@@ -255,7 +258,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
           })
           .onConflictDoNothing();
 
-        const caller = await callerFor('user-navaai', { db });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
         const result = await caller.mail.send({
           threadId,
           draftId,
@@ -329,7 +335,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
       __setSmtpTransportForTests(failingSmtp);
 
       try {
-        const caller = await callerFor('user-navaai', { db });
+        const caller = await callerFor('user-navaai', {
+          db,
+          requestedTransportId: 'transport-centurion',
+        });
         await expect(
           caller.mail.send({
             threadId,

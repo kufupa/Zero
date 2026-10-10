@@ -52,7 +52,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.emptySpam (seeded)', () 
       await seedSpamThread(db, SPAM_THREAD_1);
       await seedSpamThread(db, SPAM_THREAD_2);
 
-      const caller = await callerFor('user-navaai', { db });
+      const caller = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
 
       const spamBefore = await caller.mail.listThreads({ folder: 'spam', limit: 50 });
       expect(spamBefore.threads.map((t) => t.id)).toEqual(
@@ -101,7 +101,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('mail.emptySpam (seeded)', () 
         .set({ trashedAt: new Date() })
         .where(and(eq(mailThread.id, SPAM_THREAD_1), eq(mailThread.transportId, TRANSPORT_ID)));
 
-      const caller = await callerFor('user-navaai', { db });
+      const caller = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
       const result = await caller.mail.emptySpam();
       expect(result.updated).toBe(0);
     });

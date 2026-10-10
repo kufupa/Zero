@@ -94,7 +94,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('sequential reply drafts', () 
         },
       ]);
 
-      const { mail } = await callerFor('user-navaai', { db });
+      const { mail } = await callerFor('user-navaai', {
+        db,
+        requestedTransportId: TRANSPORT_ID,
+      });
       const thread = await mail.get({ id: threadId });
       expect(thread.drafts.map((draft) => draft.id)).toEqual([activeDraftId]);
       expect(thread.drafts[0]).toMatchObject({
