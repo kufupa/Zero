@@ -478,16 +478,29 @@ export function outboundSentAfter(at: Date) {
 }
 
 /**
- * When an inbound message reached the mailbox. POP3 stores the sender's Date header in receivedAt, which can be hours
- * before (or, with a wrong clock, after) delivery, so a POP3 row arrived when Nava fetched it. Outlook sync stores
- * Outlook's delivery time in receivedAt, which holds for history imported long after. With neither, the stored time.
+ * Outlook sync created the row: persistOutlookHistory stamps canonicalContentVersion on every row it inserts, and never
+ * on a row POP3 created. POP3 matching an imported row later adds a pop3Uidl but keeps its dates and provenance, so
+ * receivedAt stays Outlook's delivery time.
  */
-export function messageArrivedAt(m: { receivedAt: Date | null; createdAt: Date; pop3Uidl: string | null }): Date {
-  return m.pop3Uidl === null ? (m.receivedAt ?? m.createdAt) : m.createdAt;
+export const OUTLOOK_SYNCED = sql<boolean>`(${message.sourceProvenance}->>'canonicalContentVersion') is not null`;
+
+/**
+ * When an inbound message reached the mailbox. POP3 stores the sender's Date header in receivedAt, which can be hours
+ * before (or, with a wrong clock, after) delivery, so a row POP3 created arrived when Nava fetched it. Outlook sync
+ * stores Outlook's delivery time in receivedAt, which holds for history imported long after and for an imported row
+ * POP3 matched later (its createdAt is the import time). With neither, the stored time.
+ */
+export function messageArrivedAt(m: {
+  receivedAt: Date | null;
+  createdAt: Date;
+  pop3Uidl: string | null;
+  outlookSynced: boolean;
+}): Date {
+  return m.pop3Uidl === null || m.outlookSynced ? (m.receivedAt ?? m.createdAt) : m.createdAt;
 }
 
 /** SQL twin of messageArrivedAt, for a `message` row. */
-export const MESSAGE_ARRIVED_AT = sql`case when ${message.pop3Uidl} is null then coalesce(${message.receivedAt}, ${message.createdAt}) else ${message.createdAt} end`;
+export const MESSAGE_ARRIVED_AT = sql`case when ${message.pop3Uidl} is null or ${OUTLOOK_SYNCED} then coalesce(${message.receivedAt}, ${message.createdAt}) else ${message.createdAt} end`;
 
 /** The message's latest succeeded read, or the one with `id` when given. */
 async function succeededRead(db: DB, messageId: string, id?: string) {
@@ -530,6 +543,7 @@ export async function ensureWorkItemForMessage(
       receivedAt: message.receivedAt,
       createdAt: message.createdAt,
       pop3Uidl: message.pop3Uidl,
+      outlookSynced: OUTLOOK_SYNCED,
     })
     .from(message)
     .where(and(eq(message.id, input.messageId), eq(message.transportId, input.transportId)))

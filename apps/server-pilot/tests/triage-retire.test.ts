@@ -21,7 +21,12 @@ import {
   EXTRACTION_VERSION,
   executeInboundExtractionRun,
 } from '../src/ai/extraction/inbound-run.js';
-import { DEFAULT_TRIAGE_PROMPT_VERSION, enqueueAiRun, toAiRunFence } from '../src/ai/run-ledger.js';
+import {
+  CLEANUP_RESERVE_MS,
+  DEFAULT_TRIAGE_PROMPT_VERSION,
+  enqueueAiRun,
+  toAiRunFence,
+} from '../src/ai/run-ledger.js';
 import { queryMailBaselineProjection } from '../src/metrics/mail-baseline-projection.js';
 import { runInboundExtractionBackfill } from '../scripts/backfill-inbound-extraction.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
@@ -34,7 +39,7 @@ import { isInboundTriageClassifierEnabled } from '../src/env.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withIngestionDb } from './helpers/ingestion-db.js';
-import { runAiWorkerDrain } from '../src/ai/worker.js';
+import { executeAiRun, MAX_WORKER_SHUTDOWN_ATTEMPTS, runAiWorkerDrain } from '../src/ai/worker.js';
 import { callerFor } from './helpers/trpc-caller.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import { and, eq } from 'drizzle-orm';
@@ -329,6 +334,91 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       expect(await categoryIdsOf(db, threadId)).toEqual([]);
     }));
 
+  describe('an inbound read cut off mid model call', () => {
+    /**
+     * Queues and claims one read, then runs it through the worker with a model that hangs until the run aborts.
+     * `cut` gets the worker's shutdown controller and the model call's signal.
+     */
+    async function cutOff(
+      db: DB,
+      id: string,
+      budgetMs: number,
+      cut: (shutdown: AbortController, signal: AbortSignal) => void,
+      prior: { attempts?: number; failureClass?: 'WORKER_SHUTDOWN' } = {},
+    ) {
+      retire();
+      const { messageId } = await persistOutlookHistory(db, history(id));
+      await admit(db, messageId);
+      const [queued] = await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'claimed',
+          claimOwner: 'u5-shutdown-test',
+          claimToken: `token-${id}`,
+          deadlineAt: new Date(Date.now() + budgetMs),
+          ...prior,
+        })
+        .where(eq(aiWorkflowRun.idempotencyKey, extractionKey(messageId)))
+        .returning({ id: aiWorkflowRun.id });
+      const shutdown = new AbortController();
+      const result = await executeAiRun(queued!.id, {
+        shutdownSignal: shutdown.signal,
+        inboundExtractionAdapter: {
+          invoke: ({ signal }) => {
+            cut(shutdown, signal!);
+            return new Promise<never>(() => undefined);
+          },
+        },
+      });
+      const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, queued!.id));
+      return { result, row: row! };
+    }
+
+    it('by a worker shutdown goes back on the queue with no attempt spent and a fresh deadline', () =>
+      withWorkerDb(async (db) => {
+        const { result, row } = await cutOff(db, 'u5-shutdown', 120_000, (shutdown) =>
+          queueMicrotask(() => shutdown.abort()),
+        );
+        expect(result.state).toBe('retry_wait');
+        expect(row).toMatchObject({
+          state: 'retry_wait',
+          failureClass: 'WORKER_SHUTDOWN',
+          attempts: 0,
+          deadlineAt: null,
+          claimToken: null,
+        });
+        expect(row.lastError).toMatch(/^worker shutdown: /);
+        expect(row.nextRunAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      }));
+
+    it('by a shutdown again right after one spends an attempt, and dead-letters once they run out', () =>
+      withWorkerDb(async (db) => {
+        const again = await cutOff(db, 'u5-shutdown-again', 120_000, (shutdown) => queueMicrotask(() => shutdown.abort()), {
+          attempts: 0,
+          failureClass: 'WORKER_SHUTDOWN',
+        });
+        expect(again.result.state).toBe('retry_wait');
+        expect(again.row).toMatchObject({ state: 'retry_wait', failureClass: 'WORKER_SHUTDOWN', attempts: 1 });
+        const spent = await cutOff(db, 'u5-shutdown-spent', 120_000, (shutdown) => queueMicrotask(() => shutdown.abort()), {
+          attempts: MAX_WORKER_SHUTDOWN_ATTEMPTS,
+          failureClass: 'WORKER_SHUTDOWN',
+        });
+        expect(spent.result.state).toBe('dead_letter');
+        expect(spent.row.state).toBe('dead_letter');
+      }));
+
+    it('by its own deadline still dead-letters, even if a shutdown follows', () =>
+      withWorkerDb(async (db) => {
+        // The run's budget runs out first; the shutdown lands while the abort is still settling.
+        const { result, row } = await cutOff(db, 'u5-deadline', CLEANUP_RESERVE_MS + 200, (shutdown, signal) =>
+          signal.addEventListener('abort', () => shutdown.abort(), { once: true }),
+        );
+        expect(result.state).toBe('dead_letter');
+        expect(row.state).toBe('dead_letter');
+        expect(row.failureClass).not.toBe('WORKER_SHUTDOWN');
+      }), 30_000);
+  });
+
   it('with the flag off, a spam read still sets spamAt', () =>
     withIngestionDb(async ({ db }) => {
       retire();
@@ -574,6 +664,36 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
         messageId: open.messageId,
       });
       expect(again?.status).toBe('needs_you');
+    }));
+
+  it('an imported request POP3 matched later keeps its Outlook arrival, so a reply sent before the import answers it', () =>
+    withIngestionDb(async ({ db }) => {
+      retire();
+      // Delivered 4 Oct (Outlook's time), answered 5 Oct, imported 7 Oct, then matched by POP3, which adds only its uidl.
+      const request = await persistOutlookHistory(db, history('u5-pop3-matched'));
+      await db
+        .update(message)
+        .set({ createdAt: new Date('2026-10-07T09:00:00Z'), pop3Uidl: 'uidl-u5-pop3-matched' })
+        .where(eq(message.id, request.messageId));
+      await admit(db, request.messageId);
+      const reply = await persistOutlookHistory(
+        db,
+        history('u5-pop3-matched-reply', {
+          direction: 'outbound',
+          fromAddress: 'centurion@legacyhotels.co.za',
+          toAddresses: ['guest@example.test'],
+          authoredAt: new Date('2026-10-05T09:00:00Z'),
+          sentAt: new Date('2026-10-05T09:00:00Z'),
+          inReplyTo: 'u5-pop3-matched@example.test',
+        }),
+      );
+      expect(reply.threadId).toBe(request.threadId);
+      await readWith(db, request.messageId, AE1_TEXT, AE1_OUTPUT);
+      const [item] = await db
+        .select({ status: workItem.status })
+        .from(workItem)
+        .where(eq(workItem.sourceMessageId, request.messageId));
+      expect(item?.status).toBe('done');
     }));
 
   it('a reply counts only once sent, and by mail date: a queued send or an older imported send leaves the item open', () =>

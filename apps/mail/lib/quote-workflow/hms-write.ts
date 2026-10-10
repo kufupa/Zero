@@ -90,6 +90,8 @@ export function hmsApprovalFromTrpc(trpc: unknown): HmsApprovalClient | null {
 
 /** How often the card re-reads a write that is still running. */
 export const HMS_WRITE_POLL_MS = 4000;
+/** How often a hidden card (no stored write yet, on mail that is not an amend) checks for one prepared meanwhile. */
+export const HMS_WRITE_IDLE_POLL_MS = 30_000;
 /** The note a flag or a needs-check takes. The server bounds it the same way. */
 export const HMS_NOTE_MIN = 3;
 export const HMS_NOTE_MAX = 500;

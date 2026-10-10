@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getMailCacheScope, inMailbox } from '@/lib/mail/mail-cache-scope';
 import {
   bindStoredWork,
   quoteAnalysisOf,
@@ -58,9 +59,12 @@ export function storedDecision(pane: StoredPane, overridden: boolean): StoredDec
   return { kind: 'live' };
 }
 
-type Lookup = { key: string; result: StoredWork | { status: 'unavailable' } };
+/** One mail's lookup, and the mailbox it was made in: edits to its work item are saved there. */
+type Lookup = { key: string; transportId: string | null; result: StoredWork | { status: 'unavailable' } };
 type FieldSend = {
   workItemId: string;
+  /** The mailbox that owns the work item. A save queued across a mailbox switch still goes there. */
+  transportId: string | null;
   path: string;
   value: RecordFieldEventInput['value'];
   msSinceOpen: number;
@@ -149,13 +153,11 @@ export function fieldEventsBetween(
     const oldStay = old ?? priorStay.get(ref.stayId);
     if (!oldStay) events.push({ path: `${stay}.removed`, value: null });
     changed(datesAt(stay, group), oldStay ? datesAt(stay, oldStay) : null);
-    if (!ref.rowId) {
-      // A stay with dates and no rows still shows room controls. Her values there go on the stay's own row.
-      const rowId = stayRowId(ref.stayId);
-      if (old && STABLE_ID.test(rowId)) changed(rowFieldsAt(`${stay}.rows[${rowId}]`, group), rowFieldsAt(`${stay}.rows[${rowId}]`, old));
-      continue;
-    }
-    const row = `${stay}.rows[${ref.rowId}]`;
+    // A stay with dates and no rows still shows room controls. Her values there go on the stay's own row, which is
+    // removed and put back like any other row.
+    const rowId = ref.rowId ?? stayRowId(ref.stayId);
+    if (!STABLE_ID.test(rowId)) continue;
+    const row = `${stay}.rows[${rowId}]`;
     if (!old) events.push({ path: `${row}.removed`, value: null });
     changed(rowFieldsAt(row, group), old ? rowFieldsAt(row, old) : null);
   }
@@ -164,7 +166,8 @@ export function fieldEventsBetween(
   for (const group of before) {
     const ref = kept.has(group.id) ? null : refOf(refs, group);
     if (!ref) continue;
-    if (ref.rowId) events.push({ path: `stays[${ref.stayId}].rows[${ref.rowId}].removed`, value: true });
+    const rowId = ref.rowId ?? stayRowId(ref.stayId);
+    if (STABLE_ID.test(rowId)) events.push({ path: `stays[${ref.stayId}].rows[${rowId}].removed`, value: true });
     if (!keptStays.has(ref.stayId)) events.push({ path: `stays[${ref.stayId}].removed`, value: true });
   }
   return events;
@@ -214,13 +217,15 @@ export function useStoredWork(args: {
       // A newer value queued behind this one is sent instead.
       if (latest.current.get(key) !== entry) return;
       try {
-        await recordEvent.mutate({
+        const input = {
           workItemId: entry.workItemId,
-          type: 'field.edit',
+          type: 'field.edit' as const,
           fieldPath: entry.path,
           value: entry.value,
           msSinceOpen: entry.msSinceOpen,
-        });
+        };
+        const pinned = inMailbox(entry.transportId);
+        await (pinned ? recordEvent.mutate(input, pinned) : recordEvent.mutate(input));
         if (latest.current.get(key) === entry) latest.current.delete(key);
       } catch {
         if (latest.current.get(key) !== entry) return;
@@ -250,7 +255,13 @@ export function useStoredWork(args: {
       clearTimeout(entry.timer);
       pending.current.delete(key);
       post(
-        { workItemId: entry.workItemId, path: entry.path, value: entry.value, msSinceOpen: entry.msSinceOpen },
+        {
+          workItemId: entry.workItemId,
+          transportId: entry.transportId,
+          path: entry.path,
+          value: entry.value,
+          msSinceOpen: entry.msSinceOpen,
+        },
         false,
       );
     },
@@ -271,7 +282,7 @@ export function useStoredWork(args: {
   }, [send]);
 
   const schedule = useCallback(
-    (path: string, workItemId: string, value: RecordFieldEventInput['value']) => {
+    (path: string, workItemId: string, transportId: string | null, value: RecordFieldEventInput['value']) => {
       const key = saveKey(workItemId, path);
       const existing = pending.current.get(key);
       if (existing) clearTimeout(existing.timer);
@@ -282,7 +293,7 @@ export function useStoredWork(args: {
       const elapsed = Math.round(Date.now() - readyAt.current);
       const msSinceOpen = existing?.msSinceOpen ?? Math.min(MAX_MS_SINCE_OPEN, Math.max(0, elapsed));
       const timer = setTimeout(() => send(key), WORK_EVENT_DEBOUNCE_MS);
-      pending.current.set(key, { workItemId, path, value, msSinceOpen, timer });
+      pending.current.set(key, { workItemId, transportId, path, value, msSinceOpen, timer });
     },
     [send],
   );
@@ -295,12 +306,14 @@ export function useStoredWork(args: {
     if (!internetMessageId || !lookupKey || !canLookUp) return;
     let current = true;
     let settled = false;
+    // The lookup goes out under the active mailbox, so its work item lives there.
+    const transportId = getMailCacheScope().activeTransportId;
     const settle = (result: Lookup['result']) => {
       if (!current || settled) return;
       settled = true;
       clearTimeout(timer);
       if (result.status === 'ready') readyAt.current = Date.now();
-      setLookup({ key: lookupKey, result });
+      setLookup({ key: lookupKey, transportId, result });
     };
     const timer = setTimeout(() => settle({ status: 'unavailable' }), STORED_LOOKUP_TIMEOUT_MS);
     setLookup(null);
@@ -349,6 +362,7 @@ export function useStoredWork(args: {
 
   const readyRefs = stored?.status === 'ready' ? stored.refs : null;
   const readyWorkItemId = stored?.status === 'ready' ? stored.workItemId : null;
+  const readyTransportId = lookup && lookup.key === lookupKey ? lookup.transportId : null;
 
   const retry = useCallback(() => {
     if (!internetMessageId) return;
@@ -363,19 +377,19 @@ export function useStoredWork(args: {
     (before: StayGroupRequirement[], after: StayGroupRequirement[]) => {
       if (!readyRefs || !readyWorkItemId) return;
       for (const event of fieldEventsBetween(readyRefs, before, after)) {
-        schedule(event.path, readyWorkItemId, event.value);
+        schedule(event.path, readyWorkItemId, readyTransportId, event.value);
       }
     },
-    [readyRefs, readyWorkItemId, schedule],
+    [readyRefs, readyWorkItemId, readyTransportId, schedule],
   );
 
   /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
   const recordContact = useCallback(
     (field: ContactField, value: string | null) => {
       if (!readyWorkItemId) return;
-      schedule(`contact.${field}`, readyWorkItemId, value);
+      schedule(`contact.${field}`, readyWorkItemId, readyTransportId, value);
     },
-    [readyWorkItemId, schedule],
+    [readyWorkItemId, readyTransportId, schedule],
   );
 
   /**

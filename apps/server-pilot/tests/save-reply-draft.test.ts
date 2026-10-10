@@ -262,6 +262,53 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
+      'a confirm from one tab never overwrites the newer reply the same user saved from another tab',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedThreads(db);
+          const nava = await callerFor(NAVA_USER_ID, { db, requestedTransportId: TRANSPORT_ID });
+          const first = await nava.drafts.saveReply(saveInput('<p>Saved</p>'));
+          await nava.drafts.create({
+            id: first.id,
+            threadId: THREAD_ID,
+            replyToMessageId: MESSAGE_ID,
+            to: 'guest@example.com',
+            subject: 'Re: Quote request',
+            message: '<p>Hand edit</p>',
+            attachments: [PDF],
+          });
+          await db
+            .update(mailDraftRevision)
+            .set({ createdAt: new Date(Date.now() + 60_000) })
+            .where(and(eq(mailDraftRevision.draftId, first.id), eq(mailDraftRevision.kind, 'edited')));
+
+          // Tab A shows the replace prompt. Tab B, same login, confirms first and saves a newer reply.
+          const tabAToken = replaceTokenOf(await refusalOf(nava.drafts.saveReply(saveInput('<p>Tab A</p>'))));
+          const tabB = await nava.drafts.saveReply(
+            saveInput('<p>Tab B newer</p>', replaceTokenOf(await refusalOf(nava.drafts.saveReply(saveInput('<p>Tab B newer</p>'))))),
+          );
+
+          const stale = await refusalOf(nava.drafts.saveReply(saveInput('<p>Tab A</p>', tabAToken)));
+          expect(stale.message).toBe('DRAFT_CHANGED');
+          const [kept] = await db.select().from(mailDraft).where(eq(mailDraft.id, tabB.id));
+          expect(kept).toMatchObject({ status: 'active' });
+          expect(kept?.htmlBody).toContain('Tab B newer');
+
+          // Tab B discards its draft. Tab A's confirm still names a draft that is gone, so nothing comes back.
+          await db.update(mailDraft).set({ status: 'discarded' }).where(eq(mailDraft.id, tabB.id));
+          const gone = await refusalOf(nava.drafts.saveReply(saveInput('<p>Tab A</p>', tabAToken)));
+          expect(gone.message).toBe('DRAFT_CHANGED');
+          const active = await db
+            .select()
+            .from(mailDraft)
+            .where(and(eq(mailDraft.threadId, THREAD_ID), eq(mailDraft.status, 'active')));
+          expect(active).toHaveLength(0);
+        });
+      },
+      30000,
+    );
+
+    it(
       'an active AI draft needs the replace confirm and keeps its origin, generation and revisions',
       async () => {
         await withSeededTestDb(async (db) => {

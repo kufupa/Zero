@@ -225,7 +225,9 @@ export type NeedsYouRow = {
 type WorkItemsClient = {
   getByMessage?: { query: (input: { internetMessageId: string }) => Promise<StoredWork> };
   open?: { mutate: (input: { internetMessageId: string }) => Promise<StoredWork> };
-  recordEvent?: { mutate: (input: RecordFieldEventInput) => Promise<unknown> };
+  recordEvent?: {
+    mutate: (input: RecordFieldEventInput, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
+  };
   retryTranslation?: { mutate: (input: { workItemId: string }) => Promise<TranslationRetryResult> };
   list?: { query: (input: { limit?: number }) => Promise<NeedsYouRow[]> };
   dismiss?: { mutate: (input: { workItemId: string }) => Promise<unknown> };

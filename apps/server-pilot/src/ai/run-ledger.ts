@@ -241,6 +241,7 @@ export type AiFailureClass =
   | 'AUDIT_CAPTURE'
   | 'HMS_LOCK_BUSY'
   | 'STAFF_QUOTE_ACTIVE'
+  | 'WORKER_SHUTDOWN'
   | 'UNKNOWN';
 
 const RETRYABLE_FAILURE_CLASSES: ReadonlySet<AiFailureClass> = new Set([

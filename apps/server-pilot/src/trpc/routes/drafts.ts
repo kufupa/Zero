@@ -1814,6 +1814,10 @@ export const draftsRouter = tRouter({
             )
             .limit(1)
             .for('update');
+          // The draft the confirm named was discarded or sent meanwhile: ask again rather than undo that.
+          if (!prior && input.replaceDraft !== undefined) {
+            throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
+          }
           let untouchedSavedReply = false;
           if (prior) {
             const [latest] = await tx
@@ -1830,7 +1834,9 @@ export const draftsRouter = tRouter({
             if (!untouchedSavedReply && input.replaceDraft === undefined) {
               throw new TRPCError({ code: 'CONFLICT', message: `DRAFT_REPLACE_CONFIRM_REQUIRED:${replaceToken}` });
             }
-            if (!untouchedSavedReply && input.replaceDraft !== replaceToken) {
+            // A confirm names one draft at one revision. Any other current draft (even this user's newer save from
+            // another tab) asks again rather than being overwritten.
+            if (input.replaceDraft !== undefined && input.replaceDraft !== replaceToken) {
               throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
             }
             if (!untouchedSavedReply) {
