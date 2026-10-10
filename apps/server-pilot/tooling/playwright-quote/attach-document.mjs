@@ -278,17 +278,31 @@ async function uploadDocument(ctx, args, state) {
   const form = await openUploadForm(page);
   await form.waitForLoadState('domcontentloaded');
   await shot({ ...ctx, page: form }, 'form.png');
+  // In-page, every field is read from the popup window only, never from the record form behind it.
+  const popup = form === page
+    ? page.locator('.x-window:visible').filter({ has: page.locator('input[type=file]') }).last()
+    : form.locator('body');
+  // H5: uploadorcreatedoc U (upload) makes filename required; C sends no checkfile and needs a server path. The popup
+  // opens without the radio in its params, so U is set the way a click sets it (client-side field states only).
+  const radio = await form.evaluate(() => {
+    const win = window.Ext?.ComponentQuery?.query('window[itemId=BSUPLD]')[0];
+    const upload = win?.down('radio[name=uploadorcreatedoc][inputValue=U]');
+    if (!upload) return 'absent';
+    if (!upload.getValue()) upload.setValue(true);
+    return upload.getValue() ? 'U' : 'unset';
+  }).catch(() => 'absent');
+  if (radio === 'unset') throw new Error('upload_radio_not_set');
   // H2 live: the form's filename field IS the file input, so the document name is the uploaded file's own name.
-  await form.locator('input[type=file]').first().setInputFiles({
+  await popup.locator('input[type=file]').first().setInputFiles({
     name: args.documentName,
     mimeType: 'application/pdf',
     buffer: await readFile(args.file),
   });
   // ponytail: description is optional in bsupld_processUpload; filled when the form shows it so the list reads clearly.
-  const description = form.locator('input[name=description]:visible');
+  const description = popup.locator('input[name=description]:visible');
   if (await description.count()) await description.first().fill(args.documentName);
   await shot({ ...ctx, page: form }, 'before.png');
-  await form.getByRole('button', { name: /^Upload$/ }).first().click();
+  await popup.getByRole('button', { name: /^Upload$/ }).first().click();
   // The route guard sets state.uploadSent when the upload leaves. Listed only when one more row shows the name.
   await page.waitForFunction(
     ({ name, before }) => [...document.querySelectorAll('body *')]
