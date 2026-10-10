@@ -1,5 +1,5 @@
-import { canCreateNativeDraft, canCreatePdf, isMultiStay, ratedStayCount } from '@/lib/quote-workflow/session';
-import { staffHeaderFieldProblem, type QuoteSession } from '@/lib/quote-workflow/types';
+import { canCreateNativeDraft, canCreatePdf, isMultiStay, pdfBlocker, ratedStayCount } from '@/lib/quote-workflow/session';
+import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { Field, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 
 /** "1 of 2 stays rated" while a multi-stay quote still lacks a stay's run. Null once every stay is rated. */
@@ -8,17 +8,38 @@ export function ratedStaysReason(session: QuoteSession): string | null {
   return rated < total ? `${rated} of ${total} stays rated` : null;
 }
 
-/** Why the PDF cannot be made yet, or null when it can. Shown under the disabled PDF button. */
+/** Why the PDF cannot be made yet, or null when it can. Shown under the disabled PDF button. Names the check that failed. */
 export function pdfBlockReason(session: QuoteSession): string | null {
-  if (canCreatePdf(session)) return null;
-  const amountProblem = staffHeaderFieldProblem(session.staffHeader);
-  if (amountProblem) return `Fix the amounts first. ${amountProblem}`;
-  const ratedReason = isMultiStay(session) ? ratedStaysReason(session) : null;
-  if (ratedReason) return ratedReason;
-  if (session.offers.length) {
-    return 'Pick a room option for every stay. Separate date searches do not prove that all stays are available together.';
+  const blocker = pdfBlocker(session);
+  if (!blocker) return null;
+  switch (blocker.kind) {
+    case 'amounts':
+      return `Fix the amounts first. ${blocker.problem}`;
+    case 'source_not_ready':
+      return blocker.unsynced
+        ? 'Waiting for this email to finish syncing.'
+        : 'Nava is still loading this email. If this does not clear, select the email again.';
+    case 'no_rates':
+      return 'Get rates first.';
+    case 'sample_rates':
+      return 'These are sample rates, so no PDF can be made. Open a live email to continue.';
+    case 'rates_stale':
+      return 'The rates are out of date. The details changed after they were found. Get rates again.';
+    case 'stays_unrated':
+      return `${blocker.rated} of ${blocker.total} stays rated`;
+    case 'mixed_stays':
+      return 'Pick room options from one stay only. Separate date searches do not prove that all stays are available together.';
+    case 'rated_option_not_picked':
+      return 'Pick the room option the rates were found for, or get rates again.';
+    case 'no_stay':
+      return session.groups.length ? 'Pick the stay to quote first.' : 'Add a stay first.';
+    case 'nothing_picked':
+      return 'Pick a room option first.';
+    case 'pick_gone':
+      return 'A picked room option is no longer in the results. Pick again.';
+    case 'occupancy':
+      return 'The picked rooms do not match the rooms and guests asked for. Pick rooms that match.';
   }
-  return 'Get rates first.';
 }
 
 /** The quote documents: the PDF, the Excel export and the reply text that goes with them. The pane frames it as a step. */

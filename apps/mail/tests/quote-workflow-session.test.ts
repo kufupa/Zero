@@ -8,6 +8,7 @@ import {
   initialQuoteSession,
   nextSelectedOfferIds,
   parseChildrenAges,
+  pdfBlocker,
   pickNextRunnableStep,
   planQuoteSteps,
   quoteRunBlockReason,
@@ -27,6 +28,7 @@ import {
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
 import { staffHeaderFieldProblem } from '../lib/quote-workflow/types';
+import { pdfBlockReason } from '../components/quote-workflow/document-review';
 import type {
   LunaAnalysisWire,
   QuoteAnalysis,
@@ -2678,5 +2680,133 @@ describe('stay edits: rows, stays and their rates', () => {
   it('counts rooms and guests over every row', () => {
     const groups = [row('t', dateA, { quantity: 20, adults: 2 }), row('s', dateA, { quantity: 10, adults: 1, roomPreference: 'STQN' })];
     expect(stayTotals(groups)).toEqual({ rooms: 30, guests: 50 });
+  });
+});
+
+describe('why the PDF cannot be made: the reason names the check that failed', () => {
+  /** One stay, rated by a live staff run: the PDF can be made. */
+  function ratedSingleStay(): QuoteSession {
+    const s = withStaffSource(analysisReady());
+    return reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-1', 850000, s.inputRevision));
+  }
+
+  /** One stay with authorised (non-staff-run) results, nothing picked yet. */
+  function authorisedResults(offers: QuoteOffer[] = [authorisedOffer]): QuoteSession {
+    return reduceQuoteSession(withStaffSource(analysisReady()), {
+      type: 'results_ready',
+      offers,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+    });
+  }
+
+  function expectBlocked(session: QuoteSession, kind: string, reason: string) {
+    expect(pdfBlocker(session)?.kind).toBe(kind);
+    expect(canCreatePdf(session)).toBe(false);
+    expect(pdfBlockReason(session)).toBe(reason);
+  }
+
+  it('gives no reason once the PDF can be made', () => {
+    const s = ratedSingleStay();
+    expect(pdfBlocker(s)).toBeNull();
+    expect(canCreatePdf(s)).toBe(true);
+    expect(pdfBlockReason(s)).toBeNull();
+  });
+
+  it('asks to fix an unreadable amount first', () => {
+    const s = reduceQuoteSession(ratedSingleStay(), {
+      type: 'patch_staff_header',
+      header: { fieldErrors: { dinnerAllowance: 'Enter an amount in rand, like 450 or 1,250.50' } },
+    });
+    expectBlocked(
+      s,
+      'amounts',
+      'Fix the amounts first. Dinner allowance: Enter an amount in rand, like 450 or 1,250.50',
+    );
+  });
+
+  it('says the email is still loading, not "Get rates first", while its mailbox copy is not linked', () => {
+    const s: QuoteSession = { ...ratedSingleStay(), staffSource: null };
+    expectBlocked(s, 'source_not_ready', 'Nava is still loading this email. If this does not clear, select the email again.');
+    expectBlocked({ ...s, mailboxStatus: 'unsynced' }, 'source_not_ready', 'Waiting for this email to finish syncing.');
+  });
+
+  it('keeps "Get rates first." only for an email with no rates at all', () => {
+    expectBlocked(withStaffSource(analysisReady()), 'no_rates', 'Get rates first.');
+  });
+
+  it('says the rates are out of date when the run is there but its evidence is gone or for older inputs', () => {
+    const rated = ratedSingleStay();
+    const stale = 'The rates are out of date. The details changed after they were found. Get rates again.';
+    // The live proof: the run happened, then the evidence was dropped. Staff must not be told to get rates first.
+    expectBlocked({ ...rated, evidence: null }, 'rates_stale', stale);
+    expectBlocked({ ...rated, inputRevision: rated.inputRevision + 1 }, 'rates_stale', stale);
+    // Evidence still current, but the staff run is for another copy of the email.
+    expectBlocked(
+      { ...rated, staffSource: staffSource({ sourceHash: 'cd'.repeat(32) }) },
+      'rates_stale',
+      stale,
+    );
+  });
+
+  it('says sample rates cannot make a PDF', () => {
+    let s = reduceQuoteSession(withStaffSource(analysisReady()), {
+      type: 'results_ready',
+      offers: [authorisedOffer],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      provenance: { kind: 'fixture', selectionEpoch: 1, inputRevision: 1 },
+    });
+    s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+    expectBlocked(s, 'sample_rates', 'These are sample rates, so no PDF can be made. Open a live email to continue.');
+  });
+
+  it('counts rated stays on a combined quote', () => {
+    const s = reduceQuoteSession(twoDateSession(), staffQuoteFor(STAY_A, 'rev-a', 272000, twoDateSession().inputRevision));
+    expectBlocked(s, 'stays_unrated', '1 of 2 stays rated');
+  });
+
+  it('says options from more than one date search were picked for a one-stay quote', () => {
+    const other: QuoteOffer = { ...authorisedOffer, id: 'o2', sourceRef: 'src-2', quoteRequestKey: STAY_B };
+    const s = reduceQuoteSession(authorisedResults([authorisedOffer, other]), {
+      type: 'select_offers',
+      offerIds: ['o1', 'o2'],
+    });
+    expectBlocked(
+      s,
+      'mixed_stays',
+      'Pick room options from one stay only. Separate date searches do not prove that all stays are available together.',
+    );
+  });
+
+  it('asks for the rated option back when only the pick moved off it', () => {
+    const s = reduceQuoteSession(ratedSingleStay(), { type: 'select_offers', offerIds: [] });
+    expectBlocked(s, 'rated_option_not_picked', 'Pick the room option the rates were found for, or get rates again.');
+  });
+
+  it('asks to pick a room option when none is picked', () => {
+    expectBlocked(authorisedResults(), 'nothing_picked', 'Pick a room option first.');
+  });
+
+  it('says a picked option is no longer in the results', () => {
+    const s = reduceQuoteSession(authorisedResults(), { type: 'select_offers', offerIds: ['gone'] });
+    expectBlocked(s, 'pick_gone', 'A picked room option is no longer in the results. Pick again.');
+  });
+
+  it('says the picked rooms do not match the rooms and guests asked for', () => {
+    const twoRooms: QuoteOffer = { ...authorisedOffer, quantity: 2 };
+    const s = reduceQuoteSession(authorisedResults([twoRooms]), { type: 'select_offers', offerIds: ['o1'] });
+    expectBlocked(
+      s,
+      'occupancy',
+      'The picked rooms do not match the rooms and guests asked for. Pick rooms that match.',
+    );
+  });
+
+  it('asks to pick the stay when no stay row matches the selected stay', () => {
+    const s = reduceQuoteSession(authorisedResults(), { type: 'select_offers', offerIds: ['o1'] });
+    expect(canCreatePdf(s)).toBe(true);
+    expectBlocked({ ...s, selectedStayKey: STAY_B }, 'no_stay', 'Pick the stay to quote first.');
   });
 });
