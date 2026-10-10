@@ -139,32 +139,26 @@ describe('work-event eval export', () => {
     });
   });
 
-  it('exports a rate choice as the HMS rate against her final price', async () => {
+  it('exports extraction fields only: rate choices and follow-up draft decisions are not labels', async () => {
     await withIngestionDb(async ({ db }) => {
       const item = await seedItem(db, 'thread-rate');
       const rate = 'quote.rows[g_room1].rate';
       const hms = { rateCode: 'RACK', nightlyMinor: [250000, 250000] };
+      const name = 'contact.name';
       await addEvents(db, item, [
+        // A later quote at the HMS price writes no rate event, so the last custom price is not her final choice.
         { type: 'rate.one_off', fieldPath: rate, aiValue: hms, value: { source: 'one_off', amountMinor: 230000 }, at: 1 },
-        {
-          type: 'rate.override',
-          fieldPath: rate,
-          aiValue: hms,
-          value: { source: 'override', rateCode: 'NETT', amountMinor: 210000, note: 'Approved by GM' },
-          at: 2,
-        },
+        // Rejecting one follow-up draft and accepting another reuse one path for two different replies.
+        { type: 'field.reject', fieldPath: 'followUp.draft', aiValue: 'Draft one', value: null, at: 2 },
+        { type: 'field.accept', fieldPath: 'followUp.draft', aiValue: 'Draft two', value: 'Draft two', at: 3 },
+        { type: 'field.edit', fieldPath: name, aiValue: 'J Smith', value: 'Jane Smith', at: 4 },
       ]);
+      await db.update(workItem).set({ state: { [name]: 'Jane Smith' } }).where(eq(workItem.id, item));
 
       const { rows } = await exportWorkEvents(db);
 
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({
-        field_id: rate,
-        ai_value: hms,
-        human_value: { source: 'override', rateCode: 'NETT', amountMinor: 210000, note: 'Approved by GM' },
-        label_status: 'candidate',
-      });
-      expect(rows[0]!.event_ids).toHaveLength(2);
+      expect(rows.map((row) => row.field_id)).toEqual([name]);
+      expect(rows[0]).toMatchObject({ ai_value: 'J Smith', human_value: 'Jane Smith' });
     });
   });
 
