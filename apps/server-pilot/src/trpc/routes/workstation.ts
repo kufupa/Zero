@@ -1163,13 +1163,16 @@ export const workstationRouter = router({
           factRefs: proposalFactRefsForRevision(bound.run, input.revisionRef),
         });
         const cloned = structuredClone(revision);
-        const extraTotalMinor = quotedTotalWithStoredExtras(cloned, bound.run) - cloned.totalMinor;
+        const rowPrices = storedRowPrices(bound.run, cloned.id);
+        const extraTotalMinor =
+          quotedTotalWithStoredExtras(cloned, bound.run) - pricedRoomTotal(cloned, rowPrices);
         const draft = await buildBookingDrafts({
           analysis: input.analysis,
           revision: cloned,
           defaults: bookingCodeDefaults(partyClassFromRevision(cloned, staff)),
           messageId: input.messageId,
           extraTotalMinor,
+          rowPrices,
         });
         return {
           status: 'ready' as const,
@@ -1278,14 +1281,16 @@ export const workstationRouter = router({
       const staff = run.metrics?.staffQuoteAttestation as
         | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
         | undefined;
+      const rowPrices = storedRowPrices(run, resolved.revision.id);
       const extraTotalMinor =
-        quotedTotalWithStoredExtras(resolved.revision, run) - resolved.revision.totalMinor;
+        quotedTotalWithStoredExtras(resolved.revision, run) - pricedRoomTotal(resolved.revision, rowPrices);
       const draft = await buildBookingDrafts({
         analysis: input.analysis,
         revision: structuredClone(resolved.revision),
         defaults: bookingCodeDefaults(partyClassFromRevision(resolved.revision, staff)),
         messageId: input.messageId,
         extraTotalMinor,
+        rowPrices,
       });
       return {
         status: 'ready' as const,

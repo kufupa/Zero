@@ -59,6 +59,8 @@ export async function snapshotRowPrices(
             eq(customRate.transportId, transportId),
             inArray(customRate.id, savedIds),
             isNull(customRate.archivedAt),
+            // Quotes price in rand only (U12), so a rate in any other currency is never applied.
+            eq(customRate.currency, 'ZAR'),
           ),
         )
     : [];

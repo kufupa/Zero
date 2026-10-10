@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compareRateClaim, type RateComparison } from '../quote-proposal/rate-check.js';
 import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
+import type { RowPrice } from '../quote-proposal/quote-lines.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 
 export type BookingDraftDefaults = {
@@ -121,8 +122,25 @@ function quotedBoard(board: Board): QuotedBoard {
   return 'unknown';
 }
 
-function comparisonTarget(revision: QuoteRevision, extraTotalMinor = 0) {
-  const groups = revision.groups;
+/**
+ * The revision's rooms at their approved prices. A saved, one-off or override row charges its own rate on every night, so a
+ * client's rate claim is checked against the rate the quote sent, not HMS's.
+ */
+function pricedGroups(revision: QuoteRevision, rowPrices: readonly RowPrice[]): QuoteRevision['groups'] {
+  return revision.groups.map((group) => {
+    const price = rowPrices.find((row) => row.groupId === group.id);
+    if (!price) return group;
+    return {
+      ...group,
+      nightly: group.nightly.map((night) => ({ ...night, amountMinor: price.amountMinor })),
+      perRoomMinor: price.amountMinor * group.nightly.length,
+      totalMinor: price.amountMinor * group.nightly.length * group.quantity,
+    };
+  });
+}
+
+function comparisonTarget(revision: QuoteRevision, rowPrices: readonly RowPrice[], extraTotalMinor = 0) {
+  const groups = pricedGroups(revision, rowPrices);
   return {
     currency: revision.currency,
     basis: 'per_room_per_night' as const,
@@ -149,11 +167,12 @@ function checkRateClaim(
   claim: LunaAnalysis['rateClaims'][number],
   revision: QuoteRevision,
   messageId: string,
+  rowPrices: readonly RowPrice[],
   extraTotalMinor = 0,
 ): RateComparison & { claimQuote: string; assumedTaxBasis: boolean } {
   const assumedTaxBasis = claim.taxBasis === 'unknown';
   const { amount, precision } = normalizeClaimAmount(claim.amount);
-  const rooms = comparisonTarget(revision);
+  const rooms = comparisonTarget(revision, rowPrices);
   const target =
     claim.basis === 'total' || claim.kind === 'total'
       ? {
@@ -238,7 +257,10 @@ export async function buildBookingDrafts(input: {
   revision: QuoteRevision;
   defaults: BookingDraftDefaults;
   messageId: string;
+  /** Authorised extras only. Room prices staff set come in rowPrices. */
   extraTotalMinor?: number;
+  /** The row prices the quote's approval recorded. */
+  rowPrices?: readonly RowPrice[];
   validate?: (
     request: Record<string, unknown>,
   ) => Promise<{ ok: boolean; errors: unknown[] }>;
@@ -291,6 +313,9 @@ export async function buildBookingDrafts(input: {
   ) {
     flags.push('party_rate_not_applied');
   }
+  // The create tool books at the HMS rate plan and cannot set an amount, so a row priced by staff needs its rate changed in HMS.
+  const rowPrices = input.rowPrices ?? [];
+  if (rowPrices.length) flags.push('manual_rate_change');
   const roomCodes = new Set(revision.groups.map((group) => group.roomCode));
   if (revision.groups.length > 1 && roomCodes.size > 1) {
     flags.push('joint_inventory_unproven');
@@ -302,7 +327,7 @@ export async function buildBookingDrafts(input: {
   return {
     rooms,
     rateCheck: input.analysis.rateClaims.map((claim) => {
-      const compared = checkRateClaim(claim, revision, input.messageId, input.extraTotalMinor ?? 0);
+      const compared = checkRateClaim(claim, revision, input.messageId, rowPrices, input.extraTotalMinor ?? 0);
       return stayUnclear ? { ...compared, status: 'cannot_check' as const, reason: 'ambiguous_stay' } : compared;
     }),
     missing: uniqueMissing,

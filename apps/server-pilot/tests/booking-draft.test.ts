@@ -506,6 +506,44 @@ describe('buildBookingDrafts', () => {
     expect(draft.flags).toContain('party_rate_not_applied');
   });
 
+  it('checks claims against an override rate and flags the manual rate change HMS needs (U13)', async () => {
+    const revision = await agencyRevision({ amounts: ['2400.00', '2400.00'] });
+    const groupId = revision.groups[0]!.id;
+    const rowPrices = [
+      { groupId, source: 'override' as const, rateCode: 'NCOR1B', amountMinor: 185_000, note: 'Approved' },
+    ];
+    const claim = (amount: string, basis: 'per_room_per_night' | 'total') => ({
+      kind: basis === 'total' ? ('total' as const) : ('exact' as const),
+      amount,
+      currency: 'ZAR',
+      basis,
+      taxBasis: 'gross_included' as const,
+      quote: amount,
+    });
+    const priced = await buildBookingDrafts({
+      analysis: analysis({ rateClaims: [claim('1850.00', 'per_room_per_night'), claim('7400.00', 'total')] }),
+      revision,
+      defaults: COMPLETE_DEFAULTS,
+      messageId: 'message-1',
+      rowPrices,
+      validate: validateCreate,
+    });
+    expect(priced.rateCheck.map((check) => check.status)).toEqual(['match', 'match']);
+    expect(priced.flags).toContain('manual_rate_change');
+    // The create request carries no amount, so the rate change is a flag, never a silent HMS price.
+    expect(priced.rooms[0]!.request).not.toHaveProperty('rate');
+
+    const hms = await buildBookingDrafts({
+      analysis: analysis({ rateClaims: [claim('1850.00', 'per_room_per_night')] }),
+      revision,
+      defaults: COMPLETE_DEFAULTS,
+      messageId: 'message-1',
+      validate: validateCreate,
+    });
+    expect(hms.rateCheck[0]?.status).toBe('mismatch');
+    expect(hms.flags).not.toContain('manual_rate_change');
+  });
+
   it('does not mutate a frozen revision', async () => {
     const revision = await agencyRevision();
     const before = structuredClone(revision);

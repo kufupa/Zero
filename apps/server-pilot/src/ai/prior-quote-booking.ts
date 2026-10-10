@@ -179,8 +179,7 @@ export function storedRowPrices(run: { metrics: Record<string, unknown> | null }
 
 /**
  * The approved total: the priced rooms plus the stored extras. Equal to the HMS total when no row is priced.
- * Booking drafts take the difference from HMS's total as their extra amount, so a total claim matches the approval.
- * ponytail: per-night rate claims still compare with HMS nightly rates; the draft's rate check is U20/U26.
+ * Booking drafts check rate claims against the priced rooms and flag manual_rate_change, because HMS books at its own rate.
  */
 export function quotedTotalWithStoredExtras(revision: QuoteRevision, run: PriorQuoteRun): number {
   const rooms = pricedRoomTotal(revision, storedRowPrices(run, revision.id));

@@ -9,6 +9,8 @@ import { NAVA_TRANSPORT_ID, NAVA_USER_ID, TRANSPORT_ID } from '../src/db/seed.js
 import { customRate, workEvent, workItem } from '../src/db/schema/work.js';
 import { appendWorkEvent, quoteWorkItemIdFor, recordRateEvents } from '../src/ai/work-events.js';
 import { snapshotRowPrices } from '../src/trpc/routes/rates.js';
+import { quotedTotalWithStoredExtras, storedRowPrices } from '../src/ai/prior-quote-booking.js';
+import { quoteWorkbookForStays } from '../src/quote-proposal/quote-workbook.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
@@ -155,6 +157,46 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('saved rates (seeded, transact
         code: 'PRECONDITION_FAILED',
         message: 'That saved rate is archived or no longer exists. Pick another rate.',
       });
+    });
+  });
+
+  it('an approved quote keeps its saved rate after the rate is renamed, repriced and archived', async () => {
+    await withSeededTestDb(async (db) => {
+      const nava = await callerFor(NAVA_USER_ID, { db, requestedTransportId: NAVA_TRANSPORT_ID });
+      const rate = await nava.rates.create({ name: 'Conference group', amountMinor: 175_000 });
+      const revision = await syntheticRevision(['2400.00', '2400.00']);
+      const groupId = revision.groups[0]!.id;
+      const rowPrices = await snapshotRowPrices(db, NAVA_TRANSPORT_ID, {
+        groups: revision.groups,
+        rowPrices: [{ groupId, source: 'saved', customRateId: rate.id }],
+      });
+      const run = {
+        transportId: NAVA_TRANSPORT_ID,
+        threadId: 'thread-x',
+        state: 'succeeded',
+        metrics: { staffQuoteAttestation: { revisionIds: [revision.id], rowPrices } },
+      };
+
+      await nava.rates.update({ id: rate.id, name: 'Renamed group', amountMinor: 199_000 });
+      await nava.rates.archive({ id: rate.id });
+
+      expect(storedRowPrices(run, revision.id)).toEqual([
+        { groupId, source: 'saved', customRateId: rate.id, name: 'Conference group', amountMinor: 175_000 },
+      ]);
+      // Two rooms for two nights at the approved R1,750.
+      expect(quotedTotalWithStoredExtras(revision, run)).toBe(700_000);
+      const workbook = quoteWorkbookForStays({
+        stays: [{ revision, rowPrices: storedRowPrices(run, revision.id) }],
+        header: {
+          attention: 'Ann Guest',
+          company: 'Acme Travel',
+          clientEmail: 'ann@example.test',
+          clientTelephone: '021 000 0000',
+          signerName: 'Staff Member',
+          signerEmail: 'staff@example.test',
+        },
+      });
+      expect(workbook.totalMinor).toBe(700_000);
     });
   });
 
