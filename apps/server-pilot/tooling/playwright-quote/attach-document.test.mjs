@@ -7,6 +7,7 @@ import {
   attachRequestAllowed,
   attachRequestDecision,
   attachVerified,
+  countListedDocument,
   exitCodeForAttach,
   isPdfBytes,
   isPdfDocumentName,
@@ -188,4 +189,26 @@ test('attachDocument refuses unless ATTACH_VERIFIED=true, then refuses a pre-202
     await attachDocument({ ...parsed.args, file: '/nonexistent/attach-document-test.pdf' }, '/tmp/attach-document-test/out', armed),
     { outcome: 'refused_file_invalid', ...refused },
   );
+});
+
+test('countListedDocument counts Documents rows as the name or "<code>: <name>", and nothing that only contains it', () => {
+  const leaf = (text) => ({ childElementCount: 0, textContent: text });
+  const rows = [
+    leaf('31050: nava-h2-test.pdf'),
+    leaf(' nava-h2-test.pdf '),
+    leaf('31051:\u00a0nava-h2-test.pdf'),
+    leaf(': nava-h2-test.pdf'),
+    leaf('Documents:39519 50231'),
+    leaf('old-nava-h2-test.pdf'),
+    leaf('x31050: nava-h2-test.pdf'),
+    leaf('31050: nava-h2-test.pdf.bak'),
+    { childElementCount: 1, textContent: '31050: nava-h2-test.pdf' },
+  ];
+  globalThis.document = { querySelectorAll: () => rows };
+  try {
+    assert.equal(countListedDocument('nava-h2-test.pdf'), 3);
+    assert.equal(countListedDocument('other.pdf'), 0);
+  } finally {
+    delete globalThis.document;
+  }
 });
