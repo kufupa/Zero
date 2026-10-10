@@ -249,6 +249,16 @@ function refusedResult(outcome) {
   return { outcome, uploadSent: false, screenshots: [], error: null };
 }
 
+// Leaf nodes in the Documents tree naming the document. H2d live: a row reads "<document code>: <file name>", e.g.
+// "31050: nava-h2-test.pdf". Runs in the page, so it is self-contained.
+export function countListedDocument(name) {
+  return [...document.querySelectorAll('body *')].filter((el) => {
+    if (el.childElementCount !== 0) return false;
+    const text = el.textContent?.trim() ?? '';
+    return text === name || (text.endsWith(`: ${name}`) && /^\d+$/.test(text.slice(0, -name.length - 2)));
+  }).length;
+}
+
 // The upload form opens either as an Ext window in the page or as a new page. Whichever shows a file input first.
 async function openUploadForm(page) {
   const opened = page.context().waitForEvent('page', { timeout: 20000 }).catch(() => null);
@@ -267,14 +277,13 @@ async function openUploadForm(page) {
   });
 }
 
-// ponytail: the Documents tab and Create/Upload Document were captured live (U28-H2); the upload and list read-back are
-// proven only once an H2 run attaches. Only reached once ATTACH_VERIFIED=true.
+// Live-proven on our Labtest stay (U28-H2d, 2026-10-10): Create/Upload Document, Submit, and the tree row
+// "31050: nava-h2-test.pdf". Only reached once ATTACH_VERIFIED=true.
 async function uploadDocument(ctx, args, state) {
   const { page } = ctx;
   await page.getByText(/^Documents$/).first().click();
   await page.waitForTimeout(800);
-  const listedName = page.getByText(args.documentName, { exact: true });
-  const listedBefore = await listedName.count();
+  const listedBefore = await page.evaluate(countListedDocument, args.documentName);
   const form = await openUploadForm(page);
   await form.waitForLoadState('domcontentloaded');
   await shot({ ...ctx, page: form }, 'form.png');
@@ -307,12 +316,14 @@ async function uploadDocument(ctx, args, state) {
   const submit = popup.getByRole('button', { name: /^Submit$/ }).or(popup.getByText(/^Submit$/));
   await submit.filter({ visible: true }).first().click();
   // The route guard sets state.uploadSent when the upload leaves. Listed only when one more row shows the name.
-  await page.waitForFunction(
-    ({ name, before }) => [...document.querySelectorAll('body *')]
-      .filter((el) => el.childElementCount === 0 && el.textContent?.trim() === name).length > before,
-    { name: args.documentName, before: listedBefore },
-    { timeout: 30000 },
-  ).then(() => { state.listed = true; }, () => {});
+  // Polled from Node (no in-page eval, which the HMS page's CSP may refuse).
+  for (const until = Date.now() + 30000; Date.now() < until; await delay(500)) {
+    const count = await page.evaluate(countListedDocument, args.documentName).catch(() => 0);
+    if (count > listedBefore) {
+      state.listed = true;
+      break;
+    }
+  }
   await shot(ctx, 'after.png');
 }
 
