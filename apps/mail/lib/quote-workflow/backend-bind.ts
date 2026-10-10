@@ -246,6 +246,10 @@ export async function bindStoredWork(args: {
   query?: WorkItemsClient['getByMessage'];
   open?: WorkItemsClient['open'];
   internetMessageId: string;
+  /** Called when the stored read is in and only the open is left, so the caller's lookup deadline can stop there. */
+  onRead?: () => void;
+  /** How long the open may take. Past it the read shows without an item, the same as a failed open. */
+  openTimeoutMs?: number;
 }): Promise<StoredWork | { status: 'unavailable' }> {
   if (!args.query) return { status: 'unavailable' };
   let stored: StoredWork;
@@ -255,11 +259,18 @@ export async function bindStoredWork(args: {
     return { status: 'unavailable' };
   }
   if (stored.status !== 'ready' || stored.workItemId || !args.open) return stored;
+  args.onRead?.();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<StoredWork>((resolve) => {
+    if (args.openTimeoutMs !== undefined) timer = setTimeout(() => resolve(stored), args.openTimeoutMs);
+  });
   try {
-    const opened = await args.open.mutate({ internetMessageId: args.internetMessageId });
+    const opened = await Promise.race([args.open.mutate({ internetMessageId: args.internetMessageId }), late]);
     return opened.status === 'ready' && opened.workItemId ? opened : stored;
   } catch {
     return stored;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

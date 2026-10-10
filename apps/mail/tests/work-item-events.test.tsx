@@ -251,6 +251,29 @@ describe('useStoredWork', () => {
     }
   });
 
+  it('keeps the stored read when opening its work item is slow, and logs no edit', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => ({ ...READY, workItemId: null, workItemStatus: null }));
+      const open = vi.fn((_input: unknown) => new Promise<never>(() => undefined));
+      const routes = { workItems: { ...trpc.workItems, open: { mutate: open } } };
+      const { result, unmount } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(open).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(STORED_LOOKUP_TIMEOUT_MS * 2);
+      });
+      expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null });
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 3 }]));
+      unmount();
+      expect(mutate).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('logs five quick edits to one field as one event after the quiet period', async () => {
     const { trpc, mutate } = fakeTrpc(() => READY);
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));

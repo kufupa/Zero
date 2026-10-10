@@ -305,7 +305,14 @@ export function useStoredWork(args: {
     const timer = setTimeout(() => settle({ status: 'unavailable' }), STORED_LOOKUP_TIMEOUT_MS);
     setLookup(null);
     const routes = workItemsFromTrpc(trpcRef.current);
-    void bindStoredWork({ query: routes.getByMessage, open: routes.open, internetMessageId }).then(settle);
+    // The deadline covers the stored read. Once it is in, a slow open shows that read rather than reading live.
+    void bindStoredWork({
+      query: routes.getByMessage,
+      open: routes.open,
+      internetMessageId,
+      onRead: () => clearTimeout(timer),
+      openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS,
+    }).then(settle);
     return () => {
       current = false;
       clearTimeout(timer);
