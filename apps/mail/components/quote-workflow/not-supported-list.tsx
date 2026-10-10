@@ -10,7 +10,8 @@ const FLAG_COPY: Record<LunaAnalysisWire['flags'][number], string> = {
   amendment_or_cancel: 'Changing or cancelling a booking is not supported yet. Handle it by hand in HMS.',
   long_stay: 'Stay over 30 nights: split it into shorter stays by hand.',
   discount_or_negotiation: 'Discount asked for: your decision is needed.',
-  multi_date: "Several date options: run each one. Build each option's PDF before running the next.",
+  // Multi-stay (U20): one rate run per stay, then one combined proposal. Never one PDF per option.
+  multi_date: 'Several stays: get rates for each one. Prepare quote puts every stay in one proposal.',
   extras: 'Extras asked for (shuttle or dinner): set them under Extras in Stay details before you make the PDF.',
   mixed_request: 'Several requests in one email: check each one.',
   attachment_unread: 'An attachment could not be read. Open it in Outlook and check it.',
@@ -35,9 +36,11 @@ function flagCopy(
 }
 
 function tasksLine(tasks: LunaAnalysisWire['tasks']): string | null {
-  if (tasks.length <= 1) return null;
-  const words = tasks.map((task) => TASK_KIND_WORDS[task.kind] ?? task.kind).join(', ');
-  return `This email asks for ${tasks.length} things: ${words}. This pane handles the first. Do the rest by hand.`;
+  // Luna emits one quote task per date set, and the pane quotes every stay in one proposal, so a kind counts once.
+  const kinds = [...new Set(tasks.map((task) => task.kind))];
+  if (kinds.length <= 1) return null;
+  const words = kinds.map((kind) => TASK_KIND_WORDS[kind] ?? kind).join(', ');
+  return `This email asks for ${kinds.length} things: ${words}. This pane handles the first. Do the rest by hand.`;
 }
 
 export function NotSupportedList({

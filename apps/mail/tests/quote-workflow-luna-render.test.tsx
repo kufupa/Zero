@@ -295,7 +295,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(onPatchGroup).toHaveBeenCalledWith('g1', expect.objectContaining({ adults: 3 }));
   });
 
-  it('shows a multi-task line for three steps and no buttons', () => {
+  it('shows a multi-task line for distinct kinds of work and no buttons', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',
       groups: [g1],
@@ -312,10 +312,34 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     render(<QuoteWorkflowPanel session={session} />);
     expect(
       screen.getByText(
-        'This email asks for 3 things: a quote, a quote, a booking. This pane handles the first. Do the rest by hand.',
+        // One quote per stay is one combined quote (U20), so the two quote tasks count once.
+        'This email asks for 2 things: a quote, a booking. This pane handles the first. Do the rest by hand.',
       ),
     ).toBeDefined();
     expect(screen.queryByRole('button', { name: /do the rest/i })).toBeNull();
+  });
+
+  it('treats one quote task per stay as one multi-stay quote, not work to do by hand', () => {
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [g1],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({
+        flags: ['rooms_only_group', 'multi_date'],
+        tasks: [
+          { kind: 'quote', groupIndexes: [0], note: '' },
+          { kind: 'quote', groupIndexes: [1], note: '' },
+        ],
+      }),
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.queryByText(/This email asks for/i)).toBeNull();
+    expect(screen.queryByText(/Do the rest by hand/i)).toBeNull();
+    expect(screen.queryByText(/PDF before running the next/i)).toBeNull();
+    expect(
+      screen.getByText('Several stays: get rates for each one. Prepare quote puts every stay in one proposal.'),
+    ).toBeDefined();
   });
 
   it('hides the tasks line when luna has a single task', () => {
