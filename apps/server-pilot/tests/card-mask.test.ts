@@ -25,6 +25,12 @@ describe('maskCardNumbers', () => {
     expect(maskCardNumbers('Security code: 321')).toBe('Security code: [code masked]');
   });
 
+  it('masks a security code on the line after its label, as extracted PDF text splits them', () => {
+    expect(maskCardNumbers('CVV:\n123')).toBe('CVV:\n[code masked]');
+    expect(maskCardNumbers('Security code\r\n\r\n 4567 ')).toBe('Security code\r\n\r\n [code masked] ');
+    expect(maskCardNumbers('CVV:\n\n\n123')).toBe('CVV:\n\n\n123');
+  });
+
   it('leaves a bare number and a two-digit value after a security label alone', () => {
     expect(maskCardNumbers('room 123 for 2 nights')).toBe('room 123 for 2 nights');
     expect(maskCardNumbers('CVV 12')).toBe('CVV 12');
