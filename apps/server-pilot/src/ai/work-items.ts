@@ -604,29 +604,25 @@ export async function dismissWorkItem(
   });
 }
 
-/** The chip on a Needs-you row (KTD14). */
-export type NeedsYouChip = 'needs_you' | 'queued' | 'in_hms' | 'review';
+/** The chips on a Needs-you row (KTD14), in list order: the list sorts by this index, then by age. */
+export const NEEDS_YOU_CHIPS = ['needs_you', 'review', 'queued', 'in_hms'] as const;
+export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
 
 /**
- * Queued and In HMS come from the item's latest linked run, so the run is the one state machine. Otherwise a review
- * item shows Review, and anything else needs her.
- */
-export function needsYouChip(status: string, runState: string | null): NeedsYouChip {
-  if (runState === 'queued' || runState === 'retry_wait') return 'queued';
-  if (runState === 'claimed' || runState === 'running') return 'in_hms';
-  return status === 'review' ? 'review' : 'needs_you';
-}
-
-/**
- * Work items in this transport with the given statuses, the Needs-you list. Needs you comes before review, then the
- * oldest mail first. Spam is left out, a spam thread and a spam read alike. Each row carries its chip.
+ * Work items in this transport with the given statuses, the Needs-you list. Spam, trashed and deleted threads are left
+ * out. Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run
+ * never moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
+ * NEEDS_YOU_CHIPS order, then the oldest mail first.
  */
 export async function listWorkItems(
   db: DB,
   input: { transportId: string; statuses: readonly string[]; limit: number },
 ) {
   if (input.statuses.length === 0) return [];
-  const latestRunState = sql<string | null>`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.workItemId} = ${workItem.id} order by ${aiWorkflowRun.createdAt} desc limit 1)`;
+  const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.workItemId} = ${workItem.id} and ${aiWorkflowRun.executorLane} = 'hms' order by ${aiWorkflowRun.createdAt} desc limit 1)`;
+  const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
+    .mapWith(Number)
+    .as('chip_rank');
   const rows = await db
     .select({
       id: workItem.id,
@@ -638,23 +634,28 @@ export async function listWorkItems(
       sender: message.fromAddress,
       subject: message.subject,
       receivedAt: message.receivedAt,
-      runState: latestRunState,
+      chipRank,
     })
     .from(workItem)
+    .innerJoin(mailThread, eq(mailThread.id, workItem.threadId))
     .leftJoin(message, eq(message.id, workItem.sourceMessageId))
-    .leftJoin(mailThread, eq(mailThread.id, workItem.threadId))
     .where(
       and(
         eq(workItem.transportId, input.transportId),
         inArray(workItem.status, [...input.statuses]),
         ne(workItem.kind, 'spam'),
         isNull(mailThread.spamAt),
+        isNull(mailThread.trashedAt),
       ),
     )
     .orderBy(
-      sql`case when ${workItem.status} = 'needs_you' then 0 else 1 end`,
+      sql`chip_rank`,
       asc(sql`coalesce(${message.receivedAt}, ${workItem.createdAt})`),
+      asc(workItem.id),
     )
     .limit(input.limit);
-  return rows.map(({ runState, ...row }) => ({ ...row, chip: needsYouChip(row.status, runState) }));
+  return rows.map(({ chipRank: rank, ...row }) => ({
+    ...row,
+    chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
+  }));
 }

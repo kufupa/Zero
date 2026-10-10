@@ -332,6 +332,17 @@ describe('Needs-you entry on the pane', () => {
     expect(document.querySelector<HTMLElement>('main.nava-pane-scroll')?.style.display).toBe('');
   });
 
+  it('Back reloads the pane count, so a dismiss made on the list shows on the entry', async () => {
+    render(<NavaPane bridge={fakeBridge} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
+    listQuery.mockResolvedValue([TWO_OPEN[1]!]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
+    await waitFor(() => expect(dismissMutate).toHaveBeenCalledWith({ workItemId: 'wi-1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to quotes' }));
+    expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
+  });
+
   it('the webmail pane opens a row thread through the webmail callback', async () => {
     const onOpenThread = vi.fn();
     render(<NavaPane bridge={fakeBridge} preview onOpenThread={onOpenThread} />);

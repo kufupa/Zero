@@ -10,7 +10,6 @@ import {
   ensureWorkItemForMessage,
   formStays,
   listWorkItems,
-  needsYouChip,
   parseFieldPath,
   recordFieldEvent,
   storedTranslation,
@@ -896,19 +895,6 @@ describe('work item route', () => {
     }));
 });
 
-describe('chip from the latest linked run', () => {
-  it('maps the run state and the item status to one chip', () => {
-    expect(needsYouChip('needs_you', null)).toBe('needs_you');
-    expect(needsYouChip('needs_you', 'succeeded')).toBe('needs_you');
-    expect(needsYouChip('needs_you', 'dead_letter')).toBe('needs_you');
-    expect(needsYouChip('needs_you', 'queued')).toBe('queued');
-    expect(needsYouChip('review', 'retry_wait')).toBe('queued');
-    expect(needsYouChip('needs_you', 'claimed')).toBe('in_hms');
-    expect(needsYouChip('review', 'running')).toBe('in_hms');
-    expect(needsYouChip('review', null)).toBe('review');
-  });
-});
-
 describe('needs-you list', () => {
   /** A quote read for a new mail, received at `receivedAt`, with its work item. Returns the work item id. */
   async function openItem(db: DB, id: string, receivedAt: string): Promise<string> {
@@ -924,7 +910,7 @@ describe('needs-you list', () => {
     return listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
   }
 
-  it('lists needs you before review, and the oldest mail first within a status', () =>
+  it('lists needs you before review, and the oldest mail first within a chip', () =>
     withDb(async (db) => {
       const newer = await openItem(db, 'o-new', '2026-10-08T09:00:00Z');
       const older = await openItem(db, 'o-old', '2026-10-05T09:00:00Z');
@@ -943,7 +929,7 @@ describe('needs-you list', () => {
       expect(rows[0]!.receivedAt?.toISOString()).toBe('2026-10-05T09:00:00.000Z');
     }));
 
-  it('leaves out spam threads, spam reads, and done or dismissed items', () =>
+  it('leaves out spam, trashed and deleted threads, spam reads, and done or dismissed items', () =>
     withDb(async (db) => {
       const kept = await openItem(db, 'k1', '2026-10-05T09:00:00Z');
 
@@ -964,6 +950,12 @@ describe('needs-you list', () => {
         kind: 'spam',
       });
 
+      await openItem(db, 'tr1', '2026-10-05T09:00:00Z');
+      await db.update(mailThread).set({ trashedAt: new Date() }).where(eq(mailThread.id, 'thread-tr1'));
+      // A deleted thread leaves its work item behind with no thread (SET NULL).
+      await openItem(db, 'del1', '2026-10-05T09:00:00Z');
+      await db.delete(mailThread).where(eq(mailThread.id, 'thread-del1'));
+
       const done = await openItem(db, 'dn1', '2026-10-05T09:00:00Z');
       await db.update(workItem).set({ status: 'done' }).where(eq(workItem.id, done));
       const dismissed = await openItem(db, 'dm1', '2026-10-05T09:00:00Z');
@@ -977,20 +969,24 @@ describe('needs-you list', () => {
       const addRun = async (
         workItemId: string,
         id: string,
-        state: 'queued' | 'retry_wait' | 'claimed' | 'running' | 'succeeded',
+        state: 'queued' | 'retry_wait' | 'claimed' | 'running' | 'succeeded' | 'dead_letter',
         createdAt = new Date(),
+        lane: { runKind: 'read_tool' | 'hms_write' | 'quote_followup'; executorLane: 'hms' | 'default' } = {
+          runKind: 'read_tool',
+          executorLane: 'hms',
+        },
       ) => {
         await db.insert(aiWorkflowRun).values({
           id: randomUUID(),
           transportId: CENTURION,
           threadId: `thread-${id}`,
           triggerMessageId: `msg-${id}`,
-          runKind: 'read_tool',
+          runKind: lane.runKind,
           idempotencyKey: `test-run:${randomUUID()}`,
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: HMS_JOB_PROMPT_VERSION,
           state,
-          executorLane: 'hms',
+          executorLane: lane.executorLane,
           workItemId,
           createdAt,
           updatedAt: createdAt,
@@ -1003,6 +999,9 @@ describe('needs-you list', () => {
       const finished = await openItem(db, 'c-done-run', '2026-10-05T09:00:00Z');
       const reviewed = await openItem(db, 'c-review', '2026-10-06T09:00:00Z');
       const reviewedQueued = await openItem(db, 'c-review-queued', '2026-10-07T09:00:00Z');
+      const followUp = await openItem(db, 'c-followup', '2026-10-08T09:00:00Z');
+      const deadWrite = await openItem(db, 'c-dead-write', '2026-10-09T09:00:00Z');
+      const writing = await openItem(db, 'c-writing', '2026-10-10T09:00:00Z');
       await db.update(workItem).set({ status: 'review' }).where(eq(workItem.id, reviewed));
       await db.update(workItem).set({ status: 'review' }).where(eq(workItem.id, reviewedQueued));
 
@@ -1013,6 +1012,24 @@ describe('needs-you list', () => {
       await addRun(finished, 'c-done-run', 'queued', new Date(Date.now() - 60_000));
       await addRun(finished, 'c-done-run', 'succeeded');
       await addRun(reviewedQueued, 'c-review-queued', 'queued');
+      // Only HMS-lane runs move the chip: a queued follow-up on the default lane is not "Queued".
+      await addRun(followUp, 'c-followup', 'queued', new Date(), {
+        runKind: 'quote_followup',
+        executorLane: 'default',
+      });
+      // A dead write needs her. A running write is In HMS, even with a newer default-lane run.
+      await addRun(deadWrite, 'c-dead-write', 'dead_letter', new Date(), {
+        runKind: 'hms_write',
+        executorLane: 'hms',
+      });
+      await addRun(writing, 'c-writing', 'running', new Date(Date.now() - 60_000), {
+        runKind: 'hms_write',
+        executorLane: 'hms',
+      });
+      await addRun(writing, 'c-writing', 'queued', new Date(), {
+        runKind: 'quote_followup',
+        executorLane: 'default',
+      });
 
       const rows = await openList(db);
       expect(Object.fromEntries(rows.map((row) => [row.id, row.chip]))).toEqual({
@@ -1023,7 +1040,23 @@ describe('needs-you list', () => {
         [finished]: 'needs_you',
         [reviewed]: 'review',
         [reviewedQueued]: 'queued',
+        [followUp]: 'needs_you',
+        [deadWrite]: 'needs_you',
+        [writing]: 'in_hms',
       });
+      // Sorted by chip (Needs you, Review, Queued, In HMS), then the oldest mail first.
+      expect(rows.map((row) => row.id)).toEqual([
+        bare,
+        finished,
+        followUp,
+        deadWrite,
+        reviewed,
+        queued,
+        retried,
+        reviewedQueued,
+        running,
+        writing,
+      ]);
 
       const routeRows = await centurionCaller().workItems.list({});
       expect(routeRows.find((row) => row.id === queued)).toMatchObject({

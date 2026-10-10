@@ -521,6 +521,8 @@ export function NavaPane({
   });
   // Preview starts on the quoting tool; the welcome, connection and tour screens never show there.
   const shownScreen: PaneScreen = preview && currentScreen !== 'needs-you' ? 'tool' : currentScreen;
+  // Bumped when the list closes, so the entry remounts and its count takes in any dismiss made on the list.
+  const [needsYouVisit, setNeedsYouVisit] = useState(0);
   const [tourSlideIndex, setTourSlideIndex] = useState(0);
   const [pingState, setPingState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
@@ -1171,7 +1173,10 @@ export function NavaPane({
           <NeedsYouView
             trpc={trpcClient}
             host={preview ? 'web' : 'outlook'}
-            onBack={() => setCurrentScreen('tool')}
+            onBack={() => {
+              setNeedsYouVisit((visit) => visit + 1);
+              setCurrentScreen('tool');
+            }}
             onOpenThread={onOpenThread}
           />
         )}
@@ -1184,7 +1189,11 @@ export function NavaPane({
           >
             {/* The open count from the Needs-you list. Shows "Needs you" alone until the list has loaded. */}
             <div className="flex justify-end">
-              <NeedsYouEntry trpc={trpcClient} onOpen={() => setCurrentScreen('needs-you')} />
+              <NeedsYouEntry
+                key={needsYouVisit}
+                trpc={trpcClient}
+                onOpen={() => setCurrentScreen('needs-you')}
+              />
             </div>
 
             {/* Email context for the selected email; until one is selected, an empty state. */}
