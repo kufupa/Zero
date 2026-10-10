@@ -198,8 +198,9 @@ export function VoucherFindCard({
     }
   };
 
+  // The id is the preview gate's sign that a voucher-only pane has settled (VOUCHER_CARD_SELECTOR in nava-preview-run.ts).
   return (
-    <Section title={VOUCHER_COPY.heading}>
+    <Section title={VOUCHER_COPY.heading} id="quote-voucher-find">
       <p className={captionClass}>{VOUCHER_COPY.caption}</p>
       {line ? (
         <p data-pii className={valueClass}>

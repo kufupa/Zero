@@ -5058,6 +5058,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
         <section
           aria-label="Find the booking"
           class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          id="quote-voucher-find"
         >
           <div
             class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -6805,6 +6806,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
         <section
           aria-label="Find the booking"
           class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          id="quote-voucher-find"
         >
           <div
             class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
