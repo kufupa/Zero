@@ -257,6 +257,83 @@ async function recordNeedsCheck(
 }
 
 /**
+ * Prepare step: stores a fresh HMS before-state as work_item.state.hmsSnapshot. The read runs before the transaction,
+ * so approval never reads HMS while it holds the work-item row lock. The snapshot key is outside the form digest, so
+ * storing a new snapshot leaves an approved form valid.
+ */
+export async function storeHmsSnapshot(input: {
+  db?: DB;
+  transportId: string;
+  workItemId: string;
+  readHmsState: () => Promise<unknown>;
+  now?: Date;
+}): Promise<{ digest: string; readAt: string }> {
+  const db = input.db ?? getDb();
+  const now = input.now ?? new Date();
+  const snapshot = { digest: hmsStateDigest(await input.readHmsState()), readAt: now.toISOString() };
+  await db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({ id: workItem.id, state: workItem.state, status: workItem.status })
+      .from(workItem)
+      .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+      .limit(1)
+      .for('update');
+    if (!item) throw new HmsApprovalError('not_found');
+    if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
+    await tx
+      .update(workItem)
+      .set({ state: { ...item.state, [HMS_SNAPSHOT_KEY]: snapshot }, updatedAt: now })
+      .where(eq(workItem.id, item.id));
+  });
+  return snapshot;
+}
+
+/**
+ * Ends a claimed hms_write run as dead-letter and records a needs-check event in one transaction. A needs-check also
+ * drops the stored snapshot, so the next approval re-reads HMS. Returns false when the claim is gone, so the caller
+ * reports a lost lease and does not treat the run as ended. assertHmsUnchangedBeforeSave keeps its own block.
+ */
+export async function endHmsWriteRun(input: {
+  db?: DB;
+  fence: AiRunFence;
+  failureClass: AiFailureClass;
+  reason: string;
+}): Promise<boolean> {
+  const db = input.db ?? getDb();
+  return db.transaction(async (tx) => {
+    const now = new Date();
+    const row = await markAiRunDeadLetter(
+      {
+        runId: input.fence.runId,
+        claimOwner: input.fence.claimOwner,
+        claimToken: input.fence.claimToken,
+        expectedStates: ['claimed', 'running'],
+        lastError: input.reason,
+        failureClass: input.failureClass,
+      },
+      tx as DB,
+    );
+    if (!row) return false;
+    if (row.workItemId) {
+      if (input.failureClass === 'NEEDS_CHECK') {
+        await tx
+          .update(workItem)
+          .set({ state: sql`${workItem.state} - 'hmsSnapshot'`, updatedAt: now })
+          .where(eq(workItem.id, row.workItemId));
+      }
+      await recordNeedsCheck(tx as DB, {
+        workItemId: row.workItemId,
+        runId: row.id,
+        failureClass: input.failureClass,
+        reason: input.reason,
+        now,
+      });
+    }
+    return true;
+  });
+}
+
+/**
  * Server-side approval of one HMS write. The client sends only the work item id. The server recomputes the form
  * digest from stored state. A stale or missing snapshot is re-read first (KTD11) when a reader is supplied.
  */
