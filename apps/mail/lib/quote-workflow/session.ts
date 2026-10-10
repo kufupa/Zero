@@ -493,33 +493,93 @@ export function staffQuoteMatchesSession(session: QuoteSession): boolean {
   return true;
 }
 
-export function canCreatePdf(session: QuoteSession): boolean {
+/**
+ * Why the PDF cannot be made yet: the first check that fails, in the order canCreatePdf runs them. Null when the PDF
+ * can be made. canCreatePdf is this returning null, so the reason staff see always names the check that failed.
+ */
+export type PdfBlocker =
+  /** A typed amount in the quote header cannot be read. */
+  | { kind: 'amounts'; problem: string }
+  /** The email is not yet linked to its synced mailbox copy (hash, message and thread). */
+  | { kind: 'source_not_ready'; unsynced: boolean }
+  /** No rates were found for this email. */
+  | { kind: 'no_rates' }
+  /** The rates are sample data, not a live HMS run. */
+  | { kind: 'sample_rates' }
+  /** The rates were found for other details: the stays, header or email changed since. */
+  | { kind: 'rates_stale' }
+  /** A combined quote with a stay that has no current run. */
+  | { kind: 'stays_unrated'; rated: number; total: number }
+  /** A one-stay quote with room options picked from more than one date search. */
+  | { kind: 'mixed_stays' }
+  /** The rates are current, but the picked option is not the one they were found for. */
+  | { kind: 'rated_option_not_picked' }
+  /** No stay rows match the selected stay. */
+  | { kind: 'no_stay' }
+  /** No room option is picked. */
+  | { kind: 'nothing_picked' }
+  /** A picked option is no longer in the results, or is not a priced room. */
+  | { kind: 'pick_gone' }
+  /** The picked rooms do not match the rooms, guests, dates or meal plan asked for. */
+  | { kind: 'occupancy' };
+
+export function pdfBlocker(session: QuoteSession): PdfBlocker | null {
   // An unreadable amount means the saved one is not what staff see: no PDF, Excel or reply until it is fixed.
-  if (staffHeaderFieldProblem(session.staffHeader)) return false;
-  if (!staffSourceReady(session)) return false;
-  if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') return false;
+  const problem = staffHeaderFieldProblem(session.staffHeader);
+  if (problem) return { kind: 'amounts', problem };
+  if (!staffSourceReady(session)) return { kind: 'source_not_ready', unsynced: session.mailboxStatus === 'unsynced' };
+  if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') {
+    if (session.evidence?.kind === 'fixture') return { kind: 'sample_rates' };
+    const anyResults =
+      session.offers.length > 0 || Boolean(session.staffQuote) || Object.keys(session.staffQuotes).length > 0;
+    return session.evidence || anyResults ? { kind: 'rates_stale' } : { kind: 'no_rates' };
+  }
   // A combined quote is one document for every stay: each stay needs its current run, not one selection.
-  if (isMultiStay(session)) return combinedStayRuns(session) !== null;
+  if (isMultiStay(session)) {
+    if (combinedStayRuns(session) !== null) return null;
+    return { kind: 'stays_unrated', ...ratedStayCount(session) };
+  }
   const selectedKeys = new Set(
     session.selectedOfferIds
       .map((id) => session.offers.find((item) => item.id === id)?.quoteRequestKey)
       .filter((key): key is string => Boolean(key)),
   );
-  if (selectedKeys.size > 1) return false;
-  if (staffQuoteForStay(session)) {
-    if (!staffQuoteMatchesSession(session)) return false;
+  if (selectedKeys.size > 1) return { kind: 'mixed_stays' };
+  const quote = staffQuoteForStay(session);
+  if (quote) {
+    if (!staffQuoteMatchesSession(session)) {
+      return ratedOptionOnlyMismatch(session, quote) ? { kind: 'rated_option_not_picked' } : { kind: 'rates_stale' };
+    }
     const scoped = session.groups.filter((group) => stayKeyForGroup(group) === session.selectedStayKey);
-    return scoped.length > 0;
+    return scoped.length > 0 ? null : { kind: 'no_stay' };
   }
   const selected = session.selectedOfferIds
     .map((id) => session.offers.find((offer) => offer.id === id))
     .filter((offer): offer is QuoteOffer => Boolean(offer && offer.kind === 'allocation' && offer.sourceRef));
-  if (selected.length === 0 || selected.length !== session.selectedOfferIds.length) return false;
+  if (session.selectedOfferIds.length === 0) return { kind: 'nothing_picked' };
+  if (selected.length !== session.selectedOfferIds.length) return { kind: 'pick_gone' };
   const scoped = session.selectedStayKey
     ? session.groups.filter((group) => stayKeyForGroup(group) === session.selectedStayKey)
     : session.groups;
-  if (scoped.length === 0) return false;
-  return scoped.every((group) => occupancySatisfied(group, coveringAllocations(selected, group.id)));
+  if (scoped.length === 0) return { kind: 'no_stay' };
+  return scoped.every((group) => occupancySatisfied(group, coveringAllocations(selected, group.id)))
+    ? null
+    : { kind: 'occupancy' };
+}
+
+/** True when the stay's run would still match if its own option were the pick: only the selection is off. */
+function ratedOptionOnlyMismatch(session: QuoteSession, quote: StaffQuoteAllocation): boolean {
+  if (session.selectedOfferIds.length === 1 && session.selectedOfferIds[0] === quote.revisionRef) return false;
+  try {
+    return staffQuoteMatchesSession({ ...session, selectedOfferIds: [quote.revisionRef] });
+  } catch {
+    // An unreadable header is not a selection problem. Report the rates as out of date, never throw.
+    return false;
+  }
+}
+
+export function canCreatePdf(session: QuoteSession): boolean {
+  return pdfBlocker(session) === null;
 }
 
 export function canCreateNativeDraft(session: QuoteSession): boolean {
