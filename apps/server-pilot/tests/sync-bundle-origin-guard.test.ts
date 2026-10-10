@@ -1,8 +1,8 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 
 // The bundle ships local refs/heads/main. A local main that lags or leads origin
@@ -14,8 +14,26 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+// Caller overrides (or a git hook's GIT_DIR) must not leak into the sandbox.
+function cleanEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env))
+    if (
+      key.startsWith('GIT_') ||
+      [
+        'ALLOW_UNPUSHED_DEPLOY',
+        'AWS_REGION',
+        'BUNDLE_KEY',
+        'BOOTSTRAP_BUCKET',
+        'EC2_REPO_PATH',
+      ].includes(key)
+    )
+      delete env[key];
+  return env;
+}
+
 function git(cwd: string, ...args: string[]) {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: cleanEnv() });
   if (result.status !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr}`);
   return result.stdout.trim();
 }
@@ -56,7 +74,7 @@ function sandbox() {
       cwd: repo,
       encoding: 'utf8',
       timeout: 20_000,
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ...env },
+      env: { ...cleanEnv(), PATH: `${bin}:${process.env.PATH}`, ...env },
     });
   const commit = (message: string) => {
     writeFileSync(join(repo, `${message}.txt`), message);

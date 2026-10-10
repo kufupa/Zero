@@ -482,7 +482,7 @@ fi
 # The bundle ships local refs/heads/$GIT_BRANCH, not origin. A stale or unpushed
 # local branch would deploy the wrong commit, so it must match origin first.
 if [ "${ALLOW_UNPUSHED_DEPLOY:-0}" != "1" ]; then
-  if ! git fetch -q origin "+refs/heads/$GIT_BRANCH:refs/remotes/origin/$GIT_BRANCH"; then
+  if ! GIT_TERMINAL_PROMPT=0 git fetch -q origin "+refs/heads/$GIT_BRANCH:refs/remotes/origin/$GIT_BRANCH"; then
     echo "error: cannot fetch origin/$GIT_BRANCH to check the deploy branch (ALLOW_UNPUSHED_DEPLOY=1 skips this check)" >&2
     exit 1
   fi
@@ -504,6 +504,11 @@ BUNDLE_HEAD="${BUNDLE_LINE#* }"
 if [ "$BUNDLE_HEAD" != "refs/heads/$GIT_BRANCH" ] ||
   ! git rev-parse --verify --quiet "$BUNDLE_COMMIT^{commit}" >/dev/null; then
   echo "error: branch $GIT_BRANCH not found in $REPO_ROOT" >&2
+  exit 1
+fi
+# The bundle re-reads the branch by name; refuse if it moved after the origin check.
+if [ "${ALLOW_UNPUSHED_DEPLOY:-0}" != "1" ] && [ "$BUNDLE_COMMIT" != "$LOCAL_COMMIT" ]; then
+  echo "error: $GIT_BRANCH moved during bundle creation; rerun the deploy" >&2
   exit 1
 fi
 
