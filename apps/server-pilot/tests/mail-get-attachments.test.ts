@@ -61,7 +61,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             s3Key: 'fixtures/invoice.pdf',
           });
 
-          const caller = await callerFor('user-navaai', { db });
+          const caller = await callerFor('user-navaai', {
+            db,
+            requestedTransportId: 'transport-centurion',
+          });
           const thread = await caller.mail.get({ id: THREAD_ID });
           const msg = thread.messages.find((m) => m.id === MSG_ID);
           expect(msg?.attachments).toEqual(

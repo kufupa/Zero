@@ -42,7 +42,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI draft promotion contract',
       textBody: 'Need help',
       receivedAt: new Date('2026-07-06T10:00:00Z'),
     });
-    const caller = await callerFor('user-navaai', { db });
+    const caller = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
     return { caller, threadId, parentMessageId };
   }
 
