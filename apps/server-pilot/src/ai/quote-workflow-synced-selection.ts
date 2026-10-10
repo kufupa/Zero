@@ -189,10 +189,12 @@ export function orderCausalPreceding(
 export async function loadSyncedQuoteSelectionFromMailbox(input: {
   transportId: string;
   internetMessageId?: string;
+  /** The stored row's id. When set it is used instead of the header, which can be missing or shared by two rows. */
+  messageId?: string;
   signal?: AbortSignal;
 }): Promise<SyncedQuoteSelection | null> {
   const internetMessageId = input.internetMessageId?.trim();
-  if (!internetMessageId) return null;
+  if (!internetMessageId && !input.messageId) return null;
   let db;
   try {
     db = getDb();
@@ -210,7 +212,12 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     })
     .from(message)
     .where(
-      and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, internetMessageId)),
+      and(
+        eq(message.transportId, input.transportId),
+        input.messageId
+          ? eq(message.id, input.messageId)
+          : eq(message.messageIdHeader, internetMessageId ?? ''),
+      ),
     )
     .limit(2);
   const row = selected[0];

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailThread, message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
@@ -382,6 +382,29 @@ export async function ensureWorkItem(
   return { id: row.id, status: row.status, state: row.state };
 }
 
+/**
+ * An outbound message sent after `at`. A Nava send has no sentAt until delivery is confirmed, so a queued or failed send
+ * is not a reply. Imported Outlook history keeps its sent time in receivedAt when sentAt is missing.
+ */
+export function outboundSentAfter(at: Date) {
+  return or(
+    gt(message.sentAt, at),
+    and(isNull(message.sentAt), eq(message.historyOnly, true), gt(message.receivedAt, at)),
+  );
+}
+
+/**
+ * When an inbound message reached the mailbox. POP3 stores the sender's Date header in receivedAt, which can be hours
+ * before (or, with a wrong clock, after) delivery, so a POP3 row arrived when Nava fetched it. Outlook sync stores
+ * Outlook's delivery time in receivedAt, which holds for history imported long after. With neither, the stored time.
+ */
+export function messageArrivedAt(m: { receivedAt: Date | null; createdAt: Date; pop3Uidl: string | null }): Date {
+  return m.pop3Uidl === null ? (m.receivedAt ?? m.createdAt) : m.createdAt;
+}
+
+/** SQL twin of messageArrivedAt, for a `message` row. */
+export const MESSAGE_ARRIVED_AT = sql`case when ${message.pop3Uidl} is null then coalesce(${message.receivedAt}, ${message.createdAt}) else ${message.createdAt} end`;
+
 async function latestSucceededRead(db: DB, messageId: string) {
   const [row] = await db
     .select()
@@ -402,15 +425,21 @@ async function latestSucceededRead(db: DB, messageId: string) {
 
 /**
  * Points the message's work item at its latest succeeded read. A message with no succeeded read has none, and spam
- * never gets one (nobody has work to do on it). A thread with a staff reply after this message is already answered,
- * so a new item starts done, not needs_you.
+ * never gets one (nobody has work to do on it). A thread with a staff reply sent after this message arrived is already
+ * answered, so a new item starts done, not needs_you. Both sides use mail event times (see messageArrivedAt), not
+ * import order.
  */
 export async function ensureWorkItemForMessage(
   db: DB,
   input: { transportId: string; messageId: string },
 ): Promise<WorkItemRef | null> {
   const [msg] = await db
-    .select({ threadId: message.threadId, createdAt: message.createdAt })
+    .select({
+      threadId: message.threadId,
+      receivedAt: message.receivedAt,
+      createdAt: message.createdAt,
+      pop3Uidl: message.pop3Uidl,
+    })
     .from(message)
     .where(and(eq(message.id, input.messageId), eq(message.transportId, input.transportId)))
     .limit(1);
@@ -424,7 +453,8 @@ export async function ensureWorkItemForMessage(
         eq(message.threadId, msg.threadId),
         eq(message.transportId, input.transportId),
         eq(message.direction, 'outbound'),
-        gt(message.createdAt, msg.createdAt),
+        // After the request arrived, not after its Date header: a reply sent before delivery did not answer it.
+        outboundSentAfter(messageArrivedAt(msg)),
       ),
     )
     .limit(1);

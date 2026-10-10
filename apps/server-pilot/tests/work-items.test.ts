@@ -1077,6 +1077,12 @@ describe('follow-up route', () => {
     withDb(async (db) => {
       await addOtherTransport(db);
       await seedMail(db, 'fu1');
+      // The request arrived before the quote went out; a later inbound would overtake the suggestion.
+      const requestAt = new Date('2026-10-08T08:00:00Z');
+      await db
+        .update(message)
+        .set({ receivedAt: requestAt, createdAt: requestAt })
+        .where(eq(message.id, 'msg-fu1'));
       await db.insert(user).values({ id: NAVA_USER_ID, name: 'Nava AI', email: NAVA_USER_EMAIL, emailVerified: true });
       await db.insert(message).values({
         id: 'out-fu1',

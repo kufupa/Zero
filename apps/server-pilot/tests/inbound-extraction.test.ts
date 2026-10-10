@@ -1,7 +1,7 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
-import type { DB } from '../src/db/client.js';
+import { __setDbForTests, type DB } from '../src/db/client.js';
 import { buildInboundPrompt, extractInboundMail } from '../src/ai/extraction/extract.js';
 import {
   __resetInboundExtractionCapForTests,
@@ -20,7 +20,10 @@ import {
   splitSegments,
   TRANSLATE_RULES,
 } from '../src/ai/extraction/translate.js';
-import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
+import {
+  loadSyncedQuoteSelectionFromMailbox,
+  type SyncedQuoteSelection,
+} from '../src/ai/quote-workflow-synced-selection.js';
 import {
   aiWorkflowRun,
   mailSenderPreference,
@@ -301,6 +304,106 @@ describe('inbound extraction stored read', () => {
       expect(spamAt('thread-spam-replied')).toBeNull();
     }));
 
+  it('loads the mail by its row id, so a missing or shared Message-ID header still gets a read', () =>
+    withIngestionDb(async ({ db }) => {
+      const headerless = await seedMail(db, 'thread-no-header', AE1_TEXT);
+      await db.update(message).set({ messageIdHeader: null }).where(eq(message.id, headerless));
+      const loads: unknown[] = [];
+      const model = fakeModel(() => AE1_OUTPUT);
+      expect(
+        await readMail(db, headerless, selectionFor(AE1_TEXT), model.adapter, {
+          loadSelection: async (input) => {
+            loads.push(input);
+            return selectionFor(AE1_TEXT);
+          },
+        }),
+      ).toBe('stored');
+      expect(loads).toEqual([expect.objectContaining({ transportId: TRANSPORT, messageId: headerless })]);
+      expect(await rowFor(db, headerless)).toMatchObject({ status: 'succeeded' });
+
+      // Two rows ingest kept apart share one header; the loader still finds the exact row by id.
+      const first = await seedMail(db, 'thread-shared-header-1', AE1_TEXT);
+      const second = await seedMail(db, 'thread-shared-header-2', AE2_TEXT);
+      await db
+        .update(message)
+        .set({ messageIdHeader: 'shared@example.com' })
+        .where(inArray(message.id, [first, second]));
+      __setDbForTests({ db, conn: null as never });
+      try {
+        const loaded = await loadSyncedQuoteSelectionFromMailbox({ transportId: TRANSPORT, messageId: second });
+        expect(loaded).toMatchObject({ messageId: second, bodyText: AE2_TEXT });
+      } finally {
+        __setDbForTests(null);
+      }
+    }));
+
+  it('arrival, not the Date header, orders mail: a reply sent before the request arrived does not answer it, and a late-delivered mail decides spam', () =>
+    withIngestionDb(async ({ db }) => {
+      const at = (hhmm: string) => new Date(`2026-10-08T${hhmm}:00Z`);
+      const model = fakeModel(() => AE1_OUTPUT);
+      const staffReply = (id: string, threadId: string, sentAt: Date) =>
+        db.insert(message).values({
+          id,
+          transportId: TRANSPORT,
+          threadId,
+          direction: 'outbound',
+          fromAddress: 'centurion@legacyhotels.co.za',
+          toAddresses: ['sender@example.com'],
+          subject: 'Re: Rooms request',
+          textBody: 'Thanks.',
+          receivedAt: sentAt,
+          sentAt,
+        });
+      // POP3 mail whose Date header says 08:00, fetched at 10:00. A reply sent at 09:00 predates its arrival; one
+      // at 11:00 answers it.
+      const early = await seedMail(db, 'thread-arrival-early', AE1_TEXT);
+      const late = await seedMail(db, 'thread-arrival-late', AE1_TEXT);
+      await db
+        .update(message)
+        .set({ receivedAt: at('08:00'), createdAt: at('10:00'), pop3Uidl: sql`'uidl-' || ${message.id}` })
+        .where(inArray(message.id, [early, late]));
+      await staffReply('reply-before-arrival', 'thread-arrival-early', at('09:00'));
+      await staffReply('reply-after-arrival', 'thread-arrival-late', at('11:00'));
+      await readMail(db, early, selectionFor(AE1_TEXT), model.adapter);
+      await readMail(db, late, selectionFor(AE1_TEXT), model.adapter);
+      const statusOf = async (messageId: string) =>
+        (await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId)))[0]?.status;
+      expect(await statusOf(early)).toBe('needs_you');
+      expect(await statusOf(late)).toBe('done');
+
+      // POP3: spam dated 09:00 fetched 09:01; a real request dated 08:00 fetched at 10:00, after it. The request is
+      // the newest mail, so its read lifts the mark.
+      const legit = await seedMail(db, 'thread-arrival-spam', AE1_TEXT);
+      await db
+        .update(message)
+        .set({ receivedAt: at('08:00'), createdAt: at('10:00'), pop3Uidl: 'uidl-legit' })
+        .where(eq(message.id, legit));
+      await db.insert(message).values({
+        id: 'spam-before-legit',
+        transportId: TRANSPORT,
+        threadId: 'thread-arrival-spam',
+        direction: 'inbound',
+        fromAddress: 'promo@example.net',
+        subject: 'Prize',
+        textBody: SPAM_TEXT,
+        receivedAt: at('09:00'),
+        createdAt: at('09:01'),
+        pop3Uidl: 'uidl-spam',
+      });
+      await db.update(mailThread).set({ spamAt: at('09:02') }).where(eq(mailThread.id, 'thread-arrival-spam'));
+      const gateOpen = {
+        ...ON,
+        AI_WRITE_GATE_ENABLED: 'true',
+        INBOUND_TRIAGE_CLASSIFIER: 'off',
+      } as NodeJS.ProcessEnv;
+      expect(await readMail(db, legit, selectionFor(AE1_TEXT), model.adapter, { env: gateOpen })).toBe('stored');
+      const [thread] = await db
+        .select({ spamAt: mailThread.spamAt })
+        .from(mailThread)
+        .where(eq(mailThread.id, 'thread-arrival-spam'));
+      expect(thread?.spamAt).toBeNull();
+    }));
+
   it('a timeout stores a failed read with a reason, and a rerun with the same key is a no-op', () =>
     withIngestionDb(async ({ db }) => {
       const messageId = await seedMail(db, 'thread-timeout', AE1_TEXT);
@@ -390,7 +493,12 @@ describe('inbound extraction stored read', () => {
       const stateOf = async (runId: string) =>
         (
           await db
-            .select({ state: aiWorkflowRun.state, attempts: aiWorkflowRun.attempts, nextRunAt: aiWorkflowRun.nextRunAt })
+            .select({
+              state: aiWorkflowRun.state,
+              attempts: aiWorkflowRun.attempts,
+              nextRunAt: aiWorkflowRun.nextRunAt,
+              deadlineAt: aiWorkflowRun.deadlineAt,
+            })
             .from(aiWorkflowRun)
             .where(eq(aiWorkflowRun.id, runId))
             .limit(1)
@@ -424,6 +532,29 @@ describe('inbound extraction stored read', () => {
       expect(deferredRow.state).toBe('retry_wait');
       expect(deferredRow.attempts).toBe(deferred.run.attempts);
       expect(deferredRow.nextRunAt!.getTime()).toBeGreaterThan(Date.now());
+      // The wait outlasts the run's deadline, so the next claim must set a fresh one rather than dead-letter it.
+      expect(deferredRow.deadlineAt).toBeNull();
+
+      // A worker whose claim was taken over while it read writes nothing; the new owner makes the read.
+      const lost = await claimOne('thread-run-lost');
+      await db
+        .update(aiWorkflowRun)
+        .set({ claimToken: 'token-other-worker' })
+        .where(eq(aiWorkflowRun.id, lost.run.id));
+      expect(
+        await executeInboundExtractionRun({
+          ...lost,
+          signal,
+          db,
+          env: ON,
+          adapter: model.adapter,
+          loadSelection,
+        }),
+      ).toEqual({ runId: lost.run.id, state: 'retry_wait' });
+      expect(await rowFor(db, lost.run.triggerMessageId)).toBeNull();
+      expect(
+        await db.select().from(workItem).where(eq(workItem.sourceMessageId, lost.run.triggerMessageId)),
+      ).toHaveLength(0);
 
       const unconfigured = await claimOne('thread-run-unconfigured');
       expect(

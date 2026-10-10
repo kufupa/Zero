@@ -6,17 +6,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FollowUpCard } from '../components/nava-pane/blocks/follow-up-card';
 import type { FollowUp } from '../lib/quote-workflow/follow-up';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
+import { registerComposeFlush, registerComposeUnsavedCheck } from '../lib/mail/compose-flush-registry';
 
-const { findQuery, useMutate, dismissMutate, setCompose } = vi.hoisted(() => ({
+const { findQuery, useMutate, dismissMutate, setCompose, composeState } = vi.hoisted(() => ({
   findQuery: vi.fn(),
   useMutate: vi.fn(),
   dismissMutate: vi.fn(),
   setCompose: vi.fn(),
+  composeState: { current: {} as Record<string, string | null> },
 }));
 
 vi.mock('nuqs', () => ({
   parseAsString: {},
-  useQueryStates: () => [{}, setCompose],
+  useQueryStates: () => [composeState.current, setCompose],
 }));
 
 const trpc = {
@@ -85,10 +87,14 @@ async function settle() {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  composeState.current = {};
 });
 
 afterEach(() => {
   cleanup();
+  registerComposeFlush(null);
+  registerComposeUnsavedCheck(null);
+  vi.unstubAllGlobals();
 });
 
 describe('follow-up card', () => {
@@ -210,11 +216,71 @@ describe('follow-up card', () => {
     const { bridge, sendCommand } = bridgeWith({ canInsert: false });
     renderCard(bridge, true);
     fireEvent.click(await screen.findByRole('button', { name: 'Open in reply box' }));
-    expect(setCompose).toHaveBeenCalledWith({
-      mode: 'reply',
-      activeReplyId: '001',
-      draftId: 'quote-followup:out-1',
-    });
+    // Any open reply closes first, so the composer remounts with the follow-up instead of keeping the replaced body.
+    await waitFor(() => expect(setCompose).toHaveBeenCalledTimes(2));
+    expect(setCompose.mock.calls).toEqual([
+      [{ mode: null, activeReplyId: null, draftId: null }],
+      [{ mode: 'reply', activeReplyId: '001', draftId: 'quote-followup:out-1' }],
+    ]);
     expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('webmail: Use saves the open reply first, so a replace sets aside the saved text', async () => {
+    findQuery.mockResolvedValue(SUGGESTED);
+    const order: string[] = [];
+    registerComposeFlush(async () => {
+      order.push('flush');
+    });
+    useMutate.mockImplementation(async () => {
+      order.push('use');
+      return IN_REPLY;
+    });
+    renderCard(bridgeWith({ canInsert: false }).bridge, true);
+    fireEvent.click(await screen.findByRole('button', { name: USE }));
+    await screen.findByRole('button', { name: 'Open in reply box' });
+    expect(order).toEqual(['flush', 'use']);
+  });
+
+  it('webmail: unsaved reply edits are dropped only after staff confirm, and never when the follow-up is already open', async () => {
+    findQuery.mockResolvedValue(IN_REPLY);
+    registerComposeUnsavedCheck(() => true);
+    const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+    vi.stubGlobal('confirm', confirm);
+    const { unmount } = renderCard(bridgeWith({ canInsert: false }).bridge, true);
+    const open = await screen.findByRole('button', { name: 'Open in reply box' });
+
+    fireEvent.click(open);
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    expect(setCompose).not.toHaveBeenCalled();
+
+    fireEvent.click(open);
+    await waitFor(() => expect(setCompose).toHaveBeenCalledTimes(2));
+
+    // Clicking again once the reply box shows the follow-up neither asks nor closes it.
+    unmount();
+    setCompose.mockClear();
+    composeState.current = { mode: 'reply', activeReplyId: '001', draftId: 'quote-followup:out-1' };
+    renderCard(bridgeWith({ canInsert: false }).bridge, true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open in reply box' }));
+    await settle();
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(setCompose).not.toHaveBeenCalled();
+  });
+
+  it('Outlook: a retry after switching emails and back still replays the unconfirmed insert', async () => {
+    const followUp = { ...IN_REPLY, id: 'quote-followup:out-remount' };
+    findQuery.mockResolvedValue(followUp);
+    const { bridge, sendCommand } = bridgeWith();
+    sendCommand.mockRejectedValueOnce(new Error('bridge timeout'));
+    const first = renderCard(bridge);
+    fireEvent.click(await screen.findByRole('button', { name: INSERT }));
+    await screen.findByText(/Check Outlook Drafts/);
+    // The card is keyed by the selected email, so switching away and back mounts a new one.
+    first.unmount();
+    renderCard(bridge);
+    fireEvent.click(await screen.findByRole('button', { name: INSERT }));
+    expect(await screen.findByText('Draft inserted in Outlook Drafts.')).toBeTruthy();
+    expect(sendCommand).toHaveBeenCalledTimes(2);
+    expect(sendCommand.mock.calls[1]?.[1]).toEqual(sendCommand.mock.calls[0]?.[1]);
   });
 });

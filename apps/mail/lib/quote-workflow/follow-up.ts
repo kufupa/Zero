@@ -92,4 +92,6 @@ export const FOLLOW_UP_COPY = {
   reselect: 'Outlook did not provide the selected message and its folder. Select it again.',
   noInsert: 'This Outlook add-in cannot insert drafts. Update the add-in.',
   openReply: 'Open in reply box',
+  discardReply:
+    'The reply box has unsaved changes. Close it without saving them and open the follow-up instead?',
 } as const;

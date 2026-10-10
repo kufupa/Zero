@@ -483,11 +483,24 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       const older = await persistOutlookHistory(db, history('u5-bf-older'));
       const newer = await persistOutlookHistory(db, history('u5-bf-newer'));
       const stale = await persistOutlookHistory(db, history('u5-bf-stale'));
-      const setCreatedAt = (messageId: string, createdAt: Date) =>
-        db.update(message).set({ createdAt }).where(eq(message.id, messageId));
-      await setCreatedAt(older.messageId, new Date(now.getTime() - 2 * HOUR_MS));
-      await setCreatedAt(newer.messageId, new Date(now.getTime() - HOUR_MS));
-      await setCreatedAt(stale.messageId, new Date(now.getTime() - 30 * 24 * HOUR_MS));
+      // Ambiguous identity: live admission never reads it, so the backfill skips it too.
+      const ambiguous = await persistOutlookHistory(db, history('u5-bf-ambiguous'));
+      await db
+        .update(message)
+        .set({ sourceProvenance: { attention: 'AMBIGUOUS_IDENTITY' }, receivedAt: now, createdAt: now })
+        .where(eq(message.id, ambiguous.messageId));
+      // The window and the order go by the mail's own date. Every row here was imported just now (createdAt), as
+      // Outlook history is; the 30-day-old mail must stay out even though its row is new.
+      const setMailDate = (messageId: string, receivedAt: Date) =>
+        db.update(message).set({ receivedAt, createdAt: now }).where(eq(message.id, messageId));
+      await setMailDate(older.messageId, new Date(now.getTime() - 2 * HOUR_MS));
+      await setMailDate(newer.messageId, new Date(now.getTime() - HOUR_MS));
+      await setMailDate(stale.messageId, new Date(now.getTime() - 30 * 24 * HOUR_MS));
+      // The newer mail was imported first, so import order disagrees with mail order.
+      await db
+        .update(message)
+        .set({ createdAt: new Date(now.getTime() - 60_000) })
+        .where(eq(message.id, newer.messageId));
       const extractionRuns = () =>
         db
           .select({ key: aiWorkflowRun.idempotencyKey, nextRunAt: aiWorkflowRun.nextRunAt })
@@ -519,6 +532,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       expect(due.get(extractionKey(newer.messageId))).toBe(now.getTime());
       expect(due.get(extractionKey(older.messageId))).toBe(now.getTime() + HOUR_MS);
       expect(due.has(extractionKey(stale.messageId))).toBe(false);
+      expect(due.has(extractionKey(ambiguous.messageId))).toBe(false);
 
       // A second run finds the same two candidates and adds no rows.
       await runInboundExtractionBackfill({ db, now, dryRun: false, maxPerHour: 1 });
@@ -560,6 +574,74 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
         messageId: open.messageId,
       });
       expect(again?.status).toBe('needs_you');
+    }));
+
+  it('a reply counts only once sent, and by mail date: a queued send or an older imported send leaves the item open', () =>
+    withIngestionDb(async ({ db }) => {
+      retire();
+      const queued = await persistOutlookHistory(db, history('u5-queued'));
+      const older = await persistOutlookHistory(db, history('u5-older-sent'));
+      await admit(db, queued.messageId);
+      await admit(db, older.messageId);
+      const outbound = {
+        transportId: TRANSPORT_ID,
+        direction: 'outbound' as const,
+        fromAddress: 'centurion@legacyhotels.co.za',
+        toAddresses: ['guest@example.test'],
+        subject: 'Re: Request',
+        textBody: 'Thanks.',
+      };
+      // mail.send: stored before delivery with sentAt null; a failed send stays that way.
+      await db.insert(message).values({
+        ...outbound,
+        id: 'u5-queued-reply',
+        threadId: queued.threadId,
+        receivedAt: new Date(),
+        sentAt: null,
+      });
+      // Outlook history imported after the request, but sent the day before it.
+      await db.insert(message).values({
+        ...outbound,
+        id: 'u5-older-sent-reply',
+        threadId: older.threadId,
+        historyOnly: true,
+        receivedAt: new Date('2026-10-03T10:00:00Z'),
+        sentAt: new Date('2026-10-03T10:00:00Z'),
+      });
+
+      await readWith(db, queued.messageId, AE1_TEXT, AE1_OUTPUT);
+      await readWith(db, older.messageId, AE1_TEXT, AE1_OUTPUT);
+      for (const messageId of [queued.messageId, older.messageId]) {
+        const [row] = await db
+          .select({ status: workItem.status })
+          .from(workItem)
+          .where(eq(workItem.sourceMessageId, messageId));
+        expect(row?.status).toBe('needs_you');
+      }
+    }));
+
+  it('backfill order: an older spam read never puts back in spam a thread a newer mail cleared', () =>
+    withIngestionDb(async ({ db }) => {
+      retire();
+      const spam = await persistOutlookHistory(
+        db,
+        history('u5-old-spam', { textBody: SPAM_TEXT, authoredAt: new Date('2026-10-03T10:00:00Z') }),
+      );
+      const quote = await persistOutlookHistory(
+        db,
+        history('u5-new-quote', { inReplyTo: 'u5-old-spam@example.test' }),
+      );
+      expect(quote.threadId).toBe(spam.threadId);
+      await db.update(mailThread).set({ spamAt: new Date() }).where(eq(mailThread.id, spam.threadId));
+      await admit(db, spam.messageId);
+      await admit(db, quote.messageId);
+
+      // Newest first, as the backfill queues them.
+      await readWith(db, quote.messageId, AE1_TEXT, AE1_OUTPUT);
+      expect(await spamAtOf(db, quote.messageId)).toBeNull();
+      await readWith(db, spam.messageId, SPAM_TEXT, SPAM_OUTPUT);
+      expect(await extractionOf(db, spam.messageId)).toMatchObject({ kind: 'spam' });
+      expect(await spamAtOf(db, quote.messageId)).toBeNull();
     }));
 
   it('retired un-spam: any non-spam read lifts the mark (other included); a spam read keeps it; a blocked sender goes to spam', () =>
