@@ -357,16 +357,25 @@ export function stayGuest(stay: StayRecordWire): string | null {
 
 export type AmendDiff = { guest?: string; arrival?: string; departure?: string };
 
+/** The dates the guest asked for: the requested stay, else the booking dates the email states. */
+export function askedDates(amendment: QuoteAmendment): { arrival: string | null; departure: string | null } {
+  return {
+    arrival: amendment.requestedArrival ?? amendment.arrival,
+    departure: amendment.requestedDeparture ?? amendment.departure,
+  };
+}
+
 /** Fields where the guest's email and HMS disagree. Values are display-ready. */
 export function amendDiffs(amendment: QuoteAmendment, stay: StayRecordWire): AmendDiff {
   const diff: AmendDiff = {};
+  const asked = askedDates(amendment);
   const hmsArrival = stayText(stay.arrival);
-  if (amendment.arrival && hmsArrival && isoDay(amendment.arrival) !== isoDay(hmsArrival)) {
-    diff.arrival = formatStayDate(amendment.arrival);
+  if (asked.arrival && hmsArrival && isoDay(asked.arrival) !== isoDay(hmsArrival)) {
+    diff.arrival = formatStayDate(asked.arrival);
   }
   const hmsDeparture = stayText(stay.departure);
-  if (amendment.departure && hmsDeparture && isoDay(amendment.departure) !== isoDay(hmsDeparture)) {
-    diff.departure = formatStayDate(amendment.departure);
+  if (asked.departure && hmsDeparture && isoDay(asked.departure) !== isoDay(hmsDeparture)) {
+    diff.departure = formatStayDate(asked.departure);
   }
   const lastName = amendment.guestLastName?.trim() ?? '';
   const hmsName = stayGuest(stay);

@@ -109,11 +109,23 @@ export const lunaAnalysisSchema = z.object({
   arrival: z
     .string()
     .nullish()
-    .describe('ISO YYYY-MM-DD arrival on the existing booking, as stated. Null if not stated.'),
+    .describe('ISO YYYY-MM-DD arrival on the existing booking as booked now, before the change. Null if not stated.'),
   departure: z
     .string()
     .nullish()
-    .describe('ISO YYYY-MM-DD checkout day (exclusive), as stated. Null if not stated.'),
+    .describe('ISO YYYY-MM-DD checkout day (exclusive) on the existing booking as booked now. Null if not stated.'),
+  requestedArrival: z
+    .string()
+    .nullish()
+    .describe(
+      'ISO YYYY-MM-DD arrival the guest wants after the change. Adding nights before arrival moves it earlier. Same as arrival when unchanged. Null if unknown.',
+    ),
+  requestedDeparture: z
+    .string()
+    .nullish()
+    .describe(
+      'ISO YYYY-MM-DD checkout day (exclusive) the guest wants after the change. Same as departure when unchanged. Null if unknown.',
+    ),
   requestedChange: z
     .string()
     .nullish()

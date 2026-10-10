@@ -355,6 +355,7 @@ describe('mapLlmDecision', () => {
   });
 
   it('builds the amendment payload for amend and cancel only', () => {
+    // AE2 shape: the guest adds the night before arrival and a later checkout. Booked and requested stay apart.
     expect(
       amendmentFromAnalysis(
         lunaAnalysisSchema.parse(
@@ -362,9 +363,11 @@ describe('mapLlmDecision', () => {
             workflow: 'amend',
             confirmationNumber: '57291630-1',
             guestLastName: 'Example',
-            arrival: '2026-11-12',
-            departure: '2026-11-17',
-            requestedChange: 'Change departure from 15 Nov to 17 Nov',
+            arrival: '2026-11-01',
+            departure: '2026-11-06',
+            requestedArrival: '2026-10-31',
+            requestedDeparture: '2026-11-07',
+            requestedChange: 'Add the night of 31 Oct and check out on 7 Nov',
           }),
         ),
       ),
@@ -372,9 +375,11 @@ describe('mapLlmDecision', () => {
       kind: 'amend',
       confirmationNumber: '57291630-1',
       guestLastName: 'Example',
-      arrival: '2026-11-12',
-      departure: '2026-11-17',
-      requestedChange: 'Change departure from 15 Nov to 17 Nov',
+      arrival: '2026-11-01',
+      departure: '2026-11-06',
+      requestedArrival: '2026-10-31',
+      requestedDeparture: '2026-11-07',
+      requestedChange: 'Add the night of 31 Oct and check out on 7 Nov',
     });
     expect(
       amendmentFromAnalysis(lunaAnalysisSchema.parse(analysis({ workflow: 'cancel' }))),
@@ -384,6 +389,8 @@ describe('mapLlmDecision', () => {
       guestLastName: null,
       arrival: null,
       departure: null,
+      requestedArrival: null,
+      requestedDeparture: null,
       requestedChange: null,
     });
     expect(
@@ -582,6 +589,8 @@ describe('analyseQuoteSelection', () => {
           requestedChange: `Card 4111 1111 1111 1111 ${'x'.repeat(400)}`,
           arrival: '2026-02-30',
           departure: '2026-11-17',
+          requestedArrival: '2026-10-32',
+          requestedDeparture: '2026-11-18',
         }),
       ),
       enabled: true,
@@ -592,6 +601,8 @@ describe('analyseQuoteSelection', () => {
       expect(result.analysis.requestedChange?.length).toBeLessThanOrEqual(300);
       expect(result.analysis.arrival).toBeNull();
       expect(result.analysis.departure).toBe('2026-11-17');
+      expect(result.analysis.requestedArrival).toBeNull();
+      expect(result.analysis.requestedDeparture).toBe('2026-11-18');
     }
   });
 

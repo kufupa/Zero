@@ -479,11 +479,6 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
             </div>
           </div>
           <div
-            class="rounded-[3px] border px-2.5 py-1.5 text-[11.5px] border-[#bfdbfe] bg-[#eff6ff] text-[#1e3a8a]"
-          >
-            Not a quote or booking. Change the type above if Nava got it wrong.
-          </div>
-          <div
             class="flex flex-col gap-2"
           >
             <button

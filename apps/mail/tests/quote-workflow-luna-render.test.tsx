@@ -123,6 +123,29 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.queryByRole('button', { name: 'This is a quote request' })).toBeNull();
   });
 
+  it('drops the "not a quote or booking" notice when the change card carries the amendment (AE2)', () => {
+    const session = sessionWithAnalysis({
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ workflow: 'other', flags: ['amendment_or_cancel'] }),
+      amendment: {
+        kind: 'amend',
+        confirmationNumber: '57291630-1',
+        guestLastName: 'Example',
+        arrival: '2026-11-01',
+        departure: '2026-11-06',
+        requestedArrival: '2026-10-31',
+        requestedDeparture: '2026-11-07',
+        requestedChange: 'Add the night of 31 Oct and check out on 7 Nov',
+      },
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.queryByText(/Not a quote or booking/)).toBeNull();
+    expect(screen.getByText('Nava can find the booking; make the change in HMS yourself.')).toBeDefined();
+  });
+
   it('calls onTreatAs quote and booking from the type picker on the Other workflow', () => {
     const onTreatAs = vi.fn();
     const session = sessionWithAnalysis({

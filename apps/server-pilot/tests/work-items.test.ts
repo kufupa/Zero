@@ -244,6 +244,9 @@ describe('stored read for the pane', () => {
         guestLastName: null,
         arrival: '2026-11-01',
         departure: '2026-11-06',
+        // AE2: the guest's requested stay rides beside the booked one.
+        requestedArrival: '2026-10-31',
+        requestedDeparture: '2026-11-07',
         requestedChange: null,
       });
       expect(work.analysis.luna.flags).toContain('amendment_or_cancel');

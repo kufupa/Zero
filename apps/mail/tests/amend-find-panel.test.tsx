@@ -306,6 +306,20 @@ describe('AmendLookupPanel', () => {
     expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
   });
 
+  it('shows the requested stay as what the guest asked, and finds the booking by its booked arrival (AE2)', async () => {
+    // Booked 12–14 Oct; the guest adds the night of 11 Oct and checks out on 15 Oct.
+    const findStay = vi.fn().mockResolvedValue(found({ arrival: '2026-10-12', departure: '2026-10-14' }));
+    const ask = { ...AMEND, requestedArrival: '2026-10-11', requestedDeparture: '2026-10-15' };
+    render(<AmendLookupPanel session={sessionWith(ask)} trpc={lookupTrpc(findStay)} />);
+    expect(screen.getByText('11 Oct 2026')).toBeTruthy();
+    expect(screen.getByText('15 Oct 2026')).toBeTruthy();
+    pressFind();
+    await waitFor(() => expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' }));
+    await waitFor(() => expect(screen.getByText('Guest wants: 11 Oct 2026')).toBeTruthy());
+    expect(screen.getByText('Guest wants: 15 Oct 2026')).toBeTruthy();
+    expect(document.querySelector('[data-field="arrival"]')?.getAttribute('data-differs')).toBe('true');
+  });
+
   it('labels a cancellation request as one', () => {
     const findStay = vi.fn(NEVER_SETTLES);
     render(
