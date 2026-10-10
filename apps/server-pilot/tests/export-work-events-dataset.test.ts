@@ -1,7 +1,8 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { describe, expect, it, vi } from 'vitest';
 import type { GoldenRow } from '../src/ai/reservationist-backtest.js';
 import type { DB } from '../src/db/client.js';
 import { workEvent, workItem, type WorkEventType } from '../src/db/schema/work.js';
@@ -120,6 +121,53 @@ describe('work-event eval export', () => {
     });
   });
 
+  it('takes the final field value from saved state when concurrent edits logged out of order', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const item = await seedItem(db, 'thread-race');
+      const count = `stays[${STAY_A}].rows[${ROW_A}].count`;
+      // The edit to 5 started first but took the row lock second, so state holds 5 while its event time is earlier.
+      await addEvents(db, item, [
+        { type: 'field.edit', fieldPath: count, aiValue: 2, value: 5, at: 1 },
+        { type: 'field.edit', fieldPath: count, aiValue: 2, value: 4, at: 2 },
+      ]);
+      await db.update(workItem).set({ state: { [count]: 5 } }).where(eq(workItem.id, item));
+
+      const { rows } = await exportWorkEvents(db);
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ field_id: count, ai_value: 2, human_value: 5 });
+    });
+  });
+
+  it('exports a rate choice as the HMS rate against her final price', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const item = await seedItem(db, 'thread-rate');
+      const rate = 'quote.rows[g_room1].rate';
+      const hms = { rateCode: 'RACK', nightlyMinor: [250000, 250000] };
+      await addEvents(db, item, [
+        { type: 'rate.one_off', fieldPath: rate, aiValue: hms, value: { source: 'one_off', amountMinor: 230000 }, at: 1 },
+        {
+          type: 'rate.override',
+          fieldPath: rate,
+          aiValue: hms,
+          value: { source: 'override', rateCode: 'NETT', amountMinor: 210000, note: 'Approved by GM' },
+          at: 2,
+        },
+      ]);
+
+      const { rows } = await exportWorkEvents(db);
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        field_id: rate,
+        ai_value: hms,
+        human_value: { source: 'override', rateCode: 'NETT', amountMinor: 210000, note: 'Approved by GM' },
+        label_status: 'candidate',
+      });
+      expect(rows[0]!.event_ids).toHaveLength(2);
+    });
+  });
+
   it('pairs by stable id after a stay is deleted', async () => {
     await withIngestionDb(async ({ db }) => {
       const item = await seedItem(db, 'thread-delete');
@@ -157,6 +205,7 @@ describe('work-event eval export', () => {
       const { rows, golden: stats } = await exportWorkEvents(db, { golden });
 
       expect(stats).toEqual({ matched: 2, total: 2 });
+      expect((await exportWorkEvents(db, { golden })).warnings).toEqual([]);
       expect(rows.find((row) => row.work_item_id === holdout)).toMatchObject({ split: 'holdout', split_source: 'golden' });
       expect(rows.find((row) => row.work_item_id === dev)).toMatchObject({ split: 'dev', split_source: 'golden' });
       expect(rows.find((row) => row.work_item_id === free)).toMatchObject({
@@ -224,10 +273,21 @@ describe('work-event eval export', () => {
       const dir = mkdtempSync(join(tmpdir(), 'work-events-export-'));
       try {
         const golden = join(dir, 'golden.jsonl');
-        writeFileSync(golden, '');
+        // A golden case whose message is not in this database cannot pin its thread's split: the summary warns.
+        writeFileSync(golden, `${JSON.stringify(goldenCase('case-elsewhere', 'holdout', 'msg-not-here'))}\n`);
         const out = join(dir, 'nested', 'out.jsonl');
-
-        expect(await main(['--out', out, '--golden-set', golden], { DATABASE_URL: url })).toBe(0);
+        const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          expect(await main(['--out', out, '--golden-set', golden], { DATABASE_URL: url })).toBe(0);
+          const summary = JSON.parse(String(log.mock.calls.at(-1)?.[0])) as { golden: unknown; warnings: string[] };
+          expect(summary.golden).toEqual({ matched: 0, total: 1 });
+          expect(summary.warnings).toEqual([expect.stringContaining('1 of 1 golden cases have no message')]);
+          expect(warn).toHaveBeenCalledWith(expect.stringContaining('warning: 1 of 1 golden cases'));
+        } finally {
+          log.mockRestore();
+          warn.mockRestore();
+        }
 
         const lines = readFileSync(out, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as EvalRow);
         expect(lines).toHaveLength(1);

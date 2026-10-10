@@ -417,15 +417,15 @@ Whether the mail reader may load remote `http(s)` images for a message. Defaults
 
 ### Work item
 
-One person's job on one inbound mail: a `work_item` row per (thread, kind, source message), where kind is a mail type (`quote`, `booking`, `amendment`, `cancellation`, `voucher_pop`, `spam`, `other`). It stores only the status a person sees (`needs_you`, `review`, `done`, `dismissed`). Its `state` holds the fields she has set, so a re-extraction never overwrites them. Spam gets no work item. Distinct from the `ai_workflow_run` jobs linked to it, which carry queued, running and in-HMS state.
+One person's job on one inbound mail: a `work_item` row per (thread, kind, source message), where kind is a mail type (`quote`, `booking`, `amendment`, `cancellation`, `voucher_pop`, `spam`, `other`). It stores only the status a person sees (`needs_you`, `review`, `done`, `dismissed`). Its `state` holds the fields she has set, so a re-extraction never overwrites them, plus the HMS before-state snapshot an approval checks. The inbound read never creates a spam work item; opening a spam mail in the pane can, and the needs-you list hides it. Distinct from the `ai_workflow_run` jobs linked to it, whose run state (`queued`, `retry_wait`, `claimed`, `running`, ...) drives the needs-you chips.
 
 ### Work event
 
-One append-only `work_event` row per decision on a work item: a field edit, accept or reject, a rate choice, an approval grant or consumption, write evidence, a review, or a status change. A trigger refuses UPDATE and DELETE, and the foreign key is RESTRICT, so deleting mail cannot erase the record. `field_path` uses stable extraction ids, such as `stays[s_…].rows[r_…].count`. It is the authoritative HITL record; `hitl_event` is the best-effort telemetry log.
+One append-only `work_event` row per decision on a work item: a field edit, accept or reject, a rate choice, an approval grant or consumption, write evidence, or a status change (`review.ok` and `review.flag` are in the vocabulary but nothing writes them yet). A trigger refuses UPDATE and DELETE, and the foreign key is RESTRICT, so deleting mail cannot erase the record. Stay and row field events use stable extraction ids in `field_path`, such as `stays[s_…].rows[r_…].count`; contact edits use `contact.<field>`, and rate events `quote.rows[<group id>].rate`. It is the authoritative HITL record; `hitl_event` is the best-effort telemetry log.
 
 ### Extraction
 
-The stored read of one admitted inbound mail: one `mail_extraction` row per (message, extractor version), with status `succeeded` or `failed`. Its payload holds the contact, agency, stays and rows with stable ids (`s_` and `r_` plus a hash of the message id and position), requested and booked dates, confirmation numbers and missing items. Card numbers are masked before storage. The pane reads the latest succeeded row. A mail with no succeeded read shows its latest failure reason, or is read live when there is none.
+The stored read of one admitted inbound mail: one `mail_extraction` row per (message, extractor version), with status `succeeded` or `failed`. Its payload holds the contact, agency, stays and rows with stable ids (`s_` hashes the message id and stay position, `r_` the stay id and row position), requested and booked dates, confirmation numbers and missing items. Card numbers are masked before storage. The pane reads the latest succeeded row. A mail with no succeeded read shows its latest failure reason, or is read live when there is none.
 
 ### Needs-you list
 
@@ -433,11 +433,11 @@ The open work items on both pane surfaces, from `listWorkItems`. By default it s
 
 ### Saved rate
 
-A named nightly rate per transport (`custom_rate`), used as one row's `saved` price source. Archived rather than deleted, so a quote keeps the name and amount it used: its `rate.saved` event copies both. One active name per transport. Empty room codes mean every room type. Distinct from a one-off rate, which is typed on one row and has no name.
+A named nightly rate per transport (`custom_rate`), used as one row's `saved` price source. Archived rather than deleted, so a quote keeps the name and amount it used: its `rate.saved` event copies both, when the mail has a quote work item. One active name per transport. Room codes are stored (empty means every room type) but do not yet limit which rows can use a rate. Distinct from a one-off rate, which is typed on one row and has no name.
 
 ### Override
 
-A row priced by staff at a rate code and an override rate, source `override`, with a required note saying who approved it and why. It is recorded as a `rate.override` work event. The client Excel and PDF lines carry only the final nightly rate, not the note. Booking drafts flag `manual_rate_change` whenever any row is staff-priced, because HMS's create tool books at its own rate plan. Distinct from `resolveApprovedOverride`, a whole-total adjustment packet that sets no line rate.
+A row priced by staff at a rate code and an override rate, source `override`, with a required note saying who approved it and why. It is recorded as a `rate.override` work event when the mail has a quote work item. The client Excel and PDF lines carry only the final nightly rate, not the note. Booking drafts flag `manual_rate_change` whenever any row is staff-priced, because HMS's create tool books at its own rate plan. Distinct from `resolveApprovedOverride`, a whole-total adjustment packet that sets no line rate.
 
 ### Approval
 

@@ -1,18 +1,21 @@
 /**
- * Work-event eval export (R17, U27). Candidate labels from human field edits on Nava pane work items.
+ * Work-event eval export (R17, U27). Candidate labels from human field edits and rate choices on Nava pane work items.
  *
  *   export-work-events-dataset.ts [--out FILE] [--split dev|holdout] [--golden-set FILE]
  *
- * One row per (work item, stable field id) that a person edited (field.edit or field.reject). ai_value is the first
- * event's AI value and human_value the last event's value, both card-masked. Pairing is by field_id. The ids carry the
- * extraction's stable stay and row ids, so deleting a stay never shifts another stay's pair. A removed stay or row still
- * exports its own `removed` pair (false to true). Fields only accepted, and fields with no event, are not exported.
- * rate.* events are not exported: their AI side is the HMS quote rate, not an extraction value.
+ * One row per (work item, stable field id) that a person edited (field.edit or field.reject) or priced (rate.saved,
+ * rate.one_off or rate.override). ai_value is the first event's AI value. For a field, human_value is the value saved in
+ * work_item.state, which follows the row-locked update order; event time is the transaction start, so two concurrent
+ * edits can log out of order. A rate has no state key and takes its last event's value: the HMS quote rate against the
+ * price she chose. Both values are card-masked. Pairing is by field_id. The ids carry the extraction's stable stay and
+ * row ids, so deleting a stay never shifts another stay's pair. A removed stay or row still exports its own `removed`
+ * pair (false to true). Fields only accepted, and fields with no event, are not exported.
  *
  * Split: a thread that holds a golden-set case takes that case's split (holdout wins when its cases disagree). Any other
  * thread is holdout when sha256(thread id) mod 3 is 0, else dev, about one in three like the golden set's 40 of 120.
  * split_source says which rule applied. The golden set is read from .private/reservationist-backtest/golden-set.jsonl when
- * that file exists. --golden-set names another file, and then it must exist.
+ * that file exists. --golden-set names another file, and then it must exist. A missing default file, or golden cases whose
+ * messages are not in this database, add a warning to the summary: those holdout threads fall back to the hash split.
  *
  * Read-only: every query runs in one REPEATABLE READ READ ONLY transaction on DATABASE_URL. The only write is the JSONL
  * file, under apps/server-pilot/.private/ by default (gitignored, no auto-delete).
@@ -59,8 +62,9 @@ const PRIVATE_ROOT = fileURLToPath(new URL('../.private/', import.meta.url));
 const DEFAULT_OUT = join(PRIVATE_ROOT, 'work-events-eval', 'work-events-v1.jsonl');
 const DEFAULT_GOLDEN_SET = join(PRIVATE_ROOT, 'reservationist-backtest', 'golden-set.jsonl');
 const HOLDOUT_MODULUS = 3;
-const EDIT_TYPES: ReadonlySet<string> = new Set(['field.edit', 'field.reject']);
-const SEQUENCE_TYPES = ['field.edit', 'field.accept', 'field.reject'] as const;
+const RATE_TYPES = ['rate.saved', 'rate.one_off', 'rate.override'] as const;
+const EDIT_TYPES: ReadonlySet<string> = new Set(['field.edit', 'field.reject', ...RATE_TYPES]);
+const SEQUENCE_TYPES = ['field.edit', 'field.accept', 'field.reject', ...RATE_TYPES] as const;
 const USAGE = 'usage: export-work-events-dataset.ts [--out FILE] [--split dev|holdout] [--golden-set FILE]';
 
 /** Deterministic split for a thread with no golden case. */
@@ -101,10 +105,14 @@ export function goldenThreadSplits(
 }
 
 /**
- * One pair per edited field id on each work item: the first event's AI value, the last event's value and every event
- * id for that field. Input must be ordered by work item, time and id. A field without a person's edit is dropped.
+ * One pair per edited field id on each work item: the first event's AI value, the final value and every event id for
+ * that field. Input must be ordered by work item, time and id. The final value is the field's key in the item's saved
+ * state when it has one, else the last event's value. A field without a person's edit is dropped.
  */
-export function pairEditedFields(events: readonly FieldEvent[]) {
+export function pairEditedFields(
+  events: readonly FieldEvent[],
+  stateOf: ReadonlyMap<string, Record<string, unknown>> = new Map(),
+) {
   const byField = new Map<string, FieldEvent[]>();
   for (const event of events) {
     const key = `${event.workItemId}\u0000${event.fieldPath}`;
@@ -116,13 +124,14 @@ export function pairEditedFields(events: readonly FieldEvent[]) {
     if (!group.some((event) => EDIT_TYPES.has(event.type))) return [];
     const first = group[0]!;
     const last = group[group.length - 1]!;
+    const state = stateOf.get(first.workItemId);
     return [
       {
         workItemId: first.workItemId,
         threadId: first.threadId,
         fieldId: first.fieldPath,
         aiValue: first.aiValue,
-        humanValue: last.value,
+        humanValue: state && Object.hasOwn(state, first.fieldPath) ? state[first.fieldPath] : last.value,
         eventIds: group.map((event) => event.id),
       },
     ];
@@ -132,7 +141,7 @@ export function pairEditedFields(events: readonly FieldEvent[]) {
 export async function exportWorkEvents(
   db: DB,
   options: { golden?: readonly GoldenRow[]; split?: Split } = {},
-): Promise<{ rows: EvalRow[]; golden: { matched: number; total: number } }> {
+): Promise<{ rows: EvalRow[]; golden: { matched: number; total: number }; warnings: string[] }> {
   return db.transaction(
     async (tx) => {
       const events = await tx
@@ -163,14 +172,29 @@ export async function exportWorkEvents(
         for (const row of found) threadOf.set(row.id, row.threadId);
       }
       const { splits: goldenSplits, matched } = goldenThreadSplits(golden, threadOf);
+      const warnings =
+        matched < golden.length
+          ? [
+              `${golden.length - matched} of ${golden.length} golden cases have no message in this database: their threads take the hash split`,
+            ]
+          : [];
 
       // The SQL filter already drops null field paths; the check narrows the type for the pairing.
       const fieldEvents: FieldEvent[] = [];
       for (const event of events) {
         if (event.fieldPath !== null) fieldEvents.push({ ...event, fieldPath: event.fieldPath });
       }
+      const itemIds = [...new Set(fieldEvents.map((event) => event.workItemId))];
+      const stateOf = new Map<string, Record<string, unknown>>();
+      if (itemIds.length) {
+        const items = await tx
+          .select({ id: workItem.id, state: workItem.state })
+          .from(workItem)
+          .where(inArray(workItem.id, itemIds));
+        for (const item of items) stateOf.set(item.id, item.state);
+      }
       const rows: EvalRow[] = [];
-      for (const pair of pairEditedFields(fieldEvents)) {
+      for (const pair of pairEditedFields(fieldEvents, stateOf)) {
         const fromGolden = pair.threadId ? goldenSplits.get(pair.threadId) : undefined;
         const split = fromGolden ?? hashSplit(pair.threadId ?? pair.workItemId);
         if (options.split && split !== options.split) continue;
@@ -186,7 +210,7 @@ export async function exportWorkEvents(
           split_source: fromGolden ? 'golden' : 'hash',
         });
       }
-      return { rows, golden: { matched, total: golden.length } };
+      return { rows, golden: { matched, total: golden.length }, warnings };
     },
     { isolationLevel: 'repeatable read', accessMode: 'read only' },
   );
@@ -209,7 +233,6 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
   }
   const goldenPath = values['golden-set'] ?? DEFAULT_GOLDEN_SET;
   const useGolden = values['golden-set'] !== undefined || existsSync(goldenPath);
-  if (!useGolden) console.error(`no golden set at ${goldenPath}: every thread takes its hash split`);
   const golden = useGolden ? readGoldenSet(goldenPath) : [];
 
   const { db, conn } = createDb(url);
@@ -219,12 +242,17 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
   } finally {
     await conn.end();
   }
+  const warnings = [
+    ...(useGolden ? [] : [`no golden set at ${goldenPath}: every thread takes its hash split, golden holdout included`]),
+    ...result.warnings,
+  ];
+  for (const warning of warnings) console.error(`warning: ${warning}`);
   const out = resolve(values.out ?? DEFAULT_OUT);
   mkdirSync(dirname(out), { recursive: true, mode: 0o700 });
   writeFileSync(out, result.rows.map((row) => `${JSON.stringify(row)}\n`).join(''), { mode: 0o600 });
   const bySplit = { dev: 0, holdout: 0 };
   for (const row of result.rows) bySplit[row.split] += 1;
-  console.log(JSON.stringify({ out, rows: result.rows.length, bySplit, golden: result.golden }));
+  console.log(JSON.stringify({ out, rows: result.rows.length, bySplit, golden: result.golden, warnings }));
   return 0;
 }
 
