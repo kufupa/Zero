@@ -1094,6 +1094,47 @@ describe('bindUsePriorQuoteForBooking', () => {
     expect(older.status === 'ok' && older.payload.onceExtras).toBe(false);
   });
 
+  it('carries the HMS no-building flag and the recorded staff check of the reused quote', async () => {
+    const ready = (extra: Record<string, unknown>) => async () => ({
+      status: 'ready' as const,
+      draft: { rooms: [] } as unknown as BookingDraftReady['draft'],
+      options: {} as BookingDraftReady['options'],
+      messageId: 'mail-1',
+      selectionEpoch: 1,
+      inputRevision: 1,
+      revisionRef: 'rev-1',
+      workflowRunId: 'run-1',
+      totalMinor: 100,
+      currency: 'ZAR',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      roomCode: 'STQN',
+      rateCode: 'BAR',
+      board: 'bb' as const,
+      ...extra,
+    });
+    const args = {
+      source,
+      workflowRunId: 'run-1',
+      revisionRef: 'rev-1',
+      threadId: 'thread-1',
+      messageId: 'mail-1',
+      selectionEpoch: 1,
+      inputRevision: 1,
+      analysis: luna,
+    };
+    const flagged = await bindUsePriorQuoteForBooking({
+      ...args,
+      mutate: ready({ poolBasis: 'property_room_type', jointRoomsChecked: true }),
+    });
+    expect(flagged.status === 'ok' && flagged.payload).toMatchObject({ poolBasis: 'property_room_type', jointRoomsChecked: true });
+    const unchecked = await bindUsePriorQuoteForBooking({ ...args, mutate: ready({ poolBasis: 'property_room_type' }) });
+    expect(unchecked.status === 'ok' && unchecked.payload.jointRoomsChecked).toBe(false);
+    const plain = await bindUsePriorQuoteForBooking({ ...args, mutate: ready({ jointRoomsChecked: true }) });
+    expect(plain.status === 'ok' && plain.payload).not.toHaveProperty('poolBasis');
+    expect(plain.status === 'ok' && plain.payload).not.toHaveProperty('jointRoomsChecked');
+  });
+
   it('maps a room-only revision board onto the reused offer', () => {
     expect(offerBoardFromRevision('room_only')).toBe('room_only');
     expect(offerBoardFromRevision('dinner_bed_breakfast')).toBe('dinner_bb');

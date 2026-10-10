@@ -8,7 +8,12 @@ import {
   ratedStayCount,
   staffSourceReady,
 } from './session';
-import { revisionMatchesRequest, type QualifiedStaffPdfInput, type QualifiedStaffWorkbookResult } from './staff-quote-bind';
+import {
+  jointRoomsRefusal,
+  revisionMatchesRequest,
+  type QualifiedStaffPdfInput,
+  type QualifiedStaffWorkbookResult,
+} from './staff-quote-bind';
 import type { QuoteSession } from './types';
 
 export const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -161,7 +166,10 @@ export async function bindQualifiedStaffWorkbook(args: {
     (args.download ?? triggerBlobDownload)(new Blob([bytes], { type: XLSX_MIME_TYPE }), result.fileName);
     return { status: 'ok', fileName: result.fileName };
   } catch (error) {
-    return unavailable(error instanceof Error && error.message ? error.message : 'The Excel could not be made. Try again.');
+    return unavailable(
+      jointRoomsRefusal(error) ??
+        (error instanceof Error && error.message ? error.message : 'The Excel could not be made. Try again.'),
+    );
   }
 }
 

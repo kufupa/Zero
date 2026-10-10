@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { workEvent, workItem, WORK_EVENT_TYPES, type WorkEventType } from '../db/schema/work.js';
 import type { RowPrice } from '../quote-proposal/quote-lines.js';
@@ -88,4 +88,68 @@ export async function recordRateEvents(
       aiSource: args.workflowRunId,
     });
   }
+}
+
+/** The work item a staff check on this mail is recorded on: its quote item, else its other item. Null when it has none. */
+export async function workItemIdForMessage(
+  db: DB,
+  scope: { transportId: string; threadId: string; messageId: string },
+): Promise<string | null> {
+  const rows = await db
+    .select({ id: workItem.id, kind: workItem.kind })
+    .from(workItem)
+    .where(
+      and(
+        eq(workItem.transportId, scope.transportId),
+        eq(workItem.threadId, scope.threadId),
+        eq(workItem.sourceMessageId, scope.messageId),
+      ),
+    )
+    .orderBy(workItem.createdAt);
+  return (rows.find((row) => row.kind === 'quote') ?? rows[0])?.id ?? null;
+}
+
+/**
+ * Staff ticked (or unticked) that they checked in HMS that a run's room types can be booked together. HMS gave no
+ * building for them, so it does not prove it. Append-only: the latest event for the run and revision is the state.
+ */
+export async function recordJointRoomsCheck(
+  db: DB,
+  args: { workItemId: string; actorUserId: string; workflowRunId: string; revisionRef: string; checked: boolean },
+): Promise<void> {
+  // clock_timestamp, not the transaction's now(): a tick and an untick in one transaction must still order.
+  await db.insert(workEvent).values({
+    workItemId: args.workItemId,
+    at: sql`clock_timestamp()`,
+    actorKind: 'user',
+    actorUserId: args.actorUserId,
+    type: args.checked ? 'joint_rooms.checked' : 'joint_rooms.unchecked',
+    fieldPath: 'quote.jointRooms',
+    value: { workflowRunId: args.workflowRunId, revisionRef: args.revisionRef },
+    aiSource: args.workflowRunId,
+  });
+}
+
+/** Whether the latest joint-rooms event for this run and revision, on this mail's work items, is a tick. */
+export async function jointRoomsChecked(
+  db: DB,
+  scope: { transportId: string; threadId: string; messageId: string; workflowRunId: string; revisionRef: string },
+): Promise<boolean> {
+  const [row] = await db
+    .select({ type: workEvent.type })
+    .from(workEvent)
+    .innerJoin(workItem, eq(workEvent.workItemId, workItem.id))
+    .where(
+      and(
+        eq(workItem.transportId, scope.transportId),
+        eq(workItem.threadId, scope.threadId),
+        eq(workItem.sourceMessageId, scope.messageId),
+        inArray(workEvent.type, ['joint_rooms.checked', 'joint_rooms.unchecked']),
+        sql`${workEvent.value}->>'workflowRunId' = ${scope.workflowRunId}`,
+        sql`${workEvent.value}->>'revisionRef' = ${scope.revisionRef}`,
+      ),
+    )
+    .orderBy(desc(workEvent.at), desc(workEvent.id))
+    .limit(1);
+  return row?.type === 'joint_rooms.checked';
 }

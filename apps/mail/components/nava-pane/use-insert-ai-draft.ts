@@ -5,6 +5,7 @@ import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-fligh
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { requireMultiOptionDraft, type CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
+import { jointRoomsRefusal } from '@/lib/quote-workflow/staff-quote-bind';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { trpcClient } from '@/providers/query-provider';
 
@@ -554,7 +555,7 @@ export function useInsertAiDraft({
       toast.error(
         draftChanged
           ? 'The draft changed while saving. Save the reply again.'
-          : 'Could not save the reply. Try again.',
+          : (jointRoomsRefusal(error) ?? 'Could not save the reply. Try again.'),
       );
     } finally {
       saveInFlight.current = false;

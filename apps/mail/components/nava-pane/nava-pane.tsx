@@ -54,6 +54,7 @@ import {
   bindHmsQueueStatus,
   bindQuoteRunScreenshot,
   bindQualifiedStaffProposalPdf,
+  bindRecordJointRoomsCheck,
   bindStaffActions,
   bindStaffQuoteSource,
   staffQuoteFromTrpc,
@@ -468,6 +469,7 @@ export function NavaPane({
           approvedHeader: header,
           // What the earlier run charged, not what the header asks now: a combined quote checks it on each stay.
           onceExtras: prior.onceExtras,
+          ...(prior.poolBasis ? { poolBasis: prior.poolBasis, jointRoomsChecked: prior.jointRoomsChecked } : {}),
         },
         selectionEpoch,
         inputRevision,
@@ -633,6 +635,21 @@ export function NavaPane({
     }).finally(() => {
       workbookInFlight.current = false;
       setWorkbookPending(false);
+    });
+  };
+  // The HMS joint-rooms tick counts once the server has it: the PDF, Excel and saved reply check it there too.
+  const recordJointRoomsCheck = (revisionRef: string, checked: boolean) => {
+    const session = quoteSessionRef.current;
+    const run = [session.staffQuote, ...Object.values(session.staffQuotes)].find(
+      (quote) => quote?.revisionRef === revisionRef,
+    );
+    if (!run) return;
+    void bindRecordJointRoomsCheck({
+      mutate: staffQuoteFromTrpc(trpcClient).workstation.recordJointRoomsCheck?.mutate,
+      input: { workflowRunId: run.workflowRunId, revisionRef, threadId: run.threadId, checked },
+    }).then((result) => {
+      if (result.status === 'ok') dispatchQuote({ type: 'joint_rooms_checked', revisionRef, checked });
+      else toast.warning(result.reason);
     });
   };
   // The build this page was served, read from its index.html at page load (never from a fetch).
@@ -1401,9 +1418,7 @@ export function NavaPane({
                 dispatchQuote({ type: 'select_offers', offerIds: nextSelectedOfferIds(quoteSession, offerId) })
               }
               onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html })}
-              onJointRoomsChecked={(revisionRef, checked) =>
-                dispatchQuote({ type: 'joint_rooms_checked', revisionRef, checked })
-              }
+              onJointRoomsChecked={recordJointRoomsCheck}
               onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
               onPatchStaffHeader={(header) => dispatchQuote({ type: 'patch_staff_header', header })}

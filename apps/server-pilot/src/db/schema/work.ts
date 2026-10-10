@@ -48,6 +48,8 @@ export const WORK_EVENT_TYPES = [
   'rate.saved',
   'rate.one_off',
   'rate.override',
+  'joint_rooms.checked',
+  'joint_rooms.unchecked',
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
 

@@ -182,6 +182,49 @@ function rejectionReason(error: unknown): string {
 
 export const EXPIRED_STAFF_QUOTE_COPY = 'This quote has expired. Run the quote again.';
 
+/** Must match JOINT_ROOMS_UNCHECKED in apps/server-pilot/src/ai/joint-rooms-check.ts. */
+export const JOINT_ROOMS_UNCHECKED = 'joint_rooms_unchecked';
+export const JOINT_ROOMS_UNCHECKED_COPY =
+  'Check in HMS that these rooms can be booked together, then tick "I checked these rooms together in HMS".';
+
+/** Staff copy when the server refused a PDF, Excel or saved reply for a missing joint-rooms check. Else null. */
+export function jointRoomsRefusal(error: unknown): string | null {
+  return error instanceof Error && error.message.trim() === JOINT_ROOMS_UNCHECKED ? JOINT_ROOMS_UNCHECKED_COPY : null;
+}
+
+const JOINT_ROOMS_CHECK_FAILURES: Record<string, string> = {
+  joint_rooms_check_unavailable:
+    "Nava can't record this check for this email yet. Quote each room type separately for now.",
+  joint_rooms_check_not_needed: 'This quote does not need the HMS check.',
+};
+
+export type RecordJointRoomsCheckInput = {
+  workflowRunId: string;
+  revisionRef: string;
+  threadId: string;
+  checked: boolean;
+};
+
+/** Records the staff tick on the server. The pane shows it only after the server has it. */
+export async function bindRecordJointRoomsCheck(args: {
+  mutate?: (input: RecordJointRoomsCheckInput) => Promise<{ status?: string; checked?: boolean }>;
+  input: RecordJointRoomsCheckInput;
+}): Promise<{ status: 'ok' } | { status: 'unavailable'; reason: string }> {
+  if (!args.mutate) {
+    return { status: 'unavailable', reason: 'This check cannot be saved from this pane yet. Refresh the pane and try again.' };
+  }
+  try {
+    const result = await args.mutate(args.input);
+    if (result?.status !== 'recorded' || result.checked !== args.input.checked) {
+      return { status: 'unavailable', reason: 'The check was not saved. Try again.' };
+    }
+    return { status: 'ok' };
+  } catch (error) {
+    const code = error instanceof Error ? error.message.trim() : '';
+    return { status: 'unavailable', reason: JOINT_ROOMS_CHECK_FAILURES[code] ?? rejectionReason(error) };
+  }
+}
+
 /** workstation.qualifiedQuoteProposalPdf messages for a quote run that is unrecorded or expired. */
 const EXPIRED_STAFF_QUOTE_SERVER_MESSAGES = new Set([
   'Proposal source not found',
@@ -192,7 +235,7 @@ const EXPIRED_STAFF_QUOTE_SERVER_MESSAGES = new Set([
 export function qualifiedPdfFailureReason(error: unknown): string {
   if (error instanceof Error && EXPIRED_STAFF_QUOTE_SERVER_MESSAGES.has(error.message.trim()))
     return EXPIRED_STAFF_QUOTE_COPY;
-  return rejectionReason(error);
+  return jointRoomsRefusal(error) ?? rejectionReason(error);
 }
 
 function knownNativeCode(raw: string): string | null {
@@ -923,6 +966,9 @@ type StaffQuoteClient = {
   };
   qualifiedQuoteProposalPdf?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffPdfResult> };
   quoteWorkbook?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffWorkbookResult> };
+  recordJointRoomsCheck?: {
+    mutate: (input: RecordJointRoomsCheckInput) => Promise<{ status?: string; checked?: boolean }>;
+  };
   prepareBookingDraft?: { mutate: (input: PrepareBookingDraftInput) => Promise<PrepareBookingDraftResult> };
   listThreadQuoteRevisions?: {
     query: (input: { threadId: string }) => Promise<{ revisions?: Array<{ workflowRunId: string; revisionRef: string }> }>;

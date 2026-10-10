@@ -11,7 +11,11 @@ import {
   approvedExecuteHeader,
   bindExecuteStaffQuote,
   bindQualifiedStaffProposalPdf,
+  bindRecordJointRoomsCheck,
+  JOINT_ROOMS_UNCHECKED_COPY,
+  jointRoomsRefusal,
   nativeRoomCodes,
+  qualifiedPdfFailureReason,
   resolveNativeRoomCodes,
   sha256HexOfBytes,
 } from '../lib/quote-workflow/staff-quote-bind';
@@ -460,6 +464,27 @@ describe('staff quote execute/PDF header bind', () => {
     expect((await run('property_room_type'))?.poolBasis).toBe('property_room_type');
     expect((await run(undefined))?.poolBasis).toBeUndefined();
     expect((await run('anything'))?.poolBasis).toBeUndefined();
+  });
+
+  it('records the joint-rooms tick on the server and names each refusal for staff', async () => {
+    const input = { workflowRunId: 'run-1', revisionRef: 'rev-1', threadId: 'thread-1', checked: true };
+    const mutate = vi.fn(async () => ({ status: 'recorded', checked: true }));
+    expect(await bindRecordJointRoomsCheck({ mutate, input })).toEqual({ status: 'ok' });
+    expect(mutate).toHaveBeenCalledWith(input);
+    expect(await bindRecordJointRoomsCheck({ mutate: async () => ({ status: 'recorded', checked: false }), input })).toEqual({
+      status: 'unavailable',
+      reason: 'The check was not saved. Try again.',
+    });
+    const refused = await bindRecordJointRoomsCheck({
+      mutate: async () => {
+        throw new Error('joint_rooms_check_unavailable');
+      },
+      input,
+    });
+    expect(refused.status === 'unavailable' && refused.reason).toMatch(/can't record this check/);
+    expect((await bindRecordJointRoomsCheck({ input })).status).toBe('unavailable');
+    expect(qualifiedPdfFailureReason(new Error('joint_rooms_unchecked'))).toBe(JOINT_ROOMS_UNCHECKED_COPY);
+    expect(jointRoomsRefusal(new Error('something else'))).toBeNull();
   });
 
   it('sends staff-confirmed dinner and shuttle extras on executeStaffQuote', async () => {

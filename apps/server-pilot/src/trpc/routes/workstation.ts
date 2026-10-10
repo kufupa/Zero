@@ -56,7 +56,14 @@ import {
   quoteWorkbookFileName,
   WorkbookRefusalError,
 } from '../../quote-proposal/quote-workbook.js';
-import { quoteWorkItemIdFor, recordRateEvents } from '../../ai/work-events.js';
+import {
+  jointRoomsChecked,
+  quoteWorkItemIdFor,
+  recordJointRoomsCheck,
+  recordRateEvents,
+  workItemIdForMessage,
+} from '../../ai/work-events.js';
+import { JOINT_ROOMS_UNCHECKED, jointRoomsUnchecked } from '../../ai/joint-rooms-check.js';
 import { snapshotRowPrices } from './rates.js';
 import {
   getInstalledStaffQuoteServices,
@@ -341,6 +348,15 @@ export const prepareBookingDraftInput = z
   .strict();
 
 export const listThreadQuoteRevisionsInput = z.object({ threadId: z.string().min(1) }).strict();
+
+export const recordJointRoomsCheckInput = z
+  .object({
+    workflowRunId: z.string().min(1),
+    revisionRef: z.string().min(1),
+    threadId: z.string().min(1),
+    checked: z.boolean(),
+  })
+  .strict();
 
 export const usePriorQuoteForBookingInput = z
   .object({
@@ -667,6 +683,17 @@ async function proposalStaysFor(
     } catch {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
     }
+    // HMS gave no building for 2+ room types: no document until staff record that they checked them together in HMS.
+    if (
+      await jointRoomsUnchecked(db, {
+        transportId: ctx.activeTransportId,
+        threadId: run.threadId,
+        messageId: run.triggerMessageId,
+        workflowRunId: run.id,
+        revision: resolved.revision,
+      })
+    )
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: JOINT_ROOMS_UNCHECKED });
     stays.push({ ...resolved, staff, rowPrices: storedRowPrices(run, resolved.revision.id) });
   }
   return stays;
@@ -1278,6 +1305,58 @@ export const workstationRouter = router({
       if (!payload) return { status: 'unavailable' as const, reason: 'not_found' as const };
       return { status: 'ready' as const, payload };
     }),
+  /**
+   * Staff ticked (or unticked) that they checked in HMS that a run's room types can be booked together. Only a run whose
+   * revision HMS gave no building for (propertyPoolBasis) takes it. Recorded as a work_event on the run's mail.
+   */
+  recordJointRoomsCheck: mailboxProcedure
+    .input(recordJointRoomsCheckInput)
+    .mutation(async ({ input, ctx }) => {
+      await awaitPendingStaffQuote(input.workflowRunId);
+      const db = getDb();
+      const [bound] = await db
+        .select({ run: aiWorkflowRun })
+        .from(aiWorkflowRun)
+        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+        .where(
+          and(
+            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+            eq(aiWorkflowRun.id, input.workflowRunId),
+            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+            eq(aiWorkflowRun.threadId, input.threadId),
+          ),
+        )
+        .limit(1);
+      if (!bound) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
+      let revision: QuoteRevision;
+      try {
+        revision = resolveLedgerProposal(bound.run, {
+          transportId: ctx.activeTransportId,
+          messageId: bound.run.triggerMessageId,
+          revisionRef: input.revisionRef,
+          factRefs: proposalFactRefsForRevision(bound.run, input.revisionRef),
+        }).revision;
+      } catch {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Proposal evidence is not ready' });
+      }
+      if (!propertyPoolBasis(revision))
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'joint_rooms_check_not_needed' });
+      const workItemId = await workItemIdForMessage(db, {
+        transportId: ctx.activeTransportId,
+        threadId: bound.run.threadId,
+        messageId: bound.run.triggerMessageId,
+      });
+      if (!workItemId)
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'joint_rooms_check_unavailable' });
+      await recordJointRoomsCheck(db, {
+        workItemId,
+        actorUserId: ctx.sessionUser.id,
+        workflowRunId: bound.run.id,
+        revisionRef: revision.id,
+        checked: input.checked,
+      });
+      return { status: 'recorded' as const, workflowRunId: bound.run.id, revisionRef: revision.id, checked: input.checked };
+    }),
   usePriorQuoteForBooking: mailboxProcedure
     .input(usePriorQuoteForBookingInput)
     .mutation(async ({ input, ctx }) => {
@@ -1287,6 +1366,7 @@ export const workstationRouter = router({
           id: aiWorkflowRun.id,
           transportId: aiWorkflowRun.transportId,
           threadId: aiWorkflowRun.threadId,
+          triggerMessageId: aiWorkflowRun.triggerMessageId,
           state: aiWorkflowRun.state,
           createdAt: aiWorkflowRun.createdAt,
           finishedAt: aiWorkflowRun.finishedAt,
@@ -1341,6 +1421,19 @@ export const workstationRouter = router({
         board: resolved.revision.groups[0]!.board,
         // Whether this quote's total already has the once-per-quote extras (the shuttle, a flat other charge).
         onceExtras: revisionCarriesOnceExtras(run, resolved.revision.id),
+        // The earlier quote keeps its HMS no-building flag, and the staff check recorded for it.
+        ...(propertyPoolBasis(resolved.revision)
+          ? {
+              poolBasis: 'property_room_type' as const,
+              jointRoomsChecked: await jointRoomsChecked(getDb(), {
+                transportId: ctx.activeTransportId,
+                threadId: run.threadId,
+                messageId: run.triggerMessageId,
+                workflowRunId: run.id,
+                revisionRef: resolved.revision.id,
+              }),
+            }
+          : {}),
       };
     }),
   // Native refusals happen inside Outlook after the server grant; without this the server sees only

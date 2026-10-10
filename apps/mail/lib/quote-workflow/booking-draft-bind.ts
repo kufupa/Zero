@@ -110,6 +110,10 @@ export type UsePriorQuoteForBookingReady = BookingDraftReady & {
   board: QuoteBoard;
   /** Whether the earlier quote's total has the once-per-quote extras. Absent from an older server: treated as no. */
   onceExtras?: boolean;
+  /** HMS gave no building for the earlier quote's 2+ room types. Staff check them together in HMS. */
+  poolBasis?: 'property_room_type';
+  /** The staff check the server has recorded for the earlier quote. */
+  jointRoomsChecked?: boolean;
 };
 
 export function overlayLunaGroupsFromStaff(
@@ -232,6 +236,9 @@ export async function bindUsePriorQuoteForBooking(args: {
         rateCode: result.rateCode,
         board: offerBoardFromRevision(result.board),
         onceExtras: result.onceExtras === true,
+        ...(result.poolBasis === 'property_room_type'
+          ? { poolBasis: result.poolBasis, jointRoomsChecked: result.jointRoomsChecked === true }
+          : {}),
       },
     };
   } catch (error) {

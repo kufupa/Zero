@@ -48,6 +48,7 @@ import { sanitizeHtmlBodyForStorage } from '../../mail/sanitize-email-html.js';
 import { parseDraftSearchQueryOrThrow } from '../../mail/search/trpc.js';
 import { buildDraftSearchConditions } from '../../mail/search/query.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
+import { JOINT_ROOMS_UNCHECKED, uncheckedJointRoomRuns } from '../../ai/joint-rooms-check.js';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { and, eq, desc, inArray, like, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
@@ -1798,6 +1799,14 @@ export const draftsRouter = tRouter({
       if (replyParent.threadId !== input.threadId) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'REPLY_PARENT_THREAD_MISMATCH' });
       }
+      // HMS gave no building for a current quote's room types: no saved reply until staff record the check in HMS.
+      const unchecked = await uncheckedJointRoomRuns(db, {
+        transportId,
+        threadId: input.threadId,
+        messageId: input.replyToMessageId,
+        userId: ctx.sessionUser.id,
+      });
+      if (unchecked.length) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: JOINT_ROOMS_UNCHECKED });
       const html = sanitizeHtmlBodyForStorage(input.html) ?? '';
       try {
         return await db.transaction(async (tx) => {
