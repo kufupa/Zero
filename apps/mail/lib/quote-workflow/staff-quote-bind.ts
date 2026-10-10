@@ -106,6 +106,13 @@ export type StaffQuoteSourceResult =
   | { status: 'ready'; messageId: string; threadId: string; sourceHash: string }
   | { status: 'message_not_synced' };
 
+/** One further stay of a combined quote: its own attested run. */
+export type QualifiedStayRun = {
+  workflowRunId: string;
+  revisionRef: string;
+  factRefs: string[];
+};
+
 export type QualifiedStaffPdfInput = {
   workflowRunId: string;
   revisionRef: string;
@@ -117,6 +124,8 @@ export type QualifiedStaffPdfInput = {
   clientEmail: string;
   clientTelephone: string;
   agency: string;
+  /** A combined quote: the other stays' runs. Absent for one stay. */
+  additionalStays?: QualifiedStayRun[];
 };
 
 export type QualifiedStaffPdfResult = {
@@ -568,6 +577,26 @@ function otherChargeFor(
 }
 
 /**
+ * Whether the header has a charge made once per quote, not per guest or night: the shuttle, or an "other" charge per trip
+ * or as one item. A combined quote of several stays charges these once, on the first stay only.
+ */
+export function hasOncePerQuoteExtras(header: StaffQuoteHeader): boolean {
+  const other = otherChargeFor(header.other);
+  const flatOther = other?.unit === 'per_trip' || other?.unit === 'item';
+  return Boolean(header.shuttleRequested) || flatOther;
+}
+
+/** The header without its once-per-quote charges, for every stay of a combined quote but the first. */
+export function withoutOncePerQuoteExtras(header: StaffQuoteHeader): StaffQuoteHeader {
+  const next = { ...header };
+  delete next.shuttleRequested;
+  delete next.shuttleMinor;
+  delete next.shuttleTrips;
+  if (next.other?.unit === 'per_trip' || next.other?.unit === 'item') delete next.other;
+  return next;
+}
+
+/**
  * The picked parties the quote sends: a company as company and an agency as agency, each with its HMS id and name. A pick
  * without a plain HMS id (an unverified suggestion, for one) is never sent. Undefined when nothing valid was picked.
  */
@@ -592,6 +621,8 @@ export async function bindExecuteStaffQuote(args: {
   inputRevision: number;
   groups: StayGroupRequirement[];
   header: StaffQuoteHeader;
+  /** False for every stay of a combined quote but the first, so the once-per-quote charges are made once. */
+  onceExtras?: boolean;
 }): Promise<BoundExecuteStaffQuote> {
   // A typed amount that cannot be read is never priced from the older saved amount.
   const fieldProblem = staffHeaderFieldProblem(args.header);
@@ -608,8 +639,9 @@ export async function bindExecuteStaffQuote(args: {
   const prepared = staffQuoteGroupsFromStay(args.groups);
   if ('error' in prepared) return { status: 'unavailable', reason: prepared.error };
   try {
+    const sent = args.onceExtras === false ? withoutOncePerQuoteExtras(args.header) : args.header;
     const header = approvedExecuteHeader(
-      args.header,
+      sent,
       prepared.ok.map((group) => group.id),
     );
     const result = await args.mutate({
@@ -667,6 +699,7 @@ export async function bindExecuteStaffQuote(args: {
         clientEmail: header.clientEmail,
         clientTelephone: header.clientTelephone,
       },
+      onceExtras: hasOncePerQuoteExtras(sent),
       runId: typeof result.runId === 'string' && result.runId.trim() ? result.runId : null,
       screenshots: Array.isArray(result.screenshots)
         ? result.screenshots.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
@@ -689,6 +722,14 @@ export async function bindExecuteStaffQuote(args: {
       noMatchingRate: reason.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX),
     };
   }
+}
+
+/**
+ * The revision id a document must carry. One stay's document is named by that stay's revision. A combined document is
+ * named by the set of its stays' revisions (quotes:...), which the client cannot rebuild, so it is checked by prefix.
+ */
+export function revisionMatchesRequest(input: QualifiedStaffPdfInput, revisionId: string): boolean {
+  return input.additionalStays?.length ? revisionId.startsWith('quotes:') : revisionId === input.revisionRef;
 }
 
 export type BoundStaffPdf =
@@ -725,6 +766,7 @@ export async function bindQualifiedStaffProposalPdf(args: {
       clientEmail: args.input.clientEmail,
       clientTelephone: args.input.clientTelephone,
       agency: args.input.agency,
+      ...(args.input.additionalStays?.length ? { additionalStays: args.input.additionalStays } : {}),
     });
     if (
       !pdf ||
@@ -735,7 +777,7 @@ export async function bindQualifiedStaffProposalPdf(args: {
       typeof pdf.pdfHash !== 'string' ||
       !/^[a-f0-9]{64}$/.test(pdf.pdfHash) ||
       typeof pdf.revisionId !== 'string' ||
-      pdf.revisionId !== args.input.revisionRef ||
+      !revisionMatchesRequest(args.input, pdf.revisionId) ||
       !Number.isSafeInteger(pdf.totalMinor) ||
       pdf.totalMinor <= 0 ||
       pdf.totalMinor !== args.expectedTotalMinor

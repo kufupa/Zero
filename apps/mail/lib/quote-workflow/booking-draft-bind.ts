@@ -114,11 +114,13 @@ export function overlayLunaGroupsFromStaff(
   groups: StayGroupRequirement[],
 ): LunaAnalysisWire['groups'] {
   if (!groups.length) return luna.groups;
+  // A position only means a row when the email has one stay. With several, another stay's row must not supply guests.
+  const oneStay = new Set(groups.map(dateKeyOf)).size <= 1;
   return groups.map((group, index) => {
     const match =
       luna.groups.find(
         (row) => row.arrival === (group.arrivalDate ?? null) && row.departure === (group.departureDate ?? null),
-      ) ?? luna.groups[index];
+      ) ?? (oneStay ? luna.groups[index] : undefined);
     return {
       arrival: group.arrivalDate ?? null,
       departure: group.departureDate ?? null,
@@ -278,19 +280,25 @@ export function buildExpiredPriorRequoteBindArgs(args: {
   staffEdited: boolean;
 }): { groups: StayGroupRequirement[]; header: StaffQuoteHeader } {
   if (!args.staffEdited) {
-    const groups = args.stored.groups.map((group, index) => ({
-      id: args.sessionGroups[index]?.id ?? group.id,
-      arrivalDate: group.arrivalDate,
-      departureDate: group.departureDate,
-      quantity: group.quantity,
-      adults: group.adults,
-      childrenAges: [...group.childrenAges],
-      board: group.board,
-      roomCodes: group.roomCodes ? [...group.roomCodes] : undefined,
-      roomPreference: group.roomCodes?.[0],
-      specialRequests: [],
-      fields: {},
-    }));
+    const oneStay = new Set(args.sessionGroups.map(dateKeyOf)).size <= 1;
+    const groups = args.stored.groups.map((group, index) => {
+      // A row takes the id of the session row for the same stay, so another stay's row id never lands here.
+      const within = args.stored.groups.slice(0, index).filter((row) => dateKeyOf(row) === dateKeyOf(group)).length;
+      const sameStay = args.sessionGroups.filter((row) => dateKeyOf(row) === dateKeyOf(group));
+      return {
+        id: sameStay[within]?.id ?? (oneStay ? args.sessionGroups[index]?.id : undefined) ?? group.id,
+        arrivalDate: group.arrivalDate,
+        departureDate: group.departureDate,
+        quantity: group.quantity,
+        adults: group.adults,
+        childrenAges: [...group.childrenAges],
+        board: group.board,
+        roomCodes: group.roomCodes ? [...group.roomCodes] : undefined,
+        roomPreference: group.roomCodes?.[0],
+        specialRequests: [],
+        fields: {},
+      };
+    });
     return {
       groups,
       header: {
@@ -322,7 +330,19 @@ export function buildExpiredPriorRequoteBindArgs(args: {
       },
     };
   }
-  return { groups: args.sessionGroups, header: args.sessionHeader };
+  // With several stays, re-quote only the session rows of the one stay this revision quoted. Every row in one run would
+  // merge the stays. When that stay's dates were edited away, or the revision spans stays, there is nothing safe to send.
+  if (new Set(args.sessionGroups.map(dateKeyOf)).size <= 1) {
+    return { groups: args.sessionGroups, header: args.sessionHeader };
+  }
+  const quoted = new Set(args.stored.groups.map(dateKeyOf));
+  const groups = quoted.size === 1 ? args.sessionGroups.filter((row) => quoted.has(dateKeyOf(row))) : [];
+  return { groups, header: args.sessionHeader };
+}
+
+/** The stay a row belongs to, by its dates. */
+function dateKeyOf(row: { arrivalDate?: string; departureDate?: string }): string {
+  return `${row.arrivalDate ?? 'unknown'}:${row.departureDate ?? 'unknown'}`;
 }
 
 /** Copies only the keys that have a value, so a missing stored field keeps the session's own value. */

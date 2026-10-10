@@ -88,11 +88,12 @@ describe('quote workflow scenario matrix', () => {
     expect(body).toMatch(/Alternative — not counted in the total/);
   });
 
-  it('warns that staggered date searches do not prove joint availability', () => {
+  it('says how many date options are rated before the one quote can be prepared', () => {
     const session = sessionFromFixture('staggered-dates');
     session.selectedOfferIds = session.offers.map((offer) => offer.id);
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getAllByText(/do not prove that all stays are available together/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('0 of 2 stays rated').length).toBeGreaterThan(0);
+    expect(screen.queryByText(/do not prove that all stays are available together/i)).toBeNull();
   });
 
   it('expands varying nightly prices', () => {

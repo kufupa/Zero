@@ -15,7 +15,7 @@ import {
   type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
-import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
+import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
@@ -44,6 +44,7 @@ import {
   offerBoardFromRevision,
   overlayLunaGroupsFromStaff,
   type PriorStaffQuoteRequoteRow,
+  type UsePriorQuoteForBookingReady,
 } from '@/lib/quote-workflow/booking-draft-bind';
 import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
 import { partyFinderFromTrpc, partyIndexFromTrpc } from '@/lib/quote-workflow/party-lookup';
@@ -65,7 +66,10 @@ import {
   dinnerAllowanceStillRequired,
   evidenceMatchesSession,
   groupsForQuoteStep,
+  isMultiStay,
   quoteRunIsCurrent,
+  requestedQuoteKeys,
+  stayKeyForGroup,
   hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
@@ -73,6 +77,7 @@ import {
   quoteRunBlockReason,
   reduceQuoteSession,
   removedStayFor,
+  rowsTakeOnceExtras,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -364,19 +369,21 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
       .map((group) => `${group.arrivalDate ?? ''}:${group.departureDate ?? ''}:${group.quantity ?? ''}:${group.adults ?? ''}`)
       .join(','),
     quoteSession.staffQuote ? 'quoted' : '',
-    quoteSession.bookingDraft ? 'drafted' : '',
+    Object.keys(quoteSession.staffQuotes).join(','),
+    Object.keys(quoteSession.bookingDrafts).join(','),
   ].join(':');
   useEffect(() => {
     const luna = quoteSession.analysis?.luna;
     const source = quoteSession.staffSource;
     const binding = quoteSession.binding;
-    if (
-      luna?.workflow !== 'create_booking' ||
-      !source ||
-      !binding ||
-      quoteSession.staffQuote ||
-      quoteSession.bookingDraft
-    ) {
+    // Each date option waits for its own earlier quote. An option that already has a run or a draft is left alone.
+    // A single stay waits as one, dated or not, so its first accepted prior quote binds as it did before date options.
+    const stayKeys = requestedQuoteKeys(quoteSession.groups);
+    const singleStayKey = stayKeys.length <= 1 ? (stayKeys[0] ?? 'unknown:unknown') : null;
+    const waiting = (singleStayKey ? [singleStayKey] : stayKeys).filter(
+      (key) => !quoteSession.staffQuotes[key] && !quoteSession.bookingDrafts[key],
+    );
+    if (luna?.workflow !== 'create_booking' || !source || !binding || waiting.length === 0) {
       return;
     }
     const staff = staffQuoteFromTrpc(trpcClient);
@@ -385,8 +392,64 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     // A stay edit does not always move inputRevision, so the result is also tied to the rows it read.
     const stayRevision = quoteSession.stayRevision;
     const header = quoteSession.staffHeader;
-    const groupId = quoteSession.groups[0]?.id;
-    const quantity = quoteSession.groups[0]?.quantity;
+    // The earlier quote's run and draft belong to the stay it was made for, so its rows are that stay's rows.
+    const bindPrior = (prior: UsePriorQuoteForBookingReady, stayKey: string) => {
+      const stayRow = quoteSession.groups.find((group) => stayKeyForGroup(group) === stayKey);
+      const groupId = stayRow?.id;
+      const quantity = stayRow?.quantity;
+      dispatchQuote({
+        type: 'staff_quote_ready',
+        offer: {
+          id: prior.revisionRef,
+          kind: 'allocation',
+          roomCode: prior.roomCode,
+          roomLabel: 'Selected allocation',
+          board: offerBoardFromRevision(prior.board),
+          rateCode: prior.rateCode,
+          currency: 'ZAR',
+          nightly: [],
+          stayTotalMinor: prior.totalMinor,
+          observedAt: '',
+          sourceRef: prior.revisionRef,
+          restrictions: [],
+          combinable: true,
+          quoteRequestKey: stayKey,
+          coversGroupIds: groupId ? [groupId] : [],
+          quantity,
+        },
+        staffQuote: {
+          workflowRunId: prior.workflowRunId,
+          revisionRef: prior.revisionRef,
+          factRefs: [],
+          messageId: source.messageId,
+          threadId: source.threadId,
+          sourceHash: source.sourceHash,
+          selectionEpoch,
+          inputRevision,
+          inputDigest: prior.revisionRef,
+          totalMinor: prior.totalMinor,
+          currency: prior.currency,
+          quoteRequestKey: stayKey,
+          approvedHeader: header,
+        },
+        selectionEpoch,
+        inputRevision,
+        stayRevision,
+      });
+      dispatchQuote({
+        type: 'booking_draft_ready',
+        stayRevision,
+        payload: {
+          draft: prior.draft,
+          options: prior.options,
+          messageId: prior.messageId,
+          selectionEpoch: prior.selectionEpoch,
+          inputRevision: prior.inputRevision,
+          revisionRef: prior.revisionRef,
+        },
+        sourceHash: source.sourceHash,
+      });
+    };
     let cancelled = false;
     void bindListThreadQuoteRevisions({
       query: staff.workstation.listThreadQuoteRevisions?.query,
@@ -394,10 +457,10 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     }).then(async (revisions) => {
       if (cancelled || !revisions[0]) return;
       const reasons: string[] = [];
-      let prior: Awaited<ReturnType<typeof bindUsePriorQuoteForBooking>> | null = null;
       let expiredPrior: PriorStaffQuoteRequoteRow | null = null;
+      const unbound = new Set(waiting);
       for (const row of revisions) {
-        if (cancelled) return;
+        if (cancelled || unbound.size === 0) break;
         const candidate = await bindUsePriorQuoteForBooking({
           mutate: staff.workstation.usePriorQuoteForBooking?.mutate,
           source,
@@ -412,17 +475,22 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
             groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
           },
         });
-        if (candidate.status === 'ok') {
-          prior = candidate;
-          break;
+        if (cancelled) return;
+        if (candidate.status !== 'ok') {
+          reasons.push(candidate.reason);
+          if (candidate.reason === 'expired' && !expiredPrior) {
+            expiredPrior = { workflowRunId: row.workflowRunId, revisionRef: row.revisionRef };
+          }
+          continue;
         }
-        reasons.push(candidate.reason);
-        if (candidate.reason === 'expired' && !expiredPrior) {
-          expiredPrior = { workflowRunId: row.workflowRunId, revisionRef: row.revisionRef };
-        }
+        // A candidate binds only to a stay that is still waiting for one. Other rows of that stay are skipped.
+        const stayKey = singleStayKey ?? `${candidate.payload.arrivalDate}:${candidate.payload.departureDate}`;
+        if (!unbound.has(stayKey)) continue;
+        unbound.delete(stayKey);
+        bindPrior(candidate.payload, stayKey);
       }
       if (cancelled) return;
-      if (!prior || prior.status !== 'ok') {
+      if (unbound.size > 0) {
         const notice = expiredPriorQuoteNotice(reasons, expiredPrior);
         if (notice === 'requote' && expiredPrior) {
           toast.warning(expiredPriorQuoteToastMessage(), {
@@ -436,61 +504,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
         } else if (notice === 'mismatch') {
           toast.warning('The dates no longer match the earlier quote. Run the search again.');
         }
-        return;
       }
-      const stayKey = `${prior.payload.arrivalDate}:${prior.payload.departureDate}`;
-      dispatchQuote({
-        type: 'staff_quote_ready',
-        offer: {
-          id: prior.payload.revisionRef,
-          kind: 'allocation',
-          roomCode: prior.payload.roomCode,
-          roomLabel: 'Selected allocation',
-          board: offerBoardFromRevision(prior.payload.board),
-          rateCode: prior.payload.rateCode,
-          currency: 'ZAR',
-          nightly: [],
-          stayTotalMinor: prior.payload.totalMinor,
-          observedAt: '',
-          sourceRef: prior.payload.revisionRef,
-          restrictions: [],
-          combinable: true,
-          quoteRequestKey: stayKey,
-          coversGroupIds: groupId ? [groupId] : [],
-          quantity,
-        },
-        staffQuote: {
-          workflowRunId: prior.payload.workflowRunId,
-          revisionRef: prior.payload.revisionRef,
-          factRefs: [],
-          messageId: source.messageId,
-          threadId: source.threadId,
-          sourceHash: source.sourceHash,
-          selectionEpoch,
-          inputRevision,
-          inputDigest: prior.payload.revisionRef,
-          totalMinor: prior.payload.totalMinor,
-          currency: prior.payload.currency,
-          quoteRequestKey: stayKey,
-          approvedHeader: header,
-        },
-        selectionEpoch,
-        inputRevision,
-        stayRevision,
-      });
-      dispatchQuote({
-        type: 'booking_draft_ready',
-        stayRevision,
-        payload: {
-          draft: prior.payload.draft,
-          options: prior.payload.options,
-          messageId: prior.payload.messageId,
-          selectionEpoch: prior.payload.selectionEpoch,
-          inputRevision: prior.payload.inputRevision,
-          revisionRef: prior.payload.revisionRef,
-        },
-        sourceHash: source.sourceHash,
-      });
     });
     return () => {
       cancelled = true;
@@ -561,13 +575,15 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
   // any input in the pane resets the idle clock, and writes are counted, so no per-field checks are needed.
   const quoteSessionDirty =
     combinedEdit !== null ||
-    quoteSession.bookingDraft !== null ||
+    Object.keys(quoteSession.bookingDrafts).length > 0 ||
     unsentStaffNote ||
     hasStaffStayEdits(quoteSession);
   // One Excel export at a time. A second click while one is being made does nothing, and the button
   // stays disabled until the export settles. The server call is a tRPC mutation, so it also counts as in flight.
   const [workbookPending, setWorkbookPending] = useState(false);
   const workbookInFlight = useRef(false);
+  // The combined quote for every stay. A second click while it is being made does nothing.
+  const pdfInFlight = useRef(false);
   const downloadWorkbook = () => {
     if (workbookInFlight.current) return;
     workbookInFlight.current = true;
@@ -701,6 +717,10 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
         sessionHeader: session.staffHeader,
         staffEdited: hasStaffStayEdits(session),
       });
+      if (!groups.length) {
+        toast.warning('The stays changed since this quote. Run the search for that stay again.');
+        return;
+      }
       const run = bindExecuteStaffQuote({
         mutate: staff.workstation.executeStaffQuote?.mutate,
         source,
@@ -708,6 +728,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
         inputRevision,
         groups,
         header,
+        onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(groups)),
       });
       return trackStaffQuoteRun(run).then((remote) => {
         if (remote.status !== 'ok') {
@@ -815,6 +836,8 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
       inputRevision,
       groups: stayGroups,
       header: quoteSession.staffHeader,
+      // A combined quote charges the shuttle and flat "other" charges once, on its first stay.
+      onceExtras: rowsTakeOnceExtras(quoteSession, requestedQuoteKeys(stayGroups)),
     });
     void trackStaffQuoteRun(run).then((remote) => {
       if (remote.status !== 'ok') {
@@ -907,6 +930,51 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     const session = quoteSessionRef.current;
     if (dinnerAllowanceStillRequired(session.staffHeader)) {
       toast.warning('Enter the dinner allowance per person per night before preparing the PDF.');
+      return;
+    }
+    if (isMultiStay(session)) {
+      // One combined document for every stay. Until each stay is rated, the request says how many are.
+      const request = combinedDocumentRequest(session);
+      if (request.status === 'unavailable') {
+        toast.warning(request.reason);
+        return;
+      }
+      if (pdfInFlight.current) return;
+      pdfInFlight.current = true;
+      const selectionEpoch = session.binding?.selectionEpoch ?? 0;
+      const inputRevision = session.inputRevision;
+      // The combined PDF is bound to the stays' runs, not to the selected option, so selecting another option while it
+      // builds keeps it.
+      const selectedOfferIds = [
+        request.input.revisionRef,
+        ...(request.input.additionalStays ?? []).map((stay) => stay.revisionRef),
+      ];
+      const staff = staffQuoteFromTrpc(trpcClient);
+      void bindQualifiedStaffProposalPdf({
+        mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
+        input: request.input,
+        expectedTotalMinor: request.expectedTotalMinor,
+      }).then((remote) => {
+        if (remote.status === 'unavailable') {
+          toast.warning(remote.reason);
+          return;
+        }
+        dispatchQuote({
+          type: 'pdf_ready',
+          pdf: {
+            fileName: remote.pdf.fileName,
+            bytesBase64: remote.pdf.pdfBase64,
+            pdfHash: remote.pdf.pdfHash,
+            revisionId: remote.pdf.revisionId,
+            totalMinor: remote.pdf.totalMinor,
+          },
+          selectionEpoch,
+          inputRevision,
+          selectedOfferIds,
+        });
+      }).finally(() => {
+        pdfInFlight.current = false;
+      });
       return;
     }
     const key = stayKey ?? session.selectedStayKey;
@@ -1268,7 +1336,6 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
                 );
               }}
               onPreparePdf={() => preparePdfFor(null)}
-              onPreparePdfFor={(stayKey) => preparePdfFor(stayKey)}
               onDownloadWorkbook={downloadWorkbook}
               workbookPending={workbookPending}
             />

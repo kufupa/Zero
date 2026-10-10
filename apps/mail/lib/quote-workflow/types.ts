@@ -225,6 +225,8 @@ export type StaffQuoteAllocation = {
     clientEmail: string;
     clientTelephone: string;
   };
+  /** True when this run carried the once-per-quote extras (the shuttle, a per-trip or one-item "other" charge). */
+  onceExtras?: boolean;
   /** HMS evidence run for the audit view; null when the run left no screenshots. */
   runId?: string | null;
   /** Screenshot file names for runId, in capture order. */
@@ -516,8 +518,8 @@ export type QuoteSession = {
   handledReviewItemIds: string[];
   /** Rate cards for the latest run of each room group. Kept while a pinned re-run is pending. */
   rateOptions?: RateOption[];
-  /** U8 booking card. Null until a matching prepareBookingDraft result arrives. */
-  bookingDraft: BookingDraftReady | null;
+  /** U8 booking cards, one per stay whose matching prepareBookingDraft result has arrived. */
+  bookingDrafts: Record<string, BookingDraftReady>;
   /** Staff override that re-runs analyseSelection as quote or booking. */
   treatAs: 'quote' | 'create_booking' | null;
   /** Staff "Tell Luna" note re-submitted as top-priority evidence. */

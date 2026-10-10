@@ -5,18 +5,18 @@ import {
   canCreatePdf,
   draftStayGroup,
   groupStays,
+  isMultiStay,
   newQuoteToken,
   optionLetter,
-  pendingPdfStayKey,
   pickNextRunnableStep,
   quoteRunBlockReason,
+  ratedStayCount,
   requestedQuoteKeys,
   rowRoomCode,
   stayKeyForGroup,
   staffSourceReady,
   stayTotals,
 } from '@/lib/quote-workflow/session';
-import { completedDateOptions } from '@/lib/quote-workflow/multi-option-draft';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
 import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
@@ -616,40 +616,31 @@ function hasExtras(header: StaffQuoteHeader): boolean {
   );
 }
 
-/** Date options: one row per date option with its dates, total, PDF state, and actions. Sits at the top of the rates step. */
+/** Date options: one row per date option with its dates and rate. Every option goes into one combined quote, so there is no PDF per option. Sits at the top of the rates step. */
 function StayScopePicker({
   session,
   onSelect,
-  onPreparePdf,
 }: {
   session: QuoteSession;
   onSelect?: (stayKey: string) => void;
-  onPreparePdf?: (stayKey: string) => void;
 }) {
   const stayKeys = requestedQuoteKeys(session.groups);
   if (stayKeys.length <= 1) return null;
-  const allOptionsReply = completedDateOptions(session).length >= 2;
-  const noReplySender = session.analysis?.noReplySender === true;
-  const pending = pendingPdfStayKey(session);
+  const { rated, total } = ratedStayCount(session);
   return (
     <div className="flex flex-col gap-2">
       <h3 className="text-[11.5px] font-semibold text-[#475569]">Date options</h3>
       <p className="text-[11px] text-[#64748b]">
-        This email asks for more than one set of dates. Run each option; Nava keeps every result.
+        This email asks for more than one set of dates. Run each option; Nava keeps every result and quotes them together.
       </p>
-      {pending ? (
-        <p className="text-[11px] text-amber-800">
-          Option {optionLetter(stayKeys.indexOf(pending))} has no PDF yet. Prepare its PDF before running another option.
-        </p>
-      ) : null}
+      <p className="text-[11px] font-semibold text-[#475569]">{`${rated} of ${total} stays rated`}</p>
       {stayKeys.map((key, index) => {
         const letter = optionLetter(index);
         const selected = session.selectedStayKey === key;
         const quote = session.staffQuotes[key];
-        const hasPdf = Boolean(session.stayPdfs[key]);
         const step = session.steps.find((item) => item.shareKey === key);
         const status = quote
-          ? `Quoted ${money(quote.totalMinor)} · ${hasPdf ? 'PDF ready' : 'PDF not built'}`
+          ? `Quoted ${money(quote.totalMinor)}`
           : step?.status === 'failed'
             ? 'Search failed. Run this option again.'
             : step?.status === 'running'
@@ -675,26 +666,6 @@ function StayScopePicker({
               </span>
               <span className="text-[11px] font-normal text-[#475569]">{status}</span>
             </button>
-            {quote && !hasPdf ? (
-              <div className="flex flex-col gap-1">
-                <button
-                  type="button"
-                  disabled={!onPreparePdf}
-                  onClick={() => onPreparePdf?.(key)}
-                  className="h-7 self-start rounded-sm border border-[#1a4332] bg-white px-2 text-[11px] font-semibold text-[#1a4332] disabled:opacity-40"
-                >
-                  Prepare PDF for option {letter}
-                </button>
-                {onPreparePdf ? null : <p className="text-[11px] text-[#64748b]">Not available here.</p>}
-              </div>
-            ) : null}
-            {selected && hasPdf && !noReplySender ? (
-              <p className="text-[11px] text-[#475569]">
-                {allOptionsReply
-                  ? `Use Draft option ${letter} only below for this option.`
-                  : 'Use Insert draft in Outlook for this option.'}
-              </p>
-            ) : null}
           </div>
         );
       })}
@@ -843,7 +814,6 @@ export function QuoteWorkflowPanel({
   onSelectOffer,
   onReplyChange,
   onPreparePdf,
-  onPreparePdfFor,
   onDownloadWorkbook,
   workbookPending,
   onHandleReviewItem,
@@ -878,7 +848,6 @@ export function QuoteWorkflowPanel({
   onSelectOffer?: (offerId: string) => void;
   onReplyChange?: (html: string) => void;
   onPreparePdf?: () => void;
-  onPreparePdfFor?: (stayKey: string) => void;
   onDownloadWorkbook?: () => void;
   /** An Excel export is being made; the Excel button is disabled meanwhile. */
   workbookPending?: boolean;
@@ -1058,7 +1027,7 @@ export function QuoteWorkflowPanel({
       {showWorkspace && (showRates || session.offers.length) ? (
         <Section step={2} title="Rates from HMS">
           {showRates ? (
-            <StayScopePicker session={session} onSelect={onSelectStayKey} onPreparePdf={onPreparePdfFor} />
+            <StayScopePicker session={session} onSelect={onSelectStayKey} />
           ) : null}
           {showRates ? (
             <PrimaryButton
@@ -1101,7 +1070,7 @@ export function QuoteWorkflowPanel({
                 Selected total {money(allocationTotal(session.offers.filter((o) => session.selectedOfferIds.includes(o.id))))}.
                 Alternatives are not added to this total.
                 {new Set(session.offers.filter((o) => o.kind === 'allocation').map((o) => o.quoteRequestKey)).size > 1
-                  ? ' Each date search keeps its own quote and PDF. Once two or more options are finished, Create one reply with all date options puts them in one draft.'
+                  ? ' Every date option goes into one quote. Prepare the quote once every option is rated, then create one reply with all date options.'
                   : ''}
               </p>
               {session.offers.map((offer) => {
@@ -1129,14 +1098,21 @@ export function QuoteWorkflowPanel({
           ) : null}
         </Section>
       ) : null}
-      {session.bookingDraft ? (
-        <BookingCards
-          draft={session.bookingDraft}
-          groups={session.groups}
-          paneSave={paneSave}
-          parties={session.staffHeader.parties}
-        />
-      ) : null}
+      {requestedQuoteKeys(session.groups)
+        .filter((key) => session.bookingDrafts[key])
+        .map((key) => (
+          <Fragment key={key}>
+            {isMultiStay(session) ? (
+              <p className="text-[11.5px] font-semibold text-[#475569]">Booking for {key.replace(':', ' → ')}</p>
+            ) : null}
+            <BookingCards
+              draft={session.bookingDrafts[key]!}
+              groups={session.groups}
+              paneSave={paneSave}
+              parties={session.staffHeader.parties}
+            />
+          </Fragment>
+        ))}
       {showReply ? (
         <Section step={3} title="Quote documents">
           <DocumentReview

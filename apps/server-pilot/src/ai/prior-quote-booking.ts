@@ -100,14 +100,19 @@ export function analysisMatchesQuotedStay(
   const quoted = new Set(
     revision.groups.map((group) => `${group.arrivalDate}:${group.departureDate}`),
   );
-  if (!asked.every((group) => quoted.has(`${group.arrival}:${group.departure}`))) return false;
-  if (asked.some((group) => typeof group.rooms === 'number')) {
-    const askedRooms = asked.reduce((sum, group) => sum + (group.rooms ?? 0), 0);
+  // With several stays asked, a revision covers only some of them. The stays it does quote must all be asked.
+  const askedKeys = new Set(asked.map((group) => `${group.arrival}:${group.departure}`));
+  if (asked.length > 1 && [...quoted].some((key) => !askedKeys.has(key))) return false;
+  // The asked stays this revision quotes. The other stays of the request belong to other revisions.
+  const covered = asked.filter((group) => quoted.has(`${group.arrival}:${group.departure}`));
+  if (!covered.length) return false;
+  if (covered.some((group) => typeof group.rooms === 'number')) {
+    const askedRooms = covered.reduce((sum, group) => sum + (group.rooms ?? 0), 0);
     const quotedRooms = revision.groups.reduce((sum, group) => sum + group.quantity, 0);
     if (askedRooms !== quotedRooms) return false;
   }
-  if (asked.length === 1 && typeof asked[0]?.adultsPerRoom === 'number') {
-    if (!revision.groups.every((group) => group.adults === asked[0]!.adultsPerRoom)) return false;
+  if (covered.length === 1 && typeof covered[0]?.adultsPerRoom === 'number') {
+    if (!revision.groups.every((group) => group.adults === covered[0]!.adultsPerRoom)) return false;
   }
   return true;
 }
