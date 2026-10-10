@@ -5327,6 +5327,28 @@ export async function executeAiRun(
 
     throw new Error(`unsupported AI run kind: ${run.runKind}`);
   } catch (error) {
+    // A worker shutdown (a deploy restart) cut off an inbound read. Its writes commit only under the claim, so nothing
+    // was stored: it goes back on the queue now, with no attempt spent and a fresh deadline for the next worker. The
+    // run's own deadline or a lost lease aborts with another reason and fails as before. The loop claims nothing once
+    // shutdown starts, so each requeue takes one more shutdown.
+    if (
+      run.runKind === 'inbound_extraction' &&
+      shutdownSignal.aborted &&
+      signal.reason === shutdownSignal.reason
+    ) {
+      const requeued = await markAiRunRetry({
+        runId,
+        claimOwner: owner,
+        claimToken,
+        expectedStates: ['running'],
+        attempts: run.attempts,
+        nextRunAt: new Date(),
+        lastError: `worker shutdown: ${error instanceof Error ? error.message : String(error)}`,
+        failureClass: 'WORKER_SHUTDOWN',
+        resetDeadline: true,
+      });
+      if (requeued) return { runId, state: 'retry_wait' };
+    }
     return failAiRun(runWithFence, error, toAiRunFence(runWithFence) ?? fence);
   } finally {
     if (heartbeatTimer !== undefined) clearInterval(heartbeatTimer);

@@ -21,7 +21,12 @@ import {
   EXTRACTION_VERSION,
   executeInboundExtractionRun,
 } from '../src/ai/extraction/inbound-run.js';
-import { DEFAULT_TRIAGE_PROMPT_VERSION, enqueueAiRun, toAiRunFence } from '../src/ai/run-ledger.js';
+import {
+  CLEANUP_RESERVE_MS,
+  DEFAULT_TRIAGE_PROMPT_VERSION,
+  enqueueAiRun,
+  toAiRunFence,
+} from '../src/ai/run-ledger.js';
 import { queryMailBaselineProjection } from '../src/metrics/mail-baseline-projection.js';
 import { runInboundExtractionBackfill } from '../scripts/backfill-inbound-extraction.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
@@ -34,7 +39,7 @@ import { isInboundTriageClassifierEnabled } from '../src/env.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withIngestionDb } from './helpers/ingestion-db.js';
-import { runAiWorkerDrain } from '../src/ai/worker.js';
+import { executeAiRun, runAiWorkerDrain } from '../src/ai/worker.js';
 import { callerFor } from './helpers/trpc-caller.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import { and, eq } from 'drizzle-orm';
@@ -328,6 +333,73 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       expect(run).toMatchObject({ state: 'succeeded', metrics: { triageRetired: true } });
       expect(await categoryIdsOf(db, threadId)).toEqual([]);
     }));
+
+  describe('an inbound read cut off mid model call', () => {
+    /**
+     * Queues and claims one read, then runs it through the worker with a model that hangs until the run aborts.
+     * `cut` gets the worker's shutdown controller and the model call's signal.
+     */
+    async function cutOff(
+      db: DB,
+      id: string,
+      budgetMs: number,
+      cut: (shutdown: AbortController, signal: AbortSignal) => void,
+    ) {
+      retire();
+      const { messageId } = await persistOutlookHistory(db, history(id));
+      await admit(db, messageId);
+      const [queued] = await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'claimed',
+          claimOwner: 'u5-shutdown-test',
+          claimToken: `token-${id}`,
+          deadlineAt: new Date(Date.now() + budgetMs),
+        })
+        .where(eq(aiWorkflowRun.idempotencyKey, extractionKey(messageId)))
+        .returning({ id: aiWorkflowRun.id });
+      const shutdown = new AbortController();
+      const result = await executeAiRun(queued!.id, {
+        shutdownSignal: shutdown.signal,
+        inboundExtractionAdapter: {
+          invoke: ({ signal }) => {
+            cut(shutdown, signal!);
+            return new Promise<never>(() => undefined);
+          },
+        },
+      });
+      const [row] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, queued!.id));
+      return { result, row: row! };
+    }
+
+    it('by a worker shutdown goes back on the queue with no attempt spent and a fresh deadline', () =>
+      withWorkerDb(async (db) => {
+        const { result, row } = await cutOff(db, 'u5-shutdown', 120_000, (shutdown) =>
+          queueMicrotask(() => shutdown.abort()),
+        );
+        expect(result.state).toBe('retry_wait');
+        expect(row).toMatchObject({
+          state: 'retry_wait',
+          failureClass: 'WORKER_SHUTDOWN',
+          attempts: 0,
+          deadlineAt: null,
+          claimToken: null,
+        });
+        expect(row.lastError).toMatch(/^worker shutdown: /);
+        expect(row.nextRunAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      }));
+
+    it('by its own deadline still dead-letters, even if a shutdown follows', () =>
+      withWorkerDb(async (db) => {
+        // The run's budget runs out first; the shutdown lands while the abort is still settling.
+        const { result, row } = await cutOff(db, 'u5-deadline', CLEANUP_RESERVE_MS + 200, (shutdown, signal) =>
+          signal.addEventListener('abort', () => shutdown.abort(), { once: true }),
+        );
+        expect(result.state).toBe('dead_letter');
+        expect(row.state).toBe('dead_letter');
+        expect(row.failureClass).not.toBe('WORKER_SHUTDOWN');
+      }), 30_000);
+  });
 
   it('with the flag off, a spam read still sets spamAt', () =>
     withIngestionDb(async ({ db }) => {
