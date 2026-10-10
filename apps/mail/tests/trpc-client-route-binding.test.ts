@@ -8,6 +8,7 @@ import { paneStayFromTrpc } from '../lib/quote-workflow/pane-stay-bind';
 import { amendCancelClientFromTrpc, amendCapabilitiesFromTrpc } from '../lib/quote-workflow/amend-cancel';
 import { amendFindClientFromTrpc } from '../lib/quote-workflow/amend-find';
 import { partyFinderFromTrpc } from '../lib/quote-workflow/party-lookup';
+import { savedRatesFromTrpc } from '../components/quote-workflow/rate-controls';
 
 // The pane passes the real tRPC client, which is a function-backed proxy (typeof 'function').
 // Plain-object mocks hid the bug where every helper returned empty routes in production.
@@ -37,9 +38,14 @@ describe('pane tRPC helpers bind routes off the real client', () => {
     expect(partyFinderFromTrpc(client)).not.toBeNull();
   });
 
+  it('binds the saved-rate routes off the real client', () => {
+    expect(savedRatesFromTrpc(client)).not.toBeNull();
+  });
+
   it('still refuses a missing client', () => {
     expect(quoteWorkflowFromTrpc(undefined)).toEqual({});
     expect(amendFindClientFromTrpc(null)).toBeNull();
     expect(partyFinderFromTrpc(undefined)).toBeNull();
+    expect(savedRatesFromTrpc(undefined)).toBeNull();
   });
 });

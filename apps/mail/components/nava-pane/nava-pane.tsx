@@ -19,6 +19,7 @@ import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { savedRatesFromTrpc } from '@/components/quote-workflow/rate-controls';
 import {
   fixtureReplyHtml,
   loadQuoteFixture,
@@ -107,6 +108,8 @@ const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
 const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
 // The same picker's typeahead: the HMS list and the listed parties, as staff type. Null when the route is missing.
 const PANE_PARTY_INDEX = partyIndexFromTrpc(trpcClient);
+// The saved rates for each row's price (R7). Null when the rates route is missing, so only one-off and override show.
+const PANE_SAVED_RATES = savedRatesFromTrpc(trpcClient);
 
 /**
  * Pane body. The route calls useOutlookBridge() once and passes the result in as `bridge`.
@@ -1283,6 +1286,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               findParty={PANE_PARTY_FINDER}
               partyIndex={PANE_PARTY_INDEX}
+              rates={PANE_SAVED_RATES}
               onPatchGroup={(groupId, patch) => editStayRows({ type: 'patch_group', groupId, patch })}
               // Shown only on a failed-read item, which stays listed after she starts typing in the form.
               onRetryRead={storedWork.retry}

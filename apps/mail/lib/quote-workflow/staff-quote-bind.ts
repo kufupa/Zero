@@ -16,6 +16,7 @@ import type {
   StaffQuoteOtherUnit,
   StaffQuoteParty,
   StaffQuoteSource,
+  StaffRowRate,
   StayGroupRequirement,
 } from './types';
 import { staffHeaderFieldProblem } from './types';
@@ -51,6 +52,12 @@ export type StaffQuoteGroupInput = {
   rateCode?: string;
 };
 
+/** A row price as the server reads it (staffRowPriceInput). A saved rate is named by id only. */
+export type StaffRowPriceWire =
+  | { groupId: string; source: 'saved'; customRateId: string }
+  | { groupId: string; source: 'one_off'; oneOffRate: number }
+  | { groupId: string; source: 'override'; rateCode: string; overrideRate: number; note: string };
+
 export type ExecuteStaffQuoteInput = {
   messageId: string;
   sourceHash: string;
@@ -77,6 +84,8 @@ export type ExecuteStaffQuoteInput = {
   notes?: string;
   /** Sent only when staff picked a company or agency in HMS. Without one the request is unchanged. */
   parties?: StaffQuoteParties;
+  /** Sent only when staff priced a row. Without one the request is unchanged. */
+  rowPrices?: StaffRowPriceWire[];
 };
 
 export type ExecuteStaffQuoteResult = {
@@ -100,6 +109,8 @@ export type ExecuteStaffQuoteResult = {
   screenshots?: string[];
   /** Optional: an older server sends none. */
   rateOptions?: RateOption[];
+  /** Optional: an older server sends none. */
+  rowRates?: StaffRowRate[];
 };
 
 export type StaffQuoteSourceResult =
@@ -348,9 +359,63 @@ export function readRateOptions(value: unknown): RateOption[] {
       currency: typeof raw.currency === 'string' ? raw.currency : 'ZAR',
       priced: raw.priced === 'summary' ? 'summary' : 'full',
       selected: raw.selected === true,
+      ...(raw.hint === 'event_rate' ? { hint: 'event_rate' as const } : {}),
     });
   }
   return options;
+}
+
+/** The row prices on these rows, in the shape the server reads. A row without a price is left out, so HMS prices it. */
+export function rowPricesFor(groups: readonly StayGroupRequirement[]): StaffRowPriceWire[] {
+  return groups.flatMap((group): StaffRowPriceWire[] => {
+    const price = group.rowPrice;
+    if (!price) return [];
+    if (price.source === 'saved') return [{ groupId: group.id, source: 'saved', customRateId: price.customRateId }];
+    if (price.source === 'one_off') return [{ groupId: group.id, source: 'one_off', oneOffRate: price.amountMinor }];
+    return [
+      {
+        groupId: group.id,
+        source: 'override',
+        rateCode: price.rateCode,
+        overrideRate: price.amountMinor,
+        note: price.note,
+      },
+    ];
+  });
+}
+
+const ROW_RATE_SOURCES = new Set<string>(['hms', 'saved', 'one_off', 'override']);
+
+/** The charged rate of each row on a run. A malformed row is dropped, so one bad row never breaks the quote. */
+export function readRowRates(value: unknown): StaffRowRate[] {
+  if (!Array.isArray(value)) return [];
+  const isMoneyList = (list: unknown): list is number[] =>
+    Array.isArray(list) && list.every((amount) => Number.isSafeInteger(amount));
+  const rates: StaffRowRate[] = [];
+  for (const row of value) {
+    if (!row || typeof row !== 'object') continue;
+    const raw = row as Record<string, unknown>;
+    if (
+      typeof raw.groupId !== 'string' ||
+      typeof raw.source !== 'string' ||
+      !ROW_RATE_SOURCES.has(raw.source) ||
+      !isMoneyList(raw.hmsNightlyMinor) ||
+      !isMoneyList(raw.nightlyMinor)
+    ) {
+      continue;
+    }
+    rates.push({
+      groupId: raw.groupId,
+      source: raw.source as StaffRowRate['source'],
+      hmsNightlyMinor: raw.hmsNightlyMinor,
+      nightlyMinor: raw.nightlyMinor,
+      ...(typeof raw.customRateName === 'string' ? { customRateName: raw.customRateName } : {}),
+      ...(typeof raw.rateCode === 'string' ? { rateCode: raw.rateCode } : {}),
+      ...(typeof raw.note === 'string' ? { note: raw.note } : {}),
+      ...(typeof raw.hmsComment === 'string' ? { hmsComment: raw.hmsComment } : {}),
+    });
+  }
+  return rates;
 }
 
 export type BoundStaffSource =
@@ -644,6 +709,7 @@ export async function bindExecuteStaffQuote(args: {
       sent,
       prepared.ok.map((group) => group.id),
     );
+    const rowPrices = rowPricesFor(args.groups);
     const result = await args.mutate({
       messageId: args.source.messageId,
       sourceHash: args.source.sourceHash,
@@ -652,6 +718,7 @@ export async function bindExecuteStaffQuote(args: {
       groups: prepared.ok,
       ...header,
       ...(pickedParties(args.header.parties) ? { parties: pickedParties(args.header.parties) } : {}),
+      ...(rowPrices.length ? { rowPrices } : {}),
     });
     if (!result || typeof result !== 'object') {
       return { status: 'unavailable', reason: 'HMS returned no result for this quote. Try again.' };
@@ -678,6 +745,7 @@ export async function bindExecuteStaffQuote(args: {
       return { status: 'unavailable', reason: 'HMS returned a total that cannot be used. Try again, or check the rate in HMS.' };
     }
     const rateOptions = readRateOptions(result.rateOptions);
+    const rowRates = readRowRates(result.rowRates);
     const staffQuote: StaffQuoteAllocation = {
       workflowRunId: result.workflowRunId,
       revisionRef: result.revisionRef,
@@ -705,6 +773,7 @@ export async function bindExecuteStaffQuote(args: {
         ? result.screenshots.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
         : [],
       ...(rateOptions.length ? { rateOptions } : {}),
+      ...(rowRates.length ? { rowRates } : {}),
     };
     return {
       status: 'ok',
