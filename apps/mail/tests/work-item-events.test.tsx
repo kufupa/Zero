@@ -136,6 +136,18 @@ describe('fieldEventsBetween', () => {
     ]);
   });
 
+  it('removes and puts back the own row of a stay with no rows, so a removed room stays gone on reopen', () => {
+    // She copies the room, then removes the original. The copy keeps the stay; the original's own row goes.
+    const copy = row('r_ef56', 'st-2', { arrivalDate: '2026-11-01', departureDate: '2026-11-03' });
+    expect(fieldEventsBetween(READY.refs, [G3, copy], [copy])).toEqual([
+      { path: 'stays[st-2].rows[st-2_row].removed', value: true },
+    ]);
+    expect(fieldEventsBetween(READY.refs, [copy], [G3, copy]).slice(0, 2)).toEqual([
+      { path: 'stays[st-2].rows[st-2_row].removed', value: null },
+      { path: 'stays[st-2].rows[st-2_row].count', value: 1 },
+    ]);
+  });
+
   it('logs a row she adds under its own id, with the values it has', () => {
     const added = row('r_ab12', 'st-1', { quantity: undefined, adults: undefined, board: 'bb' });
     expect(fieldEventsBetween(READY.refs, [G1, G2], [G1, G2, added])).toEqual([

@@ -149,13 +149,11 @@ export function fieldEventsBetween(
     const oldStay = old ?? priorStay.get(ref.stayId);
     if (!oldStay) events.push({ path: `${stay}.removed`, value: null });
     changed(datesAt(stay, group), oldStay ? datesAt(stay, oldStay) : null);
-    if (!ref.rowId) {
-      // A stay with dates and no rows still shows room controls. Her values there go on the stay's own row.
-      const rowId = stayRowId(ref.stayId);
-      if (old && STABLE_ID.test(rowId)) changed(rowFieldsAt(`${stay}.rows[${rowId}]`, group), rowFieldsAt(`${stay}.rows[${rowId}]`, old));
-      continue;
-    }
-    const row = `${stay}.rows[${ref.rowId}]`;
+    // A stay with dates and no rows still shows room controls. Her values there go on the stay's own row, which is
+    // removed and put back like any other row.
+    const rowId = ref.rowId ?? stayRowId(ref.stayId);
+    if (!STABLE_ID.test(rowId)) continue;
+    const row = `${stay}.rows[${rowId}]`;
     if (!old) events.push({ path: `${row}.removed`, value: null });
     changed(rowFieldsAt(row, group), old ? rowFieldsAt(row, old) : null);
   }
@@ -164,7 +162,8 @@ export function fieldEventsBetween(
   for (const group of before) {
     const ref = kept.has(group.id) ? null : refOf(refs, group);
     if (!ref) continue;
-    if (ref.rowId) events.push({ path: `stays[${ref.stayId}].rows[${ref.rowId}].removed`, value: true });
+    const rowId = ref.rowId ?? stayRowId(ref.stayId);
+    if (STABLE_ID.test(rowId)) events.push({ path: `stays[${ref.stayId}].rows[${rowId}].removed`, value: true });
     if (!keptStays.has(ref.stayId)) events.push({ path: `stays[${ref.stayId}].removed`, value: true });
   }
   return events;
