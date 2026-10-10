@@ -8,7 +8,8 @@ export const LAB_ARRIVAL_FLOOR = '2027-01-01';
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 // --last-name is optional. With it, a quick search that does not show the confirmation retries by surname.
-const VALUE_FLAGS = new Set(['--confirmation', '--arrival', '--mode', '--out', '--reason', '--last-name']);
+// --expect-stay names a JSON file with the stay the approval was checked against. Commit only (pane write runner, U26).
+const VALUE_FLAGS = new Set(['--confirmation', '--arrival', '--mode', '--out', '--reason', '--last-name', '--expect-stay']);
 // Lifts the Labtest guard for one run. Only the server passes it, and only in on mode. It is never read from the environment.
 export const ALLOW_REAL_GUEST_FLAG = '--allow-real-guest';
 const REQUIRED_FLAGS = ['--confirmation', '--arrival', '--mode', '--out'];
@@ -20,6 +21,7 @@ const REFUSED_OUTCOMES = new Set([
   'refused_identity_mismatch',
   'refused_reason_missing',
   'refused_penalty',
+  'refused_stay_changed',
 ]);
 const CDP_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
@@ -174,10 +176,21 @@ export function parseCancelArgs(argv) {
   if (!reason) return refuse('--reason must not be empty');
   const lastName = optionalSurname(values);
   if (lastName === false) return refuse('--last-name must be a surname: letters, apostrophe, dot, hyphen or space');
+  const expectStay = values.get('--expect-stay');
+  if (expectStay !== undefined && mode !== 'commit') return refuse('--expect-stay is for commit only');
   return {
     ok: true,
     exitCode: 0,
-    args: { confirmation, arrival, mode, reason, out: values.get('--out'), lastName, allowRealGuest },
+    args: {
+      confirmation,
+      arrival,
+      mode,
+      reason,
+      out: values.get('--out'),
+      lastName,
+      allowRealGuest,
+      ...(expectStay !== undefined ? { expectStay } : {}),
+    },
   };
 }
 
@@ -290,7 +303,16 @@ export async function runCancelDialog({ args, record, result, io }) {
     result.outcome = refusedNow;
     return result;
   }
-  if (!(await io.clickOk())) throw new Error('REASON_OK_NOT_UNIQUE');
+  let clicked;
+  try {
+    clicked = await io.clickOk();
+  } catch (error) {
+    // The click runs inside the page. A reply lost after it (browser or connection drop) may follow a sent cancel, so
+    // the run counts as clicked: it ends unconfirmed and is read back before any new approval.
+    result.clickedOk = true;
+    throw error;
+  }
+  if (!clicked) throw new Error('REASON_OK_NOT_UNIQUE');
   result.clickedOk = true;
   io.mark('committed');
   await io.waitAfterOk();
@@ -583,6 +605,17 @@ function coerceStayField(field, text) {
   if (STAY_MONEY_FIELDS.has(field)) return parseBalanceValue(text);
   if (STAY_DATE_FIELDS.has(field)) return hmsDateToIso(text);
   return text;
+}
+
+// The fields of the approved stay that the record opened for the write no longer shows the same way. Only the expected
+// stay's own fields are compared: they are what the approval's HMS digest covered. Blank text and null are the same.
+export function stayChanges(expected, actual) {
+  const norm = (value) => {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    const text = squash(value);
+    return text === '' ? null : text;
+  };
+  return Object.keys(expected ?? {}).filter((field) => norm(expected[field]) !== norm(actual?.[field]));
 }
 
 // pairs: [{label, value}] read from the open record. A field is null when no visible input carries it, or when

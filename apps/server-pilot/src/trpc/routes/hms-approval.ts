@@ -13,18 +13,19 @@ import { mailboxProcedure, router } from '../trpc.js';
 
 const uuid = z.string().uuid();
 
-// strict(): the client names only the work item. Grant, digests and snapshot are server-made.
-const approveInput = z.object({ workItemId: uuid }).strict();
+// strict(): the client names the work item and the form digest it showed. Grant, HMS digest and snapshot are server-made.
+const approveInput = z.object({ workItemId: uuid, formDigest: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 const evidenceInput = z.object({ workItemId: uuid, eventId: uuid }).strict();
 const stateInput = z.object({ workItemId: uuid }).strict();
 // No HMS reader is wired here yet, so a resolve is staff saying they checked the booking in HMS, with a note.
 const resolveInput = z.object({ workItemId: uuid, note: z.string().trim().min(3).max(500) }).strict();
-// A flag must say why. An OK carries no note.
+// A flag must say why. An OK carries no note. Both name the run the reviewer was shown.
 const reviewInput = z.discriminatedUnion('decision', [
-  z.object({ workItemId: uuid, decision: z.literal('ok') }).strict(),
+  z.object({ workItemId: uuid, runId: uuid, decision: z.literal('ok') }).strict(),
   z
     .object({
       workItemId: uuid,
+      runId: uuid,
       decision: z.literal('flag'),
       note: z.string().trim().min(3).max(500),
     })
@@ -48,6 +49,7 @@ export const hmsApprovalRouter = router({
         transportId: ctx.activeTransportId,
         actorUserId: ctx.sessionUser.id,
         workItemId: input.workItemId,
+        formDigest: input.formDigest,
       });
     } catch (err) {
       return refusal(err);
@@ -71,6 +73,7 @@ export const hmsApprovalRouter = router({
         transportId: ctx.activeTransportId,
         actorUserId: ctx.sessionUser.id,
         workItemId: input.workItemId,
+        runId: input.runId,
         decision: input.decision,
         note: input.decision === 'flag' ? input.note : undefined,
       });

@@ -513,6 +513,25 @@ describe('pane stay cancel', () => {
       '/tmp/run',
     );
     expect(commit.slice(-2)).toEqual(['--reason', 'Duplicate Booking']);
+    // The pane write runner's commit names the approved stay file in its own run directory. A preview never does.
+    const checked = buildCancelStayArgs(
+      {
+        mode: 'commit',
+        confirmation: '57291630-1',
+        arrival: '2027-09-14',
+        reason: 'Duplicate Booking',
+        allowRealGuest: false,
+        expectStay: { confirmation: '57291630-1', balance: '0.00' },
+      },
+      '/tmp/run',
+    );
+    expect(checked.slice(-2)).toEqual(['--expect-stay', '/tmp/run/expect-stay.json']);
+    expect(
+      buildCancelStayArgs(
+        { mode: 'preview', confirmation: '57291630-1', arrival: '2027-09-14', reason: null, allowRealGuest: false, expectStay: {} },
+        '/tmp/run',
+      ),
+    ).not.toContain('--expect-stay');
     expect(commit).toContain('--mode');
     expect(commit[commit.indexOf('--mode') + 1]).toBe('commit');
   });

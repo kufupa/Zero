@@ -266,6 +266,30 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(view).toMatchObject({ status: 'retrying', failureClass: 'LEASE_LOST' });
     }));
 
+  it('a job requeued after a restart past its run deadline is claimed again, not dead-lettered', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      const job = await queueUserHmsJob(
+        { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
+        db,
+      );
+      const claimed = await claimJob(db, 'hms-ai-worker-111');
+      await markAiRunRunning(
+        { runId: claimed.id, claimOwner: claimed.claimOwner!, claimToken: claimed.claimToken!, deadlineAt: claimed.deadlineAt! },
+        db,
+      );
+      // Worker 111 died long enough ago that the first claim's deadline has passed too.
+      await db
+        .update(aiWorkflowRun)
+        .set({ heartbeatAt: new Date(Date.now() - 10 * 60_000), deadlineAt: new Date(Date.now() - 60_000) })
+        .where(eq(aiWorkflowRun.id, claimed.id));
+      expect(await requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-222' }, db)).toBe(1);
+      const again = await claimJob(db, 'hms-ai-worker-222');
+      expect(again.id).toBe(job!.id);
+      expect(again.state).toBe('claimed');
+      expect(again.deadlineAt!.getTime()).toBeGreaterThan(Date.now());
+    }));
+
   it('a requeued job gets a fresh run deadline on its next claim', () =>
     withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);

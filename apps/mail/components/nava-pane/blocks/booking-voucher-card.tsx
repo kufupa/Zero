@@ -10,7 +10,8 @@ const HMS_APPROVAL_CLIENT = hmsApprovalFromTrpc(trpcClient);
 
 /**
  * Booking and voucher block: the change or cancellation card for an existing booking, its approve and review card once
- * the stored work item is ready, then the Find the booking card for a voucher email. The card is keyed by the email, so
+ * the stored work item is ready (on any mail whose work item holds an HMS write, such as an attach), then the Find the
+ * booking card for a voucher email. The card is keyed by the email, so
  * it resets on a selection change.
  */
 export function BookingVoucherCard({
@@ -34,13 +35,15 @@ export function BookingVoucherCard({
   return (
     <>
       <AmendLookupPanel session={session} trpc={trpcClient} />
-      {amendment && workItemId ? (
+      {/* Amend and cancel mail always shows the card. Other mail (an attach on a voucher) shows it from the stored write. */}
+      {workItemId && (amendment || writesEnabled) ? (
         <ApproveCard
           key={workItemId}
           client={HMS_APPROVAL_CLIENT}
           workItemId={workItemId}
           writesEnabled={writesEnabled}
-          confirmation={amendment.confirmationNumber}
+          confirmation={amendment?.confirmationNumber ?? null}
+          requireStoredWrite={!amendment}
         />
       ) : null}
       <VoucherFindCard

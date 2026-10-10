@@ -504,6 +504,37 @@ describe('AmendLookupPanel', () => {
     await expectFoundBooking();
     expect(findStay).toHaveBeenCalledTimes(2);
   });
+
+  it('shows a queued job as queued while its status reads fail, never as idle', async () => {
+    const trpc = lookupTrpc(vi.fn().mockResolvedValue(found()));
+    trpc.paneStayLookup.jobStatus.query = async () => {
+      throw new Error('status read failed');
+    };
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
+    pressFind();
+    await waitFor(() =>
+      expect(screen.getByTestId('hms-job-status').getAttribute('data-state')).toBe('queued'),
+    );
+  });
+});
+
+describe('pollHmsJob', () => {
+  it('shows the job as failed when no status read ever succeeded, so Retry is offered', async () => {
+    vi.useFakeTimers();
+    try {
+      const views: HmsJobView[] = [];
+      const transport: HmsJobTransport = {
+        queue: vi.fn(),
+        status: vi.fn().mockRejectedValue(new Error('status read failed')),
+      };
+      const done = pollHmsJob(transport, RUN_ID, { live: () => true, onView: (view) => views.push(view) });
+      await vi.runAllTimersAsync();
+      await done;
+      expect(views).toEqual([expect.objectContaining({ runId: RUN_ID, status: 'failed', failureClass: 'POLL_LOST' })]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 /** The server with its job queue off (HMS_JOB_QUEUE unset): queue calls return no run id, findStay/searchGuest answer. */

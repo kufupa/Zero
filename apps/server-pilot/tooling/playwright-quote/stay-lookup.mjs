@@ -15,14 +15,14 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
-  arrivalReport, checkCdpEnv, formPairsFromSnapshot, hmsDateToIso, lookupExitCode, parseLookupArgs, parsePanelSnapshot,
-  parseRecordsFooter, sameStayRows, searchGuestOutcome, squash, stayFromFormPairs, stayIdentityVerdict, windowCovers,
+  arrivalReport, checkCdpEnv, hmsDateToIso, lookupExitCode, parseLookupArgs, parsePanelSnapshot,
+  parseRecordsFooter, sameStayRows, searchGuestOutcome, squash, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
 import {
-  findStay, openGuestStay, openRecord, quickActions, quickPanel, readBalance, readRecord, readWindow, setQuickWindow, shot,
+  findStay, openGuestStay, openRecord, quickActions, quickPanel, readStayFields, readWindow, setQuickWindow, shot,
 } from './cancel-stay.mjs';
 import { driveQuickSearch, windowAction } from './quick-search.mjs';
-import { snapshotPanel, snapshotRecordForm } from './stay-lookup-dom.mjs';
+import { snapshotPanel } from './stay-lookup-dom.mjs';
 
 const QUICK_WAIT_MS = 8000;
 const PANEL_FOOTER = /Records:\s*\d+\s+of\s+\d+/i;
@@ -62,29 +62,6 @@ function mark(ctx, name) {
 function setOutcome(result, outcome, reason = null) {
   result.outcome = outcome;
   result.reason = reason;
-}
-
-// The labelled fields first (see formPairsFromSnapshot). The named inputs that readRecord already trusts fill any field
-// the labels did not give, and the balance comes from readBalance. A field with conflicting labelled values is never
-// filled. Debug mode writes the form region to record-form.html.
-async function readStayFields(ctx) {
-  const { page, args, result } = ctx;
-  const snapshot = await page.evaluate(snapshotRecordForm, args.debugHtml);
-  if (snapshot.region) await writeFile(join(ctx.dir, 'record-form.html'), snapshot.region);
-  const { stay, conflicts } = stayFromFormPairs(formPairsFromSnapshot(snapshot.entries));
-  const named = await readRecord(page);
-  const fallback = {
-    confirmation: squash(named.confirmation),
-    lastName: squash(named.lastName),
-    status: squash(named.status),
-    arrival: hmsDateToIso(named.arrival),
-  };
-  for (const [field, value] of Object.entries(fallback)) {
-    if (stay[field] === null && value && !conflicts.includes(field)) stay[field] = value;
-  }
-  if (stay.balance === null && !conflicts.includes('balance')) stay.balance = await readBalance(page);
-  result.conflicts = conflicts;
-  return stay;
 }
 
 // The quick panel is ready once its footer shows the Records count and its search ran: before that it shows the

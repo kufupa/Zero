@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   isSettled,
+  pendingJobView,
   pollHmsJob,
   type HmsJobKind,
   type HmsJobRequest,
@@ -26,16 +27,33 @@ export type HmsJobState = {
   retry: () => void;
 };
 
+function sameSurname(a: string, b: string): boolean {
+  const norm = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/** True when a read-back job was queued for the resume's surname and arrival, each only when given. */
+function resumedFor(request: HmsJobRequest | null, lastName: string | null, arrival: string | null): boolean {
+  if (lastName && !(request?.kind === 'search_guest' && sameSurname(request.lastName, lastName))) return false;
+  if (arrival && request?.arrival !== arrival) return false;
+  return true;
+}
+
 export function useHmsJob(input: {
   transport: HmsJobTransport | null;
-  /** The job to read back after a remount. Null reads nothing back. */
-  resume: { kind: HmsJobKind; confirmation?: string } | null;
+  /**
+   * The job to read back after a remount. Null reads nothing back. A surname or arrival limits the read-back to a job
+   * queued for them, so a thread with mail about two guests never shows one guest's job under the other.
+   */
+  resume: { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string } | null;
   /** Changes with the email or booking selection. The shown job is cleared and the read-back runs again. */
   scope: string | null;
 }): HmsJobState {
   const { transport, resume, scope } = input;
   const resumeKind = resume?.kind ?? null;
   const resumeConfirmation = resume?.confirmation ?? null;
+  const resumeLastName = resume?.lastName ?? null;
+  const resumeArrival = resume?.arrival ?? null;
   const [runId, setRunId] = useState<string | null>(null);
   const [view, setView] = useState<HmsJobView | null>(null);
   const [queuing, setQueuing] = useState(false);
@@ -54,12 +72,15 @@ export function useHmsJob(input: {
     setQueueFailed(false);
     if (!transport || !resumeKind) return;
     let live = true;
-    const query = resumeConfirmation
-      ? { kind: resumeKind, confirmation: resumeConfirmation }
-      : { kind: resumeKind };
+    const query = {
+      kind: resumeKind,
+      ...(resumeConfirmation ? { confirmation: resumeConfirmation } : {}),
+      ...(resumeArrival ? { arrival: resumeArrival } : {}),
+    };
     transport.status(query).then(
       (found) => {
         if (!live || generation.current !== mine || !found) return;
+        if (!resumedFor(found.request, resumeLastName, resumeArrival)) return;
         lastRequest.current = found.request;
         setView(found);
         if (!isSettled(found)) setRunId(found.runId);
@@ -69,7 +90,7 @@ export function useHmsJob(input: {
     return () => {
       live = false;
     };
-  }, [transport, scope, resumeKind, resumeConfirmation]);
+  }, [transport, scope, resumeKind, resumeConfirmation, resumeLastName, resumeArrival]);
 
   // Polls the current run id until it settles. A new run id, a new scope or an unmount ends the old loop.
   useEffect(() => {
@@ -100,7 +121,11 @@ export function useHmsJob(input: {
           setQueuing(false);
           // Job queue off: the lookup ran synchronously and its answer is already settled.
           if (started.view) setView(started.view);
-          else setRunId(started.runId);
+          else {
+            // Queued until the first status read lands, so the panel never looks idle while the job exists.
+            setView(pendingJobView(started.runId, request));
+            setRunId(started.runId);
+          }
         },
         () => {
           if (generation.current !== mine) return;

@@ -12,6 +12,8 @@ export type HmsWriteView = {
   status: string;
   /** The values she is approving: the stored state without the snapshot. */
   form: Record<string, unknown>;
+  /** Digest of the stored form. Approve sends it back, so the server refuses values this card did not show. */
+  formDigest: string;
   /** Display values of the HMS snapshot, keyed like the form. Null when none were stored. */
   before: Record<string, unknown> | null;
   snapshot: { readAt: string; stale: boolean } | null;
@@ -40,13 +42,14 @@ export type HmsEvidenceReply =
   | { status: 'ok'; dataUrl: string }
   | { status: 'unavailable'; reason: string };
 
+/** A review names the run the card showed. The server refuses it once a newer write has run. */
 export type HmsReviewInput =
-  | { workItemId: string; decision: 'ok' }
-  | { workItemId: string; decision: 'flag'; note: string };
+  | { workItemId: string; runId: string; decision: 'ok' }
+  | { workItemId: string; runId: string; decision: 'flag'; note: string };
 
 export type HmsApprovalClient = {
   writeState: (input: { workItemId: string }) => Promise<HmsWriteView>;
-  approve: (input: { workItemId: string }) => Promise<HmsApproved>;
+  approve: (input: { workItemId: string; formDigest: string }) => Promise<HmsApproved>;
   review: (input: HmsReviewInput) => Promise<HmsReviewed>;
   resolveNeedsCheck: (input: { workItemId: string; note: string }) => Promise<unknown>;
   reread: (input: { workItemId: string }) => Promise<HmsReread>;
@@ -171,6 +174,8 @@ const REFUSAL_COPY: Record<string, string> = {
   note_required: 'Add a note first.',
   no_executed_write: 'Nothing was written, so there is nothing to review.',
   already_reviewed: 'This write is already reviewed.',
+  form_outdated: 'The values changed since this card loaded. Check them, then approve again.',
+  run_changed: 'Another write ran since this one loaded. Check the latest write, then review it.',
 };
 
 /** The words for a refused procedure. The server sends the refusal name as the error message. */
@@ -180,6 +185,11 @@ export function refusalCopy(err: unknown): string {
 }
 
 type Run = NonNullable<HmsWriteView['run']>;
+
+/** True when the work item holds an HMS write: an action form (attach, cancel) or a write run. */
+export function isStoredWrite(view: Pick<HmsWriteView, 'form' | 'run'>): boolean {
+  return view.run !== null || typeof view.form.action === 'string';
+}
 
 /**
  * Where the write is, and what the cards offer. `message` is the one line the card shows as its status.
@@ -260,7 +270,8 @@ export function writeStatusOf(view: HmsWriteView): WriteStatus {
       phase: 'written',
       message: HMS_WRITE_COPY.written,
       review: true,
-      approve: !closed && base.reviewed === 'flag',
+      // A form edited after the write was never written: review OK is refused, so approving again is offered.
+      approve: !closed && (base.reviewed === 'flag' || base.changed),
     };
   }
   const reason = stopWords(run);
@@ -270,7 +281,7 @@ export function writeStatusOf(view: HmsWriteView): WriteStatus {
       phase: 'partial',
       message: `Stopped part way. ${reason} ${HMS_WRITE_COPY.partial}`,
       review: true,
-      approve: !closed && base.reviewed === 'flag',
+      approve: !closed && (base.reviewed === 'flag' || base.changed),
     };
   }
   return {

@@ -16,7 +16,7 @@ import {
   type PaneSaveMode,
   type PaneStayLock,
 } from './pane-stay-save.js';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { basename, join } from 'node:path';
@@ -86,7 +86,15 @@ export type PaneStayCancelSpawnInput = {
   reason: string | null;
   /** True only in on mode. The CLI then drops the Labtest guard for this run. */
   allowRealGuest: boolean;
+  /**
+   * Commit only: the stay the write's approval was checked against. The CLI reads the record it opens again and refuses
+   * (refused_stay_changed, nothing clicked) when any of these fields differ.
+   */
+  expectStay?: Record<string, unknown>;
 };
+
+/** The expected-stay file a commit run reads, inside its own output directory. */
+const EXPECT_STAY_FILE = 'expect-stay.json';
 
 /** What one cancel-stay.mjs run reports in its result.json. Screenshots are absolute paths. */
 export type PaneStayCancelSpawnResult = {
@@ -160,6 +168,7 @@ export function buildCancelStayArgs(input: PaneStayCancelSpawnInput, outDir: str
     outDir,
   ];
   if (input.mode === 'commit' && input.reason) args.push('--reason', input.reason);
+  if (input.mode === 'commit' && input.expectStay) args.push('--expect-stay', join(outDir, EXPECT_STAY_FILE));
   // Only an on-mode run passes the switch. Nothing else in the environment can lift the lab guard.
   if (input.allowRealGuest) args.push(ALLOW_REAL_GUEST_FLAG);
   return args;
@@ -186,6 +195,9 @@ export async function spawnPaneStayCancel(input: PaneStayCancelSpawnInput): Prom
   const dir = await mkdtemp(join(tmpdir(), 'pane-cancel-'));
   let runError: unknown = null;
   try {
+    if (input.mode === 'commit' && input.expectStay) {
+      await writeFile(join(dir, EXPECT_STAY_FILE), JSON.stringify(input.expectStay), { mode: 0o600 });
+    }
     await execFileAsync('node', buildCancelStayArgs(input, dir), {
       timeout: CANCEL_TIMEOUT_MS,
       env: paneStaySpawnEnv(),

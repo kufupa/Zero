@@ -741,6 +741,8 @@ export async function requeueHmsReadsAfterRestart(
       claimOwner: null,
       claimToken: null,
       nextRunAt: now,
+      // The dead worker's claim deadline may already be past; the next claim sets a fresh one (as requeueRun does).
+      deadlineAt: null,
       lastError: 'hms worker restarted',
       failureClass: 'LEASE_LOST',
       updatedAt: now,

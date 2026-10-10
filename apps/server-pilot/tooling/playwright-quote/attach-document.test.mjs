@@ -212,3 +212,15 @@ test('countListedDocument counts Documents rows as the name or "<code>: <name>",
     delete globalThis.document;
   }
 });
+
+test('countListedDocument matches a name with repeated or edge spaces against its collapsed row text', () => {
+  const leaf = (text) => ({ childElementCount: 0, textContent: text });
+  const rows = [leaf('31050: my  file.pdf'), leaf('my\u00a0 file.pdf'), leaf('31051: my file.pdf.bak')];
+  globalThis.document = { querySelectorAll: () => rows };
+  try {
+    assert.equal(countListedDocument('my  file.pdf'), 2);
+    assert.equal(countListedDocument(' my file.pdf'), 2);
+  } finally {
+    delete globalThis.document;
+  }
+});

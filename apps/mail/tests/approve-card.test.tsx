@@ -2,6 +2,7 @@
  * @vitest-environment happy-dom
  */
 import {
+  HMS_WRITE_POLL_MS,
   hmsApprovalFromTrpc,
   refusalCopy,
   writeRowsOf,
@@ -11,16 +12,34 @@ import {
   type HmsReviewed,
   type HmsWriteView,
 } from '../lib/quote-workflow/hms-write';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ApproveCard } from '../components/quote-workflow/approve-card';
+import { BookingVoucherCard } from '../components/nava-pane/blocks/booking-voucher-card';
+import { initialQuoteSession } from '../lib/quote-workflow/session';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+// The pane block binds its write card off the shared tRPC client. Only the hmsApproval routes answer here.
+const paneWrite = vi.hoisted(() => ({ view: null as unknown }));
+vi.mock('@/providers/query-provider', () => ({
+  trpcClient: {
+    hmsApproval: {
+      writeState: { query: async () => paneWrite.view },
+      approve: { mutate: async () => ({}) },
+      review: { mutate: async () => ({}) },
+      resolveNeedsCheck: { mutate: async () => ({}) },
+      reread: { mutate: async () => ({ status: 'stored' }) },
+      evidence: { query: async () => ({ status: 'unavailable', reason: 'evidence_unavailable' }) },
+    },
+  },
+}));
 
 const WORK_ITEM = '3f8a2c1e-9b7d-4e6f-8a1b-2c3d4e5f6a7b';
 const CONFIRMATION = 'LAB-40417';
 const READ_AT = '2026-10-10T09:00:00.000Z';
 const EVENT_ID = '7b1e2d3c-4f5a-4b6c-8d7e-9f0a1b2c3d4e';
+const DIGEST = 'd'.repeat(64);
 
 const APPROVED: HmsApproved = {
   grantId: 'grant-1',
@@ -36,6 +55,7 @@ function viewWith(patch: Partial<HmsWriteView> = {}): HmsWriteView {
   return {
     status: 'needs_you',
     form: { arrival: '2026-11-02', board: 'bb' },
+    formDigest: DIGEST,
     before: { arrival: '2026-11-01', board: 'room_only' },
     snapshot: { readAt: READ_AT, stale: false },
     grant: null,
@@ -143,7 +163,9 @@ describe('ApproveCard approval', () => {
     renderCard(client);
     expect(await screen.findByText(/the queued write will not run/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Approve again' }));
-    await waitFor(() => expect(client.approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM }));
+    await waitFor(() =>
+      expect(client.approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM, formDigest: DIGEST }),
+    );
   });
 
   it('treats a missing HMS read the same as a stale one', async () => {
@@ -154,11 +176,22 @@ describe('ApproveCard approval', () => {
     ).toBe(true);
   });
 
-  it('approves with the work item only, then reads the state again', async () => {
+  it('approves the work item with the digest of the values it shows, then reads the state again', async () => {
     const client = fakeClient(viewWith());
     renderCard(client);
     fireEvent.click(await screen.findByRole('button', { name: 'Approve these values' }));
-    await waitFor(() => expect(client.approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM }));
+    await waitFor(() =>
+      expect(client.approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM, formDigest: DIGEST }),
+    );
+    await waitFor(() => expect(client.writeState).toHaveBeenCalledTimes(2));
+  });
+
+  it('an approval refused because the values moved on says so and reads the new values', async () => {
+    const client = fakeClient(viewWith());
+    vi.mocked(client.approve).mockRejectedValueOnce(new Error('form_outdated'));
+    renderCard(client);
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve these values' }));
+    expect(await screen.findByText(/changed since this card loaded/)).toBeTruthy();
     await waitFor(() => expect(client.writeState).toHaveBeenCalledTimes(2));
   });
 
@@ -274,6 +307,69 @@ describe('ApproveCard write states', () => {
   });
 });
 
+describe('ApproveCard reads', () => {
+  it('keeps polling a moving write after a failed read, and offers the read again meanwhile', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const client = fakeClient(viewWith({ run: runWith('running') }));
+      vi.mocked(client.writeState)
+        .mockResolvedValueOnce(viewWith({ run: runWith('running') }))
+        .mockRejectedValueOnce(new Error('network'))
+        .mockResolvedValue(viewWith({ run: runWith('succeeded') }));
+      renderCard(client);
+      expect(await screen.findByText(/Running in HMS/)).toBeTruthy();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HMS_WRITE_POLL_MS);
+      });
+      expect(await screen.findByText('Nava could not load this write.')).toBeTruthy();
+      expect(screen.getByText(/Running in HMS/)).toBeTruthy();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HMS_WRITE_POLL_MS);
+      });
+      expect(await screen.findByText(/Written in HMS/)).toBeTruthy();
+      expect(screen.queryByText('Nava could not load this write.')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('BookingVoucherCard write card', () => {
+  const attachForm = { action: 'attach_document', confirmation: '57291630-1', documentName: 'Voucher.pdf' };
+
+  it('shows the approve card for an attach on mail that is not an amend or cancel', async () => {
+    paneWrite.view = viewWith({ form: attachForm, before: null });
+    render(
+      <BookingVoucherCard
+        session={initialQuoteSession()}
+        internetMessageId={null}
+        syncCommitted={null}
+        syncPending={false}
+        workItemId={WORK_ITEM}
+        writesEnabled
+      />,
+    );
+    expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
+  });
+
+  it('shows no write card for an item on such mail that holds no HMS write', async () => {
+    paneWrite.view = viewWith();
+    const { container } = render(
+      <BookingVoucherCard
+        session={initialQuoteSession()}
+        internetMessageId={null}
+        syncCommitted={null}
+        syncPending={false}
+        workItemId={WORK_ITEM}
+        writesEnabled
+      />,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container.querySelector('section')).toBeNull();
+  });
+});
+
 describe('ApproveCard gated off', () => {
   it('renders no write controls in prod and keeps the Copy confirmation handoff', async () => {
     const client = fakeClient(viewWith({ run: runWith('dead_letter', { failureClass: 'AUTH' }) }));
@@ -309,8 +405,8 @@ describe('hmsApprovalFromTrpc and refusals', () => {
       },
     });
     expect(client).not.toBeNull();
-    await client?.approve({ workItemId: WORK_ITEM });
-    expect(approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM });
+    await client?.approve({ workItemId: WORK_ITEM, formDigest: DIGEST });
+    expect(approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM, formDigest: DIGEST });
   });
 
   it('turns a refusal name into words, and an unknown one into a generic line', () => {
@@ -353,6 +449,8 @@ describe('writeRowsOf and writeStatusOf', () => {
       false,
     );
     expect(writeStatusOf(viewWith({ run: runWith('succeeded') })).approve).toBe(false);
+    // A form edited after the write was never written: review OK is refused, so approving again is open.
+    expect(writeStatusOf(viewWith({ grant: changed, run: runWith('succeeded') })).approve).toBe(true);
     expect(
       writeStatusOf(viewWith({ run: runWith('succeeded', { reviewed: 'flag' }) })).approve,
     ).toBe(true);
