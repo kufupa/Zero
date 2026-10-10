@@ -196,6 +196,8 @@ test('countListedDocument counts Documents rows as the name or "<code>: <name>",
   const rows = [
     leaf('31050: nava-h2-test.pdf'),
     leaf(' nava-h2-test.pdf '),
+    leaf('31051:\u00a0nava-h2-test.pdf'),
+    leaf(': nava-h2-test.pdf'),
     leaf('Documents:39519 50231'),
     leaf('old-nava-h2-test.pdf'),
     leaf('x31050: nava-h2-test.pdf'),
@@ -204,7 +206,7 @@ test('countListedDocument counts Documents rows as the name or "<code>: <name>",
   ];
   globalThis.document = { querySelectorAll: () => rows };
   try {
-    assert.equal(countListedDocument('nava-h2-test.pdf'), 2);
+    assert.equal(countListedDocument('nava-h2-test.pdf'), 3);
     assert.equal(countListedDocument('other.pdf'), 0);
   } finally {
     delete globalThis.document;
