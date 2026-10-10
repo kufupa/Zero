@@ -658,10 +658,19 @@ describe('NavaPane screen states', () => {
     },
   };
 
+  /**
+   * The stored read fills the first stay. Since U16 added the contact block and translation, the full pane render can
+   * pass the 1 s default on a loaded box, and a miss here shifts the useId values in every later snapshot.
+   */
+  const storedReadLands = () =>
+    waitFor(() => expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-03'), {
+      timeout: 4000,
+    });
+
   it('stored: a mail with a stored read opens from it and makes no live read', async () => {
     bridgeMockState.storedWork = STORED_READY;
     render(<NavaPane bridge={fakeBridge} />);
-    await waitFor(() => expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-03'));
+    await storedReadLands();
     await settle();
     expect(bridgeMockState.analyseCalls).toBe(0);
   });
@@ -670,7 +679,7 @@ describe('NavaPane screen states', () => {
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.recordEvent.mockRejectedValue(new Error('offline'));
     render(<NavaPane bridge={fakeBridge} />);
-    await waitFor(() => expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-03'));
+    await storedReadLands();
     fireEvent.change(screen.getAllByLabelText(/Adults/i)[0]!, { target: { value: '3' } });
     expect(await screen.findByText(/Couldn.t save change/, {}, { timeout: 6000 })).toBeDefined();
     expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(2);
@@ -685,7 +694,7 @@ describe('NavaPane screen states', () => {
   it('stored: a stay she adds is logged under its own id, so it is there on reopen', async () => {
     bridgeMockState.storedWork = STORED_READY;
     render(<NavaPane bridge={fakeBridge} />);
-    await waitFor(() => expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-03'));
+    await storedReadLands();
     fireEvent.click(screen.getByRole('button', { name: 'Add stay' }));
     await waitFor(() =>
       expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(
