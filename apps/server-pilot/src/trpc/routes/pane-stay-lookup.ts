@@ -24,6 +24,7 @@ import {
   recordToolOutcome,
   toolInputDigest,
 } from '../../ai/hitl-tool-run.js';
+import { availabilityRequestSchema } from '../../ai/hms-availability.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
@@ -63,9 +64,10 @@ const jobStatusInput = z.union([
       threadId: threadIdInput,
       kind: z.enum(['find', 'search_guest', 'availability']),
       confirmation: confirmation.optional(),
-      // An availability snapshot is picked by its stay's dates.
+      // An availability snapshot is picked by its stay's dates, and by its rooms when two stays share the dates.
       arrival: arrival.optional(),
       departure: arrival.optional(),
+      rooms: availabilityRequestSchema.shape.rooms.optional(),
     })
     .strict(),
 ]);
