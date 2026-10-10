@@ -1313,14 +1313,14 @@ export function NavaPane({
             {/* Contact block (U16): the core details, pre-filled. Then the translation, only for mail not in English. */}
             {activeEmail ? (
               <ContactBlock
-                key={`${activeEmail.internetMessageId ?? ''}|${storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : ''}`}
+                key={`${activeEmail.internetMessageId ?? ''}|${storedWork.pane.state === 'ready' ? (storedWork.pane.workItemId ?? '') : ''}`}
                 contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
                 onEdit={storedWork.recordContact}
               />
             ) : null}
             {storedWork.pane.state === 'ready' ? (
               <TranslationBox
-                key={storedWork.pane.workItemId}
+                key={storedWork.pane.workItemId ?? activeEmail?.internetMessageId ?? ''}
                 language={storedWork.pane.language}
                 translation={storedWork.pane.translation}
                 busy={storedWork.translationBusy}

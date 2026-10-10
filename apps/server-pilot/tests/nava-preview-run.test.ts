@@ -494,6 +494,7 @@ describe('classifyTrpcRequest: verified pane reads and named writes', () => {
   // Each read was read through to its helpers in src/trpc/routes and src/ai: selects only, or a stored-bytes fetch.
   const VERIFIED_READS = [
     'workItems.list',
+    'workItems.getByMessage',
     'workItems.followUpByMessage',
     'rates.list',
     'paneStayLookup.jobStatus',
@@ -501,9 +502,9 @@ describe('classifyTrpcRequest: verified pane reads and named writes', () => {
     'hmsApproval.evidence',
     'hmsApproval.writeState',
   ];
-  // workItems.getByMessage is a query, but its read inserts a work item when the mail has a stored read. It stays blocked.
+  // workItems.open makes the work item a stored read lacks. getByMessage only reads, so it is a verified read above.
   const WRITES = [
-    'workItems.getByMessage',
+    'workItems.open',
     'rates.create',
     'paneStayLookup.queueFind',
     'hmsApproval.reread',
@@ -527,9 +528,9 @@ describe('classifyTrpcRequest: verified pane reads and named writes', () => {
   });
 
   it('blocks a batch that carries a write alongside verified reads', () => {
-    const decision = classifyTrpcRequest(`${origin}workItems.list,workItems.getByMessage?batch=1`);
+    const decision = classifyTrpcRequest(`${origin}workItems.getByMessage,workItems.open?batch=1`);
     expect(decision.allowed).toBe(false);
-    expect(decision.blocked).toEqual([{ procedure: 'workItems.getByMessage', reason: 'write' }]);
+    expect(decision.blocked).toEqual([{ procedure: 'workItems.open', reason: 'write' }]);
   });
 });
 

@@ -6,6 +6,7 @@ import { retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
 import {
   dismissWorkItem,
   listWorkItems,
+  openStoredWork,
   recordFieldEvent,
   storedTranslation,
   storedWorkFor,
@@ -45,6 +46,18 @@ export const workItemsRouter = router({
     .input(z.object({ internetMessageId }).strict())
     .query(({ input, ctx }) =>
       storedWorkFor(getDb(), {
+        transportId: ctx.activeTransportId,
+        internetMessageId: input.internetMessageId,
+      }),
+    ),
+  /**
+   * Makes the work item for a stored read that has none yet, and returns the same view as getByMessage. The pane calls
+   * it once, when getByMessage came back ready with a null workItemId, so getByMessage itself never writes.
+   */
+  open: mailboxProcedure
+    .input(z.object({ internetMessageId }).strict())
+    .mutation(({ input, ctx }) =>
+      openStoredWork(getDb(), {
         transportId: ctx.activeTransportId,
         internetMessageId: input.internetMessageId,
       }),

@@ -176,14 +176,17 @@ export type StoredTranslation =
   | { status: 'failed' }
   | null;
 
-/** A mail's stored read from workItems.getByMessage. Ready carries its work item and analysis; none means read it live. */
+/**
+ * A mail's stored read from workItems.getByMessage. Ready carries its analysis and its work item (null until one is
+ * opened, see bindStoredWork); none means read it live.
+ */
 export type StoredWork =
   | { status: 'none' }
   | { status: 'failed'; reason: string }
   | {
       status: 'ready';
-      workItemId: string;
-      workItemStatus: string;
+      workItemId: string | null;
+      workItemStatus: string | null;
       extractionId: string;
       /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
       refs: Record<string, { stayId: string; rowId: string | null }>;
@@ -221,6 +224,7 @@ export type NeedsYouRow = {
 
 type WorkItemsClient = {
   getByMessage?: { query: (input: { internetMessageId: string }) => Promise<StoredWork> };
+  open?: { mutate: (input: { internetMessageId: string }) => Promise<StoredWork> };
   recordEvent?: { mutate: (input: RecordFieldEventInput) => Promise<unknown> };
   retryTranslation?: { mutate: (input: { workItemId: string }) => Promise<TranslationRetryResult> };
   list?: { query: (input: { limit?: number }) => Promise<NeedsYouRow[]> };
@@ -233,16 +237,29 @@ export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {
   return workItems ?? {};
 }
 
-/** Reads the stored work for one mail. A missing route or a failed call reads as unavailable, so the pane reads live. */
+/**
+ * Reads the stored work for one mail. A missing route or a failed call reads as unavailable, so the pane reads live.
+ * The read writes nothing. A stored read with no work item yet is opened once (workItems.open) so edits have an item;
+ * if that cannot run (no route, a failed call, the preview), the read still shows and edits are not logged.
+ */
 export async function bindStoredWork(args: {
   query?: WorkItemsClient['getByMessage'];
+  open?: WorkItemsClient['open'];
   internetMessageId: string;
 }): Promise<StoredWork | { status: 'unavailable' }> {
   if (!args.query) return { status: 'unavailable' };
+  let stored: StoredWork;
   try {
-    return await args.query.query({ internetMessageId: args.internetMessageId });
+    stored = await args.query.query({ internetMessageId: args.internetMessageId });
   } catch {
     return { status: 'unavailable' };
+  }
+  if (stored.status !== 'ready' || stored.workItemId || !args.open) return stored;
+  try {
+    const opened = await args.open.mutate({ internetMessageId: args.internetMessageId });
+    return opened.status === 'ready' && opened.workItemId ? opened : stored;
+  } catch {
+    return stored;
   }
 }
 

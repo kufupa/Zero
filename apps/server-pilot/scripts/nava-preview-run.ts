@@ -83,6 +83,7 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'rates.list',
   'settings.get',
   'workItems.followUpByMessage',
+  'workItems.getByMessage',
   'workItems.list',
   'workstation.getPriorStaffQuoteRequote',
   'workstation.hmsQueueStatus',
@@ -100,8 +101,7 @@ export const ANALYSIS_PROCEDURES: ReadonlySet<string> = new Set(['quoteWorkflow.
 export const HMS_READ_PROCEDURES: ReadonlySet<string> = new Set(['panePartyLookup.findParty']);
 /**
  * Mutations the pane references, named so a block reads as a write. Any other name is blocked as unknown.
- * workItems.getByMessage is a query that writes: it inserts or updates a work-item row when the mail has a stored read.
- * It stays blocked, and is named here so the block counts as a write.
+ * workItems.open makes the work item for a stored read that has none; workItems.getByMessage only reads.
  */
 export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'drafts.saveReply',
@@ -123,7 +123,7 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'rates.update',
   'workItems.dismiss',
   'workItems.dismissFollowUp',
-  'workItems.getByMessage',
+  'workItems.open',
   'workItems.recordEvent',
   'workItems.retryTranslation',
   'workItems.useFollowUp',
