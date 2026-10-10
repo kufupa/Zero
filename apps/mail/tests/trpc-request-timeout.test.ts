@@ -31,10 +31,6 @@ describe('procedure-specific request deadlines', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.voucherFind?batch=1')).toBe(45_000);
     expect(trpcRequestTimeoutMs('/api/trpc/quoteWorkflow.voucherFindX')).toBe(5_000);
   });
-  it('gives the translation retry 45s, past its 40s server deadline', () => {
-    expect(trpcRequestTimeoutMs('/api/trpc/workItems.retryTranslation?batch=1')).toBe(45_000);
-    expect(trpcRequestTimeoutMs('/api/trpc/workItems.retryTranslationX')).toBe(5_000);
-  });
   it('gives prepareBookingDraft and usePriorQuoteForBooking the trace-finish deadline', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.prepareBookingDraft?batch=1')).toBe(120_000);
     expect(trpcRequestTimeoutMs('/api/trpc/workstation.usePriorQuoteForBooking?batch=1')).toBe(

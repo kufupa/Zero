@@ -3,67 +3,31 @@
 // on the open record, opens Documents, uploads through Create/Upload Document, and reads the document list back.
 // Usage: node attach-document.mjs --confirmation 57291630-1 --arrival 2027-09-14 --file <path.pdf> --document-name <name>.pdf --out <dir>
 // Exit: 0 attached; 2 refused_* or not_found or usage; 1 any other outcome.
-// ATTACH_VERIFIED=true in the environment arms the driver. It is unset everywhere until U28-H2 captures the Documents
-// flow on a live Labtest stay, and H2 sets it for its own run only. While it is unset the driver refuses before any
-// browser work, so no upload request is sent from an unverified flow.
-// The route guard is an explicit allowlist (attachRequestDecision): class A static GETs, the reviewed login, Guest Stay
-// search and record-open reads, class B record tab loads, and the BSUPLD upload chain bound to this confirmation.
-// Everything else is aborted. A write-verb scan runs on top as a second check.
+// ATTACH_VERIFIED stays false until U28-H2 captures the Documents selectors on a live Labtest stay. While it is false the
+// driver refuses before any browser work, so no upload request is sent from an unverified flow.
+// The route guard lets through only what attachRequestAllowed names: the HMS origin, /web/base endpoints, no write verb.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import { findStay, openGuestStay, openRecord, readRecord, shot } from './cancel-stay.mjs';
-import { checkCdpEnv, identityCheck, parseIsoDate, preflight, squash } from './cancel-stay-rules.mjs';
+import { checkCdpEnv, identityCheck, parseIsoDate, squash } from './cancel-stay-rules.mjs';
 
 // The read path's cap (ARTIFACT_MAX_INPUT_BYTES in src/mail/artifacts/read-artifact.ts). A TS test pins the equality.
 export const ATTACH_MAX_BYTES = 20 * 1024 * 1024;
-export const ATTACH_VERIFIED_ENV = 'ATTACH_VERIFIED';
-
-// ponytail: armed per run by env until U28-H2 captures the Documents tab, the upload popup and the list on a live
-// Labtest stay. After that the selectors are pinned and this stays an explicit opt-in.
-export function attachVerified(env = process.env) {
-  return env[ATTACH_VERIFIED_ENV] === 'true';
-}
+// ponytail: flip to true only after U28-H2 captures the Documents tab, the upload popup and the list on a live Labtest stay.
+export const ATTACH_VERIFIED = false;
 
 const FLAGS = new Set(['--confirmation', '--arrival', '--file', '--document-name', '--out']);
 const CONFIRMATION = /^\d+-\d+$/;
 const PDF_MAGIC = Buffer.from('%PDF-');
+const ASSET_TYPES = new Set(['document', 'script', 'stylesheet', 'image', 'font', 'xhr', 'fetch']);
+const HMS_ENDPOINT = /^\/web\/base\/[A-Za-z0-9._-]+$/;
 const UPLOAD_PATH = '/web/base/BSUPLD.upload';
-const BLOCKED_LOG_MAX = 20;
-// Write verbs in a path or query. A second check on top of the allowlist.
-const WRITE_VERB = /\b(save|delete|cancel|duplicate|checkin|checkout|crs|insert|update|commit|new|create|submit|autosave)\b/i;
-// A form key or value that is exactly a write action. pageaction is the Ext store's SAVE/DELETE switch, so any use of it
-// is refused (OSRESV.DOC?pageaction=SAVE and =DELETE).
-const WRITE_TOKEN = /^(save|delete|cancel|duplicate|checkin|checkout|insert|update|commit|new|create|submit|autosave|amend|post)$/i;
-const MUTATION_KEY = /^(pageaction|autosave)$/i;
-// Class A: static resources, as the read-only probe allowed them (no query, not a document or XHR).
-const STATIC_PREFIX = '/web/resources/';
-const STATIC_EXCLUDED_TYPES = new Set(['xhr', 'fetch', 'document']);
-// Reviewed reads the login, Guest Stay search and record open send (src/hms/live-read-manifest.ts, probe 2026-10-10).
-const READ_GET_PATHS = new Set([
-  '/web/base/logindisp',
-  '/web/base/login-all.js',
-  '/web/base/COMMON',
-  '/web/base/all-classes.js',
-  '/web/jsp/interfaceStatusAlert.jsp',
-]);
-const READ_POST_PATHS = new Set([
-  '/web/base/login',
-  '/web/base/BSSTRT',
-  '/web/base/BSSTRT.HDR',
-  '/web/base/OSRESS.search',
-  '/web/base/OSRESV',
-  '/web/base/OSRESV.HDR',
-  '/web/base/OSRESV.LST',
-]);
-// Class B: one record tab load, POST /web/base/OSRESV.<TAB> naming its own function and tab. OSRESV.DOC.insert and
-// .update (the "Add Document" popup) never match, because the path must end at the tab.
-const TAB_LOAD = /^\/web\/base\/OSRESV\.([A-Z]{3})$/;
-const TABS = new Set(['DOC', 'FOL', 'GST', 'NOT', 'TRC', 'REM', 'RAN', 'PRF', 'TIV']);
-const UPLOAD_POPUP_PATH = '/web/base/BSUPLD';
-const UPLOAD_CHECK_PATH = '/web/base/BSUPLD.checkfile';
+const UPLOAD_PATHS = new Set(['/web/base/BSUPLD.checkfile', UPLOAD_PATH]);
+// Write verbs. A URL, or a non-upload body, containing one is refused, so only reads and the upload itself go out.
+const WRITE_VERB = /\b(save|delete|cancel|duplicate|checkin|checkout|crs|insert|update|commit|new)\b/i;
 
 // A file name HMS takes here: a .pdf with no path separator and no control character.
 export function isPdfDocumentName(name) {
@@ -109,135 +73,32 @@ export function isPdfBytes(body) {
     && body.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC);
 }
 
-function formMap(text) {
-  try {
-    return new URLSearchParams(text);
-  } catch {
-    return null;
-  }
-}
-
-// True when a form key is the store's write switch, or a key or value is exactly a write action.
-function formHasWrite(map) {
-  for (const [key, value] of map) {
-    if (MUTATION_KEY.test(key.trim()) || WRITE_TOKEN.test(key.trim()) || WRITE_TOKEN.test(value.trim())) return true;
-  }
-  return false;
-}
-
-function single(map, key) {
-  const values = map.getAll(key);
-  return values.length === 1 ? values[0] : null;
-}
-
-// The document key HMS binds an upload to: <stayid>#<confirmation>#<property>. Only this run's confirmation passes.
-function boundToStay(daeCode, confirmation) {
-  const match = /^(\d+)#([^#]+)#([A-Z0-9]+)$/.exec(daeCode ?? '');
-  return Boolean(match && CONFIRMATION.test(confirmation) && match[2] === confirmation);
-}
-
-// One named text field of a multipart body, for the upload's binding when it is not in the query.
-function multipartField(body, name) {
-  const match = new RegExp(`name="${name}"\\r?\\n\\r?\\n([^\\r\\n]*)`).exec(body);
-  return match ? match[1] : null;
-}
-
-function uploadFieldsBound(fields, confirmation) {
-  return fields.uploadorcreatedoc === 'U'
-    && fields.daeRentity === 'RESV'
-    && boundToStay(fields.daeCode, confirmation);
-}
-
-const ALLOW = (rule) => ({ allowed: true, rule });
-const BLOCK = (code) => ({ allowed: false, code });
-
-// The route guard's decision for one request. The allowlist is the control: a request is allowed only when it matches
-// one reviewed shape, and every POST shape also passes the write scan. confirmation binds the upload chain to the stay.
-export function attachRequestDecision({
-  method,
-  url,
-  resourceType,
-  postData = '',
-  contentType = '',
-  origin,
-  confirmation,
-}) {
+// The route guard's decision for one request. Only the HMS origin. A GET is allowed for page assets and reads whose URL
+// holds no write verb. A POST is allowed only to an HMS /web/base endpoint whose path and body hold no write verb. The
+// upload is a multipart body, which is not scanned, because the file bytes could match a verb by accident.
+export function attachRequestAllowed({ method, url, resourceType, postData = '', contentType = '', origin }) {
   let target;
   try {
     target = new URL(url);
   } catch {
-    return BLOCK('url_invalid');
+    return false;
   }
-  if (target.origin !== origin) return BLOCK('origin');
-  const path = target.pathname;
-  const query = target.searchParams;
+  if (target.origin !== origin) return false;
   const verb = String(method ?? '').toUpperCase();
-  const type = String(contentType ?? '').split(';')[0].trim().toLowerCase();
-  const body = postData ?? '';
-
   if (verb === 'GET' || verb === 'HEAD') {
-    if (body !== '') return BLOCK('get_body');
-    if (path.startsWith(STATIC_PREFIX)) {
-      return target.search === '' && !STATIC_EXCLUDED_TYPES.has(resourceType) ? ALLOW('class_a_static') : BLOCK('static_shape');
-    }
-    if (!READ_GET_PATHS.has(path)) return BLOCK('path_not_allowed');
-    if (WRITE_VERB.test(`${path}${target.search}`) || formHasWrite(query)) return BLOCK('write_verb');
-    return ALLOW('reviewed_read_get');
+    return ASSET_TYPES.has(resourceType) && !WRITE_VERB.test(`${target.pathname}${target.search}`);
   }
-  if (verb !== 'POST') return BLOCK('method');
-  if (WRITE_VERB.test(path) || formHasWrite(query)) return BLOCK('write_verb');
-
-  if (path === UPLOAD_PATH) {
-    // The one write: a multipart upload, bound to this stay, from the BSUPLD popup.
-    if (type !== 'multipart/form-data') return BLOCK('upload_shape');
-    if (query.get('isPopup') !== 'true' || !query.get('requestToken')) return BLOCK('upload_shape');
-    const field = (name) => query.get(name) ?? multipartField(body, name);
-    const fields = {
-      uploadorcreatedoc: field('uploadorcreatedoc'),
-      daeRentity: field('daeRentity'),
-      daeCode: field('daeCode'),
-    };
-    return uploadFieldsBound(fields, confirmation) ? ALLOW('upload') : BLOCK('upload_binding');
-  }
-
-  // Every other POST is an empty or form-encoded body with no write in it.
-  if (body !== '' && type !== 'application/x-www-form-urlencoded') return BLOCK('body_format');
-  const form = formMap(body);
-  if (!form || formHasWrite(form)) return BLOCK('write_verb');
-
-  if (READ_POST_PATHS.has(path)) return ALLOW('reviewed_read_post');
-  const tab = TAB_LOAD.exec(path);
-  if (tab) {
-    if (!TABS.has(tab[1])) return BLOCK('tab_not_allowed');
-    return single(form, 'SYSTEM_FUNCTION_NAME') === 'OSRESV' && single(form, 'CURRENT_TAB_NAME') === tab[1]
-      ? ALLOW('class_b_tab')
-      : BLOCK('tab_shape');
-  }
-  if (path === UPLOAD_POPUP_PATH) {
-    const fn = form.get('SYSTEM_FUNCTION_NAME');
-    return fn === null || fn === 'BSUPLD' ? ALLOW('upload_popup') : BLOCK('popup_shape');
-  }
-  if (path === UPLOAD_CHECK_PATH) {
-    const fields = {
-      uploadorcreatedoc: single(form, 'uploadorcreatedoc'),
-      daeRentity: single(form, 'daeRentity'),
-      daeCode: single(form, 'daeCode'),
-    };
-    return uploadFieldsBound(fields, confirmation) ? ALLOW('upload_checkfile') : BLOCK('checkfile_binding');
-  }
-  return BLOCK('path_not_allowed');
+  if (verb !== 'POST' || !HMS_ENDPOINT.test(target.pathname) || WRITE_VERB.test(target.pathname)) return false;
+  if (UPLOAD_PATHS.has(target.pathname) && /^multipart\/form-data/i.test(contentType)) return true;
+  return !WRITE_VERB.test(postData);
 }
 
-export function attachRequestAllowed(request) {
-  return attachRequestDecision(request).allowed;
-}
-
-// The outcome of one run. Once the upload request left the browser, the write may have happened, so only a list that
-// shows the document is attached, and anything else is unconfirmed (the caller treats it as unknown). Before that, a
-// refusal stands as is.
+// The outcome of one run. A refusal stands as is. Once the upload request left the browser, a list that does not show the
+// document is unconfirmed, so the caller treats it as unknown rather than as not written.
 export function attachOutcome({ refusal = null, uploadSent = false, listed = false }) {
-  if (uploadSent) return listed ? 'attached' : 'upload_unconfirmed';
-  return refusal ?? 'execution_failure';
+  if (refusal) return refusal;
+  if (!uploadSent) return 'execution_failure';
+  return listed ? 'attached' : 'upload_unconfirmed';
 }
 
 export function exitCodeForAttach(outcome) {
@@ -249,56 +110,24 @@ function refusedResult(outcome) {
   return { outcome, uploadSent: false, screenshots: [], error: null };
 }
 
-// The upload form opens either as an Ext window in the page or as a new page. Whichever shows a file input first.
-async function openUploadForm(page) {
-  const opened = page.context().waitForEvent('page', { timeout: 20000 }).catch(() => null);
-  // Exact text, so the "Add Document" icon button (OSRESV.DOC.insert/.update) is never the one clicked.
-  await page.getByText(/^Create\/Upload Document$/).first().click();
-  const inPage = page.locator('.x-window:visible input[type=file]').first()
-    .waitFor({ state: 'attached', timeout: 20000 }).then(() => page, () => null);
-  return new Promise((resolveForm, rejectForm) => {
-    let pending = 2;
-    const settle = (form) => {
-      if (form) resolveForm(form);
-      else if (--pending === 0) rejectForm(new Error('upload_form_not_opened'));
-    };
-    opened.then(settle);
-    inPage.then(settle);
-  });
-}
-
-// ponytail: the Documents tab, the upload form and the list are not captured from live HMS yet (U28-H2). Only reached
-// once ATTACH_VERIFIED=true.
+// ponytail: the Documents tab, the upload popup and the list are not captured from live HMS yet (U28-H2). Only reached
+// once ATTACH_VERIFIED is true.
 async function uploadDocument(ctx, args, state) {
   const { page } = ctx;
   await page.getByText(/^Documents$/).first().click();
   await page.waitForTimeout(800);
-  const listedName = page.getByText(args.documentName, { exact: true });
-  const listedBefore = await listedName.count();
-  const form = await openUploadForm(page);
-  await form.waitForLoadState('domcontentloaded');
-  await form.locator('input[type=file]').first().setInputFiles(args.file);
-  await form.locator('input[name=filename]:visible').first().fill(args.documentName);
-  await shot({ ...ctx, page: form }, 'before.png');
-  await form.getByRole('button', { name: /^Upload$/ }).first().click();
-  // The route guard sets state.uploadSent when the upload leaves. Listed only when one more row shows the name.
-  await page.waitForFunction(
-    ({ name, before }) => [...document.querySelectorAll('body *')]
-      .filter((el) => el.childElementCount === 0 && el.textContent?.trim() === name).length > before,
-    { name: args.documentName, before: listedBefore },
-    { timeout: 30000 },
-  ).then(() => { state.listed = true; }, () => {});
+  const popupOpened = page.context().waitForEvent('page', { timeout: 20000 });
+  await page.locator('button[action=upload]:visible').first().click();
+  const popup = await popupOpened;
+  await popup.waitForLoadState('domcontentloaded');
+  await popup.locator('input[type=file]').setInputFiles(args.file);
+  await popup.locator('input[name=filename]').fill(args.documentName);
+  await shot({ ...ctx, page: popup }, 'before.png');
+  await popup.getByRole('button', { name: /^Upload$/ }).click();
+  // The popup's upload sets state.uploadSent in the route guard. A list that does not show the name leaves it unlisted.
+  await page.getByText(args.documentName, { exact: true }).first().waitFor({ timeout: 30000 })
+    .then(() => { state.listed = true; }, () => {});
   await shot(ctx, 'after.png');
-}
-
-function routeFacts(request) {
-  return {
-    method: request.method(),
-    url: request.url(),
-    resourceType: request.resourceType(),
-    postData: request.postData() ?? '',
-    contentType: request.headers()['content-type'] ?? '',
-  };
 }
 
 async function attachLive(args, dir) {
@@ -310,7 +139,7 @@ async function attachLive(args, dir) {
     page: null,
     secret: null,
   };
-  const state = { refusal: null, uploadSent: false, listed: false, error: null, blocked: [] };
+  const state = { refusal: null, uploadSent: false, listed: false, error: null };
   let browser = null;
   let context = null;
   try {
@@ -319,42 +148,21 @@ async function attachLive(args, dir) {
     ctx.secret = await readSecret();
     const origin = new URL(ctx.secret.loginUrl).origin;
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
-    // serviceWorkers block: a service worker's requests would not pass through context.route.
-    context = await browser.newContext({
-      ignoreHTTPSErrors: true,
-      acceptDownloads: false,
-      serviceWorkers: 'block',
-      viewport: { width: 1600, height: 1000 },
-    });
+    context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
     await context.route('**/*', (route) => {
-      let decision;
-      let facts = null;
-      try {
-        facts = routeFacts(route.request());
-        decision = attachRequestDecision({ ...facts, origin, confirmation: args.confirmation });
-      } catch {
-        decision = { allowed: false, code: 'guard_failure' };
+      const request = route.request();
+      const allowed = attachRequestAllowed({
+        method: request.method(),
+        url: request.url(),
+        resourceType: request.resourceType(),
+        postData: request.postData() ?? '',
+        contentType: request.headers()['content-type'] ?? '',
+        origin,
+      });
+      if (allowed && request.method() === 'POST' && new URL(request.url()).pathname === UPLOAD_PATH) {
+        state.uploadSent = true;
       }
-      if (decision.allowed) {
-        if (decision.rule === 'upload') state.uploadSent = true;
-        return route.continue();
-      }
-      if (state.blocked.length < BLOCKED_LOG_MAX) {
-        // Method, path and code only: queries and bodies can carry guest data.
-        let path = '[unparsed]';
-        try {
-          path = new URL(facts?.url ?? '').pathname;
-        } catch {
-          /* keep the placeholder */
-        }
-        state.blocked.push({ method: facts?.method ?? '?', path, code: decision.code });
-      }
-      // A blocked non-GET before the upload ends the run: nothing more is clicked on a page that tried to write.
-      if (!state.uploadSent && facts?.method !== 'GET' && facts?.method !== 'HEAD') {
-        state.refusal ??= 'refused_request_blocked';
-        void ctx.page?.close({ runBeforeUnload: false }).catch(() => {});
-      }
-      return route.abort('blockedbyclient');
+      return allowed ? route.continue() : route.abort();
     });
     ctx.page = await context.newPage();
     ctx.page.setDefaultTimeout(20000);
@@ -363,13 +171,13 @@ async function attachLive(args, dir) {
     await ctx.page.waitForTimeout(1500);
     const found = await findStay(ctx, { evidence: false });
     if (!found) {
-      state.refusal ??= 'not_found';
+      state.refusal = 'not_found';
     } else {
       if (found.locator) await openRecord(ctx.page, found.locator);
       const verdict = identityCheck(args, await readRecord(ctx.page));
       if (!verdict.ok) {
-        state.refusal ??= verdict.outcome;
-      } else if (!state.refusal) {
+        state.refusal = verdict.outcome;
+      } else {
         await shot(ctx, 'opened.png');
         await uploadDocument(ctx, args, state);
       }
@@ -384,17 +192,13 @@ async function attachLive(args, dir) {
     outcome: attachOutcome(state),
     uploadSent: state.uploadSent,
     screenshots: ctx.result.screenshots.map((path) => basename(path)),
-    blocked: state.blocked,
     error: state.error,
   };
 }
 
-// Runs one attach. Nothing is read or opened unless ATTACH_VERIFIED=true, the arrival is a 2027+ lab arrival and the
-// file is a PDF under the cap.
-export async function attachDocument(args, dir, env = process.env) {
-  if (!attachVerified(env)) return refusedResult('refused_unverified');
-  const lab = preflight(args);
-  if (!lab.ok) return refusedResult(lab.outcome);
+// Runs one attach. Nothing is read or opened while ATTACH_VERIFIED is false.
+export async function attachDocument(args, dir) {
+  if (!ATTACH_VERIFIED) return refusedResult('refused_unverified');
   const body = await readFile(args.file).catch(() => null);
   if (!isPdfBytes(body)) return refusedResult('refused_file_invalid');
   return attachLive(args, dir);

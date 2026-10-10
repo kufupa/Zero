@@ -6,12 +6,7 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     const routes = decodeURIComponent(pathname.split('/').at(-1) ?? '').split(',');
     if (routes.includes('workstation.executeStaffQuote')) return 20 * 60_000;
     // voucherFind: a 15 s text read, then up to 20 s for a scanned PDF's vision read (SCANNED_PDF_VISION).
-    // retryTranslation: one translation call, bounded by the server at 40 s (TRANSLATE_DEADLINE_MS).
-    if (
-      routes.includes('quoteWorkflow.analyseSelection') ||
-      routes.includes('quoteWorkflow.voucherFind') ||
-      routes.includes('workItems.retryTranslation')
-    )
+    if (routes.includes('quoteWorkflow.analyseSelection') || routes.includes('quoteWorkflow.voucherFind'))
       return 45_000;
     // Browser runs under the hotel lock: a find or name search takes about 1-2 minutes; the server bounds it at 5.
     if (routes.includes('paneStayLookup.findStay') || routes.includes('paneStayLookup.searchGuest'))

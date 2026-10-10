@@ -3,10 +3,7 @@ import {
   bindStoredWork,
   quoteAnalysisOf,
   workItemsFromTrpc,
-  type ContactField,
   type RecordFieldEventInput,
-  type StoredContact,
-  type StoredTranslation,
   type StoredWork,
 } from './backend-bind';
 import type { QuoteAnalysis, QuoteBoard, StayGroupRequirement } from './types';
@@ -30,14 +27,7 @@ export type StoredPane =
   | { state: 'loading' }
   | { state: 'reading' }
   | { state: 'failed'; reason: string }
-  | {
-      state: 'ready';
-      analysis: QuoteAnalysis;
-      workItemId: string;
-      contact: StoredContact;
-      language: string | null;
-      translation: StoredTranslation;
-    };
+  | { state: 'ready'; analysis: QuoteAnalysis; workItemId: string };
 
 export type StoredDecision =
   | { kind: 'wait' }
@@ -167,8 +157,6 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
   // Sends that failed twice. Kept across mail changes until a retry or a newer edit to the same field.
   const failed = useRef(new Map<string, FieldSend>());
   const [saveFailed, setSaveFailed] = useState(false);
-  // The work item whose translation is being asked for again, so "Translating…" shows for that mail only.
-  const [translating, setTranslating] = useState<string | null>(null);
   const trpcRef = useRef(trpc);
 
   useEffect(() => {
@@ -276,14 +264,7 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
   if (!internetMessageId || !canLookUp) pane = { state: 'reading' };
   else if (!stored) pane = { state: 'loading' };
   else if (stored.status === 'ready') {
-    pane = {
-      state: 'ready',
-      analysis: quoteAnalysisOf(stored.analysis),
-      workItemId: stored.workItemId,
-      contact: stored.contact,
-      language: stored.language,
-      translation: stored.translation,
-    };
+    pane = { state: 'ready', analysis: quoteAnalysisOf(stored.analysis), workItemId: stored.workItemId };
   } else if (stored.status === 'failed' && retried === 0) {
     pane = { state: 'failed', reason: stored.reason };
   } else pane = { state: 'reading' };
@@ -319,45 +300,5 @@ export function useStoredWork(args: { trpc: unknown; internetMessageId: string |
     [readyRefs, readyWorkItemId, schedule],
   );
 
-  /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
-  const recordContact = useCallback(
-    (field: ContactField, value: string | null) => {
-      if (!readyWorkItemId) return;
-      schedule(`contact.${field}`, readyWorkItemId, value);
-    },
-    [readyWorkItemId, schedule],
-  );
-
-  /**
-   * Asks for the stored translation again. The answer replaces the stored translation on the pane, if the same mail is
-   * still on screen. A call that fails leaves the translation as it was.
-   */
-  const retryTranslation = useCallback(() => {
-    const retry = workItemsFromTrpc(trpcRef.current).retryTranslation;
-    if (!retry || !readyWorkItemId) return;
-    const workItemId = readyWorkItemId;
-    const settle = () => setTranslating((current) => (current === workItemId ? null : current));
-    setTranslating(workItemId);
-    retry.mutate({ workItemId }).then((result) => {
-      settle();
-      if (result.status !== 'done') return;
-      setLookup((prev) =>
-        prev && prev.result.status === 'ready' && prev.result.workItemId === workItemId
-          ? { ...prev, result: { ...prev.result, translation: result.translation ?? null } }
-          : prev,
-      );
-    }, settle);
-  }, [readyWorkItemId]);
-
-  return {
-    pane,
-    key,
-    retry,
-    recordGroups,
-    recordContact,
-    retryTranslation,
-    translationBusy: translating !== null && translating === readyWorkItemId,
-    saveFailed,
-    retrySave,
-  };
+  return { pane, key, retry, recordGroups, saveFailed, retrySave };
 }
