@@ -1830,7 +1830,9 @@ export const draftsRouter = tRouter({
             if (!untouchedSavedReply && input.replaceDraft === undefined) {
               throw new TRPCError({ code: 'CONFLICT', message: `DRAFT_REPLACE_CONFIRM_REQUIRED:${replaceToken}` });
             }
-            if (!untouchedSavedReply && input.replaceDraft !== replaceToken) {
+            // A confirm names one draft at one revision. Any other current draft (even this user's newer save from
+            // another tab) asks again rather than being overwritten.
+            if (input.replaceDraft !== undefined && input.replaceDraft !== replaceToken) {
               throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
             }
             if (!untouchedSavedReply) {
