@@ -18,8 +18,10 @@ import {
 } from '../src/ai/work-items.js';
 import { HMS_JOB_PROMPT_VERSION, NOT_APPLICABLE_MODEL_ID } from '../src/ai/run-ledger.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
-import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
+import { aiWorkflowRun, mailboxTransport, mailDraft, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
+import { user } from '../src/db/schema/auth.js';
+import { NAVA_USER_EMAIL, NAVA_USER_ID } from '../src/db/seed.js';
 import { appRouter } from '../src/trpc/router.js';
 import { AE1_OUTPUT, AE1_TEXT, fakeModel, selectionFor } from './fixtures/inbound-extraction.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
@@ -1064,5 +1066,87 @@ describe('needs-you list', () => {
         sender: 'sender@example.com',
         subject: 'Rooms request',
       });
+    }));
+});
+
+describe('follow-up route', () => {
+  it('lists the suggestion, maps a missing or busy one to NOT_FOUND and CONFLICT, and scopes it to the transport', () =>
+    withDb(async (db) => {
+      await addOtherTransport(db);
+      await seedMail(db, 'fu1');
+      await db.insert(user).values({ id: NAVA_USER_ID, name: 'Nava AI', email: NAVA_USER_EMAIL, emailVerified: true });
+      await db.insert(message).values({
+        id: 'out-fu1',
+        transportId: CENTURION,
+        threadId: 'thread-fu1',
+        direction: 'outbound',
+        fromAddress: 'centurion@legacyhotels.co.za',
+        toAddresses: ['sender@example.com'],
+        ccAddresses: [],
+        bccAddresses: [],
+        subject: 'Re: Rooms request',
+        textBody: 'Please find our quote.',
+        ownerHeaderValue: 'centurion@legacyhotels.co.za',
+        messageIdHeader: 'out-fu1@example.com',
+        references: [],
+        isRead: true,
+        isStarred: false,
+        sentAt: new Date('2026-10-09T08:00:00Z'),
+      });
+      await db.insert(workItem).values({
+        transportId: CENTURION,
+        threadId: 'thread-fu1',
+        sourceMessageId: 'msg-fu1',
+        kind: 'quote',
+        status: 'needs_you',
+        sentMessageId: 'out-fu1',
+        sentAt: new Date('2026-10-09T08:00:00Z'),
+      });
+      await db.insert(mailDraft).values({
+        id: 'quote-followup:out-fu1',
+        transportId: CENTURION,
+        threadId: 'thread-fu1',
+        createdByUserId: NAVA_USER_ID,
+        subject: 'Re: Rooms request',
+        textBody: 'Hello, following up on our quote.',
+        htmlBody: '<p>Hello, following up on our quote.</p>',
+        status: 'candidate',
+        origin: 'manual',
+        replyToMessageId: 'out-fu1',
+      });
+      const route = centurionCaller().workItems;
+
+      expect(await route.followUpByMessage({ internetMessageId: '<fu1@example.com>' })).toMatchObject({
+        state: 'suggested',
+        id: 'quote-followup:out-fu1',
+      });
+      expect(await route.followUpByMessage({ internetMessageId: '<nobody@example.com>' })).toBeNull();
+      await expect(
+        centurionCaller(OTHER).workItems.useFollowUp({ draftId: 'quote-followup:out-fu1' }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      await expect(
+        centurionCaller().workItems.dismissFollowUp({ draftId: 'quote-followup:missing' }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+      await db.insert(mailDraft).values({
+        id: 'reply-in-progress',
+        transportId: CENTURION,
+        threadId: 'thread-fu1',
+        createdByUserId: NAVA_USER_ID,
+        subject: 'Re: Rooms request',
+        textBody: 'Our reply.',
+        status: 'active',
+        origin: 'manual',
+      });
+      await expect(
+        route.useFollowUp({ draftId: 'quote-followup:out-fu1' }),
+      ).rejects.toMatchObject({ code: 'CONFLICT', message: 'ACTIVE_DRAFT_EXISTS' });
+      expect(
+        await route.useFollowUp({ draftId: 'quote-followup:out-fu1', replaceActive: true }),
+      ).toMatchObject({ state: 'in_reply', id: 'quote-followup:out-fu1' });
+      // Once used it is no longer a candidate, so the pane cannot dismiss it.
+      await expect(
+        route.dismissFollowUp({ draftId: 'quote-followup:out-fu1' }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
     }));
 });
