@@ -291,13 +291,13 @@ export async function runInboundExtraction(
   });
   // The work item points at this read. Its person-set values stay in its state (see work-items.ts).
   await ensureWorkItemForMessage(db, { transportId: run.transportId, messageId: run.triggerMessageId });
-  if (env.AI_WRITE_GATE_ENABLED === 'true') {
-    // Once the classifier is retired, a sender the person blocked goes to spam here, as the classifier did.
-    const retired = !isInboundTriageClassifierEnabled(env);
+  // Spam has one writer. While the classifier is on it owns spamAt and this read only records its kind, so the two
+  // never race (the read could otherwise spam a thread before the classifier files it). Once it is retired, this read
+  // writes spam with the classifier's guards: a blocked sender goes to spam, and any other read lifts the mark.
+  if (env.AI_WRITE_GATE_ENABLED === 'true' && !isInboundTriageClassifierEnabled(env)) {
     const blocked =
-      retired &&
       (await getSenderPreference({ db, transportId: run.transportId, emailRaw: trigger.fromAddress })) ===
-        'block';
+      'block';
     const markSpam =
       blocked ||
       (extraction.kind === 'spam' &&
@@ -315,10 +315,9 @@ export async function runInboundExtraction(
             isNull(mailThread.spamUserLockedAt),
           ),
         );
-    } else if (retired) {
-      // Un-spam replaces the classifier's, so it runs only once the classifier is retired. Like the classifier, any
-      // read that is not spam lifts the mark ('other' covers events, venue hire and invoices), and so does a spam read
-      // the guards keep out (allowed or never-spam sender, staff reply).
+    } else {
+      // Like the classifier, any read that is not spam lifts the mark ('other' covers events, venue hire and
+      // invoices), and so does a spam read the guards keep out (allowed or never-spam sender, staff reply).
       await liftSpamOnLatestInbound(db, run, trigger);
     }
   }

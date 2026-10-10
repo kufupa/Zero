@@ -231,7 +231,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       expect(await runsFor(db, extractionKey(messageId))).toHaveLength(0);
     }));
 
-  it('default (classifier unset, extraction on): both runs queue, and the read projects no baseline and lifts no spam', () =>
+  it('default (classifier unset, extraction on): both runs queue; the read projects no baseline and writes no spam', () =>
     withIngestionDb(async ({ db }) => {
       vi.stubEnv('INBOUND_EXTRACTION', 'on');
       const { messageId, threadId } = await persistOutlookHistory(db, history('u5-default'));
@@ -253,8 +253,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
         limit: 20,
       });
       expect(baseline).toEqual([]);
-      // The classifier owns un-spam while it is on.
+      // The classifier owns spam and un-spam while it is on.
       expect(await spamAtOf(db, messageId)).not.toBeNull();
+      const spam = await persistOutlookHistory(db, history('u5-default-spam', { textBody: SPAM_TEXT }));
+      await admit(db, spam.messageId);
+      await readWith(db, spam.messageId, SPAM_TEXT, SPAM_OUTPUT, DEFAULT_ON);
+      expect(await extractionOf(db, spam.messageId)).toMatchObject({ kind: 'spam' });
+      expect(await spamAtOf(db, spam.messageId)).toBeNull();
     }));
 
   it('with the flag off, inbound mail gets an extraction and a baseline row, and no classifier run', () =>
