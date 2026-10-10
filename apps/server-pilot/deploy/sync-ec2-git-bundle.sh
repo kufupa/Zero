@@ -479,6 +479,22 @@ if ! git check-ref-format --branch "$GIT_BRANCH" >/dev/null 2>&1; then
   exit 1
 fi
 
+# The bundle ships local refs/heads/$GIT_BRANCH, not origin. A stale or unpushed
+# local branch would deploy the wrong commit, so it must match origin first.
+if [ "${ALLOW_UNPUSHED_DEPLOY:-0}" != "1" ]; then
+  if ! git fetch -q origin "+refs/heads/$GIT_BRANCH:refs/remotes/origin/$GIT_BRANCH"; then
+    echo "error: cannot fetch origin/$GIT_BRANCH to check the deploy branch (ALLOW_UNPUSHED_DEPLOY=1 skips this check)" >&2
+    exit 1
+  fi
+  LOCAL_COMMIT="$(git rev-parse --verify --quiet "refs/heads/$GIT_BRANCH^{commit}" || true)"
+  ORIGIN_COMMIT="$(git rev-parse --verify --quiet "refs/remotes/origin/$GIT_BRANCH^{commit}" || true)"
+  if [ -z "$LOCAL_COMMIT" ] || [ "$LOCAL_COMMIT" != "$ORIGIN_COMMIT" ]; then
+    echo "error: local $GIT_BRANCH (${LOCAL_COMMIT:0:9}) does not match origin/$GIT_BRANCH (${ORIGIN_COMMIT:0:9})" >&2
+    echo "  update it first: git fetch origin $GIT_BRANCH:$GIT_BRANCH (ALLOW_UNPUSHED_DEPLOY=1 skips this check)" >&2
+    exit 1
+  fi
+fi
+
 echo "Creating git bundle for $GIT_BRANCH..."
 git bundle create "$BUNDLE_FILE" "refs/heads/$GIT_BRANCH"
 
