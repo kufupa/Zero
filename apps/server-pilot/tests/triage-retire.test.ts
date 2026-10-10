@@ -28,7 +28,7 @@ import {
   toAiRunFence,
 } from '../src/ai/run-ledger.js';
 import { queryMailBaselineProjection } from '../src/metrics/mail-baseline-projection.js';
-import { runInboundExtractionBackfill } from '../scripts/backfill-inbound-extraction.js';
+import { parseBackfillArgs, runInboundExtractionBackfill } from '../scripts/backfill-inbound-extraction.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { admitLiveMessage } from '../src/mail/ingest/live-admission.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
@@ -628,6 +628,62 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       await runInboundExtractionBackfill({ db, now, dryRun: false, maxPerHour: 1 });
       expect(await extractionRuns()).toHaveLength(2);
     }));
+
+  it('the backfill --message-id queues only those rows, outside the window too, with the live key', () =>
+    withIngestionDb(async ({ db }) => {
+      const now = new Date('2026-10-10T12:00:00.000Z');
+      const picked = await persistOutlookHistory(db, history('u5-mid-picked'));
+      const old = await persistOutlookHistory(db, history('u5-mid-old'));
+      const other = await persistOutlookHistory(db, history('u5-mid-other'));
+      const ambiguous = await persistOutlookHistory(db, history('u5-mid-ambiguous'));
+      await db.update(message).set({ receivedAt: new Date(now.getTime() - HOUR_MS) }).where(eq(message.id, picked.messageId));
+      await db.update(message).set({ receivedAt: new Date(now.getTime() - HOUR_MS) }).where(eq(message.id, other.messageId));
+      // Older than the 14-day window: named by id, it is still read.
+      await db
+        .update(message)
+        .set({ receivedAt: new Date(now.getTime() - 30 * 24 * HOUR_MS) })
+        .where(eq(message.id, old.messageId));
+      // Ambiguous identity stays out even when named.
+      await db
+        .update(message)
+        .set({ sourceProvenance: { attention: 'AMBIGUOUS_IDENTITY' }, receivedAt: now })
+        .where(eq(message.id, ambiguous.messageId));
+      const messageIds = [picked.messageId, old.messageId, ambiguous.messageId, 'msg-missing'];
+      const keys = async () =>
+        (
+          await db
+            .select({ key: aiWorkflowRun.idempotencyKey })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.runKind, 'inbound_extraction'))
+        )
+          .map((row) => row.key)
+          .sort();
+
+      expect(await runInboundExtractionBackfill({ db, now, dryRun: true, maxPerHour: 60, messageIds })).toEqual({
+        dryRun: true,
+        candidates: 2,
+        queued: 0,
+        hours: 1,
+        maxPerHour: 60,
+      });
+      expect(await keys()).toEqual([]);
+      await runInboundExtractionBackfill({ db, now, dryRun: false, maxPerHour: 60, messageIds });
+      expect(await keys()).toEqual([extractionKey(picked.messageId), extractionKey(old.messageId)].sort());
+      // A repeat adds nothing, and the unnamed mail in the window was never queued.
+      await runInboundExtractionBackfill({ db, now, dryRun: false, maxPerHour: 60, messageIds });
+      expect(await keys()).toHaveLength(2);
+      expect(await keys()).not.toContain(extractionKey(other.messageId));
+    }));
+
+  it('the backfill parses a repeated --message-id, drops repeats, and refuses an empty one', () => {
+    expect(parseBackfillArgs(['--dry-run', '--message-id', 'm1', '--message-id', ' m2 ', '--message-id', 'm1'])).toEqual({
+      dryRun: true,
+      help: false,
+      messageIds: ['m1', 'm2'],
+    });
+    expect(parseBackfillArgs([])).toEqual({ dryRun: false, help: false });
+    expect(() => parseBackfillArgs(['--message-id', ' '])).toThrow();
+  });
 
   it('a thread with a later staff reply starts its work item done, and an unanswered one needs you', () =>
     withIngestionDb(async ({ db }) => {

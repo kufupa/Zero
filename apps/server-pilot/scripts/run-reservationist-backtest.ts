@@ -32,6 +32,7 @@ import {
   BACKTEST_TARGETS,
   GOLDEN_TARGETS,
   cellOf,
+  goldenMailbox,
   incompleteRunProblems,
   pickSubset,
   readGoldenSet,
@@ -167,7 +168,7 @@ async function run(runId: string, target: BacktestTarget, subset?: number): Prom
   );
   const todo = picked.filter((row) => !done.has(row.id));
   console.log(JSON.stringify({ runId, target, cases: picked.length, todo: todo.length }));
-  if (target !== 'agent') return runProduction(target, todo, tracesPath);
+  if (target !== 'agent') return runProduction(target, todo, tracesPath, goldenMailbox(rows));
 
   const model = createAzureLunaModel();
   const defaults = createDefaultRunners({
@@ -247,7 +248,12 @@ async function run(runId: string, target: BacktestTarget, subset?: number): Prom
 }
 
 /** pane and extract: the production adapter, prompt and deadline for every row. */
-async function runProduction(target: 'pane' | 'extract', todo: GoldenRow[], tracesPath: string): Promise<number> {
+async function runProduction(
+  target: 'pane' | 'extract',
+  todo: GoldenRow[],
+  tracesPath: string,
+  mailbox: string | null,
+): Promise<number> {
   const { adapter } = resolveAdapter(true, null);
   if (!adapter) throw new Error('AZURE_OPENAI_BASE_URL and AZURE_FOUNDRY_API_KEY required');
   let finished = 0;
@@ -255,7 +261,7 @@ async function runProduction(target: 'pane' | 'extract', todo: GoldenRow[], trac
     const started = Date.now();
     let trace: Trace;
     try {
-      trace = { id: row.id, split: row.split, type: row.type, ...(await runProductionTarget(target, row, adapter)), ms: Date.now() - started };
+      trace = { id: row.id, split: row.split, type: row.type, ...(await runProductionTarget(target, row, adapter, mailbox)), ms: Date.now() - started };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       const empty = target === 'pane' ? { target, analysis: null } : { target, extraction: null };

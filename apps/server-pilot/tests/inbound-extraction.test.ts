@@ -45,6 +45,9 @@ import {
   SPAM_OUTPUT,
   SPAM_TEXT,
   selectionFor,
+  STAFF_FORWARD_FROM,
+  STAFF_FORWARD_SUBJECT,
+  STAFF_FORWARD_TEXT,
   VOUCHER_OUTPUT,
   VOUCHER_TEXT,
 } from './fixtures/inbound-extraction.js';
@@ -118,8 +121,9 @@ describe('inbound extraction stored read', () => {
       const selection = selectionFor(AE1_TEXT, AE1_SUBJECT);
 
       expect(await readMail(db, messageId, selection, model.adapter)).toBe('stored');
-      // The model sees the From address, so the agency can come from the sender domain.
-      expect(model.calls[0]?.userPrompt).toContain(`From: ${AE1_FROM}`);
+      // The model sees the From address, so the agency can come from the sender domain, and the mailbox address, so
+      // a sender on the hotel's own domain reads as staff.
+      expect(model.calls[0]?.userPrompt).toContain(`Mailbox: centurion@legacyhotels.co.za\nFrom: ${AE1_FROM}`);
       expect(model.calls[0]?.systemPrompt).toMatch(/agency is the organisation of the sender/);
       const row = await rowFor(db, messageId);
       expect(row).toMatchObject({ status: 'succeeded', kind: 'quote', language: 'en', translation: null });
@@ -152,6 +156,30 @@ describe('inbound extraction stored read', () => {
       expect(again.ok ? again.payload.stays[1]!.rows.map((row) => row.id) : null).toEqual(
         payload.stays[1]!.rows.map((row) => row.id),
       );
+    }));
+
+  it('a staff forward of an outside request: the model gets the mailbox and the staff rule, and the read is the request', () =>
+    withIngestionDb(async ({ db }) => {
+      const messageId = await seedMail(db, 'thread-fw1', STAFF_FORWARD_TEXT, 'inbound', STAFF_FORWARD_FROM);
+      // Stands in for the correct answer: the forwarded operator request, never the hotel group as the agency.
+      const model = fakeModel(() => AE1_OUTPUT);
+      const selection = selectionFor(STAFF_FORWARD_TEXT, STAFF_FORWARD_SUBJECT);
+
+      expect(await readMail(db, messageId, selection, model.adapter)).toBe('stored');
+      // The sender shares the mailbox's domain, so the model can tell the mail comes from staff.
+      expect(model.calls[0]?.userPrompt).toContain(
+        `Mailbox: centurion@legacyhotels.co.za\nFrom: ${STAFF_FORWARD_FROM}`,
+      );
+      expect(model.calls[0]?.systemPrompt).toMatch(/When staff pass on an outside request for the hotel to handle/);
+      expect(model.calls[0]?.systemPrompt).toMatch(/The hotel and its group are never the agency/);
+      const row = await rowFor(db, messageId);
+      expect(row).toMatchObject({ status: 'succeeded', kind: 'quote' });
+      const payload = row!.payload as MailExtractionPayload;
+      expect(payload.agency).toBe('Horizon Trail Tours');
+      expect(payload.contact.email).toBe('priya@horizontrailtours.example');
+      expect(payload.stays).toHaveLength(2);
+      const [item] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
+      expect(item).toMatchObject({ kind: 'quote', extractionId: row!.id });
     }));
 
   it('AE2: an amendment keeps requested and booked pairs, and a French body gets an aligned translation', () =>
@@ -668,6 +696,21 @@ describe('flags, cap parsing and the rules', () => {
         inboundExtractionMaxPerHour({ INBOUND_EXTRACTION_MAX_PER_HOUR: value } as NodeJS.ProcessEnv),
       ).toBe(60);
     }
+  });
+
+  it('a staff forward of an outside request reads as that request, and the hotel is never the agency', () => {
+    const { system, user } = buildInboundPrompt(
+      selectionFor(AE1_TEXT),
+      'hara@legacyhotels.co.za',
+      'centurion@legacyhotels.co.za',
+    );
+    expect(system).toMatch(/a sender on the Mailbox address's domain, or one who signs for this hotel or its hotel group, is staff/);
+    expect(system).toMatch(/kind, stays, agency, endClient and contact come from the request passed on/);
+    expect(system).toMatch(/The hotel and its group are never the agency/);
+    expect(system).toMatch(/Only a staff mail that passes on no outside request is other/);
+    expect(user).toContain('Mailbox: centurion@legacyhotels.co.za\nFrom: hara@legacyhotels.co.za\n\n');
+    // No mailbox, no line: the From address alone, as before.
+    expect(buildInboundPrompt(selectionFor(AE1_TEXT), 'hara@legacyhotels.co.za').user).not.toContain('Mailbox:');
   });
 
   it('the rules no longer send 10+ rooms to other, and a 30-room rooms-only group is a quote', () => {

@@ -451,6 +451,136 @@ describe('work item upsert', () => {
       expect(item!.extractionId).toBe(second);
     }));
 
+  it('a new-version read that changes the kind (an internal forward read again as a quote) is what the pane shows', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'fw1');
+      const lookup = { transportId: CENTURION, internetMessageId: '<fw1@example.com>' };
+      const old = await insertRead(db, messageId, {
+        version: 'extract-v1',
+        kind: 'other',
+        payload: { ...payload(), agency: 'Grand Hotel Group' },
+      });
+      await db
+        .update(mailExtraction)
+        .set({ createdAt: new Date(Date.now() - 60_000) })
+        .where(eq(mailExtraction.id, old));
+      const before = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect((await storedWorkFor(db, lookup)) as { analysis: { intent: string } }).toMatchObject({
+        extractionId: old,
+        analysis: { intent: 'other' },
+      });
+
+      // The re-read the extractor change queues (same message, new version) lands as the latest succeeded read.
+      const next = await insertRead(db, messageId, { version: 'extract-v2', kind: 'quote', payload: payload() });
+      const after = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(after?.id).not.toBe(before?.id);
+      expect(after?.extractionId).toBe(next);
+      const work = await storedWorkFor(db, lookup);
+      if (work.status !== 'ready') throw new Error(`expected ready, got ${work.status}`);
+      expect(work.extractionId).toBe(next);
+      expect(work.workItemId).toBe(after?.id);
+      expect(work.analysis.intent).toBe('quote');
+      expect(work.analysis.groups[0]!.organisation).toBe('Horizon Trail Tours');
+
+      // Nobody touched the item from the older read, so it is dismissed with a system event and leaves Needs you.
+      const [stale] = await db.select().from(workItem).where(eq(workItem.id, before!.id));
+      expect(stale).toMatchObject({ kind: 'other', status: 'dismissed' });
+      expect(await eventsFor(db, before!.id)).toEqual([
+        expect.objectContaining({
+          actorKind: 'system',
+          type: 'status.changed',
+          value: expect.objectContaining({ from: 'needs_you', to: 'dismissed', extractionId: next }),
+        }),
+      ]);
+      const open = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(open.map((row) => row.id)).toEqual([after!.id]);
+      // A repeat changes nothing.
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(await eventsFor(db, before!.id)).toHaveLength(1);
+    }));
+
+  it('a read that returns to an earlier kind brings its item back, unless she dismissed it herself', () =>
+    withDb(async (db) => {
+      const ago = (ms: number) => new Date(Date.now() - ms);
+      const read = async (messageId: string, version: string, kind: 'quote' | 'other', age: number) => {
+        const id = await insertRead(db, messageId, { version, kind, payload: payload() });
+        await db.update(mailExtraction).set({ createdAt: ago(age) }).where(eq(mailExtraction.id, id));
+        return id;
+      };
+      const status = async (id: string) =>
+        (await db.select({ status: workItem.status }).from(workItem).where(eq(workItem.id, id)))[0]!.status;
+
+      // quote, then other, then quote again: the quote item comes back on the newest read, the other item goes.
+      const messageId = await seedMail(db, 'fw4');
+      await read(messageId, 'extract-v1', 'quote', 30_000);
+      const quote = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      await read(messageId, 'extract-v2', 'other', 20_000);
+      const other = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(await status(quote!.id)).toBe('dismissed');
+      const third = await read(messageId, 'extract-v3', 'quote', 10_000);
+      const back = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(back).toMatchObject({ id: quote!.id, status: 'needs_you', extractionId: third });
+      expect(await status(other!.id)).toBe('dismissed');
+      const open = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(open.map((row) => row.id)).toEqual([quote!.id]);
+
+      // Her own dismissal stands when the kind comes back.
+      const mine = await seedMail(db, 'fw5');
+      await read(mine, 'extract-v1', 'quote', 30_000);
+      const kept = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: mine });
+      expect(await dismissWorkItem(db, { transportId: CENTURION, workItemId: kept!.id, userId: USER })).toEqual({
+        status: 'dismissed',
+      });
+      await read(mine, 'extract-v2', 'other', 20_000);
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: mine });
+      await read(mine, 'extract-v3', 'quote', 10_000);
+      const again = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: mine });
+      expect(again?.id).toBe(kept!.id);
+      expect(await status(kept!.id)).toBe('dismissed');
+    }));
+
+  it('a kind-changing re-read never dismisses an older item she has edited, or one already done', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'fw2');
+      const old = await insertRead(db, messageId, { version: 'extract-v1', kind: 'other', payload: payload() });
+      await db
+        .update(mailExtraction)
+        .set({ createdAt: new Date(Date.now() - 60_000) })
+        .where(eq(mailExtraction.id, old));
+      const edited = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(
+        await recordFieldEvent(db, {
+          transportId: CENTURION,
+          workItemId: edited!.id,
+          userId: USER,
+          type: 'field.edit',
+          fieldPath: 'contact.phone',
+          value: '+27 11 555 0100',
+        }),
+      ).toMatchObject({ status: 'recorded' });
+      // A second untouched item from the older read, already marked done: done items are never dismissed.
+      const messageTwo = await seedMail(db, 'fw3');
+      const oldTwo = await insertRead(db, messageTwo, { version: 'extract-v1', kind: 'other', payload: payload() });
+      await db
+        .update(mailExtraction)
+        .set({ createdAt: new Date(Date.now() - 60_000) })
+        .where(eq(mailExtraction.id, oldTwo));
+      const done = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: messageTwo });
+      await db.update(workItem).set({ status: 'done' }).where(eq(workItem.id, done!.id));
+
+      await insertRead(db, messageId, { version: 'extract-v2', kind: 'quote', payload: payload() });
+      await insertRead(db, messageTwo, { version: 'extract-v2', kind: 'quote', payload: payload() });
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: messageTwo });
+
+      const [keptEdited] = await db.select().from(workItem).where(eq(workItem.id, edited!.id));
+      expect(keptEdited!.status).toBe('needs_you');
+      const [keptDone] = await db.select().from(workItem).where(eq(workItem.id, done!.id));
+      expect(keptDone!.status).toBe('done');
+      const open = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(open.map((row) => row.id)).toContain(edited!.id);
+    }));
+
   it('never moves the work item back to an older read a slow caller still holds', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'up2');

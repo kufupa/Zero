@@ -31,6 +31,7 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - totalRooms is the stay's total rooms as stated. When the mail gives a total without a split per room type (e.g. "30 rooms, single and double/twin rates"), set totalRooms, keep one row per room type with rooms null, and list rooms in missing. Never split a total yourself.
 - requested is the stay the sender asks for now. booked is set only for amendment, cancellation and voucher_pop: the dates the mail or thread says are currently booked. Otherwise booked is null.
 - agency is the organisation of the sender: the From address domain, the signature or the letterhead. A travel agency or tour operator writing for its client is the agency. endClient is the party the booking is for ("our client X", or a client or group named in the subject or body), only when it differs from the sender. A company named in the subject is the end client, not the agency, unless the sender works for it. Never swap them.
+- Hotel staff: a sender on the Mailbox address's domain, or one who signs for this hotel or its hotel group, is staff. When staff pass on an outside request for the hotel to handle (a forward, or a note above the quoted or earlier request asking colleagues to quote, book or manage it), read the mail as that outside request, not an internal handover: kind, stays, agency, endClient and contact come from the request passed on, and the staff note only adds to it. The hotel and its group are never the agency. Only a staff mail that passes on no outside request is other, and so is a staff note saying the request is already handled (booked, confirmed or sent), even with the request quoted below it. A mail from outside is read by what it asks now.
 - confirmationNumbers are existing booking or confirmation numbers exactly as written. Never invent or reformat one.
 - contact is the sender or booker's name, email and phone, as written.
 - sourceLanguage is the ISO 639-1 code of the main body text, lower case.
@@ -61,12 +62,14 @@ export function usageOf(result: ModelInvokeResult | undefined, startedAt: number
 }
 
 /**
- * System rules plus the mail as text, with the From address so the agency can come from the sender domain. Scanned
- * PDF bytes are dropped: their card digits cannot be masked.
+ * System rules plus the mail as text, with the From address so the agency can come from the sender domain, and the
+ * mailbox address so a sender on the hotel's own domain reads as staff. Scanned PDF bytes are dropped: their card
+ * digits cannot be masked.
  */
 export function buildInboundPrompt(
   selection: SyncedQuoteSelection,
   from?: string | null,
+  mailbox?: string | null,
 ): {
   system: string;
   user: string;
@@ -76,10 +79,14 @@ export function buildInboundPrompt(
     attachments: selection.attachments.map((attachment) => ({ ...attachment, pdf: undefined })),
   };
   const { user } = buildQuoteWorkflowPrompt(textOnly);
+  const headers = [
+    mailbox?.trim() ? `Mailbox: ${mailbox.trim()}` : null,
+    from?.trim() ? `From: ${from.trim()}` : null,
+  ].filter(Boolean);
   return {
     system: `${CENTURION_HOTEL_RULES}\n${EXTRACTION_RULES}`,
     user: maskCardNumbers(
-      `${UNTRUSTED_NOTE}\n\n${from?.trim() ? `From: ${from.trim()}\n\n` : ''}${user}`,
+      `${UNTRUSTED_NOTE}\n\n${headers.length ? `${headers.join('\n')}\n\n` : ''}${user}`,
     ).slice(0, MAX_PROMPT_CHARS),
   };
 }
@@ -184,10 +191,12 @@ export async function extractInboundMail(input: {
   messageId: string;
   /** The stored From header of the mail. */
   from?: string | null;
+  /** The address of the mailbox the mail came into (the transport's email). */
+  mailbox?: string | null;
   signal?: AbortSignal;
   deadlineMs?: number;
 }): Promise<ExtractionAttempt> {
-  const prompt = buildInboundPrompt(input.selection, input.from);
+  const prompt = buildInboundPrompt(input.selection, input.from, input.mailbox);
   const startedAt = Date.now();
   const called = await invokeBounded({
     adapter: input.adapter,

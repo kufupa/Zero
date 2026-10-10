@@ -6,6 +6,7 @@ import {
   STRATA,
   cellOf,
   extractFields,
+  goldenMailbox,
   incompleteRunProblems,
   pickSubset,
   readGoldenSet,
@@ -367,6 +368,17 @@ describe('production targets', () => {
     context: [{ id: 'c1', direction: 'outbound', eventAt: '2026-10-05T08:00:00.000Z', from: 'desk@hotel.test', subject: 'Re', text: 'Earlier thread body' }],
   };
 
+  it('extract: the mailbox is the address staff replies come from most, the same for every row', () => {
+    const reply = row.context[0]!;
+    const rows = [
+      row,
+      { ...row, context: [reply, { ...reply, id: 'c2', from: 'Desk@Hotel.test ' }, { ...reply, id: 'c3', from: 'gm@hotel.test' }] },
+      { ...row, context: [{ ...reply, id: 'c4', direction: 'inbound', from: 'guest@agency.test' }] },
+    ];
+    expect(goldenMailbox(rows)).toBe('desk@hotel.test');
+    expect(goldenMailbox([golden(1, 'dev')])).toBeNull();
+  });
+
   it('pane: sends the production analyse prompt and scores the mapped groups', async () => {
     const { adapter, calls } = fakeAdapter(luna());
     const trace = await runProductionTarget('pane', row, adapter);
@@ -425,7 +437,11 @@ describe('production targets', () => {
     const trace = await runProductionTarget('extract', row, adapter);
     expect(calls[0]!.systemPrompt).toContain(EXTRACTION_RULES);
     expect(calls[0]!.userPrompt).toContain(`From: ${row.trigger.from}`);
+    expect(calls[0]!.userPrompt).not.toContain('Mailbox:');
     expect(scoreGoldenCase(row, trace)).toMatchObject({ correct: 6, scored: 6, error: false });
+    const withMailbox = fakeAdapter(extraction());
+    await runProductionTarget('extract', row, withMailbox.adapter, 'desk@hotel.test');
+    expect(withMailbox.calls[0]!.userPrompt).toContain(`Mailbox: desk@hotel.test\nFrom: ${row.trigger.from}`);
 
     const amend = {
       ...row,

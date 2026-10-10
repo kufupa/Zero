@@ -493,6 +493,23 @@ export function goldenSelection(row: GoldenRow): SyncedQuoteSelection {
   };
 }
 
+/**
+ * The mailbox address prod passes the extraction (the transport's email), as the golden set shows it: the address its
+ * staff replies most often come from. The set is one mailbox, so every row gets the same one. Null with no reply.
+ */
+export function goldenMailbox(rows: readonly GoldenRow[]): string | null {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    for (const message of row.context) {
+      const address = message.direction === 'outbound' ? message.from.trim().toLowerCase() : '';
+      if (address) counts.set(address, (counts.get(address) ?? 0) + 1);
+    }
+  }
+  let best: string | null = null;
+  for (const [address, count] of counts) if (!best || count > counts.get(best)!) best = address;
+  return best;
+}
+
 export type GoldenUsage = { inputTokens?: number; outputTokens?: number; costUsd?: number } | null;
 
 /**
@@ -503,6 +520,7 @@ export async function runProductionTarget(
   target: 'pane' | 'extract',
   row: GoldenRow,
   adapter: ModelAdapter,
+  mailbox?: string | null,
 ): Promise<GoldenTrace & { usage: GoldenUsage }> {
   const selection = goldenSelection(row);
   if (target === 'pane') {
@@ -512,7 +530,7 @@ export async function runProductionTarget(
       ? { target, analysis: res.analysis, replayMisses: 0, usage }
       : { target, analysis: null, replayMisses: 0, usage, error: res.fallbackReason };
   }
-  const res = await extractInboundMail({ adapter, selection, messageId: row.trigger.id, from: row.trigger.from });
+  const res = await extractInboundMail({ adapter, selection, messageId: row.trigger.id, from: row.trigger.from, mailbox });
   const usage = { inputTokens: res.usage.inputTokens, outputTokens: res.usage.outputTokens, costUsd: res.usage.costUsd };
   return res.ok
     ? { target, extraction: { kind: res.kind, payload: res.payload }, replayMisses: 0, usage }
