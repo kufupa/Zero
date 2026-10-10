@@ -6,9 +6,11 @@ import {
   STRATA,
   cellOf,
   extractFields,
+  incompleteRunProblems,
   pickSubset,
   readGoldenSet,
   replayRunners,
+  runCasesDigest,
   runProductionTarget,
   scoreFields,
   scoreGoldenCase,
@@ -188,6 +190,37 @@ describe('golden set validation and subset', () => {
     expect(subset.filter((row) => row.split === 'holdout')).toHaveLength(10);
     expect(new Set(subset.filter((row) => row.split === 'dev').map(cellOf)).size).toBe(20);
     expect(pickSubset([...rows].reverse(), 30).map((row) => row.id)).toEqual(ids);
+  });
+
+  it('spreads a small subset across every request type in both splits, quote types included', () => {
+    const subset = pickSubset(fullSet(), 30);
+    for (const split of ['dev', 'holdout'] as const) {
+      expect(new Set(subset.filter((row) => row.split === split).map((row) => row.type))).toEqual(new Set(STRATA));
+    }
+  });
+});
+
+describe('run binding and completeness', () => {
+  it('fingerprints the selected cases so an edited case or a different selection cannot resume or score', () => {
+    const rows = fullSet();
+    const digest = runCasesDigest(rows);
+    expect(runCasesDigest([...rows].reverse())).toBe(digest);
+    expect(runCasesDigest(pickSubset(rows, 30))).not.toBe(digest);
+    const edited = rows.map((row, i) => (i === 3 ? { ...row, trigger: { ...row.trigger, text: 'Edited request' } } : row));
+    expect(runCasesDigest(edited)).not.toBe(digest);
+    const relabeled = rows.map((row, i) => (i === 3 ? { ...row, expected: { ...row.expected, adults: 9 } } : row));
+    expect(runCasesDigest(relabeled)).not.toBe(digest);
+  });
+
+  it('refuses to pass a run with untraced declared cases or an unscored split', () => {
+    const rows = [golden(0, 'dev'), golden(80, 'holdout')];
+    const devOnly = summarizeGolden([scoreGoldenCase(rows[0]!, { decision: decision({}), replayMisses: 0 })]);
+    expect(incompleteRunProblems(rows.map((r) => r.id), new Set([rows[0]!.id]), devOnly)).toEqual([
+      '1 of 2 declared cases have no trace',
+      'holdout: no scored fields',
+    ]);
+    const both = summarizeGolden(rows.map((row) => scoreGoldenCase(row, { decision: decision({}), replayMisses: 0 })));
+    expect(incompleteRunProblems(rows.map((r) => r.id), new Set(rows.map((r) => r.id)), both)).toEqual([]);
   });
 });
 
