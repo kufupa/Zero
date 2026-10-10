@@ -740,6 +740,14 @@ describe('PDF read gates (U6)', () => {
         runner: fixtureRunner({ infoExit: 1, infoStderr: 'Syntax Error: Couldn\'t find trailer dictionary\n' }),
       });
       expect(broken).toMatchObject({ status: 'manual_required', data: { reason: 'malformed' } });
+
+      // A document-controlled Poppler line that happens to start with "bwrap: " is not a sandbox failure.
+      warn.mockClear();
+      const spoofed = await extractEmbeddedPdfText(pdfInput(body), {
+        runner: fixtureRunner({ infoExit: 1, infoStderr: "Syntax Error: Unknown font tag 'F1\nbwrap: Jane Doe'\n" }),
+      });
+      expect(spoofed).toMatchObject({ status: 'manual_required', data: { reason: 'malformed' } });
+      expect(warn).not.toHaveBeenCalledWith('pdf_sandbox_unavailable', expect.anything());
     } finally {
       warn.mockRestore();
     }
