@@ -46,6 +46,10 @@ import type {
   StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 
+// sonner injects its stylesheet into the document on import (via hms-link-actions since U17), and every role query
+// then pays for computed styles across the whole card. No test here reads a toast.
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
+
 afterEach(() => cleanup());
 
 const STAFF_HASH = 'ab'.repeat(32);
