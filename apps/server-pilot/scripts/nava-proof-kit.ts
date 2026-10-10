@@ -19,6 +19,20 @@ import {
 } from './nava-ae4-override-proof';
 import { fitPaneToContent, MARK_PII_JS, outcomeOf, PII_SELECTOR, type RunConfig } from './nava-preview-run';
 
+export {
+  allowEditsFrom,
+  browserMailboxApi,
+  mailboxFailures,
+  MailboxSwitchError,
+  needsEditsMessage,
+  newMailboxPermit,
+  newMailboxSwitch,
+  withActiveMailbox,
+  withMailboxPermit,
+  type MailboxRecord,
+  type MailboxSwitch,
+} from './nava-proof-safety';
+
 export const SETTLE_MS = 120_000;
 export const STEP_MS = 30_000;
 export const DOC_MS = 180_000;
@@ -34,9 +48,10 @@ export type GuardDecision<Reason extends string = string> = {
 export type ProofPage = { browser: Browser; context: BrowserContext; page: Page; captured: Captured };
 
 /**
- * Launches Chromium with the run's session and pins the host, as nava-preview-run.ts does. Every tRPC request goes
- * through `classify`; a refused one is aborted and listed in captured.blocked. Every tRPC response is split into
- * captured.outcomes. Any other request (the app shell, assets) is left alone.
+ * Launches Chromium with the run's session and pins the host, as nava-preview-run.ts does. Every tRPC request from any
+ * page of the context (the pane's page and the driver's own mailbox page) goes through `classify`; a refused one is
+ * aborted and listed in captured.blocked. Every tRPC response of the pane's page is split into captured.outcomes. Any
+ * other request (the app shell, assets) is left alone.
  */
 export async function openProofPage(
   config: RunConfig,
@@ -57,8 +72,7 @@ export async function openProofPage(
       acceptDownloads: false,
       ...(config.transportId ? { extraHTTPHeaders: { 'x-zero-active-transport': config.transportId } } : {}),
     });
-    const page = await context.newPage();
-    await page.route('**/api/trpc/**', async (route: Route) => {
+    await context.route('**/api/trpc/**', async (route: Route) => {
       const request: Request = route.request();
       const decision = classify(request.url(), request.postData());
       if (decision.allowed) {
@@ -68,6 +82,7 @@ export async function openProofPage(
       for (const item of decision.blocked) captured.blocked.push(`${item.procedure} (${item.reason})`);
       await route.abort('blockedbyclient');
     });
+    const page = await context.newPage();
     page.on('response', (response: Response) => {
       const url = response.url();
       if (!url.includes('/api/trpc/')) return;

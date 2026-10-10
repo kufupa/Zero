@@ -13,6 +13,7 @@ import {
   AE1_WRITE_PROCEDURES,
   classifyAe1Request,
   documentStayCount,
+  filledFieldsOf,
   newAe1GuardState,
   parseAe1Config,
   pickRoomOption,
@@ -187,7 +188,7 @@ describe('room rows', () => {
     board: 'unknown',
     ...extra,
   });
-  const inputs = { roomSplit: [15, 15], adultsSplit: [], board: 'bb' as const };
+  const inputs = { roomSplit: [15, 15], adultsSplit: [], board: 'bb' as const, allowEdits: true };
 
   it('fills the AE1 rows with 15 + 15 per stay and records what it used', () => {
     const rows = [1, 2].flatMap((stayNumber) => [
@@ -211,6 +212,43 @@ describe('room rows', () => {
     const { plans, split } = planRoomRows([row({ roomValue: 'SKNG', rooms: 4, adults: 3, board: 'dinner_bb' })], inputs);
     expect(plans).toEqual([{ index: 0, roomType: null, rooms: null, adults: null, board: null }]);
     expect(split.rows[0]).toMatchObject({ askedType: null, roomType: 'SKNG', rooms: 4, adults: 3, board: 'dinner_bb' });
+  });
+
+  it('never overwrites a value the pane has, row by row and field by field', () => {
+    const full = { roomValue: 'STWN', rooms: 7, adults: 1, board: 'room_only' };
+    const rows = [
+      row({ room: 1, ...full }),
+      row({ room: 2, ...full, rooms: null }),
+      row({ room: 3, ...full, adults: null }),
+      row({ room: 4, ...full, board: 'unknown' }),
+      row({ room: 5, ...full, roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single') }),
+    ];
+    const { plans, split } = planRoomRows(rows, { ...inputs, roomSplit: [15, 15, 15, 15, 15], adultsSplit: [2, 2, 2, 2, 2] });
+    // Each row fills only its one missing value; every present value comes back unchanged.
+    expect(plans).toEqual([
+      { index: 0, roomType: null, rooms: null, adults: null, board: null },
+      { index: 1, roomType: null, rooms: 15, adults: null, board: null },
+      { index: 2, roomType: null, rooms: null, adults: 2, board: null },
+      { index: 3, roomType: null, rooms: null, adults: null, board: 'bb' },
+      { index: 4, roomType: 'STQN', rooms: null, adults: null, board: null },
+    ]);
+    for (const used of split.rows) {
+      if (!used.roomTypeFilled) expect(used.roomType).toBe('STWN');
+      if (!used.roomsFilled) expect(used.rooms).toBe(7);
+      if (!used.adultsFilled) expect(used.adults).toBe(1);
+      if (!used.boardFilled) expect(used.board).toBe('room_only');
+    }
+    expect(filledFieldsOf(split)).toEqual([
+      'stay1.room2.rooms',
+      'stay1.room3.adults',
+      'stay1.room4.board',
+      'stay1.room5.roomType',
+    ]);
+  });
+
+  it('lists no fills for a complete pane', () => {
+    const { split } = planRoomRows([row({ roomValue: 'SKNG', rooms: 4, adults: 3, board: 'dinner_bb' })], inputs);
+    expect(filledFieldsOf(split)).toEqual([]);
   });
 
   it('takes adults from NAVA_AE1_ADULTS when given', () => {
@@ -237,7 +275,12 @@ describe('config', () => {
   it('defaults to 15/15 rooms and bed and breakfast', () => {
     const config = parseAe1Config(['--threads', 't-1', '--out', dir], env(), dir);
     expect(config.threadId).toBe('t-1');
-    expect(config.inputs).toEqual({ roomSplit: [15, 15], adultsSplit: [], board: 'bb' });
+    expect(config.inputs).toEqual({ roomSplit: [15, 15], adultsSplit: [], board: 'bb', allowEdits: false });
+  });
+
+  it('allows edits only with NAVA_PROOF_ALLOW_EDITS=1', () => {
+    expect(parseAe1Config(['--threads', 'a'], env({ NAVA_PROOF_ALLOW_EDITS: '1' }), dir).inputs.allowEdits).toBe(true);
+    expect(parseAe1Config(['--threads', 'a'], env({ NAVA_PROOF_ALLOW_EDITS: 'yes' }), dir).inputs.allowEdits).toBe(false);
   });
 
   it('reads the split and refuses bad inputs', () => {
@@ -274,6 +317,10 @@ describe('verdict', () => {
     xlsxExtraRows: 0,
     xlsxTotalRow: true,
     roomSplitUsed: { rule: '15/15 rooms per stay where the pane has none', rows: [] },
+    editsAllowed: true,
+    filledFields: [],
+    activeMailboxSwitched: true,
+    restored: true,
     screenshots: { rates: true, documents: true, pane: true },
     workflowRunIds: ['r1', 'r2'],
     blocked: ['panePartyLookup.findParty (second_party_lookup)'],
@@ -296,6 +343,8 @@ describe('verdict', () => {
     expect(ae1Failures({ ...passing, screenshots: { rates: false, documents: true, pane: true } })).toEqual([
       'a screenshot is missing',
     ]);
+    expect(ae1Failures({ ...passing, restored: false })).toEqual(['the default mailbox was not restored after the run']);
+    expect(ae1Failures({ ...passing, activeMailboxSwitched: false, restored: false })).toEqual([]);
   });
 
   it('fails on any block the pane should not have caused', () => {

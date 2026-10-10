@@ -8,9 +8,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildQuoteWorkbook } from '../src/quote-proposal/quote-workbook';
 import { parseAe1Config, runAe1 } from '../scripts/nava-ae1-rates-proof';
 import { parseAe2Config, runAe2 } from '../scripts/nava-ae2-find-proof';
+import { parseAe4Config, runAe4 } from '../scripts/nava-ae4-override-proof';
 
 /**
- * Runs both drivers end to end in Chromium against a scripted stand-in for the pane: plain HTML with the pane's labels
+ * Runs the drivers end to end in Chromium against a scripted stand-in for the pane: plain HTML with the pane's labels
  * and a fake tRPC server. It proves the flow (settle, fill, one run per stay, documents, find, screenshots, summary), not
  * the pane itself; the markup tests in the per-driver files tie the selectors to the mail code.
  */
@@ -131,6 +132,10 @@ function ae1Page(): string {
   const script = `
     const stays = ${JSON.stringify(STAYS)};
     const runs = [];
+    // The pane logs every field edit (workItems.recordEvent); the drivers must not cause one without leave.
+    document.querySelectorAll('section[aria-label="Stay details"] input, section[aria-label="Stay details"] select').forEach((el) =>
+      el.addEventListener('input', () => trpc('workItems.recordEvent', { field: el.getAttribute('aria-label') })),
+    );
     trpc('workItems.getByMessage', { messageId: 'm1' });
     // The pane searches the company and the agency by itself; the guard lets only the first through.
     trpc('panePartyLookup.findParty', { name: 'Org', kind: 'company' });
@@ -215,7 +220,11 @@ describe('AE1 driver against a scripted pane', () => {
     async () => {
       const base = await serve(ae1Page(), ae1Handlers());
       const out = join(dir, 'ae1-rates-test');
-      const config = parseAe1Config(['--threads', 't-1', '--out', out, '--timeout-ms', '20000'], env(base), dir);
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', out, '--timeout-ms', '20000'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
       const summary = await runAe1(config, () => undefined);
       expect(summary.failures).toEqual([]);
       expect(summary).toMatchObject({
@@ -233,6 +242,8 @@ describe('AE1 driver against a scripted pane', () => {
         expectedXlsxRows: 4,
         xlsxExtraRows: 0,
         xlsxTotalRow: true,
+        editsAllowed: true,
+        activeMailboxSwitched: false,
         workflowRunIds: ['run-1', 'run-2'],
         blocked: ['panePartyLookup.findParty (second_party_lookup)'],
         screenshots: { rates: true, documents: true, pane: true },
@@ -268,11 +279,32 @@ describe('AE1 driver against a scripted pane', () => {
     const stays =`,
       );
       const base = await serve(html, ae1Handlers());
-      const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-block'), '--timeout-ms', '20000'], env(base), dir);
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-block'), '--timeout-ms', '20000'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
       const summary = await runAe1(config, () => undefined);
       expect(summary.ok).toBe(false);
       expect(summary.blocker).toBe('the pane did not take the room type, room count, adults or meal plan typed into a row');
       expect(summary.ratesRuns).toBe(0);
+      expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'without NAVA_PROOF_ALLOW_EDITS stops with needs_edits and types nothing into the thread',
+    async () => {
+      const base = await serve(ae1Page(), ae1Handlers());
+      const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-no-edits'), '--timeout-ms', '20000'], env(base), dir);
+      const summary = await runAe1(config, () => undefined);
+      expect(summary.ok).toBe(false);
+      expect(summary.editsAllowed).toBe(false);
+      expect(summary.blocker).toMatch(/^needs_edits:stay1\.room1\.roomType,stay1\.room1\.rooms,stay1\.room1\.adults,stay1\.room1\.board,/);
+      expect(summary.blocker?.split(',')).toHaveLength(16);
+      expect(summary.filledFields).toEqual([]);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
       expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
     },
     120_000,
@@ -382,6 +414,197 @@ describe('AE2 driver against a scripted pane', () => {
       expect(JSON.stringify(summary)).not.toMatch(/Fixturemann|57291630/);
       expect(calls.filter((call) => call.procedure === 'paneStayLookup.queueFind')).toHaveLength(1);
       expect(calls.some((call) => call.procedure === 'workItems.open')).toBe(false);
+    },
+    120_000,
+  );
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The active mailbox
+
+/** The AE2 stand-in's server, plus a stateful default mailbox: transport-nava is the default, as on the pilot account. */
+function ae2Handlers(mailbox: { current: string }): Record<string, Handler> {
+  let polls = 0;
+  return {
+    'connections.getDefault': () => ({ id: mailbox.current, email: `${mailbox.current}@example.test` }),
+    'connections.list': () => ({
+      connections: [{ id: 'transport-nava' }, { id: 'transport-centurion' }],
+      disconnectedIds: [],
+    }),
+    'connections.setDefault': (input) => {
+      mailbox.current = (input as { connectionId: string }).connectionId;
+      return { id: mailbox.current };
+    },
+    'workItems.getByMessage': () => ({
+      status: 'ready',
+      analysis: {
+        amendment: {
+          kind: 'amend',
+          confirmationNumber: '57291630-1',
+          guestLastName: 'Fixturemann',
+          arrival: '2026-11-01',
+          departure: '2026-11-06',
+          requestedArrival: '2026-10-31',
+          requestedDeparture: '2026-11-07',
+        },
+      },
+    }),
+    'paneStayLookup.queueFind': () => ({ runId: '00000000-0000-4000-8000-000000000001' }),
+    'paneStayLookup.jobStatus': (input) => {
+      if (!(input as { runId?: string }).runId) return null;
+      polls += 1;
+      const done = polls > 1;
+      return {
+        runId: '00000000-0000-4000-8000-000000000001',
+        request: { kind: 'find', confirmation: '57291630-1', arrival: '2026-11-01' },
+        prefetch: false,
+        status: done ? 'done' : 'running',
+        attempts: 1,
+        failureClass: null,
+        result: done
+          ? { outcome: 'found', stay: { arrival: '2026-11-01', departure: '2026-11-06', lastName: 'Fixturemann' }, screenshots: [], runId: 'cli' }
+          : null,
+      };
+    },
+  };
+}
+
+describe('the active mailbox', () => {
+  it.skipIf(!chromiumBinary)(
+    "makes the run's transport the default before the pane opens and puts the old default back after",
+    async () => {
+      const mailbox = { current: 'transport-nava' };
+      const base = await serve(ae2Page(), ae2Handlers(mailbox));
+      const config = parseAe2Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae2-mailbox'), '--timeout-ms', '20000'],
+        env(base, { NAVA_PREVIEW_TRANSPORT_ID: 'transport-centurion' }),
+        dir,
+      );
+      const summary = await runAe2(config, () => undefined);
+      expect(summary.failures).toEqual([]);
+      expect(summary).toMatchObject({ ok: true, activeMailboxSwitched: true, restored: true });
+      expect(mailbox.current).toBe('transport-nava');
+      const sets = calls.filter((call) => call.procedure === 'connections.setDefault').map((call) => call.input);
+      expect(sets).toEqual([{ connectionId: 'transport-centurion' }, { connectionId: 'transport-nava' }]);
+      // The switch lands before the pane reads the mail, the restore after the find.
+      const order = calls.map((call) => call.procedure);
+      const firstSet = order.indexOf('connections.setDefault');
+      const lastSet = order.lastIndexOf('connections.setDefault');
+      expect(firstSet).toBeLessThan(order.indexOf('workItems.getByMessage'));
+      expect(lastSet).toBeGreaterThan(order.indexOf('paneStayLookup.queueFind'));
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    "blocks a setDefault the pane sends; only the driver's two calls reach the server",
+    async () => {
+      const mailbox = { current: 'transport-nava' };
+      const html = ae2Page().replace(
+        "trpc('workItems.getByMessage'",
+        "trpc('connections.setDefault', { connectionId: 'transport-centurion' });\n    trpc('workItems.getByMessage'",
+      );
+      const base = await serve(html, ae2Handlers(mailbox));
+      const config = parseAe2Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae2-pane-set'), '--timeout-ms', '20000'],
+        env(base, { NAVA_PREVIEW_TRANSPORT_ID: 'transport-centurion' }),
+        dir,
+      );
+      const summary = await runAe2(config, () => undefined);
+      expect(summary.blocked).toContain('connections.setDefault (unknown)');
+      expect(summary.ok).toBe(false);
+      expect(summary).toMatchObject({ activeMailboxSwitched: true, restored: true });
+      expect(calls.filter((call) => call.procedure === 'connections.setDefault')).toHaveLength(2);
+      expect(mailbox.current).toBe('transport-nava');
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'switches nothing when the transport is already the default',
+    async () => {
+      const mailbox = { current: 'transport-centurion' };
+      const base = await serve(ae2Page(), ae2Handlers(mailbox));
+      const config = parseAe2Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae2-same'), '--timeout-ms', '20000'],
+        env(base, { NAVA_PREVIEW_TRANSPORT_ID: 'transport-centurion' }),
+        dir,
+      );
+      const summary = await runAe2(config, () => undefined);
+      expect(summary).toMatchObject({ ok: true, activeMailboxSwitched: false, restored: false });
+      expect(calls.some((call) => call.procedure === 'connections.setDefault')).toBe(false);
+    },
+    120_000,
+  );
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// AE4: a real thread's stay is never overwritten
+
+/** A stored quote as in the live incident: 2026-11-02 to 06, one room. `rooms` '' leaves the room count missing. */
+function ae4Page(rooms: string): string {
+  const body = `
+    <select aria-label="Nava reads this as"><option value="quote" selected>Quote request</option></select>
+    <section aria-label="Stay details">
+      <div hidden>
+        <input type="date" aria-label="Arrival" value="2026-11-02">
+        <input type="date" aria-label="Departure" value="2026-11-06">
+      </div>
+      <button>Change dates ▾</button>
+      <select aria-label="Room type">
+        <option value="">Choose a room type</option>
+        <option value="STQN">Standard Queen (STQN)</option>
+        <option value="STWN" selected>Standard Twin (STWN)</option>
+      </select>
+      <input type="number" aria-label="Rooms" value="${rooms}">
+      <input type="number" aria-label="Adults" value="2">
+      <select aria-label="Meal plan"><option value="unknown">Not stated yet</option><option value="bb" selected>B&amp;B</option></select>
+    </section>
+    <section aria-label="Room 1 price"><button disabled>Discount / override</button></section>`;
+  const script = `
+    trpc('workItems.getByMessage', { messageId: 'm1' });
+    document.querySelectorAll('section[aria-label="Stay details"] input, section[aria-label="Stay details"] select').forEach((el) =>
+      el.addEventListener('input', () => trpc('workItems.recordEvent', { field: el.getAttribute('aria-label'), value: el.value })),
+    );`;
+  return shell(body, script);
+}
+
+const ae4Handlers = (): Record<string, Handler> => ({
+  'workItems.getByMessage': () => ({ status: 'ready', workItemId: 'wi-1', analysis: { luna: { workflow: 'quote' } } }),
+});
+
+describe('AE4 driver on a stored quote', () => {
+  it.skipIf(!chromiumBinary)(
+    'without NAVA_PROOF_ALLOW_EDITS stops with needs_edits for the one missing field and edits nothing',
+    async () => {
+      const base = await serve(ae4Page(''), ae4Handlers());
+      const config = parseAe4Config(['--threads', 't-1', '--out', join(dir, 'ae4-no-edits'), '--timeout-ms', '20000'], env(base), dir);
+      const summary = await runAe4(config, () => undefined);
+      expect(summary.blocker).toBe('needs_edits:rooms');
+      expect(summary).toMatchObject({ ok: false, editsAllowed: false, filledFields: [], hmsReads: 0 });
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    "with NAVA_PROOF_ALLOW_EDITS fills only the missing room count and keeps the stored stay's dates and room",
+    async () => {
+      const base = await serve(ae4Page(''), ae4Handlers());
+      const lines: string[] = [];
+      const config = parseAe4Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae4-fill'), '--timeout-ms', '20000'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
+      const summary = await runAe4(config, (line) => lines.push(line));
+      expect(summary.filledFields).toEqual(['rooms']);
+      expect(lines).toContain('stay filled: rooms');
+      // The only edit is the room count; the dates, room type, adults and meal plan were never touched.
+      const edits = calls.filter((call) => call.procedure === 'workItems.recordEvent').map((call) => call.input);
+      expect(edits).toEqual([{ field: 'Rooms', value: '1' }]);
+      // The scripted pane has no working override, so the run stops there, after the stay step.
+      expect(summary.blocker).toMatch(/^Discount \/ override is disabled/);
     },
     120_000,
   );

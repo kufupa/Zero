@@ -12,6 +12,11 @@
  * already shows a stored lookup (a staff or prefetch job read back from the database), the button is gone: the driver
  * reports that job's request and result instead, and makes no HMS call.
  *
+ * Mailbox: when NAVA_PREVIEW_TRANSPORT_ID is not the account's default mailbox, the driver makes it the default with
+ * connections.setDefault before opening the pane and always puts the previous default back afterwards
+ * (nava-proof-safety.ts withActiveMailbox). The summary records activeMailboxSwitched and restored; a failed restore fails
+ * the run. Only the driver's own setDefault calls pass the guard; one from the pane is blocked.
+ *
  * Guard: every tRPC request is checked by procedure name. Reads (paneStayLookup.jobStatus and .screenshot among them) and
  * the analysis pass. Exactly one find passes: paneStayLookup.queueFind (HMS_JOB_QUEUE=on: the hms worker reads HMS), or,
  * only after a queueFind that returned no run id (queue off), paneStayLookup.findStay. Every HMS write (cancel preview and
@@ -46,7 +51,22 @@ import {
   type Captured,
   type TrpcOutcome,
 } from './nava-ae4-override-proof';
-import { captureShots, openProofPage, openThread, STEP_MS, unexpectedBlocks, type GuardDecision } from './nava-proof-kit';
+import {
+  browserMailboxApi,
+  captureShots,
+  mailboxFailures,
+  MailboxSwitchError,
+  newMailboxPermit,
+  newMailboxSwitch,
+  openProofPage,
+  openThread,
+  STEP_MS,
+  unexpectedBlocks,
+  withActiveMailbox,
+  withMailboxPermit,
+  type GuardDecision,
+  type MailboxRecord,
+} from './nava-proof-kit';
 import { ANALYSIS_PROCEDURES, KNOWN_WRITE_PROCEDURES, parseRunConfig, READ_PROCEDURES, redactText, type RunConfig } from './nava-preview-run';
 
 export const QUEUE_FIND_PROCEDURE = 'paneStayLookup.queueFind';
@@ -229,7 +249,7 @@ export function lookupDatesUsed(sent: string | null, amendment: AmendRead | null
 // ---------------------------------------------------------------------------------------------------------------------
 // Summary
 
-export type Ae2Summary = {
+export type Ae2Summary = MailboxRecord & {
   ok: boolean;
   run: string;
   threadId: string;
@@ -280,6 +300,7 @@ export function ae2Failures(summary: Omit<Ae2Summary, 'ok' | 'failures'>): strin
     failures.push('"Booking in HMS now" does not show the dates the job read');
   }
   if (summary.findCalls > 1) failures.push(`expected one find, saw ${summary.findCalls}`);
+  failures.push(...mailboxFailures(summary));
   const unexpected = unexpectedBlocks(summary.blocked, AE2_EXPECTED_BLOCKS);
   if (unexpected.length) failures.push(`the guard blocked: ${unexpected.join(', ')}`);
   if (!summary.screenshots.amend) failures.push('the amendment card screenshot is missing');
@@ -344,6 +365,8 @@ export async function runAe2(config: Ae2Config, log: (line: string) => void): Pr
     shownDeparture: null,
     arrivalMismatch: false,
     screenshots: { amend: false, pane: false },
+    activeMailboxSwitched: false,
+    restored: false,
     blocked: [],
     blocker: null,
   };
@@ -452,20 +475,28 @@ export async function runAe2(config: Ae2Config, log: (line: string) => void): Pr
     summary.screenshots = { amend: shots.amend === true, pane: shots.pane === true };
   };
 
-  const { browser, context, page, captured } = await openProofPage(config, (url, postData) =>
-    classifyAe2Request(url, postData, state),
+  const permit = newMailboxPermit();
+  const mailbox = newMailboxSwitch();
+  const { browser, context, page, captured } = await openProofPage(
+    config,
+    withMailboxPermit((url, postData) => classifyAe2Request(url, postData, state), permit),
   );
   try {
     try {
-      await steps(page, captured);
+      // The run's transport is the active mailbox while the pane is open; the previous default comes back after.
+      await withActiveMailbox(browserMailboxApi(context, config.baseUrl, permit), config.transportId, mailbox, log, () =>
+        steps(page, captured),
+      );
     } catch (error) {
-      if (!(error instanceof Blocker)) throw error;
+      if (!(error instanceof Blocker) && !(error instanceof MailboxSwitchError)) throw error;
       summary.blocker = error.message;
       const shots = await captureShots(page, config.outDir, { amend: CARD }).catch(() => ({}) as Record<string, boolean>);
       summary.screenshots = { amend: shots.amend === true, pane: shots.pane === true };
     }
     await context.close();
   } finally {
+    summary.activeMailboxSwitched = mailbox.activeMailboxSwitched;
+    summary.restored = mailbox.restored;
     await browser.close();
   }
   summary.findCalls = state.queueFinds + state.syncFinds;

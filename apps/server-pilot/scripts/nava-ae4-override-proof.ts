@@ -6,9 +6,22 @@
  *   - the pane review shows the override and a "Copy for HMS comments" line;
  *   - a work_event row holds the HMS (AI) rate, her rate, the note and her session user.
  *
- * The driver opens one thread in /nava-preview, sets the type to Quote, types one stay, saves the override on the row
- * (which starts the stay's rates run: workstation.executeStaffQuote, the one HMS call, a read), prepares the PDF and the
- * Excel, and screenshots the row's review with guest details masked ([data-pii], as nava-preview-run.ts does).
+ * The driver opens one thread in /nava-preview, uses the stay the pane already has, saves the override on the row (which
+ * starts the stay's rates run: workstation.executeStaffQuote, the one HMS call, a read), prepares the PDF and the Excel,
+ * and screenshots the row's review with guest details masked ([data-pii], as nava-preview-run.ts does).
+ *
+ * The thread is real, so the driver never overwrites what the pane shows. A stay with dates and a row (a stored quote, or
+ * the analysis' groups) is used as it is; only a value the pane is missing and the rates run needs (no dates at all, a
+ * room type that says "pick a room type", no room or adult count, no meal plan) is filled. The default stay
+ * (NAVA_AE4_ARRIVAL and the rest) is typed only when the pane has no stay at all (the treat-as path on a non-quote mail).
+ * Every fill needs NAVA_PROOF_ALLOW_EDITS=1; without it the run stops with the blocker "needs_edits:<fields>" before it
+ * types anything. The summary lists what was filled (filledFields).
+ *
+ * Mailbox: when NAVA_PREVIEW_TRANSPORT_ID is not the account's default mailbox, the driver makes it the default with
+ * connections.setDefault before opening the pane (the PDF/Excel identity check, workstation.ts emailsMatch, compares the
+ * pane's mailbox, which is the default) and always puts the previous default back afterwards (nava-proof-safety.ts
+ * withActiveMailbox). The summary records activeMailboxSwitched and restored; a failed restore fails the run. Only the
+ * driver's own setDefault calls pass the guard.
  *
  * Guard: every tRPC request is checked by procedure name. Reads and the analysis pass. Of the writes, only the AE4 ones
  * pass (AE4_WRITE_PROCEDURES): the work item open and field events, the one rates run, the PDF and the Excel. A second
@@ -22,7 +35,8 @@
  * Environment (values are never printed): NAVA_PREVIEW_BASE_URL, NAVA_PREVIEW_STORAGE_STATE, NAVA_PREVIEW_RESOLVE_TO,
  * NAVA_PREVIEW_TRANSPORT_ID, NAVA_PREVIEW_CHROMIUM as nava-preview-run.ts. Optional stay and override inputs:
  * NAVA_AE4_ARRIVAL (2027-03-10), NAVA_AE4_DEPARTURE (2027-03-11), NAVA_AE4_ROOM (STQN), NAVA_AE4_BOARD (bb),
- * NAVA_AE4_RATE_CODE (NCOR1B), NAVA_AE4_RATE (1,850), NAVA_AE4_NOTE ("Kamala OK'd – repeat group").
+ * NAVA_AE4_RATE_CODE (NCOR1B), NAVA_AE4_RATE (1,850), NAVA_AE4_NOTE ("Kamala OK'd – repeat group"). The stay inputs are
+ * used only for fields the pane is missing, and only with NAVA_PROOF_ALLOW_EDITS=1.
  *
  * Usage: nava-preview-gate.sh --ae4 <thread-id>   (signs in, then runs:)
  *   pnpm --dir apps/server-pilot exec tsx scripts/nava-ae4-override-proof.ts --threads <id> --out <dir> --timeout-ms 600000
@@ -75,6 +89,18 @@ import {
   type PaneRead,
   type RunConfig,
 } from './nava-preview-run';
+import {
+  allowEditsFrom,
+  browserMailboxApi,
+  mailboxFailures,
+  MailboxSwitchError,
+  needsEditsMessage,
+  newMailboxPermit,
+  newMailboxSwitch,
+  withActiveMailbox,
+  withMailboxPermit,
+  type MailboxRecord,
+} from './nava-proof-safety';
 
 /** The writes AE4 needs. Nothing here writes to HMS or the mailbox; executeStaffQuote is the one HMS read. */
 export const AE4_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
@@ -98,6 +124,8 @@ export type Ae4Inputs = {
   rateMinor: number;
   note: string;
   allowNoEvent: boolean;
+  /** NAVA_PROOF_ALLOW_EDITS=1: the driver may fill stay fields the pane is missing. Off, a needed fill stops the run. */
+  allowEdits: boolean;
 };
 
 export type Ae4Config = RunConfig & { threadId: string; inputs: Ae4Inputs };
@@ -153,6 +181,7 @@ export function parseAe4Config(argv: readonly string[], env: NodeJS.ProcessEnv, 
       rateMinor,
       note,
       allowNoEvent: env.NAVA_AE4_ALLOW_NO_EVENT?.trim() === '1',
+      allowEdits: allowEditsFrom(env),
     },
   };
 }
@@ -227,6 +256,82 @@ export function classifyAe4Request(url: string, postData: string | null, state: 
   if (allowed) state.hmsReads += ratesRuns;
   return { allowed, procedures, blocked };
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The stay
+
+/** The pane's Stay details step as the page shows it. Values are the inputs' own ('' when empty). */
+export type Ae4StayRead = {
+  /** Room rows (Room type selects) across every stay. */
+  rows: number;
+  arrival: string;
+  departure: string;
+  roomValue: string;
+  roomOptions: Array<{ value: string; label: string }>;
+  rooms: string;
+  adults: string;
+  board: string;
+};
+
+export type Ae4StayField = 'stay' | 'arrival' | 'departure' | 'roomType' | 'rooms' | 'adults' | 'board';
+export type Ae4StayFill = { field: Ae4StayField; value: string };
+
+const KNOWN_ROOM_LABEL = /\(([A-Z]{2,8})\)$/;
+const positiveCount = (raw: string) => /^\d+$/.test(raw.trim()) && Number(raw) > 0;
+
+/**
+ * What the driver may type into the stay: only values the pane is missing that the rates run needs. A present value is
+ * never in the list. With no row at all the pane has no stay, and the whole default stay is typed ("stay" adds it).
+ * Throws a Blocker when the stay cannot be used without guessing (more than one row, only one of the two dates).
+ */
+export function planAe4Stay(read: Ae4StayRead, inputs: Pick<Ae4Inputs, 'arrival' | 'departure' | 'room' | 'board'>): Ae4StayFill[] {
+  if (read.rows === 0) {
+    return [
+      { field: 'stay', value: '' },
+      { field: 'arrival', value: inputs.arrival },
+      { field: 'departure', value: inputs.departure },
+      { field: 'roomType', value: inputs.room },
+      { field: 'rooms', value: '1' },
+      { field: 'adults', value: '2' },
+      { field: 'board', value: inputs.board },
+    ];
+  }
+  if (read.rows !== 1) throw new Blocker(`the quote has ${read.rows} rows; AE4 needs one stay with one room`);
+  const fills: Ae4StayFill[] = [];
+  const arrival = read.arrival.trim();
+  const departure = read.departure.trim();
+  if (!arrival && !departure) {
+    fills.push({ field: 'arrival', value: inputs.arrival }, { field: 'departure', value: inputs.departure });
+  } else if (!arrival || !departure) {
+    throw new Blocker('the stay has only one of its dates; the driver does not guess the other');
+  }
+  const current = read.roomOptions.find((option) => option.value === read.roomValue);
+  const known = Boolean(read.roomValue) && KNOWN_ROOM_LABEL.exec(current?.label ?? '')?.[1] === read.roomValue;
+  if (!known) fills.push({ field: 'roomType', value: inputs.room });
+  if (!positiveCount(read.rooms)) fills.push({ field: 'rooms', value: '1' });
+  if (!positiveCount(read.adults)) fills.push({ field: 'adults', value: '2' });
+  if (!BOARDS.has(read.board)) fills.push({ field: 'board', value: inputs.board });
+  return fills;
+}
+
+/** Browser-side: the first stay's fields. Plain JS, no DOM types. The date inputs are read even while folded away. */
+export const READ_STAY_JS = `() => {
+  const pane = document.querySelector('[data-preview-pane]');
+  if (!pane) return null;
+  const all = (selector) => Array.from(pane.querySelectorAll(selector));
+  const value = (selector) => { const el = pane.querySelector(selector); return el ? el.value : ''; };
+  const select = pane.querySelector('select[aria-label="Room type"]');
+  return {
+    rows: all('select[aria-label="Room type"]').length,
+    arrival: value('input[aria-label="Arrival"]'),
+    departure: value('input[aria-label="Departure"]'),
+    roomValue: select ? select.value : '',
+    roomOptions: select ? Array.from(select.options).map((o) => ({ value: o.value, label: (o.textContent || '').trim() })) : [],
+    rooms: value('input[aria-label="Rooms"]'),
+    adults: value('input[aria-label="Adults"]'),
+    board: value('select[aria-label="Meal plan"]'),
+  };
+}`;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // tRPC responses
@@ -440,7 +545,7 @@ export function checkDocumentText(
 // ---------------------------------------------------------------------------------------------------------------------
 // Summary
 
-export type Ae4Summary = {
+export type Ae4Summary = MailboxRecord & {
   ok: boolean;
   run: string;
   threadId: string;
@@ -463,6 +568,10 @@ export type Ae4Summary = {
   /** No route returns it. The header's SELECT finds it by workflowRunId (work_event.ai_source). */
   workEventId: null;
   hmsReads: number;
+  /** NAVA_PROOF_ALLOW_EDITS was on. */
+  editsAllowed: boolean;
+  /** What the driver typed into the thread's stay ("type" for the treat-as change). Empty when the pane's stay was used. */
+  filledFields: string[];
   blocked: string[];
   failures: string[];
   blocker: string | null;
@@ -482,6 +591,7 @@ export function ae4Failures(summary: Omit<Ae4Summary, 'ok' | 'failures'>, allowN
   if (!summary.copyForHmsLine || !summary.copyButtonShown) failures.push('no Copy for HMS comments line');
   if (!summary.screenshots.review || !summary.screenshots.pane) failures.push('a review screenshot is missing');
   if (summary.hmsReads !== 1) failures.push(`expected one HMS read, saw ${summary.hmsReads}`);
+  failures.push(...mailboxFailures(summary));
   // The server writes the event only onto a quote work item for this mail. The header's SELECT then confirms the row.
   if (!allowNoEvent && (summary.storedWorkflow !== 'quote' || !summary.workItemId || !summary.workflowRunId)) {
     failures.push('no rate.override work_event can be written for this mail');
@@ -588,9 +698,16 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
     workflowRunId: null,
     workEventId: null,
     hmsReads: 0,
+    editsAllowed: inputs.allowEdits,
+    filledFields: [],
+    activeMailboxSwitched: false,
+    restored: false,
     blocked: [],
     blocker: null,
   };
+  const permit = newMailboxPermit();
+  const mailbox = newMailboxSwitch();
+  const classify = withMailboxPermit((url, postData) => classifyAe4Request(url, postData, state), permit);
 
   const host = new URL(config.baseUrl).hostname;
   const browser: Browser = await chromium.launch({
@@ -606,10 +723,10 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
       acceptDownloads: false,
       ...(config.transportId ? { extraHTTPHeaders: { 'x-zero-active-transport': config.transportId } } : {}),
     });
-    const page = await context.newPage();
-    await page.route('**/api/trpc/**', async (route: Route) => {
+    // On the context, so the driver's own mailbox page goes through the guard too.
+    await context.route('**/api/trpc/**', async (route: Route) => {
       const request: Request = route.request();
-      const decision = classifyAe4Request(request.url(), request.postData(), state);
+      const decision = classify(request.url(), request.postData());
       if (decision.allowed) {
         await route.continue();
         return;
@@ -617,6 +734,7 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
       for (const item of decision.blocked) captured.blocked.push(`${item.procedure} (${item.reason})`);
       await route.abort('blockedbyclient');
     });
+    const page = await context.newPage();
     page.on('response', (response: Response) => {
       const url = response.url();
       if (!url.includes(TRPC_PREFIX)) return;
@@ -629,222 +747,241 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
     });
 
     try {
-      // 1. Open the thread and let the pane read it.
-      await page.goto(`${config.baseUrl}/nava-preview?thread=${encodeURIComponent(threadId)}`, {
-        waitUntil: 'domcontentloaded',
-      });
-      if (new URL(page.url()).pathname.startsWith('/login')) throw new Blocker('the storage state has no session');
-      await waitFor('the pane to read the email', SETTLE_MS, async () => {
-        const read = await readPane(page, threadId);
-        const outcome = read ? outcomeOf(read) : null;
-        if (outcome === 'unsynced' || outcome === 'error') throw new Blocker(`pane ${outcome}`);
-        return outcome;
-      });
-      log('pane settled');
-
-      // 2. The stored read decides whether a rate event can be written. Checked before any HMS call.
-      const noRead: StoredWorkView = { status: 'none', workItemId: null, workflow: null };
-      const stored = await waitFor('the stored read', 15_000, async () => {
-        const get = latestOutcome(captured, 'workItems.getByMessage');
-        return get ? (storedWorkView(get.data) ?? noRead) : null;
-      }).catch(() => noRead);
-      summary.storedWorkflow = stored.status === 'ready' ? stored.workflow : null;
-      summary.workItemId = stored.workItemId;
-      if (summary.storedWorkflow !== 'quote' && !inputs.allowNoEvent) {
-        throw new Blocker(
-          `no_quote_work_item: the stored read is ${summary.storedWorkflow ?? stored.status}, so no rate.override work_event can be written (workstation.ts executeStaffQuote -> quoteWorkItemIdFor needs work_item.kind = 'quote'). Use a quote-request email or set NAVA_AE4_ALLOW_NO_EVENT=1`,
-        );
-      }
-      // A stored read without its item: the pane makes it with workItems.open. The event needs that item to exist.
-      if (summary.storedWorkflow === 'quote' && !summary.workItemId) {
-        const opened = await waitFor('the work item', 15_000, async () => {
-          const open = latestOutcome(captured, 'workItems.open');
-          return open ? (storedWorkView(open.data) ?? { status: 'failed', workItemId: null, workflow: null }) : null;
-        }).catch(() => null);
-        summary.workItemId = opened?.workItemId ?? null;
-      }
-      if (summary.storedWorkflow === 'quote' && !summary.workItemId && !inputs.allowNoEvent) {
-        throw new Blocker('no_quote_work_item: the quote read has no work item and workItems.open did not make one');
-      }
-
-      const pane = page.locator('[data-preview-pane]');
-      // 3. Type: Quote.
-      const type = pane.locator('select[aria-label="Nava reads this as"]');
-      await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
-        throw new Blocker('treat-as select ("Nava reads this as") is missing');
-      });
-      if ((await type.inputValue()) !== 'quote') {
-        await type.selectOption('quote');
-        log('type set to Quote');
-      }
-      await waitFor('the quote workspace', SETTLE_MS, async () => {
-        const read = await readPane(page, threadId);
-        if (!read || read.analysing) return null;
-        const rooms = await pane.locator('select[aria-label="Room type"]').count();
-        const add = await pane.getByRole('button', { name: 'Add stay', exact: true }).count();
-        return rooms > 0 || add > 0 ? true : null;
-      });
-
-      // 4. One stay: dates, one room, two adults, a room type, a meal plan.
-      if ((await pane.locator('select[aria-label="Room type"]').count()) === 0) {
-        await pane.getByRole('button', { name: 'Add stay', exact: true }).click();
-      }
-      const roomSelects = pane.locator('select[aria-label="Room type"]');
-      await roomSelects.first().waitFor({ state: 'visible', timeout: STEP_MS });
-      if ((await roomSelects.count()) !== 1) {
-        throw new Blocker(`the quote has ${await roomSelects.count()} rows; AE4 needs one stay with one room`);
-      }
-      const arrivalInput = pane.locator('input[aria-label="Arrival"]');
-      if (!(await arrivalInput.isVisible())) await pane.getByRole('button', { name: /Change dates/ }).click();
-      await arrivalInput.fill(inputs.arrival);
-      await pane.locator('input[aria-label="Departure"]').fill(inputs.departure);
-      await roomSelects.first().selectOption(inputs.room);
-      await pane.locator('input[aria-label="Rooms"]').fill('1', { force: true });
-      await pane.locator('input[aria-label="Adults"]').fill('2', { force: true });
-      await pane.locator('select[aria-label="Meal plan"]').selectOption(inputs.board);
-      log('stay typed');
-
-      // 5. The override on the row. Saving it re-runs the stay: the one HMS read.
-      const priceBox = pane.locator('section[aria-label$=" price"]').first();
-      await priceBox.waitFor({ state: 'visible', timeout: STEP_MS });
-      const toggle = priceBox.getByRole('button', { name: 'Change price' });
-      if (await toggle.count()) await toggle.click();
-      const overrideButton = priceBox.getByRole('button', { name: 'Discount / override' });
-      await waitFor('Discount / override to be enabled', STEP_MS, async () =>
-        (await overrideButton.isEnabled()) ? true : null,
-      ).catch(async () => {
-        throw new Blocker(`Discount / override is disabled: ${await visibleText(page, '[data-preview-pane] section[aria-label$=" price"]')}`);
-      });
-      await overrideButton.click();
-      const form = priceBox.locator('form[aria-label^="Discount or override"]');
-      await form.waitFor({ state: 'visible', timeout: STEP_MS });
-      const codeSelect = form.locator('select').first();
-      // A code outside the listed ones goes in as Other, as staff type it.
-      if (await codeSelect.locator(`option[value="${inputs.rateCode}"]`).count()) {
-        await codeSelect.selectOption(inputs.rateCode);
-      } else {
-        await codeSelect.selectOption('OTHER');
-        await form.getByLabel(/Other rate code/).fill(inputs.rateCode);
-      }
-      await form.getByLabel(/Override rate per night/).fill(inputs.rate);
-      await form.getByLabel(/Approved by \/ why/).fill(inputs.note);
-      const save = form.getByRole('button', { name: 'Save override' });
-      if (!(await save.isEnabled())) {
-        throw new Blocker(`Save override is disabled: ${await visibleText(page, '[data-preview-pane] form[aria-label^="Discount or override"]')}`);
-      }
-      const runsBefore = captured.outcomes.length;
-      await save.click();
-      log('override saved');
-
-      // A saved price starts the stay's run by itself. If it did not, "Get rates from HMS" runs it with the same price.
-      await new Promise((resolve) => setTimeout(resolve, 10_000));
-      if (state.hmsReads === 0) {
-        const getRates = pane.getByRole('button', { name: 'Get rates from HMS' });
-        if ((await getRates.count()) && (await getRates.isEnabled())) {
-          await getRates.click();
-          log('rates started from Get rates from HMS');
-        }
-      }
-      if (state.hmsReads === 0) {
-        throw new Blocker(`the rates run did not start: ${await visibleText(page, '[data-preview-pane] section[aria-label$=" price"]')}`);
-      }
-      const ratesOutcome = await waitFor('the HMS rates run', config.timeoutMs, async () =>
-        latestOutcome(captured, HMS_RATES_PROCEDURE, runsBefore),
-      );
-      if (ratesOutcome.error) throw new Blocker(`rates run failed: ${redactText(ratesOutcome.error.message).slice(0, 240)}`);
-      const rates = ratesRunOf(ratesOutcome.data);
-      summary.workflowRunId = rates.workflowRunId;
-      const row = rates.rows.find((item) => item.source === 'override') ?? rates.rows[0];
-      summary.aiRateMinor = row ? [...new Set(row.hmsNightlyMinor)] : [];
-      log('rates run returned');
-
-      // 6. The review: the override line, the note and the HMS comment with its copy button.
-      const reviewText = await waitFor('the HMS comment line', STEP_MS, async () => {
-        const text = await priceBox.innerText();
-        return /HMS comment:/.test(text) ? text.replace(/\s+/g, ' ') : null;
-      }).catch(async () => (await priceBox.innerText().catch(() => '')).replace(/\s+/g, ' '));
-      summary.reviewShowsOverride =
-        reviewText.includes(`${inputs.rateCode} override`) &&
-        textHasAmount(reviewText, inputs.rateMinor) &&
-        reviewText.includes('Approved by / why:') &&
-        textHasNote(reviewText, inputs.note);
-      summary.copyForHmsLine = /HMS comment: (.+?)(?: Copy for HMS comments|$)/.exec(reviewText)?.[1]?.trim() ?? null;
-      summary.copyButtonShown = (await priceBox.getByRole('button', { name: 'Copy for HMS comments' }).count()) > 0;
-      summary.screenshots = await capturePane(page, config.outDir);
-      log(`screenshots: pane=${summary.screenshots.pane} review=${summary.screenshots.review}`);
-
-      // 7. The client documents.
-      const preparePdf = pane.getByRole('button', { name: /^Prepare (PDF|quote)$/ });
-      await preparePdf.first().waitFor({ state: 'visible', timeout: STEP_MS });
-      // The run selects its own result (session.ts staff quote), so the button enables without a pick.
-      await waitFor('Prepare PDF to be enabled', STEP_MS, async () =>
-        (await preparePdf.first().isEnabled()) ? true : null,
-      ).catch(async () => {
-        const reason = await preparePdf
-          .first()
-          .locator('xpath=following-sibling::p[1]')
-          .innerText({ timeout: 2_000 })
-          .catch(() => '');
-        throw new Blocker(`Prepare PDF is disabled: ${redactText(reason.trim()).slice(0, 240)}`);
-      });
-      const docsBefore = captured.outcomes.length;
-      await preparePdf.first().click();
-      const pdfOutcome = await waitFor('the PDF', DOC_MS, async () =>
-        latestOutcome(captured, 'workstation.qualifiedQuoteProposalPdf', docsBefore),
-      );
-      if (pdfOutcome.error) throw new Blocker(`PDF failed: ${redactText(pdfOutcome.error.message).slice(0, 240)}`);
-      const pdfBase64 = (pdfOutcome.data as { pdfBase64?: unknown } | undefined)?.pdfBase64;
-      if (typeof pdfBase64 !== 'string') throw new Blocker('PDF response carried no file');
-      const pdfPath = join(config.outDir, 'quote.pdf');
-      writeFileSync(pdfPath, Buffer.from(pdfBase64, 'base64'), { mode: 0o600 });
-      log('pdf saved');
-
-      const excel = pane.getByRole('button', { name: 'Download Excel' });
-      await waitFor('Download Excel to be enabled', STEP_MS, async () => ((await excel.isEnabled()) ? true : null));
-      const xlsxBefore = captured.outcomes.length;
-      await excel.click();
-      const xlsxOutcome = await waitFor('the Excel', DOC_MS, async () =>
-        latestOutcome(captured, 'workstation.quoteWorkbook', xlsxBefore),
-      );
-      if (xlsxOutcome.error) throw new Blocker(`Excel failed: ${redactText(xlsxOutcome.error.message).slice(0, 240)}`);
-      const xlsxBase64 = (xlsxOutcome.data as { xlsxBase64?: unknown } | undefined)?.xlsxBase64;
-      if (typeof xlsxBase64 !== 'string') throw new Blocker('Excel response carried no file');
-      const xlsxBytes = Buffer.from(xlsxBase64, 'base64');
-      writeFileSync(join(config.outDir, 'quote.xlsx'), xlsxBytes, { mode: 0o600 });
-      log('excel saved');
-
-      // 8. What the client would read. The text itself is never printed.
-      const expectations = { rateMinor: inputs.rateMinor, note: inputs.note, aiRatesMinor: summary.aiRateMinor };
-      let pdfText: string;
-      try {
-        pdfText = execFileSync('/usr/bin/pdftotext', ['-layout', '-enc', 'UTF-8', pdfPath, '-'], {
-          encoding: 'utf8',
-          timeout: 30_000,
-          maxBuffer: 8 * 1024 * 1024,
-          stdio: ['ignore', 'pipe', 'ignore'],
+      // The run's transport is the active mailbox while the pane is open; the previous default comes back after.
+      await withActiveMailbox(browserMailboxApi(context, config.baseUrl, permit), config.transportId, mailbox, log, async () => {
+        // 1. Open the thread and let the pane read it.
+        await page.goto(`${config.baseUrl}/nava-preview?thread=${encodeURIComponent(threadId)}`, {
+          waitUntil: 'domcontentloaded',
         });
-      } catch {
-        throw new Blocker('pdftotext could not read the PDF (is poppler-utils installed?)');
-      }
-      const pdf = checkDocumentText(pdfText, expectations);
-      summary.pdfHas1850 = pdf.hasRate;
-      summary.pdfHasNote = pdf.hasNote;
-      summary.pdfHasAiRate = pdf.hasAiRate;
-      const xlsx = checkDocumentText(xlsxText(xlsxBytes), expectations);
-      summary.xlsxHas1850 = xlsx.hasRate;
-      summary.xlsxHasNote = xlsx.hasNote;
-      summary.xlsxHasAiRate = xlsx.hasAiRate;
+        if (new URL(page.url()).pathname.startsWith('/login')) throw new Blocker('the storage state has no session');
+        await waitFor('the pane to read the email', SETTLE_MS, async () => {
+          const read = await readPane(page, threadId);
+          const outcome = read ? outcomeOf(read) : null;
+          if (outcome === 'unsynced' || outcome === 'error') throw new Blocker(`pane ${outcome}`);
+          return outcome;
+        });
+        log('pane settled');
 
-      // A work item made while the pane was open (workItems.open) is the one the event lands on.
-      const opened = storedWorkView(latestOutcome(captured, 'workItems.open')?.data);
-      if (!summary.workItemId && opened?.workItemId) summary.workItemId = opened.workItemId;
+        // 2. The stored read decides whether a rate event can be written. Checked before any HMS call.
+        const noRead: StoredWorkView = { status: 'none', workItemId: null, workflow: null };
+        const stored = await waitFor('the stored read', 15_000, async () => {
+          const get = latestOutcome(captured, 'workItems.getByMessage');
+          return get ? (storedWorkView(get.data) ?? noRead) : null;
+        }).catch(() => noRead);
+        summary.storedWorkflow = stored.status === 'ready' ? stored.workflow : null;
+        summary.workItemId = stored.workItemId;
+        if (summary.storedWorkflow !== 'quote' && !inputs.allowNoEvent) {
+          throw new Blocker(
+            `no_quote_work_item: the stored read is ${summary.storedWorkflow ?? stored.status}, so no rate.override work_event can be written (workstation.ts executeStaffQuote -> quoteWorkItemIdFor needs work_item.kind = 'quote'). Use a quote-request email or set NAVA_AE4_ALLOW_NO_EVENT=1`,
+          );
+        }
+        // A stored read without its item: the pane makes it with workItems.open. The event needs that item to exist.
+        if (summary.storedWorkflow === 'quote' && !summary.workItemId) {
+          const opened = await waitFor('the work item', 15_000, async () => {
+            const open = latestOutcome(captured, 'workItems.open');
+            return open ? (storedWorkView(open.data) ?? { status: 'failed', workItemId: null, workflow: null }) : null;
+          }).catch(() => null);
+          summary.workItemId = opened?.workItemId ?? null;
+        }
+        if (summary.storedWorkflow === 'quote' && !summary.workItemId && !inputs.allowNoEvent) {
+          throw new Blocker('no_quote_work_item: the quote read has no work item and workItems.open did not make one');
+        }
+
+        const pane = page.locator('[data-preview-pane]');
+        // 3. Type: Quote. Changing it is an edit to the thread.
+        const type = pane.locator('select[aria-label="Nava reads this as"]');
+        await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
+          throw new Blocker('treat-as select ("Nava reads this as") is missing');
+        });
+        if ((await type.inputValue()) !== 'quote') {
+          if (!inputs.allowEdits) throw new Blocker(needsEditsMessage(['type']));
+          await type.selectOption('quote');
+          summary.filledFields.push('type');
+          log('type set to Quote');
+        }
+        await waitFor('the quote workspace', SETTLE_MS, async () => {
+          const read = await readPane(page, threadId);
+          if (!read || read.analysing) return null;
+          const rooms = await pane.locator('select[aria-label="Room type"]').count();
+          const add = await pane.getByRole('button', { name: 'Add stay', exact: true }).count();
+          return rooms > 0 || add > 0 ? true : null;
+        });
+
+        // 4. The stay: the pane's own. Only what it is missing is filled, and only with NAVA_PROOF_ALLOW_EDITS=1.
+        const stayRead = (await page.evaluate(`(${READ_STAY_JS})()`)) as Ae4StayRead | null;
+        if (!stayRead) throw new Blocker('the Stay details step is missing');
+        const fills = planAe4Stay(stayRead, inputs);
+        if (fills.length && !inputs.allowEdits) throw new Blocker(needsEditsMessage(fills.map((fill) => fill.field)));
+        const fillOf = (field: Ae4StayField) => fills.find((fill) => fill.field === field)?.value ?? null;
+        if (fillOf('stay') !== null) await pane.getByRole('button', { name: 'Add stay', exact: true }).click();
+        const roomSelects = pane.locator('select[aria-label="Room type"]');
+        await roomSelects.first().waitFor({ state: 'visible', timeout: STEP_MS });
+        if ((await roomSelects.count()) !== 1) {
+          throw new Blocker(`the quote has ${await roomSelects.count()} rows; AE4 needs one stay with one room`);
+        }
+        const arrivalFill = fillOf('arrival');
+        const departureFill = fillOf('departure');
+        if (arrivalFill !== null || departureFill !== null) {
+          const arrivalInput = pane.locator('input[aria-label="Arrival"]');
+          if (!(await arrivalInput.isVisible())) await pane.getByRole('button', { name: /Change dates/ }).click();
+          if (arrivalFill !== null) await arrivalInput.fill(arrivalFill);
+          if (departureFill !== null) await pane.locator('input[aria-label="Departure"]').fill(departureFill);
+        }
+        const roomFill = fillOf('roomType');
+        if (roomFill !== null) await roomSelects.first().selectOption(roomFill);
+        const roomsFill = fillOf('rooms');
+        if (roomsFill !== null) await pane.locator('input[aria-label="Rooms"]').fill(roomsFill, { force: true });
+        const adultsFill = fillOf('adults');
+        if (adultsFill !== null) await pane.locator('input[aria-label="Adults"]').fill(adultsFill, { force: true });
+        const boardFill = fillOf('board');
+        if (boardFill !== null) await pane.locator('select[aria-label="Meal plan"]').selectOption(boardFill);
+        summary.filledFields.push(...fills.map((fill) => fill.field));
+        log(fills.length ? `stay filled: ${fills.map((fill) => fill.field).join(', ')}` : 'stay used as the pane has it');
+
+        // 5. The override on the row. Saving it re-runs the stay: the one HMS read.
+        const priceBox = pane.locator('section[aria-label$=" price"]').first();
+        await priceBox.waitFor({ state: 'visible', timeout: STEP_MS });
+        const toggle = priceBox.getByRole('button', { name: 'Change price' });
+        if (await toggle.count()) await toggle.click();
+        const overrideButton = priceBox.getByRole('button', { name: 'Discount / override' });
+        await waitFor('Discount / override to be enabled', STEP_MS, async () =>
+          (await overrideButton.isEnabled()) ? true : null,
+        ).catch(async () => {
+          throw new Blocker(`Discount / override is disabled: ${await visibleText(page, '[data-preview-pane] section[aria-label$=" price"]')}`);
+        });
+        await overrideButton.click();
+        const form = priceBox.locator('form[aria-label^="Discount or override"]');
+        await form.waitFor({ state: 'visible', timeout: STEP_MS });
+        const codeSelect = form.locator('select').first();
+        // A code outside the listed ones goes in as Other, as staff type it.
+        if (await codeSelect.locator(`option[value="${inputs.rateCode}"]`).count()) {
+          await codeSelect.selectOption(inputs.rateCode);
+        } else {
+          await codeSelect.selectOption('OTHER');
+          await form.getByLabel(/Other rate code/).fill(inputs.rateCode);
+        }
+        await form.getByLabel(/Override rate per night/).fill(inputs.rate);
+        await form.getByLabel(/Approved by \/ why/).fill(inputs.note);
+        const save = form.getByRole('button', { name: 'Save override' });
+        if (!(await save.isEnabled())) {
+          throw new Blocker(`Save override is disabled: ${await visibleText(page, '[data-preview-pane] form[aria-label^="Discount or override"]')}`);
+        }
+        const runsBefore = captured.outcomes.length;
+        await save.click();
+        log('override saved');
+
+        // A saved price starts the stay's run by itself. If it did not, "Get rates from HMS" runs it with the same price.
+        await new Promise((resolve) => setTimeout(resolve, 10_000));
+        if (state.hmsReads === 0) {
+          const getRates = pane.getByRole('button', { name: 'Get rates from HMS' });
+          if ((await getRates.count()) && (await getRates.isEnabled())) {
+            await getRates.click();
+            log('rates started from Get rates from HMS');
+          }
+        }
+        if (state.hmsReads === 0) {
+          throw new Blocker(`the rates run did not start: ${await visibleText(page, '[data-preview-pane] section[aria-label$=" price"]')}`);
+        }
+        const ratesOutcome = await waitFor('the HMS rates run', config.timeoutMs, async () =>
+          latestOutcome(captured, HMS_RATES_PROCEDURE, runsBefore),
+        );
+        if (ratesOutcome.error) throw new Blocker(`rates run failed: ${redactText(ratesOutcome.error.message).slice(0, 240)}`);
+        const rates = ratesRunOf(ratesOutcome.data);
+        summary.workflowRunId = rates.workflowRunId;
+        const row = rates.rows.find((item) => item.source === 'override') ?? rates.rows[0];
+        summary.aiRateMinor = row ? [...new Set(row.hmsNightlyMinor)] : [];
+        log('rates run returned');
+
+        // 6. The review: the override line, the note and the HMS comment with its copy button.
+        const reviewText = await waitFor('the HMS comment line', STEP_MS, async () => {
+          const text = await priceBox.innerText();
+          return /HMS comment:/.test(text) ? text.replace(/\s+/g, ' ') : null;
+        }).catch(async () => (await priceBox.innerText().catch(() => '')).replace(/\s+/g, ' '));
+        summary.reviewShowsOverride =
+          reviewText.includes(`${inputs.rateCode} override`) &&
+          textHasAmount(reviewText, inputs.rateMinor) &&
+          reviewText.includes('Approved by / why:') &&
+          textHasNote(reviewText, inputs.note);
+        summary.copyForHmsLine = /HMS comment: (.+?)(?: Copy for HMS comments|$)/.exec(reviewText)?.[1]?.trim() ?? null;
+        summary.copyButtonShown = (await priceBox.getByRole('button', { name: 'Copy for HMS comments' }).count()) > 0;
+        summary.screenshots = await capturePane(page, config.outDir);
+        log(`screenshots: pane=${summary.screenshots.pane} review=${summary.screenshots.review}`);
+
+        // 7. The client documents.
+        const preparePdf = pane.getByRole('button', { name: /^Prepare (PDF|quote)$/ });
+        await preparePdf.first().waitFor({ state: 'visible', timeout: STEP_MS });
+        // The run selects its own result (session.ts staff quote), so the button enables without a pick.
+        await waitFor('Prepare PDF to be enabled', STEP_MS, async () =>
+          (await preparePdf.first().isEnabled()) ? true : null,
+        ).catch(async () => {
+          const reason = await preparePdf
+            .first()
+            .locator('xpath=following-sibling::p[1]')
+            .innerText({ timeout: 2_000 })
+            .catch(() => '');
+          throw new Blocker(`Prepare PDF is disabled: ${redactText(reason.trim()).slice(0, 240)}`);
+        });
+        const docsBefore = captured.outcomes.length;
+        await preparePdf.first().click();
+        const pdfOutcome = await waitFor('the PDF', DOC_MS, async () =>
+          latestOutcome(captured, 'workstation.qualifiedQuoteProposalPdf', docsBefore),
+        );
+        if (pdfOutcome.error) throw new Blocker(`PDF failed: ${redactText(pdfOutcome.error.message).slice(0, 240)}`);
+        const pdfBase64 = (pdfOutcome.data as { pdfBase64?: unknown } | undefined)?.pdfBase64;
+        if (typeof pdfBase64 !== 'string') throw new Blocker('PDF response carried no file');
+        const pdfPath = join(config.outDir, 'quote.pdf');
+        writeFileSync(pdfPath, Buffer.from(pdfBase64, 'base64'), { mode: 0o600 });
+        log('pdf saved');
+
+        const excel = pane.getByRole('button', { name: 'Download Excel' });
+        await waitFor('Download Excel to be enabled', STEP_MS, async () => ((await excel.isEnabled()) ? true : null));
+        const xlsxBefore = captured.outcomes.length;
+        await excel.click();
+        const xlsxOutcome = await waitFor('the Excel', DOC_MS, async () =>
+          latestOutcome(captured, 'workstation.quoteWorkbook', xlsxBefore),
+        );
+        if (xlsxOutcome.error) throw new Blocker(`Excel failed: ${redactText(xlsxOutcome.error.message).slice(0, 240)}`);
+        const xlsxBase64 = (xlsxOutcome.data as { xlsxBase64?: unknown } | undefined)?.xlsxBase64;
+        if (typeof xlsxBase64 !== 'string') throw new Blocker('Excel response carried no file');
+        const xlsxBytes = Buffer.from(xlsxBase64, 'base64');
+        writeFileSync(join(config.outDir, 'quote.xlsx'), xlsxBytes, { mode: 0o600 });
+        log('excel saved');
+
+        // 8. What the client would read. The text itself is never printed.
+        const expectations = { rateMinor: inputs.rateMinor, note: inputs.note, aiRatesMinor: summary.aiRateMinor };
+        let pdfText: string;
+        try {
+          pdfText = execFileSync('/usr/bin/pdftotext', ['-layout', '-enc', 'UTF-8', pdfPath, '-'], {
+            encoding: 'utf8',
+            timeout: 30_000,
+            maxBuffer: 8 * 1024 * 1024,
+            stdio: ['ignore', 'pipe', 'ignore'],
+          });
+        } catch {
+          throw new Blocker('pdftotext could not read the PDF (is poppler-utils installed?)');
+        }
+        const pdf = checkDocumentText(pdfText, expectations);
+        summary.pdfHas1850 = pdf.hasRate;
+        summary.pdfHasNote = pdf.hasNote;
+        summary.pdfHasAiRate = pdf.hasAiRate;
+        const xlsx = checkDocumentText(xlsxText(xlsxBytes), expectations);
+        summary.xlsxHas1850 = xlsx.hasRate;
+        summary.xlsxHasNote = xlsx.hasNote;
+        summary.xlsxHasAiRate = xlsx.hasAiRate;
+
+        // A work item made while the pane was open (workItems.open) is the one the event lands on.
+        const opened = storedWorkView(latestOutcome(captured, 'workItems.open')?.data);
+        if (!summary.workItemId && opened?.workItemId) summary.workItemId = opened.workItemId;
+      });
     } catch (error) {
-      if (!(error instanceof Blocker)) throw error;
+      if (!(error instanceof Blocker) && !(error instanceof MailboxSwitchError)) throw error;
       summary.blocker = error.message;
       await capturePane(page, config.outDir).catch(() => undefined);
     }
     await context.close();
   } finally {
+    summary.activeMailboxSwitched = mailbox.activeMailboxSwitched;
+    summary.restored = mailbox.restored;
     await browser.close();
   }
   summary.hmsReads = state.hmsReads;
