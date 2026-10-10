@@ -299,13 +299,16 @@ export function scoreFields(expected: GoldenRow['expected'], actual: GoldenField
 type Occupancy = { rooms: number | null; adultsPerRoom: number | null; children: number };
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 
-/** Totals over the rows of one stay. Adults are total adults; a lone row with no room count is one room. */
+/** Totals over the rows of one stay. Adults are total adults; a lone row with no room count is the stay's total rooms, else one. */
 function occupancyOf(rows: Occupancy[], totalRooms: number | null = null): Pick<GoldenFields, 'rooms' | 'adults' | 'children'> {
   if (!rows.length) return { rooms: totalRooms, adults: null, children: null };
   const adultsKnown = rows.every((r) => r.adultsPerRoom !== null && (r.rooms !== null || rows.length === 1));
   return {
     rooms: totalRooms ?? (rows.every((r) => r.rooms !== null) ? sum(rows.map((r) => r.rooms!)) : null),
-    adults: adultsKnown ? sum(rows.map((r) => (r.rooms ?? 1) * r.adultsPerRoom!)) : null,
+    // A lone row with no room count takes the stay's total rooms when the extraction gives one.
+    adults: adultsKnown
+      ? sum(rows.map((r) => (r.rooms ?? (rows.length === 1 ? totalRooms : null) ?? 1) * r.adultsPerRoom!))
+      : null,
     children: sum(rows.map((r) => r.children)),
   };
 }

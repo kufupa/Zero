@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   STRATA,
   cellOf,
+  extractFields,
   pickSubset,
   readGoldenSet,
   replayRunners,
@@ -420,5 +421,24 @@ describe('production targets', () => {
   it('agent: leaves the booked-date and stay-count fields unscored, since its decision cannot state them', () => {
     const amend = { ...golden(0, 'dev'), expected: { workflow: 'quote' as const, bookedArrivalDate: '2026-10-12', stays: 1 } };
     expect(scoreGoldenCase(amend, { decision: decision({}), replayMisses: 0 }).fields.map((f) => f.field)).toEqual(['workflow']);
+  });
+});
+
+describe('extract occupancy', () => {
+  it('a lone row with no room count uses the stay total rooms for adults', () => {
+    const extraction = {
+      kind: 'quote',
+      payload: {
+        stays: [
+          {
+            requested: { arrival: '2026-11-01', departure: '2026-11-03' },
+            booked: null,
+            totalRooms: 3,
+            rows: [{ rooms: null, adultsPerRoom: 2, childAges: [] }],
+          },
+        ],
+      },
+    } as unknown as Parameters<typeof extractFields>[0];
+    expect(extractFields(extraction)).toMatchObject({ rooms: 3, adults: 6, children: 0 });
   });
 });
