@@ -322,6 +322,10 @@ Cutover sequencing where the app and Nginx TLS site are deployed and proven on-b
 
 ## AI mail pipeline
 
+### Luna
+
+The AI reservationist assistant that reads an inbound hotel email and proposes its intent, stay dates and room groups. In the Outlook pane, Luna's proposal appears as the badge and prefill for the selected email. Staff confirm it before any quote or booking runs.
+
 ### AI workflow run
 
 Durable queue row in `ai_workflow_run` representing one async AI job (triage, candidate draft, or feedback extraction). Claimed by `ai-worker`, idempotent by `idempotency_key`, with retry/dead-letter state.
