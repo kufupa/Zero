@@ -267,8 +267,8 @@ async function openUploadForm(page) {
   });
 }
 
-// ponytail: the Documents tab, the upload form and the list are not captured from live HMS yet (U28-H2). Only reached
-// once ATTACH_VERIFIED=true.
+// ponytail: the Documents tab and Create/Upload Document were captured live (U28-H2); the upload and list read-back are
+// proven only once an H2 run attaches. Only reached once ATTACH_VERIFIED=true.
 async function uploadDocument(ctx, args, state) {
   const { page } = ctx;
   await page.getByText(/^Documents$/).first().click();
@@ -277,8 +277,16 @@ async function uploadDocument(ctx, args, state) {
   const listedBefore = await listedName.count();
   const form = await openUploadForm(page);
   await form.waitForLoadState('domcontentloaded');
-  await form.locator('input[type=file]').first().setInputFiles(args.file);
-  await form.locator('input[name=filename]:visible').first().fill(args.documentName);
+  await shot({ ...ctx, page: form }, 'form.png');
+  // H2 live: the form's filename field IS the file input, so the document name is the uploaded file's own name.
+  await form.locator('input[type=file]').first().setInputFiles({
+    name: args.documentName,
+    mimeType: 'application/pdf',
+    buffer: await readFile(args.file),
+  });
+  // ponytail: description is optional in bsupld_processUpload; filled when the form shows it so the list reads clearly.
+  const description = form.locator('input[name=description]:visible');
+  if (await description.count()) await description.first().fill(args.documentName);
   await shot({ ...ctx, page: form }, 'before.png');
   await form.getByRole('button', { name: /^Upload$/ }).first().click();
   // The route guard sets state.uploadSent when the upload leaves. Listed only when one more row shows the name.
@@ -383,6 +391,7 @@ async function attachLive(args, dir) {
   return {
     outcome: attachOutcome(state),
     uploadSent: state.uploadSent,
+    listed: state.listed,
     screenshots: ctx.result.screenshots.map((path) => basename(path)),
     blocked: state.blocked,
     error: state.error,
