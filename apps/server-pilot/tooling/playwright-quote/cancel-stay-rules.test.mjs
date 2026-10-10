@@ -8,7 +8,7 @@ import {
   parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty,
   outcomeAfterFailure, pollUntil, SETTLE_BUDGET_MS, SETTLE_INTERVAL_MS, settleCancel,
   parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight, resolveOutcome, sameStayRows,
-  searchGuestOutcome, stayFromFormPairs, stayIdentityVerdict, windowCovers,
+  searchGuestOutcome, stayChanges, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
 
 function argv(overrides = {}) {
@@ -882,6 +882,37 @@ test('a commit with no charge types the lab note, picks the reason, clicks one O
   assert.equal(result.penaltyText, null);
   assert.equal(calls.filter((call) => call === 'clickOk').length, 1);
   assert.deepEqual(calls.filter((call) => call.startsWith('fillNote')), ['fillNote:Lab proof cancel']);
+});
+
+test('stayChanges names each approved field the reopened record shows differently, and nothing else', () => {
+  const approved = { confirmation: '57291630-1', departure: '2027-09-16', adults: 1, balance: '0.00', bookingAgency: null };
+  assert.deepEqual(stayChanges(approved, { ...approved, reservationNote: 'not in the approval' }), []);
+  assert.deepEqual(stayChanges(approved, { ...approved, bookingAgency: '  ' }), []);
+  assert.deepEqual(
+    stayChanges(approved, { ...approved, departure: '2027-09-17', balance: '150.00', adults: 2 }),
+    ['departure', 'adults', 'balance'],
+  );
+  assert.deepEqual(stayChanges(approved, { confirmation: '57291630-1' }), ['departure', 'adults', 'balance']);
+});
+
+test('parseCancelArgs takes --expect-stay on a commit only', () => {
+  const commit = parseCancelArgs(argv({ '--mode': 'commit', '--expect-stay': '/tmp/run/expect-stay.json' }));
+  assert.equal(commit.ok, true, commit.error);
+  assert.equal(commit.args.expectStay, '/tmp/run/expect-stay.json');
+  assert.equal(parseCancelArgs(argv({ '--expect-stay': '/tmp/run/expect-stay.json' })).ok, false);
+  assert.equal(exitCodeFor('refused_stay_changed'), 2);
+});
+
+test('an OK click whose reply is lost counts as clicked, so the run ends unconfirmed, never as a clean failure', async () => {
+  const dialog = scriptedDialog({ windows: [[REASON_WINDOW]] });
+  dialog.io.clickOk = async () => {
+    dialog.calls.push('clickOk');
+    throw new Error('Target page, context or browser has been closed');
+  };
+  const result = { outcome: null, reasons: [], clickedOk: false, penaltyText: null, penaltyAmount: null, penaltyPending: false, refusal: null };
+  await assert.rejects(runCancelDialog({ args: COMMIT_ARGS, record: RECORD, result, io: dialog.io }), /browser has been closed/);
+  assert.equal(result.clickedOk, true);
+  assert.equal(outcomeAfterFailure(result), 'cancel_unconfirmed');
 });
 
 test('an on-mode commit types the staff reason as the note', async () => {

@@ -104,7 +104,7 @@ describe('ReviewCard decision', () => {
     const onChanged = renderReview(client);
     fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
     await waitFor(() =>
-      expect(client.review).toHaveBeenCalledWith({ workItemId: WORK_ITEM, decision: 'ok' }),
+      expect(client.review).toHaveBeenCalledWith({ workItemId: WORK_ITEM, runId: 'run-1', decision: 'ok' }),
     );
     expect(await screen.findByText('Reviewed OK. This item is done.')).toBeTruthy();
     expect(onChanged).toHaveBeenCalledTimes(1);
@@ -132,6 +132,7 @@ describe('ReviewCard decision', () => {
     await waitFor(() =>
       expect(client.review).toHaveBeenCalledWith({
         workItemId: WORK_ITEM,
+        runId: 'run-1',
         decision: 'flag',
         note: 'Room type is wrong',
       }),
@@ -180,5 +181,14 @@ describe('ReviewCard decision', () => {
     renderReview(client);
     fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
     expect(await screen.findByText('This write is already reviewed.')).toBeTruthy();
+  });
+
+  it('a review refused because a newer write ran says so and reads the state again', async () => {
+    const client = fakeClient();
+    vi.mocked(client.review).mockRejectedValueOnce(new Error('run_changed'));
+    const onChanged = renderReview(client);
+    fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
+    expect(await screen.findByText(/Another write ran since this one loaded/)).toBeTruthy();
+    expect(onChanged).toHaveBeenCalledTimes(1);
   });
 });

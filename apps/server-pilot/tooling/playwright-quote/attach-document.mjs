@@ -250,12 +250,14 @@ function refusedResult(outcome) {
 }
 
 // Leaf nodes in the Documents tree naming the document. H2d live: a row reads "<document code>: <file name>", e.g.
-// "31050: nava-h2-test.pdf". Whitespace (incl. nbsp) is collapsed. Runs in the page, so it is self-contained.
+// "31050: nava-h2-test.pdf". Whitespace (incl. nbsp) is collapsed in the row and in the name alike, so a name with
+// repeated spaces still matches. Runs in the page, so it is self-contained.
 export function countListedDocument(name) {
+  const want = name.replace(/\s+/g, ' ').trim();
   return [...document.querySelectorAll('body *')].filter((el) => {
     if (el.childElementCount !== 0) return false;
     const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
-    return text === name || (text.endsWith(name) && /^\d+: ?$/.test(text.slice(0, -name.length)));
+    return text === want || (text.endsWith(want) && /^\d+: ?$/.test(text.slice(0, -want.length)));
   }).length;
 }
 

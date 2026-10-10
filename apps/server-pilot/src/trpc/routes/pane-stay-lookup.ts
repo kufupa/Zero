@@ -64,6 +64,8 @@ const jobStatusInput = z.union([
       threadId: threadIdInput,
       kind: z.enum(['find', 'search_guest', 'availability']),
       confirmation: confirmation.optional(),
+      // A guest search is picked by its surname too: one thread can carry vouchers for different guests.
+      lastName: searchGuestInput.shape.lastName.optional(),
       // An availability snapshot is picked by its stay's dates, and by its rooms when two stays share the dates.
       arrival: arrival.optional(),
       departure: arrival.optional(),

@@ -549,9 +549,37 @@ describe('pane HMS write (U26)', () => {
           arrival: ARRIVAL,
           reason: 'Test Reservations',
           allowRealGuest: false,
+          // The read that matched the approval: the cancel CLI compares its own read of the record with it before OK.
+          expectStay: LAB_STAY,
         },
       ]);
       expect((await runRow(db, run.runId)).state).toBe('succeeded');
+    });
+  });
+
+  it('a cancel whose record changed after the pre-Save read is refused by the CLI with no OK, and ends in needs-check', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedWriteItem(db, { state: CANCEL_FORM });
+      await prepare(db, workItemId);
+      await approve(db, workItemId);
+      onCancel = async () => ({
+        outcome: 'refused_stay_changed',
+        statusBefore: 'Reserved',
+        statusAfter: null,
+        reasons: [],
+        penaltyText: null,
+        screenshots: [],
+        clickedOk: false,
+      });
+      const run = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
+        status: 'ended',
+        failureClass: 'NEEDS_CHECK',
+        reason: 'refused_stay_changed',
+      });
+      expect(cancelCalls[0]?.expectStay).toEqual(LAB_STAY);
+      // Nothing was written, so a fresh read and approval are allowed without a read-back.
+      expect((await stateOf(db, workItemId)).hmsSnapshot).toBeUndefined();
     });
   });
 
@@ -632,7 +660,7 @@ describe('pane HMS write (U26)', () => {
       __setDbForTests({ db, conn: sql } as never);
       const previousMode = process.env.RESERVATIONIST_PANE_AMEND;
       try {
-        await caller.hmsApproval.review({ workItemId, decision: 'flag', note: 'Wrong document' });
+        await caller.hmsApproval.review({ workItemId, runId: run.runId, decision: 'flag', note: 'Wrong document' });
         expect((await stateOf(db, workItemId)).hmsSnapshot).toBeUndefined();
         await expect(approve(db, workItemId)).rejects.toMatchObject({
           refusal: 'snapshot_missing',

@@ -73,7 +73,9 @@ export type HmsApprovalRefusal =
   | 'no_needs_check'
   | 'note_required'
   | 'no_executed_write'
-  | 'already_reviewed';
+  | 'already_reviewed'
+  | 'form_outdated'
+  | 'run_changed';
 
 export class HmsApprovalError extends Error {
   readonly refusal: HmsApprovalRefusal;
@@ -383,6 +385,11 @@ export async function approveHmsWrite(input: {
   transportId: string;
   actorUserId: string;
   workItemId: string;
+  /**
+   * The form digest of the values the card showed (hmsWriteStateOf.formDigest). When given, approval is refused unless
+   * the stored form still has it, so staff never approve values they were not shown.
+   */
+  formDigest?: string;
   /** Re-reads HMS when the snapshot is stale. Without it, a stale snapshot is refused. */
   rereadHmsState?: () => Promise<unknown>;
   now?: Date;
@@ -399,6 +406,9 @@ export async function approveHmsWrite(input: {
     if (!item) throw new HmsApprovalError('not_found');
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
     if (!item.threadId || !item.sourceMessageId) throw new HmsApprovalError('source_mail_missing');
+    if (input.formDigest !== undefined && input.formDigest !== formDigest(item.state)) {
+      throw new HmsApprovalError('form_outdated');
+    }
     await supersedeChangedQueuedWrite(tx as DB, item.id, formDigest(item.state), now);
     await assertNoOpenWrite(tx as DB, item.id);
 
@@ -605,22 +615,27 @@ async function hmsRereadReason(
   }
 }
 
+type HmsPreSaveReason = 'hms_changed' | 'reread_failed' | 'form_changed' | 'not_open' | 'snapshot_stale';
+
 export type HmsPreSaveOutcome =
   | { status: 'unchanged' }
-  | { status: 'needs_check'; reason: 'hms_changed' | 'reread_failed' | 'form_changed' }
+  | { status: 'needs_check'; reason: HmsPreSaveReason }
   | { status: 'lease_lost' };
 
 /**
  * Last check before Save, run by the hms_write runner. It proves the lease is held, that this run consumed its
- * grant, that the form is still the approved one, and that HMS still matches the grant's before-state digest.
- * The lease is checked again after the re-read, so a lease lost during it cannot allow Save. A mismatch or an
- * unreadable booking dead-letters the run to needs-check. Only 'unchanged' allows Save.
+ * grant, that the item is open with the approved form, and that HMS still matches the grant's before-state digest.
+ * The item, the form, the approval's 30-minute window and the lease are checked again after the re-read, so a dismiss,
+ * an edit, an expiry or a lost lease during it cannot allow Save. A mismatch or an unreadable booking dead-letters the
+ * run to needs-check. Only 'unchanged' allows Save.
  */
 export async function assertHmsUnchangedBeforeSave(input: {
   db?: DB;
   runId: string;
   fence: AiRunFence;
   readHmsState: () => Promise<unknown>;
+  /** The clock for the approval's age, read after the HMS re-read. Defaults to the wall clock. */
+  now?: () => Date;
 }): Promise<HmsPreSaveOutcome> {
   const db = input.db ?? getDb();
   if (input.runId !== input.fence.runId) throw new HmsApprovalError('lease_lost');
@@ -647,17 +662,21 @@ export async function assertHmsUnchangedBeforeSave(input: {
     )
     .limit(1);
   if (!consumed) throw new HmsApprovalError('not_consumed');
-  const [item] = await db
-    .select({ state: workItem.state })
-    .from(workItem)
-    .where(eq(workItem.id, run.workItemId))
-    .limit(1);
-  let reason: 'hms_changed' | 'reread_failed' | 'form_changed' | null = null;
-  if (!item || formDigest(item.state) !== grant.formDigest) {
-    reason = 'form_changed';
-  } else {
-    reason = await hmsRereadReason(input.readHmsState, grant.hmsBeforeDigest);
-  }
+  const workItemId = run.workItemId;
+  const itemReason = async (): Promise<'not_open' | 'form_changed' | null> => {
+    const [item] = await db
+      .select({ state: workItem.state, status: workItem.status })
+      .from(workItem)
+      .where(eq(workItem.id, workItemId))
+      .limit(1);
+    if (!item || item.status === 'done' || item.status === 'dismissed') return 'not_open';
+    return formDigest(item.state) === grant.formDigest ? null : 'form_changed';
+  };
+  let reason: HmsPreSaveReason | null =
+    (await itemReason()) ?? (await hmsRereadReason(input.readHmsState, grant.hmsBeforeDigest));
+  // The HMS read takes time: staff may dismiss or edit the item meanwhile, and the approval may pass 30 minutes.
+  if (!reason) reason = await itemReason();
+  if (!reason && snapshotStale(grant.hmsReadAt, input.now?.() ?? new Date())) reason = 'snapshot_stale';
   if (!(await heartbeatAiRun(input.fence, db))) return { status: 'lease_lost' };
   if (!reason) return { status: 'unchanged' };
   await db.transaction(async (tx) => {
@@ -965,6 +984,8 @@ export async function reviewHmsWrite(input: {
   transportId: string;
   actorUserId: string;
   workItemId: string;
+  /** The run the reviewer was shown. When given, the review is refused unless it is still the latest write. */
+  runId?: string;
   decision: 'ok' | 'flag';
   note?: string;
   now?: Date;
@@ -990,11 +1011,19 @@ export async function reviewHmsWrite(input: {
       throw new HmsApprovalError('needs_check_open');
     const run = await latestWriteRun(tx as DB, item.id);
     if (!run) throw new HmsApprovalError('no_executed_write');
+    if (input.runId !== undefined && input.runId !== run.id) throw new HmsApprovalError('run_changed');
     const evidence = await evidenceForRun(tx as DB, item.id, run.id);
     if (run.state !== 'succeeded' && evidence.length === 0)
       throw new HmsApprovalError('no_executed_write');
     if (await reviewForRun(tx as DB, item.id, run.id))
       throw new HmsApprovalError('already_reviewed');
+    // OK closes the item, so the stored form must be the one this write was approved for. A later edit was never written.
+    if (input.decision === 'ok') {
+      const grantId = grantIdForRun(run);
+      if (!grantId) throw new HmsApprovalError('no_grant');
+      const { grant } = await loadGrant(tx as DB, item.id, grantId);
+      if (formDigest(item.state) !== grant.formDigest) throw new HmsApprovalError('state_changed');
+    }
 
     const status = input.decision === 'ok' ? 'done' : 'needs_you';
     const state: Record<string, unknown> = { ...item.state };
@@ -1028,6 +1057,8 @@ export type HmsWriteStateView = {
   status: string;
   /** The values she is approving: the stored state without the snapshot. */
   form: Record<string, unknown>;
+  /** Digest of the stored form. The card sends it back on approve, so an edit it has not shown refuses the approval. */
+  formDigest: string;
   /** Display values of the stored HMS snapshot (hmsSnapshot.values), keyed like the form. Null when none were stored. */
   before: Record<string, unknown> | null;
   snapshot: { readAt: string; stale: boolean } | null;
@@ -1136,6 +1167,7 @@ export async function hmsWriteStateOf(input: {
   return {
     status: item.status,
     form: maskedStrings(formOf(item.state)),
+    formDigest: formDigest(item.state),
     before: storedValues.success ? maskedStrings(storedValues.data) : null,
     snapshot: snapshot
       ? { readAt: snapshot.readAt, stale: snapshotStale(snapshot.readAt, now) }

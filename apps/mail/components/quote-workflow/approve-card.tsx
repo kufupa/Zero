@@ -3,6 +3,7 @@ import {
   HMS_NOTE_MIN,
   HMS_WRITE_COPY,
   HMS_WRITE_POLL_MS,
+  isStoredWrite,
   refusalCopy,
   writeRowsOf,
   writeStatusOf,
@@ -31,12 +32,18 @@ export function ApproveCard({
   workItemId,
   writesEnabled,
   confirmation,
+  requireStoredWrite = false,
 }: {
   client: HmsApprovalClient | null;
   workItemId: string;
   writesEnabled: boolean;
   /** The HMS confirmation number, for the Copy link and Copy confirmation handoff. */
   confirmation: string | null;
+  /**
+   * True on mail that is not an amend or cancel. The card then shows only once the work item holds an HMS write (an
+   * action form such as attach_document, or a write run), so other items never get write controls.
+   */
+  requireStoredWrite?: boolean;
 }) {
   if (!client) return null;
   if (!writesEnabled) {
@@ -46,13 +53,22 @@ export function ApproveCard({
       </WriteFrame>
     );
   }
-  return <LiveWriteCard client={client} workItemId={workItemId} confirmation={confirmation} />;
+  return (
+    <LiveWriteCard
+      client={client}
+      workItemId={workItemId}
+      confirmation={confirmation}
+      requireStoredWrite={requireStoredWrite}
+    />
+  );
 }
 
 /** The write's state for one work item. Re-read after each action, and every few seconds while a run is moving. */
 function useHmsWriteState(client: HmsApprovalClient, workItemId: string) {
   const [loaded, setLoaded] = useState<{ workItemId: string; view: HmsWriteView } | null>(null);
   const [failed, setFailed] = useState(false);
+  // Counts each read that settled, success or failure, so a moving write is polled again after a failed read too.
+  const [reads, setReads] = useState(0);
   const [tick, setTick] = useState(0);
   const refresh = useCallback(() => setTick((count) => count + 1), []);
   const moving = loaded !== null && writeStatusOf(loaded.view).phase === 'running';
@@ -64,9 +80,12 @@ function useHmsWriteState(client: HmsApprovalClient, workItemId: string) {
         if (!live) return;
         setLoaded({ workItemId, view });
         setFailed(false);
+        setReads((count) => count + 1);
       },
       () => {
-        if (live) setFailed(true);
+        if (!live) return;
+        setFailed(true);
+        setReads((count) => count + 1);
       },
     );
     return () => {
@@ -78,7 +97,7 @@ function useHmsWriteState(client: HmsApprovalClient, workItemId: string) {
     if (!moving) return;
     const timer = setTimeout(refresh, HMS_WRITE_POLL_MS);
     return () => clearTimeout(timer);
-  }, [moving, loaded, refresh]);
+  }, [moving, reads, refresh]);
 
   return { view: loaded?.workItemId === workItemId ? loaded.view : null, failed, refresh };
 }
@@ -87,23 +106,35 @@ function LiveWriteCard({
   client,
   workItemId,
   confirmation,
+  requireStoredWrite,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   confirmation: string | null;
+  requireStoredWrite: boolean;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId);
+  // Hidden only once a read shows no stored write. A failed first read shows Try again: it may hide a pending write.
+  if (requireStoredWrite && (view ? !isStoredWrite(view) : !failed)) return null;
+  const loadFailed = (
+    <div role="alert" className="flex flex-wrap items-center gap-2 text-[12px] text-[#334155]">
+      <span>{HMS_WRITE_COPY.loadFailed}</span>
+      <button type="button" className={writeClasses.secondary} onClick={refresh}>
+        {HMS_WRITE_COPY.retry}
+      </button>
+    </div>
+  );
+  const formConfirmation = typeof view?.form.confirmation === 'string' ? view.form.confirmation : null;
   return (
-    <WriteFrame confirmation={confirmation}>
+    <WriteFrame confirmation={confirmation ?? formConfirmation}>
       {view ? (
-        <WriteBody client={client} workItemId={workItemId} view={view} onChanged={refresh} />
+        <>
+          {/* A failed re-read leaves these values possibly out of date: say so, and offer the read again. */}
+          {failed ? loadFailed : null}
+          <WriteBody client={client} workItemId={workItemId} view={view} onChanged={refresh} />
+        </>
       ) : failed ? (
-        <div role="alert" className="flex flex-wrap items-center gap-2 text-[12px] text-[#334155]">
-          <span>{HMS_WRITE_COPY.loadFailed}</span>
-          <button type="button" className={writeClasses.secondary} onClick={refresh}>
-            {HMS_WRITE_COPY.retry}
-          </button>
-        </div>
+        loadFailed
       ) : (
         <p role="status" className={writeClasses.note}>
           {HMS_WRITE_COPY.loading}
@@ -157,6 +188,7 @@ function WriteBody({
         <ApproveSection
           client={client}
           workItemId={workItemId}
+          formDigest={view.formDigest}
           status={status}
           canApprove={rows.length > 0}
           onChanged={onChanged}
@@ -191,12 +223,15 @@ function WriteRows({ rows }: { rows: WriteRow[] }) {
 function ApproveSection({
   client,
   workItemId,
+  formDigest,
   status,
   canApprove,
   onChanged,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
+  /** The digest of the form this card shows. The server refuses the approval when the stored form has moved on. */
+  formDigest: string;
   status: WriteStatus;
   canApprove: boolean;
   onChanged: () => void;
@@ -210,12 +245,16 @@ function ApproveSection({
     setBusy(true);
     setError(null);
     client
-      .approve({ workItemId })
+      .approve({ workItemId, formDigest })
       .then(() => {
         toast.success(HMS_WRITE_COPY.approved);
         onChanged();
       })
-      .catch((err: unknown) => setError(refusalCopy(err)))
+      .catch((err: unknown) => {
+        setError(refusalCopy(err));
+        // A refusal can mean the stored values moved on, so the card reads them again.
+        onChanged();
+      })
       .finally(() => setBusy(false));
   };
 

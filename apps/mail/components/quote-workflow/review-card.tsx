@@ -97,7 +97,9 @@ export function ReviewCard({
       return;
     }
     const input: HmsReviewInput =
-      decision === 'flag' ? { workItemId, decision, note: text } : { workItemId, decision };
+      decision === 'flag'
+        ? { workItemId, runId: run.runId, decision, note: text }
+        : { workItemId, runId: run.runId, decision };
     setBusy(true);
     setError(null);
     client
@@ -108,7 +110,11 @@ export function ReviewCard({
         onChanged();
         if (decision === 'flag') rereadAfterFlag();
       })
-      .catch((err: unknown) => setError(refusalCopy(err)))
+      .catch((err: unknown) => {
+        setError(refusalCopy(err));
+        // A refusal can mean a newer write ran or the values changed, so the card reads the state again.
+        onChanged();
+      })
       .finally(() => setBusy(false));
   };
 

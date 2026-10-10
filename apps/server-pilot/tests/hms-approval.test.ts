@@ -200,7 +200,7 @@ describe('HMS write approvals', () => {
     });
   });
 
-  it('the client cannot write an approval: the procedure takes only a work item id, and one approval is in flight at a time', async () => {
+  it('the client cannot write an approval: the procedure takes only a work item id and the form digest it showed, and one approval is in flight at a time', async () => {
     await withIngestionDb(
       async ({ db, sql }) => {
         const workItemId = await seedItem(db);
@@ -213,12 +213,18 @@ describe('HMS write approvals', () => {
             hmsBeforeDigest: 'forged',
           } as never),
         ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
-        const granted = await caller.hmsApproval.approve({ workItemId });
+        // The card sends back the digest of the form it showed. A form edited since then is refused, not approved.
+        await expect(
+          caller.hmsApproval.approve({ workItemId, formDigest: formDigest(EDITED_FORM) }),
+        ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'form_outdated' });
+        const granted = await caller.hmsApproval.approve({ workItemId, formDigest: formDigest(FORM) });
         expect(granted.runId).toEqual(expect.any(String));
         const [count] = await sql<{ n: number }[]>`
           SELECT count(*)::int AS n FROM work_event WHERE type = 'approval.granted'`;
         expect(count?.n).toBe(1);
-        await expect(caller.hmsApproval.approve({ workItemId })).rejects.toMatchObject({
+        await expect(
+          caller.hmsApproval.approve({ workItemId, formDigest: formDigest(FORM) }),
+        ).rejects.toMatchObject({
           code: 'PRECONDITION_FAILED',
           message: 'write_in_flight',
         });
@@ -433,6 +439,50 @@ describe('HMS write approvals', () => {
           readHmsState: async () => HMS_BEFORE,
         }),
       ).resolves.toEqual({ status: 'needs_check', reason: 'form_changed' });
+    });
+  });
+
+  it('an edit or a dismiss made while HMS is re-read is caught after the read, and Save is refused', async () => {
+    await withIngestionDb(async ({ db }) => {
+      for (const [n, change, reason] of [
+        [1, { state: EDITED_FORM }, 'form_changed'],
+        [2, { status: 'dismissed' as const }, 'not_open'],
+      ] as const) {
+        const workItemId = await seedItem(db, { n });
+        await approve(db, workItemId);
+        const claim = await claimWrite(db);
+        await consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: NOW });
+        await expect(
+          assertHmsUnchangedBeforeSave({
+            db,
+            runId: claim.runId,
+            fence: claim.fence,
+            readHmsState: async () => {
+              await db.update(workItem).set(change).where(eq(workItem.id, workItemId));
+              return HMS_BEFORE;
+            },
+          }),
+        ).resolves.toEqual({ status: 'needs_check', reason });
+        expect(await runRow(db, claim.runId)).toMatchObject({ state: 'dead_letter', lastError: reason });
+      }
+    });
+  });
+
+  it('an approval that passes 30 minutes during the pre-Save read refuses Save', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      const claim = await claimWrite(db);
+      await consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: at(29) });
+      await expect(
+        assertHmsUnchangedBeforeSave({
+          db,
+          runId: claim.runId,
+          fence: claim.fence,
+          readHmsState: async () => HMS_BEFORE,
+          now: () => at(31),
+        }),
+      ).resolves.toEqual({ status: 'needs_check', reason: 'snapshot_stale' });
     });
   });
 
@@ -938,6 +988,37 @@ describe('HMS write review and write state', () => {
     });
   });
 
+  it('a review names the run it was shown: a newer write refuses it, so OK never closes a write nobody saw', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      const shown = await runApprovedWrite(db);
+      // Another pane approves and finishes a second write while this one still shows the first.
+      await approve(db, workItemId);
+      const latest = await runApprovedWrite(db);
+      await expect(review(db, workItemId, { runId: shown })).rejects.toMatchObject({ refusal: 'run_changed' });
+      await expect(review(db, workItemId, { runId: latest })).resolves.toEqual({ runId: latest, status: 'done' });
+    });
+  });
+
+  it('OK is refused when the form changed after the write, and a flag still returns the item for a new approval', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      const runId = await runApprovedWrite(db);
+      const [item] = await db.select().from(workItem).where(eq(workItem.id, workItemId));
+      await db
+        .update(workItem)
+        .set({ state: { ...item!.state, ...EDITED_FORM } })
+        .where(eq(workItem.id, workItemId));
+      await expect(review(db, workItemId, { runId })).rejects.toMatchObject({ refusal: 'state_changed' });
+      expect((await db.select().from(workItem).where(eq(workItem.id, workItemId)))[0]?.status).toBe('needs_you');
+      await expect(
+        review(db, workItemId, { runId, decision: 'flag', note: 'Arrival edited after the write' }),
+      ).resolves.toEqual({ runId, status: 'needs_you' });
+    });
+  });
+
   it('one decision per run', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedItem(db);
@@ -962,7 +1043,7 @@ describe('HMS write review and write state', () => {
         caller.hmsApproval.review({ workItemId, decision: 'ok', note: 'not allowed' } as never),
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
       await expect(
-        caller.hmsApproval.review({ workItemId, decision: 'flag', note: 'Check arrival in HMS' }),
+        caller.hmsApproval.review({ workItemId, runId, decision: 'flag', note: 'Check arrival in HMS' }),
       ).resolves.toEqual({ runId, status: 'needs_you' });
       // This form names no booking to read (no confirmation, arrival or action), so nothing reaches HMS.
       await expect(caller.hmsApproval.reread({ workItemId })).resolves.toEqual({
@@ -970,7 +1051,7 @@ describe('HMS write review and write state', () => {
         reason: 'form_invalid',
       });
       await expect(
-        callerFor('transport-nava').hmsApproval.review({ workItemId, decision: 'ok' }),
+        callerFor('transport-nava').hmsApproval.review({ workItemId, runId, decision: 'ok' }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });
       await expect(
         callerFor('transport-nava').hmsApproval.writeState({ workItemId }),

@@ -187,6 +187,41 @@ describe('voucher find card: the existing search', () => {
     fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.search }));
     expect(await screen.findByText(/could not read the HMS search/i)).toBeTruthy();
   });
+
+  it("never reads back another guest's search from the same thread, and still reads back this guest's", async () => {
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    const JONES: VoucherFindReply = { ...VOUCHER, messageId: 'm2', guest: { lastName: 'Jones', arrival: '2026-11-12' } };
+    trpc.quoteWorkflow.voucherFind.query = vi.fn(async ({ internetMessageId }: { internetMessageId: string }) =>
+      internetMessageId === 'second@host' ? JONES : VOUCHER,
+    );
+    // The latest search_guest job on the thread, filtered by arrival as the server does.
+    const byRun = trpc.paneStayLookup.jobStatus.query;
+    const latest: HmsJobView[] = [];
+    const queue = trpc.paneStayLookup.queueSearchGuest.mutate;
+    trpc.paneStayLookup.queueSearchGuest.mutate = async (input) => {
+      const started = await queue(input);
+      const view = await byRun({ runId: started.runId });
+      if (view) latest.unshift(view);
+      return started;
+    };
+    trpc.paneStayLookup.jobStatus.query = async (input: { runId: string } | { threadId: string; arrival?: string }) =>
+      'runId' in input
+        ? byRun(input)
+        : (latest.find((view) => !input.arrival || view.request?.arrival === input.arrival) ?? null);
+
+    const { rerender } = render(<VoucherFindCard internetMessageId="first@host" trpc={trpc} download={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.search }));
+    await screen.findByText('John Smith · 57291630-1');
+
+    rerender(<VoucherFindCard internetMessageId="second@host" trpc={trpc} download={vi.fn()} />);
+    await screen.findByText(`Guest Jones · arriving ${formatStayDate('2026-11-12')}`);
+    // Give the read-back time to answer: Smith's rows must not appear under Jones.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText('John Smith · 57291630-1')).toBeNull();
+
+    rerender(<VoucherFindCard internetMessageId="first@host" trpc={trpc} download={vi.fn()} />);
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+  });
 });
 
 describe('voucher find card: saving the file', () => {

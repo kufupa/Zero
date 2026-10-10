@@ -15,17 +15,19 @@
 // --last-name is optional: when the confirmation does not show in the header quick search, the surname is typed and the row with the exact confirmation is used.
 // Exit: 0 preview_ok|cancelled|already_cancelled; 2 refused_* or usage; 1 other outcome (also writes failure.png).
 // Read-only lookups (find, search-guest) live in stay-lookup.mjs, which imports the helpers exported here.
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
 import {
-  arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, hmsDateToIso, identityCheck,
+  arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, formPairsFromSnapshot, hmsDateToIso, identityCheck,
   isCancelledStatus, normalizeReasons, outcomeAfterFailure, parseBalanceValue, parseCancelArgs, parseDateWindowLabel,
   parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, runCancelDialog, settleCancel, squash,
+  stayChanges, stayFromFormPairs,
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
+import { snapshotRecordForm } from './stay-lookup-dom.mjs';
 
 const MAX_PICKER_CLICKS = 60;
 const QUICK_WAIT_MS = 8000;
@@ -100,6 +102,29 @@ export async function readRecord(page) {
       status: value('status'),
     };
   });
+}
+
+// The labelled fields first (see formPairsFromSnapshot). The named inputs that readRecord already trusts fill any field
+// the labels did not give, and the balance comes from readBalance. A field with conflicting labelled values is never
+// filled. Debug mode writes the form region to record-form.html.
+export async function readStayFields(ctx) {
+  const { page, args, result } = ctx;
+  const snapshot = await page.evaluate(snapshotRecordForm, args.debugHtml);
+  if (snapshot.region) await writeFile(join(ctx.dir, 'record-form.html'), snapshot.region);
+  const { stay, conflicts } = stayFromFormPairs(formPairsFromSnapshot(snapshot.entries));
+  const named = await readRecord(page);
+  const fallback = {
+    confirmation: squash(named.confirmation),
+    lastName: squash(named.lastName),
+    status: squash(named.status),
+    arrival: hmsDateToIso(named.arrival),
+  };
+  for (const [field, value] of Object.entries(fallback)) {
+    if (stay[field] === null && value && !conflicts.includes(field)) stay[field] = value;
+  }
+  if (stay.balance === null && !conflicts.includes('balance')) stay.balance = await readBalance(page);
+  result.conflicts = conflicts;
+  return stay;
 }
 
 async function visibleWindowTexts(page) {
@@ -646,6 +671,17 @@ async function run(ctx) {
     return;
   }
 
+  // The pane write runner (U26) passes the stay its approval was checked against. This session opened the record on its
+  // own, so the record is read again here and any field that moved since refuses the run before the dialog opens.
+  if (args.expectStay) {
+    const expected = JSON.parse(await readFile(args.expectStay, 'utf8'));
+    const changed = stayChanges(expected, await readStayFields(ctx));
+    if (changed.length > 0) {
+      result.outcome = 'refused_stay_changed';
+      result.refusal = `stay_changed:${changed.join(',')}`;
+      return;
+    }
+  }
   result.cancelPath = await openCancelDialog(page);
   const dialog = await waitCancelDialog(page);
   await shot(ctx, 'cancel-dialog.png');

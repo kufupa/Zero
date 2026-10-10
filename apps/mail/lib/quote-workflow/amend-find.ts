@@ -165,7 +165,7 @@ export type HmsJobClient = {
   findStay?: (input: FindStayInput) => Promise<FindStayReply>;
   searchGuest?: (input: GuestSearchInput) => Promise<GuestSearchReply>;
   jobStatus: (
-    input: { runId: string } | { threadId: string; kind: HmsJobKind; confirmation?: string },
+    input: { runId: string } | { threadId: string; kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string },
   ) => Promise<HmsJobView | null>;
   screenshot: (input: ScreenshotInput) => Promise<ScreenshotReply>;
 };
@@ -173,7 +173,9 @@ export type HmsJobClient = {
 /** The job calls for one thread: queue a request, and read a job by run id or the latest of a kind on the thread. */
 export type HmsJobTransport = {
   queue: (request: HmsJobRequest) => Promise<HmsJobStart>;
-  status: (input: { runId: string } | { kind: HmsJobKind; confirmation?: string }) => Promise<HmsJobView | null>;
+  status: (
+    input: { runId: string } | { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string },
+  ) => Promise<HmsJobView | null>;
 };
 
 type TrpcPaneStayLookupRoutes = {
@@ -490,6 +492,21 @@ export function searchRunFromJob(view: HmsJobView | null, queueFailed: boolean):
   );
 }
 
+/** The view for a job just queued, before its first status read, so the panel shows it as queued, not idle. */
+export function pendingJobView(runId: string, request: HmsJobRequest | null): HmsJobView {
+  return {
+    runId,
+    request,
+    prefetch: false,
+    status: 'queued',
+    position: null,
+    attempts: 0,
+    failureClass: null,
+    asOf: null,
+    result: null,
+  };
+}
+
 /** Poll cadence while a job is queued, running or retrying. */
 export const HMS_JOB_POLL_MS = 3_000;
 /** Unreadable polls in a row before polling stops: about a minute at the poll cadence. */
@@ -498,8 +515,9 @@ export const HMS_JOB_MAX_MISSES = 20;
 /**
  * Polls one job by run id until it settles. Each read goes to onView. live() ends the loop when the pane unmounts or a
  * newer request has replaced this one. A read that fails is tried again on the next tick: the job is in the database,
- * so a dropped request loses nothing. After HMS_JOB_MAX_MISSES unreadable reads in a row, polling stops and the last job
- * seen shows as failed, so the staff can retry instead of waiting on a spinner that never ends.
+ * so a dropped request loses nothing. After HMS_JOB_MAX_MISSES unreadable reads in a row, polling stops and the job
+ * shows as failed (the last view seen, or the bare run when none was), so the staff can retry instead of waiting on a
+ * spinner that never ends.
  */
 export async function pollHmsJob(
   transport: HmsJobTransport,
@@ -519,7 +537,8 @@ export async function pollHmsJob(
     } else {
       misses += 1;
       if (misses >= HMS_JOB_MAX_MISSES) {
-        if (last) options.onView({ ...last, status: 'failed', failureClass: 'POLL_LOST' });
+        // Shown as failed even when no read ever succeeded, so the panel offers Retry instead of looking idle.
+        options.onView({ ...(last ?? pendingJobView(runId, null)), status: 'failed', failureClass: 'POLL_LOST' });
         return;
       }
     }

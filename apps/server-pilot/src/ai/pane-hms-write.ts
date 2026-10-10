@@ -367,7 +367,8 @@ type SaveOutcome = {
   runDir?: string;
 };
 
-async function saveCancel(form: CancelForm): Promise<SaveOutcome> {
+/** `approvedStay` is the read that matched the approval's HMS digest. The cancel CLI refuses if its own read differs. */
+async function saveCancel(form: CancelForm, approvedStay: PaneStayFields): Promise<SaveOutcome> {
   const spawn = paneStayCancelLoaders.spawn ?? spawnPaneStayCancel;
   const request: PaneStayCancelSpawnInput = {
     mode: 'commit',
@@ -375,6 +376,7 @@ async function saveCancel(form: CancelForm): Promise<SaveOutcome> {
     arrival: form.arrival,
     reason: squash(form.reason),
     allowRealGuest: false,
+    expectStay: approvedStay,
   };
   const result: PaneStayCancelSpawnResult = await spawn(request);
   return {
@@ -523,7 +525,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   let saved: SaveOutcome;
   try {
     saved = approved.action === 'cancel'
-      ? await saveCancel(approved)
+      ? await saveCancel(approved, stay)
       : await saveAttach(approved, input.file);
   } catch (error) {
     clearInterval(beat);

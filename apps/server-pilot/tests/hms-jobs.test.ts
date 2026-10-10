@@ -222,6 +222,28 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(remounted?.asOf).toEqual(expect.any(String));
     }));
 
+  it('a remount on a thread with two guests reads back the search for the asked surname, whatever its case', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      const search = (lastName: string) =>
+        queueUserHmsJob(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            threadId,
+            request: { kind: 'search_guest', lastName, arrival: '2026-10-12' },
+          },
+          db,
+        );
+      const smith = await search('Smith');
+      const jones = await search('Jones');
+      const resume = (lastName: string) =>
+        readHmsJobView({ transportId: TRANSPORT_ID, threadId, kind: 'search_guest', lastName, arrival: '2026-10-12' }, db);
+      expect((await resume(' smith '))?.runId).toBe(smith!.id);
+      expect((await resume('JONES'))?.runId).toBe(jones!.id);
+      expect(await resume('Brown')).toBeNull();
+    }));
+
   it('queued user jobs report their position in the lane', () =>
     withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
@@ -264,6 +286,30 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(await requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-222' }, db)).toBe(1);
       const view = await readHmsJobView({ transportId: TRANSPORT_ID, runId: job!.id }, db);
       expect(view).toMatchObject({ status: 'retrying', failureClass: 'LEASE_LOST' });
+    }));
+
+  it('a job requeued after a restart past its run deadline is claimed again, not dead-lettered', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      const job = await queueUserHmsJob(
+        { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
+        db,
+      );
+      const claimed = await claimJob(db, 'hms-ai-worker-111');
+      await markAiRunRunning(
+        { runId: claimed.id, claimOwner: claimed.claimOwner!, claimToken: claimed.claimToken!, deadlineAt: claimed.deadlineAt! },
+        db,
+      );
+      // Worker 111 died long enough ago that the first claim's deadline has passed too.
+      await db
+        .update(aiWorkflowRun)
+        .set({ heartbeatAt: new Date(Date.now() - 10 * 60_000), deadlineAt: new Date(Date.now() - 60_000) })
+        .where(eq(aiWorkflowRun.id, claimed.id));
+      expect(await requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-222' }, db)).toBe(1);
+      const again = await claimJob(db, 'hms-ai-worker-222');
+      expect(again.id).toBe(job!.id);
+      expect(again.state).toBe('claimed');
+      expect(again.deadlineAt!.getTime()).toBeGreaterThan(Date.now());
     }));
 
   it('a requeued job gets a fresh run deadline on its next claim', () =>

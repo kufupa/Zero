@@ -644,6 +644,8 @@ export async function readHmsJobView(
         threadId: string;
         kind: 'find' | 'search_guest' | 'availability';
         confirmation?: string;
+        /** A guest search's surname, compared case- and space-insensitively: one thread can carry two guests' searches. */
+        lastName?: string;
         /** A stay's dates pick its availability snapshot; its rooms tell apart two stays on the same dates. */
         arrival?: string;
         departure?: string;
@@ -676,6 +678,11 @@ export async function readHmsJobView(
               sql`${aiWorkflowRun.readRequest}->>'kind' = ${input.kind}`,
               ...(input.confirmation
                 ? [sql`${aiWorkflowRun.readRequest}->>'confirmation' = ${input.confirmation}`]
+                : []),
+              ...(input.lastName
+                ? [
+                    sql`lower(btrim(regexp_replace(${aiWorkflowRun.readRequest}->>'lastName', '[[:space:]]+', ' ', 'g'))) = ${input.lastName.trim().replace(/\s+/g, ' ').toLowerCase()}`,
+                  ]
                 : []),
               ...(input.arrival
                 ? [sql`${aiWorkflowRun.readRequest}->>'arrival' = ${input.arrival}`]
@@ -741,6 +748,8 @@ export async function requeueHmsReadsAfterRestart(
       claimOwner: null,
       claimToken: null,
       nextRunAt: now,
+      // The dead worker's claim deadline may already be past; the next claim sets a fresh one (as requeueRun does).
+      deadlineAt: null,
       lastError: 'hms worker restarted',
       failureClass: 'LEASE_LOST',
       updatedAt: now,
