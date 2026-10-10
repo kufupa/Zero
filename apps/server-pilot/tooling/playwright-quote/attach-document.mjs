@@ -302,7 +302,10 @@ async function uploadDocument(ctx, args, state) {
   const description = popup.locator('input[name=description]:visible');
   if (await description.count()) await description.first().fill(args.documentName);
   await shot({ ...ctx, page: form }, 'before.png');
-  await popup.getByRole('button', { name: /^Upload$/ }).first().click();
+  // H2b live: the popup's action is Submit (beside Cancel), scoped to the upload window. Visible only, so a hidden
+  // "Submit" text node in the window is never the first match.
+  const submit = popup.getByRole('button', { name: /^Submit$/ }).or(popup.getByText(/^Submit$/));
+  await submit.filter({ visible: true }).first().click();
   // The route guard sets state.uploadSent when the upload leaves. Listed only when one more row shows the name.
   await page.waitForFunction(
     ({ name, before }) => [...document.querySelectorAll('body *')]
