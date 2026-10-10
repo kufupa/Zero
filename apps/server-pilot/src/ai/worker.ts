@@ -60,6 +60,7 @@ import {
   type LinkedContextReferenceKind,
 } from '../hms/context-read-reference.js';
 import {
+  isInboundTriageClassifierEnabled,
   parseEnv,
   requireHmsEvidenceHmacChildKey,
   requireHmsReadRuntimeConfig,
@@ -4439,6 +4440,18 @@ export async function executeAiRun(
       );
 
       const externalSentAnalyticsOnly = trigger?.direction === 'outbound';
+      if (!externalSentAnalyticsOnly && !isInboundTriageClassifierEnabled(process.env)) {
+        // INBOUND_TRIAGE_CLASSIFIER=off: no classifier call and no folder, read or spam write. Spam, the baseline and
+        // the warmer come from inbound_extraction. A run queued before the flag flipped ends here.
+        const retired = await markAiRunSucceeded({
+          runId,
+          claimOwner: owner,
+          claimToken,
+          expectedStates: ['running'],
+          metrics: { triageRetired: true },
+        });
+        return { runId, state: retired ? 'succeeded' : 'retry_wait' };
+      }
       let output: WorkflowTriageOutput;
       let mastraTraceId: string | undefined;
       let workflowMetrics: Record<string, unknown> = {};
@@ -4501,7 +4514,8 @@ export async function executeAiRun(
       let routedBaseline:
         | Awaited<ReturnType<typeof extractMailBaselineWithApprovedRoute>>
         | undefined;
-      if (baselineRow) {
+      // Inbound mail's baseline is projected from inbound_extraction completion. Only sent copies still run it here.
+      if (baselineRow && externalSentAnalyticsOnly) {
         const clock = resolveTriageEventClock(baselineRow);
         routedBaseline = await extractMailBaselineWithApprovedRoute(
           {
@@ -4563,17 +4577,19 @@ export async function executeAiRun(
           applyMode = applyResult.applyMode;
         }
 
-        let baselineMetrics: Record<string, unknown> = {
-          status:
-            routedBaseline?.semanticRoute === 'approved_local_extraction'
-              ? 'persisted_semantic_projection'
-              : 'persisted_source_observation',
-          routeStatus: baselineRoute.available ? 'available' : 'unavailable',
-          routeId: baselineRoute.route,
-          extraction: routedBaseline?.semanticRoute ?? 'none',
-          triageClassifierVersion: baselineHints.classifierVersion,
-          ...(baselineRoute.reason ? { reason: baselineRoute.reason } : {}),
-        };
+        let baselineMetrics: Record<string, unknown> = externalSentAnalyticsOnly
+          ? {
+              status:
+                routedBaseline?.semanticRoute === 'approved_local_extraction'
+                  ? 'persisted_semantic_projection'
+                  : 'persisted_source_observation',
+              routeStatus: baselineRoute.available ? 'available' : 'unavailable',
+              routeId: baselineRoute.route,
+              extraction: routedBaseline?.semanticRoute ?? 'none',
+              triageClassifierVersion: baselineHints.classifierVersion,
+              ...(baselineRoute.reason ? { reason: baselineRoute.reason } : {}),
+            }
+          : { status: 'projected_by_extraction' };
         if (routedBaseline && baselineRow) {
           const extraction = routedBaseline.extraction;
           const configuredMeasurement = parseMailboxMeasurementConfig(
@@ -5264,6 +5280,7 @@ export async function executeAiRun(
         signal,
         adapter: options.inboundExtractionAdapter,
         db,
+        mailBaselineRoute: baselineRoute,
       });
       // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
       if (extracted.state === 'succeeded') scheduleAvailabilityPrefetch(runWithFence);
@@ -5449,11 +5466,11 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     // HMS lane: live factory only — never createMockCandidateSession.
     ...(lane === 'hms' ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() } : {}),
   });
-  if (executed.state === 'succeeded') {
-    // Fire-and-forget after the triage commit, never inside the admission
+  if (executed.state === 'succeeded' && claimed.runKind === 'inbound_extraction') {
+    // Fire-and-forget after the extraction commit, never inside the admission
     // transaction. Off unless LUNA_ANALYSE_WARMER=on (see quote-workflow-warmer.ts).
     scheduleInboundTriageAnalyseWarm(claimed);
-    // Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1; live inbound triage only.
+    // Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1; live inbound extraction only.
     schedulePrefetchForInbound(claimed);
   }
   return true;

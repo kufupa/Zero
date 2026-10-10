@@ -458,7 +458,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1 and 7654321-2');
-      const inbound = await insertInboundTriage(db, threadId, messageId);
+      const inbound = await insertInboundExtraction(db, threadId, messageId);
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true, HMS_PREFETCH_PER_HOUR: 1 };
       expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(1);
       expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(0);
@@ -478,7 +478,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
-      const inbound = await insertInboundTriage(db, threadId, messageId);
+      const inbound = await insertInboundExtraction(db, threadId, messageId);
       await enqueueHmsJob(
         {
           transportId: TRANSPORT_ID,
@@ -505,7 +505,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
-      const inbound = await insertInboundTriage(db, threadId, messageId);
+      const inbound = await insertInboundExtraction(db, threadId, messageId);
       const base = parseEnv(process.env as Record<string, string | undefined>);
       expect(await prefetchHmsConfirmations(inbound, db, { ...base, HMS_PREFETCH_ENABLED: false })).toBe(0);
       const backfill = { ...inbound, admissionSnapshotId: null };
@@ -515,7 +515,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   it('prefetch needs the job queue on, and skips mail on a spam thread', () =>
     withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
-      const inbound = await insertInboundTriage(db, threadId, messageId);
+      const inbound = await insertInboundExtraction(db, threadId, messageId);
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
       expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(0);
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
@@ -648,7 +648,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 });
 
-async function insertInboundTriage(db: DB, threadId: string, messageId: string): Promise<AiWorkflowRun> {
+async function insertInboundExtraction(
+  db: DB,
+  threadId: string,
+  messageId: string,
+): Promise<AiWorkflowRun> {
   const [row] = await db
     .insert(aiWorkflowRun)
     .values({
@@ -656,8 +660,8 @@ async function insertInboundTriage(db: DB, threadId: string, messageId: string):
       transportId: TRANSPORT_ID,
       threadId,
       triggerMessageId: messageId,
-      runKind: 'inbound_triage',
-      idempotencyKey: `inbound-triage:${messageId}`,
+      runKind: 'inbound_extraction',
+      idempotencyKey: `inbound-extraction:${messageId}`,
       modelId: 'amazon.nova-lite-v1:0',
       promptVersion: 'triage-v6',
       admissionSnapshotId: `snapshot-${randomUUID()}`,
@@ -666,7 +670,7 @@ async function insertInboundTriage(db: DB, threadId: string, messageId: string):
       priority: 0,
     })
     .returning();
-  if (!row) throw new Error('inbound triage seed failed');
+  if (!row) throw new Error('inbound extraction seed failed');
   return row;
 }
 

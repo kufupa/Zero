@@ -212,6 +212,14 @@ export function isHitlLedgerEnabled(input: EnvInput = process.env): boolean {
 }
 
 /**
+ * Old inbound folder/label classifier. Default ON: only the exact value `off` retires it. With `off`, inbound mail
+ * makes no classifier call. Spam, the mail baseline and the pane warmer come from inbound_extraction instead.
+ */
+export function isInboundTriageClassifierEnabled(input: EnvInput = process.env): boolean {
+  return input.INBOUND_TRIAGE_CLASSIFIER !== 'off';
+}
+
+/**
  * Vision fallback for scanned voucher PDFs. Only the exact value `on` enables it; unset, `off`, or anything else keeps
  * voucher reads text-only.
  */

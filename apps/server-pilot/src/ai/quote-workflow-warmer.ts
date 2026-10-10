@@ -194,7 +194,12 @@ export async function warmInboundTriageAnalyse(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<InboundAnalyseWarmResult> {
   if (!analyseWarmerEnabled(env)) return 'skipped';
-  if (run.runKind !== 'inbound_triage' || !run.admissionSnapshotId) return 'skipped';
+  // inbound_extraction is the live trigger now. inbound_triage stays accepted for the luna backfill's run shape.
+  if (
+    (run.runKind !== 'inbound_extraction' && run.runKind !== 'inbound_triage') ||
+    !run.admissionSnapshotId
+  )
+    return 'skipped';
   if (run.executorLane !== 'default') return 'skipped';
   if (queueIsFull()) {
     console.info('luna_warm_skip_queue_full', { code: 'queue_full' });
@@ -212,7 +217,7 @@ export async function warmInboundTriageAnalyse(
   }
 }
 
-/** Fire-and-forget entry for the ai-worker, called after triage succeeds. */
+/** Fire-and-forget entry for the ai-worker, called after an inbound_extraction run succeeds. */
 export function scheduleInboundTriageAnalyseWarm(
   run: InboundTriageWarmRun,
   env: NodeJS.ProcessEnv = process.env,

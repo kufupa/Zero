@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
@@ -284,6 +284,8 @@ export async function ensureWorkItem(
     messageId: string;
     kind: MailKind;
     extractionId: string;
+    /** Only the insert uses it. An existing item keeps its status. */
+    status?: 'needs_you' | 'done';
   },
 ): Promise<WorkItemRef> {
   await db
@@ -294,6 +296,7 @@ export async function ensureWorkItem(
       sourceMessageId: input.messageId,
       kind: input.kind,
       extractionId: input.extractionId,
+      ...(input.status ? { status: input.status } : {}),
     })
     .onConflictDoNothing({ target: [workItem.threadId, workItem.kind, workItem.sourceMessageId] });
   const [row] = await db
@@ -338,24 +341,40 @@ async function latestSucceededRead(db: DB, messageId: string) {
   };
 }
 
-/** Points the message's work item at its latest succeeded read. A message with no succeeded read has none. */
+/**
+ * Points the message's work item at its latest succeeded read. A message with no succeeded read has none. A thread
+ * with a staff reply after this message is already answered, so a new item starts done, not needs_you.
+ */
 export async function ensureWorkItemForMessage(
   db: DB,
   input: { transportId: string; messageId: string },
 ): Promise<WorkItemRef | null> {
   const [msg] = await db
-    .select({ threadId: message.threadId })
+    .select({ threadId: message.threadId, createdAt: message.createdAt })
     .from(message)
     .where(and(eq(message.id, input.messageId), eq(message.transportId, input.transportId)))
     .limit(1);
   const latest = await latestSucceededRead(db, input.messageId);
   if (!msg || !latest) return null;
+  const [reply] = await db
+    .select({ id: message.id })
+    .from(message)
+    .where(
+      and(
+        eq(message.threadId, msg.threadId),
+        eq(message.transportId, input.transportId),
+        eq(message.direction, 'outbound'),
+        gt(message.createdAt, msg.createdAt),
+      ),
+    )
+    .limit(1);
   return ensureWorkItem(db, {
     transportId: input.transportId,
     threadId: msg.threadId,
     messageId: input.messageId,
     kind: latest.kind,
     extractionId: latest.id,
+    status: reply ? 'done' : undefined,
   });
 }
 

@@ -271,6 +271,8 @@ export interface EnqueueAiRunInput {
   readResultRef?: string;
   /** Non-serializable server-issued admission provenance. */
   readAdmissionIssuer?: ReadAdmissionIssuer;
+  /** Earliest claim time. Omitted means due now. The backfill spreads its runs across hours with this. */
+  nextRunAt?: Date;
 }
 
 export interface AiRunScopeFilter {
@@ -487,6 +489,7 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
     executorLane: input.executorLane ?? 'default',
     workItemId: input.workItemId ?? null,
     priority: input.priority ?? 0,
+    ...(input.nextRunAt ? { nextRunAt: input.nextRunAt } : {}),
     state: 'queued' as const,
     createdAt: now,
     updatedAt: now,
