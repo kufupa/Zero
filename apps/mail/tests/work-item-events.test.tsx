@@ -472,6 +472,22 @@ describe('useStoredWork', () => {
     expect(query).toHaveBeenCalledTimes(2);
   });
 
+  it('opens a missing work item in the mailbox its lookup was made in', async () => {
+    setMailCacheScope({ userId: 'user', activeTransportId: 'transport-a' });
+    try {
+      const { trpc } = fakeTrpc(() => ({ ...READY, workItemId: null, workItemStatus: null }));
+      const open = vi.fn(async (_input: unknown, _opts?: unknown) => READY);
+      const routes = { workItems: { ...trpc.workItems, open: { mutate: open } } };
+      const { result } = renderHook(() =>
+        useStoredWork({ trpc: routes, internetMessageId: 'm-1', scope: 'user:session:transport-a' }),
+      );
+      await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
+      expect(open.mock.calls).toEqual([[{ internetMessageId: 'm-1' }, { context: { activeTransportId: 'transport-a' } }]]);
+    } finally {
+      setMailCacheScope({ userId: null, activeTransportId: null });
+    }
+  });
+
   it('never opens a work item in the mailbox switched to while the lookup was out', async () => {
     setMailCacheScope({ userId: 'user', activeTransportId: 'transport-a' });
     try {
@@ -494,11 +510,6 @@ describe('useStoredWork', () => {
         answerA({ ...READY, workItemId: null, workItemStatus: null });
         await Promise.resolve();
       });
-      for (const call of open.mock.calls) {
-        expect(transportForCall((call[1] as { context?: Record<string, unknown> } | undefined)?.context)).toBe(
-          'transport-a',
-        );
-      }
       expect(open).not.toHaveBeenCalled();
     } finally {
       setMailCacheScope({ userId: null, activeTransportId: null });
