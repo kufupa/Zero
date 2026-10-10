@@ -1,3 +1,4 @@
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import type {
   QuoteAmendment,
   QuoteAnalysis,
@@ -223,8 +224,12 @@ export type NeedsYouRow = {
 };
 
 type WorkItemsClient = {
-  getByMessage?: { query: (input: { internetMessageId: string }) => Promise<StoredWork> };
-  open?: { mutate: (input: { internetMessageId: string }) => Promise<StoredWork> };
+  getByMessage?: {
+    query: (input: { internetMessageId: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+  };
+  open?: {
+    mutate: (input: { internetMessageId: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+  };
   recordEvent?: {
     mutate: (input: RecordFieldEventInput, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
   };
@@ -243,31 +248,40 @@ export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {
  * Reads the stored work for one mail. A missing route or a failed call reads as unavailable, so the pane reads live.
  * The read writes nothing. A stored read with no work item yet is opened once (workItems.open) so edits have an item;
  * if that cannot run (no route, a failed call, the preview), the read still shows and edits are not logged.
+ * Both calls go out under `transportId` (the mailbox the lookup was made in), and no open is sent once `isStale` says
+ * the pane moved on (another mail or mailbox), so a late read never opens a work item in the mailbox switched to.
  */
 export async function bindStoredWork(args: {
   query?: WorkItemsClient['getByMessage'];
   open?: WorkItemsClient['open'];
   internetMessageId: string;
+  /** The mailbox the lookup was made in. Null sends under whichever mailbox is active. */
+  transportId?: string | null;
+  /** True once the caller no longer wants this lookup. Checked after the read, before any open. */
+  isStale?: () => boolean;
   /** Called when the stored read is in and only the open is left, so the caller's lookup deadline can stop there. */
   onRead?: () => void;
   /** How long the open may take. Past it the read shows without an item, the same as a failed open. */
   openTimeoutMs?: number;
 }): Promise<StoredWork | { status: 'unavailable' }> {
   if (!args.query) return { status: 'unavailable' };
+  const input = { internetMessageId: args.internetMessageId };
+  const pinned = inMailbox(args.transportId ?? null);
   let stored: StoredWork;
   try {
-    stored = await args.query.query({ internetMessageId: args.internetMessageId });
+    stored = await (pinned ? args.query.query(input, pinned) : args.query.query(input));
   } catch {
     return { status: 'unavailable' };
   }
-  if (stored.status !== 'ready' || stored.workItemId || !args.open) return stored;
+  if (stored.status !== 'ready' || stored.workItemId || !args.open || args.isStale?.()) return stored;
   args.onRead?.();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<StoredWork>((resolve) => {
     if (args.openTimeoutMs !== undefined) timer = setTimeout(() => resolve(stored), args.openTimeoutMs);
   });
   try {
-    const opened = await Promise.race([args.open.mutate({ internetMessageId: args.internetMessageId }), late]);
+    const opening = pinned ? args.open.mutate(input, pinned) : args.open.mutate(input);
+    const opened = await Promise.race([opening, late]);
     return opened.status === 'ready' && opened.workItemId ? opened : stored;
   } catch {
     return stored;
