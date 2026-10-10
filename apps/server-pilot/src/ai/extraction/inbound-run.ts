@@ -5,6 +5,7 @@ import { getDb, type DB } from '../../db/client.js';
 import { mailCategory, mailThread, mailThreadCategory, message } from '../../db/schema/mail.js';
 import { mailExtraction, workItem } from '../../db/schema/work.js';
 import { getSenderPreference } from '../../mail/sender-preference.js';
+import { isInboundTriageClassifierEnabled } from '../../env.js';
 import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../../metrics/mail-baseline.js';
 import { persistMailBaselineProjection } from '../../metrics/mail-baseline-projection.js';
 import { parseMailboxMeasurementConfig } from '../../metrics/mail-measurement-config.js';
@@ -290,47 +291,48 @@ export async function runInboundExtraction(
   });
   // The work item points at this read. Its person-set values stay in its state (see work-items.ts).
   await ensureWorkItemForMessage(db, { transportId: run.transportId, messageId: run.triggerMessageId });
-  if (
-    extraction.kind === 'spam' &&
-    env.AI_WRITE_GATE_ENABLED === 'true' &&
-    (await spamWriteAllowed(db, run.transportId, trigger.threadId, trigger.fromAddress))
-  ) {
-    const now = new Date();
-    await db
-      .update(mailThread)
-      .set({ spamAt: now, updatedAt: now })
-      .where(
-        and(
-          eq(mailThread.id, trigger.threadId),
-          eq(mailThread.transportId, run.transportId),
-          isNull(mailThread.spamAt),
-          isNull(mailThread.spamUserLockedAt),
-        ),
-      );
-  }
-  if (env.AI_WRITE_GATE_ENABLED === 'true' && SPAM_LIFTING_KINDS.has(extraction.kind)) {
-    await liftSpamOnLatestInbound(db, run, trigger);
+  if (env.AI_WRITE_GATE_ENABLED === 'true') {
+    // Once the classifier is retired, a sender the person blocked goes to spam here, as the classifier did.
+    const retired = !isInboundTriageClassifierEnabled(env);
+    const blocked =
+      retired &&
+      (await getSenderPreference({ db, transportId: run.transportId, emailRaw: trigger.fromAddress })) ===
+        'block';
+    const markSpam =
+      blocked ||
+      (extraction.kind === 'spam' &&
+        (await spamWriteAllowed(db, run.transportId, trigger.threadId, trigger.fromAddress)));
+    if (markSpam) {
+      const now = new Date();
+      await db
+        .update(mailThread)
+        .set({ spamAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(mailThread.id, trigger.threadId),
+            eq(mailThread.transportId, run.transportId),
+            isNull(mailThread.spamAt),
+            isNull(mailThread.spamUserLockedAt),
+          ),
+        );
+    } else if (retired) {
+      // Un-spam replaces the classifier's, so it runs only once the classifier is retired. Like the classifier, any
+      // read that is not spam lifts the mark ('other' covers events, venue hire and invoices), and so does a spam read
+      // the guards keep out (allowed or never-spam sender, staff reply).
+      await liftSpamOnLatestInbound(db, run, trigger);
+    }
   }
   return 'stored';
 }
 
-/** Hotel business reads. Only these lift a spam mark. An 'other' or 'spam' read never does. */
-const SPAM_LIFTING_KINDS: ReadonlySet<string> = new Set([
-  'quote',
-  'booking',
-  'amendment',
-  'cancellation',
-  'voucher_pop',
-]);
-
 /**
  * Un-spam, which the retired classifier used to do on the next mail. The thread's latest inbound read decides. A
- * person's lock and a sender the person blocked both keep the mark.
+ * person's lock keeps the mark. The caller never lifts for a blocked sender.
  */
 async function liftSpamOnLatestInbound(
   db: DB,
   run: Pick<AiWorkflowRun, 'transportId' | 'triggerMessageId'>,
-  trigger: { threadId: string; fromAddress: string },
+  trigger: { threadId: string },
 ): Promise<void> {
   const [latest] = await db
     .select({ id: message.id })
@@ -345,12 +347,6 @@ async function liftSpamOnLatestInbound(
     .orderBy(desc(message.createdAt), desc(message.id))
     .limit(1);
   if (latest?.id !== run.triggerMessageId) return;
-  const preference = await getSenderPreference({
-    db,
-    transportId: run.transportId,
-    emailRaw: trigger.fromAddress,
-  });
-  if (preference === 'block') return;
   await db
     .update(mailThread)
     .set({ spamAt: null, updatedAt: new Date() })
@@ -406,8 +402,8 @@ async function spamWriteAllowed(
 }
 
 /**
- * Worker entry for an `inbound_extraction` run. Maps the outcome onto the run's state. The mail baseline is projected
- * here too, after the read outcome, so it no longer depends on the old triage run.
+ * Worker entry for an `inbound_extraction` run. Maps the outcome onto the run's state. Once the classifier is retired,
+ * the mail baseline is projected here too, after the read outcome.
  */
 export async function executeInboundExtractionRun(input: {
   run: AiWorkflowRun;
@@ -451,14 +447,17 @@ export async function executeInboundExtractionRun(input: {
     );
     return { runId: run.id, state: 'retry_wait' };
   }
-  // The baseline reads the message and the approved route, not the extraction model. It runs for every outcome that is
-  // not deferred, so a missing extraction model never stops it.
-  const mailBaseline = await projectInboundMailBaseline(
-    db,
-    run,
-    input.mailBaselineRoute ?? resolveMailBaselineExtractionRoute({ approvedRoute: null }),
-    input.signal,
-  );
+  // Once the classifier is retired, the inbound baseline is projected here instead of by its run. It reads the message
+  // and the approved route, not the extraction model, so it runs for every outcome that is not deferred. With the
+  // classifier on, its run still projects the baseline and this one stays out, so a message never gets two.
+  const mailBaseline = isInboundTriageClassifierEnabled(input.env ?? process.env)
+    ? null
+    : await projectInboundMailBaseline(
+        db,
+        run,
+        input.mailBaselineRoute ?? resolveMailBaselineExtractionRoute({ approvedRoute: null }),
+        input.signal,
+      );
   if (outcome === 'stale_version' || outcome === 'unconfigured') {
     await markAiRunDeadLetter(
       {

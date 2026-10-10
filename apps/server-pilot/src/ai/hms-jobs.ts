@@ -270,7 +270,7 @@ async function countRecentPrefetches(
 }
 
 /**
- * Prefetch after a live inbound extraction succeeds. Validated confirmation
+ * Prefetch after a live inbound classifier or extraction run succeeds. Validated confirmation
  * numbers become low-priority jobs, capped per transport per hour. Backfill
  * and sent-copy triage never prefetch. Returns how many jobs were created.
  */
@@ -281,13 +281,12 @@ export async function prefetchHmsConfirmations(
 ): Promise<number> {
   if (!env.HMS_PREFETCH_ENABLED || !hmsJobQueueEnabled()) return 0;
   // Live admission stamps an admission snapshot; backfill and imports do not.
-  if (
-    run.runKind !== 'inbound_extraction' ||
-    !run.admissionSnapshotId ||
-    !run.idempotencyKey.startsWith('inbound-extraction:')
-  ) {
-    return 0;
-  }
+  // The trigger is the classifier run, or the extraction run once the classifier is retired (the worker picks one).
+  // Sent copies (external-sent-baseline) never prefetch.
+  const liveInbound =
+    (run.runKind === 'inbound_triage' && run.idempotencyKey.startsWith('inbound-triage:')) ||
+    (run.runKind === 'inbound_extraction' && run.idempotencyKey.startsWith('inbound-extraction:'));
+  if (!liveInbound || !run.admissionSnapshotId) return 0;
   const [mail] = await db
     .select({ subject: message.subject, textBody: message.textBody, spamAt: mailThread.spamAt })
     .from(message)
@@ -329,7 +328,7 @@ export async function prefetchHmsConfirmations(
   return created;
 }
 
-/** Fire-and-forget from the worker after an inbound_extraction run succeeds. Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1. */
+/** Fire-and-forget from the worker after the live inbound run succeeds. Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1. */
 export function schedulePrefetchForInbound(run: AiWorkflowRun): void {
   void prefetchHmsConfirmations(run).catch(() => undefined);
 }

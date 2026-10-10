@@ -11,10 +11,10 @@ import {
   queryMailBaselineProjection,
   reduceProjectedMailBaseline,
 } from '../src/metrics/mail-baseline-repository.js';
-import { EXTRACTION_VERSION, enqueueInboundExtraction } from '../src/ai/extraction/inbound-run.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { parseAndPersist } from '../src/mail/ingest/store.js';
+import { enqueueAiRun } from '../src/ai/run-ledger.js';
 import { runAiWorkerDrain } from '../src/ai/worker.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -118,16 +118,23 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           updatedAt: now,
         });
 
-        // The baseline is projected from inbound_extraction completion. No extraction model is configured in tests, so
-        // the run dead-letters after the baseline is written. Only the projection is asserted. The flag must be on:
-        // off defers the run for five minutes instead of reaching the unconfigured outcome.
-        vi.stubEnv('INBOUND_EXTRACTION', 'on');
-        await enqueueInboundExtraction({ transportId, threadId, messageId }, db);
+        const run = await enqueueAiRun(
+          {
+            transportId,
+            threadId,
+            triggerMessageId: messageId,
+            runKind: 'inbound_triage',
+            idempotencyKey: `u2-worker-generation-${messageId}`,
+            modelId: 'not_applicable',
+            promptVersion: 'triage-v6',
+          },
+          db,
+        );
         expect(
           await runAiWorkerDrain({
             transportId,
-            runKind: 'inbound_extraction',
-            promptVersion: EXTRACTION_VERSION,
+            runKind: 'inbound_triage',
+            promptVersion: 'triage-v6',
             timeoutMs: 5_000,
             pollIntervalMs: 10,
           }),
@@ -154,6 +161,18 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           interpretationVersion: rows[0]!.interpretationVersion,
         });
         expect(reduced.primaryBucket).toBe('unknown');
+
+        const [runRow] = await db
+          .select({ metrics: aiWorkflowRun.metrics })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, run.id));
+        expect(runRow?.metrics).toMatchObject({
+          mailBaseline: expect.objectContaining({
+            status: 'persisted_source_observation',
+            routeStatus: 'unavailable',
+            extraction: 'unavailable_source_observation',
+          }),
+        });
 
         const semanticTransportId = `u2-worker-semantic-transport-${randomUUID()}`;
         const semanticThreadId = `u2-worker-semantic-thread-${randomUUID()}`;
@@ -189,11 +208,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           createdAt: now,
           updatedAt: now,
         });
-        await enqueueInboundExtraction(
+        const semanticRun = await enqueueAiRun(
           {
             transportId: semanticTransportId,
             threadId: semanticThreadId,
-            messageId: semanticMessageId,
+            triggerMessageId: semanticMessageId,
+            runKind: 'inbound_triage',
+            idempotencyKey: `u2-worker-semantic-generation-${semanticMessageId}`,
+            modelId: 'not_applicable',
+            promptVersion: 'triage-v6',
           },
           db,
         );
@@ -208,8 +231,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         try {
           semanticDrain = await runAiWorkerDrain({
             transportId: semanticTransportId,
-            runKind: 'inbound_extraction',
-            promptVersion: EXTRACTION_VERSION,
+            runKind: 'inbound_triage',
+            promptVersion: 'triage-v6',
             timeoutMs: 5_000,
             pollIntervalMs: 10,
           });
@@ -238,6 +261,28 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           interpretationVersion: semanticRows[0]!.interpretationVersion,
         });
         expect(semanticReduced.primaryBucket).toBe('awaiting_hotel_reply');
+        const [semanticRunRow] = await db
+          .select({ metrics: aiWorkflowRun.metrics })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, semanticRun.id));
+        const semanticMetrics = semanticRunRow?.metrics as {
+          mailBaseline?: {
+            status?: string;
+            routeStatus?: string;
+            routeId?: string | null;
+            extraction?: string;
+            modelUsage?: { inputTokens?: number; outputTokens?: number; latencyMs?: number };
+          };
+        };
+        expect(semanticMetrics.mailBaseline?.status).toBe('persisted_semantic_projection');
+        expect(semanticMetrics.mailBaseline?.routeStatus).toBe('available');
+        expect(semanticMetrics.mailBaseline?.routeId).toBe('u2-configured-extraction-route');
+        expect(semanticMetrics.mailBaseline?.extraction).toBe('approved_local_extraction');
+        expect(semanticMetrics.mailBaseline?.modelUsage).toMatchObject({
+          inputTokens: 13,
+          outputTokens: 9,
+          latencyMs: 4,
+        });
       });
     }, 30000);
   },

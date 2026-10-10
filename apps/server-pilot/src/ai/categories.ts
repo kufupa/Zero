@@ -33,21 +33,17 @@ export const AI_OVERLAY_CATEGORY_SLUGS = ['urgent'] as const;
  * Pill slug for an inbound read's kind. It stands in for the retired classifier's folder when a thread has no triage
  * rows. Spam has no pill: it lives in the spam folder. The mapping is a product call, so review it with the pill copy.
  */
+export const EXTRACTION_KIND_PILL_SLUGS: Readonly<Record<string, string>> = {
+  quote: 'bookings',
+  booking: 'bookings',
+  amendment: 'manage-stay',
+  cancellation: 'manage-stay',
+  voucher_pop: 'documents-delivery',
+  other: 'unknown-review',
+};
+
 export function pillSlugForExtractionKind(kind: string): string | null {
-  switch (kind) {
-    case 'quote':
-    case 'booking':
-      return 'bookings';
-    case 'amendment':
-    case 'cancellation':
-      return 'manage-stay';
-    case 'voucher_pop':
-      return 'documents-delivery';
-    case 'other':
-      return 'unknown-review';
-    default:
-      return null;
-  }
+  return Object.hasOwn(EXTRACTION_KIND_PILL_SLUGS, kind) ? EXTRACTION_KIND_PILL_SLUGS[kind]! : null;
 }
 
 /** Workflow primaries not already represented by a legacy slug. */

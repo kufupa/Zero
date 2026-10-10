@@ -56,10 +56,7 @@ import {
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
-import {
-  enqueueInboundExtraction,
-  inboundExtractionEnabled,
-} from '../../ai/extraction/inbound-run.js';
+import { enqueueInboundExtraction } from '../../ai/extraction/inbound-run.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
 import { enqueueShadowPrediction, rematchShadowPredictions } from '../../ai/shadow-evaluation.js';
 import { ingestRequireOwnerHeader, isInboundTriageClassifierEnabled } from '../../env.js';
@@ -769,9 +766,9 @@ export async function persistInboundMessage(
           tx as unknown as DB,
         );
       }
-      // Inbound mail gets its read on this path too, so spam, the baseline and the warmer keep running without the
-      // classifier. Sent copies never get one.
-      if (!isHotelSent && inboundExtractionEnabled(process.env)) {
+      // Once the classifier is retired, the read replaces its run on this path too, so spam and the baseline keep
+      // running. Retired implies INBOUND_EXTRACTION=on. Sent copies never get one.
+      if (!isHotelSent && !isInboundTriageClassifierEnabled(process.env)) {
         await enqueueInboundExtraction(
           { transportId: transport.id, threadId, messageId },
           tx as unknown as DB,

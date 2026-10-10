@@ -211,12 +211,26 @@ export function isHitlLedgerEnabled(input: EnvInput = process.env): boolean {
   return input.HITL_LEDGER === 'on';
 }
 
+let warnedClassifierOffWithoutExtraction = false;
+
 /**
- * Old inbound folder/label classifier. Default ON: only the exact value `off` retires it. With `off`, inbound mail
- * makes no classifier call. Spam, the mail baseline and the pane warmer come from inbound_extraction instead.
+ * Old inbound folder/label classifier. Default ON. It retires only when INBOUND_TRIAGE_CLASSIFIER is exactly `off` AND
+ * INBOUND_EXTRACTION is exactly `on`, because extraction then carries spam, the mail baseline, the pane warmer, the
+ * prefetch and the pills. `off` without extraction keeps the classifier on and logs one warning.
  */
 export function isInboundTriageClassifierEnabled(input: EnvInput = process.env): boolean {
-  return input.INBOUND_TRIAGE_CLASSIFIER !== 'off';
+  if (input.INBOUND_TRIAGE_CLASSIFIER !== 'off') return true;
+  if (input.INBOUND_EXTRACTION === 'on') return false;
+  if (!warnedClassifierOffWithoutExtraction) {
+    warnedClassifierOffWithoutExtraction = true;
+    console.warn(
+      JSON.stringify({
+        event: 'inbound_triage_classifier_kept_on',
+        code: 'INBOUND_EXTRACTION_NOT_ON',
+      }),
+    );
+  }
+  return true;
 }
 
 /**

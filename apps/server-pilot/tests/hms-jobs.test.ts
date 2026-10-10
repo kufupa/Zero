@@ -454,6 +454,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(asOf).toBeLessThanOrEqual(Date.now() + 1000);
     }));
 
+  it('the classifier run still prefetches while the classifier is on; a sent copy never does', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
+      const triage = await insertInboundExtraction(db, threadId, messageId, 'inbound_triage');
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+      const sentCopy = { ...triage, idempotencyKey: `external-sent-baseline:${messageId}` };
+      expect(await prefetchHmsConfirmations(sentCopy, db, env)).toBe(0);
+      expect(await prefetchHmsConfirmations(triage, db, env)).toBe(1);
+    }));
+
   it('a duplicate prefetch is a no-op, and the hourly cap holds per transport', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
@@ -652,6 +663,7 @@ async function insertInboundExtraction(
   db: DB,
   threadId: string,
   messageId: string,
+  kind: 'inbound_extraction' | 'inbound_triage' = 'inbound_extraction',
 ): Promise<AiWorkflowRun> {
   const [row] = await db
     .insert(aiWorkflowRun)
@@ -660,8 +672,9 @@ async function insertInboundExtraction(
       transportId: TRANSPORT_ID,
       threadId,
       triggerMessageId: messageId,
-      runKind: 'inbound_extraction',
-      idempotencyKey: `inbound-extraction:${messageId}`,
+      runKind: kind,
+      idempotencyKey:
+        kind === 'inbound_triage' ? `inbound-triage:${messageId}` : `inbound-extraction:${messageId}`,
       modelId: 'amazon.nova-lite-v1:0',
       promptVersion: 'triage-v6',
       admissionSnapshotId: `snapshot-${randomUUID()}`,

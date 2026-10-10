@@ -58,8 +58,11 @@ import {
   DEFAULT_FEEDBACK_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
-import { pillSlugForExtractionKind } from '../../ai/categories.js';
-import { mailExtraction } from '../../db/schema/work.js';
+import {
+  extractionPillSlugSql,
+  extractionPillsApply,
+  threadInCategories,
+} from '../../mail/extraction-pill.js';
 import {
   parseFromEmail,
   sendInput,
@@ -71,7 +74,7 @@ import {
   getLatestInboundFromAddress,
   upsertSenderPreference,
 } from '../../mail/sender-preference.js';
-import { and, eq, asc, desc, isNotNull, isNull, inArray, sql, exists } from 'drizzle-orm';
+import { and, eq, asc, desc, isNotNull, isNull, inArray, sql } from 'drizzle-orm';
 import { formatContentDispositionFilename } from '../../mail/attachment-filename.js';
 import { formatEmlFilename } from '../../mail/eml-export.js';
 import { getS3Storage } from '../../storage/s3.js';
@@ -280,41 +283,22 @@ async function loadCategoryIdsByThreadIds(
     categoryIdsByThread.set(row.threadId, existing);
   }
 
-  // With the classifier retired, a thread has no triage rows. Its pill comes from the latest succeeded inbound read.
+  // With the classifier retired, a thread with no category rows takes its pill from its latest inbound read.
+  if (!extractionPillsApply()) return categoryIdsByThread;
   const unlabelled = threadIds.filter((threadId) => !categoryIdsByThread.has(threadId));
   if (unlabelled.length === 0) return categoryIdsByThread;
-  const reads = await db
-    .select({ threadId: message.threadId, kind: mailExtraction.kind })
-    .from(mailExtraction)
-    .innerJoin(message, eq(message.id, mailExtraction.messageId))
-    .where(
+  const pills = await db
+    .select({ threadId: mailThread.id, categoryId: mailCategory.id })
+    .from(mailThread)
+    .innerJoin(
+      mailCategory,
       and(
-        eq(message.transportId, transportId),
-        eq(message.direction, 'inbound'),
-        inArray(message.threadId, unlabelled),
-        eq(mailExtraction.status, 'succeeded'),
+        eq(mailCategory.transportId, transportId),
+        sql`${mailCategory.slug} = ${extractionPillSlugSql(transportId)}`,
       ),
     )
-    .orderBy(desc(mailExtraction.createdAt));
-  const latestKindByThread = new Map<string, string>();
-  for (const read of reads) {
-    if (read.kind && !latestKindByThread.has(read.threadId)) {
-      latestKindByThread.set(read.threadId, read.kind);
-    }
-  }
-  const pillSlugs = [...latestKindByThread.values()]
-    .map(pillSlugForExtractionKind)
-    .filter((slug): slug is string => slug !== null);
-  if (pillSlugs.length === 0) return categoryIdsByThread;
-  const pillCategories = await db
-    .select({ id: mailCategory.id, slug: mailCategory.slug })
-    .from(mailCategory)
-    .where(and(eq(mailCategory.transportId, transportId), inArray(mailCategory.slug, pillSlugs)));
-  const idBySlug = new Map(pillCategories.map((row) => [row.slug, row.id]));
-  for (const [threadId, kind] of latestKindByThread) {
-    const categoryId = idBySlug.get(pillSlugForExtractionKind(kind) ?? '');
-    if (categoryId) categoryIdsByThread.set(threadId, [categoryId]);
-  }
+    .where(and(eq(mailThread.transportId, transportId), inArray(mailThread.id, unlabelled)));
+  for (const pill of pills) categoryIdsByThread.set(pill.threadId, [pill.categoryId]);
   return categoryIdsByThread;
 }
 
@@ -420,20 +404,7 @@ export const mailRouter = tRouter({
 
     const filterCategoryIds = input.filters?.categoryIds ?? [];
     if (filterCategoryIds.length > 0) {
-      conditions.push(
-        exists(
-          db
-            .select({ one: sql`1` })
-            .from(mailThreadCategory)
-            .where(
-              and(
-                eq(mailThreadCategory.threadId, mailThread.id),
-                eq(mailThreadCategory.transportId, transportId),
-                inArray(mailThreadCategory.categoryId, filterCategoryIds),
-              ),
-            ),
-        ),
-      );
+      conditions.push(threadInCategories(db, transportId, { categoryIds: filterCategoryIds }));
     }
 
     if (input.q && input.q.trim()) {
@@ -755,12 +726,10 @@ export const mailRouter = tRouter({
       } else if (input.categoryId) {
         const rows = await db
           .select({ id: mailThread.id })
-          .from(mailThreadCategory)
-          .innerJoin(mailThread, eq(mailThreadCategory.threadId, mailThread.id))
+          .from(mailThread)
           .where(
             and(
-              eq(mailThreadCategory.transportId, transportId),
-              eq(mailThreadCategory.categoryId, input.categoryId),
+              threadInCategories(db, transportId, { categoryIds: [input.categoryId] }),
               eq(mailThread.transportId, transportId),
               eq(mailThread.isRead, false),
               isNull(mailThread.trashedAt),

@@ -4441,8 +4441,9 @@ export async function executeAiRun(
 
       const externalSentAnalyticsOnly = trigger?.direction === 'outbound';
       if (!externalSentAnalyticsOnly && !isInboundTriageClassifierEnabled(process.env)) {
-        // INBOUND_TRIAGE_CLASSIFIER=off: no classifier call and no folder, read or spam write. Spam, the baseline and
-        // the warmer come from inbound_extraction. A run queued before the flag flipped ends here.
+        // Classifier retired (INBOUND_TRIAGE_CLASSIFIER=off with INBOUND_EXTRACTION=on): no classifier call and no
+        // folder, read or spam write. Spam, the baseline and the warmer come from inbound_extraction. A run queued
+        // before the flag flipped ends here. With the classifier on, this run projects the inbound baseline as before.
         const retired = await markAiRunSucceeded({
           runId,
           claimOwner: owner,
@@ -4514,8 +4515,7 @@ export async function executeAiRun(
       let routedBaseline:
         | Awaited<ReturnType<typeof extractMailBaselineWithApprovedRoute>>
         | undefined;
-      // Inbound mail's baseline is projected from inbound_extraction completion. Only sent copies still run it here.
-      if (baselineRow && externalSentAnalyticsOnly) {
+      if (baselineRow) {
         const clock = resolveTriageEventClock(baselineRow);
         routedBaseline = await extractMailBaselineWithApprovedRoute(
           {
@@ -4577,19 +4577,17 @@ export async function executeAiRun(
           applyMode = applyResult.applyMode;
         }
 
-        let baselineMetrics: Record<string, unknown> = externalSentAnalyticsOnly
-          ? {
-              status:
-                routedBaseline?.semanticRoute === 'approved_local_extraction'
-                  ? 'persisted_semantic_projection'
-                  : 'persisted_source_observation',
-              routeStatus: baselineRoute.available ? 'available' : 'unavailable',
-              routeId: baselineRoute.route,
-              extraction: routedBaseline?.semanticRoute ?? 'none',
-              triageClassifierVersion: baselineHints.classifierVersion,
-              ...(baselineRoute.reason ? { reason: baselineRoute.reason } : {}),
-            }
-          : { status: 'projected_by_extraction' };
+        let baselineMetrics: Record<string, unknown> = {
+          status:
+            routedBaseline?.semanticRoute === 'approved_local_extraction'
+              ? 'persisted_semantic_projection'
+              : 'persisted_source_observation',
+          routeStatus: baselineRoute.available ? 'available' : 'unavailable',
+          routeId: baselineRoute.route,
+          extraction: routedBaseline?.semanticRoute ?? 'none',
+          triageClassifierVersion: baselineHints.classifierVersion,
+          ...(baselineRoute.reason ? { reason: baselineRoute.reason } : {}),
+        };
         if (routedBaseline && baselineRow) {
           const extraction = routedBaseline.extraction;
           const configuredMeasurement = parseMailboxMeasurementConfig(
@@ -5466,11 +5464,15 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     // HMS lane: live factory only — never createMockCandidateSession.
     ...(lane === 'hms' ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() } : {}),
   });
-  if (executed.state === 'succeeded' && claimed.runKind === 'inbound_extraction') {
-    // Fire-and-forget after the extraction commit, never inside the admission
+  // The live inbound trigger is the classifier run, or the extraction run once the classifier is retired. Never both.
+  const inboundTriggerKind = isInboundTriageClassifierEnabled(process.env)
+    ? 'inbound_triage'
+    : 'inbound_extraction';
+  if (executed.state === 'succeeded' && claimed.runKind === inboundTriggerKind) {
+    // Fire-and-forget after the commit, never inside the admission
     // transaction. Off unless LUNA_ANALYSE_WARMER=on (see quote-workflow-warmer.ts).
     scheduleInboundTriageAnalyseWarm(claimed);
-    // Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1; live inbound extraction only.
+    // Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1; live inbound only.
     schedulePrefetchForInbound(claimed);
   }
   return true;

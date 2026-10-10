@@ -29,6 +29,7 @@ import { admitLiveMessage } from '../src/mail/ingest/live-admission.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { pillSlugForExtractionKind } from '../src/ai/categories.js';
 import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
+import { upsertSenderPreference } from '../src/mail/sender-preference.js';
 import { isInboundTriageClassifierEnabled } from '../src/env.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -39,7 +40,19 @@ import { TRANSPORT_ID } from '../src/db/seed.js';
 import { and, eq } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
-const ON: NodeJS.ProcessEnv = { INBOUND_EXTRACTION: 'on', AI_WRITE_GATE_ENABLED: 'true' };
+/** Classifier retired: off only takes effect with extraction on. */
+const RETIRED: NodeJS.ProcessEnv = {
+  INBOUND_TRIAGE_CLASSIFIER: 'off',
+  INBOUND_EXTRACTION: 'on',
+  AI_WRITE_GATE_ENABLED: 'true',
+};
+/** Today's default: classifier unset, extraction on. */
+const DEFAULT_ON: NodeJS.ProcessEnv = { INBOUND_EXTRACTION: 'on', AI_WRITE_GATE_ENABLED: 'true' };
+
+function retire() {
+  vi.stubEnv('INBOUND_TRIAGE_CLASSIFIER', 'off');
+  vi.stubEnv('INBOUND_EXTRACTION', 'on');
+}
 const HOUR_MS = 60 * 60 * 1000;
 
 afterEach(() => {
@@ -134,14 +147,20 @@ async function claimExtraction(db: DB, messageId: string) {
 }
 
 /** Runs the read with a fake model. The model is returned so its calls can be counted. */
-async function readWith(db: DB, messageId: string, body: string, output: Record<string, unknown>) {
+async function readWith(
+  db: DB,
+  messageId: string,
+  body: string,
+  output: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = RETIRED,
+) {
   const model = fakeModel(() => output);
   const claimed = await claimExtraction(db, messageId);
   const state = await executeInboundExtractionRun({
     ...claimed,
     signal: new AbortController().signal,
     db,
-    env: ON,
+    env,
     adapter: model.adapter,
     loadSelection: async () => selectionFor(body),
   });
@@ -183,18 +202,64 @@ async function categoryIdsOf(db: DB, threadId: string): Promise<string[]> {
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', () => {
-  it('the classifier flag is on unless the value is exactly off', () => {
+  it('the classifier retires only on exactly off with extraction exactly on; off alone keeps it and warns once', () => {
+    const extraction = { INBOUND_EXTRACTION: 'on' };
     expect(isInboundTriageClassifierEnabled({})).toBe(true);
-    expect(isInboundTriageClassifierEnabled({ INBOUND_TRIAGE_CLASSIFIER: 'on' })).toBe(true);
-    expect(isInboundTriageClassifierEnabled({ INBOUND_TRIAGE_CLASSIFIER: 'OFF' })).toBe(true);
-    expect(isInboundTriageClassifierEnabled({ INBOUND_TRIAGE_CLASSIFIER: '0' })).toBe(true);
-    expect(isInboundTriageClassifierEnabled({ INBOUND_TRIAGE_CLASSIFIER: 'off' })).toBe(false);
+    expect(isInboundTriageClassifierEnabled(extraction)).toBe(true);
+    expect(isInboundTriageClassifierEnabled({ ...extraction, INBOUND_TRIAGE_CLASSIFIER: 'on' })).toBe(true);
+    expect(isInboundTriageClassifierEnabled({ ...extraction, INBOUND_TRIAGE_CLASSIFIER: 'OFF' })).toBe(true);
+    expect(isInboundTriageClassifierEnabled({ ...extraction, INBOUND_TRIAGE_CLASSIFIER: '0' })).toBe(true);
+    expect(isInboundTriageClassifierEnabled({ ...extraction, INBOUND_TRIAGE_CLASSIFIER: 'off' })).toBe(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(isInboundTriageClassifierEnabled({ INBOUND_TRIAGE_CLASSIFIER: 'off' })).toBe(true);
+      expect(
+        isInboundTriageClassifierEnabled({ INBOUND_TRIAGE_CLASSIFIER: 'off', INBOUND_EXTRACTION: 'off' }),
+      ).toBe(true);
+      expect(warn.mock.calls.length).toBeLessThanOrEqual(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
+
+  it('classifier off without extraction: admission still queues the classifier run', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('INBOUND_TRIAGE_CLASSIFIER', 'off');
+      const { messageId } = await persistOutlookHistory(db, history('u5-failsafe'));
+      await admit(db, messageId);
+      expect(await runsFor(db, `inbound-triage:${messageId}`)).toHaveLength(1);
+      expect(await runsFor(db, extractionKey(messageId))).toHaveLength(0);
+    }));
+
+  it('default (classifier unset, extraction on): both runs queue, and the read projects no baseline and lifts no spam', () =>
+    withIngestionDb(async ({ db }) => {
+      vi.stubEnv('INBOUND_EXTRACTION', 'on');
+      const { messageId, threadId } = await persistOutlookHistory(db, history('u5-default'));
+      await db.update(mailThread).set({ spamAt: new Date() }).where(eq(mailThread.id, threadId));
+      await admit(db, messageId);
+      expect(await runsFor(db, `inbound-triage:${messageId}`)).toHaveLength(1);
+      expect(await runsFor(db, extractionKey(messageId))).toHaveLength(1);
+      const { state } = await readWith(db, messageId, AE1_TEXT, AE1_OUTPUT, DEFAULT_ON);
+      expect(state.state).toBe('succeeded');
+      const [run] = await db
+        .select({ metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, extractionKey(messageId)));
+      expect(run?.metrics).not.toHaveProperty('mailBaseline');
+      const baseline = await queryMailBaselineProjection(db, {
+        transportIds: [TRANSPORT_ID],
+        threadIds: [threadId],
+        observationCutoff: new Date(),
+        limit: 20,
+      });
+      expect(baseline).toEqual([]);
+      // The classifier owns un-spam while it is on.
+      expect(await spamAtOf(db, messageId)).not.toBeNull();
+    }));
 
   it('with the flag off, inbound mail gets an extraction and a baseline row, and no classifier run', () =>
     withIngestionDb(async ({ db }) => {
-      vi.stubEnv('INBOUND_TRIAGE_CLASSIFIER', 'off');
-      vi.stubEnv('INBOUND_EXTRACTION', 'on');
+      retire();
       const { messageId, threadId } = await persistOutlookHistory(
         db,
         history('u5-inbound', { subject: 'Summit Africa rugby tour' }),
@@ -228,7 +293,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
 
   it('a classifier run queued before the flag flipped ends with no model call and no folder write', () =>
     withWorkerDb(async (db) => {
-      vi.stubEnv('INBOUND_TRIAGE_CLASSIFIER', 'off');
+      retire();
       const { messageId, threadId } = await persistOutlookHistory(db, history('u5-leftover'));
       await enqueueAiRun(
         {
@@ -261,8 +326,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
 
   it('with the flag off, a spam read still sets spamAt', () =>
     withIngestionDb(async ({ db }) => {
-      vi.stubEnv('INBOUND_TRIAGE_CLASSIFIER', 'off');
-      vi.stubEnv('INBOUND_EXTRACTION', 'on');
+      retire();
       const { messageId } = await persistOutlookHistory(
         db,
         history('u5-spam', { subject: 'Prize notice', textBody: SPAM_TEXT }),
@@ -279,7 +343,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
 
   it('with the flag off, a sent copy still gets its external-sent-baseline run and baseline row', () =>
     withWorkerDb(async (db) => {
-      vi.stubEnv('INBOUND_TRIAGE_CLASSIFIER', 'off');
+      retire();
       const { messageId, threadId } = await persistOutlookHistory(
         db,
         history('u5-sent', {
@@ -319,10 +383,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       );
     }));
 
-  it('the pill comes from the extraction kind, and spam has none', () =>
+  it('retired: the pill, filter, counts, category search and mark-read come from the extraction kind; spam has none', () =>
     withSeededTestDb(async (db) => {
       expect(pillSlugForExtractionKind('quote')).toBe('bookings');
       expect(pillSlugForExtractionKind('spam')).toBeNull();
+      expect(pillSlugForExtractionKind('constructor')).toBeNull();
 
       const quote = await persistOutlookHistory(db, history('u5-pill-quote'));
       const spam = await persistOutlookHistory(db, history('u5-pill-spam'));
@@ -353,12 +418,58 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
         .from(mailCategory)
         .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'bookings')));
       const { mail } = await callerFor('user-navaai', { db, requestedTransportId: TRANSPORT_ID });
-      const result = await mail.listThreads({ folder: 'all', limit: 20 });
-      const categoriesById = new Map(
-        result.threads.map((thread) => [thread.id, thread.categoryIds]),
-      );
-      expect(categoriesById.get(quote.threadId)).toEqual([bookings!.id]);
-      expect(categoriesById.get(spam.threadId) ?? []).toEqual([]);
+      const pillsOf = async () =>
+        new Map(
+          (await mail.listThreads({ folder: 'all', limit: 20 })).threads.map((thread) => [
+            thread.id,
+            thread.categoryIds,
+          ]),
+        );
+      const bookingsCount = async () =>
+        (await mail.unreadCounts()).categories.find((row) => row.categoryId === bookings!.id);
+
+      // Classifier on (default): rows only, exactly as before.
+      vi.stubEnv('INBOUND_EXTRACTION', 'on');
+      expect((await pillsOf()).get(quote.threadId) ?? []).toEqual([]);
+      const before = await bookingsCount();
+
+      retire();
+      const pills = await pillsOf();
+      expect(pills.get(quote.threadId)).toEqual([bookings!.id]);
+      expect(pills.get(spam.threadId) ?? []).toEqual([]);
+
+      const filtered = await mail.listThreads({
+        folder: 'all',
+        limit: 20,
+        filters: { categoryIds: [bookings!.id] },
+      });
+      const filteredIds = filtered.threads.map((thread) => thread.id);
+      expect(filteredIds).toContain(quote.threadId);
+      expect(filteredIds).not.toContain(spam.threadId);
+
+      const searched = await mail.listThreads({ folder: 'all', limit: 20, q: 'category:bookings' });
+      expect(searched.threads.map((thread) => thread.id)).toContain(quote.threadId);
+
+      const after = await bookingsCount();
+      expect(after?.totalCount).toBe((before?.totalCount ?? 0) + 1);
+
+      // A person's category wins over the read: a thread with rows keeps them.
+      const [manage] = await db
+        .select({ id: mailCategory.id })
+        .from(mailCategory)
+        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'manage-stay')));
+      await db
+        .insert(mailThreadCategory)
+        .values({ threadId: spam.threadId, categoryId: manage!.id, transportId: TRANSPORT_ID });
+      expect((await pillsOf()).get(spam.threadId)).toEqual([manage!.id]);
+
+      await db.update(mailThread).set({ isRead: false }).where(eq(mailThread.id, quote.threadId));
+      await mail.markFolderAsRead({ categoryId: bookings!.id });
+      const [read] = await db
+        .select({ isRead: mailThread.isRead })
+        .from(mailThread)
+        .where(eq(mailThread.id, quote.threadId));
+      expect(read?.isRead).toBe(true);
     }));
 
   it('the backfill dry run writes nothing, a real run queues each read once, staggered by the hourly cap', () =>
@@ -411,8 +522,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
 
   it('a thread with a later staff reply starts its work item done, and an unanswered one needs you', () =>
     withIngestionDb(async ({ db }) => {
-      vi.stubEnv('INBOUND_TRIAGE_CLASSIFIER', 'off');
-      vi.stubEnv('INBOUND_EXTRACTION', 'on');
+      retire();
       const answered = await persistOutlookHistory(db, history('u5-answered'));
       const open = await persistOutlookHistory(db, history('u5-open'));
       await admit(db, answered.messageId);
@@ -447,30 +557,47 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       expect(again?.status).toBe('needs_you');
     }));
 
-  it('un-spam: a hotel-kind read lifts a spam mark, and an other read does not', () =>
+  it('retired un-spam: any non-spam read lifts the mark (other included); a spam read keeps it; a blocked sender goes to spam', () =>
     withIngestionDb(async ({ db }) => {
-      vi.stubEnv('INBOUND_TRIAGE_CLASSIFIER', 'off');
-      vi.stubEnv('INBOUND_EXTRACTION', 'on');
+      retire();
       const lifted = await persistOutlookHistory(db, history('u5-unspam-quote'));
-      const kept = await persistOutlookHistory(db, history('u5-unspam-other'));
-      for (const row of [lifted, kept]) {
+      const other = await persistOutlookHistory(db, history('u5-unspam-other'));
+      const kept = await persistOutlookHistory(db, history('u5-unspam-spam'));
+      const locked = await persistOutlookHistory(db, history('u5-unspam-locked'));
+      for (const row of [lifted, other, kept, locked]) {
         await db
           .update(mailThread)
           .set({ spamAt: new Date() })
           .where(eq(mailThread.id, row.threadId));
       }
-      await admit(db, lifted.messageId);
-      await admit(db, kept.messageId);
-      const quoteRead = await readWith(db, lifted.messageId, AE1_TEXT, AE1_OUTPUT);
-      const otherRead = await readWith(db, kept.messageId, AE1_TEXT, {
-        ...SPAM_OUTPUT,
-        kind: 'other',
-      });
-      expect(quoteRead.state.state).toBe('succeeded');
-      expect(otherRead.state.state).toBe('succeeded');
-      expect(await extractionOf(db, lifted.messageId)).toMatchObject({ kind: 'quote' });
-      expect(await extractionOf(db, kept.messageId)).toMatchObject({ kind: 'other' });
+      await db
+        .update(mailThread)
+        .set({ spamUserLockedAt: new Date() })
+        .where(eq(mailThread.id, locked.threadId));
+      for (const row of [lifted, other, kept, locked]) await admit(db, row.messageId);
+      expect((await readWith(db, lifted.messageId, AE1_TEXT, AE1_OUTPUT)).state.state).toBe('succeeded');
+      expect(
+        (await readWith(db, other.messageId, AE1_TEXT, { ...SPAM_OUTPUT, kind: 'other' })).state.state,
+      ).toBe('succeeded');
+      expect((await readWith(db, kept.messageId, SPAM_TEXT, SPAM_OUTPUT)).state.state).toBe('succeeded');
+      expect((await readWith(db, locked.messageId, AE1_TEXT, AE1_OUTPUT)).state.state).toBe('succeeded');
       expect(await spamAtOf(db, lifted.messageId)).toBeNull();
+      expect(await spamAtOf(db, other.messageId)).toBeNull();
       expect(await spamAtOf(db, kept.messageId)).not.toBeNull();
+      expect(await spamAtOf(db, locked.messageId)).not.toBeNull();
+
+      const blocked = await persistOutlookHistory(
+        db,
+        history('u5-blocked', { fromAddress: 'blocked-sender@example.test' }),
+      );
+      await upsertSenderPreference({
+        db,
+        transportId: TRANSPORT_ID,
+        emailRaw: 'blocked-sender@example.test',
+        kind: 'block',
+      });
+      await admit(db, blocked.messageId);
+      await readWith(db, blocked.messageId, AE1_TEXT, AE1_OUTPUT);
+      expect(await spamAtOf(db, blocked.messageId)).not.toBeNull();
     }));
 });
