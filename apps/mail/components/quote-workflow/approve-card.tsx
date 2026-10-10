@@ -100,9 +100,23 @@ function useHmsWriteState(client: HmsApprovalClient, workItemId: string, require
   }, [client, workItemId, tick]);
 
   useEffect(() => {
-    if (!moving && !waiting) return;
-    const timer = setTimeout(refresh, moving ? HMS_WRITE_POLL_MS : HMS_WRITE_IDLE_POLL_MS);
-    return () => clearTimeout(timer);
+    if (moving) {
+      const timer = setTimeout(refresh, HMS_WRITE_POLL_MS);
+      return () => clearTimeout(timer);
+    }
+    if (!waiting) return;
+    // The idle check waits while the page is hidden (a background tab or a closed pane) and starts again when shown.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      clearTimeout(timer);
+      timer = document.hidden ? undefined : setTimeout(refresh, HMS_WRITE_IDLE_POLL_MS);
+    };
+    arm();
+    document.addEventListener('visibilitychange', arm);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', arm);
+    };
   }, [moving, waiting, reads, refresh]);
 
   return { view: loaded?.workItemId === workItemId ? loaded.view : null, failed, refresh };
