@@ -87,7 +87,19 @@ export type SandboxRunner = (
   outputDir?: string,
 ) => Promise<SandboxResult>;
 
-function pdfFailureReason(result: SandboxResult): 'encrypted' | 'malformed' {
+function pdfFailureReason(
+  tool: PdfSandboxTool,
+  result: SandboxResult,
+): 'encrypted' | 'malformed' | 'parser_failure' {
+  // bubblewrap prefixes its own setup errors with "bwrap: " and exits 1 before Poppler runs, e.g. when AppArmor
+  // refuses the user namespace to an unconfined service. That says nothing about the PDF, so it is never "damaged".
+  // Anchored to the start of stderr (no /m): once Poppler runs, a later line may echo document bytes.
+  const sandboxError = /^bwrap: [^\n]*/.exec(result.stderr.toString('utf8'))?.[0];
+  if (sandboxError) {
+    // bubblewrap's own line names a syscall, never document text, so it is safe to log.
+    console.warn('pdf_sandbox_unavailable', { tool, error: sandboxError.slice(0, 200) });
+    return 'parser_failure';
+  }
   // Poppler reports a password-required PDF with exit 1, not its permissions exit 3.
   // Match only its exact diagnostic; never expose parser stderr as artifact text.
   return result.exitCode === 3 ||
@@ -556,7 +568,7 @@ export async function extractEmbeddedPdfText(
       return manualResult({
         attachmentId,
         mimeType,
-        reason: pdfFailureReason(info),
+        reason: pdfFailureReason('pdfinfo', info),
         sourceHash,
         now,
       });
@@ -627,7 +639,7 @@ export async function extractEmbeddedPdfText(
       return manualResult({
         attachmentId,
         mimeType,
-        reason: pdfFailureReason(textResult),
+        reason: pdfFailureReason('pdftotext', textResult),
         sourceHash,
         pageCount,
         now,

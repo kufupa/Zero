@@ -1,0 +1,63 @@
+# AppArmor profile for /usr/bin/bwrap, the PDF reader's sandbox (src/mail/artifacts/read-artifact.ts).
+#
+# Why: Ubuntu 24.04 sets kernel.apparmor_restrict_unprivileged_userns=1. pm2's systemd unit is unconfined, so bubblewrap
+# cannot create its user namespace and every sandboxed pdfinfo/pdftotext exits 1 ("bwrap: setting up uid map:
+# Permission denied"). Never lift the restriction globally (sysctl); grant it to bwrap only, with this profile.
+#
+# This is AppArmor upstream's bwrap-userns-restrict (profiles/apparmor/profiles/extras/, master), pinned to abi 4.0 for
+# Ubuntu 24.04's apparmor 4.0.1. It is NOT the "flags=(unconfined) { userns, }" pattern: that would let any local user
+# run `bwrap --unshare-user --cap-add ALL ... sh` and keep full capabilities in the new namespace, i.e. bwrap becomes a
+# general bypass of the restriction. Here only bwrap itself holds capabilities inside its namespace (to set up mounts);
+# everything it execs (prlimit, pdfinfo, pdftotext, pdftoppm) is stacked with unpriv_bwrap, which denies every
+# capability. Nothing else gains userns: the profile attaches only to the exact path /usr/bin/bwrap.
+#
+# Install (idempotent):  see apps/server-pilot/deploy/pdf-text-gate.sh header.
+# Rollback:              sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict && sudo rm -f /etc/apparmor.d/bwrap-userns-restrict
+
+abi <abi/4.0>,
+
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(attach_disconnected,mediate_deleted) {
+  allow capability,
+  # Not "allow all", so the pix stack below applies. 'm' is needed everywhere for children under stacking.
+  allow file rwlkm /{**,},
+  allow network,
+  allow unix,
+  allow ptrace,
+  allow signal,
+  allow mqueue,
+  allow io_uring,
+  allow userns,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+  allow dbus,
+
+  # bwrap sets no-new-privs, so its children stack against bwrap and unpriv_bwrap rather than transition.
+  allow pix /** -> &bwrap//&unpriv_bwrap,
+
+  include if exists <local/bwrap-userns-restrict>
+}
+
+# Strips capabilities from everything bwrap runs.
+profile unpriv_bwrap flags=(attach_disconnected,mediate_deleted) {
+  allow file rwlkm /{**,},
+  allow network,
+  allow unix,
+  allow ptrace,
+  allow signal,
+  allow mqueue,
+  allow io_uring,
+  allow userns,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+  allow dbus,
+
+  allow pix /** -> &unpriv_bwrap,
+
+  audit deny capability,
+
+  include if exists <local/unpriv_bwrap>
+}
