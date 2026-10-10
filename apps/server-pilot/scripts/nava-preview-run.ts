@@ -140,10 +140,11 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Named writes the pane sends on every open, which the runner blocks by design. They are still blocked and listed in
- * results.json, but do not fail the gate: the pane renders without them, and every thread would otherwise fail.
+ * Named writes the pane sends on open, which the runner blocks by design. They are still blocked and listed in
+ * results.json, but do not fail the gate: the pane renders without them. workItems.open is sent only for a stored read
+ * with no work item yet; the pane still shows the read, and only edit logging waits for the item.
  */
-export const BLOCKED_BY_DESIGN: ReadonlySet<string> = new Set(['workItems.getByMessage']);
+export const BLOCKED_BY_DESIGN: ReadonlySet<string> = new Set(['workItems.open']);
 
 export type TrpcDecision = {
   allowed: boolean;

@@ -264,13 +264,15 @@ describe('blocked requests: pane failure or configuration error', () => {
     expect(configFailures([], ['labels.unknown'])).toHaveLength(1);
   });
 
-  it('lists a write blocked by design but does not fail the gate on it (workItems.getByMessage)', () => {
-    expect(BLOCKED_BY_DESIGN.has('workItems.getByMessage')).toBe(true);
-    const opened = [result({ blockedWrites: ['workItems.getByMessage'] })];
-    expect(gateFailures(opened, ['workItems.getByMessage'])).toEqual([]);
+  it('lists a write blocked by design but does not fail the gate on it (workItems.open)', () => {
+    expect(BLOCKED_BY_DESIGN.has('workItems.open')).toBe(true);
+    // getByMessage is a read now, so it is never blocked and never excused.
+    expect(BLOCKED_BY_DESIGN.has('workItems.getByMessage')).toBe(false);
+    const opened = [result({ blockedWrites: ['workItems.open'] })];
+    expect(gateFailures(opened, ['workItems.open'])).toEqual([]);
     expect(configFailures(opened)).toEqual([]);
     expect(summarize(opened).blockedWrites).toBe(1);
-    expect(gateFailures([result({ blockedWrites: ['workItems.getByMessage', 'drafts.saveReply'] })])).toEqual([
+    expect(gateFailures([result({ blockedWrites: ['workItems.open', 'drafts.saveReply'] })])).toEqual([
       '1 write request(s) were blocked',
     ]);
   });
