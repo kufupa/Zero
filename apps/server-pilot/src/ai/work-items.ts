@@ -279,6 +279,8 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
     guestLastName: null,
     arrival: validIsoDate(booked?.arrival ?? requested?.arrival ?? null) ?? null,
     departure: validIsoDate(booked?.departure ?? requested?.departure ?? null) ?? null,
+    requestedArrival: validIsoDate(requested?.arrival ?? null) ?? null,
+    requestedDeparture: validIsoDate(requested?.departure ?? null) ?? null,
     requestedChange: null,
   };
   const mapped = mapLlmDecision(luna);

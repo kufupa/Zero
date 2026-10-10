@@ -17,6 +17,7 @@ import {
 import {
   AMEND_FIND_COPY,
   amendDiffs,
+  askedDates,
   amendFindClientFromTrpc,
   arrivalMismatchNote,
   findRequestFor,
@@ -197,6 +198,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     });
   };
 
+  // The guest's column shows the stay they want. The booked dates stay on amendment.arrival/departure for the lookup.
+  const asked = askedDates(amendment);
   const ratePlan = stayText(stay?.ratePlan);
   const mealPlan = stayText(stay?.mealPlan);
   const grandTotal = stayText(stay?.grandTotal);
@@ -216,8 +219,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
             actions={handoffNumber ? <HmsLinkActions confirmation={handoffNumber} /> : null}
           />
           <AskRow label="Guest last name" value={amendment.guestLastName ?? 'Not in the email'} />
-          <AskRow label="Arrival" value={amendment.arrival ? formatStayDate(amendment.arrival) : 'Not stated'} />
-          <AskRow label="Departure" value={amendment.departure ? formatStayDate(amendment.departure) : 'Not stated'} />
+          <AskRow label="Arrival" value={asked.arrival ? formatStayDate(asked.arrival) : 'Not stated'} />
+          <AskRow label="Departure" value={asked.departure ? formatStayDate(asked.departure) : 'Not stated'} />
         </div>
         <div className="flex flex-col gap-2">
           <p className={headingClass}>Booking in HMS now</p>

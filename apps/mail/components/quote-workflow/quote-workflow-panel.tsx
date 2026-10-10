@@ -923,7 +923,10 @@ export function QuoteWorkflowPanel({
     return (
       <div className="flex flex-col gap-3">
         <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
-        <Notice tone="info">Not a quote or booking. Change the type above if Nava got it wrong.</Notice>
+        {/* A change or cancellation has its own card above, so "not a quote or booking" would contradict the badge. */}
+        {amendment ? null : (
+          <Notice tone="info">Not a quote or booking. Change the type above if Nava got it wrong.</Notice>
+        )}
         <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} unreadFiles={unreadFiles.length > 0} />
         {unreadFiles.map((item) => (

@@ -159,9 +159,12 @@ export type QuoteAmendment = {
   kind: 'amend' | 'cancel';
   confirmationNumber: string | null;
   guestLastName: string | null;
-  /** ISO day as stated in the email. */
+  /** ISO day of the booking as it stands, as stated in the email. The lookup uses it. */
   arrival: string | null;
   departure: string | null;
+  /** ISO days of the stay the guest wants after the change. Absent on payloads from before they were read. */
+  requestedArrival?: string | null;
+  requestedDeparture?: string | null;
   requestedChange: string | null;
 };
 

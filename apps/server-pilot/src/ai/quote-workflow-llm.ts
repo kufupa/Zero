@@ -15,7 +15,7 @@ const ATTACHMENT_TEXT_MAX = 20_000;
 const MAX_SCANNED_PDFS = 3;
 const DEFAULT_DEADLINE_MS = 25_000;
 
-export const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms (engine quotes per group, max 8 groups); set rooms_only_group. Do not set conference_or_group for rooms-only. Venue hire, DDR, delegates, or packages are workflow=other with conference_or_group (handle manually). Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task.`;
+export const K2_MAPPING = `Map hotel-rule workflow names onto this schema: "create" is create_booking; "skip" and "spam" are other. Rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms (engine quotes per group, max 8 groups); set rooms_only_group. Do not set conference_or_group for rooms-only. Venue hire, DDR, delegates, or packages are workflow=other with conference_or_group (handle manually). Never output prices except verbatim claims in rateClaims. rateClaims[].quote must be an exact contiguous substring of the email, thread or attachment text; if no exact span exists, omit the claim. Never paraphrase, tidy, complete, or invent a quoted amount. Extras (shuttle, dinner, transfers) become missing questions, not invented prices. adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2. "single room" means 1 adult per room. A double or twin room with no headcount means 2 adults. Never ask for room type, board or rate; the hotel defaults those. Emit one task per distinct piece of PMS work, in the order staff would do it. Different date sets for the same ask become separate quote tasks. "Quote then book if OK" becomes quote then create_booking. A single simple ask is one task. For amend or cancel, arrival/departure are the booking as it stands and requestedArrival/requestedDeparture are the whole stay the guest wants after the change. "The night of D" is the night that starts on D: adding it before a stay makes D the arrival.`;
 
 /** The response schema the model fills. Hashed into the version so a schema change also misses the cache. */
 const LUNA_RESPONSE_JSON = JSON.stringify(
@@ -259,8 +259,12 @@ export type QuoteAmendment = {
   kind: 'amend' | 'cancel';
   confirmationNumber: string | null;
   guestLastName: string | null;
+  /** The booking as it stands, as stated in the email. The lookup uses these. */
   arrival: string | null;
   departure: string | null;
+  /** The stay the guest wants after the change. */
+  requestedArrival: string | null;
+  requestedDeparture: string | null;
   requestedChange: string | null;
 };
 
@@ -272,6 +276,8 @@ export function amendmentFromAnalysis(analysis: LunaAnalysis): QuoteAmendment | 
     guestLastName: analysis.guestLastName ?? null,
     arrival: analysis.arrival ?? null,
     departure: analysis.departure ?? null,
+    requestedArrival: analysis.requestedArrival ?? null,
+    requestedDeparture: analysis.requestedDeparture ?? null,
     requestedChange: analysis.requestedChange ?? null,
   };
 }
@@ -286,13 +292,18 @@ const REQUESTED_CHANGE_MAX = 300;
 function groundedAmendmentFields(
   analysis: LunaAnalysis,
   sourceText: string,
-): Pick<LunaAnalysis, 'confirmationNumber' | 'arrival' | 'departure' | 'requestedChange'> {
+): Pick<
+  LunaAnalysis,
+  'confirmationNumber' | 'arrival' | 'departure' | 'requestedArrival' | 'requestedDeparture' | 'requestedChange'
+> {
   const confirmation = analysis.confirmationNumber?.trim() ?? '';
   const change = analysis.requestedChange?.trim() ?? '';
   return {
     confirmationNumber: confirmation && sourceText.includes(confirmation) ? confirmation : null,
     arrival: validIsoDate(analysis.arrival ?? null) ?? null,
     departure: validIsoDate(analysis.departure ?? null) ?? null,
+    requestedArrival: validIsoDate(analysis.requestedArrival ?? null) ?? null,
+    requestedDeparture: validIsoDate(analysis.requestedDeparture ?? null) ?? null,
     requestedChange: change ? maskCardNumbers(change).slice(0, REQUESTED_CHANGE_MAX) : null,
   };
 }
