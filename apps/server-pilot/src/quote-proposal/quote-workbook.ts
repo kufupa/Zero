@@ -90,6 +90,15 @@ function lineLimitMessage(count: number): string {
   return `Quote has ${count} lines; the proposal Excel holds at most ${MAX_WORKBOOK_LINES}. Split it into separate quotes.`;
 }
 
+/** Refuses a quote with more lines than the proposal holds, before any renderer or currency check: no PDF outgrows its Excel. */
+export function assertProposalLineLimit(stays: WorkbookStay[]): void {
+  const count = stays.reduce(
+    (sum, stay) => sum + deriveQuoteLines(stay.revision, stay.rowPrices).length + (stay.facts ? deriveAuthorizedExtraLines(stay.revision, stay.facts).length : 0),
+    0,
+  );
+  if (count > MAX_WORKBOOK_LINES) throw new WorkbookLineLimitError(lineLimitMessage(count));
+}
+
 function isoParts(value: string): { year: number; month: number; day: number } {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   const year = Number(match?.[1]);

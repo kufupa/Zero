@@ -72,7 +72,7 @@ import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, pricedRoomTotal, type AuthorizedProposalFacts, type RowPrice } from './quote-lines.js';
 import { quoteDigest, exactMinor, type QuoteRevision, type ImportedOffer } from './quote-revision.js';
-import { quoteDateLabel, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
+import { assertProposalLineLimit, quoteDateLabel, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
 export type RevisionProposalHeader = {attention:string;company:string;clientEmail:string;clientTelephone:string;agency:string;signerName:string;signerEmail:string;/** Unpriced staff note printed under the total. */notes?:string};
 function htmlText(value:string):string {
   return value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -153,6 +153,7 @@ export async function buildStaysProposalPdf(
 ): Promise<{ revisionId: string; pdfHash: string; pdf: Uint8Array; fileName: string; totalMinor: number }> {
   const base = opts.url.replace(/\/+$/, '');
   if (!base) throw new Error('GOTENBERG_URL missing');
+  assertProposalLineLimit(stays);
   const fetchImpl = timedFetch(opts.fetchImpl);
   const single = stays.length === 1 ? stays[0]! : undefined;
   let rendered: { pdf: Uint8Array; totalMinor: number };
