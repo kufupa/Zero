@@ -19,6 +19,8 @@ import {
 import { otherBoardContractNotes, type RateOption } from '../../ai/rate-options.js';
 import { quoteRateContextEnabled } from '../../ai/quote-rate-switch.js';
 import { verifyPartyPick } from '../../ai/pane-party-lookup.js';
+import { ReservationistTaskEvidenceUnavailable } from '../../ai/reservationist-execution.js';
+import type { NativeQuoteGapDetail } from '../../ai/reservationist-evaluation-composition.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
 import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
 import {
@@ -155,14 +157,37 @@ export function staffQuoteFailureCode(error: unknown): string {
   return /^[A-Za-z0-9_.:-]{1,120}$/.test(candidate) ? candidate : 'unknown';
 }
 
+/**
+ * Where the quote failed. HMS execution failures carry their own phase (login, hotel_availability, …). A missing-evidence
+ * failure (ReservationistTaskEvidenceUnavailable) happens after HMS answered, while Nava qualifies the answer: 'qualification'.
+ */
 export function staffQuoteFailurePhase(error: unknown): string {
   const phase = error && typeof error === 'object' && 'phase' in error ? error.phase : undefined;
-  return typeof phase === 'string' && /^[a-z_]{1,40}$/.test(phase) ? phase : 'unknown';
+  if (typeof phase === 'string' && /^[a-z_]{1,40}$/.test(phase)) return phase;
+  return error instanceof ReservationistTaskEvidenceUnavailable ? 'qualification' : 'unknown';
 }
 
-export function staffQuoteFailureLog(error: unknown): { code: string; phase: string } {
-  return { code: staffQuoteFailureCode(error), phase: staffQuoteFailurePhase(error) };
+/** The native gap detail an evidence failure carries (statuses and HMS codes only), or undefined. */
+function nativeQuoteGapOf(error: unknown): NativeQuoteGapDetail | undefined {
+  if (!(error instanceof ReservationistTaskEvidenceUnavailable) || !error.detail) return undefined;
+  const detail = error.detail as Partial<NativeQuoteGapDetail>;
+  return Array.isArray(detail.rows) && typeof detail.allocationStatus === 'string'
+    ? (detail as NativeQuoteGapDetail)
+    : undefined;
 }
+
+export function staffQuoteFailureLog(error: unknown): {
+  code: string;
+  phase: string;
+  detail?: NativeQuoteGapDetail;
+} {
+  const detail = nativeQuoteGapOf(error);
+  return { code: staffQuoteFailureCode(error), phase: staffQuoteFailurePhase(error), ...(detail ? { detail } : {}) };
+}
+
+/** The staff message when HMS priced every room but gave no building, so Nava cannot prove the rooms fit together. */
+export const SHARED_INVENTORY_GAP_MESSAGE =
+  "HMS priced each room, but Nava can't yet confirm the rooms are available together (HMS gives no building). Quote each room type separately for now.";
 
 function isHmsExecutionFailure(error: unknown, code: string, phase: string): boolean {
   if (HMS_EXECUTION_CODES.has(code) || HMS_EXECUTION_PHASE.test(phase)) return true;
@@ -186,6 +211,9 @@ export function staffQuoteFailureMessage(
 ): string {
   const code = staffQuoteFailureCode(error);
   if (code === 'native_quote_no_matching_rate') return nativeNoMatchingRateMessage(context);
+  if (code === 'native_quote_business_evidence_unavailable' && nativeQuoteGapOf(error)?.sharedInventoryPoolGap) {
+    return SHARED_INVENTORY_GAP_MESSAGE;
+  }
   const actions: Record<string, string> = {
     business_quote_policy_unavailable:
       'Verify VAT and tourism levy inclusion for the selected rate.',

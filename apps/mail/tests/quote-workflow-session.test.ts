@@ -716,6 +716,19 @@ describe('quote session', () => {
     );
   });
 
+  it('labels the rows of one stay as rooms, not as stays', () => {
+    const line = formatQuoteStepInputs({
+      quoteRequestKey: '2026-11-02:2026-11-06',
+      groups: [
+        { quantity: 15, roomPreference: 'STQN', adults: 1 },
+        { quantity: 15, roomPreference: 'STWN', adults: 2 },
+      ],
+    });
+    expect(line).toBe('Dates 2026-11-02 → 2026-11-06 · Room 1: 15 × STQN, 1 adult · Room 2: 15 × STWN, 2 adults');
+    expect(line).not.toMatch(/Stay \d/);
+    expect(formatQuoteStepInputs({ groups: [{ roomPreference: ' ' }] })).toBe('Room 1: 1 × any room, adults not set');
+  });
+
   it('keeps mixed same-date groups selected and rejects a partial PDF', () => {
     const mixed = {
       ...quoteAnalysis,
