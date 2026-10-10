@@ -2,14 +2,13 @@ import type {
   BookingDraftReady,
   LunaAnalysisWire,
   QuoteBoard,
-  RowPriceChoice,
   StaffQuoteHeader,
   StaffQuoteOtherCharge,
   StaffQuoteSource,
   StayGroupRequirement,
 } from './types';
 import { staffQuoteGroupsFromStay } from './staff-quote-bind';
-import type { StaffQuoteGroupInput, StaffRowPriceWire } from './staff-quote-bind';
+import type { StaffQuoteGroupInput } from './staff-quote-bind';
 
 export type PrepareBookingDraftInput = {
   workflowRunId: string;
@@ -250,19 +249,7 @@ export type PriorStaffQuoteRequotePayload = {
   shuttleTrips?: number;
   other?: StaffQuoteOtherCharge;
   notes?: string;
-  /** The row prices the quote was run with, keyed by the stored row ids. A re-quote asks for the same prices again. */
-  rowPrices?: StaffRowPriceWire[];
 };
-
-/**
- * A stored row price as a row's price. The payload names a saved rate by id only, so its name and amount are left for
- * the re-quote's row rates to show.
- */
-function storedRowPrice(price: StaffRowPriceWire): RowPriceChoice {
-  if (price.source === 'saved') return { source: 'saved', customRateId: price.customRateId, name: 'Saved rate', amountMinor: 0 };
-  if (price.source === 'one_off') return { source: 'one_off', amountMinor: price.oneOffRate };
-  return { source: 'override', rateCode: price.rateCode, amountMinor: price.overrideRate, note: price.note };
-}
 
 export type PriorStaffQuoteRequoteRow = {
   workflowRunId: string;
@@ -298,7 +285,6 @@ export function buildExpiredPriorRequoteBindArgs(args: {
       // A row takes the id of the session row for the same stay, so another stay's row id never lands here.
       const within = args.stored.groups.slice(0, index).filter((row) => dateKeyOf(row) === dateKeyOf(group)).length;
       const sameStay = args.sessionGroups.filter((row) => dateKeyOf(row) === dateKeyOf(group));
-      const price = args.stored.rowPrices?.find((row) => row.groupId === group.id);
       return {
         id: sameStay[within]?.id ?? (oneStay ? args.sessionGroups[index]?.id : undefined) ?? group.id,
         arrivalDate: group.arrivalDate,
@@ -311,7 +297,6 @@ export function buildExpiredPriorRequoteBindArgs(args: {
         roomPreference: group.roomCodes?.[0],
         specialRequests: [],
         fields: {},
-        ...(price ? { rowPrice: storedRowPrice(price) } : {}),
       };
     });
     return {
@@ -345,14 +330,7 @@ export function buildExpiredPriorRequoteBindArgs(args: {
       },
     };
   }
-  // With several stays, re-quote only the session rows of the one stay this revision quoted. Every row in one run would
-  // merge the stays. When that stay's dates were edited away, or the revision spans stays, there is nothing safe to send.
-  if (new Set(args.sessionGroups.map(dateKeyOf)).size <= 1) {
-    return { groups: args.sessionGroups, header: args.sessionHeader };
-  }
-  const quoted = new Set(args.stored.groups.map(dateKeyOf));
-  const groups = quoted.size === 1 ? args.sessionGroups.filter((row) => quoted.has(dateKeyOf(row))) : [];
-  return { groups, header: args.sessionHeader };
+  return { groups: args.sessionGroups, header: args.sessionHeader };
 }
 
 /** The stay a row belongs to, by its dates. */

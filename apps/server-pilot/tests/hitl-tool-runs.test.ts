@@ -365,18 +365,6 @@ describe('tool-run ledger: classifiers by site', () => {
     expect(
       classifyCancelCommit({ outcome: 'cancel_unconfirmed' } as never, '57291630-1', DIGEST),
     ).toMatchObject({ status: 'unconfirmed', confirmationNo: '57291630-1' });
-    // A penalty after the OK is needs check even when the booking reads Cancelled, and it is not an episode cancel.
-    const penalty = classifyCancelCommit(
-      { outcome: 'cancel_penalty_pending', statusAfter: 'Cancelled' } as never,
-      '57291630-1',
-      DIGEST,
-    );
-    expect(penalty).toMatchObject({
-      status: 'unconfirmed',
-      errorCode: 'cancel_penalty_pending',
-      confirmationNo: '57291630-1',
-    });
-    expect(penalty.episodeOutcome).toBeUndefined();
     expect(
       classifyCancelCommit({ outcome: 'refused_penalty_not_accepted' } as never, '57291630-1', DIGEST),
     ).toMatchObject({ status: 'refused', errorCode: 'refused_penalty_not_accepted' });

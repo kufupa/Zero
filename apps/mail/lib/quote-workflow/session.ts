@@ -17,7 +17,7 @@ import type {
 } from './types';
 import { emptyStaffQuoteHeader, staffHeaderFieldProblem, type StaffExtraField } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
-import { approvedExecuteHeader, hasOncePerQuoteExtras } from './staff-quote-bind';
+import { approvedExecuteHeader } from './staff-quote-bind';
 import { knownRoomCode, type RoomTypeCode } from './room-types';
 
 /**
@@ -412,28 +412,7 @@ export function currentStayRun(session: QuoteSession, key: string): StaffQuoteAl
     quote.approvedHeader.company === header.company &&
     quote.approvedHeader.agency === header.agency &&
     offer.stayTotalMinor === quote.totalMinor;
-  if (!current) return null;
-  // A combined quote charges the once-per-quote extras once, on the first stay. A run that has them on another stay, or
-  // a first stay's run without them, would put the wrong amount in the total.
-  if (isMultiStay(session) && Boolean(quote.onceExtras) !== runCarriesOnceExtras(session, key)) return null;
-  return quote;
-}
-
-/**
- * Whether the run of this stay carries the once-per-quote extras (the shuttle, a per-trip or one-item "other" charge):
- * one stay always does, and a combined quote charges them on its first stay only.
- */
-export function runCarriesOnceExtras(
-  session: Pick<QuoteSession, 'groups' | 'staffHeader'>,
-  stayKey: string,
-): boolean {
-  return hasOncePerQuoteExtras(session.staffHeader) && rowsTakeOnceExtras(session, [stayKey]);
-}
-
-/** False only for a run of a combined quote's stays other than the first: it leaves the once-per-quote extras out. */
-export function rowsTakeOnceExtras(session: Pick<QuoteSession, 'groups'>, stayKeys: readonly string[]): boolean {
-  const keys = requestedQuoteKeys(session.groups);
-  return keys.length <= 1 || stayKeys.includes(keys[0]!);
+  return current ? quote : null;
 }
 
 /** Every date option's current staff run in option order, or null while any stay is unrated or its run is stale. */
@@ -796,8 +775,7 @@ function replaceStayRows(current: StayGroupRequirement[], next: StayGroupRequire
   return [...rest.slice(0, at), ...rows, ...rest.slice(at)];
 }
 
-function editStays(
-  session: QuoteSession,
+function editStays(  session: QuoteSession,
   groups: StayGroupRequirement[],
   affected: ReadonlySet<string>,
   keepRatesOf?: string,
@@ -1482,11 +1460,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
-      // A combined PDF is for the stays' current runs (the action names them), whichever option is selected.
-      const expectedIds = isMultiStay(session)
-        ? (combinedStayRuns(session)?.map((run) => run.revisionRef) ?? [])
-        : session.selectedOfferIds;
-      if (!sameSelectedOfferIds(action.selectedOfferIds, expectedIds)) {
+      if (!sameSelectedOfferIds(action.selectedOfferIds, session.selectedOfferIds)) {
         return session;
       }
       const stayKey = session.selectedStayKey;
@@ -1502,12 +1476,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       return { ...session, reviewedReplyHtml: action.html };
     case 'select_offers':
       if (sameSelectedOfferIds(action.offerIds, session.selectedOfferIds)) return session;
-      // A combined PDF covers every stay's run, not the selection, so it stays.
-      return {
-        ...session,
-        selectedOfferIds: action.offerIds,
-        pdf: isMultiStay(session) ? session.pdf : null,
-      };
+      return { ...session, selectedOfferIds: action.offerIds, pdf: null };
     case 'mailbox_status':
       return { ...session, mailboxStatus: action.status };
     default:

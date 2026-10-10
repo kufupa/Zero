@@ -61,11 +61,8 @@ const jobStatusInput = z.union([
   z
     .object({
       threadId: threadIdInput,
-      kind: z.enum(['find', 'search_guest', 'availability']),
+      kind: z.enum(['find', 'search_guest']),
       confirmation: confirmation.optional(),
-      // An availability snapshot is picked by its stay's dates.
-      arrival: arrival.optional(),
-      departure: arrival.optional(),
     })
     .strict(),
 ]);

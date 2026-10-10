@@ -4,26 +4,6 @@ import {
 } from './staff-quote-installation.js';
 
 /**
- * The only variables a pane HMS CLI inherits: the process basics, the CDP endpoint and ownership, and the credential
- * source the CLIs read (readSecret in fetch-quote.mjs). Everything else is dropped, so a flag set for one lab run
- * (LAB_CANCEL_CONFIRMATION) or a database URL never reaches a live HMS run.
- */
-export const PANE_CLI_ENV_ALLOWLIST = [
-  'PATH',
-  'HOME',
-  'LANG',
-  'LC_ALL',
-  'TZ',
-  'TMPDIR',
-  'PLAYWRIGHT_BROWSERS_PATH',
-  'AWS_REGION',
-  'HMS_READ_SECRET_ARN',
-  'HMS_QUOTE_SECRET_PATH',
-  'HMS_STAGEHAND_CDP_URL',
-  'HMS_STAGEHAND_BROWSER_OWNERSHIP',
-] as const;
-
-/**
  * The environment for a pane HMS CLI (stay-lookup, cancel-stay, create-lab-stay). The http process has no
  * HMS_STAGEHAND_* variables, so the CLIs refuse with CDP_URL_REQUIRED. The installed staff quote configuration names
  * the borrowed browser and the credential file, the same way the staff quote spawner passes them to its CLIs.
@@ -33,10 +13,7 @@ export function paneStaySpawnEnv(
   env: NodeJS.ProcessEnv = process.env,
   readConfiguration: () => StaffQuoteInstallationConfiguration = readInstalledStaffQuoteConfiguration,
 ): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = {};
-  for (const name of PANE_CLI_ENV_ALLOWLIST) {
-    if (env[name] !== undefined) out[name] = env[name];
-  }
+  const out: NodeJS.ProcessEnv = { ...env };
   if (out.HMS_STAGEHAND_CDP_URL) return out;
   let configuration: StaffQuoteInstallationConfiguration;
   try {

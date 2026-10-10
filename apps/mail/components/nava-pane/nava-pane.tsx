@@ -78,7 +78,6 @@ import {
   quoteRunBlockReason,
   reduceQuoteSession,
   removedStayFor,
-  rowsTakeOnceExtras,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -91,8 +90,6 @@ import { WelcomeScreen } from './screens/welcome';
 import { DiagnosticsScreen } from './screens/diagnostics';
 import { TourScreen } from './screens/tour';
 import { SelectedEmailBlock } from './blocks/selected-email';
-import { ContactBlock } from './blocks/contact-block';
-import { TranslationBox } from './blocks/translation-box';
 import { BookingVoucherCard } from './blocks/booking-voucher-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
 import { SystemCheckResultsBlock } from './blocks/system-check-results';
@@ -720,10 +717,6 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
         sessionHeader: session.staffHeader,
         staffEdited: hasStaffStayEdits(session),
       });
-      if (!groups.length) {
-        toast.warning('The stays changed since this quote. Run the search for that stay again.');
-        return;
-      }
       const run = bindExecuteStaffQuote({
         mutate: staff.workstation.executeStaffQuote?.mutate,
         source,
@@ -731,7 +724,6 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
         inputRevision,
         groups,
         header,
-        onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(groups)),
       });
       return trackStaffQuoteRun(run).then((remote) => {
         if (remote.status !== 'ok') {
@@ -839,8 +831,6 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
       inputRevision,
       groups: stayGroups,
       header: quoteSession.staffHeader,
-      // A combined quote charges the shuttle and flat "other" charges once, on its first stay.
-      onceExtras: rowsTakeOnceExtras(quoteSession, requestedQuoteKeys(stayGroups)),
     });
     void trackStaffQuoteRun(run).then((remote) => {
       if (remote.status !== 'ok') {
@@ -946,12 +936,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
       pdfInFlight.current = true;
       const selectionEpoch = session.binding?.selectionEpoch ?? 0;
       const inputRevision = session.inputRevision;
-      // The combined PDF is bound to the stays' runs, not to the selected option, so selecting another option while it
-      // builds keeps it.
-      const selectedOfferIds = [
-        request.input.revisionRef,
-        ...(request.input.additionalStays ?? []).map((stay) => stay.revisionRef),
-      ];
+      const selectedOfferIds = session.selectedOfferIds;
       const staff = staffQuoteFromTrpc(trpcClient);
       void bindQualifiedStaffProposalPdf({
         mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
@@ -1234,24 +1219,6 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
           <main className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
             {/* Email context for the selected email; until one is selected, an empty state. */}
             <SelectedEmailBlock activeEmail={activeEmail} />
-
-            {/* Contact block (U16): the core details, pre-filled. Then the translation, only for mail not in English. */}
-            {activeEmail ? (
-              <ContactBlock
-                key={`${activeEmail.internetMessageId ?? ''}|${storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : ''}`}
-                contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
-                onEdit={storedWork.recordContact}
-              />
-            ) : null}
-            {storedWork.pane.state === 'ready' ? (
-              <TranslationBox
-                key={storedWork.pane.workItemId}
-                language={storedWork.pane.language}
-                translation={storedWork.pane.translation}
-                busy={storedWork.translationBusy}
-                onRetry={storedWork.retryTranslation}
-              />
-            ) : null}
 
             {/* Booking and voucher block: a change or cancellation card, then the Find the booking card. */}
             <BookingVoucherCard

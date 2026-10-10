@@ -15,7 +15,6 @@ import {
   mailBaselineGenerationKey,
   RunDeadlineError,
   HMS_JOB_PROMPT_VERSION,
-  HMS_WRITE_RUN_KIND,
   shouldRetryAiFailure,
   toAiRunFence,
   type AiFailureClass,
@@ -24,7 +23,6 @@ import {
   type AiWorkflowRunKind,
   type CandidateReadPlanKind,
 } from './run-ledger.js';
-import { sweepLostHmsWriteLeases } from './hms-approval.js';
 import {
   createFailedShadowPredictionSeal,
   createShadowPredictionSeal,
@@ -164,7 +162,6 @@ import {
   executeHmsJob,
   hmsJobQueueEnabled,
   requeueHmsReadsAfterRestart,
-  scheduleAvailabilityPrefetch,
   schedulePrefetchForInbound,
 } from './hms-jobs.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
@@ -191,7 +188,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isCliEntry } from '../lib/is-cli-entry.js';
 import { assessReply } from './reply-assessment.js';
 import { executeInboundExtractionRun } from './extraction/inbound-run.js';
-import { executeQuoteFollowupRun } from './quote-followup.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb, type DB } from '../db/client.js';
 import { getS3Storage } from '../storage/s3.js';
@@ -548,9 +544,6 @@ export function parseAiWorkerCliArgs(argv: string[]): AiWorkerCliArgs {
     if (arg === '--run-kind') {
       const value = argv[++i];
       if (!value || value.startsWith('--')) throw new Error('--run-kind requires a value');
-      if (value === HMS_WRITE_RUN_KIND) {
-        throw new Error('hms_write runs are never drained: only the write runner claims them');
-      }
       runKind = value as AiWorkflowRunKind;
       continue;
     }
@@ -574,10 +567,8 @@ async function failAiRun(
     return { runId: run.id, state: 'dead_letter' };
   }
 
-  // An hms_write run is never retried: a failed write may already have reached HMS (hms-approval.ts).
   const canRetry =
     fence !== null &&
-    run.runKind !== HMS_WRITE_RUN_KIND &&
     shouldRetryAiFailure({
       failureClass,
       fence,
@@ -5258,20 +5249,13 @@ export async function executeAiRun(
     }
 
     if (run.runKind === 'inbound_extraction') {
-      const extracted = await executeInboundExtractionRun({
+      return await executeInboundExtractionRun({
         run: runWithFence,
         fence,
         signal,
         adapter: options.inboundExtractionAdapter,
         db,
       });
-      // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
-      if (extracted.state === 'succeeded') scheduleAvailabilityPrefetch(runWithFence);
-      return extracted;
-    }
-
-    if (run.runKind === 'quote_followup') {
-      return await executeQuoteFollowupRun({ run: runWithFence, fence, db });
     }
 
     if (run.runKind === 'feedback_extraction') {
@@ -5489,28 +5473,6 @@ export async function runHmsJobOnce(
 }
 
 const HMS_JOB_POLL_MS = 3_000;
-const HMS_WRITE_SWEEP_MS = 5_000;
-
-/** Turns hms_write leases lost to a dead worker into needs-check. Runs in the default worker, whatever the HMS flags. */
-async function runHmsWriteSweepLoop(signal: AbortSignal): Promise<void> {
-  while (!signal.aborted) {
-    await sweepLostHmsWriteLeases().catch((error: unknown) => {
-      console.error('hms_write_sweep_failed', error instanceof Error ? error.message : String(error));
-      return 0;
-    });
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, HMS_WRITE_SWEEP_MS);
-      signal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        { once: true },
-      );
-    });
-  }
-}
 
 /** Claims pane HMS jobs one at a time until the signal aborts. Runs alongside the default loop, so triage never waits on HMS. */
 async function runHmsJobLoop(signal: AbortSignal): Promise<void> {
@@ -5615,11 +5577,6 @@ export async function runAiWorkerLoop(
     resolveWorkerLane() === 'default' && hmsJobQueueEnabled() && !scope.idempotencyPrefix
       ? runHmsJobLoop(shutdown.signal)
       : null;
-  // Lost hms_write leases become needs-check here, whatever the HMS flags. Scoped (proof) loops never run it.
-  const hmsWriteSweep =
-    resolveWorkerLane() === 'default' && !scope.idempotencyPrefix
-      ? runHmsWriteSweepLoop(shutdown.signal)
-      : null;
 
   try {
     while (!stopping) {
@@ -5638,7 +5595,6 @@ export async function runAiWorkerLoop(
     // Let a running HMS job settle its run row before the database closes.
     shutdown.abort();
     await hmsJobs;
-    await hmsWriteSweep;
     await closeAiWorkerResources();
   }
 }

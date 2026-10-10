@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
 import { randomUUID } from 'node:crypto';
-import { unzipSync } from 'fflate';
 import { eq } from 'drizzle-orm';
 
 const installation = vi.hoisted(() => ({ configure: vi.fn(), services: vi.fn() }));
@@ -312,46 +311,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           revisionRef: octoberAgain.revisionRef,
         });
         expect(current.totalMinor).toBe(40004);
-      });
-    });
-
-    it('AE1: two stays, one shuttle on the first stay, give one document with a row per stay and the shuttle once', async () => {
-      await withSeededTestDb(async (db) => {
-        installFixture(db);
-        const request = await seedRequest(db),
-          api = caller();
-        // The pane sends the once-per-quote shuttle with the first stay only.
-        const october = await api.workstation.executeStaffQuote({
-          ...request.input,
-          inputRevision: 1,
-          groups: [{ ...request.input.groups[0]!, arrivalDate: '2026-10-26', departureDate: '2026-10-27' }],
-          shuttleRequested: true,
-          shuttleMinor: 50000,
-        });
-        const november = await api.workstation.executeStaffQuote({
-          ...request.input,
-          inputRevision: 2,
-          groups: [{ ...request.input.groups[0]!, arrivalDate: '2026-11-17', departureDate: '2026-11-18' }],
-        });
-        expect(october).toMatchObject({ status: 'ready', totalMinor: 70002, factRefs: ['extras'] });
-        expect(november).toMatchObject({ status: 'ready', totalMinor: 20002 });
-        const combined = {
-          ...pdfInput({ workflowRunId: october.workflowRunId, revisionRef: october.revisionRef, messageId: october.messageId }),
-          factRefs: october.factRefs,
-          additionalStays: [{ workflowRunId: november.workflowRunId, revisionRef: november.revisionRef, factRefs: november.factRefs }],
-        };
-        const pdf = await api.workstation.qualifiedQuoteProposalPdf(combined);
-        expect(pdf.totalMinor).toBe(20002 + 20002 + 50000);
-        const workbook = await api.workstation.quoteWorkbook(combined);
-        expect(workbook.totalMinor).toBe(pdf.totalMinor);
-        const sheet = new TextDecoder().decode(
-          unzipSync(Buffer.from(workbook.xlsxBase64, 'base64'))['xl/worksheets/sheet1.xml']!,
-        );
-        // One room row per stay (two rooms each), one shuttle row, one total.
-        expect(sheet).toContain('26-27 October 2026');
-        expect(sheet).toContain('17-18 November 2026');
-        expect(sheet.match(/Shuttle/g)).toHaveLength(1);
-        expect(sheet.match(/<f>SUM\(H24:H\d+\)<\/f>/g)).toHaveLength(1);
       });
     });
 

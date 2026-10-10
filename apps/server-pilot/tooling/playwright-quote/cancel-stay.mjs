@@ -649,10 +649,7 @@ async function run(ctx) {
   result.cancelPath = await openCancelDialog(page);
   const dialog = await waitCancelDialog(page);
   await shot(ctx, 'cancel-dialog.png');
-  // Write evidence for the pane's cancel run (U26): the dialog before OK, and the page after an OK click.
-  await shot(ctx, 'before.png');
   await runCancelDialog({ args, record, result, io: dialogIo(ctx, dialog) });
-  if (result.clickedOk) await shot(ctx, 'after.png');
 }
 
 async function drive(ctx) {

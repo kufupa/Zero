@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import {
   allocationTotal,
@@ -900,9 +900,6 @@ export function QuoteWorkflowPanel({
     setPinRun(null);
     onRunStep?.(pinRun.stepId);
   }, [pinRun, session.groups, onRunStep]);
-  // The session and pin as of the last render. A saved-rate edit lands after an await, so it reads these, not the ones it began with.
-  const latest = useRef({ session, pinRun });
-  latest.current = { session, pinRun };
   const saved = useSavedRates(rates ?? null);
   if (session.phase === 'idle') {
     return <StatusNote>Select an email in Outlook. Nava will read it and list what the quote needs.</StatusNote>;
@@ -998,14 +995,7 @@ export function QuoteWorkflowPanel({
     if (!group || !onPatchGroup) return;
     const step = stepFor(group);
     if (!step || quoteRunBlockReason(session, step)) return;
-    // A card is an HMS price, so it replaces the row's own price. Otherwise the run would charge a price the card does not show.
-    onPatchGroup(group.id, {
-      board: option.board,
-      roomCodes: [option.roomCode],
-      rateCode: option.rateCode,
-      ...(group.rowPrice ? { rowPrice: undefined } : {}),
-    });
-    if (group.rowPrice) toast.warning(`${rowLabels.get(group.id) ?? 'The row'} is back on the HMS rate of the card you picked.`);
+    onPatchGroup(group.id, { board: option.board, roomCodes: [option.roomCode], rateCode: option.rateCode });
     setPinRun({ stepId: step.id, changes: [{ groupId: group.id, check: { rateCode: option.rateCode } }] });
   };
   /**
@@ -1014,15 +1004,10 @@ export function QuoteWorkflowPanel({
    */
   const setRowPrices = (changes: { group: StayGroupRequirement; rowPrice: RowPriceChoice | undefined }[]): boolean => {
     if (!onPatchGroup || changes.length === 0) return false;
-    const { session: current, pinRun: pending } = latest.current;
     for (const { group, rowPrice } of changes) onPatchGroup(group.id, { rowPrice });
-    // A run in flight or another price waiting for its re-run keeps its turn. These rows wait for the next run.
-    if (pending || current.runningStepId) return false;
-    const steps = changes.map(({ group }) =>
-      current.steps.find((item) => item.kind === 'quote_stay' && item.shareKey === stayKeyForGroup(group)),
-    );
+    const steps = changes.map(({ group }) => stepFor(group));
     const first = steps[0];
-    if (first === undefined || steps.some((step) => step?.id !== first.id) || quoteRunBlockReason(current, first)) {
+    if (first === undefined || steps.some((step) => step?.id !== first.id) || quoteRunBlockReason(session, first)) {
       return false;
     }
     setPinRun({
@@ -1033,8 +1018,7 @@ export function QuoteWorkflowPanel({
   };
   /** A saved rate was edited or archived. Rows priced from it follow: an archived rate sends them back to the HMS rate. */
   const followSavedRate = (rateId: string, next: SavedRate | null) => {
-    // The rows as they are now: a row moved to another price while the edit was saving keeps that price.
-    const affected = latest.current.session.groups.filter(
+    const affected = session.groups.filter(
       (group) => group.rowPrice?.source === 'saved' && group.rowPrice.customRateId === rateId,
     );
     if (affected.length === 0) return;

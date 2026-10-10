@@ -19,9 +19,6 @@ import type { LunaAnalysis } from './reservationist-decision.js';
  * `stays[s_x].rows[r_y].count`), so deleting one stay never shifts another stay's AI value. A path on an id the
  * extraction does not have is a stay or row the person added, and `stays[s_x].removed` / `...rows[r_y].removed`
  * (true) is one she deleted. Both come back on reopen.
- *
- * The contact block (U16) uses `contact.name`, `contact.company`, `contact.endClient`, `contact.email` and
- * `contact.phone`. `contact.company` reads the extraction's agency. The other fields read their extraction values.
  */
 
 export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childAges', 'board'] as const;
@@ -52,56 +49,6 @@ export function parseFieldPath(path: string): FieldPath | null {
   if (dateField) return { stayId, rowId: null, field: dateField as 'arrival' | 'departure' };
   if (stayRemoved) return { stayId, rowId: null, field: 'removed' };
   return { stayId, rowId: rowId ?? '', field: rowField as RowField | 'removed' };
-}
-
-/**
- * The contact block's fields (U16). Paths are `contact.<field>`. `company` is the sender's organisation, which the
- * extraction calls the agency, so its AI value is `agency`.
- */
-export const CONTACT_FIELDS = ['name', 'company', 'endClient', 'email', 'phone'] as const;
-export type ContactField = (typeof CONTACT_FIELDS)[number];
-export type StoredContact = Record<ContactField, string | null>;
-const CONTACT_PATH = new RegExp(`^contact\\.(${CONTACT_FIELDS.join('|')})$`);
-
-export function contactFieldOf(path: string): ContactField | null {
-  const match = CONTACT_PATH.exec(path);
-  return match ? (match[1] as ContactField) : null;
-}
-
-function contactAiValue(payload: MailExtractionPayload | null | undefined, field: ContactField): string | null {
-  if (!payload) return null;
-  switch (field) {
-    case 'name':
-      return payload.contact.name;
-    case 'company':
-      return payload.agency;
-    case 'endClient':
-      return payload.endClient;
-    case 'email':
-      return payload.contact.email;
-    case 'phone':
-      return payload.contact.phone;
-  }
-}
-
-/** A contact value is text up to the extraction's cap, or null to clear it. */
-function validContactValue(value: unknown): boolean {
-  return value === null || (typeof value === 'string' && value.length <= 200);
-}
-
-/** The contact block's values: her value where she has set one, else the read's. */
-export function storedContact(payload: MailExtractionPayload, state: WorkState): StoredContact {
-  const valueOf = (field: ContactField): string | null => {
-    const key = `contact.${field}`;
-    return Object.hasOwn(state, key) ? (state[key] as string | null) : contactAiValue(payload, field);
-  };
-  return {
-    name: valueOf('name'),
-    company: valueOf('company'),
-    endClient: valueOf('endClient'),
-    email: valueOf('email'),
-    phone: valueOf('phone'),
-  };
 }
 
 function isInt(value: unknown, min: number, max: number): boolean {
@@ -135,8 +82,6 @@ export function validFieldValue(field: FieldPath['field'], value: unknown): bool
  * The extraction never removes, so `removed` on a stay or row it has reads false.
  */
 export function aiValueAt(payload: MailExtractionPayload | null | undefined, path: string): unknown {
-  const contact = contactFieldOf(path);
-  if (contact) return contactAiValue(payload, contact);
   const parsed = parseFieldPath(path);
   const stay = parsed ? payload?.stays.find((item) => item.id === parsed.stayId) : undefined;
   if (!parsed || !stay) return null;
@@ -390,8 +335,6 @@ async function latestSucceededRead(db: DB, messageId: string) {
     kind: row.kind as MailKind,
     payload: row.payload as MailExtractionPayload,
     attachments: row.attachments as AttachmentRead[] | null,
-    language: row.language,
-    translation: row.translation,
   };
 }
 
@@ -416,24 +359,6 @@ export async function ensureWorkItemForMessage(
   });
 }
 
-/** What the pane shows of a stored translation (U16). A translation that is neither succeeded nor failed reads as none. */
-export type StoredTranslation =
-  | { status: 'succeeded'; segments: Array<{ clean: string; literal: string }>; truncated: boolean }
-  | { status: 'failed' }
-  | null;
-
-export function storedTranslation(raw: unknown): StoredTranslation {
-  const stored = raw as { status?: unknown; segments?: unknown; truncated?: unknown } | null;
-  if (stored?.status === 'failed') return { status: 'failed' };
-  if (stored?.status !== 'succeeded' || !Array.isArray(stored.segments)) return null;
-  const segments = stored.segments.flatMap((item: { clean?: unknown; literal?: unknown } | null) =>
-    typeof item?.clean === 'string' && typeof item.literal === 'string'
-      ? [{ clean: item.clean, literal: item.literal }]
-      : [],
-  );
-  return { status: 'succeeded', segments, truncated: stored.truncated === true };
-}
-
 export type StoredWork =
   | { status: 'none' }
   | { status: 'failed'; reason: string }
@@ -444,10 +369,6 @@ export type StoredWork =
       extractionId: string;
       refs: Record<string, GroupRef>;
       analysis: StoredAnalysis;
-      contact: StoredContact;
-      /** The read's source language (ISO 639-1), or null when unclear. */
-      language: string | null;
-      translation: StoredTranslation;
     };
 
 async function failureFor(db: DB, messageId: string): Promise<StoredWork> {
@@ -498,9 +419,6 @@ export async function storedWorkFor(
     extractionId: latest.id,
     refs: stored.refs,
     analysis: stored.analysis,
-    contact: storedContact(latest.payload, item.state),
-    language: latest.language,
-    translation: storedTranslation(latest.translation),
   };
 }
 
@@ -527,12 +445,12 @@ export async function recordFieldEvent(
     msSinceOpen?: number;
   },
 ): Promise<FieldEventResult> {
-  const contact = contactFieldOf(input.fieldPath);
-  const path = contact ? null : parseFieldPath(input.fieldPath);
-  if (!contact && !path) return { status: 'invalid_path' };
+  const path = parseFieldPath(input.fieldPath);
+  if (!path) return { status: 'invalid_path' };
   const personValue = input.value ?? null;
-  const fits = contact ? validContactValue(personValue) : path !== null && validFieldValue(path.field, personValue);
-  if (input.type !== 'field.accept' && !fits) return { status: 'invalid_value' };
+  if (input.type !== 'field.accept' && !validFieldValue(path.field, personValue)) {
+    return { status: 'invalid_value' };
+  }
   return db.transaction(async (tx) => {
     const [item] = await tx
       .select({ extractionId: workItem.extractionId, state: workItem.state })

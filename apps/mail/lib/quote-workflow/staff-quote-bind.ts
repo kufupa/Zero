@@ -642,26 +642,6 @@ function otherChargeFor(
 }
 
 /**
- * Whether the header has a charge made once per quote, not per guest or night: the shuttle, or an "other" charge per trip
- * or as one item. A combined quote of several stays charges these once, on the first stay only.
- */
-export function hasOncePerQuoteExtras(header: StaffQuoteHeader): boolean {
-  const other = otherChargeFor(header.other);
-  const flatOther = other?.unit === 'per_trip' || other?.unit === 'item';
-  return Boolean(header.shuttleRequested) || flatOther;
-}
-
-/** The header without its once-per-quote charges, for every stay of a combined quote but the first. */
-export function withoutOncePerQuoteExtras(header: StaffQuoteHeader): StaffQuoteHeader {
-  const next = { ...header };
-  delete next.shuttleRequested;
-  delete next.shuttleMinor;
-  delete next.shuttleTrips;
-  if (next.other?.unit === 'per_trip' || next.other?.unit === 'item') delete next.other;
-  return next;
-}
-
-/**
  * The picked parties the quote sends: a company as company and an agency as agency, each with its HMS id and name. A pick
  * without a plain HMS id (an unverified suggestion, for one) is never sent. Undefined when nothing valid was picked.
  */
@@ -686,8 +666,6 @@ export async function bindExecuteStaffQuote(args: {
   inputRevision: number;
   groups: StayGroupRequirement[];
   header: StaffQuoteHeader;
-  /** False for every stay of a combined quote but the first, so the once-per-quote charges are made once. */
-  onceExtras?: boolean;
 }): Promise<BoundExecuteStaffQuote> {
   // A typed amount that cannot be read is never priced from the older saved amount.
   const fieldProblem = staffHeaderFieldProblem(args.header);
@@ -704,9 +682,8 @@ export async function bindExecuteStaffQuote(args: {
   const prepared = staffQuoteGroupsFromStay(args.groups);
   if ('error' in prepared) return { status: 'unavailable', reason: prepared.error };
   try {
-    const sent = args.onceExtras === false ? withoutOncePerQuoteExtras(args.header) : args.header;
     const header = approvedExecuteHeader(
-      sent,
+      args.header,
       prepared.ok.map((group) => group.id),
     );
     const rowPrices = rowPricesFor(args.groups);
@@ -767,7 +744,6 @@ export async function bindExecuteStaffQuote(args: {
         clientEmail: header.clientEmail,
         clientTelephone: header.clientTelephone,
       },
-      onceExtras: hasOncePerQuoteExtras(sent),
       runId: typeof result.runId === 'string' && result.runId.trim() ? result.runId : null,
       screenshots: Array.isArray(result.screenshots)
         ? result.screenshots.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)

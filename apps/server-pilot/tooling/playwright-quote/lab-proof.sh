@@ -59,6 +59,8 @@ die() {
 [[ "${HMS_STAGEHAND_BROWSER_OWNERSHIP:-}" == borrowed ]] || die "HMS_STAGEHAND_BROWSER_OWNERSHIP must be borrowed"
 [[ -n "${HMS_QUOTE_SECRET_PATH:-}" || -n "${HMS_READ_SECRET_ARN:-}" ]] ||
   die "set HMS_QUOTE_SECRET_PATH or HMS_READ_SECRET_ARN (and AWS_REGION for the ARN)"
+# create-lab-stay runs a legacy save-then-cancel branch when this is set. This proof must never take it.
+unset LAB_CANCEL_CONFIRMATION
 node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 22 || (major === 22 && minor >= 18) ? 0 : 1)' ||
   die "Node 22.18 or newer is required"
 

@@ -248,8 +248,6 @@ export type StaffQuoteAllocation = {
     clientEmail: string;
     clientTelephone: string;
   };
-  /** True when this run carried the once-per-quote extras (the shuttle, a per-trip or one-item "other" charge). */
-  onceExtras?: boolean;
   /** HMS evidence run for the audit view; null when the run left no screenshots. */
   runId?: string | null;
   /** Screenshot file names for runId, in capture order. */
