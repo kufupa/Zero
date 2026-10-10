@@ -9,7 +9,7 @@ import type { ModelAdapter } from './bedrock/adapter.js';
 import { extractInboundMail } from './extraction/extract.js';
 import type { SanitizedExtraction } from './extraction/schema.js';
 import { amendmentFromAnalysis, analyseQuoteSelection, mapLlmDecision } from './quote-workflow-llm.js';
-import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
+import { orderCausalPreceding, type SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
 
 export const STRATA = ['quote_party', 'quote_fit', 'create', 'no_tool', 'other'] as const;
 export type Stratum = (typeof STRATA)[number];
@@ -449,13 +449,20 @@ export function replayRunners(row: GoldenRow) {
   return { quote: serve('quote_stay'), party: serve('party_lookup'), misses: () => misses };
 }
 
-/** The golden row as the synced selection prod builds from the mailbox: the trigger, then earlier thread bodies oldest first. */
+/**
+ * The golden row as the synced selection prod builds from the mailbox. The thread goes through prod's own causal
+ * filter (orderCausalPreceding), so a later reply in the row's context never reaches the prompt.
+ */
 export function goldenSelection(row: GoldenRow): SyncedQuoteSelection {
+  const at = (eventAt: string | null) => (eventAt ? new Date(eventAt) : null);
   return {
     subject: row.trigger.subject,
     bodyText: row.trigger.text,
     ...(row.trigger.eventAt ? { receivedAt: row.trigger.eventAt } : {}),
-    preceding: row.context.map((message) => ({ bodyText: message.text })),
+    preceding: orderCausalPreceding(
+      { id: row.trigger.id, receivedAt: at(row.trigger.eventAt) },
+      row.context.map((message) => ({ id: message.id, textBody: message.text, receivedAt: at(message.eventAt) })),
+    ),
     attachments: [],
     messageId: row.trigger.id,
     fromAddress: row.trigger.from,

@@ -340,6 +340,11 @@ describe('production targets', () => {
     expect(calls[0]!.systemPrompt).toContain(K2_MAPPING);
     expect(calls[0]!.userPrompt).toContain('Synthetic request');
     expect(calls[0]!.userPrompt).toContain('Earlier thread body');
+    // prod's causal filter: a reply after the trigger never reaches the prompt.
+    const later = { ...row, context: [...row.context, { ...row.context[0]!, id: 'c2', eventAt: '2026-10-07T08:00:00.000Z', text: 'Later reply' }] };
+    const laterCalls = fakeAdapter(luna());
+    await runProductionTarget('pane', later, laterCalls.adapter);
+    expect(laterCalls.calls[0]!.userPrompt).not.toContain('Later reply');
     expect(trace.usage).toMatchObject({ inputTokens: 1000, outputTokens: 200 });
     const scored = scoreGoldenCase(row, trace);
     expect([scored.correct, scored.scored, scored.error]).toEqual([6, 6, false]);
