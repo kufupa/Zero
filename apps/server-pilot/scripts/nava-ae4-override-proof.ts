@@ -453,6 +453,8 @@ export type Ae4Summary = {
   reviewShowsOverride: boolean;
   copyForHmsLine: string | null;
   copyButtonShown: boolean;
+  /** review.png and pane.png were written. */
+  screenshots: { review: boolean; pane: boolean };
   aiRateMinor: number[];
   overrideRateMinor: number;
   storedWorkflow: string | null;
@@ -478,8 +480,10 @@ export function ae4Failures(summary: Omit<Ae4Summary, 'ok' | 'failures'>, allowN
   if (summary.xlsxHasAiRate === true) failures.push('Excel shows the HMS rate');
   if (!summary.reviewShowsOverride) failures.push('the pane review does not show the override');
   if (!summary.copyForHmsLine || !summary.copyButtonShown) failures.push('no Copy for HMS comments line');
+  if (!summary.screenshots.review || !summary.screenshots.pane) failures.push('a review screenshot is missing');
   if (summary.hmsReads !== 1) failures.push(`expected one HMS read, saw ${summary.hmsReads}`);
-  if (!allowNoEvent && (summary.storedWorkflow !== 'quote' || !summary.workflowRunId)) {
+  // The server writes the event only onto a quote work item for this mail. The header's SELECT then confirms the row.
+  if (!allowNoEvent && (summary.storedWorkflow !== 'quote' || !summary.workItemId || !summary.workflowRunId)) {
     failures.push('no rate.override work_event can be written for this mail');
   }
   return failures;
@@ -575,6 +579,7 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
     reviewShowsOverride: false,
     copyForHmsLine: null,
     copyButtonShown: false,
+    screenshots: { review: false, pane: false },
     aiRateMinor: [],
     overrideRateMinor: inputs.rateMinor,
     storedWorkflow: null,
@@ -649,6 +654,17 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
           `no_quote_work_item: the stored read is ${summary.storedWorkflow ?? stored.status}, so no rate.override work_event can be written (workstation.ts executeStaffQuote -> quoteWorkItemIdFor needs work_item.kind = 'quote'). Use a quote-request email or set NAVA_AE4_ALLOW_NO_EVENT=1`,
         );
       }
+      // A stored read without its item: the pane makes it with workItems.open. The event needs that item to exist.
+      if (summary.storedWorkflow === 'quote' && !summary.workItemId) {
+        const opened = await waitFor('the work item', 15_000, async () => {
+          const open = latestOutcome(captured, 'workItems.open');
+          return open ? (storedWorkView(open.data) ?? { status: 'failed', workItemId: null, workflow: null }) : null;
+        }).catch(() => null);
+        summary.workItemId = opened?.workItemId ?? null;
+      }
+      if (summary.storedWorkflow === 'quote' && !summary.workItemId && !inputs.allowNoEvent) {
+        throw new Blocker('no_quote_work_item: the quote read has no work item and workItems.open did not make one');
+      }
 
       const pane = page.locator('[data-preview-pane]');
       // 3. Type: Quote.
@@ -701,7 +717,14 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
       await overrideButton.click();
       const form = priceBox.locator('form[aria-label^="Discount or override"]');
       await form.waitFor({ state: 'visible', timeout: STEP_MS });
-      await form.locator('select').first().selectOption(inputs.rateCode);
+      const codeSelect = form.locator('select').first();
+      // A code outside the listed ones goes in as Other, as staff type it.
+      if (await codeSelect.locator(`option[value="${inputs.rateCode}"]`).count()) {
+        await codeSelect.selectOption(inputs.rateCode);
+      } else {
+        await codeSelect.selectOption('OTHER');
+        await form.getByLabel(/Other rate code/).fill(inputs.rateCode);
+      }
       await form.getByLabel(/Override rate per night/).fill(inputs.rate);
       await form.getByLabel(/Approved by \/ why/).fill(inputs.note);
       const save = form.getByRole('button', { name: 'Save override' });
@@ -746,8 +769,8 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
         textHasNote(reviewText, inputs.note);
       summary.copyForHmsLine = /HMS comment: (.+?)(?: Copy for HMS comments|$)/.exec(reviewText)?.[1]?.trim() ?? null;
       summary.copyButtonShown = (await priceBox.getByRole('button', { name: 'Copy for HMS comments' }).count()) > 0;
-      const shots = await capturePane(page, config.outDir);
-      log(`screenshots: pane=${shots.pane} review=${shots.review}`);
+      summary.screenshots = await capturePane(page, config.outDir);
+      log(`screenshots: pane=${summary.screenshots.pane} review=${summary.screenshots.review}`);
 
       // 7. The client documents.
       const preparePdf = pane.getByRole('button', { name: /^Prepare (PDF|quote)$/ });
@@ -813,7 +836,7 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
 
       // A work item made while the pane was open (workItems.open) is the one the event lands on.
       const opened = storedWorkView(latestOutcome(captured, 'workItems.open')?.data);
-      if (opened?.workItemId) summary.workItemId = opened.workItemId;
+      if (!summary.workItemId && opened?.workItemId) summary.workItemId = opened.workItemId;
     } catch (error) {
       if (!(error instanceof Blocker)) throw error;
       summary.blocker = error.message;

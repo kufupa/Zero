@@ -290,6 +290,7 @@ describe('verdict', () => {
     reviewShowsOverride: true,
     copyForHmsLine: `Rate override NCOR1B R1850.00 per night: ${NOTE}`,
     copyButtonShown: true,
+    screenshots: { review: true, pane: true },
     aiRateMinor: [194_000],
     overrideRateMinor: 185_000,
     storedWorkflow: 'quote',
@@ -307,12 +308,19 @@ describe('verdict', () => {
     expect(ae4Failures({ ...passing, xlsxHasAiRate: true })).toEqual(['Excel shows the HMS rate']);
     expect(ae4Failures({ ...passing, copyButtonShown: false })).toEqual(['no Copy for HMS comments line']);
     expect(ae4Failures({ ...passing, hmsReads: 0 })).toContain('expected one HMS read, saw 0');
+    expect(ae4Failures({ ...passing, screenshots: { review: false, pane: true } })).toEqual([
+      'a review screenshot is missing',
+    ]);
   });
 
   it('needs a quote work item unless the run allows no event', () => {
     const other = { ...passing, storedWorkflow: 'other' };
     expect(ae4Failures(other)).toEqual(['no rate.override work_event can be written for this mail']);
     expect(ae4Failures(other, true)).toEqual([]);
+    // A quote read whose work item was never made cannot hold the event either.
+    expect(ae4Failures({ ...passing, workItemId: null })).toEqual([
+      'no rate.override work_event can be written for this mail',
+    ]);
   });
 
   it('reports a blocker', () => {
