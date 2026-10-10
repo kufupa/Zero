@@ -234,9 +234,11 @@ describe('inbound extraction stored read', () => {
       expect(await rowFor(db, messageId)).toBeNull();
     }));
 
-  it('kind spam sets spamAt only with the write gate on and none of the triage not-spam guards', () =>
+  it('kind spam sets spamAt only with the classifier retired, the write gate on and none of the triage not-spam guards', () =>
     withIngestionDb(async ({ db }) => {
       const gateOn = await seedMail(db, 'thread-spam-on', SPAM_TEXT);
+      // While the classifier is on it is the only spam writer; the read records its kind only.
+      const classifierOn = await seedMail(db, 'thread-spam-classifier-on', SPAM_TEXT);
       const locked = await seedMail(db, 'thread-spam-locked', SPAM_TEXT);
       const gateOff = await seedMail(db, 'thread-spam-off', SPAM_TEXT);
       // Triage keeps these out of spam, so the model must too: an allowed sender and a thread staff replied on.
@@ -271,9 +273,16 @@ describe('inbound extraction stored read', () => {
       });
       const model = fakeModel(() => SPAM_OUTPUT);
       const selection = selectionFor(SPAM_TEXT);
-      const gateOpen = { ...ON, AI_WRITE_GATE_ENABLED: 'true' } as NodeJS.ProcessEnv;
+      const gateOpen = {
+        ...ON,
+        AI_WRITE_GATE_ENABLED: 'true',
+        INBOUND_TRIAGE_CLASSIFIER: 'off',
+      } as NodeJS.ProcessEnv;
 
       await readMail(db, gateOn, selection, model.adapter, { env: gateOpen });
+      await readMail(db, classifierOn, selection, model.adapter, {
+        env: { ...ON, AI_WRITE_GATE_ENABLED: 'true' } as NodeJS.ProcessEnv,
+      });
       await readMail(db, locked, selection, model.adapter, { env: gateOpen });
       await readMail(db, gateOff, selection, model.adapter);
       await readMail(db, allowed, selection, model.adapter, { env: gateOpen });
@@ -284,6 +293,8 @@ describe('inbound extraction stored read', () => {
         .from(mailThread);
       const spamAt = (id: string) => threads.find((thread) => thread.id === id)?.spamAt ?? null;
       expect(spamAt('thread-spam-on')).not.toBeNull();
+      expect(spamAt('thread-spam-classifier-on')).toBeNull();
+      expect(await rowFor(db, classifierOn)).toMatchObject({ kind: 'spam' });
       expect(spamAt('thread-spam-locked')).toBeNull();
       expect(spamAt('thread-spam-off')).toBeNull();
       expect(spamAt('thread-spam-allowed')).toBeNull();

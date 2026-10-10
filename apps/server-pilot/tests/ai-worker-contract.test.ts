@@ -146,12 +146,14 @@ describe('ai worker contract', () => {
     expect(source).not.toMatch(/pop3-client/);
   });
 
-  it('warms the Luna analyse cache fire-and-forget only after an inbound triage succeeds', () => {
+  it('warms the Luna analyse cache fire-and-forget only after the live inbound run succeeds', () => {
     const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
     expect(source).toMatch(/from '\.\/quote-workflow-warmer\.js'/);
     const runOnce = source.match(/const executed = await executeAiRun\(claimed\.id[\s\S]*?\n  return true;\n\}/)?.[0];
     expect(runOnce).toBeDefined();
-    expect(runOnce).toMatch(/if \(executed\.state === 'succeeded'\) \{[\s\S]*?scheduleInboundTriageAnalyseWarm\(claimed\);/);
+    expect(runOnce).toMatch(
+      /isInboundTriageClassifierEnabled\(process\.env\)\s*\?\s*'inbound_triage'\s*:\s*'inbound_extraction';\s*if \(executed\.state === 'succeeded' && claimed\.runKind === inboundTriggerKind\) \{[\s\S]*?scheduleInboundTriageAnalyseWarm\(claimed\);/,
+    );
     expect(runOnce).not.toMatch(/await scheduleInboundTriageAnalyseWarm/);
   });
 
