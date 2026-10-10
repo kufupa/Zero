@@ -39,7 +39,7 @@ import { isInboundTriageClassifierEnabled } from '../src/env.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withIngestionDb } from './helpers/ingestion-db.js';
-import { executeAiRun, runAiWorkerDrain } from '../src/ai/worker.js';
+import { executeAiRun, MAX_WORKER_SHUTDOWN_ATTEMPTS, runAiWorkerDrain } from '../src/ai/worker.js';
 import { callerFor } from './helpers/trpc-caller.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import { and, eq } from 'drizzle-orm';
@@ -344,6 +344,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       id: string,
       budgetMs: number,
       cut: (shutdown: AbortController, signal: AbortSignal) => void,
+      prior: { attempts?: number; failureClass?: 'WORKER_SHUTDOWN' } = {},
     ) {
       retire();
       const { messageId } = await persistOutlookHistory(db, history(id));
@@ -355,6 +356,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
           claimOwner: 'u5-shutdown-test',
           claimToken: `token-${id}`,
           deadlineAt: new Date(Date.now() + budgetMs),
+          ...prior,
         })
         .where(eq(aiWorkflowRun.idempotencyKey, extractionKey(messageId)))
         .returning({ id: aiWorkflowRun.id });
@@ -387,6 +389,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
         });
         expect(row.lastError).toMatch(/^worker shutdown: /);
         expect(row.nextRunAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      }));
+
+    it('by a shutdown again right after one spends an attempt, and dead-letters once they run out', () =>
+      withWorkerDb(async (db) => {
+        const again = await cutOff(db, 'u5-shutdown-again', 120_000, (shutdown) => queueMicrotask(() => shutdown.abort()), {
+          attempts: 0,
+          failureClass: 'WORKER_SHUTDOWN',
+        });
+        expect(again.result.state).toBe('retry_wait');
+        expect(again.row).toMatchObject({ state: 'retry_wait', failureClass: 'WORKER_SHUTDOWN', attempts: 1 });
+        const spent = await cutOff(db, 'u5-shutdown-spent', 120_000, (shutdown) => queueMicrotask(() => shutdown.abort()), {
+          attempts: MAX_WORKER_SHUTDOWN_ATTEMPTS,
+          failureClass: 'WORKER_SHUTDOWN',
+        });
+        expect(spent.result.state).toBe('dead_letter');
+        expect(spent.row.state).toBe('dead_letter');
       }));
 
     it('by its own deadline still dead-letters, even if a shutdown follows', () =>

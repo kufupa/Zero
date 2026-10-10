@@ -4099,6 +4099,9 @@ async function executeShadowPredictionRun(
   }
 }
 
+/** Attempts after which an inbound read a worker shutdown keeps cutting off dead-letters instead of requeueing. */
+export const MAX_WORKER_SHUTDOWN_ATTEMPTS = 3;
+
 export async function executeAiRun(
   runId: string,
   options: {
@@ -5327,21 +5330,25 @@ export async function executeAiRun(
 
     throw new Error(`unsupported AI run kind: ${run.runKind}`);
   } catch (error) {
-    // A worker shutdown (a deploy restart) cut off an inbound read. Its writes commit only under the claim, so nothing
-    // was stored: it goes back on the queue now, with no attempt spent and a fresh deadline for the next worker. The
-    // run's own deadline or a lost lease aborts with another reason and fails as before. The loop claims nothing once
-    // shutdown starts, so each requeue takes one more shutdown.
+    // A worker shutdown (a deploy restart) cut off an inbound read. Its writes commit only under the claim, and a
+    // read stored before the cut is found again ('exists'), so it goes back on the queue now with a fresh deadline for
+    // the next worker. The run's own deadline or a lost lease aborts with another reason and fails as before. The loop
+    // claims nothing once shutdown starts, so each requeue takes one more shutdown. The first costs no attempt; a run
+    // cut off again right after one spends an attempt each time and dead-letters at MAX_WORKER_SHUTDOWN_ATTEMPTS, so a
+    // read that keeps its worker from stopping is not requeued forever.
+    const cutAgain = run.failureClass === 'WORKER_SHUTDOWN';
     if (
       run.runKind === 'inbound_extraction' &&
       shutdownSignal.aborted &&
-      signal.reason === shutdownSignal.reason
+      signal.reason === shutdownSignal.reason &&
+      !(cutAgain && run.attempts >= MAX_WORKER_SHUTDOWN_ATTEMPTS)
     ) {
       const requeued = await markAiRunRetry({
         runId,
         claimOwner: owner,
         claimToken,
         expectedStates: ['running'],
-        attempts: run.attempts,
+        attempts: cutAgain ? run.attempts + 1 : run.attempts,
         nextRunAt: new Date(),
         lastError: `worker shutdown: ${error instanceof Error ? error.message : String(error)}`,
         failureClass: 'WORKER_SHUTDOWN',
