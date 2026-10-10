@@ -50,6 +50,9 @@ vi.mock('../src/hms/property-read-lock.js', async (importOriginal) => ({
 vi.mock('../src/quote-proposal/quote-lines.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/quote-proposal/quote-lines.js')>()),
   deriveQuoteLines: () => [{ description: 'Synthetic standard room' }],
+  // Synthetic revisions carry no nightly rates, so their room total is read as stored, with no row rates.
+  pricedRoomTotal: (revision: { totalMinor: number }) => revision.totalMinor,
+  rowRatesFor: () => [],
 }));
 
 const TRANSPORT = 'transport-centurion';

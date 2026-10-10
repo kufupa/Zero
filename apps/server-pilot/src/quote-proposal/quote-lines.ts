@@ -1,13 +1,28 @@
 import { occupiedDates, quoteDigest, type QuoteRevision } from './quote-revision.js';
 export type QuoteDisplayLine = { nights:number;rateMinor:number;totalMinor:number;arrivalDate:string;departureDate:string;sourceRef:string;sourceHash:string;groupId:string;description:string;quantity:number };
 const meals = {room_only:'Room Only', breakfast:'Bed & Breakfast', dinner_bed_breakfast:'Dinner Bed & Breakfast'};
-/** Accept only a resolved immutable selected revision; never derive prices from agent integers. */
-export function deriveQuoteLines(revision: QuoteRevision): QuoteDisplayLine[] {
+/**
+ * A row staff priced instead of HMS's nightly rate (KTD6). Saved and override rows keep the name, code and note as they were
+ * approved, so a later edit or archive never changes an old quote. The price applies to every night of its row.
+ */
+export type RowPrice =
+ | { groupId:string; source:'saved'; customRateId:string; name:string; amountMinor:number }
+ | { groupId:string; source:'one_off'; amountMinor:number }
+ | { groupId:string; source:'override'; rateCode:string; amountMinor:number; note:string };
+/** Accept only a resolved immutable selected revision; never derive prices from agent integers. Row prices replace only their own row's nights. */
+export function deriveQuoteLines(revision: QuoteRevision, rowPrices: readonly RowPrice[] = []): QuoteDisplayLine[] {
  const raw = revision as QuoteRevision & Record<string,unknown>;
  if ('extras' in raw || 'overrides' in raw || 'imported' in raw) throw new Error('unsupported_revision_facts');
  const {id,...data}=revision;
  if(id!==`quote:${quoteDigest(data)}`)throw new Error('revision_identity');
+ const priceByGroup=new Map<string,RowPrice>();
+ for(const price of rowPrices){
+  if(!revision.groups.some(group=>group.id===price.groupId)||priceByGroup.has(price.groupId))throw new Error('row_price_scope');
+  priceByGroup.set(price.groupId,price);
+ }
  const lines:QuoteDisplayLine[]=[];
+ // The HMS total with each priced row moved to its price. Equal to revision.totalMinor when no row is priced.
+ let expectedTotal=revision.totalMinor;
  for(const group of revision.groups){
   const dates=occupiedDates(group.arrivalDate,group.departureDate);
   if(dates.length!==group.nightly.length||dates.some((date,i)=>date!==group.nightly[i].date))throw new Error('night_coverage');
@@ -15,21 +30,46 @@ export function deriveQuoteLines(revision: QuoteRevision): QuoteDisplayLine[] {
   const label=group.roomCode==='SKNG'?'Standard King':group.roomCode==='EXKNG'?'Executive':group.roomLabel;
   if(!label.trim())throw new Error('missing_room_label');
   const occupancy=`${group.adults} adult${group.adults===1?'':'s'}${group.children?` + ${group.children} child${group.children===1?'':'ren'} (ages ${group.childAges.join(', ')})`:''} per room`;
+  const price=priceByGroup.get(group.id);
+  const nightly=price?group.nightly.map(night=>({...night,amountMinor:price.amountMinor})):group.nightly;
   let sum=0;
-  for(let i=0;i<group.nightly.length;){
-   const start=i,rateMinor=group.nightly[i].amountMinor;
+  for(let i=0;i<nightly.length;){
+   const start=i,rateMinor=nightly[i].amountMinor;
    if(!Number.isSafeInteger(rateMinor)||rateMinor<=0)throw new Error('invalid_money');
-   do{i++;}while(i<group.nightly.length&&group.nightly[i].amountMinor===rateMinor);
+   do{i++;}while(i<nightly.length&&nightly[i].amountMinor===rateMinor);
    const nights=i-start,totalMinor=rateMinor*nights*group.quantity;
    if(!Number.isSafeInteger(totalMinor)||totalMinor<=0)throw new Error('money_overflow');
    sum+=totalMinor;
    lines.push({nights,rateMinor,totalMinor,quantity:group.quantity,arrivalDate:dates[start],departureDate:i===dates.length?group.departureDate:dates[i],sourceRef:group.sourceRef,sourceHash:group.sourceHash,groupId:group.id,description:`${label} · ${occupancy} · ${meals[group.board]}`});
   }
-  if(sum!==group.totalMinor||sum/group.quantity!==group.perRoomMinor)throw new Error('group_total_mismatch');
+  const groupTotal=price?price.amountMinor*dates.length*group.quantity:group.totalMinor;
+  const perRoomMinor=price?price.amountMinor*dates.length:group.perRoomMinor;
+  if(sum!==groupTotal||sum/group.quantity!==perRoomMinor)throw new Error('group_total_mismatch');
+  expectedTotal+=groupTotal-group.totalMinor;
  }
  const total=lines.reduce((n,l)=>n+l.totalMinor,0);
- if(!Number.isSafeInteger(total)||total!==revision.totalMinor)throw new Error('proposal_total_mismatch');
+ if(!Number.isSafeInteger(total)||total!==expectedTotal)throw new Error('proposal_total_mismatch');
  return lines;
+}
+/** Room lines at their final prices, before authorised extras. Equal to revision.totalMinor when no row is priced. */
+export function pricedRoomTotal(revision: QuoteRevision, rowPrices: readonly RowPrice[] = []): number {
+ return deriveQuoteLines(revision, rowPrices).reduce((n,l)=>n+l.totalMinor,0);
+}
+/** What the pane shows per row: HMS's nightly rates, the nightly rates charged, and for an override its internal copy line. */
+export type RowRate = {
+ groupId:string;source:'hms'|RowPrice['source'];hmsNightlyMinor:number[];nightlyMinor:number[];
+ customRateName?:string;rateCode?:string;note?:string;hmsComment?:string;
+};
+export function rowRatesFor(revision: QuoteRevision, rowPrices: readonly RowPrice[] = []): RowRate[] {
+ return revision.groups.map((group):RowRate=>{
+  const hmsNightlyMinor=group.nightly.map(night=>night.amountMinor);
+  const price=rowPrices.find(row=>row.groupId===group.id);
+  if(!price)return {groupId:group.id,source:'hms',hmsNightlyMinor,nightlyMinor:hmsNightlyMinor};
+  const base={groupId:group.id,source:price.source,hmsNightlyMinor,nightlyMinor:group.nightly.map(()=>price.amountMinor)};
+  if(price.source==='saved')return {...base,customRateName:price.name};
+  if(price.source==='override')return {...base,rateCode:price.rateCode,note:price.note,hmsComment:`Rate override ${price.rateCode} R${(price.amountMinor/100).toFixed(2)} per night: ${price.note}`};
+  return base;
+ });
 }
 export type AuthorizedProposalFacts = {
  revisionId:string;authorizationId:string;sourceRef:string;sourceHash:string;
