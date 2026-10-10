@@ -156,7 +156,7 @@ function unreadAttachments(
 }
 
 /** One item per unreadable file. The plain reason goes in the text, so the one notice says why. */
-function documentFailureItems(
+export function documentFailureItems(
   attachments: SyncedQuoteAttachment[],
   mode: 'bytes' | 'text' = 'bytes',
 ) {
@@ -178,7 +178,7 @@ function documentFailureItems(
   });
 }
 
-function questionItems(missing: Array<{ field: string; question: string }>) {
+export function questionItems(missing: Array<{ field: string; question: string }>) {
   return missing.map((item, index) => ({
     id: `missing:${item.field}:${index}`,
     kind: 'question' as const,

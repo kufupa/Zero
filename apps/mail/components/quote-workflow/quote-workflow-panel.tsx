@@ -3,6 +3,7 @@ import {
   allocationTotal,
   amendmentOf,
   canCreatePdf,
+  draftStayGroup,
   groupStays,
   newQuoteToken,
   optionLetter,
@@ -847,6 +848,7 @@ export function QuoteWorkflowPanel({
   workbookPending,
   onHandleReviewItem,
   onUndoReviewItem,
+  onRetryRead,
   onViewSource,
   onEditReply,
   onPatchStaffHeader,
@@ -882,6 +884,8 @@ export function QuoteWorkflowPanel({
   workbookPending?: boolean;
   onHandleReviewItem?: (itemId: string) => void;
   onUndoReviewItem?: (itemId: string) => void;
+  /** Runs the read again after an analysis failure. Absent when there is nothing to retry. */
+  onRetryRead?: () => void;
   onViewSource?: (item: QuoteReviewItem) => void;
   onEditReply?: () => void;
   onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>) => void;
@@ -955,12 +959,14 @@ export function QuoteWorkflowPanel({
   const showReply =
     Boolean(session.offers.length || session.reviewedReplyHtml || canCreatePdf(session) || authorizedPartial || openItems.length);
 
-  if (session.phase === 'analysing' && !session.groups.length && !openItems.length) {
-    return <StatusNote>{analysingCopy(session)}</StatusNote>;
-  }
+  // While Nava reads, or after a read failed, a blank stay keeps the form open so she can type before the read lands.
+  const formGroups =
+    !session.groups.length && (session.phase === 'analysing' || session.phase === 'failed')
+      ? [draftStayGroup()]
+      : session.groups;
 
   const header = session.staffHeader ?? emptyStaffQuoteHeader();
-  const stays = groupStays(session.groups);
+  const stays = groupStays(formGroups);
   const nextStep = pickNextRunnableStep(session.steps, session.runningStepId);
   const ratesReason = ratesBlockReason(session, nextStep);
   const running = Boolean(session.runningStepId) || Boolean(hmsQueue?.pending);
@@ -1045,6 +1051,7 @@ export function QuoteWorkflowPanel({
             onEditReply={onEditReply}
             onHandle={onHandleReviewItem}
             onUndo={onUndoReviewItem}
+            onRetry={onRetryRead}
           />
         </Section>
       ) : null}

@@ -140,22 +140,78 @@ export async function bindAnalyseSelection(args: {
     return {
       kind: 'ready',
       sourceRevision: result.sourceRevision,
-      analysis: {
-        intent: result.intent,
-        groups: result.groups,
-        secondaryAsks: result.secondaryAsks,
-        alternatives: result.alternatives,
-        ...(result.reviewItems?.length ? { reviewItems: result.reviewItems } : {}),
-        ...(result.source ? { source: result.source } : {}),
-        ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
-        ...(result.aiUnavailable !== undefined ? { aiUnavailable: result.aiUnavailable } : {}),
-        ...(result.luna !== undefined ? { luna: result.luna } : {}),
-        ...(result.amendment !== undefined ? { amendment: result.amendment } : {}),
-        ...(result.noReplySender !== undefined ? { noReplySender: result.noReplySender } : {}),
-      },
+      analysis: quoteAnalysisOf(result),
     };
   } catch (error) {
     return { kind: 'unavailable', reason: rejectionReason(error) };
+  }
+}
+
+/** The ready part of an analysis, as the live read returns it. A stored read returns the same shape. */
+export type ReadyAnalyse = Omit<Extract<AnalyseSelectionResult, { status: 'ready' }>, 'status' | 'sourceRevision'>;
+
+/** The pane's analysis. The live read and a stored read both map through here, so the pane sees one shape. */
+export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
+  return {
+    intent: ready.intent,
+    groups: ready.groups,
+    secondaryAsks: ready.secondaryAsks,
+    alternatives: ready.alternatives,
+    ...(ready.reviewItems?.length ? { reviewItems: ready.reviewItems } : {}),
+    ...(ready.source ? { source: ready.source } : {}),
+    ...(ready.fallbackReason ? { fallbackReason: ready.fallbackReason } : {}),
+    ...(ready.aiUnavailable !== undefined ? { aiUnavailable: ready.aiUnavailable } : {}),
+    ...(ready.luna !== undefined ? { luna: ready.luna } : {}),
+    ...(ready.amendment !== undefined ? { amendment: ready.amendment } : {}),
+    ...(ready.noReplySender !== undefined ? { noReplySender: ready.noReplySender } : {}),
+  };
+}
+
+/** A mail's stored read from workItems.getByMessage. Ready carries its work item and analysis; none means read it live. */
+export type StoredWork =
+  | { status: 'none' }
+  | { status: 'failed'; reason: string }
+  | {
+      status: 'ready';
+      workItemId: string;
+      workItemStatus: string;
+      extractionId: string;
+      /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
+      refs: Record<string, { stayId: string; rowId: string | null }>;
+      analysis: ReadyAnalyse;
+    };
+
+/** A field event as the server takes it. Edit, accept and reject only. */
+export type RecordFieldEventInput = {
+  workItemId: string;
+  type: 'field.edit' | 'field.accept' | 'field.reject';
+  fieldPath: string;
+  /** `true` only on a `.removed` path: the person deleted that stay or row. */
+  value?: string | number | number[] | true | null;
+  msSinceOpen?: number;
+};
+
+type WorkItemsClient = {
+  getByMessage?: { query: (input: { internetMessageId: string }) => Promise<StoredWork> };
+  recordEvent?: { mutate: (input: RecordFieldEventInput) => Promise<unknown> };
+};
+
+export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return {};
+  const workItems = (trpc as { workItems?: WorkItemsClient }).workItems;
+  return workItems ?? {};
+}
+
+/** Reads the stored work for one mail. A missing route or a failed call reads as unavailable, so the pane reads live. */
+export async function bindStoredWork(args: {
+  query?: WorkItemsClient['getByMessage'];
+  internetMessageId: string;
+}): Promise<StoredWork | { status: 'unavailable' }> {
+  if (!args.query) return { status: 'unavailable' };
+  try {
+    return await args.query.query({ internetMessageId: args.internetMessageId });
+  } catch {
+    return { status: 'unavailable' };
   }
 }
 

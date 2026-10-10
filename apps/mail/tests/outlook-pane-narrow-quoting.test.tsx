@@ -109,7 +109,7 @@ describe('mounted Outlook pane quoting path at 380px', () => {
     );
     expect(container.querySelector('#mounted-outlook-pane')).not.toBeNull();
     expect(screen.queryByText(/September 2026/i)).toBeNull();
-    expect(screen.queryByText(/Change Dates/i)).toBeNull();
+    expect(screen.queryByText(/^Change Dates$/)).toBeNull();
     expect(screen.queryByText(/NCOR1B/i)).toBeNull();
     expect(screen.queryByText(/R2,150\.00/)).toBeNull();
     expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();

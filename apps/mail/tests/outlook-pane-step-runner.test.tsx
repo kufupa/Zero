@@ -4,6 +4,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
+import { findReadStayArrival } from './helpers/prepare-reviewed-quote';
 
 const { sendCommandMock, executeStaffQuoteMutateMock } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
@@ -137,7 +138,7 @@ function readyStaffQuote(request: StaffQuoteRequest) {
 
 /** The stay facts executeStaffQuote needs: dates, a known board, quantity and adults. */
 async function fillStayFacts(arrival: string, departure: string) {
-  fireEvent.change(await screen.findByLabelText('Arrival'), { target: { value: arrival } });
+  fireEvent.change(await findReadStayArrival(), { target: { value: arrival } });
   fireEvent.change(screen.getByLabelText('Departure'), { target: { value: departure } });
   fireEvent.change(screen.getByLabelText('Meal plan'), { target: { value: 'bb' } });
   fireEvent.change(screen.getByLabelText('Rooms'), { target: { value: '1' } });

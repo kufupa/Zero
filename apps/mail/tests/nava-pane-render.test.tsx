@@ -49,6 +49,10 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     screenshotReads: [] as string[],
     // Replaces the default quote analysis for one test (an amendment email, for example).
     analysisOverride: null as null | Record<string, unknown>,
+    analyseCalls: 0,
+    // A stored read for the mail. Null leaves the workItems route out, so the pane reads live as before.
+    storedWork: null as null | Record<string, unknown>,
+    recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
   },
 }));
 
@@ -171,26 +175,37 @@ vi.mock('../providers/query-provider', () => ({
       jobStatus: { query: async () => null },
       screenshot: { query: async () => null },
     },
+    get workItems() {
+      const stored = bridgeMockState.storedWork;
+      if (!stored) return undefined;
+      return {
+        getByMessage: { query: async () => stored },
+        recordEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
+      };
+    },
     quoteWorkflow: {
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
-        mutate: async () => bridgeMockState.analysisOverride ?? ({
-          status: 'ready' as const,
-          intent: 'quote' as const,
-          groups: [
-            {
-              id: 'g1',
-              childrenAges: [],
-              board: 'unknown' as const,
-              quantity: 1,
-              specialRequests: [],
-              fields: { arrivalDate: 'missing' as const, departureDate: 'missing' as const, adults: 'missing' as const },
-            },
-          ],
-          secondaryAsks: [],
-          alternatives: [],
-          sourceRevision: 1,
-        }),
+        mutate: async () => {
+          bridgeMockState.analyseCalls += 1;
+          return bridgeMockState.analysisOverride ?? ({
+            status: 'ready' as const,
+            intent: 'quote' as const,
+            groups: [
+              {
+                id: 'g1',
+                childrenAges: [],
+                board: 'unknown' as const,
+                quantity: 1,
+                specialRequests: [],
+                fields: { arrivalDate: 'missing' as const, departureDate: 'missing' as const, adults: 'missing' as const },
+              },
+            ],
+            secondaryAsks: [],
+            alternatives: [],
+            sourceRevision: 1,
+          });
+        },
       },
       runStep: {
         mutate: async () => ({
@@ -550,6 +565,10 @@ describe('NavaPane screen states', () => {
 
   afterEach(() => {
     bridgeMockState.analysisOverride = null;
+    bridgeMockState.analyseCalls = 0;
+    bridgeMockState.storedWork = null;
+    bridgeMockState.recordEvent.mockReset();
+    bridgeMockState.recordEvent.mockResolvedValue({ aiValue: null, value: null });
     localStorage.clear();
     sessionStorage.clear();
     cleanup();
@@ -607,6 +626,70 @@ describe('NavaPane screen states', () => {
     expect(card.textContent).toContain('57291630-1');
     await settle();
     expect(container).toMatchSnapshot();
+  });
+
+  const STORED_READY = {
+    status: 'ready',
+    workItemId: 'wi-1',
+    workItemStatus: 'needs_you',
+    extractionId: 'ex-1',
+    refs: { r_1: { stayId: 's_1', rowId: 'r_1' } },
+    analysis: {
+      intent: 'quote',
+      groups: [
+        {
+          id: 'r_1',
+          arrivalDate: '2026-11-03',
+          departureDate: '2026-11-05',
+          quantity: 2,
+          adults: 2,
+          childrenAges: [],
+          board: 'bb',
+          specialRequests: [],
+          fields: {},
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      source: 'luna',
+      aiUnavailable: false,
+    },
+  };
+
+  it('stored: a mail with a stored read opens from it and makes no live read', async () => {
+    bridgeMockState.storedWork = STORED_READY;
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-03'));
+    await settle();
+    expect(bridgeMockState.analyseCalls).toBe(0);
+  });
+
+  it('stored: a change that cannot be saved shows a quiet retry, and the retry sends it again', async () => {
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.recordEvent.mockRejectedValue(new Error('offline'));
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-03'));
+    fireEvent.change(screen.getAllByLabelText(/Adults/i)[0]!, { target: { value: '3' } });
+    expect(await screen.findByText(/Couldn.t save change/, {}, { timeout: 6000 })).toBeDefined();
+    expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(2);
+    bridgeMockState.recordEvent.mockResolvedValue({ aiValue: 2, value: 3 });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/Couldn.t save change/)).toBeNull());
+    expect(bridgeMockState.recordEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workItemId: 'wi-1', fieldPath: 'stays[s_1].rows[r_1].adults', value: 3 }),
+    );
+  }, 15_000);
+
+  it('stored: a stay she adds is logged under its own id, so it is there on reopen', async () => {
+    bridgeMockState.storedWork = STORED_READY;
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-03'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add stay' }));
+    await waitFor(() =>
+      expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ workItemId: 'wi-1', fieldPath: expect.stringMatching(/^stays\[s_\w+\]\.removed$/), value: null }),
+      ),
+    );
   });
 
   it('voucher: a voucher email shows the Find the booking card with the guest it names', async () => {

@@ -609,6 +609,13 @@ function reviewItemsFromExtrasNotes(
 /** Fields that decide which rate HMS quotes. A rate pin does not survive a change to any of them. */
 const RATE_PIN_FIELDS = ['board', 'arrivalDate', 'departureDate', 'roomPreference', 'roomCodes'] as const;
 
+/** The blank stay the form shows while Nava reads the email or after a failed read, so she can type before it lands. */
+export const DRAFT_GROUP_ID = 'draft-stay';
+
+export function draftStayGroup(): StayGroupRequirement {
+  return { id: DRAFT_GROUP_ID, childrenAges: [], board: 'unknown', specialRequests: [], fields: {} };
+}
+
 function applyGroupPatch(
   group: StayGroupRequirement,
   patch: Partial<StayGroupRequirement>,
@@ -845,6 +852,29 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         analysisStartStayRevision: session.stayRevision,
       };
     case 'analysis_ready': {
+      const draft = session.groups.length === 1 && session.groups[0]!.id === DRAFT_GROUP_ID ? session.groups[0]! : null;
+      if (draft) {
+        // She typed into the blank stay while Nava read. Take the read, then lay what she typed over each of its stays.
+        const typed: Partial<StayGroupRequirement> = {};
+        for (const key of Object.keys(draft) as (keyof StayGroupRequirement)[]) {
+          if (draft.fields[String(key)] === 'staff_corrected') Object.assign(typed, { [key]: draft[key] });
+        }
+        // Read as a first read (no groups, revisions 0), then move the revisions on past hers so they only ever grow.
+        const read = reduceQuoteSession(
+          { ...session, groups: [], inputRevision: 0, stayRevision: 0, analysisStartStayRevision: null },
+          action,
+        );
+        const landed = {
+          ...read,
+          inputRevision: session.inputRevision + read.inputRevision + 1,
+          stayRevision: session.stayRevision + read.stayRevision + 1,
+        };
+        if (!landed.groups.length) return landed;
+        return landed.groups.reduce(
+          (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: typed }),
+          landed,
+        );
+      }
       const staffEditedDuringRun =
         session.analysisStartStayRevision != null && session.analysisStartStayRevision !== session.stayRevision;
       const loadingDone = session.phase === 'analysing' ? 'requirements' : session.phase;
@@ -1137,9 +1167,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       });
     }
     case 'patch_group': {
-      const target = session.groups.find((group) => group.id === action.groupId);
+      // The first edit to the blank stay makes it a real group. Her edit then wins over a read that lands later.
+      const base =
+        action.groupId === DRAFT_GROUP_ID && !session.groups.some((group) => group.id === DRAFT_GROUP_ID)
+          ? [...session.groups, draftStayGroup()]
+          : session.groups;
+      const target = base.find((group) => group.id === action.groupId);
       if (!target) return session;
-      const groups = pinStay(session.groups, stayIdOf(target)).map((group) =>
+      const groups = pinStay(base, stayIdOf(target)).map((group) =>
         group.id === action.groupId ? applyGroupPatch(group, action.patch) : group,
       );
       const patched = groups.find((group) => group.id === action.groupId)!;

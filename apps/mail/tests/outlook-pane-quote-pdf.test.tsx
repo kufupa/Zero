@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { toast } from 'sonner';
-import { prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import { findReadStayArrival, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 
 const { sendCommandMock, quotePdfMutateMock, quoteWorkbookMutateMock, prepareDraftMutateMock, analyseOverride, sessionState } = vi.hoisted(() => ({
@@ -252,7 +252,7 @@ describe('Outlook pane quote proposal PDF', () => {
       },
     });
     render(<OutlookPanePage />);
-    fireEvent.change(await screen.findByLabelText('Arrival'), { target: { value: '2026-11-13' } });
+    fireEvent.change(await findReadStayArrival(), { target: { value: '2026-11-13' } });
     // Get rates waits for a room type on every row; the email gave none.
     fireEvent.change(await screen.findByLabelText('Room type'), { target: { value: 'STQN' } });
     fireEvent.click(screen.getByRole('button', { name: /^Get rates from HMS$/i }));
