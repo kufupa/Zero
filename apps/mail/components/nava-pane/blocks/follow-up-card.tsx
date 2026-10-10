@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryStates } from 'nuqs';
 import { sanitizeMailBodyHtml } from '@/lib/mail/sanitize-mail-body-html';
 import { FOLLOW_UP_COPY, followUpClientFromTrpc, type FollowUp } from '@/lib/quote-workflow/follow-up';
@@ -8,6 +8,20 @@ import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { Notice, PrimaryButton, SecondaryButton, Section } from '../pane-ui';
 
 type Busy = 'using' | 'dismissing' | 'inserting' | null;
+
+type ReplyPayload = {
+  operationId: string;
+  entryId: string;
+  storeId: string;
+  folderEntryId: string;
+  htmlBody: string;
+  replyAll: false;
+  openInComposer: false;
+};
+
+// Outlook accepts an operation ID for 15 minutes. A retry inside that window replays the same ID and body, so a draft
+// that Outlook made but did not confirm is not made twice (as in use-insert-ai-draft).
+const REPLAY_WINDOW_MS = 14 * 60 * 1000;
 
 const sanitiseFollowUpHtml = (html: string) =>
   html ? sanitizeMailBodyHtml(html, { shouldLoadImages: true, inlineStyles: true }).html : '';
@@ -53,6 +67,7 @@ export function FollowUpCard({
   const [inserted, setInserted] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const unconfirmed = useRef<{ payload: ReplyPayload; startedAt: number } | null>(null);
   const previewHtml = useMemo(() => sanitiseFollowUpHtml(followUp?.htmlBody ?? ''), [followUp?.htmlBody]);
 
   useEffect(() => {
@@ -111,14 +126,23 @@ export function FollowUpCard({
     }
   }
 
-  // One attempt. If Outlook gives no confirmation the draft may still exist, so the notice says to check Drafts.
+  // If Outlook gives no confirmation the draft may still exist, so the notice says to check Drafts. A retry replays the
+  // same operation; once its window has closed, staff confirm they checked Drafts before a new one starts.
   async function insertInOutlook() {
     if (!activeEmail || !followUp) return;
-    setBusy('inserting');
-    setNotice(null);
-    beginMutation();
-    try {
-      const payload = {
+    if (!activeEmail.storeId || !activeEmail.folderEntryId) {
+      setNotice(FOLLOW_UP_COPY.reselect);
+      return;
+    }
+    let pending = unconfirmed.current;
+    if (pending && Date.now() - pending.startedAt >= REPLAY_WINDOW_MS) {
+      // oxlint-disable-next-line no-alert
+      if (!window.confirm(FOLLOW_UP_COPY.confirmNew)) return;
+      pending = null;
+    }
+    pending ??= {
+      startedAt: Date.now(),
+      payload: {
         operationId: createOperationId(),
         entryId: activeEmail.entryId,
         storeId: activeEmail.storeId,
@@ -126,12 +150,19 @@ export function FollowUpCard({
         htmlBody: previewHtml,
         replyAll: false,
         openInComposer: false,
-      };
-      const location = await sendCommand<typeof payload, MailLocation>('CREATE_REPLY_DRAFT', payload);
+      },
+    };
+    unconfirmed.current = pending;
+    setBusy('inserting');
+    setNotice(null);
+    beginMutation();
+    try {
+      const location = await sendCommand<ReplyPayload, MailLocation>('CREATE_REPLY_DRAFT', pending.payload);
       if (!location?.entryId || !location.storeId || !location.folderEntryId) {
         setNotice(FOLLOW_UP_COPY.insertFailed);
         return;
       }
+      unconfirmed.current = null;
       setInserted(true);
     } catch {
       setNotice(FOLLOW_UP_COPY.insertFailed);

@@ -192,6 +192,19 @@ describe('follow-up card', () => {
     expect(await screen.findByText(/Check Outlook Drafts/)).toBeTruthy();
   });
 
+  it('Outlook: a retry after an unconfirmed insert replays the same operation', async () => {
+    findQuery.mockResolvedValue(IN_REPLY);
+    const { bridge, sendCommand } = bridgeWith();
+    sendCommand.mockRejectedValueOnce(new Error('bridge timeout'));
+    renderCard(bridge);
+    fireEvent.click(await screen.findByRole('button', { name: INSERT }));
+    await screen.findByText(/Check Outlook Drafts/);
+    fireEvent.click(screen.getByRole('button', { name: INSERT }));
+    expect(await screen.findByText('Draft inserted in Outlook Drafts.')).toBeTruthy();
+    expect(sendCommand).toHaveBeenCalledTimes(2);
+    expect(sendCommand.mock.calls[1]?.[1]).toEqual(sendCommand.mock.calls[0]?.[1]);
+  });
+
   it('webmail: a used follow-up opens in the reply box and never calls Outlook', async () => {
     findQuery.mockResolvedValue(IN_REPLY);
     const { bridge, sendCommand } = bridgeWith({ canInsert: false });

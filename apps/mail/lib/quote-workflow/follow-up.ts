@@ -87,6 +87,9 @@ export const FOLLOW_UP_COPY = {
   inserting: 'Inserting the draft…',
   inserted: 'Draft inserted in Outlook Drafts.',
   insertFailed: 'Outlook did not confirm the draft. Check Outlook Drafts before trying again.',
+  confirmNew:
+    'Check Outlook Drafts for the earlier follow-up. Have you checked Drafts and do you want to start a new draft?',
+  reselect: 'Outlook did not provide the selected message and its folder. Select it again.',
   noInsert: 'This Outlook add-in cannot insert drafts. Update the add-in.',
   openReply: 'Open in reply box',
 } as const;

@@ -1288,6 +1288,7 @@ export function NavaPane({
                 onRetry={storedWork.retryTranslation}
               />
             ) : null}
+
             {/* The quote follow-up on this thread, when the server holds one (R10). Keyed by the email, like the voucher card. */}
             <FollowUpCard
               key={activeEmail?.internetMessageId ?? 'no-email'}
