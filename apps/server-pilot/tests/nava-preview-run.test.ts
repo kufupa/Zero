@@ -1,23 +1,29 @@
 import {
+  BLOCKED_BY_DESIGN,
   buildGalleryHtml,
   classifyTrpcRequest,
   configFailures,
   gateFailures,
   isPiiField,
+  MARK_PII_JS,
   outcomeOf,
   PANE_BODY_SELECTOR,
   parseRunConfig,
+  PII_SELECTOR,
   piiValuesOf,
+  READ_PANE_JS,
   READ_PROCEDURES,
   redactText,
   safeSegment,
   shapeResult,
   summarize,
+  VOUCHER_CARD_SELECTOR,
   writeOutputs,
   type PaneRead,
   type ThreadResult,
 } from '../scripts/nava-preview-run';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chromium } from 'playwright';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,6 +51,10 @@ const env = (overrides: Record<string, string | undefined> = {}) =>
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mailRoot = join(here, '..', '..', 'mail');
+const chromiumBinary = [
+  chromium.executablePath(),
+  '/home/orca/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell',
+].find(existsSync);
 
 describe('parseRunConfig', () => {
   it('reads a latest-N selection with a default timeout and an out directory under cwd', () => {
@@ -143,24 +153,26 @@ describe('safeSegment', () => {
 });
 
 describe('outcomeOf', () => {
-  const base = {
+  const base: PaneRead = {
     subject: 'Quote',
     paneStatus: 'ready',
     unsyncedReason: null,
     analysing: false,
     intent: null,
     amendment: null,
+    voucher: false,
     aiUnavailable: false,
     alerts: [] as string[],
+    alerting: false,
     fields: [],
     statusText: '',
   };
 
   it('settles on an intent label, a fallback notice, an error, or unsynced', () => {
     expect(outcomeOf({ ...base, intent: 'Quote' })).toBe('intent');
-    expect(outcomeOf({ ...base, amendment: 'Cancellation' })).toBe('intent');
+    expect(outcomeOf({ ...base, amendment: 'cancel' })).toBe('intent');
     expect(outcomeOf({ ...base, aiUnavailable: true })).toBe('fallback');
-    expect(outcomeOf({ ...base, alerts: ['Luna could not read this email.'] })).toBe('error');
+    expect(outcomeOf({ ...base, alerts: ['Luna could not read this email.'], alerting: true })).toBe('error');
     expect(outcomeOf({ ...base, paneStatus: 'unsynced' })).toBe('unsynced');
     expect(outcomeOf({ ...base, paneStatus: 'error' })).toBe('error');
   });
@@ -170,6 +182,25 @@ describe('outcomeOf', () => {
     expect(outcomeOf({ ...base, paneStatus: 'loading' })).toBeNull();
     expect(outcomeOf({ ...base, paneStatus: 'missing' })).toBeNull();
     expect(outcomeOf({ ...base })).toBeNull();
+  });
+
+  // H6b: AE1 read "error" and both AE3 voucher panes "timeout", though each pane had rendered in full.
+  it('settles a read pane that also shows an HMS status line or alert as intent (AE1)', () => {
+    const ae1 = {
+      ...base,
+      intent: 'Quote request',
+      alerts: ['Searching HMS for "Fixture Tours"… about 20 seconds', "HMS search didn't apply — try again"],
+      alerting: true,
+    };
+    expect(outcomeOf(ae1)).toBe('intent');
+  });
+
+  it('settles a voucher-only pane on its voucher card (AE3)', () => {
+    expect(outcomeOf({ ...base, voucher: true })).toBe('intent');
+  });
+
+  it('keeps waiting on a status line alone: progress is not an error', () => {
+    expect(outcomeOf({ ...base, alerts: ['Searching HMS for "Fixture Tours"… about 20 seconds'] })).toBeNull();
   });
 });
 
@@ -233,6 +264,17 @@ describe('blocked requests: pane failure or configuration error', () => {
     expect(configFailures([], ['labels.unknown'])).toHaveLength(1);
   });
 
+  it('lists a write blocked by design but does not fail the gate on it (workItems.getByMessage)', () => {
+    expect(BLOCKED_BY_DESIGN.has('workItems.getByMessage')).toBe(true);
+    const opened = [result({ blockedWrites: ['workItems.getByMessage'] })];
+    expect(gateFailures(opened, ['workItems.getByMessage'])).toEqual([]);
+    expect(configFailures(opened)).toEqual([]);
+    expect(summarize(opened).blockedWrites).toBe(1);
+    expect(gateFailures([result({ blockedWrites: ['workItems.getByMessage', 'drafts.saveReply'] })])).toEqual([
+      '1 write request(s) were blocked',
+    ]);
+  });
+
   it('keeps a named write a gate failure, with no configuration error', () => {
     const writes = [result({ blockedWrites: ['workstation.bridgeTicket'] })];
     expect(configFailures(writes)).toEqual([]);
@@ -286,8 +328,10 @@ describe('guest details never reach the outputs', () => {
     analysing: false,
     intent: 'Quote',
     amendment: null,
+    voucher: false,
     aiUnavailable: false,
     alerts: [`${NAME} already has a booking`],
+    alerting: false,
     fields: [
       { field: 'Guest name', value: NAME },
       { field: 'Attention', value: NAME },
@@ -551,5 +595,86 @@ describe('parseRunConfig for the EC2 gate', () => {
       transportId: 'transport-centurion',
       resolveTo: '127.0.0.1',
     });
+  });
+});
+
+describe('screenshot masking of marked guest details (H6b)', () => {
+  it.skipIf(!chromiumBinary)(
+    'masks every [data-pii] element, and leaves plain dates and business names visible',
+    async () => {
+      expect(PII_SELECTOR).toBe('[data-pii]');
+      const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
+      try {
+        const page = await browser.newPage();
+        // The voucher line and the amendment's guest last name were left visible in the H6b gallery.
+        await page.setContent(`<div data-preview-pane>
+          <p id="voucher" data-pii="true">Guest Fixturemann · arriving 14 Oct 2026</p>
+          <div><p>Guest last name</p><p id="surname" data-pii="true">Fixturemann</p></div>
+          <p id="arrival">Arrival 14 Oct 2026</p>
+          <p id="agency">New Frontiers Tours</p>
+        </div>`);
+        await page.evaluate(`(${MARK_PII_JS})()`);
+        const masked = await page.$$eval('[data-runner-mask]', (els) => els.map((el) => el.id));
+        expect(masked.sort()).toEqual(['surname', 'voucher']);
+      } finally {
+        await browser.close();
+      }
+    },
+    30_000,
+  );
+});
+
+describe('the pane read in a browser (H6b outcome labels)', () => {
+  const TYPE_PICKER = (value: string, amendment = '') => `<select aria-label="Nava reads this as"${amendment}>
+      ${value === '' ? '<option value="" disabled selected>Choose a type</option>' : ''}
+      <option value="quote"${value === 'quote' ? ' selected' : ''}>Quote request</option>
+      <option value="create_booking">Booking</option>
+      <option value="other"${value === 'other' ? ' selected' : ''}>Amendment</option>
+    </select>`;
+  const pane = (body: string) =>
+    `<aside><a data-thread-id="t-1"><span class="font-medium">Subject</span></a></aside>
+    <div data-preview-pane><div data-preview-status="ready"><main class="nava-pane-scroll">${body}</main></div></div>`;
+
+  it.skipIf(!chromiumBinary)(
+    'reads the type picker, the amendment kind and the voucher card',
+    async () => {
+      const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
+      try {
+        const page = await browser.newPage();
+        const read = async (body: string) => {
+          await page.setContent(pane(body));
+          return (await page.evaluate(`(${READ_PANE_JS})("t-1")`)) as PaneRead;
+        };
+        const ae1 = await read(
+          `${TYPE_PICKER('quote')}<p role="status">Searching HMS for "Fixture Tours"… about 20 seconds</p>
+          <p role="alert">HMS search didn't apply — try again</p>`,
+        );
+        expect(ae1).toMatchObject({ intent: 'Quote request', amendment: null, voucher: false, alerting: true });
+        expect(outcomeOf(ae1)).toBe('intent');
+
+        const ae2 = await read(TYPE_PICKER('other', ' data-amendment-kind="amend"'));
+        expect(ae2).toMatchObject({ intent: 'Amendment', amendment: 'amend' });
+
+        const ae3 = await read(
+          `${TYPE_PICKER('')}<section id="${VOUCHER_CARD_SELECTOR.slice(1)}" aria-label="Find the booking"></section>`,
+        );
+        expect(ae3).toMatchObject({ intent: null, voucher: true, alerting: false });
+        expect(outcomeOf(ae3)).toBe('intent');
+
+        const loading = await read('<p role="status">Searching HMS…</p>');
+        expect(outcomeOf(loading)).toBeNull();
+      } finally {
+        await browser.close();
+      }
+    },
+    30_000,
+  );
+
+  it('the probes match the pane markup in the mail code', () => {
+    const badge = readFileSync(join(mailRoot, 'components', 'quote-workflow', 'workflow-badge.tsx'), 'utf8');
+    const voucher = readFileSync(join(mailRoot, 'components', 'quote-workflow', 'voucher-find-card.tsx'), 'utf8');
+    expect(badge).toContain('aria-label="Nava reads this as"');
+    expect(badge).toContain('data-amendment-kind=');
+    expect(voucher).toContain(`id="${VOUCHER_CARD_SELECTOR.slice(1)}"`);
   });
 });

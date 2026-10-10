@@ -2,12 +2,13 @@ import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-b
 import { Field, paneFieldClass, Section } from '../pane-ui';
 import { useState } from 'react';
 
-const FIELDS: Array<{ field: ContactField; label: string }> = [
-  { field: 'name', label: 'Name' },
-  { field: 'company', label: 'Company / agency' },
-  { field: 'endClient', label: 'End client' },
-  { field: 'email', label: 'Email' },
-  { field: 'phone', label: 'Phone' },
+// pii: a guest detail the preview gate masks (data-pii). The company or agency is a business name.
+const FIELDS: Array<{ field: ContactField; label: string; pii: boolean }> = [
+  { field: 'name', label: 'Name', pii: true },
+  { field: 'company', label: 'Company / agency', pii: false },
+  { field: 'endClient', label: 'End client', pii: true },
+  { field: 'email', label: 'Email', pii: true },
+  { field: 'phone', label: 'Phone', pii: true },
 ];
 
 const NO_CONTACT: StoredContact = {
@@ -35,10 +36,11 @@ export function ContactBlock({
   return (
     <Section title="Contact" id="quote-contact">
       <div className="grid grid-cols-2 gap-x-2.5 gap-y-2">
-        {FIELDS.map(({ field, label }) => (
+        {FIELDS.map(({ field, label, pii }) => (
           <Field key={field} label={label} htmlFor={`quote-contact-${field}`}>
             <input
               id={`quote-contact-${field}`}
+              data-pii={pii || undefined}
               className={paneFieldClass}
               maxLength={200}
               value={values[field] ?? ''}

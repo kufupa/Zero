@@ -155,12 +155,13 @@ export function VoucherFindCard({
   // Every warning shares one box, one short line each. Staff still see the search when the surname and arrival were read.
   // An unread voucher PDF already has its own notice in the quote panel, so the surname and arrival lines wait for a
   // readable file. Conflicts come from text that was read, so they stay.
+  const conflicts = voucherConflictLines(guest);
   const warnings = [
     unreadPdfs === 0 && guest.lastName === null && !surnameConflict ? VOUCHER_COPY.missingGuest : null,
     unreadPdfs === 0 && guest.lastName !== null && guest.arrival === null && !arrivalConflict
       ? VOUCHER_COPY.missingArrival
       : null,
-    ...voucherConflictLines(guest),
+    ...conflicts,
   ].filter((text): text is string => text !== null);
 
   const refusedNow = refused && refused.scope === internetMessageId ? refused.message : null;
@@ -197,15 +198,22 @@ export function VoucherFindCard({
     }
   };
 
+  // The id is the preview gate's sign that a voucher-only pane has settled (VOUCHER_CARD_SELECTOR in nava-preview-run.ts).
   return (
-    <Section title={VOUCHER_COPY.heading}>
+    <Section title={VOUCHER_COPY.heading} id="quote-voucher-find">
       <p className={captionClass}>{VOUCHER_COPY.caption}</p>
-      {line ? <p className={valueClass}>{line}</p> : null}
+      {line ? (
+        <p data-pii className={valueClass}>
+          {line}
+        </p>
+      ) : null}
       {warnings.length > 0 ? (
         <Notice tone="warn">
           <ul className="flex list-disc flex-col gap-0.5 pl-4">
             {warnings.map((text) => (
-              <li key={text}>{text}</li>
+              <li key={text} data-pii={conflicts.includes(text) || undefined}>
+                {text}
+              </li>
             ))}
           </ul>
         </Notice>
@@ -228,7 +236,9 @@ export function VoucherFindCard({
           <SecondaryButton disabled={save === 'saving'} onClick={() => void saveFile()}>
             {save === 'saving' ? VOUCHER_COPY.saving : VOUCHER_COPY.save}
           </SecondaryButton>
-          <span className={captionClass}>{file.filename}</span>
+          <span data-pii className={captionClass}>
+            {file.filename}
+          </span>
           {save === 'saved' ? (
             <span role="status" className={infoNoteClass}>
               {VOUCHER_COPY.saved}
@@ -260,7 +270,11 @@ function SearchResult({ run }: { run: HmsSearchRun }) {
     );
   }
   if (run.kind === 'none')
-    return <p className={infoNoteClass}>{noSearchMatchCopy(run.lastName, run.arrival)}</p>;
+    return (
+      <p data-pii className={infoNoteClass}>
+        {noSearchMatchCopy(run.lastName, run.arrival)}
+      </p>
+    );
   if (run.kind === 'capped') return <Notice tone="warn">{AMEND_FIND_COPY.searchCapped}</Notice>;
   return <Notice tone="warn">{run.message}</Notice>;
 }
@@ -272,7 +286,7 @@ function SearchRow({ row }: { row: GuestSearchRow }) {
     : 'Dates not shown';
   return (
     <div className="rounded-xs flex flex-col gap-1 border border-[#e2e8f0] p-2">
-      <p className={valueClass}>{`${guest} · ${row.confirmation}`}</p>
+      <p data-pii className={valueClass}>{`${guest} · ${row.confirmation}`}</p>
       <p className={captionClass}>{`${dates} · ${row.status || 'status not shown'}`}</p>
       <HmsLinkActions confirmation={row.confirmation} />
     </div>

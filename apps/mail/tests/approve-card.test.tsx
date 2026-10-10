@@ -17,6 +17,7 @@ import { ApproveCard } from '../components/quote-workflow/approve-card';
 import { BookingVoucherCard } from '../components/nava-pane/blocks/booking-voucher-card';
 import { initialQuoteSession } from '../lib/quote-workflow/session';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { unmaskedPii } from './helpers/pii-marks';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -356,6 +357,28 @@ describe('BookingVoucherCard write card', () => {
     );
     expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
+  });
+
+  it('marks the confirmation, guest name and file name rows data-pii, and leaves the dates visible', async () => {
+    paneWrite.view = viewWith({
+      form: { ...attachForm, lastName: 'Guestlast', arrival: '2026-11-02' },
+      before: null,
+    });
+    const { container } = render(
+      <BookingVoucherCard
+        session={initialQuoteSession()}
+        internetMessageId={null}
+        syncCommitted={null}
+        syncPending={false}
+        workItemId={WORK_ITEM}
+        writesEnabled
+      />,
+    );
+    const list = await screen.findByRole('list', { name: 'Values to write' });
+    expect(unmaskedPii(list, ['57291630-1', 'Guestlast', 'Voucher.pdf'])).toEqual([]);
+    const arrival = Array.from(list.querySelectorAll('li')).find((row) => row.textContent?.startsWith('Arrival'));
+    expect(arrival?.querySelector('[data-pii]')).toBeNull();
+    expect(container.querySelector('[data-pii]')).not.toBeNull();
   });
 
   it('shows no write card for an item on such mail that holds no HMS write', async () => {

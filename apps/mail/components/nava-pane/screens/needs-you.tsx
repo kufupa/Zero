@@ -166,10 +166,10 @@ function NeedsYouRowView({
           {CHIP_LABEL[row.chip]}
         </span>
       </div>
-      <p className="truncate text-[12.5px] font-semibold text-[#1e293b]" title={subject}>
+      <p data-pii className="truncate text-[12.5px] font-semibold text-[#1e293b]" title={subject}>
         {subject}
       </p>
-      <p className="truncate text-[11.5px] text-[#64748b]">
+      <p data-pii className="truncate text-[11.5px] text-[#64748b]">
         {sender}
         {when ? (
           <>

@@ -47,8 +47,9 @@ export function Section({
   children: ReactNode;
   id?: string;
 }) {
+  // shrink-0: in the pane's scroll body (a flex column) an overflow-hidden card may otherwise shrink to nothing.
   return (
-    <section id={id} aria-label={title} className="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]">
+    <section id={id} aria-label={title} className="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]">
       <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]">
         <h3 className="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]">
           {step !== undefined ? (

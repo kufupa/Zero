@@ -175,11 +175,24 @@ function CopyButton({ label, roomIndex, value }: { label: string; roomIndex: num
   );
 }
 
-function CopyRow({ label, roomIndex, value }: { label: string; roomIndex: number; value: string }) {
+/** `pii`: the value names the guest, so the preview gate masks it (data-pii). */
+function CopyRow({
+  label,
+  roomIndex,
+  value,
+  pii = false,
+}: {
+  label: string;
+  roomIndex: number;
+  value: string;
+  pii?: boolean;
+}) {
   return (
     <div className="flex items-center gap-2 text-[12px]">
       <span className="w-32 shrink-0 text-[11.5px] font-semibold text-[#475569]">{label}</span>
-      <span className="min-w-0 flex-1 break-words text-[#1e293b]">{value || 'Not set'}</span>
+      <span data-pii={pii || undefined} className="min-w-0 flex-1 break-words text-[#1e293b]">
+        {value || 'Not set'}
+      </span>
       <CopyButton label={label} roomIndex={roomIndex} value={value} />
     </div>
   );
@@ -317,7 +330,7 @@ function RoomSave({
     const savedShot = pickScreenshot(commit.screenshots, SAVED_SHOT);
     return (
       <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
-        <p className="text-[12.5px] font-semibold text-emerald-800">
+        <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
           {`Booked in HMS – confirmation ${commit.confirmationNumber}`}
         </p>
         <HmsLinkActions confirmation={commit.confirmationNumber} />
@@ -361,7 +374,7 @@ function RoomSave({
         />
       ) : null}
       {fresh && stay ? (
-        <p className="text-[12px] text-[#1e293b]">
+        <p data-pii className="text-[12px] text-[#1e293b]">
           {`Nava will book ${stay.firstName} ${stay.lastName} for ${stay.arrival} – ${stay.departure}, 1 room, rate ${stay.ratePlan}. Nothing is saved until you press ${bookLabel}.`}
         </p>
       ) : null}
@@ -660,8 +673,8 @@ export function BookingCards({
             </div>
             <CopyRow roomIndex={roomIndex} label="Rate code" value={textValue(request.ratePlan)} />
             <CopyRow roomIndex={roomIndex} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
-            <CopyRow roomIndex={roomIndex} label="Last name" value={textValue(request.lastName)} />
-            <CopyRow roomIndex={roomIndex} label="First name" value={textValue(request.firstName)} />
+            <CopyRow roomIndex={roomIndex} label="Last name" value={textValue(request.lastName)} pii />
+            <CopyRow roomIndex={roomIndex} label="First name" value={textValue(request.firstName)} pii />
             <RoomTextField
               roomIndex={roomIndex}
               label="Booking agency"

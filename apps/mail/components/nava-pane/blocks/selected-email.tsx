@@ -8,10 +8,10 @@ export function SelectedEmailBlock({ activeEmail }: { activeEmail: PaneBridge['a
       <div className="flex min-w-0 items-center gap-2">
         <Mail className="h-3.5 w-3.5 shrink-0 text-[#64748b]" />
         <div className="flex min-w-0 flex-col">
-          <span className="truncate text-[13px] font-bold text-[#1e293b]">
+          <span data-pii className="truncate text-[13px] font-bold text-[#1e293b]">
             {activeEmail.subject || '(no subject)'}
           </span>
-          <span className="truncate text-[11px] text-[#64748b]">
+          <span data-pii className="truncate text-[11px] text-[#64748b]">
             {`${activeEmail.senderName || 'Unknown sender'}${activeEmail.senderEmail ? ` <${activeEmail.senderEmail}>` : ''}`}
           </span>
         </div>

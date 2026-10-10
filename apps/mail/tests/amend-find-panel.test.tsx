@@ -3,6 +3,7 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { unmaskedPii } from './helpers/pii-marks';
 import { AmendLookupPanel } from '../components/quote-workflow/amend-lookup-panel';
 import {
   AMEND_FIND_COPY,
@@ -877,6 +878,54 @@ function renderCancel(mocks: CancelMocks) {
   pressFind();
   return { preview, commit, shot, findStay };
 }
+
+describe('AmendLookupPanel marks guest details for the preview gate (H6b)', () => {
+  it('marks the booking number and guest names, from the email and from HMS', async () => {
+    const findStay = vi.fn().mockResolvedValue(found({ lastName: 'Mokoena-Dube' }));
+    const { container } = render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    expect(screen.getByText('Mokoena').hasAttribute('data-pii')).toBe(true);
+    pressFind();
+    await expectFoundBooking();
+    expect(unmaskedPii(container, [CONFIRMATION, 'Mokoena', 'Thabo'])).toEqual([]);
+  });
+
+  it('marks the name search, its rows, a no-match line and a refused number', async () => {
+    const noNumber: QuoteAmendment = { ...AMEND, confirmationNumber: null };
+    const rows = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA, ROW_CANCELLED], screenshots: [], runId: null });
+    const listed = render(<AmendLookupPanel session={sessionWith(noNumber)} trpc={lookupTrpc(vi.fn(), undefined, rows)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS' }));
+    await screen.findByRole('list', { name: 'Bookings found in HMS' });
+    expect(unmaskedPii(listed.container, ['Mokoena', 'Thabo', 'Lerato', '46184891-1', '46184892-1'])).toEqual([]);
+    listed.unmount();
+
+    const none = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [], screenshots: [], runId: null });
+    const empty = render(<AmendLookupPanel session={sessionWith(noNumber)} trpc={lookupTrpc(vi.fn(), undefined, none)} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Search HMS' }));
+    await screen.findByText(noSearchMatchCopy('Mokoena', '2026-10-12'));
+    expect(unmaskedPii(empty.container, ['Mokoena'])).toEqual([]);
+    empty.unmount();
+
+    const refused = render(
+      <AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: '9999SH999999' })} trpc={lookupTrpc(vi.fn())} />,
+    );
+    expect(screen.getByText(notHmsNumberNote('9999SH999999')).hasAttribute('data-pii')).toBe(true);
+    expect(unmaskedPii(refused.container, ['9999SH999999', 'Mokoena'])).toEqual([]);
+  });
+
+  it('marks the cancel lines that name the booking and the guest', async () => {
+    renderCancel({});
+    await screen.findByText(/^Cancelling from here is switched off/);
+    expect(unmaskedPii(document.body, [CONFIRMATION, 'Mokoena', 'Thabo'])).toEqual([]);
+    cleanup();
+
+    capabilities.paneSave = true;
+    renderCancel({ preview: vi.fn().mockResolvedValue(PREVIEW_OK) });
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
+    fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
+    await screen.findByText(/^Nava will cancel/);
+    expect(unmaskedPii(document.body, [CONFIRMATION, 'Mokoena', 'Thabo'])).toEqual([]);
+  });
+});
 
 describe('AmendLookupPanel cancel from the pane', () => {
   it('says cancelling is switched off and gives the HMS steps when the pane save flag is off', async () => {

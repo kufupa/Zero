@@ -137,7 +137,8 @@ export function TranslationBox({
                 tabIndex={0}
                 className="flex flex-col gap-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
               >
-                <ol className="flex flex-col gap-2">
+                {/* The email's own text, translated: it names the guest, so the preview gate masks it (data-pii). */}
+                <ol data-pii className="flex flex-col gap-2">
                   {keyedSegments(succeeded.segments).map((segment) => (
                     <li key={segment.key} className="text-[12.5px] leading-snug text-[#1e293b]">
                       {view === 'clean' ? segment.clean : segment.literal}

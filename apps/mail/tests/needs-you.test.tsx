@@ -8,6 +8,7 @@ import {
 } from '../components/nava-pane/screens/needs-you';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { unmaskedPii } from './helpers/pii-marks';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import type { NeedsYouRow } from '../lib/quote-workflow/backend-bind';
 import { NavaPane } from '../components/nava-pane/nava-pane';
@@ -309,6 +310,15 @@ describe('Needs-you list', () => {
       await screen.findByText('The Needs-you list is not available in this version yet.'),
     ).toBeDefined();
     expect(listQuery).not.toHaveBeenCalled();
+  });
+});
+
+describe('Needs-you rows mark guest details for the preview gate (H6b)', () => {
+  it('marks each row subject and sender with data-pii', async () => {
+    listQuery.mockResolvedValue([row({ id: 'wi-1', sender: 'Priya Naidoo', subject: 'Booking for Mr Fixturemann' })]);
+    const { container } = render(<Harness host="web" onOpenThread={() => {}} />);
+    await screen.findAllByText('Booking for Mr Fixturemann');
+    expect(unmaskedPii(container, ['Fixturemann', 'Priya Naidoo'])).toEqual([]);
   });
 });
 

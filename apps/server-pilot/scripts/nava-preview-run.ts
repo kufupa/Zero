@@ -139,6 +139,12 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.usePriorQuoteForBooking',
 ]);
 
+/**
+ * Named writes the pane sends on every open, which the runner blocks by design. They are still blocked and listed in
+ * results.json, but do not fail the gate: the pane renders without them, and every thread would otherwise fail.
+ */
+export const BLOCKED_BY_DESIGN: ReadonlySet<string> = new Set(['workItems.getByMessage']);
+
 export type TrpcDecision = {
   allowed: boolean;
   procedures: string[];
@@ -329,18 +335,19 @@ const PANE_OVERFLOW_JS = `() => {
   return body ? Math.max(0, body.scrollHeight - body.clientHeight) : 0;
 }`;
 
+/** The voucher Find the booking card (voucher-find-card.tsx). A voucher-only pane has no intent but has settled. */
+export const VOUCHER_CARD_SELECTOR = '#quote-voucher-find';
+
 /** Browser-side: reads the pane and the list row for one thread. Plain JS, no DOM types. */
-const READ_PANE_JS = `(threadId) => {
+export const READ_PANE_JS = `(threadId) => {
   const clean = (value) => String(value == null ? '' : value).replace(/\\s+/g, ' ').trim();
   const panel = document.querySelector('[data-preview-pane]');
   const status = panel ? panel.querySelector('[data-preview-status]') : null;
   const row = document.querySelector('aside a[data-thread-id="' + CSS.escape(threadId) + '"]');
   const text = panel ? clean(panel.innerText) : '';
-  const labelNode = panel
-    ? Array.from(panel.querySelectorAll('span')).find(
-        (el) => el.childElementCount === 0 && ['Quote', 'Booking', 'Other'].includes(clean(el.textContent)),
-      )
-    : undefined;
+  // The type picker (workflow-badge.tsx). Its chosen option is the intent; an empty value means none is chosen yet.
+  const typeSelect = panel ? panel.querySelector('select[aria-label="Nava reads this as"]') : null;
+  const picked = typeSelect && typeSelect.value ? typeSelect.options[typeSelect.selectedIndex] : null;
   const amendment = panel ? panel.querySelector('[data-amendment-kind]') : null;
   const alerts = panel
     ? Array.from(panel.querySelectorAll('[role="alert"], [role="status"]')).map((el) => clean(el.textContent))
@@ -361,10 +368,14 @@ const READ_PANE_JS = `(threadId) => {
     paneStatus: status ? status.getAttribute('data-preview-status') : 'missing',
     unsyncedReason: status ? status.getAttribute('data-preview-reason') : null,
     analysing: /Luna is (reading the email|re-reading with your note)/.test(text),
-    intent: labelNode ? clean(labelNode.textContent) : null,
-    amendment: amendment ? clean(amendment.textContent) : null,
+    intent: picked ? clean(picked.textContent) : null,
+    amendment: amendment ? clean(amendment.getAttribute('data-amendment-kind')) || null : null,
+    voucher: Boolean(panel && panel.querySelector(${JSON.stringify(VOUCHER_CARD_SELECTOR)})),
     aiUnavailable: /Read without AI/.test(text),
     alerts: alerts.concat(toasts).filter(Boolean),
+    alerting: Boolean(
+      (panel && panel.querySelector('[role="alert"]')) || document.querySelector('[data-sonner-toast][data-type="error"]'),
+    ),
     fields: fields,
     statusText: status && status.getAttribute('data-preview-status') !== 'ready' ? clean(status.textContent) : '',
   };
@@ -379,28 +390,42 @@ export type PaneRead = {
   analysing: boolean;
   intent: string | null;
   amendment: string | null;
+  /** The voucher Find the booking card is shown. */
+  voucher: boolean;
   aiUnavailable: boolean;
+  /** Alert and status lines, for the banners. A status line ("Searching HMS…") is progress, not an error. */
   alerts: string[];
+  /** A role="alert" line or an error toast is shown. */
+  alerting: boolean;
   fields: RawField[];
   statusText: string;
 };
 
-/** A thread has settled when the pane shows an intent, an error, or a fallback notice. */
+/**
+ * A thread has settled when the pane shows an intent (the type picker has a choice), an amendment, the voucher card,
+ * an alert, or a fallback notice. 'intent' means the pane read the email.
+ */
 export function outcomeOf(read: PaneRead): Outcome | null {
   if (read.paneStatus === 'unsynced') return 'unsynced';
   if (read.paneStatus === 'error') return 'error';
   if (read.paneStatus !== 'ready' || read.analysing) return null;
   if (read.aiUnavailable) return 'fallback';
-  if (read.intent || read.amendment) return 'intent';
-  if (read.alerts.length > 0) return 'error';
+  if (read.intent || read.amendment || read.voucher) return 'intent';
+  if (read.alerting) return 'error';
   return null;
 }
 
 /**
- * Page-side, run before each screenshot. Masks guest fields (by label or test id), any unlabelled
- * or unknown text field (the default), the thread list's subject and snippet (email text), and any
- * text or value holding an email or a phone-like number. Selects and plain number, date and
- * amount fields stay visible. Business names stay visible. Runs only in the page.
+ * The pane marks every element that shows a guest detail (a name, a booking number, the email's sender or subject)
+ * with this attribute. The runner masks each one, so a new render site is covered by marking it, not by a rule here.
+ */
+export const PII_SELECTOR = '[data-pii]';
+
+/**
+ * Page-side, run before each screenshot. Masks every element the pane marks as guest detail (PII_SELECTOR), guest
+ * fields (by label or test id), any unlabelled or unknown text field (the default), the thread list's subject and
+ * snippet (email text), and any text or value holding an email or a phone-like number. Selects and plain number, date
+ * and amount fields stay visible. Business names stay visible. Runs only in the page.
  */
 export const MARK_PII_JS = `() => {
   const pii = new RegExp(${JSON.stringify(PII_LABEL.source)}, 'i');
@@ -433,6 +458,7 @@ export const MARK_PII_JS = `() => {
     if (plainTypes.includes(type) || mode === 'numeric' || mode === 'decimal') continue;
     mark(el);
   }
+  for (const el of document.querySelectorAll(${JSON.stringify(PII_SELECTOR)})) mark(el);
   for (const el of document.querySelectorAll('aside a[data-thread-id] span')) mark(el);
   for (const el of document.querySelectorAll('body *')) {
     if (el.matches('input, textarea, select')) {
@@ -617,10 +643,12 @@ async function viewThread(
   const pagePath = join(dir, 'page.png');
   await fitPaneToContent(page);
   await page.evaluate(`(${MARK_PII_JS})()`).catch(() => 0);
-  const mask = [page.locator('[data-runner-mask]')];
+  // [data-pii] is matched live at each capture, so a node the pane renders after the marking pass is still masked.
+  const mask = [page.locator(`[data-runner-mask], ${PII_SELECTOR}`)];
   await panel.screenshot({ path: panePath, mask, timeout: 15_000 }).catch(() => undefined);
-  // The page keeps the size staff see. Only the pane capture is taller.
+  // The page keeps the size staff see. Only the pane capture is taller. The resize can re-render, so mark again.
   await page.setViewportSize(VIEWPORT).catch(() => undefined);
+  await page.evaluate(`(${MARK_PII_JS})()`).catch(() => 0);
   await page
     .screenshot({ path: pagePath, fullPage: true, mask, timeout: 15_000 })
     .catch(() => undefined);
@@ -768,7 +796,7 @@ export function gateFailures(
   if (counts.error > 0) failures.push(`${counts.error} thread(s) showed a pane error`);
   // Only named writes are a pane failure. An unclassified block is a configuration error (configFailures).
   const blocked = [...blockedOutsideThreads, ...results.flatMap((item) => item.blockedWrites)];
-  const writes = blocked.filter((name) => KNOWN_WRITE_PROCEDURES.has(name)).length;
+  const writes = blocked.filter((name) => KNOWN_WRITE_PROCEDURES.has(name) && !BLOCKED_BY_DESIGN.has(name)).length;
   if (writes > 0) failures.push(`${writes} write request(s) were blocked`);
   return failures;
 }

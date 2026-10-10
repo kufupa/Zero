@@ -138,12 +138,13 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   // The name search opens when there is no usable number, when a find came back not found, or once a search has run.
   const searchOpen = !lookupable || findNotFound || searchView !== null || search.queuing;
 
-  let note: { tone: 'info' | 'warn'; text: string } | null = null;
+  // pii: the note quotes the guest's booking number.
+  let note: { tone: 'info' | 'warn'; text: string; pii?: boolean } | null = null;
   if (findRun?.kind === 'error') note = { tone: 'warn', text: findRun.message };
   else if (findRun?.kind === 'not_found') note = { tone: 'warn', text: AMEND_FIND_COPY.notFound };
   else if (findRun?.kind === 'ambiguous') note = { tone: 'warn', text: AMEND_FIND_COPY.ambiguous };
   else if (!confirmationNumber) note = { tone: 'info', text: AMEND_FIND_COPY.noNumber };
-  else if (!lookupable) note = { tone: 'warn', text: notHmsNumberNote(confirmationNumber) };
+  else if (!lookupable) note = { tone: 'warn', text: notHmsNumberNote(confirmationNumber), pii: true };
   else if (!threadId) note = { tone: 'info', text: AMEND_FIND_COPY.waitingThread };
 
   const searchHint = !client ? AMEND_FIND_COPY.unavailable : !key ? AMEND_FIND_COPY.waitingThread : null;
@@ -217,8 +218,9 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
             label="Confirmation"
             value={amendment.confirmationNumber ?? 'Not in the email'}
             actions={handoffNumber ? <HmsLinkActions confirmation={handoffNumber} /> : null}
+            pii
           />
-          <AskRow label="Guest last name" value={amendment.guestLastName ?? 'Not in the email'} />
+          <AskRow label="Guest last name" value={amendment.guestLastName ?? 'Not in the email'} pii />
           <AskRow label="Arrival" value={asked.arrival ? formatStayDate(asked.arrival) : 'Not stated'} />
           <AskRow label="Departure" value={asked.departure ? formatStayDate(asked.departure) : 'Not stated'} />
         </div>
@@ -226,7 +228,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           <p className={headingClass}>Booking in HMS now</p>
           {stay ? (
             <>
-              <HmsRow field="guest" label="Guest" value={stayGuest(stay) ?? 'Not shown'} wants={diff.guest} />
+              <HmsRow field="guest" label="Guest" value={stayGuest(stay) ?? 'Not shown'} wants={diff.guest} pii />
               <HmsRow field="arrival" label="Arrival" value={shownDate(stay.arrival)} wants={diff.arrival} />
               <HmsRow field="departure" label="Departure" value={shownDate(stay.departure)} wants={diff.departure} />
               {found?.arrivalMismatch ? (
@@ -285,7 +287,11 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           onRetry={find.retry}
         />
         <div aria-live="polite">
-          {note ? <p className={note.tone === 'warn' ? warnNoteClass : infoNoteClass}>{note.text}</p> : null}
+          {note ? (
+            <p data-pii={note.pii || undefined} className={note.tone === 'warn' ? warnNoteClass : infoNoteClass}>
+              {note.text}
+            </p>
+          ) : null}
         </div>
       </div>
       {searchOpen ? (
@@ -382,6 +388,7 @@ function GuestSearchSection({
           <input
             id={surnameId}
             type="text"
+            data-pii
             className={selectClass}
             value={form.lastName}
             disabled={searching}
@@ -450,8 +457,10 @@ function SearchResult({
                 onClick={() => onPick(row)}
                 className="flex w-full flex-wrap items-baseline gap-x-3 gap-y-0.5 rounded-xs border border-[#e2e8f0] bg-white px-2.5 py-2 text-left text-[12px] text-[#1e293b] hover:border-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
               >
-                <span className="font-semibold text-[#0066cc]">{row.confirmation}</span>
-                <span>{rowGuest(row)}</span>
+                <span data-pii className="font-semibold text-[#0066cc]">
+                  {row.confirmation}
+                </span>
+                <span data-pii>{rowGuest(row)}</span>
                 <span className="text-[#64748b]">{stayText(row.status) ?? 'Status not shown'}</span>
                 <span className="text-[#64748b]">{rowDates(row)}</span>
               </button>
@@ -468,7 +477,11 @@ function SearchResult({
       : run.kind === 'capped'
         ? AMEND_FIND_COPY.searchCapped
         : run.message;
-  return <p className={warnNoteClass}>{text}</p>;
+  return (
+    <p data-pii={run.kind === 'none' || undefined} className={warnNoteClass}>
+      {text}
+    </p>
+  );
 }
 
 function rowGuest(row: GuestSearchRow): string {
@@ -486,11 +499,24 @@ function shownDate(value: string | null): string {
   return text ? formatStayDate(text) : 'Not shown';
 }
 
-function AskRow({ label, value, actions }: { label: string; value: string; actions?: ReactNode }) {
+/** `pii`: the value names the guest or their booking, so the preview gate masks it (data-pii). */
+function AskRow({
+  label,
+  value,
+  actions,
+  pii = false,
+}: {
+  label: string;
+  value: string;
+  actions?: ReactNode;
+  pii?: boolean;
+}) {
   return (
     <div className="flex flex-col gap-0.5">
       <p className={headingClass}>{label}</p>
-      <p className={valueClass}>{value}</p>
+      <p data-pii={pii || undefined} className={valueClass}>
+        {value}
+      </p>
       {actions ? <div className="pt-0.5">{actions}</div> : null}
       <p className={captionClass}>From the email</p>
     </div>
@@ -503,12 +529,14 @@ function HmsRow({
   value,
   wants,
   actions,
+  pii = false,
 }: {
   field: string;
   label: string;
   value: string;
   wants?: string;
   actions?: ReactNode;
+  pii?: boolean;
 }) {
   return (
     <div
@@ -517,9 +545,15 @@ function HmsRow({
       className={`flex flex-col gap-0.5 ${wants ? differClass : ''}`}
     >
       <p className={headingClass}>{label}</p>
-      <p className={valueClass}>{value}</p>
+      <p data-pii={pii || undefined} className={valueClass}>
+        {value}
+      </p>
       {actions ? <div className="pt-0.5">{actions}</div> : null}
-      {wants ? <p className="text-[11px] font-semibold text-amber-900">{`Guest wants: ${wants}`}</p> : null}
+      {wants ? (
+        <p data-pii={pii || undefined} className="text-[11px] font-semibold text-amber-900">
+          {`Guest wants: ${wants}`}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -586,7 +620,7 @@ function CancelSection({
             ))}
           </select>
         </div>
-        <p className={warnNoteClass}>
+        <p data-pii className={warnNoteClass}>
           {cancelConfirmLine({ confirmation, guest: guestName, penaltyText: run.penaltyText })}
         </p>
         <button type="button" className={buttonClass} disabled={!reason || committing} onClick={onCommit}>
@@ -610,7 +644,9 @@ function CancelSection({
           <p className={captionClass}>{AMEND_CANCEL_COPY.previewHint}</p>
         </>
       ) : (
-        <p className={infoNoteClass}>{offNote}</p>
+        <p data-pii className={infoNoteClass}>
+          {offNote}
+        </p>
       )}
       {previewing ? <p className={infoNoteClass}>{AMEND_CANCEL_COPY.previewing}</p> : null}
       {current.kind === 'idle' && current.note ? <p className={warnNoteClass}>{current.note}</p> : null}
