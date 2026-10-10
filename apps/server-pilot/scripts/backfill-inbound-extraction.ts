@@ -16,7 +16,7 @@ import {
   inboundExtractionMaxPerHour,
   EXTRACTION_VERSION,
 } from '../src/ai/extraction/inbound-run.js';
-import { and, desc, eq, gte, notExists, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull, notExists, or, sql } from 'drizzle-orm';
 import { closeDb, getDb, type DB } from '../src/db/client.js';
 import { mailExtraction } from '../src/db/schema/work.js';
 import { message } from '../src/db/schema/mail.js';
@@ -63,8 +63,13 @@ export function parseBackfillArgs(argv: readonly string[]): {
   };
 }
 
-/** Inbound mail received in the window with no read for the current extractor version. Newest first. */
+/**
+ * Inbound mail received in the window with no read for the current extractor version. Newest first. The window and the
+ * order use the mail's own date (receivedAt), not when the row was stored: Outlook history imported today keeps its
+ * original date there. A row with no date falls back to when it was stored.
+ */
 export function selectBackfillCandidates(db: DB, input: { since: Date; transportId?: string }) {
+  const mailAt = sql`coalesce(${message.receivedAt}, ${message.createdAt})`;
   return db
     .select({
       transportId: message.transportId,
@@ -75,7 +80,10 @@ export function selectBackfillCandidates(db: DB, input: { since: Date; transport
     .where(
       and(
         eq(message.direction, 'inbound'),
-        gte(message.createdAt, input.since),
+        or(
+          gte(message.receivedAt, input.since),
+          and(isNull(message.receivedAt), gte(message.createdAt, input.since)),
+        ),
         input.transportId ? eq(message.transportId, input.transportId) : undefined,
         notExists(
           db
@@ -90,7 +98,7 @@ export function selectBackfillCandidates(db: DB, input: { since: Date; transport
         ),
       ),
     )
-    .orderBy(desc(message.createdAt), desc(message.id));
+    .orderBy(desc(mailAt), desc(message.id));
 }
 
 /**

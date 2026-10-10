@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { parseAsString, useQueryStates } from 'nuqs';
 import { sanitizeMailBodyHtml } from '@/lib/mail/sanitize-mail-body-html';
 import { FOLLOW_UP_COPY, followUpClientFromTrpc, type FollowUp } from '@/lib/quote-workflow/follow-up';
@@ -23,21 +23,32 @@ type ReplyPayload = {
 // that Outlook made but did not confirm is not made twice (as in use-insert-ai-draft).
 const REPLAY_WINDOW_MS = 14 * 60 * 1000;
 
+/**
+ * Inserts Outlook did not confirm, by follow-up draft id. Kept outside the card, which is keyed by the selected email
+ * and remounts when staff switch away and back, so a retry still replays the same operation.
+ */
+const unconfirmedInserts = new Map<string, { payload: ReplyPayload; startedAt: number }>();
+
 const sanitiseFollowUpHtml = (html: string) =>
   html ? sanitizeMailBodyHtml(html, { shouldLoadImages: true, inlineStyles: true }).html : '';
 
-/** Webmail only: opens the used draft in the reply box, the same compose state the thread's Edit draft sets. */
+/**
+ * Webmail only: opens the used draft in the reply box, the same compose state the thread's Edit draft sets. Any open
+ * reply is closed first, so the composer remounts with this draft; left open it would keep the replaced reply's body
+ * and only switch where it saves, and the next save would overwrite the follow-up.
+ */
 function OpenInReplyBox({ activeReplyId, draftId }: { activeReplyId: string; draftId: string }) {
   const [, setCompose] = useQueryStates({
     mode: parseAsString,
     activeReplyId: parseAsString,
     draftId: parseAsString,
   });
+  async function open() {
+    await setCompose({ mode: null, activeReplyId: null, draftId: null });
+    await setCompose({ mode: 'reply', activeReplyId, draftId });
+  }
   return (
-    <PrimaryButton
-      tone="green"
-      onClick={() => void setCompose({ mode: 'reply', activeReplyId, draftId })}
-    >
+    <PrimaryButton tone="green" onClick={() => void open()}>
       {FOLLOW_UP_COPY.openReply}
     </PrimaryButton>
   );
@@ -67,7 +78,6 @@ export function FollowUpCard({
   const [inserted, setInserted] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const unconfirmed = useRef<{ payload: ReplyPayload; startedAt: number } | null>(null);
   const previewHtml = useMemo(() => sanitiseFollowUpHtml(followUp?.htmlBody ?? ''), [followUp?.htmlBody]);
 
   useEffect(() => {
@@ -134,7 +144,7 @@ export function FollowUpCard({
       setNotice(FOLLOW_UP_COPY.reselect);
       return;
     }
-    let pending = unconfirmed.current;
+    let pending = unconfirmedInserts.get(followUp.id) ?? null;
     if (pending && Date.now() - pending.startedAt >= REPLAY_WINDOW_MS) {
       // oxlint-disable-next-line no-alert
       if (!window.confirm(FOLLOW_UP_COPY.confirmNew)) return;
@@ -152,7 +162,7 @@ export function FollowUpCard({
         openInComposer: false,
       },
     };
-    unconfirmed.current = pending;
+    unconfirmedInserts.set(followUp.id, pending);
     setBusy('inserting');
     setNotice(null);
     beginMutation();
@@ -162,7 +172,7 @@ export function FollowUpCard({
         setNotice(FOLLOW_UP_COPY.insertFailed);
         return;
       }
-      unconfirmed.current = null;
+      unconfirmedInserts.delete(followUp.id);
       setInserted(true);
     } catch {
       setNotice(FOLLOW_UP_COPY.insertFailed);

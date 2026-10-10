@@ -99,7 +99,11 @@ async function quoteRequest(
     textBody: 'Could you quote 2 rooms for 3 nights?',
     messageIdHeader: `${requestId}@example.com`,
   });
-  await db.update(message).set({ receivedAt: requestAt }).where(eq(message.id, requestId));
+  // Live mail: stored when it arrived.
+  await db
+    .update(message)
+    .set({ receivedAt: requestAt, createdAt: requestAt })
+    .where(eq(message.id, requestId));
   const [item] = await db
     .insert(workItem)
     .values({ transportId: TRANSPORT, threadId, sourceMessageId: requestId, kind: 'quote', status })
@@ -161,6 +165,7 @@ async function clientReplies(db: DB, threadId: string, id: string, receivedAt: D
     isRead: false,
     isStarred: false,
     receivedAt,
+    createdAt: receivedAt,
   });
 }
 
@@ -799,6 +804,228 @@ describe('follow-up suggestion for the pane', () => {
           internetMessageId: 'thread-sent-request@example.com',
         }),
       ).toBeNull();
+    });
+  });
+});
+
+describe('quote follow-up clocks, claims and overtaken suggestions', () => {
+  it('a send still queued or failed (no sentAt yet) never starts the clock', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-queued', REQUEST_AT);
+      // mail.send stores the row with receivedAt set and sentAt null until delivery is confirmed.
+      await sendReply(db, { id: 'out-queued', threadId: 'thread-queued', sentAt: FRI_SEND });
+      await db
+        .update(message)
+        .set({ sentAt: null, receivedAt: FRI_SEND })
+        .where(eq(message.id, 'out-queued'));
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toMatchObject({
+        linked: 0,
+        queued: 0,
+      });
+      expect((await loadItem(db, itemId)).sentMessageId).toBeNull();
+    });
+  });
+
+  it('a client reply written before the quote but delivered after it cancels the follow-up', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-late-delivery', REQUEST_AT);
+      await sendReply(db, { id: 'out-late-delivery', threadId: 'thread-late-delivery', sentAt: FRI_SEND });
+      await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
+      await clientReplies(db, 'thread-late-delivery', 'in-late-delivery', new Date('2026-10-09T07:00:00Z'));
+      await db
+        .update(message)
+        .set({ createdAt: new Date('2026-10-09T09:00:00Z') })
+        .where(eq(message.id, 'in-late-delivery'));
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toMatchObject({
+        cancelled: 1,
+        queued: 0,
+      });
+      expect(await followUpRuns(db, itemId)).toHaveLength(0);
+    });
+  });
+
+  it('two quote requests answered by one send each get a run, and both move to needs_you', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const first = await quoteRequest(db, 'thread-shared', REQUEST_AT, 'review');
+      const secondAt = new Date(REQUEST_AT.getTime() + 60 * 60 * 1000);
+      await db.insert(message).values({
+        id: 'thread-shared-request-2',
+        transportId: TRANSPORT,
+        threadId: 'thread-shared',
+        direction: 'inbound',
+        fromAddress: 'guest@example.com',
+        subject: 'Another quote request',
+        textBody: 'And 1 room for the next weekend?',
+        messageIdHeader: 'thread-shared-request-2@example.com',
+        receivedAt: secondAt,
+        createdAt: secondAt,
+      });
+      const [second] = await db
+        .insert(workItem)
+        .values({
+          transportId: TRANSPORT,
+          threadId: 'thread-shared',
+          sourceMessageId: 'thread-shared-request-2',
+          kind: 'quote',
+          status: 'review',
+        })
+        .returning({ id: workItem.id });
+      await sendReply(db, { id: 'out-shared', threadId: 'thread-shared', sentAt: FRI_SEND });
+      await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toMatchObject({ queued: 2 });
+      for (const itemId of [first, second!.id]) {
+        expect(await followUpRuns(db, itemId)).toHaveLength(1);
+        const { run, fence } = await claimRun(db, itemId);
+        expect(await executeQuoteFollowupRun({ run, fence, db, env: ON })).toMatchObject({
+          state: 'succeeded',
+        });
+        expect((await loadItem(db, itemId)).status).toBe('needs_you');
+      }
+      expect(await threadDrafts(db, 'thread-shared')).toHaveLength(1);
+    });
+  });
+
+  it('without QUOTE_FOLLOWUPS_SINCE, a restart keeps the items an earlier process already linked', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-restart', REQUEST_AT);
+      await sendReply(db, { id: 'out-restart', threadId: 'thread-restart', sentAt: FRI_SEND });
+      await db
+        .update(workItem)
+        .set({ sentMessageId: 'out-restart', sentAt: FRI_SEND, followUpDueAt: WED_DUE })
+        .where(eq(workItem.id, itemId));
+
+      expect(
+        await runQuoteFollowupSweep({ db, env: { QUOTE_FOLLOWUPS: 'on' }, now: WED_DUE }),
+      ).toMatchObject({ queued: 1 });
+      expect(await followUpRuns(db, itemId)).toHaveLength(1);
+    });
+  });
+
+  it('a worker that lost its claim writes no draft and leaves the quote as it was', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-lost', REQUEST_AT, 'review');
+      await sendReply(db, { id: 'out-lost', threadId: 'thread-lost', sentAt: FRI_SEND });
+      await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
+      await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE });
+      const { run, fence } = await claimRun(db, itemId);
+      // Another worker reclaimed the run while this one was delayed.
+      await db
+        .update(aiWorkflowRun)
+        .set({ claimToken: 'token-other-worker' })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      expect(await executeQuoteFollowupRun({ run, fence, db, env: ON })).toEqual({
+        runId: run.id,
+        state: 'retry_wait',
+      });
+      expect(await threadDrafts(db, 'thread-lost')).toHaveLength(0);
+      expect((await loadItem(db, itemId)).status).toBe('review');
+    });
+  });
+
+  it('a deferred run gets a fresh deadline on its next claim', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-deadline', REQUEST_AT);
+      await sendReply(db, { id: 'out-deadline', threadId: 'thread-deadline', sentAt: FRI_SEND });
+      await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE });
+      const { run, fence } = await claimRun(db, itemId);
+      await executeQuoteFollowupRun({ run, fence, db, env: OFF });
+      const [row] = await followUpRuns(db, itemId);
+      expect(row).toMatchObject({ state: 'retry_wait', deadlineAt: null });
+    });
+  });
+
+  it('a suggestion a client reply has overtaken cannot be used before the sweep discards it', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const { draftId } = await suggestionFor(db, 'thread-use-overtaken');
+      await clientReplies(db, 'thread-use-overtaken', 'in-use-overtaken', new Date('2026-10-14T09:00:00Z'));
+
+      expect(
+        await useFollowUpDraft(db, { transportId: TRANSPORT, userId: STAFF, draftId, replaceActive: false }),
+      ).toEqual({ status: 'not_found' });
+      expect((await threadDrafts(db, 'thread-use-overtaken'))[0]?.status).toBe('candidate');
+    });
+  });
+
+  it('a used follow-up sent from Outlook is retired once its send is seen, freeing the reply slot', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const { draftId } = await suggestionFor(db, 'thread-outlook-sent');
+      const usedAt = new Date('2026-10-14T09:00:00Z');
+      await useFollowUpDraft(db, {
+        transportId: TRANSPORT,
+        userId: STAFF,
+        draftId,
+        replaceActive: false,
+        now: usedAt,
+      });
+      // Nothing sent yet: the used draft stays.
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: usedAt })).toMatchObject({ discarded: 0 });
+      await sendReply(db, {
+        id: 'out-outlook-followup',
+        threadId: 'thread-outlook-sent',
+        sentAt: new Date('2026-10-14T10:00:00Z'),
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: usedAt })).toMatchObject({ discarded: 1 });
+      expect((await threadDrafts(db, 'thread-outlook-sent'))[0]?.status).toBe('discarded');
+      expect(
+        await followUpForMessage(db, {
+          transportId: TRANSPORT,
+          internetMessageId: 'thread-outlook-sent-request@example.com',
+        }),
+      ).toBeNull();
+    });
+  });
+
+  it('the discard pass reaches an overtaken suggestion behind more than a batch of kept ones', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      await quoteRequest(db, 'thread-kept', REQUEST_AT);
+      await sendReply(db, { id: 'out-kept', threadId: 'thread-kept', sentAt: FRI_SEND });
+      // Imported history: stored after the quote, written before it. It passes the cheap filter, not the exact check.
+      await db.insert(message).values({
+        id: 'in-kept-history',
+        transportId: TRANSPORT,
+        threadId: 'thread-kept',
+        direction: 'inbound',
+        historyOnly: true,
+        fromAddress: 'guest@example.com',
+        subject: 'Earlier note',
+        textBody: 'Sent before the quote.',
+        receivedAt: new Date('2026-10-08T08:00:00Z'),
+        createdAt: WED_DUE,
+      });
+      await db.insert(mailDraft).values(
+        Array.from({ length: 201 }, (_, i) => ({
+          id: `${QUOTE_FOLLOWUP_DRAFT_PREFIX}kept-${String(i).padStart(3, '0')}`,
+          transportId: TRANSPORT,
+          threadId: 'thread-kept',
+          createdByUserId: NAVA_USER_ID,
+          subject: 'Re: Quote request',
+          textBody: 'Following up.',
+          status: 'candidate' as const,
+          origin: 'manual' as const,
+          replyToMessageId: 'out-kept',
+        })),
+      );
+      const { draftId } = await suggestionFor(db, 'thread-late');
+      await clientReplies(db, 'thread-late', 'in-late', new Date('2026-10-14T09:00:00Z'));
+
+      expect(await runQuoteFollowupSweep({ db, env: OFF, now: WED_DUE })).toMatchObject({ discarded: 1 });
+      expect((await threadDrafts(db, 'thread-late')).find((d) => d.id === draftId)?.status).toBe(
+        'discarded',
+      );
     });
   });
 });

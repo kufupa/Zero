@@ -1,8 +1,14 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getDb, type DB } from '../../db/client.js';
-import { mailCategory, mailThread, mailThreadCategory, message } from '../../db/schema/mail.js';
+import {
+  aiWorkflowRun,
+  mailCategory,
+  mailThread,
+  mailThreadCategory,
+  message,
+} from '../../db/schema/mail.js';
 import { mailExtraction, workItem } from '../../db/schema/work.js';
 import { getSenderPreference } from '../../mail/sender-preference.js';
 import { isInboundTriageClassifierEnabled } from '../../env.js';
@@ -17,7 +23,7 @@ import {
   resolveMailBaselineExtractionRoute,
   type MailBaselineExtractionRoute,
 } from '../mail-baseline-extraction.js';
-import { canonicalInternetMessageId, resolveAdapter } from '../quote-workflow-analyse-selection.js';
+import { resolveAdapter } from '../quote-workflow-analyse-selection.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-selection.js';
 import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
 import { resolveTriageEventClock } from '../triage-input.js';
@@ -148,6 +154,42 @@ async function storeRead(db: DB, row: ExtractionRowInput): Promise<void> {
     .onConflictDoNothing({ target: [mailExtraction.messageId, mailExtraction.extractorVersion] });
 }
 
+/** The worker lost its claim on the run while the read was made. Nothing the read wrote is kept. */
+class InboundClaimLostError extends Error {}
+
+type RunClaim = { runId: string; claimOwner: string; claimToken: string };
+
+/**
+ * Commits a read and what it decides (work item, spam) in one transaction. With the worker's claim the run row is
+ * locked and checked first, so a worker that lost its claim writes nothing, and a crash never leaves a stored read
+ * whose spam change is missing (a rerun of a stored read returns `exists`).
+ */
+async function commitRead(
+  db: DB,
+  claim: RunClaim | undefined,
+  write: (tx: DB) => Promise<void>,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    if (claim) {
+      const [owned] = await tx
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.id, claim.runId),
+            eq(aiWorkflowRun.claimOwner, claim.claimOwner),
+            eq(aiWorkflowRun.claimToken, claim.claimToken),
+            eq(aiWorkflowRun.state, 'running'),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!owned) throw new InboundClaimLostError();
+    }
+    await write(tx as unknown as DB);
+  });
+}
+
 /**
  * What one run did. `stored` and `failed` both write a mail_extraction row. `capped` and `disabled` write nothing
  * and defer the run. `unconfigured` and `stale_version` dead-letter it.
@@ -172,6 +214,8 @@ export type InboundExtractionDeps = {
   now?: () => number;
   extractionDeadlineMs?: number;
   translationDeadlineMs?: number;
+  /** The worker's claim. Present, the read's writes commit only while the run is still this worker's. */
+  claim?: RunClaim;
 };
 
 /**
@@ -191,7 +235,6 @@ export async function runInboundExtraction(
       threadId: message.threadId,
       direction: message.direction,
       fromAddress: message.fromAddress,
-      messageIdHeader: message.messageIdHeader,
     })
     .from(message)
     .where(and(eq(message.id, run.triggerMessageId), eq(message.transportId, run.transportId)))
@@ -217,26 +260,20 @@ export async function runInboundExtraction(
   const clock = deps.now ?? Date.now;
   // Checked before any mail is loaded, so a spent hour costs no S3 or PDF work.
   if (callsInLastHour(clock()) >= max) return 'capped';
-  const internetMessageId = canonicalInternetMessageId(trigger.messageIdHeader);
-  if (!internetMessageId) {
-    await storeRead(db, {
-      messageId: run.triggerMessageId,
-      status: 'failed',
-      usage: { failureReason: 'no_message_id' },
-    });
-    return 'failed';
-  }
+  // Loaded by its row id: a header can be missing or shared by two rows ingest kept apart.
   const selection = await (deps.loadSelection ?? loadSyncedQuoteSelectionFromMailbox)({
     transportId: run.transportId,
-    internetMessageId,
+    messageId: run.triggerMessageId,
     signal: deps.signal,
   });
   if (!selection) {
-    await storeRead(db, {
-      messageId: run.triggerMessageId,
-      status: 'failed',
-      usage: { failureReason: 'not_found' },
-    });
+    await commitRead(db, deps.claim, (tx) =>
+      storeRead(tx, {
+        messageId: run.triggerMessageId,
+        status: 'failed',
+        usage: { failureReason: 'not_found' },
+      }),
+    );
     return 'failed';
   }
   if (!takeCallSlot(max, clock())) return 'capped';
@@ -250,12 +287,14 @@ export async function runInboundExtraction(
   });
   const attachments = attachmentReads(selection.attachments);
   if (!extraction.ok) {
-    await storeRead(db, {
-      messageId: run.triggerMessageId,
-      status: 'failed',
-      attachments,
-      usage: { ...extraction.usage, failureReason: extraction.reason },
-    });
+    await commitRead(db, deps.claim, (tx) =>
+      storeRead(tx, {
+        messageId: run.triggerMessageId,
+        status: 'failed',
+        attachments,
+        usage: { ...extraction.usage, failureReason: extraction.reason },
+      }),
+    );
     return 'failed';
   }
   let translation: InboundTranslation | null = null;
@@ -276,62 +315,42 @@ export async function runInboundExtraction(
     translation = done?.translation ?? null;
     translationUsage = done?.usage;
   }
-  await storeRead(db, {
-    messageId: run.triggerMessageId,
-    status: 'succeeded',
-    kind: extraction.kind,
-    language: sourceLanguage,
-    payload: extraction.payload,
-    translation,
-    attachments,
-    usage: {
-      extraction: extraction.usage,
-      ...(translationUsage ? { translation: translationUsage } : {}),
-    },
+  const spamWrites = env.AI_WRITE_GATE_ENABLED === 'true' && !isInboundTriageClassifierEnabled(env);
+  await commitRead(db, deps.claim, async (tx) => {
+    await storeRead(tx, {
+      messageId: run.triggerMessageId,
+      status: 'succeeded',
+      kind: extraction.kind,
+      language: sourceLanguage,
+      payload: extraction.payload,
+      translation,
+      attachments,
+      usage: {
+        extraction: extraction.usage,
+        ...(translationUsage ? { translation: translationUsage } : {}),
+      },
+    });
+    // The work item points at this read. Its person-set values stay in its state (see work-items.ts).
+    await ensureWorkItemForMessage(tx, { transportId: run.transportId, messageId: run.triggerMessageId });
+    // Spam has one writer. While the classifier is on it owns spamAt and this read only records its kind, so the two
+    // never race (the read could otherwise spam a thread before the classifier files it). Once it is retired, this
+    // read writes spam with the classifier's guards.
+    if (spamWrites) await writeSpamDecision(tx, run, trigger, extraction.kind);
   });
-  // The work item points at this read. Its person-set values stay in its state (see work-items.ts).
-  await ensureWorkItemForMessage(db, { transportId: run.transportId, messageId: run.triggerMessageId });
-  // Spam has one writer. While the classifier is on it owns spamAt and this read only records its kind, so the two
-  // never race (the read could otherwise spam a thread before the classifier files it). Once it is retired, this read
-  // writes spam with the classifier's guards: a blocked sender goes to spam, and any other read lifts the mark.
-  if (env.AI_WRITE_GATE_ENABLED === 'true' && !isInboundTriageClassifierEnabled(env)) {
-    const blocked =
-      (await getSenderPreference({ db, transportId: run.transportId, emailRaw: trigger.fromAddress })) ===
-      'block';
-    const markSpam =
-      blocked ||
-      (extraction.kind === 'spam' &&
-        (await spamWriteAllowed(db, run.transportId, trigger.threadId, trigger.fromAddress)));
-    if (markSpam) {
-      const now = new Date();
-      await db
-        .update(mailThread)
-        .set({ spamAt: now, updatedAt: now })
-        .where(
-          and(
-            eq(mailThread.id, trigger.threadId),
-            eq(mailThread.transportId, run.transportId),
-            isNull(mailThread.spamAt),
-            isNull(mailThread.spamUserLockedAt),
-          ),
-        );
-    } else {
-      // Like the classifier, any read that is not spam lifts the mark ('other' covers events, venue hire and
-      // invoices), and so does a spam read the guards keep out (allowed or never-spam sender, staff reply).
-      await liftSpamOnLatestInbound(db, run, trigger);
-    }
-  }
   return 'stored';
 }
 
 /**
- * Un-spam, which the retired classifier used to do on the next mail. The thread's latest inbound read decides. A
- * person's lock keeps the mark. The caller never lifts for a blocked sender.
+ * Spam for the thread, from its latest inbound read only: a blocked sender goes to spam, a spam read the guards allow
+ * goes to spam, and any other read lifts the mark (like the classifier: 'other' covers events, venue hire and
+ * invoices). An older mail's read (the backfill runs newest first) never moves a thread a newer mail decided. A
+ * person's lock keeps the thread as it is.
  */
-async function liftSpamOnLatestInbound(
+async function writeSpamDecision(
   db: DB,
   run: Pick<AiWorkflowRun, 'transportId' | 'triggerMessageId'>,
-  trigger: { threadId: string },
+  trigger: { threadId: string; fromAddress: string },
+  kind: string,
 ): Promise<void> {
   const [latest] = await db
     .select({ id: message.id })
@@ -343,17 +362,30 @@ async function liftSpamOnLatestInbound(
         eq(message.direction, 'inbound'),
       ),
     )
-    .orderBy(desc(message.createdAt), desc(message.id))
+    // Mail time, not import time: Outlook history imported today keeps its own date in receivedAt.
+    .orderBy(
+      desc(sql`coalesce(${message.receivedAt}, ${message.createdAt})`),
+      desc(message.createdAt),
+      desc(message.id),
+    )
     .limit(1);
   if (latest?.id !== run.triggerMessageId) return;
+  const blocked =
+    (await getSenderPreference({ db, transportId: run.transportId, emailRaw: trigger.fromAddress })) ===
+    'block';
+  const markSpam =
+    blocked ||
+    (kind === 'spam' &&
+      (await spamWriteAllowed(db, run.transportId, trigger.threadId, trigger.fromAddress)));
+  const now = new Date();
   await db
     .update(mailThread)
-    .set({ spamAt: null, updatedAt: new Date() })
+    .set({ spamAt: markSpam ? now : null, updatedAt: now })
     .where(
       and(
         eq(mailThread.id, trigger.threadId),
         eq(mailThread.transportId, run.transportId),
-        isNotNull(mailThread.spamAt),
+        markSpam ? isNull(mailThread.spamAt) : isNotNull(mailThread.spamAt),
         isNull(mailThread.spamUserLockedAt),
       ),
     );
@@ -423,13 +455,21 @@ export async function executeInboundExtractionRun(input: {
     claimToken: fence.claimToken,
     expectedStates: ['running' as const],
   };
-  const outcome = await runInboundExtraction(run, {
-    db,
-    env: input.env,
-    adapter: input.adapter,
-    loadSelection: input.loadSelection,
-    signal: input.signal,
-  });
+  let outcome: InboundExtractionOutcome;
+  try {
+    outcome = await runInboundExtraction(run, {
+      db,
+      env: input.env,
+      adapter: input.adapter,
+      loadSelection: input.loadSelection,
+      signal: input.signal,
+      claim,
+    });
+  } catch (error) {
+    // Another worker owns the run now; it makes the read.
+    if (error instanceof InboundClaimLostError) return { runId: run.id, state: 'retry_wait' };
+    throw error;
+  }
   if (outcome === 'capped' || outcome === 'disabled') {
     await markAiRunRetry(
       {
@@ -441,6 +481,8 @@ export async function executeInboundExtractionRun(input: {
             ? 'inbound extraction hourly cap reached'
             : 'inbound extraction is off (INBOUND_EXTRACTION)',
         failureClass: 'POLICY_BLOCK',
+        // The run waits longer than its deadline, so the next claim gets a fresh one instead of dead-lettering it.
+        resetDeadline: true,
       },
       db,
     );

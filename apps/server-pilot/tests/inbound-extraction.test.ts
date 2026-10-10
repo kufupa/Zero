@@ -1,7 +1,7 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
-import type { DB } from '../src/db/client.js';
+import { __setDbForTests, type DB } from '../src/db/client.js';
 import { buildInboundPrompt, extractInboundMail } from '../src/ai/extraction/extract.js';
 import {
   __resetInboundExtractionCapForTests,
@@ -20,7 +20,10 @@ import {
   splitSegments,
   TRANSLATE_RULES,
 } from '../src/ai/extraction/translate.js';
-import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
+import {
+  loadSyncedQuoteSelectionFromMailbox,
+  type SyncedQuoteSelection,
+} from '../src/ai/quote-workflow-synced-selection.js';
 import {
   aiWorkflowRun,
   mailSenderPreference,
@@ -301,6 +304,39 @@ describe('inbound extraction stored read', () => {
       expect(spamAt('thread-spam-replied')).toBeNull();
     }));
 
+  it('loads the mail by its row id, so a missing or shared Message-ID header still gets a read', () =>
+    withIngestionDb(async ({ db }) => {
+      const headerless = await seedMail(db, 'thread-no-header', AE1_TEXT);
+      await db.update(message).set({ messageIdHeader: null }).where(eq(message.id, headerless));
+      const loads: unknown[] = [];
+      const model = fakeModel(() => AE1_OUTPUT);
+      expect(
+        await readMail(db, headerless, selectionFor(AE1_TEXT), model.adapter, {
+          loadSelection: async (input) => {
+            loads.push(input);
+            return selectionFor(AE1_TEXT);
+          },
+        }),
+      ).toBe('stored');
+      expect(loads).toEqual([expect.objectContaining({ transportId: TRANSPORT, messageId: headerless })]);
+      expect(await rowFor(db, headerless)).toMatchObject({ status: 'succeeded' });
+
+      // Two rows ingest kept apart share one header; the loader still finds the exact row by id.
+      const first = await seedMail(db, 'thread-shared-header-1', AE1_TEXT);
+      const second = await seedMail(db, 'thread-shared-header-2', AE2_TEXT);
+      await db
+        .update(message)
+        .set({ messageIdHeader: 'shared@example.com' })
+        .where(inArray(message.id, [first, second]));
+      __setDbForTests({ db, conn: null as never });
+      try {
+        const loaded = await loadSyncedQuoteSelectionFromMailbox({ transportId: TRANSPORT, messageId: second });
+        expect(loaded).toMatchObject({ messageId: second, bodyText: AE2_TEXT });
+      } finally {
+        __setDbForTests(null);
+      }
+    }));
+
   it('a timeout stores a failed read with a reason, and a rerun with the same key is a no-op', () =>
     withIngestionDb(async ({ db }) => {
       const messageId = await seedMail(db, 'thread-timeout', AE1_TEXT);
@@ -390,7 +426,12 @@ describe('inbound extraction stored read', () => {
       const stateOf = async (runId: string) =>
         (
           await db
-            .select({ state: aiWorkflowRun.state, attempts: aiWorkflowRun.attempts, nextRunAt: aiWorkflowRun.nextRunAt })
+            .select({
+              state: aiWorkflowRun.state,
+              attempts: aiWorkflowRun.attempts,
+              nextRunAt: aiWorkflowRun.nextRunAt,
+              deadlineAt: aiWorkflowRun.deadlineAt,
+            })
             .from(aiWorkflowRun)
             .where(eq(aiWorkflowRun.id, runId))
             .limit(1)
@@ -424,6 +465,29 @@ describe('inbound extraction stored read', () => {
       expect(deferredRow.state).toBe('retry_wait');
       expect(deferredRow.attempts).toBe(deferred.run.attempts);
       expect(deferredRow.nextRunAt!.getTime()).toBeGreaterThan(Date.now());
+      // The wait outlasts the run's deadline, so the next claim must set a fresh one rather than dead-letter it.
+      expect(deferredRow.deadlineAt).toBeNull();
+
+      // A worker whose claim was taken over while it read writes nothing; the new owner makes the read.
+      const lost = await claimOne('thread-run-lost');
+      await db
+        .update(aiWorkflowRun)
+        .set({ claimToken: 'token-other-worker' })
+        .where(eq(aiWorkflowRun.id, lost.run.id));
+      expect(
+        await executeInboundExtractionRun({
+          ...lost,
+          signal,
+          db,
+          env: ON,
+          adapter: model.adapter,
+          loadSelection,
+        }),
+      ).toEqual({ runId: lost.run.id, state: 'retry_wait' });
+      expect(await rowFor(db, lost.run.triggerMessageId)).toBeNull();
+      expect(
+        await db.select().from(workItem).where(eq(workItem.sourceMessageId, lost.run.triggerMessageId)),
+      ).toHaveLength(0);
 
       const unconfigured = await claimOne('thread-run-unconfigured');
       expect(

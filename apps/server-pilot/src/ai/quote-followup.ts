@@ -6,7 +6,7 @@ import {
   type AiRunFence,
 } from './run-ledger.js';
 import { mailboxTransport, mailDraft, mailDraftRevision, message } from '../db/schema/mail.js';
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { deriveReplySubject } from './workflows/candidate-draft.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import { canonicalInternetMessageId } from './quote-workflow-analyse-selection.js';
@@ -82,14 +82,20 @@ export function quoteFollowupsEnabled(env: NodeJS.ProcessEnv = process.env): boo
 const PROCESS_STARTED_AT = new Date();
 let warnedNoSince = false;
 
+/** QUOTE_FOLLOWUPS_SINCE as an instant, or null when it is unset or invalid. */
+function configuredSince(env: NodeJS.ProcessEnv): Date | null {
+  const raw = env.QUOTE_FOLLOWUPS_SINCE?.trim();
+  const parsed = raw ? new Date(raw) : null;
+  return parsed && Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
 /**
  * Only sends at or after this instant get a follow-up, so turning the flag on does not flood her with drafts for old
  * quotes. QUOTE_FOLLOWUPS_SINCE is an ISO timestamp; unset or invalid falls back to the process start time.
  */
 export function quoteFollowupsSince(env: NodeJS.ProcessEnv = process.env): Date {
-  const raw = env.QUOTE_FOLLOWUPS_SINCE?.trim();
-  const parsed = raw ? new Date(raw) : null;
-  if (parsed && Number.isFinite(parsed.getTime())) return parsed;
+  const configured = configuredSince(env);
+  if (configured) return configured;
   if (!warnedNoSince) {
     warnedNoSince = true;
     console.warn(
@@ -128,6 +134,7 @@ async function threadMessages(db: DB, transportId: string, threadId: string) {
       sentAt: message.sentAt,
       receivedAt: message.receivedAt,
       createdAt: message.createdAt,
+      historyOnly: message.historyOnly,
     })
     .from(message)
     .where(and(eq(message.transportId, transportId), eq(message.threadId, threadId)));
@@ -135,14 +142,36 @@ async function threadMessages(db: DB, transportId: string, threadId: string) {
 
 type ThreadMessage = Awaited<ReturnType<typeof threadMessages>>[number];
 
-/** When an outbound message left: its send time, else when it was stored. */
+/** When an outbound message left: its send time, else when it was stored. A queued send counts as staff activity. */
 function sentTime(m: ThreadMessage): number {
   return (m.sentAt ?? m.receivedAt ?? m.createdAt).getTime();
 }
 
-/** When an inbound message arrived. */
+/**
+ * When a quote was confirmed sent, or null. A Nava send has no sentAt until delivery is confirmed, so a queued or failed
+ * send never starts the clock (or a draft claiming it was sent). Imported history keeps its sent time in receivedAt.
+ */
+function deliveredTime(m: ThreadMessage): number | null {
+  const at = m.sentAt ?? (m.historyOnly ? m.receivedAt : null);
+  return at ? at.getTime() : null;
+}
+
+/** SQL twin of deliveredTime, for a `message` row. */
+const DELIVERED_AT = sql`coalesce(${message.sentAt}, case when ${message.historyOnly} then ${message.receivedAt} end)`;
+
+/**
+ * When an inbound message arrived. Its date header is when the client wrote it, so live mail uses the later of that
+ * and when Nava stored it: a reply written before the quote but delivered after still counts as after. Imported
+ * history was stored long after it arrived, so it keeps its own date.
+ */
 function arrivedTime(m: ThreadMessage): number {
-  return (m.receivedAt ?? m.createdAt).getTime();
+  const written = (m.receivedAt ?? m.createdAt).getTime();
+  return m.historyOnly ? written : Math.max(written, m.createdAt.getTime());
+}
+
+/** A client or staff reply after the quote: a follow-up on it is no longer wanted. */
+function overtaken(thread: ThreadMessage[], sentAtMs: number): boolean {
+  return clientRepliedAfter(thread, sentAtMs) || staffRepliedAfter(thread, sentAtMs);
 }
 
 function clientRepliedAfter(thread: ThreadMessage[], sentAtMs: number): boolean {
@@ -155,49 +184,73 @@ function staffRepliedAfter(thread: ThreadMessage[], sentAtMs: number): boolean {
 }
 
 /**
- * Discards a candidate that a client or staff reply has overtaken. A used (active) draft is staff's to keep, so this
- * never touches it. The sent message the draft replies to is the quote the follow-up is about.
+ * Discards a candidate that a client or staff reply has overtaken, paging through every candidate by id so ones that
+ * are kept never hide later ones. A used (active) draft is staff's to keep, so this never touches it until a staff send
+ * on the thread after she took it: a follow-up sent from Outlook never passes through Nava's send, and its draft
+ * would otherwise hold the thread's one reply slot for good. The sent message the draft replies to is the quote.
  */
 async function discardOvertakenFollowUps(db: DB, now: Date): Promise<number> {
-  const candidates = await db
-    .select({
-      id: mailDraft.id,
-      transportId: mailDraft.transportId,
-      threadId: mailDraft.threadId,
-      replyToMessageId: mailDraft.replyToMessageId,
-    })
-    .from(mailDraft)
+  const retired = await db
+    .update(mailDraft)
+    .set({ status: 'discarded', updatedAt: now })
     .where(
       and(
-        eq(mailDraft.status, 'candidate'),
+        eq(mailDraft.status, 'active'),
+        eq(mailDraft.isSent, false),
         IS_FOLLOW_UP_DRAFT,
-        // Only threads with a message later than the quote. Waiting suggestions never fill the batch, so an overtaken
-        // one is always reached. The exact client/staff check below decides.
         sql`exists (
-          select 1 from ${message} m join ${message} s on s.id = ${mailDraft.replyToMessageId}
-          where m.transport_id = ${mailDraft.transportId} and m.thread_id = ${mailDraft.threadId} and m.id <> s.id
-            and greatest(m.sent_at, m.received_at, m.created_at) > coalesce(s.sent_at, s.received_at, s.created_at)
+          select 1 from ${message}
+          where ${message.transportId} = ${mailDraft.transportId} and ${message.threadId} = ${mailDraft.threadId}
+            and ${message.direction} = 'outbound'
+            and ${DELIVERED_AT} > (
+              select max(r.created_at) from ${mailDraftRevision} r where r.draft_id = ${mailDraft.id} and r.kind = 'promoted'
+            )
         )`,
       ),
     )
-    .orderBy(asc(mailDraft.updatedAt), asc(mailDraft.id))
-    .limit(SWEEP_BATCH);
-  let discarded = 0;
-  for (const draft of candidates) {
-    if (!draft.threadId || !draft.replyToMessageId) continue;
-    const thread = await threadMessages(db, draft.transportId, draft.threadId);
-    const sent = thread.find((m) => m.id === draft.replyToMessageId);
-    if (!sent) continue;
-    const sentAt = sentTime(sent);
-    if (!clientRepliedAfter(thread, sentAt) && !staffRepliedAfter(thread, sentAt)) continue;
-    const [row] = await db
-      .update(mailDraft)
-      .set({ status: 'discarded', updatedAt: now })
-      .where(and(eq(mailDraft.id, draft.id), eq(mailDraft.status, 'candidate')))
-      .returning({ id: mailDraft.id });
-    if (row) discarded++;
+    .returning({ id: mailDraft.id });
+  let discarded = retired.length;
+  let after: string | null = null;
+  for (;;) {
+    const candidates = await db
+      .select({
+        id: mailDraft.id,
+        transportId: mailDraft.transportId,
+        threadId: mailDraft.threadId,
+        replyToMessageId: mailDraft.replyToMessageId,
+      })
+      .from(mailDraft)
+      .where(
+        and(
+          eq(mailDraft.status, 'candidate'),
+          IS_FOLLOW_UP_DRAFT,
+          after ? gt(mailDraft.id, after) : undefined,
+          // Only threads with a message later than the quote. The exact client/staff check below decides.
+          sql`exists (
+            select 1 from ${message} m join ${message} s on s.id = ${mailDraft.replyToMessageId}
+            where m.transport_id = ${mailDraft.transportId} and m.thread_id = ${mailDraft.threadId} and m.id <> s.id
+              and greatest(m.sent_at, m.received_at, m.created_at) > coalesce(s.sent_at, s.received_at, s.created_at)
+          )`,
+        ),
+      )
+      .orderBy(asc(mailDraft.id))
+      .limit(SWEEP_BATCH);
+    for (const draft of candidates) {
+      if (!draft.threadId || !draft.replyToMessageId) continue;
+      const thread = await threadMessages(db, draft.transportId, draft.threadId);
+      const sent = thread.find((m) => m.id === draft.replyToMessageId);
+      if (!sent || !overtaken(thread, sentTime(sent))) continue;
+      const [row] = await db
+        .update(mailDraft)
+        .set({ status: 'discarded', updatedAt: now })
+        .where(and(eq(mailDraft.id, draft.id), eq(mailDraft.status, 'candidate')))
+        .returning({ id: mailDraft.id });
+      if (row) discarded++;
+    }
+    const last = candidates.at(-1);
+    if (candidates.length < SWEEP_BATCH || !last) return discarded;
+    after = last.id;
   }
-  return discarded;
 }
 
 /**
@@ -216,6 +269,7 @@ export async function runQuoteFollowupSweep(
   counts.discarded = await discardOvertakenFollowUps(db, now);
   if (!quoteFollowupsEnabled(env)) return counts;
   const since = quoteFollowupsSince(env);
+  const sinceConfigured = configuredSince(env);
 
   const source = alias(message, 'source');
   // Only items with an outbound sent after both the request and the cutoff, so items that never qualify do not fill
@@ -239,7 +293,7 @@ export async function runQuoteFollowupSweep(
         isNotNull(workItem.threadId),
         sql`exists (select 1 from ${message} where ${message.transportId} = ${workItem.transportId}
           and ${message.threadId} = ${workItem.threadId} and ${message.direction} = 'outbound'
-          and coalesce(${message.sentAt}, ${message.receivedAt}, ${message.createdAt}) >= ${firstEligibleAt})`,
+          and ${DELIVERED_AT} >= ${firstEligibleAt})`,
       ),
     )
     .limit(SWEEP_BATCH);
@@ -248,10 +302,13 @@ export async function runQuoteFollowupSweep(
     const requestedAt = (item.requestReceivedAt ?? item.requestCreatedAt).getTime();
     const firstEligible = Math.max(requestedAt, since.getTime());
     const sent = (await threadMessages(db, item.transportId, item.threadId))
-      .filter((m) => m.direction === 'outbound' && sentTime(m) >= firstEligible)
-      .sort((a, b) => sentTime(a) - sentTime(b))[0];
+      .flatMap((m) => {
+        const at = m.direction === 'outbound' ? deliveredTime(m) : null;
+        return at !== null && at >= firstEligible ? [{ id: m.id, at }] : [];
+      })
+      .sort((a, b) => a.at - b.at)[0];
     if (!sent) continue;
-    const sentAt = new Date(sentTime(sent));
+    const sentAt = new Date(sent.at);
     const [linked] = await db
       .update(workItem)
       .set({
@@ -281,7 +338,9 @@ export async function runQuoteFollowupSweep(
         inArray(workItem.status, OPEN_STATUSES),
         isNotNull(workItem.sentMessageId),
         isNotNull(workItem.followUpDueAt),
-        gte(workItem.sentAt, since),
+        // An item was linked only after the cutoff let it through. Only a configured cutoff moved later drops it; the
+        // process-start fallback moves on every restart and would strand items already waiting.
+        sinceConfigured ? gte(workItem.sentAt, sinceConfigured) : undefined,
       ),
     )
     .orderBy(asc(workItem.followUpDueAt))
@@ -306,7 +365,8 @@ export async function runQuoteFollowupSweep(
           threadId,
           triggerMessageId: sentMessageId,
           runKind: 'quote_followup',
-          idempotencyKey: `quote-followup:${sentMessageId}`,
+          // Per item: two quote requests answered by one send each keep their own run (the draft id is per send).
+          idempotencyKey: `quote-followup:${sentMessageId}:${id}`,
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: QUOTE_FOLLOWUP_PROMPT_VERSION,
           workItemId: id,
@@ -336,7 +396,10 @@ function followUpText(displayName: string | null, sentAt: Date): string {
   ].join('\n\n');
 }
 
-/** Writes the follow-up draft for one run. Returns the outcome for the run's metrics. */
+/** The worker lost its claim on the run before the follow-up committed. Nothing it wrote is kept. */
+class FollowUpClaimLostError extends Error {}
+
+/** Writes the follow-up draft for one run, inside the caller's transaction. Returns the outcome for the run's metrics. */
 async function writeFollowUp(
   db: DB,
   run: { id: string; transportId: string; triggerMessageId: string; workItemId: string | null },
@@ -351,13 +414,16 @@ async function writeFollowUp(
     })
     .from(workItem)
     .where(eq(workItem.id, run.workItemId))
-    .limit(1);
+    .limit(1)
+    // Locked for the caller's transaction, so staff closing the item now cannot be undone by the status change below.
+    .for('update');
   if (!item?.threadId) return 'no_work_item';
   if (item.status !== 'needs_you' && item.status !== 'review') return 'closed';
   if (item.sentMessageId !== run.triggerMessageId) return 'superseded';
   const thread = await threadMessages(db, run.transportId, item.threadId);
   const sent = thread.find((m) => m.id === run.triggerMessageId && m.direction === 'outbound');
   if (!sent) return 'no_sent_message';
+  if (deliveredTime(sent) === null) return 'not_sent';
   if (clientRepliedAfter(thread, sentTime(sent))) return 'client_replied';
   if (staffRepliedAfter(thread, sentTime(sent))) return 'staff_replied';
 
@@ -411,7 +477,7 @@ async function writeFollowUp(
       await tx
         .update(workItem)
         .set({ status: 'needs_you', updatedAt: now })
-        .where(eq(workItem.id, item.id));
+        .where(and(eq(workItem.id, item.id), inArray(workItem.status, OPEN_STATUSES)));
       await tx.insert(workEvent).values({
         workItemId: item.id,
         actorKind: 'system',
@@ -453,17 +519,29 @@ export async function executeQuoteFollowupRun(input: {
         nextRunAt: new Date(Date.now() + DEFER_MS),
         lastError: 'quote follow-ups are off (QUOTE_FOLLOWUPS)',
         failureClass: 'POLICY_BLOCK',
+        // The run waits longer than its deadline, so the next claim gets a fresh one instead of dead-lettering it.
+        resetDeadline: true,
       },
       db,
     );
     return { runId: run.id, state: 'retry_wait' };
   }
-  const outcome = await writeFollowUp(db, run);
-  const marked = await markAiRunSucceeded(
-    { ...claim, metrics: { quoteFollowup: { outcome } } },
-    db,
-  );
-  return { runId: run.id, state: marked ? 'succeeded' : 'retry_wait' };
+  // The draft, the item change and the run's completion commit together, and only while the claim is still this
+  // worker's (as the candidate-draft path does).
+  try {
+    return await db.transaction(async (tx) => {
+      const outcome = await writeFollowUp(tx as unknown as DB, run);
+      const marked = await markAiRunSucceeded(
+        { ...claim, metrics: { quoteFollowup: { outcome } } },
+        tx as unknown as DB,
+      );
+      if (!marked) throw new FollowUpClaimLostError();
+      return { runId: run.id, state: 'succeeded' as const };
+    });
+  } catch (error) {
+    if (error instanceof FollowUpClaimLostError) return { runId: run.id, state: 'retry_wait' };
+    throw error;
+  }
 }
 
 type FollowUpDraft = typeof mailDraft.$inferSelect;
@@ -582,6 +660,10 @@ export async function useFollowUpDraft(
       if (!draft?.threadId) return { status: 'not_found' as const };
       const workItemId = await followUpWorkItemId(tx as unknown as DB, draft);
       if (!workItemId) return { status: 'not_found' as const };
+      // A reply since the quote overtakes the suggestion even before the sweep discards it.
+      const thread = await threadMessages(tx as unknown as DB, draft.transportId, draft.threadId);
+      const sent = thread.find((m) => m.id === draft.replyToMessageId);
+      if (!sent || overtaken(thread, sentTime(sent))) return { status: 'not_found' as const };
       const [active] = await tx
         .select({ id: mailDraft.id })
         .from(mailDraft)

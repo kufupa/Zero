@@ -210,11 +210,29 @@ describe('follow-up card', () => {
     const { bridge, sendCommand } = bridgeWith({ canInsert: false });
     renderCard(bridge, true);
     fireEvent.click(await screen.findByRole('button', { name: 'Open in reply box' }));
-    expect(setCompose).toHaveBeenCalledWith({
-      mode: 'reply',
-      activeReplyId: '001',
-      draftId: 'quote-followup:out-1',
-    });
+    // Any open reply closes first, so the composer remounts with the follow-up instead of keeping the replaced body.
+    await waitFor(() => expect(setCompose).toHaveBeenCalledTimes(2));
+    expect(setCompose.mock.calls).toEqual([
+      [{ mode: null, activeReplyId: null, draftId: null }],
+      [{ mode: 'reply', activeReplyId: '001', draftId: 'quote-followup:out-1' }],
+    ]);
     expect(sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('Outlook: a retry after switching emails and back still replays the unconfirmed insert', async () => {
+    const followUp = { ...IN_REPLY, id: 'quote-followup:out-remount' };
+    findQuery.mockResolvedValue(followUp);
+    const { bridge, sendCommand } = bridgeWith();
+    sendCommand.mockRejectedValueOnce(new Error('bridge timeout'));
+    const first = renderCard(bridge);
+    fireEvent.click(await screen.findByRole('button', { name: INSERT }));
+    await screen.findByText(/Check Outlook Drafts/);
+    // The card is keyed by the selected email, so switching away and back mounts a new one.
+    first.unmount();
+    renderCard(bridge);
+    fireEvent.click(await screen.findByRole('button', { name: INSERT }));
+    expect(await screen.findByText('Draft inserted in Outlook Drafts.')).toBeTruthy();
+    expect(sendCommand).toHaveBeenCalledTimes(2);
+    expect(sendCommand.mock.calls[1]?.[1]).toEqual(sendCommand.mock.calls[0]?.[1]);
   });
 });

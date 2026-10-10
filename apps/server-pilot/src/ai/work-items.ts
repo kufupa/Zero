@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailThread, message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
@@ -382,6 +382,17 @@ export async function ensureWorkItem(
   return { id: row.id, status: row.status, state: row.state };
 }
 
+/**
+ * An outbound message sent after `at`. A Nava send has no sentAt until delivery is confirmed, so a queued or failed send
+ * is not a reply. Imported Outlook history keeps its sent time in receivedAt when sentAt is missing.
+ */
+export function outboundSentAfter(at: Date) {
+  return or(
+    gt(message.sentAt, at),
+    and(isNull(message.sentAt), eq(message.historyOnly, true), gt(message.receivedAt, at)),
+  );
+}
+
 async function latestSucceededRead(db: DB, messageId: string) {
   const [row] = await db
     .select()
@@ -402,15 +413,16 @@ async function latestSucceededRead(db: DB, messageId: string) {
 
 /**
  * Points the message's work item at its latest succeeded read. A message with no succeeded read has none, and spam
- * never gets one (nobody has work to do on it). A thread with a staff reply after this message is already answered,
- * so a new item starts done, not needs_you.
+ * never gets one (nobody has work to do on it). A thread with a staff reply sent after this message is already
+ * answered, so a new item starts done, not needs_you. Both sides use the mail's own dates, not when the rows were
+ * stored, so the order Outlook history is imported in does not decide it.
  */
 export async function ensureWorkItemForMessage(
   db: DB,
   input: { transportId: string; messageId: string },
 ): Promise<WorkItemRef | null> {
   const [msg] = await db
-    .select({ threadId: message.threadId, createdAt: message.createdAt })
+    .select({ threadId: message.threadId, receivedAt: message.receivedAt, createdAt: message.createdAt })
     .from(message)
     .where(and(eq(message.id, input.messageId), eq(message.transportId, input.transportId)))
     .limit(1);
@@ -424,7 +436,7 @@ export async function ensureWorkItemForMessage(
         eq(message.threadId, msg.threadId),
         eq(message.transportId, input.transportId),
         eq(message.direction, 'outbound'),
-        gt(message.createdAt, msg.createdAt),
+        outboundSentAfter(msg.receivedAt ?? msg.createdAt),
       ),
     )
     .limit(1);
