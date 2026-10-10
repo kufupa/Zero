@@ -101,6 +101,8 @@ export type PaneStayCancelSpawnResult = {
   screenshots: string[];
   /** Absolute directory the CLI wrote result.json and the PNGs to. Absent when no run wrote files. */
   runDir?: string;
+  /** True once the reason dialog's OK was clicked. A failure after that leaves the cancel unconfirmed. */
+  clickedOk?: boolean;
 };
 
 export const paneStayCancelLoaders: {
@@ -180,7 +182,7 @@ function refused(outcome: string): PaneStayCancelResult {
   };
 }
 
-async function defaultSpawn(input: PaneStayCancelSpawnInput): Promise<PaneStayCancelSpawnResult> {
+export async function spawnPaneStayCancel(input: PaneStayCancelSpawnInput): Promise<PaneStayCancelSpawnResult> {
   const dir = await mkdtemp(join(tmpdir(), 'pane-cancel-'));
   let runError: unknown = null;
   try {
@@ -218,6 +220,7 @@ async function defaultSpawn(input: PaneStayCancelSpawnInput): Promise<PaneStayCa
     hmsArrival: result.hmsArrival,
     screenshots: result.screenshots ?? [],
     runDir: dir,
+    clickedOk: result.clickedOk === true,
   };
 }
 
@@ -243,7 +246,7 @@ async function runPaneStayCancel(
   // The lock key is the session hotel. The input carries no propertyCode, so no caller can change the key.
   const lock = paneStayCancelLoaders.lock ?? paneStayPropertyLock();
   if (!lock) return refused('refused_lock_unavailable');
-  const spawn = paneStayCancelLoaders.spawn ?? defaultSpawn;
+  const spawn = paneStayCancelLoaders.spawn ?? spawnPaneStayCancel;
   const request: PaneStayCancelSpawnInput = {
     mode,
     confirmation: input.confirmation,
