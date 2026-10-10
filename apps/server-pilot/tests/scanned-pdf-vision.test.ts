@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { chmod, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from '../src/ai/bedrock/adapter.js';
@@ -210,6 +210,31 @@ describe('U7 scanned PDF vision fallback', () => {
     });
     expect(read?.text).toBe('Surname: Smith\nConfirmation: [card ••••1111]');
     expect(read?.text).not.toMatch(/4111/);
+  });
+
+  it('a temp-dir setup or cleanup failure never throws: setup gives no pages, cleanup keeps the rendered pages', async () => {
+    const { runner, calls } = fakeRenderer(2);
+    vi.stubEnv('TMPDIR', '/nonexistent-nava-tmp');
+    try {
+      await expect(renderPdfPagesForVision(PDF_STUB, { runner })).resolves.toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(calls).toHaveLength(0);
+    // A read-only pages dir makes the recursive rm fail with EACCES after the pages are read.
+    const locking: SandboxRunner = async (tool, inputPath, signal, outputDir) => {
+      const result = await runner(tool, inputPath, signal, outputDir);
+      await chmod(outputDir!, 0o500);
+      return result;
+    };
+    try {
+      const pages = await renderPdfPagesForVision(PDF_STUB, { runner: locking });
+      expect(pages?.map((page) => page.filename)).toEqual(['page-1.jpg', 'page-2.jpg']);
+    } finally {
+      const pagesDir = calls.at(-1)!.outputDir!;
+      await chmod(pagesDir, 0o700).catch(() => {});
+      await rm(join(pagesDir, '..'), { recursive: true, force: true });
+    }
   });
 
   it('a vision failure leaves the file unread, with no extra warning', async () => {
