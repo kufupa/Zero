@@ -99,6 +99,7 @@ const cancelFormSchema = z.object({
   action: z.literal('cancel'),
   confirmation: z.string().regex(CONFIRMATION),
   arrival: z.string().regex(ISO_DATE),
+  lastName: z.string().trim().min(1).max(100),
   reason: z.string().max(200),
 });
 
@@ -117,11 +118,12 @@ function squash(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
-/** Policy before any consume: the input shape and arrival floor, Labtest for attach, a reason for cancel. */
+/** Policy before any consume or HMS read: the input shape and arrival floor, Labtest, a reason for cancel. */
 function formRefusal(form: HmsWriteForm): string | null {
   const shape = checkCancelInput({ confirmation: form.confirmation, arrival: form.arrival });
   if (shape) return shape;
-  if (form.action === 'attach_document') return /^labtest$/i.test(form.lastName) ? null : 'refused_not_lab';
+  if (!/^labtest$/i.test(form.lastName)) return 'refused_not_lab';
+  if (form.action === 'attach_document') return null;
   const reason = squash(form.reason);
   return reason && !reason.startsWith('-') ? null : 'refused_reason_missing';
 }
@@ -138,10 +140,12 @@ function stayRefusal(stay: PaneStayFields, form: { confirmation: string; arrival
   }
 }
 
-/** The attachment the form names, when it belongs to the item's source message and is a PDF. Otherwise a refusal code. */
+type AttachmentReadInput = { transportId: string; sourceMessageId: string; attachmentId: string };
+
+/** The attachment the form names, when it belongs to the item's source message. Otherwise a refusal code. */
 async function readApprovedAttachment(
   db: DB,
-  input: { transportId: string; sourceMessageId: string; attachmentId: string },
+  input: AttachmentReadInput,
 ): Promise<Buffer | string> {
   const resolveLocator = async (attachmentId: string): Promise<AttachmentLocator | null> => {
     const [row] = await db
@@ -172,9 +176,13 @@ async function readApprovedAttachment(
     signal: AbortSignal.timeout(READ_ATTACHMENT_TIMEOUT_MS),
     resolveLocator,
   });
-  if (!stored) return 'attachment_not_found';
-  if (!stored.body.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)) return 'attachment_not_pdf';
-  return stored.body;
+  return stored ? stored.body : 'attachment_not_found';
+}
+
+/** Only %PDF- bytes within the read path's cap are uploaded, whichever reader supplied them. */
+function pdfRefusal(body: Buffer): string | null {
+  if (body.byteLength === 0 || body.byteLength > PANE_ATTACH_MAX_BYTES) return 'attachment_size_invalid';
+  return body.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC) ? null : 'attachment_not_pdf';
 }
 
 export type PaneHmsPrepareResult =
@@ -197,10 +205,14 @@ export async function prepareHmsWriteSnapshot(input: {
   const shape = checkCancelInput({ confirmation: input.confirmation, arrival: input.arrival });
   if (shape) return { status: 'refused', reason: shape };
   const readAt = new Date();
+  const lookupDirs: string[] = [];
   const found = await findStay(
     { confirmation: input.confirmation, arrival: input.arrival },
-    { lock: () => paneHmsWriteLoaders.lock ?? paneStayPropertyLock() },
-  );
+    {
+      lock: () => paneHmsWriteLoaders.lock ?? paneStayPropertyLock(),
+      onRun: ({ dir }) => lookupDirs.push(dir),
+    },
+  ).finally(() => removeDirs(lookupDirs));
   if (found.outcome !== 'found' || !found.stay) return { status: 'refused', reason: found.outcome };
   const refusal = stayRefusal(found.stay, input);
   if (refusal) return { status: 'refused', reason: refusal };
@@ -268,10 +280,20 @@ export type PaneAttachSpawnResult = {
 export const paneHmsWriteLoaders: {
   lock: PaneStayLock | null;
   spawnAttach: ((input: PaneAttachSpawnInput) => Promise<PaneAttachSpawnResult>) | null;
+  /**
+   * Replaces the attachment read. Only the ops entry for the U28-H2 live test sets it (src/ops/hms-attach-once.ts), to
+   * upload a local test PDF. The PDF and size checks still run on what it returns.
+   */
+  readAttachment: ((input: AttachmentReadInput) => Promise<Buffer | string>) | null;
 } = {
   lock: null,
   spawnAttach: null,
+  readAttachment: null,
 };
+
+async function removeDirs(dirs: string[]): Promise<void> {
+  await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})));
+}
 
 function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: string): string[] {
   return [
@@ -289,6 +311,16 @@ function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: string): s
   ];
 }
 
+/**
+ * The pane CLI env, plus ATTACH_VERIFIED=true only when this process has it. The worker never sets it. The U28-H2 ops
+ * run sets it for its own process, which arms the driver for that one run.
+ */
+function attachSpawnEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out = paneStaySpawnEnv(env);
+  if (env.ATTACH_VERIFIED === 'true') out.ATTACH_VERIFIED = 'true';
+  return out;
+}
+
 /** Runs attach-document.mjs. A refusal or failure still writes result.json, and that is read first. */
 export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<PaneAttachSpawnResult> {
   const dir = await mkdtemp(join(tmpdir(), 'pane-attach-'));
@@ -296,12 +328,17 @@ export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<
   try {
     await execFileAsync('node', buildAttachDocumentArgs(input, dir), {
       timeout: ATTACH_TIMEOUT_MS,
-      env: paneStaySpawnEnv(),
+      env: attachSpawnEnv(),
     });
   } catch (error) {
     runError = error;
   }
-  let result: { outcome?: string; uploadSent?: boolean; screenshots?: string[] };
+  let result: {
+    outcome?: string;
+    uploadSent?: boolean;
+    screenshots?: string[];
+    blocked?: { method: string; path: string; code: string }[];
+  };
   try {
     result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as typeof result;
   } catch {
@@ -312,6 +349,8 @@ export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<
   if (outcome === 'execution_failure') {
     warnPaneStaySpawnFailed('attach', runError ?? new Error('pane_attach_execution_failure'));
   }
+  // Method, path and guard code only, so H2 can see what the allowlist stopped.
+  if (result.blocked?.length) console.warn('pane_attach_blocked_requests', { blocked: result.blocked });
   return {
     outcome,
     uploadSent: result.uploadSent === true,
@@ -454,7 +493,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   }
   const found = await findStay(
     { confirmation: approved.confirmation, arrival: approved.arrival },
-    { lock: () => HELD_LOCK },
+    { lock: () => HELD_LOCK, onRun: ({ dir }) => input.runDirs.push(dir) },
   );
   if (found.outcome !== 'found' || !found.stay) {
     return endRun(db, fence, 'NEEDS_CHECK', `read_${found.outcome}`);
@@ -547,12 +586,11 @@ async function runClaimed(
   let file: string | null = null;
   if (form.action === 'attach_document') {
     if (!item?.sourceMessageId) return endRun(db, fence, 'POLICY_BLOCK', 'source_mail_missing');
-    const pdf = await readApprovedAttachment(db, {
-      transportId,
-      sourceMessageId: item.sourceMessageId,
-      attachmentId: form.attachmentId,
-    });
+    const read = { transportId, sourceMessageId: item.sourceMessageId, attachmentId: form.attachmentId };
+    const pdf = await (paneHmsWriteLoaders.readAttachment ?? ((at) => readApprovedAttachment(db, at)))(read);
     if (typeof pdf === 'string') return endRun(db, fence, 'POLICY_BLOCK', pdf);
+    const notPdf = pdfRefusal(pdf);
+    if (notPdf) return endRun(db, fence, 'POLICY_BLOCK', notPdf);
     const work = await mkdtemp(join(tmpdir(), 'pane-hms-write-'));
     runDirs.push(work);
     file = join(work, 'upload.pdf');
@@ -589,6 +627,6 @@ export async function runPaneHmsWriteOnce(input: {
   try {
     return await runClaimed(db, input.runId, input.fence, input.env ?? process.env, runDirs);
   } finally {
-    await Promise.all(runDirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})));
+    await removeDirs(runDirs);
   }
 }

@@ -35,6 +35,7 @@ import {
   runPaneHmsWriteOnce,
 } from '../src/ai/pane-hms-write.js';
 import { claimNextAiRun, toAiRunFence, type AiRunFence } from '../src/ai/run-ledger.js';
+import { parseAttachOnceArgs } from '../src/ops/hms-attach-once.js';
 import { ARTIFACT_MAX_INPUT_BYTES } from '../src/mail/artifacts/read-artifact.js';
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
@@ -100,6 +101,7 @@ const CANCEL_FORM = {
   action: 'cancel',
   confirmation: CONFIRMATION,
   arrival: ARRIVAL,
+  lastName: 'Labtest',
   reason: 'Test Reservations',
 };
 
@@ -188,6 +190,7 @@ afterEach(async () => {
   paneStayLookupLoaders.spawn = null;
   paneHmsWriteLoaders.lock = null;
   paneHmsWriteLoaders.spawnAttach = null;
+  paneHmsWriteLoaders.readAttachment = null;
   paneStayCancelLoaders.spawn = null;
   await Promise.all(runDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -288,7 +291,25 @@ describe('pane HMS write (U26)', () => {
     expect(paneHmsWriteMode({})).toBe('off');
   });
 
-  it('refuses a non-Labtest attach and a cancel before 2027 before consume, with no HMS read and no Save', async () => {
+  it('the H2 ops entry takes prepare and run with named flags only', () => {
+    expect(parseAttachOnceArgs(['prepare', '--transport', 't', '--work-item', 'w'])).toEqual({
+      command: 'prepare',
+      transportId: 't',
+      workItemId: 'w',
+    });
+    expect(
+      parseAttachOnceArgs(['run', '--transport', 't', '--work-item', 'w', '--run', 'r', '--confirmation', CONFIRMATION]),
+    ).toMatchObject({ command: 'run', runId: 'r', confirmation: CONFIRMATION, file: null });
+    expect(() => parseAttachOnceArgs(['run', '--transport', 't', '--work-item', 'w', '--run', 'r'])).toThrow(
+      /required: --confirmation/,
+    );
+    expect(() => parseAttachOnceArgs(['prepare', '--transport', 't', '--work-item', 'w', '--file', 'x.pdf'])).toThrow(
+      /unknown argument/,
+    );
+    expect(() => parseAttachOnceArgs(['approve'])).toThrow(/usage/);
+  });
+
+  it('refuses a non-Labtest attach or cancel and a cancel before 2027 before consume, with no HMS read and no Save', async () => {
     await withIngestionDb(async ({ db }) => {
       const attachId = await seedWriteItem(db, { state: { ...ATTACH_FORM, lastName: 'Smith' } });
       await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId: attachId, readHmsState: async () => hmsStay });
@@ -313,10 +334,21 @@ describe('pane HMS write (U26)', () => {
         reason: 'refused_not_lab',
       });
 
+      const otherGuestId = await seedWriteItem(db, { n: 3, state: { ...CANCEL_FORM, lastName: 'Smith' } });
+      await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId: otherGuestId, readHmsState: async () => hmsStay });
+      await approve(db, otherGuestId);
+      const otherGuestRun = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...otherGuestRun, db, env: ENV })).toEqual({
+        status: 'ended',
+        failureClass: 'POLICY_BLOCK',
+        reason: 'refused_not_lab',
+      });
+
       expect(lookups).toHaveLength(0);
       expect(attachCalls).toHaveLength(0);
       expect(cancelCalls).toHaveLength(0);
       expect(await eventsOf(db, attachId, 'approval.consumed')).toHaveLength(0);
+      expect(await eventsOf(db, otherGuestId, 'approval.consumed')).toHaveLength(0);
     });
   });
 
@@ -331,6 +363,24 @@ describe('pane HMS write (U26)', () => {
         status: 'ended',
         failureClass: 'POLICY_BLOCK',
         reason: 'attachment_not_pdf',
+      });
+      expect(attachCalls).toHaveLength(0);
+      expect(await eventsOf(db, workItemId, 'approval.consumed')).toHaveLength(0);
+    });
+  });
+
+  it('checks the PDF magic and the size cap on bytes from any reader, before consume', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
+      await approve(db, workItemId);
+      paneHmsWriteLoaders.readAttachment = async () =>
+        Buffer.concat([Buffer.from('%PDF-'), Buffer.alloc(PANE_ATTACH_MAX_BYTES)]);
+      const run = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
+        status: 'ended',
+        failureClass: 'POLICY_BLOCK',
+        reason: 'attachment_size_invalid',
       });
       expect(attachCalls).toHaveLength(0);
       expect(await eventsOf(db, workItemId, 'approval.consumed')).toHaveLength(0);
