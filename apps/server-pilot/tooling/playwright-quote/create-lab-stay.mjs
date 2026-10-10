@@ -213,42 +213,6 @@ async function main() {
   try {
     await login(page, secret);
     await openGuestStayScreen(page);
-    if (process.env.LAB_CANCEL_CONFIRMATION) {
-      const confirmation = process.env.LAB_CANCEL_CONFIRMATION;
-      const search = page.getByPlaceholder(/Search by Name, Confirmation/i).first();
-      await search.click();
-      await page.keyboard.press('Escape');
-      const range = page.getByText(/\w{3} \d{1,2}, \d{4} - \w{3} \d{1,2}, \d{4}/).first();
-      if (await range.count()) {
-        await range.click();
-        const dates = page.locator('input:visible');
-        const count = await dates.count();
-        if (count >= 2) {
-          await dates.nth(count - 2).fill('01-JUN-2027');
-          await dates.nth(count - 1).fill('30-JUN-2027');
-        }
-      }
-      await page.getByRole('button', { name: 'Run', exact: true }).click();
-      await page.getByText(confirmation, { exact: true }).first().click();
-      await page.locator('input[name="confirmationnumber"]').waitFor();
-      await page.waitForTimeout(1500);
-      const actions = page.getByText('Actions', { exact: true }).locator('xpath=following::*[contains(@class,"x-form-arrow-trigger")][1]');
-      await actions.click();
-      await page.getByText(/^Cancel Reservation$|^Cancel$/).last().click();
-      const yes = page.getByRole('button', { name: /yes|ok/i }).first();
-      if (await yes.count()) await yes.click();
-      await page.waitForTimeout(2000);
-      result.confirmationNumber = confirmation;
-      result.statusAfterCancel = await page.locator('input[name="status"]').inputValue().catch(() => '');
-      result.cancelled = /cancel/i.test(result.statusAfterCancel || '');
-      result.saved = true;
-      result.outcome = result.cancelled ? 'saved_then_cancelled' : 'cancel_failed';
-      await shot(page, dir, 'cancelled.png');
-      await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
-      process.stdout.write(`${result.outcome} ${result.statusAfterCancel}\n`);
-      if (!result.cancelled) process.exitCode = 2;
-      return;
-    }
     await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
     await page.locator('input[name="lastname"]:visible').waitFor();
     if (shopMode) {

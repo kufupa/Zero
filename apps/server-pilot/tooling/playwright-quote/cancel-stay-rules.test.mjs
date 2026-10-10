@@ -867,7 +867,8 @@ test('a charge that appears between the reason pick and the OK refuses it, and n
 
 test('a charge that opens after the OK is recorded with its text, and nothing is clicked after the OK', async () => {
   const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW], [CHARGE]]);
-  assert.equal(result.outcome, 'cancelled');
+  assert.equal(result.outcome, 'cancel_penalty_pending');
+  assert.equal(exitCodeFor(result.outcome), 1);
   assert.equal(result.clickedOk, true);
   assert.equal(result.penaltyPending, true);
   assert.equal(result.penaltyText, CHARGE);

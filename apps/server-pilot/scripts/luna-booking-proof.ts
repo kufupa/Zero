@@ -68,7 +68,6 @@ function runNode(script: string, args: string[], cwd: string): Promise<{ code: n
         HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
         HMS_READ_SECRET_ARN: process.env.HMS_READ_SECRET_ARN ?? 'nava-zero/server-pilot/infor-hms-read',
         AWS_REGION: process.env.AWS_REGION ?? 'af-south-1',
-        LAB_CANCEL_CONFIRMATION: '',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
