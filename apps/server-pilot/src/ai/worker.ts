@@ -189,6 +189,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isCliEntry } from '../lib/is-cli-entry.js';
 import { assessReply } from './reply-assessment.js';
 import { executeInboundExtractionRun } from './extraction/inbound-run.js';
+import { executeQuoteFollowupRun } from './quote-followup.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb, type DB } from '../db/client.js';
 import { getS3Storage } from '../storage/s3.js';
@@ -5260,6 +5261,10 @@ export async function executeAiRun(
       // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
       if (extracted.state === 'succeeded') scheduleAvailabilityPrefetch(runWithFence);
       return extracted;
+    }
+
+    if (run.runKind === 'quote_followup') {
+      return await executeQuoteFollowupRun({ run: runWithFence, fence, db });
     }
 
     if (run.runKind === 'feedback_extraction') {
