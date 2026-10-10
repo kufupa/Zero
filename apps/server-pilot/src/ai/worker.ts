@@ -162,6 +162,7 @@ import {
   executeHmsJob,
   hmsJobQueueEnabled,
   requeueHmsReadsAfterRestart,
+  scheduleAvailabilityPrefetch,
   schedulePrefetchForInbound,
 } from './hms-jobs.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
@@ -5249,13 +5250,16 @@ export async function executeAiRun(
     }
 
     if (run.runKind === 'inbound_extraction') {
-      return await executeInboundExtractionRun({
+      const extracted = await executeInboundExtractionRun({
         run: runWithFence,
         fence,
         signal,
         adapter: options.inboundExtractionAdapter,
         db,
       });
+      // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
+      if (extracted.state === 'succeeded') scheduleAvailabilityPrefetch(runWithFence);
+      return extracted;
     }
 
     if (run.runKind === 'feedback_extraction') {
