@@ -15,6 +15,7 @@ import {
   hmsStateDigest,
   readHmsWriteEvidence,
   recordHmsWriteEvidence,
+  resolveHmsNeedsCheck,
   sweepLostHmsWriteLeases,
 } from '../src/ai/hms-approval.js';
 import { canonicalJson } from '../src/ai/draft-approval.js';
@@ -453,6 +454,107 @@ describe('HMS write approvals', () => {
     });
   });
 
+  it('a lost-lease needs-check is resolved only by a read-back or a staff note, logged with the session user', async () => {
+    await withIngestionDb(async ({ db, sql }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      const claim = await claimWrite(db);
+      await consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: NOW });
+      const later = at(120);
+      await sweepLostHmsWriteLeases({ db, now: later, staleRunTimeoutMs: STALE_RUN_MS });
+      await expect(
+        approve(db, workItemId, { now: later, rereadHmsState: async () => HMS_CHANGED }),
+      ).rejects.toMatchObject({ refusal: 'needs_check_open' });
+
+      const resolve = (extra: { note?: string; transportId?: string } = {}) =>
+        resolveHmsNeedsCheck({
+          db,
+          transportId: extra.transportId ?? TRANSPORT_ID,
+          actorUserId: USER,
+          workItemId,
+          note: extra.note,
+          now: later,
+        });
+      await expect(resolve()).rejects.toMatchObject({ refusal: 'note_required' });
+      await expect(resolve({ note: '   ' })).rejects.toMatchObject({ refusal: 'note_required' });
+      await expect(resolve({ note: 'checked', transportId: 'transport-other' })).rejects.toMatchObject({
+        refusal: 'not_found',
+      });
+
+      // Through the procedure: the note is required, and the actor is the session user.
+      __setDbForTests({ db, conn: sql } as never);
+      const caller = callerFor(TRANSPORT_ID);
+      await expect(
+        caller.hmsApproval.resolveNeedsCheck({ workItemId, note: '' }),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      await expect(
+        caller.hmsApproval.resolveNeedsCheck({ workItemId, note: 'Booking reads amended in HMS' }),
+      ).resolves.toEqual({ runId: claim.runId, resolution: 'staff_checked' });
+      const events = await db.select().from(workEvent).where(eq(workEvent.workItemId, workItemId));
+      expect(events.find((row) => (row.value as { resolvedRunId?: string })?.resolvedRunId)).toMatchObject({
+        type: 'status.changed',
+        actorKind: 'user',
+        actorUserId: USER,
+        value: { needsCheck: false, resolvedRunId: claim.runId, resolution: 'staff_checked' },
+      });
+      await expect(resolve({ note: 'again' })).rejects.toMatchObject({ refusal: 'no_needs_check' });
+
+      // The staff resolve dropped the snapshot, so the next approval re-reads HMS, and a new run is queued.
+      await expect(approve(db, workItemId, { now: later })).rejects.toMatchObject({
+        refusal: 'snapshot_missing',
+      });
+      const next = await approve(db, workItemId, { now: later, rereadHmsState: async () => HMS_CHANGED });
+      expect(next.runId).not.toBe(claim.runId);
+    });
+  });
+
+  it('a needs-check resolved by an HMS re-read stores that read as the snapshot', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      const claim = await claimWrite(db);
+      await consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: NOW });
+      await markAiRunDeadLetter(
+        {
+          runId: claim.runId,
+          claimOwner: claim.fence.claimOwner,
+          claimToken: claim.fence.claimToken,
+          expectedStates: ['claimed', 'running'],
+          lastError: 'UNKNOWN',
+          failureClass: 'UNKNOWN',
+        },
+        db,
+      );
+      const later = at(1);
+      await expect(
+        resolveHmsNeedsCheck({
+          db,
+          transportId: TRANSPORT_ID,
+          actorUserId: USER,
+          workItemId,
+          rereadHmsState: async () => HMS_CHANGED,
+          now: later,
+        }),
+      ).resolves.toEqual({ runId: claim.runId, resolution: 'hms_reread' });
+      const next = await approve(db, workItemId, { now: later });
+      expect((await grantRow(db, next.grantId)).value).toMatchObject({
+        hmsBeforeDigest: hmsStateDigest(HMS_CHANGED),
+        hmsReadAt: later.toISOString(),
+      });
+    });
+  });
+
+  it('a needs-check cannot be resolved while a write is in flight, or when nothing blocks', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      const resolve = () =>
+        resolveHmsNeedsCheck({ db, transportId: TRANSPORT_ID, actorUserId: USER, workItemId, note: 'ok' });
+      await expect(resolve()).rejects.toMatchObject({ refusal: 'no_needs_check' });
+      await approve(db, workItemId);
+      await expect(resolve()).rejects.toMatchObject({ refusal: 'write_in_flight' });
+    });
+  });
+
   it('a snapshot stamped in the future is stale, not fresh', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedItem(db);
@@ -503,8 +605,15 @@ describe('HMS write approvals', () => {
         .then((rows) => rows.filter((row) => row.type === 'status.changed'));
       expect(event?.value).toMatchObject({ needsCheck: true, runId: claim.runId });
 
-      // Nothing was written, so a fresh approval is allowed after a pre-Save needs-check.
-      await approve(db, workItemId);
+      // HMS moved on, so the approved snapshot is gone: a fresh approval must re-read HMS first, and binds the new read.
+      const [item] = await db.select().from(workItem).where(eq(workItem.id, workItemId));
+      expect(item?.state).not.toHaveProperty('hmsSnapshot');
+      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'snapshot_missing' });
+      // Nothing was written, so a fresh approval of the unchanged form is allowed after a pre-Save needs-check.
+      const again = await approve(db, workItemId, { rereadHmsState: async () => HMS_CHANGED });
+      expect((await grantRow(db, again.grantId)).value).toMatchObject({
+        hmsBeforeDigest: hmsStateDigest(HMS_CHANGED),
+      });
       const retry = await claimWrite(db);
       await consumeHmsWriteApproval({ db, runId: retry.runId, fence: retry.fence, now: NOW });
       await expect(

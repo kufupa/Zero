@@ -29,6 +29,7 @@ import {
  * - assertHmsUnchangedBeforeSave is the last check before Save. A mismatch dead-letters the run to needs-check.
  * - hms_write runs are never reclaimed by claimNextAiRun. sweepLostHmsWriteLeases turns a lost lease into
  *   needs-check. Nothing re-runs a write automatically.
+ * - resolveHmsNeedsCheck closes a blocking needs-check after an HMS re-read or a staff check with a note.
  *
  * Needs-check is derived from ai_workflow_run.failure_class and recorded as a work_event status.changed.
  * NEEDS_CHECK is for failures before Save, where nothing was written. LEASE_LOST means the outcome is unknown,
@@ -65,7 +66,9 @@ export type HmsApprovalRefusal =
   | 'lease_lost'
   | 'not_consumed'
   | 'evidence_invalid'
-  | 'evidence_exists';
+  | 'evidence_exists'
+  | 'no_needs_check'
+  | 'note_required';
 
 export class HmsApprovalError extends Error {
   readonly refusal: HmsApprovalRefusal;
@@ -160,7 +163,7 @@ async function loadGrant(
   return { grant: parsed.data, payloadHash: row.payloadHash };
 }
 
-async function assertNoOpenWrite(db: DB, workItemId: string): Promise<void> {
+async function assertNoWriteInFlight(db: DB, workItemId: string): Promise<void> {
   const [open] = await db
     .select({ id: aiWorkflowRun.id })
     .from(aiWorkflowRun)
@@ -173,6 +176,13 @@ async function assertNoOpenWrite(db: DB, workItemId: string): Promise<void> {
     )
     .limit(1);
   if (open) throw new HmsApprovalError('write_in_flight');
+}
+
+/**
+ * The latest write run whose outcome is unknown and that nobody has resolved yet, or null. Call it after
+ * assertNoWriteInFlight, so the latest run is terminal.
+ */
+async function unresolvedNeedsCheckRunId(db: DB, workItemId: string): Promise<string | null> {
   const [latest] = await db
     .select({
       id: aiWorkflowRun.id,
@@ -185,25 +195,41 @@ async function assertNoOpenWrite(db: DB, workItemId: string): Promise<void> {
     )
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
     .limit(1);
-  if (!latest) return;
-  if (latest.failureClass && BLOCKING_FAILURE_CLASSES.has(latest.failureClass)) {
-    throw new HmsApprovalError('needs_check_open');
+  if (!latest) return null;
+  if (!latest.failureClass || !BLOCKING_FAILURE_CLASSES.has(latest.failureClass)) {
+    // A run that never consumed its grant never reached HMS, so a new approval is safe. A consumed run that neither
+    // succeeded nor stopped at the pre-Save check may have written, so its outcome is unknown until read back.
+    if (latest.state === 'succeeded' || latest.failureClass === 'NEEDS_CHECK') return null;
+    const [consumed] = await db
+      .select({ id: workEvent.id })
+      .from(workEvent)
+      .where(
+        and(
+          eq(workEvent.workItemId, workItemId),
+          eq(workEvent.type, 'approval.consumed'),
+          sql`${workEvent.value}->>'runId' = ${latest.id}`,
+        ),
+      )
+      .limit(1);
+    if (!consumed) return null;
   }
-  // A run that never consumed its grant never reached HMS, so a new approval is safe. A consumed run that neither
-  // succeeded nor stopped at the pre-Save check may have written, so its outcome is unknown until read back.
-  if (latest.state === 'succeeded' || latest.failureClass === 'NEEDS_CHECK') return;
-  const [consumed] = await db
+  const [resolved] = await db
     .select({ id: workEvent.id })
     .from(workEvent)
     .where(
       and(
         eq(workEvent.workItemId, workItemId),
-        eq(workEvent.type, 'approval.consumed'),
-        sql`${workEvent.value}->>'runId' = ${latest.id}`,
+        eq(workEvent.type, 'status.changed'),
+        sql`${workEvent.value}->>'resolvedRunId' = ${latest.id}`,
       ),
     )
     .limit(1);
-  if (consumed) throw new HmsApprovalError('needs_check_open');
+  return resolved ? null : latest.id;
+}
+
+async function assertNoOpenWrite(db: DB, workItemId: string): Promise<void> {
+  await assertNoWriteInFlight(db, workItemId);
+  if (await unresolvedNeedsCheckRunId(db, workItemId)) throw new HmsApprovalError('needs_check_open');
 }
 
 async function recordNeedsCheck(
@@ -311,6 +337,64 @@ export async function approveHmsWrite(input: {
       hmsReadAt: snapshot.readAt,
       expiresAt: expiresAt.toISOString(),
     };
+  });
+}
+
+const RESOLVE_NOTE_MAX = 500;
+
+/**
+ * Closes a needs-check that blocks approval (KTD12 read-back), as an event with actor = session user. Either the server
+ * re-reads HMS, and the read becomes the item's snapshot, or staff confirm they checked the booking in HMS and leave a
+ * note. A staff resolve drops the stored snapshot, because HMS may have changed since it, so the next approval re-reads.
+ * Nothing is re-run: a new write still needs a new approval.
+ */
+export async function resolveHmsNeedsCheck(input: {
+  db?: DB;
+  transportId: string;
+  actorUserId: string;
+  workItemId: string;
+  note?: string;
+  rereadHmsState?: () => Promise<unknown>;
+  now?: Date;
+}): Promise<{ runId: string; resolution: 'hms_reread' | 'staff_checked' }> {
+  const db = input.db ?? getDb();
+  const now = input.now ?? new Date();
+  const note = input.note?.trim() ?? '';
+  if (!input.rereadHmsState && note.length === 0) throw new HmsApprovalError('note_required');
+  if (note.length > RESOLVE_NOTE_MAX) throw new HmsApprovalError('note_required');
+  return db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({ id: workItem.id, state: workItem.state })
+      .from(workItem)
+      .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+      .limit(1)
+      .for('update');
+    if (!item) throw new HmsApprovalError('not_found');
+    await assertNoWriteInFlight(tx as DB, item.id);
+    const runId = await unresolvedNeedsCheckRunId(tx as DB, item.id);
+    if (!runId) throw new HmsApprovalError('no_needs_check');
+    const state: Record<string, unknown> = { ...item.state };
+    let resolution: 'hms_reread' | 'staff_checked';
+    if (input.rereadHmsState) {
+      state[HMS_SNAPSHOT_KEY] = {
+        digest: hmsStateDigest(await input.rereadHmsState()),
+        readAt: now.toISOString(),
+      };
+      resolution = 'hms_reread';
+    } else {
+      delete state[HMS_SNAPSHOT_KEY];
+      resolution = 'staff_checked';
+    }
+    await tx.update(workItem).set({ state, updatedAt: now }).where(eq(workItem.id, item.id));
+    await tx.insert(workEvent).values({
+      workItemId: item.id,
+      at: now,
+      actorKind: 'user',
+      actorUserId: input.actorUserId,
+      type: 'status.changed',
+      value: { needsCheck: false, resolvedRunId: runId, resolution, ...(note ? { note } : {}) },
+    });
+    return { runId, resolution };
   });
 }
 
@@ -471,6 +555,18 @@ export async function assertHmsUnchangedBeforeSave(input: {
       tx as DB,
     );
     if (row?.workItemId) {
+      if (reason === 'hms_changed') {
+        // HMS moved on from the approved snapshot, so the next approval must re-read it (KTD11). A newer snapshot stays.
+        await tx
+          .update(workItem)
+          .set({ state: sql`${workItem.state} - 'hmsSnapshot'`, updatedAt: now })
+          .where(
+            and(
+              eq(workItem.id, row.workItemId),
+              sql`${workItem.state}->'hmsSnapshot'->>'digest' = ${grant.hmsBeforeDigest}`,
+            ),
+          );
+      }
       await recordNeedsCheck(tx as DB, {
         workItemId: row.workItemId,
         runId: row.id,
@@ -618,6 +714,8 @@ export async function recordHmsWriteEvidence(input: {
     if (err instanceof S3KeyExistsError) throw new HmsApprovalError('evidence_exists');
     throw err;
   }
+  // If this insert fails, the object is an orphan: no event names it, so the read route never serves it, and the
+  // 90-day rule on the prefix expires it.
   const [event] = await db
     .insert(workEvent)
     .values({

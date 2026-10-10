@@ -4,6 +4,7 @@ import {
   HmsApprovalError,
   approveHmsWrite,
   readHmsWriteEvidence,
+  resolveHmsNeedsCheck,
 } from '../../ai/hms-approval.js';
 import { mailboxProcedure, router } from '../trpc.js';
 
@@ -12,6 +13,8 @@ const uuid = z.string().uuid();
 // strict(): the client names only the work item. Grant, digests and snapshot are server-made.
 const approveInput = z.object({ workItemId: uuid }).strict();
 const evidenceInput = z.object({ workItemId: uuid, eventId: uuid }).strict();
+// No HMS reader is wired here yet, so a resolve is staff saying they checked the booking in HMS, with a note.
+const resolveInput = z.object({ workItemId: uuid, note: z.string().trim().min(3).max(500) }).strict();
 
 function refusal(err: unknown): never {
   if (err instanceof HmsApprovalError) {
@@ -30,6 +33,18 @@ export const hmsApprovalRouter = router({
         transportId: ctx.activeTransportId,
         actorUserId: ctx.sessionUser.id,
         workItemId: input.workItemId,
+      });
+    } catch (err) {
+      return refusal(err);
+    }
+  }),
+  resolveNeedsCheck: mailboxProcedure.input(resolveInput).mutation(async ({ input, ctx }) => {
+    try {
+      return await resolveHmsNeedsCheck({
+        transportId: ctx.activeTransportId,
+        actorUserId: ctx.sessionUser.id,
+        workItemId: input.workItemId,
+        note: input.note,
       });
     } catch (err) {
       return refusal(err);
