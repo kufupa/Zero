@@ -474,6 +474,33 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(rows).toHaveLength(1);
     }));
 
+  it('availability probes in the hour do not use the confirmation prefetch cap (U10)', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
+      const inbound = await insertInboundTriage(db, threadId, messageId);
+      await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: {
+            kind: 'availability',
+            arrival: '2026-11-03',
+            departure: '2026-11-04',
+            rooms: [{ roomType: 'Double', quantity: 1, adults: 2, childAges: [] }],
+          },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: `hms-job:availability:${TRANSPORT_ID}:cap-test`,
+        },
+        db,
+      );
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true, HMS_PREFETCH_PER_HOUR: 1 };
+      expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(1);
+    }));
+
   it('prefetch stays off unless HMS_PREFETCH_ENABLED is set, and never runs for backfill', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');

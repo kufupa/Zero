@@ -9,6 +9,7 @@ import {
 } from '../src/ai/run-ledger.js';
 import {
   availabilityPrefetchEnabled,
+  availabilityProbesPerHour,
   enqueueHmsJob,
   executeHmsJob,
   HMS_JOB_PRIORITY_PREFETCH,
@@ -29,7 +30,6 @@ import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
-import { parseEnv } from '../src/env.js';
 import { appRouter } from '../src/trpc/router.js';
 import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
@@ -275,6 +275,8 @@ describe('U10 availability probe (pure)', () => {
 
   it('snapshots each group with its options, counts the available ones, and keeps no evidence', () => {
     expect(availabilitySnapshotOf(QUOTE_RESULT)).toEqual({
+      // Room types are not mapped to HMS codes, so the read is labelled as every room type.
+      roomScope: 'all_room_types',
       searchOutcome: 'partial',
       observedAt: '2026-10-10T00:05:00.000Z',
       availableOptions: 1,
@@ -357,7 +359,7 @@ describe('U10 availability probe (pure)', () => {
 // Each case seeds a fresh rolled-back database; the shared lane box is slow under load.
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane DB)', { timeout: 60_000 }, () => {
   beforeEach(() => {
-    // parseEnv needs the server's required keys; the rest of the lane config stays unset.
+    // The lane claim parses the server env, which needs these keys; the rest of the lane config stays unset.
     vi.stubEnv('PORT', '3000');
     vi.stubEnv('BETTER_AUTH_URL', 'https://nava.legacy.local');
     vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
@@ -406,17 +408,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       expect(rows.every((row) => row.priority === HMS_JOB_PRIORITY_PREFETCH)).toBe(true);
     }));
 
-  it('the hourly cap stops the probes at HMS_PREFETCH_PER_HOUR', () =>
+  it('the hourly cap stops the probes at HMS_AVAILABILITY_PER_HOUR, 6 by default', () =>
     withSeededTestDb(async (db) => {
+      expect(availabilityProbesPerHour({})).toBe(6);
+      expect(availabilityProbesPerHour({ HMS_AVAILABILITY_PER_HOUR: 'many' })).toBe(6);
+      expect(availabilityProbesPerHour({ HMS_AVAILABILITY_PER_HOUR: '0' })).toBe(0);
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
-      const capped = probeEnv({ HMS_PREFETCH_PER_HOUR: '1' });
-      expect(parseEnv(capped).HMS_PREFETCH_PER_HOUR).toBe(1);
+      const capped = probeEnv({ HMS_AVAILABILITY_PER_HOUR: '1' });
       expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, capped)).toBe(1);
       expect(await availabilityRuns(db)).toHaveLength(1);
     }));
 
-  it('a confirmation prefetch already in the hour takes the slot the probes would use', () =>
+  it('confirmation prefetch has its own cap: a full HMS_PREFETCH_PER_HOUR does not stop the probes', () =>
     withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
@@ -435,8 +439,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       );
       expect(
         await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv({ HMS_PREFETCH_PER_HOUR: '1' })),
-      ).toBe(0);
-      expect(await availabilityRuns(db)).toHaveLength(0);
+      ).toBe(2);
+      expect(await availabilityRuns(db)).toHaveLength(2);
     }));
 
   it('a staff quote in flight holds the probe: it yields without the lock and without reading HMS', () =>
@@ -518,7 +522,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
         status: 'done',
         prefetch: true,
         request: { kind: 'availability', arrival: '2026-10-26', departure: '2026-10-27' },
-        result: { outcome: 'read', searchOutcome: 'partial', availableOptions: 1, kind: 'availability' },
+        result: {
+          outcome: 'read',
+          roomScope: 'all_room_types',
+          searchOutcome: 'partial',
+          availableOptions: 1,
+          kind: 'availability',
+        },
       });
       const asOf = Date.parse(first!.asOf!);
       expect(asOf).toBeGreaterThanOrEqual(before);

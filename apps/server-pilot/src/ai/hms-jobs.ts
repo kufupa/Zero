@@ -63,6 +63,18 @@ export function availabilityPrefetchEnabled(env: NodeJS.Dict<string> = process.e
   return env.HMS_AVAILABILITY_PREFETCH === 'on' && hmsJobQueueEnabled(env);
 }
 
+const AVAILABILITY_PROBES_PER_HOUR_DEFAULT = 6;
+
+/**
+ * Availability probes per transport per hour (HMS_AVAILABILITY_PER_HOUR). Counted apart from confirmation prefetch
+ * (HMS_PREFETCH_PER_HOUR) and kept smaller: a probe is a full Hotel Availability read. Unset or invalid means 6.
+ */
+export function availabilityProbesPerHour(env: NodeJS.Dict<string> = process.env): number {
+  const raw = env.HMS_AVAILABILITY_PER_HOUR?.trim();
+  const parsed = raw ? Number(raw) : Number.NaN;
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : AVAILABILITY_PROBES_PER_HOUR_DEFAULT;
+}
+
 export const HMS_JOB_PRIORITY_USER = 10;
 export const HMS_JOB_PRIORITY_PREFETCH = 0;
 const JOB_MAX_ATTEMPTS = 3;
@@ -235,7 +247,13 @@ export async function queueUserHmsJob(
   return run;
 }
 
-async function countRecentPrefetches(db: DB, transportId: string, since: Date): Promise<number> {
+// Each prefetch kind has its own hourly budget, so availability probes never use up confirmation prefetch.
+async function countRecentPrefetches(
+  db: DB,
+  transportId: string,
+  kind: 'find' | 'availability',
+  since: Date,
+): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(aiWorkflowRun)
@@ -244,6 +262,7 @@ async function countRecentPrefetches(db: DB, transportId: string, since: Date): 
         eq(aiWorkflowRun.transportId, transportId),
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
         eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+        sql`${aiWorkflowRun.readRequest}->>'kind' = ${kind}`,
         gt(aiWorkflowRun.createdAt, since),
       ),
     );
@@ -287,6 +306,7 @@ export async function prefetchHmsConfirmations(
     const used = await countRecentPrefetches(
       db,
       run.transportId,
+      'find',
       new Date(Date.now() - PREFETCH_WINDOW_MS),
     );
     if (used >= env.HMS_PREFETCH_PER_HOUR) break;
@@ -316,7 +336,7 @@ export function schedulePrefetchForInbound(run: AiWorkflowRun): void {
 
 /**
  * Availability probes for an admitted quote's stored extraction: one per complete stay, at prefetch priority and under
- * the same hourly cap. Only quote mail, never spam. The same stay on the same day is one job, whichever mail carried
+ * their own hourly cap (HMS_AVAILABILITY_PER_HOUR), separate from confirmation prefetch. Only quote mail, never spam. The same stay on the same day is one job, whichever mail carried
  * it. Returns how many jobs were created.
  */
 export async function prefetchAvailabilityForExtraction(
@@ -341,12 +361,17 @@ export async function prefetchAvailabilityForExtraction(
     .orderBy(desc(mailExtraction.createdAt))
     .limit(1);
   if (!extraction || extraction.spamAt) return 0;
-  const perHour = parseEnv(env as Record<string, string | undefined>).HMS_PREFETCH_PER_HOUR;
+  const perHour = availabilityProbesPerHour(env);
   const workItemId = await latestWorkItemId(db, run.transportId, extraction.threadId);
   const dayKey = new Date().toISOString().slice(0, 10);
   let created = 0;
   for (const request of availabilityRequestsFor(extraction.payload)) {
-    const used = await countRecentPrefetches(db, run.transportId, new Date(Date.now() - PREFETCH_WINDOW_MS));
+    const used = await countRecentPrefetches(
+      db,
+      run.transportId,
+      'availability',
+      new Date(Date.now() - PREFETCH_WINDOW_MS),
+    );
     if (used >= perHour) break;
     const digest = createHash('sha256').update(JSON.stringify(request)).digest('hex').slice(0, 16);
     const result = await enqueueHmsJob(

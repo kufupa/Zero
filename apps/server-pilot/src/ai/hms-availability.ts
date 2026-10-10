@@ -124,6 +124,11 @@ type QuoteGroup = { id?: unknown; outcome?: unknown; options?: QuoteOption[] } |
 export type QuoteEnvelope = { outcome?: unknown; observedAt?: unknown; groups?: QuoteGroup[] };
 
 export type AvailabilitySnapshot = {
+  /**
+   * What the read covered. Room types are not mapped to HMS codes yet, so each group's search is for every room type
+   * at that occupancy; the stated room type in the request is a label only. Show it as all-room availability.
+   */
+  roomScope: 'all_room_types';
   /** The quote tool's outcome for the search: quote, partial, no_match, unavailable, input_gap or execution_failure. */
   searchOutcome: string;
   observedAt: string | null;
@@ -162,6 +167,7 @@ export function availabilitySnapshotOf(result: QuoteEnvelope): AvailabilitySnaps
     0,
   );
   return {
+    roomScope: 'all_room_types',
     searchOutcome: text(result.outcome) ?? 'execution_failure',
     observedAt: text(result.observedAt),
     availableOptions,
