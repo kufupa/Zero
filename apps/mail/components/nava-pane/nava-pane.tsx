@@ -1172,6 +1172,8 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
                   ? sync.status.discovered > sync.status.committed && !sync.status.userPaused
                   : false
               }
+              workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
+              writesEnabled={paneSaveOn}
             />
 
             {storedWork.saveFailed ? (

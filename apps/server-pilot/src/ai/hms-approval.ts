@@ -43,6 +43,8 @@ export const HMS_WRITE_PROMPT_VERSION = 'hms-write/1';
 const HMS_WRITE_PRIORITY = 10;
 /** Sealed evidence prefix. deploy/aws-resources.md expires it at 90 days. */
 export const HMS_WRITE_EVIDENCE_PREFIX = 'hms-write-evidence/v1/';
+/** The lifecycle rule on that prefix. Evidence sealed this long ago is reported as expired (the object is gone). */
+export const HMS_WRITE_EVIDENCE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const EVIDENCE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}\.png$/;
 const PATH_SEGMENT_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -68,7 +70,9 @@ export type HmsApprovalRefusal =
   | 'evidence_invalid'
   | 'evidence_exists'
   | 'no_needs_check'
-  | 'note_required';
+  | 'note_required'
+  | 'no_executed_write'
+  | 'already_reviewed';
 
 export class HmsApprovalError extends Error {
   readonly refusal: HmsApprovalRefusal;
@@ -781,3 +785,260 @@ export async function readHmsWriteEvidence(input: {
   }
 }
 
+/** The latest hms_write run for a work item. Each approval makes one run, so this is also the latest grant. */
+async function latestWriteRun(db: DB, workItemId: string) {
+  const [run] = await db
+    .select({
+      id: aiWorkflowRun.id,
+      state: aiWorkflowRun.state,
+      failureClass: aiWorkflowRun.failureClass,
+      lastError: aiWorkflowRun.lastError,
+      idempotencyKey: aiWorkflowRun.idempotencyKey,
+    })
+    .from(aiWorkflowRun)
+    .where(
+      and(eq(aiWorkflowRun.workItemId, workItemId), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND)),
+    )
+    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+    .limit(1);
+  return run ?? null;
+}
+
+/** The write.evidence events one run sealed, oldest first. */
+async function evidenceForRun(db: DB, workItemId: string, runId: string) {
+  return db
+    .select({ id: workEvent.id, name: sql<string>`${workEvent.value}->>'name'`, at: workEvent.at })
+    .from(workEvent)
+    .where(
+      and(
+        eq(workEvent.workItemId, workItemId),
+        eq(workEvent.type, 'write.evidence'),
+        sql`${workEvent.value}->>'runId' = ${runId}`,
+      ),
+    )
+    .orderBy(workEvent.at, workEvent.id);
+}
+
+/** The review decision for one run, or null while it is unreviewed. */
+async function reviewForRun(db: DB, workItemId: string, runId: string) {
+  const [row] = await db
+    .select({ type: workEvent.type })
+    .from(workEvent)
+    .where(
+      and(
+        eq(workEvent.workItemId, workItemId),
+        inArray(workEvent.type, ['review.ok', 'review.flag']),
+        sql`${workEvent.value}->>'runId' = ${runId}`,
+      ),
+    )
+    .limit(1);
+  return row ? (row.type === 'review.ok' ? 'ok' : 'flag') : null;
+}
+
+export type HmsReviewResult = {
+  runId: string;
+  status: 'done' | 'needs_you';
+  /** Set on a flag: whether the HMS re-read ran, failed, or is not wired yet (U26). */
+  reread: 'hms_reread' | 'reread_failed' | 'not_wired' | null;
+};
+
+/**
+ * Review of an executed write, as an event with actor = session user. Review needs an outcome: a run that succeeded, or
+ * one that stopped after sealing evidence. Nothing is reviewed while a needs-check is open. OK closes the item (done).
+ * Flag needs a note, returns the item to needs_you and, on an executed write, re-reads HMS first so the next approval
+ * binds the current booking. Only one decision per run.
+ */
+export async function reviewHmsWrite(input: {
+  db?: DB;
+  transportId: string;
+  actorUserId: string;
+  workItemId: string;
+  decision: 'ok' | 'flag';
+  note?: string;
+  /** U26 passes its HMS re-read here. Without it a flag records reread 'not_wired'. */
+  rereadHmsState?: () => Promise<unknown>;
+  now?: Date;
+}): Promise<HmsReviewResult> {
+  const db = input.db ?? getDb();
+  const now = input.now ?? new Date();
+  const note = input.note?.trim() ?? '';
+  if (input.decision === 'flag' && (note.length === 0 || note.length > RESOLVE_NOTE_MAX)) {
+    throw new HmsApprovalError('note_required');
+  }
+  return db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({ id: workItem.id, status: workItem.status, state: workItem.state })
+      .from(workItem)
+      .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+      .limit(1)
+      .for('update');
+    if (!item) throw new HmsApprovalError('not_found');
+    if (item.status === 'done' || item.status === 'dismissed')
+      throw new HmsApprovalError('not_open');
+    await assertNoWriteInFlight(tx as DB, item.id);
+    if (await unresolvedNeedsCheckRunId(tx as DB, item.id))
+      throw new HmsApprovalError('needs_check_open');
+    const run = await latestWriteRun(tx as DB, item.id);
+    if (!run) throw new HmsApprovalError('no_executed_write');
+    const evidence = await evidenceForRun(tx as DB, item.id, run.id);
+    if (run.state !== 'succeeded' && evidence.length === 0)
+      throw new HmsApprovalError('no_executed_write');
+    if (await reviewForRun(tx as DB, item.id, run.id))
+      throw new HmsApprovalError('already_reviewed');
+
+    const status = input.decision === 'ok' ? 'done' : 'needs_you';
+    const state: Record<string, unknown> = { ...item.state };
+    let reread: HmsReviewResult['reread'] = null;
+    if (input.decision === 'flag') {
+      reread = 'not_wired';
+      if (input.rereadHmsState) {
+        try {
+          state[HMS_SNAPSHOT_KEY] = {
+            digest: hmsStateDigest(await input.rereadHmsState()),
+            readAt: now.toISOString(),
+          };
+          reread = 'hms_reread';
+        } catch {
+          // A flag is still recorded when HMS cannot be read. The next approval then needs a re-read.
+          reread = 'reread_failed';
+        }
+      }
+    }
+    await tx.insert(workEvent).values({
+      workItemId: item.id,
+      at: now,
+      actorKind: 'user',
+      actorUserId: input.actorUserId,
+      type: input.decision === 'ok' ? 'review.ok' : 'review.flag',
+      value: input.decision === 'ok' ? { runId: run.id } : { runId: run.id, note, reread },
+    });
+    await tx.insert(workEvent).values({
+      workItemId: item.id,
+      at: now,
+      actorKind: 'user',
+      actorUserId: input.actorUserId,
+      type: 'status.changed',
+      value: { from: item.status, to: status, reviewedRunId: run.id },
+    });
+    await tx
+      .update(workItem)
+      .set({ status, state, updatedAt: now })
+      .where(eq(workItem.id, item.id));
+    return { runId: run.id, status, reread };
+  });
+}
+
+export type HmsWriteStateView = {
+  /** The work item's stored status. */
+  status: string;
+  /** The values she is approving: the stored state without the snapshot. */
+  form: Record<string, unknown>;
+  /** Display values of the stored HMS snapshot (hmsSnapshot.values), keyed like the form. Null when none were stored. */
+  before: Record<string, unknown> | null;
+  snapshot: { readAt: string; stale: boolean } | null;
+  /** The latest approval. fingerprintMatches is false once the form changed after it was made. */
+  grant: { grantId: string; consumed: boolean; fingerprintMatches: boolean } | null;
+  /** The latest hms_write run and what it sealed. expired is set once the evidence is past the retention window. */
+  run: {
+    runId: string;
+    state: string;
+    failureClass: string | null;
+    lastError: string | null;
+    evidence: Array<{ eventId: string; name: string; expired: boolean }>;
+    reviewed: 'ok' | 'flag' | null;
+  } | null;
+  /** True while a needs-check blocks approval and review: the outcome is unknown until someone reads HMS back. */
+  needsCheck: boolean;
+};
+
+/**
+ * What the approve and review cards show for one work item: the form, the snapshot's age and display values, the latest
+ * approval and whether it still matches the form, the latest write run with its evidence, and any open needs-check.
+ * Read-only. Null when the work item is not in this transport.
+ */
+export async function hmsWriteStateOf(input: {
+  db?: DB;
+  transportId: string;
+  workItemId: string;
+  now?: Date;
+}): Promise<HmsWriteStateView | null> {
+  const db = input.db ?? getDb();
+  const now = input.now ?? new Date();
+  const [item] = await db
+    .select({ id: workItem.id, status: workItem.status, state: workItem.state })
+    .from(workItem)
+    .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+    .limit(1);
+  if (!item) return null;
+  const snapshot = readSnapshot(item.state);
+  const storedValues = z
+    .record(z.unknown())
+    .safeParse((item.state[HMS_SNAPSHOT_KEY] as { values?: unknown } | undefined)?.values);
+  const run = await latestWriteRun(db, item.id);
+  const grantId = run ? grantIdForRun(run) : null;
+  let grant: HmsWriteStateView['grant'] = null;
+  if (grantId) {
+    const [row] = await db
+      .select({ value: workEvent.value })
+      .from(workEvent)
+      .where(
+        and(
+          eq(workEvent.id, grantId),
+          eq(workEvent.workItemId, item.id),
+          eq(workEvent.type, 'approval.granted'),
+        ),
+      )
+      .limit(1);
+    const parsed = hmsWriteGrantSchema.safeParse(row?.value);
+    if (parsed.success) {
+      const [consumed] = await db
+        .select({ id: workEvent.id })
+        .from(workEvent)
+        .where(
+          and(
+            eq(workEvent.workItemId, item.id),
+            eq(workEvent.type, 'approval.consumed'),
+            sql`${workEvent.value}->>'grantId' = ${grantId}`,
+          ),
+        )
+        .limit(1);
+      grant = {
+        grantId,
+        consumed: Boolean(consumed),
+        fingerprintMatches: formDigest(item.state) === parsed.data.formDigest,
+      };
+    }
+  }
+  let runView: HmsWriteStateView['run'] = null;
+  if (run) {
+    const evidence = await evidenceForRun(db, item.id, run.id);
+    const reviewed = await reviewForRun(db, item.id, run.id);
+    runView = {
+      runId: run.id,
+      state: run.state,
+      failureClass: run.failureClass,
+      lastError: run.lastError,
+      evidence: evidence.map((row) => ({
+        eventId: row.id,
+        name: row.name,
+        expired: now.getTime() - row.at.getTime() >= HMS_WRITE_EVIDENCE_RETENTION_MS,
+      })),
+      reviewed,
+    };
+  }
+  return {
+    status: item.status,
+    form: formOf(item.state),
+    before: storedValues.success ? storedValues.data : null,
+    snapshot: snapshot
+      ? { readAt: snapshot.readAt, stale: snapshotStale(snapshot.readAt, now) }
+      : null,
+    grant,
+    run: runView,
+    // A run still in flight has no outcome yet, so it is not a needs-check until it ends.
+    needsCheck:
+      run !== null &&
+      !(NONTERMINAL_AI_RUN_STATES as readonly string[]).includes(run.state) &&
+      Boolean(await unresolvedNeedsCheckRunId(db, item.id)),
+  };
+}
