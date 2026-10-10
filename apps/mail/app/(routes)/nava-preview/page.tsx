@@ -35,7 +35,7 @@ function formatWhen(value: string | Date | null | undefined): string {
 
 export default function NavaPreviewPage() {
   const trpc = useTRPC();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const deepLinked = params.get('thread');
   const recent = useQuery(
     trpc.mail.listThreads.queryOptions({ folder: 'inbox', limit: LIST_LIMIT }),
@@ -90,7 +90,11 @@ export default function NavaPreviewPage() {
         className="flex h-screen w-[420px] shrink-0 flex-col overflow-hidden border-l border-[#e2e8f0] bg-white"
       >
         {selectedId ? (
-          <WebPanePanel key={selectedId} threadId={selectedId} />
+          <WebPanePanel
+            key={selectedId}
+            threadId={selectedId}
+            onOpenThread={(id) => setParams({ thread: id })}
+          />
         ) : (
           <p className="p-4 text-sm text-slate-500">No thread selected.</p>
         )}

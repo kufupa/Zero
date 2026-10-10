@@ -84,6 +84,7 @@ import { toast } from 'sonner';
 import { WelcomeScreen } from './screens/welcome';
 import { DiagnosticsScreen } from './screens/diagnostics';
 import { TourScreen } from './screens/tour';
+import { NeedsYouEntry, NeedsYouView } from './screens/needs-you';
 import { SelectedEmailBlock } from './blocks/selected-email';
 import { ContactBlock } from './blocks/contact-block';
 import { TranslationBox } from './blocks/translation-box';
@@ -94,7 +95,7 @@ import { ReplyBody } from './reply-body';
 import { useInsertAiDraft } from './use-insert-ai-draft';
 import { useSystemCheck } from './use-system-check';
 
-type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool';
+type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
 
 // One client for the pane's life, so screenshot loaders keep their identity across renders.
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
@@ -108,7 +109,16 @@ const PANE_PARTY_INDEX = partyIndexFromTrpc(trpcClient);
  * `preview` (the /nava-preview viewer) starts on the quoting tool, skipping the welcome, connection
  * and tour screens and their automatic ping. Analysis does not wait on the ping. Outlook passes nothing.
  */
-export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; preview?: boolean }) {
+export function NavaPane({
+  bridge,
+  preview = false,
+  onOpenThread,
+}: {
+  bridge: PaneBridge;
+  preview?: boolean;
+  /** Webmail only: opens a Needs-you row's thread in the webmail. Outlook passes nothing. */
+  onOpenThread?: (threadId: string) => void;
+}) {
   const {
     isConnected,
     activeEmail,
@@ -510,7 +520,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
     return 'welcome';
   });
   // Preview starts on the quoting tool; the welcome, connection and tour screens never show there.
-  const shownScreen: PaneScreen = preview ? 'tool' : currentScreen;
+  const shownScreen: PaneScreen = preview && currentScreen !== 'needs-you' ? 'tool' : currentScreen;
   const [tourSlideIndex, setTourSlideIndex] = useState(0);
   const [pingState, setPingState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
@@ -1085,7 +1095,7 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
         )}
 
         {/* First-run steps only: the bar is gone once onboarding is done (replay from the ⋯ menu). Preview never shows it. */}
-        {shownScreen !== 'tool' && (
+        {shownScreen !== 'tool' && shownScreen !== 'needs-you' && (
         <div className="flex w-full items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-1.5 text-xs">
           <div className="flex items-center gap-1 font-semibold text-[#1e293b]">
             <span className="text-[11px] text-[#64748b]">Step</span>
@@ -1156,11 +1166,27 @@ export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; prev
             onOpenTool={() => setCurrentScreen('tool')}
           />
         )}
-        {/* Screen slot: the Needs-you list (U24) mounts here as one more shownScreen branch. */}
+        {/* SCREEN 5: NEEDS YOU (U24). Reached from the entry on the quoting tool, on both surfaces. */}
+        {shownScreen === 'needs-you' && (
+          <NeedsYouView
+            trpc={trpcClient}
+            host={preview ? 'web' : 'outlook'}
+            onBack={() => setCurrentScreen('tool')}
+            onOpenThread={onOpenThread}
+          />
+        )}
 
-        {/* Scrollable Body: SCREEN 4 QUOTING TOOL */}
-        {shownScreen === 'tool' && (
-          <main className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
+        {/* Scrollable Body: SCREEN 4 QUOTING TOOL. Stays mounted, hidden, while the list is open, so its state survives. */}
+        {(shownScreen === 'tool' || shownScreen === 'needs-you') && (
+          <main
+            style={shownScreen === 'tool' ? undefined : { display: 'none' }}
+            className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5"
+          >
+            {/* The open count from the Needs-you list. Shows "Needs you" alone until the list has loaded. */}
+            <div className="flex justify-end">
+              <NeedsYouEntry trpc={trpcClient} onOpen={() => setCurrentScreen('needs-you')} />
+            </div>
+
             {/* Email context for the selected email; until one is selected, an empty state. */}
             <SelectedEmailBlock activeEmail={activeEmail} />
 

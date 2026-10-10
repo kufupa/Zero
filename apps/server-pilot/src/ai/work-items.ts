@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailThread, message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
 import type { ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
@@ -395,7 +395,10 @@ async function latestSucceededRead(db: DB, messageId: string) {
   };
 }
 
-/** Points the message's work item at its latest succeeded read. A message with no succeeded read has none. */
+/**
+ * Points the message's work item at its latest succeeded read. A message with no succeeded read has none, and spam
+ * never gets one (nobody has work to do on it).
+ */
 export async function ensureWorkItemForMessage(
   db: DB,
   input: { transportId: string; messageId: string },
@@ -406,7 +409,7 @@ export async function ensureWorkItemForMessage(
     .where(and(eq(message.id, input.messageId), eq(message.transportId, input.transportId)))
     .limit(1);
   const latest = await latestSucceededRead(db, input.messageId);
-  if (!msg || !latest) return null;
+  if (!msg || !latest || latest.kind === 'spam') return null;
   return ensureWorkItem(db, {
     transportId: input.transportId,
     threadId: msg.threadId,
@@ -601,13 +604,30 @@ export async function dismissWorkItem(
   });
 }
 
-/** Work items in this transport with the given statuses, most recently changed first. */
+/** The chip on a Needs-you row (KTD14). */
+export type NeedsYouChip = 'needs_you' | 'queued' | 'in_hms' | 'review';
+
+/**
+ * Queued and In HMS come from the item's latest linked run, so the run is the one state machine. Otherwise a review
+ * item shows Review, and anything else needs her.
+ */
+export function needsYouChip(status: string, runState: string | null): NeedsYouChip {
+  if (runState === 'queued' || runState === 'retry_wait') return 'queued';
+  if (runState === 'claimed' || runState === 'running') return 'in_hms';
+  return status === 'review' ? 'review' : 'needs_you';
+}
+
+/**
+ * Work items in this transport with the given statuses, the Needs-you list. Needs you comes before review, then the
+ * oldest mail first. Spam is left out, a spam thread and a spam read alike. Each row carries its chip.
+ */
 export async function listWorkItems(
   db: DB,
   input: { transportId: string; statuses: readonly string[]; limit: number },
 ) {
   if (input.statuses.length === 0) return [];
-  return db
+  const latestRunState = sql<string | null>`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.workItemId} = ${workItem.id} order by ${aiWorkflowRun.createdAt} desc limit 1)`;
+  const rows = await db
     .select({
       id: workItem.id,
       kind: workItem.kind,
@@ -615,14 +635,26 @@ export async function listWorkItems(
       threadId: workItem.threadId,
       sourceMessageId: workItem.sourceMessageId,
       updatedAt: workItem.updatedAt,
+      sender: message.fromAddress,
       subject: message.subject,
       receivedAt: message.receivedAt,
+      runState: latestRunState,
     })
     .from(workItem)
     .leftJoin(message, eq(message.id, workItem.sourceMessageId))
+    .leftJoin(mailThread, eq(mailThread.id, workItem.threadId))
     .where(
-      and(eq(workItem.transportId, input.transportId), inArray(workItem.status, [...input.statuses])),
+      and(
+        eq(workItem.transportId, input.transportId),
+        inArray(workItem.status, [...input.statuses]),
+        ne(workItem.kind, 'spam'),
+        isNull(mailThread.spamAt),
+      ),
     )
-    .orderBy(desc(workItem.updatedAt))
+    .orderBy(
+      sql`case when ${workItem.status} = 'needs_you' then 0 else 1 end`,
+      asc(sql`coalesce(${message.receivedAt}, ${workItem.createdAt})`),
+    )
     .limit(input.limit);
+  return rows.map(({ runState, ...row }) => ({ ...row, chip: needsYouChip(row.status, runState) }));
 }

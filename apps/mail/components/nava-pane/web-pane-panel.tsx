@@ -11,8 +11,14 @@ function statusCopy(selection: PreviewSelection): string {
   return '';
 }
 
-/** The Nava pane for one thread, read-only, fed by the thread's latest guest email. */
-export function WebPanePanel({ threadId }: { threadId: string }) {
+/** The Nava pane for one thread, read-only, fed by the thread's latest guest email. `onOpenThread` opens another thread (Needs you). */
+export function WebPanePanel({
+  threadId,
+  onOpenThread,
+}: {
+  threadId: string;
+  onOpenThread?: (threadId: string) => void;
+}) {
   const { selection, bridge } = useWebPreview({ threadId });
   if (selection.status !== 'ready') {
     const reason = selection.status === 'unsynced' ? selection.reason : undefined;
@@ -34,7 +40,7 @@ export function WebPanePanel({ threadId }: { threadId: string }) {
       data-preview-thread={threadId}
       className="h-full overflow-y-auto"
     >
-      <NavaPane bridge={bridge} preview />
+      <NavaPane bridge={bridge} preview onOpenThread={onOpenThread} />
     </div>
   );
 }
