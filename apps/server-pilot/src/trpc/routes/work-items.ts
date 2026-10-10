@@ -2,10 +2,12 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { getDb } from '../../db/client.js';
 import { WORK_ITEM_STATUSES } from '../../db/schema/work.js';
+import { retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
 import {
   dismissWorkItem,
   listWorkItems,
   recordFieldEvent,
+  storedTranslation,
   storedWorkFor,
 } from '../../ai/work-items.js';
 import { mailboxProcedure, router } from '../trpc.js';
@@ -77,6 +79,20 @@ export const workItemsRouter = router({
     }
     return { aiValue: result.aiValue, value: result.value };
   }),
+  /** Translates the read again (U16 Retry). Returns the translation the pane shows, or why it could not run. */
+  retryTranslation: mailboxProcedure
+    .input(z.object({ workItemId: z.string().uuid() }).strict())
+    .mutation(async ({ input, ctx }) => {
+      const result = await retryInboundTranslation({
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+      });
+      if (result.status === 'not_found') {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+      }
+      if (result.status !== 'done') return { status: result.status, translation: null };
+      return { status: 'done' as const, translation: storedTranslation(result.translation) };
+    }),
   dismiss: mailboxProcedure
     .input(z.object({ workItemId: z.string().uuid() }).strict())
     .mutation(async ({ input, ctx }) => {

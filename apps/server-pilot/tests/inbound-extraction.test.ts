@@ -11,6 +11,7 @@ import {
   type InboundExtractionDeps,
   inboundExtractionEnabled,
   inboundExtractionMaxPerHour,
+  retryInboundTranslation,
   runInboundExtraction,
 } from '../src/ai/extraction/inbound-run.js';
 import type { MailExtractionPayload } from '../src/ai/extraction/schema.js';
@@ -26,7 +27,7 @@ import {
   mailThread,
   message,
 } from '../src/db/schema/mail.js';
-import { mailExtraction } from '../src/db/schema/work.js';
+import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { toAiRunFence } from '../src/ai/run-ledger.js';
 import {
   AE1_FROM,
@@ -532,4 +533,108 @@ describe('flags, cap parsing and the rules', () => {
     expect(system).not.toMatch(/10\+ rooms\/delegates or events are other/);
     expect(system).toMatch(/quote at any size, 10\+ rooms included/);
   });
+});
+
+describe('translation retry', () => {
+  async function workItemFor(db: DB, messageId: string): Promise<string> {
+    const [item] = await db
+      .select({ id: workItem.id })
+      .from(workItem)
+      .where(eq(workItem.sourceMessageId, messageId))
+      .limit(1);
+    return item!.id;
+  }
+
+  /** A French read whose translation came back misaligned, so the stored translation is failed. */
+  async function frenchReadWithFailedTranslation(db: DB) {
+    const messageId = await seedMail(db, 'thread-retry-fr', AE2_TEXT);
+    const model = fakeModel((input) =>
+      input.systemPrompt === TRANSLATE_RULES ? { segments: [] } : AE2_OUTPUT,
+    );
+    expect(await readMail(db, messageId, selectionFor(AE2_TEXT), model.adapter)).toBe('stored');
+    expect((await rowFor(db, messageId))!.translation).toMatchObject({ status: 'failed', reason: 'misaligned' });
+    return { messageId, workItemId: await workItemFor(db, messageId) };
+  }
+
+  it('makes one translation call, replaces the failed translation in place, and keeps the read', () =>
+    withIngestionDb(async ({ db }) => {
+      const { messageId, workItemId } = await frenchReadWithFailedTranslation(db);
+      const before = await rowFor(db, messageId);
+      const retry = fakeModel(echoTranslation);
+
+      const result = await retryInboundTranslation(
+        { transportId: TRANSPORT, workItemId },
+        { db, env: ON, adapter: retry.adapter },
+      );
+      expect(retry.calls).toHaveLength(1);
+      expect(retry.calls[0]!.systemPrompt).toBe(TRANSLATE_RULES);
+      expect(result).toMatchObject({
+        status: 'done',
+        translation: { status: 'succeeded', sourceLanguage: 'fr' },
+      });
+      const after = await rowFor(db, messageId);
+      expect(after!.id).toBe(before!.id);
+      expect(after!.payload).toEqual(before!.payload);
+      expect(after!.translation).toMatchObject({ status: 'succeeded' });
+      expect(Object.keys(after!.usage as Record<string, unknown>).sort()).toEqual(['extraction', 'translation']);
+    }));
+
+  it('stores a failed retry as failed, with the reason the call ended', () =>
+    withIngestionDb(async ({ db }) => {
+      const { messageId, workItemId } = await frenchReadWithFailedTranslation(db);
+      const hanging = fakeModel(() => hangingResponder());
+
+      const result = await retryInboundTranslation(
+        { transportId: TRANSPORT, workItemId },
+        { db, env: ON, adapter: hanging.adapter, translationDeadlineMs: 50 },
+      );
+      expect(result).toEqual({
+        status: 'done',
+        translation: expect.objectContaining({ status: 'failed', reason: 'timeout' }),
+      });
+      expect((await rowFor(db, messageId))!.translation).toMatchObject({ status: 'failed', reason: 'timeout' });
+    }));
+
+  it('makes no call for an English read', () =>
+    withIngestionDb(async ({ db }) => {
+      const messageId = await seedMail(db, 'thread-retry-en', AE1_TEXT);
+      expect(await readMail(db, messageId, selectionFor(AE1_TEXT), fakeModel(() => AE1_OUTPUT).adapter)).toBe(
+        'stored',
+      );
+      const retry = fakeModel(echoTranslation);
+      expect(
+        await retryInboundTranslation(
+          { transportId: TRANSPORT, workItemId: await workItemFor(db, messageId) },
+          { db, env: ON, adapter: retry.adapter },
+        ),
+      ).toEqual({ status: 'not_needed' });
+      expect(retry.calls).toHaveLength(0);
+    }));
+
+  it('is refused with the flag off, a spent hour, no model, or another transport, and changes nothing', () =>
+    withIngestionDb(async ({ db }) => {
+      const { messageId, workItemId } = await frenchReadWithFailedTranslation(db);
+      const retry = fakeModel(echoTranslation);
+      const item = { transportId: TRANSPORT, workItemId };
+
+      expect(await retryInboundTranslation(item, { db, env: {} as NodeJS.ProcessEnv, adapter: retry.adapter })).toEqual({
+        status: 'disabled',
+      });
+      expect(
+        await retryInboundTranslation(item, {
+          db,
+          env: { ...ON, INBOUND_EXTRACTION_MAX_PER_HOUR: '0' },
+          adapter: retry.adapter,
+        }),
+      ).toEqual({ status: 'capped' });
+      expect(await retryInboundTranslation(item, { db, env: ON, adapter: null })).toEqual({ status: 'unconfigured' });
+      expect(
+        await retryInboundTranslation(
+          { transportId: 'transport-other', workItemId },
+          { db, env: ON, adapter: retry.adapter },
+        ),
+      ).toEqual({ status: 'not_found' });
+      expect(retry.calls).toHaveLength(0);
+      expect((await rowFor(db, messageId))!.translation).toMatchObject({ status: 'failed', reason: 'misaligned' });
+    }));
 });
