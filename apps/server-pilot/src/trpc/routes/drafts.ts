@@ -49,7 +49,7 @@ import { parseDraftSearchQueryOrThrow } from '../../mail/search/trpc.js';
 import { buildDraftSearchConditions } from '../../mail/search/query.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { mailboxProcedure, router as tRouter } from '../trpc.js';
-import { and, eq, desc, inArray, sql } from 'drizzle-orm';
+import { and, eq, desc, inArray, like, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
@@ -1041,12 +1041,11 @@ export async function enqueueHmsCandidateRefresh(input: {
 }
 
 /**
- * Saved pane replies (saveReply) are revisions of kind `ai_generated` on an origin 'manual' draft. The kind
- * marks "the pane's generated reply, untouched by hand". No enum value says saved-reply, and adding one
- * needs a migration, so this marker is the no-migration choice.
+ * Revisions written by saveReply carry this id prefix. Their kind stays honest ('created' or 'edited', a human action),
+ * so eval data never reads a saved reply as AI output. The prefix tells an untouched saved reply from a hand edit
+ * without a migration, the same way follow-up drafts are told apart by their draft id.
  */
-// ponytail: saved replies reuse the ai_generated kind instead of a migration. Give them their own kind when migrations reopen.
-const SAVED_REPLY_REVISION_KIND = 'ai_generated' as const;
+const SAVED_REPLY_REVISION_PREFIX = 'saved-reply:';
 
 export const draftsRouter = tRouter({
   getArtifact: mailboxProcedure
@@ -1768,8 +1767,9 @@ export const draftsRouter = tRouter({
   }),
 
   /**
-   * Save the pane's reply to the thread's one active draft, as a revision. An active draft written by someone
-   * else, or edited by hand since the last save, is replaced only with replaceExisting (the UI asks first).
+   * Save the pane's reply to the thread's one active draft, as a revision. Any other active draft (an AI draft,
+   * someone else's, or one edited by hand since the last save) is replaced only with replaceExisting (the UI asks
+   * first). Replacing discards it and starts a new draft; it is never overwritten.
    */
   saveReply: mailboxProcedure
     .input(
@@ -1811,23 +1811,33 @@ export const draftsRouter = tRouter({
           let untouchedSavedReply = false;
           if (prior) {
             const [latest] = await tx
-              .select({ kind: mailDraftRevision.kind, actorUserId: mailDraftRevision.actorUserId })
+              .select({ id: mailDraftRevision.id, actorUserId: mailDraftRevision.actorUserId })
               .from(mailDraftRevision)
               .where(eq(mailDraftRevision.draftId, prior.id))
               .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
               .limit(1);
             untouchedSavedReply =
-              latest?.kind === SAVED_REPLY_REVISION_KIND && latest.actorUserId === ctx.sessionUser.id;
+              latest?.id.startsWith(SAVED_REPLY_REVISION_PREFIX) === true &&
+              latest.actorUserId === ctx.sessionUser.id;
             if (!untouchedSavedReply && !input.replaceExisting) {
               throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_REPLACE_CONFIRM_REQUIRED' });
             }
+            if (!untouchedSavedReply) {
+              // Replace = discard, the status delete gives it (as useFollowUp does). The old draft keeps its
+              // origin, generationId and revisions, so an AI draft's version stays for eval.
+              await tx
+                .update(mailDraft)
+                .set({ status: 'discarded', updatedAt: new Date() })
+                .where(and(eq(mailDraft.id, prior.id), eq(mailDraft.transportId, transportId)));
+            }
           }
-          const draftId = prior?.id ?? randomUUID();
+          const updateInPlace = prior !== undefined && untouchedSavedReply;
+          const draftId = updateInPlace ? prior.id : randomUUID();
           const attachments = await persistStaffAttachments(
             decodedAttachments,
             transportId,
             draftId,
-            prior?.attachments ?? [],
+            updateInPlace ? prior.attachments : [],
           );
           const content = {
             threadId: input.threadId,
@@ -1839,12 +1849,9 @@ export const draftsRouter = tRouter({
             textBody: html,
             htmlBody: html,
             attachments,
-            // Human-reviewed pane reply: no AI approval gate, and no generation to go stale.
-            origin: 'manual' as const,
-            generationId: null,
             updatedAt: new Date(),
           };
-          if (prior) {
+          if (updateInPlace) {
             await tx
               .update(mailDraft)
               .set(content)
@@ -1856,14 +1863,16 @@ export const draftsRouter = tRouter({
               createdByUserId: ctx.sessionUser.id,
               isSent: false,
               status: 'active',
+              // Human-reviewed pane reply: no AI approval gate, and no generation to go stale.
+              origin: 'manual',
               ...content,
             });
           }
           await tx.insert(mailDraftRevision).values({
-            id: randomUUID(),
+            id: `${SAVED_REPLY_REVISION_PREFIX}${randomUUID()}`,
             draftId,
             actorUserId: ctx.sessionUser.id,
-            kind: SAVED_REPLY_REVISION_KIND,
+            kind: updateInPlace ? 'edited' : 'created',
             toAddresses: input.to,
             ccAddresses: [],
             bccAddresses: [],
@@ -1909,7 +1918,7 @@ export const draftsRouter = tRouter({
         .where(
           and(
             eq(mailDraftRevision.draftId, draft.id),
-            eq(mailDraftRevision.kind, SAVED_REPLY_REVISION_KIND),
+            like(mailDraftRevision.id, `${SAVED_REPLY_REVISION_PREFIX}%`),
           ),
         )
         .limit(1);

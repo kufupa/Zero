@@ -41,15 +41,15 @@ function confirmNewReplyAfterUncertainOutcome(): boolean {
 
 function confirmReplaceDraft(): boolean {
   try {
-    // Intentional blocking question: a saved reply must not silently overwrite a draft someone else wrote.
+    // Intentional blocking question: a saved reply must not silently replace an AI, someone else's or a hand-edited draft.
     // oxlint-disable-next-line no-alert
     return window.confirm(
-      'Replace current draft? This thread already has a draft that someone else wrote or that was edited by hand.',
+      'Replace current draft? This thread already has a draft: an AI draft, one someone else wrote, or one edited by hand. It is set aside, not deleted.',
     );
   } catch { return false; }
 }
 
-/** The server's refusal to overwrite a hand-written or other-person draft (see drafts.saveReply). */
+/** The server's refusal to replace an AI, other-person or hand-edited draft without a confirm (see drafts.saveReply). */
 function isReplaceDraftRequired(error: unknown): boolean {
   const maybe = error as { data?: { code?: string }; message?: string };
   return maybe.data?.code === 'CONFLICT' && maybe.message === 'DRAFT_REPLACE_CONFIRM_REQUIRED';
