@@ -197,6 +197,8 @@ export function validateGoldenSet(rows: readonly GoldenRow[]): string[] {
 /**
  * Deterministic subset at the set's dev:holdout ratio (30 gives 20 + 10). Round-robin over type x domain cells:
  * each pass takes one case from every cell that still has one, so cells are covered before any repeats.
+ * Cells are ordered type-first (nth domain of every type before the (n+1)th of any), so a quota smaller than
+ * the cell count still spreads across request types instead of cutting the alphabetically last ones.
  */
 export function pickSubset<T extends GoldenRow>(rows: readonly T[], size = 30): T[] {
   const devQuota = Math.round((size * GOLDEN_TARGETS.dev) / (GOLDEN_TARGETS.dev + GOLDEN_TARGETS.holdout));
@@ -207,7 +209,14 @@ export function pickSubset<T extends GoldenRow>(rows: readonly T[], size = 30): 
     for (const row of rows.filter((r) => r.split === split).sort((a, b) => a.id.localeCompare(b.id))) {
       cells.set(cellOf(row), [...(cells.get(cellOf(row)) ?? []), row]);
     }
-    const queues = [...cells.keys()].sort().map((key) => cells.get(key)!);
+    const rank = new Map<string, number>();
+    const keys = [...cells.keys()].sort().map((key) => {
+      const type = key.slice(0, key.indexOf('|'));
+      rank.set(type, (rank.get(type) ?? -1) + 1);
+      return { key, order: [rank.get(type)!, STRATA.indexOf(type as Stratum)] as const };
+    });
+    keys.sort((a, b) => a.order[0] - b.order[0] || a.order[1] - b.order[1]);
+    const queues = keys.map(({ key }) => cells.get(key)!);
     let taken = 0;
     for (let pass = 0; taken < quota[split]; pass += 1) {
       const level = queues.filter((queue) => queue.length > pass);
@@ -431,6 +440,18 @@ export function summarizeGolden(rows: readonly GoldenScoredCase[]) {
     errors: rows.filter((r) => r.error).length,
     replayMisses: rows.reduce((sum, r) => sum + r.replayMisses, 0),
   };
+}
+
+/** Fingerprint of a run's selected cases, inputs and labels included; resume and score reject a run whose cases changed. */
+export const runCasesDigest = (rows: readonly GoldenRow[]) => fingerprint([...rows].sort((a, b) => a.id.localeCompare(b.id)));
+
+/** Why a run is not scoreable: a declared case without a trace, or a split with no scored field (no overfit gate). */
+export function incompleteRunProblems(caseIds: readonly string[], tracedIds: ReadonlySet<string>, summary: ReturnType<typeof summarizeGolden>): string[] {
+  const missing = caseIds.filter((id) => !tracedIds.has(id));
+  return [
+    ...(missing.length ? [`${missing.length} of ${caseIds.length} declared cases have no trace`] : []),
+    ...(['dev', 'holdout'] as const).filter((split) => summary[split].accuracy === null).map((split) => `${split}: no scored fields`),
+  ];
 }
 
 /**

@@ -32,9 +32,11 @@ import {
   BACKTEST_TARGETS,
   GOLDEN_TARGETS,
   cellOf,
+  incompleteRunProblems,
   pickSubset,
   readGoldenSet,
   replayRunners,
+  runCasesDigest,
   runProductionTarget,
   scoreGoldenCase,
   senderDomainOf,
@@ -127,20 +129,28 @@ function check(): number {
   return problems.length ? 1 : 0;
 }
 
+type Manifest = { runId: string; target?: BacktestTarget; casesDigest?: string; cases: Array<{ id: string }> };
+const readManifest = (dir: string): Manifest | null =>
+  existsSync(join(dir, 'manifest.json')) ? (JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as Manifest) : null;
+
 async function run(runId: string, target: BacktestTarget, subset?: number): Promise<number> {
   const rows = loadValidGolden();
   const picked = subset ? pickSubset(rows, subset) : rows;
   const dir = join(ROOT, runId);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const manifestPath = join(dir, 'manifest.json');
-  if (existsSync(manifestPath)) {
-    const previous = (JSON.parse(readFileSync(manifestPath, 'utf8')) as { target?: BacktestTarget }).target ?? 'agent';
+  const casesDigest = runCasesDigest(picked);
+  const prior = readManifest(dir);
+  if (prior) {
+    const previous = prior.target ?? 'agent';
     if (previous !== target) throw new Error(`run ${runId} is a ${previous} run; resume it with --target ${previous}`);
+    if (prior.casesDigest !== casesDigest) {
+      throw new Error(`run ${runId} was started with different cases or case inputs; start a new --run-id`);
+    }
   }
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   const tracesPath = join(dir, 'traces.jsonl');
   const done = new Set(latestTraces(tracesPath).filter((trace) => !trace.error).map((trace) => trace.id));
   writePrivate(
-    manifestPath,
+    join(dir, 'manifest.json'),
     JSON.stringify(
       {
         runId,
@@ -148,6 +158,7 @@ async function run(runId: string, target: BacktestTarget, subset?: number): Prom
         // pane and extract run at the production adapter's own reasoning effort.
         reasoning: target === 'agent' ? REASONING : 'production',
         subset: subset ?? null,
+        casesDigest,
         cases: picked.map((row) => ({ id: row.id, split: row.split, type: row.type, senderDomain: senderDomainOf(row.trigger.from) })),
       },
       null,
@@ -260,21 +271,27 @@ async function runProduction(target: 'pane' | 'extract', todo: GoldenRow[], trac
 
 function score(runId: string): number {
   const dir = join(ROOT, runId);
+  const manifest = readManifest(dir);
+  if (!manifest) throw new Error(`run ${runId} has no manifest.json`);
   const golden = new Map(readGoldenSet(GOLDEN_SET).map((row) => [row.id, row]));
-  const traces = latestTraces(join(dir, 'traces.jsonl'));
-  const rows = traces.flatMap((trace) => {
-    const row = golden.get(trace.id);
-    return row ? [scoreGoldenCase(row, trace)] : [];
-  });
+  const caseIds = manifest.cases.map((c) => c.id);
+  const declared = caseIds.flatMap((id) => golden.get(id) ?? []);
+  if (declared.length !== caseIds.length || runCasesDigest(declared) !== manifest.casesDigest) {
+    throw new Error(`run ${runId} cases changed in the golden set since the run; start a new --run-id`);
+  }
+  const traces = latestTraces(join(dir, 'traces.jsonl')).filter((trace) => golden.has(trace.id) && caseIds.includes(trace.id));
+  const rows = traces.map((trace) => scoreGoldenCase(golden.get(trace.id)!, trace));
   const target = traces[0]?.target ?? 'agent';
   const summary = { target, ...summarizeGolden(rows), scored: rows.length, traced: traces.length };
+  const incomplete = incompleteRunProblems(caseIds, new Set(traces.map((trace) => trace.id)), summary);
   writePrivate(join(dir, 'fields.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
-  writePrivate(join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
-  console.log(JSON.stringify(summary, null, 2));
+  writePrivate(join(dir, 'summary.json'), JSON.stringify({ ...summary, incomplete }, null, 2));
+  console.log(JSON.stringify({ ...summary, incomplete }, null, 2));
+  for (const problem of incomplete) console.error(`score incomplete: ${problem}`);
   if (summary.overfitAlarm) {
     console.error(`overfit alarm: dev minus holdout is ${summary.gapPoints} points (limit ${GOLDEN_TARGETS.overfitGapPoints})`);
   }
-  return summary.overfitAlarm ? 1 : 0;
+  return summary.overfitAlarm || incomplete.length ? 1 : 0;
 }
 
 async function main(argv: string[]): Promise<number> {

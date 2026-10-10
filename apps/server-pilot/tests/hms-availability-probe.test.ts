@@ -348,6 +348,7 @@ describe('U10 availability probe (pure)', () => {
         kind: 'availability',
         arrival: '2026-10-26',
         departure: '2026-10-27',
+        rooms: [{ roomType: 'Single', quantity: 1, adults: 1, childAges: [] }],
       }),
     ).resolves.toBeNull();
     await expect(
@@ -546,6 +547,45 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       );
       expect(second).toMatchObject({ status: 'done', request: { arrival: '2026-11-17' } });
       expect(second!.asOf).toEqual(expect.any(String));
+    }));
+
+  it('a probe shared by a second thread on the same day reads back on that thread too', () =>
+    withSeededTestDb(async (db) => {
+      const first = await seedThread(db);
+      await seedExtraction(db, first.messageId, 'quote');
+      const second = await seedThread(db);
+      await seedExtraction(db, second.messageId, 'quote');
+      paneStayLookupLoaders.lock = lockWith(true);
+      availabilityProbeLoaders.spawn = vi.fn(async () => QUOTE_RESULT);
+      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(first.messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(second.messageId), db, probeEnv())).toBe(0);
+      // A repeat from the same thread does not list it twice.
+      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(second.messageId), db, probeEnv())).toBe(0);
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('succeeded');
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('succeeded');
+      const stay = { kind: 'availability' as const, arrival: '2026-10-26', departure: '2026-10-27' };
+      const own = await readHmsJobView({ transportId: TRANSPORT_ID, threadId: first.threadId, ...stay }, db);
+      const shared = await readHmsJobView({ transportId: TRANSPORT_ID, threadId: second.threadId, ...stay }, db);
+      expect(shared).toMatchObject({ status: 'done', result: { kind: 'availability' } });
+      expect(shared!.runId).toBe(own!.runId);
+      const [row] = await db.select({ metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun).where(eq(aiWorkflowRun.id, own!.runId));
+      expect((row!.metrics as { sharedThreadIds?: string[] }).sharedThreadIds).toEqual([second.threadId]);
+    }));
+
+  it('two stays on the same dates with different rooms each read back their own snapshot by rooms', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const twin = { ...STAY_A, id: 's_dddd4444', rows: [STAY_A.rows[1]!] };
+      await seedExtraction(db, messageId, 'quote', { ...PAYLOAD, stays: [STAY_A, twin] });
+      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      const [a, b] = availabilityRequestsFor({ stays: [STAY_A, twin] });
+      const view = (rooms: AvailabilityRequest['rooms']) =>
+        readHmsJobView(
+          { transportId: TRANSPORT_ID, threadId, kind: 'availability', arrival: '2026-10-26', departure: '2026-10-27', rooms },
+          db,
+        );
+      expect((await view(a!.rooms))?.request).toEqual(a);
+      expect((await view(b!.rooms))?.request).toEqual(b);
     }));
 
   it('a probe whose read fails is retried, and its snapshot is not stored', () =>

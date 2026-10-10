@@ -24,6 +24,7 @@ import {
   availabilityRequestSchema,
   availabilityRequestsFor,
   probeAvailability,
+  type AvailabilityRequest,
 } from './hms-availability.js';
 import { classifyFind, classifySearch, recordedToolRun, toolInputDigest } from './hitl-tool-run.js';
 import {
@@ -215,11 +216,28 @@ export async function enqueueHmsJob(
     .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey })
     .returning();
   if (inserted) return { run: inserted, created: true };
-  const [existing] = await db
-    .select()
-    .from(aiWorkflowRun)
-    .where(eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey))
-    .limit(1);
+  // A shared job (the same read from another thread's mail) lists this thread too, so its lookup finds the snapshot.
+  const threadJson = JSON.stringify([input.threadId]);
+  const [shared] = await db
+    .update(aiWorkflowRun)
+    .set({
+      metrics: sql`jsonb_set(coalesce(${aiWorkflowRun.metrics}, '{}'::jsonb), '{sharedThreadIds}', coalesce(${aiWorkflowRun.metrics}->'sharedThreadIds', '[]'::jsonb) || ${threadJson}::jsonb)`,
+    })
+    .where(
+      and(
+        eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey),
+        ne(aiWorkflowRun.threadId, input.threadId),
+        sql`not coalesce(${aiWorkflowRun.metrics}->'sharedThreadIds', '[]'::jsonb) @> ${threadJson}::jsonb`,
+      ),
+    )
+    .returning();
+  const [existing] = shared
+    ? [shared]
+    : await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey))
+        .limit(1);
   if (!existing) throw new Error(`failed to enqueue or load HMS job for ${input.idempotencyKey}`);
   return { run: existing, created: false };
 }
@@ -626,9 +644,10 @@ export async function readHmsJobView(
         threadId: string;
         kind: 'find' | 'search_guest' | 'availability';
         confirmation?: string;
-        /** A stay's dates pick its availability snapshot. */
+        /** A stay's dates pick its availability snapshot; its rooms tell apart two stays on the same dates. */
         arrival?: string;
         departure?: string;
+        rooms?: AvailabilityRequest['rooms'];
       },
   db: DB = getDb(),
 ): Promise<HmsJobView | null> {
@@ -649,7 +668,10 @@ export async function readHmsJobView(
           .from(aiWorkflowRun)
           .where(
             and(
-              eq(aiWorkflowRun.threadId, input.threadId),
+              or(
+                eq(aiWorkflowRun.threadId, input.threadId),
+                sql`${aiWorkflowRun.metrics}->'sharedThreadIds' @> ${JSON.stringify([input.threadId])}::jsonb`,
+              ),
               scope,
               sql`${aiWorkflowRun.readRequest}->>'kind' = ${input.kind}`,
               ...(input.confirmation
@@ -660,6 +682,9 @@ export async function readHmsJobView(
                 : []),
               ...(input.departure
                 ? [sql`${aiWorkflowRun.readRequest}->>'departure' = ${input.departure}`]
+                : []),
+              ...(input.rooms
+                ? [sql`${aiWorkflowRun.readRequest}->'rooms' = ${JSON.stringify(input.rooms)}::jsonb`]
                 : []),
             ),
           )

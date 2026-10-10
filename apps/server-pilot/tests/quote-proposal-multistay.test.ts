@@ -332,6 +332,20 @@ describe('combined quote PDF', () => {
     );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it('refuses one stay over the line limit on the HTML renderer and on the non-rand HTML fallback', async () => {
+    const big = await stayOn('2026-10-12', distinctNights(64));
+    const fetchImpl = gotenberg();
+    await expect(buildStaysProposalPdf([big], proposalHeader, { url: GOTENBERG, fetchImpl, html: true })).rejects.toThrow(
+      WorkbookLineLimitError,
+    );
+    const { id: _id, ...data } = { ...big.revision, currency: 'USD', groups: big.revision.groups.map((group) => ({ ...group, currency: 'USD' })) };
+    const usd = { ...big, revision: { ...data, id: `quote:${quoteDigest(data)}` } };
+    await expect(buildStaysProposalPdf([usd], proposalHeader, { url: GOTENBERG, fetchImpl, html: false })).rejects.toThrow(
+      WorkbookLineLimitError,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 describe('combined stay approvals', () => {

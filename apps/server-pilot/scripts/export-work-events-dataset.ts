@@ -3,11 +3,12 @@
  *
  *   export-work-events-dataset.ts [--out FILE] [--split dev|holdout] [--golden-set FILE]
  *
- * One row per (work item, stable field id) that a person edited (field.edit or field.reject) or priced (rate.saved,
- * rate.one_off or rate.override). ai_value is the first event's AI value. For a field, human_value is the value saved in
+ * One row per (work item, stable extraction field id) that a person edited (field.edit or field.reject). Only extraction
+ * paths (stays[...] and contact.*) count: follow-up draft decisions reuse one path across different drafts, and rate.*
+ * events are not labels, since a later quote that keeps the HMS price writes no event and the last custom price would
+ * read as final. ai_value is the first event's AI value. human_value is the value saved in
  * work_item.state, which follows the row-locked update order; event time is the transaction start, so two concurrent
- * edits can log out of order. A rate has no state key and takes its last event's value: the HMS quote rate against the
- * price she chose. Both values are card-masked. Pairing is by field_id. The ids carry the extraction's stable stay and
+ * edits can log out of order. Both values are card-masked. Pairing is by field_id. The ids carry the extraction's stable stay and
  * row ids, so deleting a stay never shifts another stay's pair. A removed stay or row still exports its own `removed`
  * pair (false to true). Fields only accepted, and fields with no event, are not exported.
  *
@@ -28,6 +29,7 @@ import { parseArgs } from 'node:util';
 import { and, asc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { maskCardNumbers } from '../src/ai/card-mask.js';
 import { readGoldenSet, type GoldenRow } from '../src/ai/reservationist-backtest.js';
+import { contactFieldOf, parseFieldPath } from '../src/ai/work-items.js';
 import { createDb, type DB } from '../src/db/client.js';
 import { message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
@@ -62,9 +64,10 @@ const PRIVATE_ROOT = fileURLToPath(new URL('../.private/', import.meta.url));
 const DEFAULT_OUT = join(PRIVATE_ROOT, 'work-events-eval', 'work-events-v1.jsonl');
 const DEFAULT_GOLDEN_SET = join(PRIVATE_ROOT, 'reservationist-backtest', 'golden-set.jsonl');
 const HOLDOUT_MODULUS = 3;
-const RATE_TYPES = ['rate.saved', 'rate.one_off', 'rate.override'] as const;
-const EDIT_TYPES: ReadonlySet<string> = new Set(['field.edit', 'field.reject', ...RATE_TYPES]);
-const SEQUENCE_TYPES = ['field.edit', 'field.accept', 'field.reject', ...RATE_TYPES] as const;
+const EDIT_TYPES: ReadonlySet<string> = new Set(['field.edit', 'field.reject']);
+const SEQUENCE_TYPES = ['field.edit', 'field.accept', 'field.reject'] as const;
+/** An extraction field the pane edits, as recordFieldEvent accepts it. */
+const isExtractionField = (path: string) => contactFieldOf(path) !== null || parseFieldPath(path) !== null;
 const USAGE = 'usage: export-work-events-dataset.ts [--out FILE] [--split dev|holdout] [--golden-set FILE]';
 
 /** Deterministic split for a thread with no golden case. */
@@ -179,10 +182,10 @@ export async function exportWorkEvents(
             ]
           : [];
 
-      // The SQL filter already drops null field paths; the check narrows the type for the pairing.
+      // The SQL filter already drops null field paths; the check narrows the type and keeps extraction fields only.
       const fieldEvents: FieldEvent[] = [];
       for (const event of events) {
-        if (event.fieldPath !== null) fieldEvents.push({ ...event, fieldPath: event.fieldPath });
+        if (event.fieldPath !== null && isExtractionField(event.fieldPath)) fieldEvents.push({ ...event, fieldPath: event.fieldPath });
       }
       const itemIds = [...new Set(fieldEvents.map((event) => event.workItemId))];
       const stateOf = new Map<string, Record<string, unknown>>();

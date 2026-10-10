@@ -424,8 +424,10 @@ export async function renderPdfPagesForVision(
   if (body.byteLength > ARTIFACT_MAX_INPUT_BYTES || body.subarray(0, 5).toString('ascii') !== '%PDF-') {
     return null;
   }
-  const directory = await mkdtemp(join(tmpdir(), 'nava-pdf-'));
+  // Setup and cleanup failures leave this file unread too; they never fail the caller's other files.
+  let directory: string | undefined;
   try {
+    directory = await mkdtemp(join(tmpdir(), 'nava-pdf-'));
     await chmod(directory, 0o700);
     const inputPath = join(directory, 'document.pdf');
     const pagesDir = join(directory, 'pages');
@@ -458,7 +460,7 @@ export async function renderPdfPagesForVision(
   } catch {
     return null;
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});
   }
 }
 
