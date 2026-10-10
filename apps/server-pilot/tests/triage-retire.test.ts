@@ -483,6 +483,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       const older = await persistOutlookHistory(db, history('u5-bf-older'));
       const newer = await persistOutlookHistory(db, history('u5-bf-newer'));
       const stale = await persistOutlookHistory(db, history('u5-bf-stale'));
+      // Ambiguous identity: live admission never reads it, so the backfill skips it too.
+      const ambiguous = await persistOutlookHistory(db, history('u5-bf-ambiguous'));
+      await db
+        .update(message)
+        .set({ sourceProvenance: { attention: 'AMBIGUOUS_IDENTITY' }, receivedAt: now, createdAt: now })
+        .where(eq(message.id, ambiguous.messageId));
       // The window and the order go by the mail's own date. Every row here was imported just now (createdAt), as
       // Outlook history is; the 30-day-old mail must stay out even though its row is new.
       const setMailDate = (messageId: string, receivedAt: Date) =>
@@ -526,6 +532,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       expect(due.get(extractionKey(newer.messageId))).toBe(now.getTime());
       expect(due.get(extractionKey(older.messageId))).toBe(now.getTime() + HOUR_MS);
       expect(due.has(extractionKey(stale.messageId))).toBe(false);
+      expect(due.has(extractionKey(ambiguous.messageId))).toBe(false);
 
       // A second run finds the same two candidates and adds no rows.
       await runInboundExtractionBackfill({ db, now, dryRun: false, maxPerHour: 1 });
