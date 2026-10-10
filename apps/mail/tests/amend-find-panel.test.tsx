@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import { AmendLookupPanel } from '../components/quote-workflow/amend-lookup-panel';
 import {
+  askedDates,
   AMEND_FIND_COPY,
   amendDiffs,
   amendFindClientFromTrpc,
@@ -319,6 +320,22 @@ describe('AmendLookupPanel', () => {
     await waitFor(() => expect(screen.getByText('Guest wants: 11 Oct 2026')).toBeTruthy());
     expect(screen.getByText('Guest wants: 15 Oct 2026')).toBeTruthy();
     expect(document.querySelector('[data-field="arrival"]')?.getAttribute('data-differs')).toBe('true');
+  });
+
+  it('shows an unknown requested date as not stated, not the booked date, and finds no false match in HMS', async () => {
+    // The guest moves the arrival but the read could not tell to when. The departure stays as booked.
+    const findStay = vi.fn().mockResolvedValue(found({ arrival: '2026-10-12', departure: '2026-10-14' }));
+    const ask = { ...AMEND, requestedArrival: null, requestedDeparture: '2026-10-14' };
+    render(<AmendLookupPanel session={sessionWith(ask)} trpc={lookupTrpc(findStay)} />);
+    expect(screen.getByText('Not stated')).toBeTruthy();
+    expect(screen.queryByText('12 Oct 2026')).toBeNull();
+    expect(askedDates(ask)).toEqual({ arrival: null, departure: '2026-10-14' });
+    // An older payload without the requested pair, and a cancellation, show the booking as stated.
+    expect(askedDates(AMEND)).toEqual({ arrival: '2026-10-12', departure: '2026-10-14' });
+    expect(askedDates({ ...CANCEL, requestedArrival: null, requestedDeparture: null })).toEqual({
+      arrival: '2027-09-14',
+      departure: '2027-09-16',
+    });
   });
 
   it('labels a cancellation request as one', () => {

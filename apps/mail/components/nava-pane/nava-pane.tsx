@@ -62,6 +62,7 @@ import { useHmsQueueStatus } from '@/lib/quote-workflow/use-hms-queue-status';
 import {
   admissionKey,
   analysisRetryKey,
+  DRAFT_GROUP_ID,
   canCreatePdf,
   canRunQuoteStep,
   dinnerAllowanceStillRequired,
@@ -99,7 +100,8 @@ import { FollowUpCard } from './blocks/follow-up-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
 import { SystemCheckResultsBlock } from './blocks/system-check-results';
 import { ReplyBody } from './reply-body';
-import { useInsertAiDraft, type ReviewedReply } from './use-insert-ai-draft';
+import { useInsertAiDraft } from './use-insert-ai-draft';
+import { useSavedReply } from './use-saved-reply';
 import { useSystemCheck } from './use-system-check';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
@@ -212,26 +214,12 @@ export function NavaPane({
     sendCommand,
     supportsAction,
   });
-  // The thread's saved reply (Save reply on the webmail panel), offered for Insert in Outlook. Read per thread.
+  // The thread's saved reply (Save reply on the webmail panel), offered for Insert in Outlook.
   const savedReplyThreadId = preview ? null : (quoteSession.staffSource?.threadId ?? null);
-  const [savedReply, setSavedReply] = useState<ReviewedReply | null>(null);
-  useEffect(() => {
-    setSavedReply(null);
-    if (!savedReplyThreadId) return;
-    let alive = true;
-    void (async () => {
-      try {
-        const saved = await trpcClient.drafts.savedReply.query({ threadId: savedReplyThreadId });
-        if (alive) setSavedReply(saved ? { html: saved.html, attachments: saved.attachments } : null);
-      } catch {
-        // ponytail: a failed read hides Insert saved reply rather than showing an error. The normal Insert draft button still works.
-        if (alive) setSavedReply(null);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [savedReplyThreadId]);
+  const savedReply = useSavedReply(
+    (input) => trpcClient.drafts.savedReply.query(input),
+    savedReplyThreadId,
+  );
   const { testing, testResults, runComprehensiveTest, resetTestResults } = useSystemCheck({
     activeEmail,
     capabilities,
@@ -298,6 +286,7 @@ export function NavaPane({
   const storedWork = useStoredWork({
     trpc: trpcClient,
     internetMessageId: activeEmail?.internetMessageId ?? null,
+    scope: currentScope,
   });
   const storedOverridden = Boolean(quoteSession.treatAs || quoteSession.staffNote);
   /** A staff edit to the stay rows. On a stored read it is logged against the work item, so it is there on reopen. */
@@ -306,7 +295,8 @@ export function NavaPane({
     dispatchQuote(action);
     storedWork.recordGroups(before.groups, reduceQuoteSession(before, action).groups);
   };
-  const storedGate = storedOverridden ? 'override' : storedWork.key;
+  // With a treat-as or note the read is live, so only Retry read (its count) re-runs it, not a stored-read change.
+  const storedGate = storedOverridden ? `override|${storedWork.retryCount}` : storedWork.key;
   useEffect(() => {
     const binding = quoteSession.binding;
     if (!binding || !quoteAdmissionKey) return;
@@ -317,8 +307,17 @@ export function NavaPane({
     const selectionEpoch = binding.selectionEpoch;
     const decision = storedDecision(storedWork.pane, storedOverridden);
     if (decision.kind === 'ready') {
+      const ready = { type: 'analysis_ready', analysis: decision.analysis } as const;
+      const before = reduceQuoteSession(quoteSessionRef.current, { type: 'analysis_started' });
       dispatchQuote({ type: 'mailbox_status', status: 'ready' });
-      dispatchQuote({ type: 'analysis_ready', analysis: decision.analysis });
+      dispatchQuote(ready);
+      // What she typed into the blank stay while the stored read loaded is laid over its stays. Log it like any edit.
+      if (before.groups.some((group) => group.id === DRAFT_GROUP_ID)) {
+        // The read as a first read, the way analysis_ready reads it under her typing, so the diff is only her typing.
+        const first = { ...before, groups: [], inputRevision: 0, stayRevision: 0, analysisStartStayRevision: null };
+        const plain = reduceQuoteSession(first, ready).groups;
+        storedWork.recordGroups(plain, reduceQuoteSession(before, ready).groups);
+      }
     } else if (decision.kind === 'failed') {
       dispatchQuote({ type: 'mailbox_status', status: 'ready' });
       dispatchQuote({ type: 'analysis_failed', message: decision.reason });
@@ -466,6 +465,8 @@ export function NavaPane({
           currency: prior.currency,
           quoteRequestKey: stayKey,
           approvedHeader: header,
+          // What the earlier run charged, not what the header asks now: a combined quote checks it on each stay.
+          onceExtras: prior.onceExtras,
         },
         selectionEpoch,
         inputRevision,
@@ -473,7 +474,6 @@ export function NavaPane({
       });
       dispatchQuote({
         type: 'booking_draft_ready',
-        stayRevision,
         payload: {
           draft: prior.draft,
           options: prior.options,
@@ -806,12 +806,29 @@ export function NavaPane({
             type: 'booking_draft_ready',
             payload: draftRemote.payload,
             sourceHash: source.sourceHash,
-            // Applying the run's rows above moved stayRevision by one.
-            stayRevision: stayRevision + (groups.length ? 1 : 0),
           });
         });
       });
     });
+  };
+
+  /** Inserts the thread's saved reply as it is now. Webmail may have replaced it since the button appeared. */
+  const insertSavedReply = async () => {
+    const threadId = savedReplyThreadId;
+    let current: Awaited<ReturnType<typeof savedReply.readCurrent>>;
+    try {
+      current = await savedReply.readCurrent();
+    } catch {
+      toast.error('Could not read the saved reply. Try again.');
+      return;
+    }
+    // The reply belongs to the thread it was read for. Staff may have moved to another email meanwhile.
+    if (quoteSessionRef.current.staffSource?.threadId !== threadId) return;
+    if (!current) {
+      toast.warning('This thread has no saved reply any more. Save it again in webmail.');
+      return;
+    }
+    trackedDraft('saved', current);
   };
 
   const runQuoteStep = (stepId: string) => {
@@ -825,6 +842,7 @@ export function NavaPane({
     dispatchQuote({ type: 'step_running', stepId: step.id });
     const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
     const inputRevision = quoteSession.inputRevision;
+    const stayRevision = quoteSession.stayRevision;
     if (isQuoteFixturePreview()) {
       const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
       dispatchQuote({
@@ -896,7 +914,7 @@ export function NavaPane({
               onClick: () => {
                 // The offer belongs to the run that made it. If staff have since moved to another email or edited
                 // the inputs, it is stale and must not patch the current quote.
-                if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision })) {
+                if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
                   toast.warning('That quote has changed. Run the quote again to quote as B&B.');
                   return;
                 }
@@ -939,8 +957,6 @@ export function NavaPane({
             type: 'booking_draft_ready',
             payload: draftRemote.payload,
             sourceHash: source.sourceHash,
-            // The draft carries every row as the run read it. Any stay edit since makes it stale.
-            stayRevision: quoteSession.stayRevision,
           });
         });
       }
@@ -1098,7 +1114,7 @@ export function NavaPane({
       statusMessage={draftStatusMessage}
       onDraft={trackedDraft}
       onSaveReply={preview ? trackedSave : undefined}
-      onInsertSaved={savedReply ? () => trackedDraft('saved', savedReply) : null}
+      onInsertSaved={savedReply.available ? () => void insertSavedReply() : null}
       preview={preview}
     />
   );

@@ -108,6 +108,8 @@ export type UsePriorQuoteForBookingReady = BookingDraftReady & {
   roomCode: string;
   rateCode: string;
   board: QuoteBoard;
+  /** Whether the earlier quote's total has the once-per-quote extras. Absent from an older server: treated as no. */
+  onceExtras?: boolean;
 };
 
 export function overlayLunaGroupsFromStaff(
@@ -115,8 +117,10 @@ export function overlayLunaGroupsFromStaff(
   groups: StayGroupRequirement[],
 ): LunaAnalysisWire['groups'] {
   if (!groups.length) return luna.groups;
-  // A position only means a row when the email has one stay. With several, another stay's row must not supply guests.
-  const oneStay = new Set(groups.map(dateKeyOf)).size <= 1;
+  // A position only means a row when the email has one stay and the rows still do. With several in either, another
+  // stay's row must not supply guests (removing one of two stays leaves one row, but the read still has both).
+  const lunaStays = new Set(luna.groups.map((row) => `${row.arrival ?? ''}:${row.departure ?? ''}`));
+  const oneStay = new Set(groups.map(dateKeyOf)).size <= 1 && lunaStays.size <= 1;
   return groups.map((group, index) => {
     const match =
       luna.groups.find(
@@ -227,6 +231,7 @@ export async function bindUsePriorQuoteForBooking(args: {
         roomCode: result.roomCode,
         rateCode: result.rateCode,
         board: offerBoardFromRevision(result.board),
+        onceExtras: result.onceExtras === true,
       },
     };
   } catch (error) {

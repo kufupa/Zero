@@ -903,7 +903,8 @@ export function QuoteWorkflowPanel({
   // The session and pin as of the last render. A saved-rate edit lands after an await, so it reads these, not the ones it began with.
   const latest = useRef({ session, pinRun });
   latest.current = { session, pinRun };
-  const saved = useSavedRates(rates ?? null);
+  // Saved rates are per mailbox. The pane stays mounted across a mailbox switch, so the list follows the binding.
+  const saved = useSavedRates(rates ?? null, session.binding?.transportId ?? null);
   if (session.phase === 'idle') {
     return <StatusNote>Select an email in Outlook. Nava will read it and list what the quote needs.</StatusNote>;
   }

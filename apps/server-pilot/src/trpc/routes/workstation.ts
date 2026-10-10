@@ -27,6 +27,7 @@ import {
   proposalFactRefsForRevision,
   quotedTotalWithStoredExtras,
   resolvePriorQuoteForBooking,
+  revisionCarriesOnceExtras,
   storedRowPrices,
 } from '../../ai/prior-quote-booking.js';
 import { lunaAnalysisSchema } from '../../ai/reservationist-decision.js';
@@ -1308,6 +1309,8 @@ export const workstationRouter = router({
         roomCode: resolved.revision.groups[0]!.roomCode,
         rateCode: resolved.revision.groups[0]!.rateCode,
         board: resolved.revision.groups[0]!.board,
+        // Whether this quote's total already has the once-per-quote extras (the shuttle, a flat other charge).
+        onceExtras: revisionCarriesOnceExtras(run, resolved.revision.id),
       };
     }),
   // Native refusals happen inside Outlook after the server grant; without this the server sees only

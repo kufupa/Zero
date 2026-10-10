@@ -29,7 +29,7 @@ const PDF = {
   base64: PDF_BASE64,
 };
 
-function saveInput(html: string, replaceExisting = false) {
+function saveInput(html: string, replaceDraft?: string) {
   return {
     threadId: THREAD_ID,
     replyToMessageId: MESSAGE_ID,
@@ -37,7 +37,7 @@ function saveInput(html: string, replaceExisting = false) {
     subject: 'Re: Quote request',
     html,
     attachments: [PDF],
-    replaceExisting,
+    ...(replaceDraft === undefined ? {} : { replaceDraft }),
   };
 }
 
@@ -66,6 +66,13 @@ async function refusalOf(call: Promise<unknown>): Promise<TRPCError> {
     return error as TRPCError;
   }
   throw new Error('expected the call to be refused');
+}
+
+/** The draft a replace confirm names, from DRAFT_REPLACE_CONFIRM_REQUIRED:<token>. */
+function replaceTokenOf(refused: TRPCError): string {
+  const [code, ...token] = refused.message.split(':');
+  expect(code).toBe('DRAFT_REPLACE_CONFIRM_REQUIRED');
+  return token.join(':');
 }
 
 /** Local-only artifact storage, the test double for the approved S3 adapter. */
@@ -166,10 +173,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             centurion.drafts.saveReply(saveInput('<p>Centurion reply</p>')),
           );
           expect(refused.code).toBe('CONFLICT');
-          expect(refused.message).toBe('DRAFT_REPLACE_CONFIRM_REQUIRED');
+          expect(refused.message).toMatch(/^DRAFT_REPLACE_CONFIRM_REQUIRED:/);
 
           const replaced = await centurion.drafts.saveReply(
-            saveInput('<p>Centurion reply</p>', true),
+            saveInput('<p>Centurion reply</p>', replaceTokenOf(refused)),
           );
           expect(replaced).toEqual({ id: expect.any(String), replaced: true });
           expect(replaced.id).not.toBe(first.id);
@@ -185,7 +192,36 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'a hand edit needs the replace confirm, then replaceExisting sets it aside for a new draft',
+      'a confirm made before someone saved newer work is refused, and their draft stays',
+      async () => {
+        await withSeededTestDb(async (db) => {
+          await seedThreads(db);
+          const nava = await callerFor(NAVA_USER_ID, { db, requestedTransportId: TRANSPORT_ID });
+          const centurion = await callerFor(CENTURION_USER_ID, { db, requestedTransportId: TRANSPORT_ID });
+          const first = await nava.drafts.saveReply(saveInput('<p>Navaai reply</p>'));
+          const refused = await refusalOf(centurion.drafts.saveReply(saveInput('<p>Centurion reply</p>')));
+          const token = replaceTokenOf(refused);
+
+          // While Centurion reads the prompt, Navaai saves a newer reply into the same draft.
+          await nava.drafts.saveReply(saveInput('<p>Navaai newer reply</p>'));
+          await db
+            .update(mailDraftRevision)
+            .set({ createdAt: new Date(Date.now() + 60_000) })
+            .where(and(eq(mailDraftRevision.draftId, first.id), eq(mailDraftRevision.kind, 'edited')));
+
+          const stale = await refusalOf(centurion.drafts.saveReply(saveInput('<p>Centurion reply</p>', token)));
+          expect(stale.code).toBe('CONFLICT');
+          expect(stale.message).toBe('DRAFT_CHANGED');
+          const [kept] = await db.select().from(mailDraft).where(eq(mailDraft.id, first.id));
+          expect(kept).toMatchObject({ status: 'active' });
+          expect(kept?.htmlBody).toContain('Navaai newer reply');
+        });
+      },
+      30000,
+    );
+
+    it(
+      'a hand edit needs the replace confirm, then the confirmed replace sets it aside for a new draft',
       async () => {
         await withSeededTestDb(async (db) => {
           await seedThreads(db);
@@ -210,11 +246,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
           const refused = await refusalOf(nava.drafts.saveReply(saveInput('<p>Overwrite</p>')));
           expect(refused.code).toBe('CONFLICT');
-          expect(refused.message).toBe('DRAFT_REPLACE_CONFIRM_REQUIRED');
+          expect(refused.message).toMatch(/^DRAFT_REPLACE_CONFIRM_REQUIRED:/);
           const [unchanged] = await db.select().from(mailDraft).where(eq(mailDraft.id, first.id));
           expect(unchanged?.htmlBody).toContain('Hand edit');
 
-          const replaced = await nava.drafts.saveReply(saveInput('<p>Overwrite</p>', true));
+          const replaced = await nava.drafts.saveReply(saveInput('<p>Overwrite</p>', replaceTokenOf(refused)));
           expect(replaced).toEqual({ id: expect.any(String), replaced: true });
           const [kept] = await db.select().from(mailDraft).where(eq(mailDraft.id, first.id));
           expect(kept).toMatchObject({ status: 'discarded' });
@@ -259,9 +295,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           });
 
           const refused = await refusalOf(nava.drafts.saveReply(saveInput('<p>Mine</p>')));
-          expect(refused.message).toBe('DRAFT_REPLACE_CONFIRM_REQUIRED');
+          expect(refused.message).toMatch(/^DRAFT_REPLACE_CONFIRM_REQUIRED:/);
 
-          const saved = await nava.drafts.saveReply(saveInput('<p>Mine</p>', true));
+          const saved = await nava.drafts.saveReply(saveInput('<p>Mine</p>', replaceTokenOf(refused)));
           expect(saved.replaced).toBe(true);
           const [ai] = await db.select().from(mailDraft).where(eq(mailDraft.id, 'draft-ai-active'));
           expect(ai).toMatchObject({ status: 'discarded', origin: 'ai', generationId: 'gen-save-reply' });

@@ -359,11 +359,17 @@ export function stayGuest(stay: StayRecordWire): string | null {
 
 export type AmendDiff = { guest?: string; arrival?: string; departure?: string };
 
-/** The dates the guest asked for: the requested stay, else the booking dates the email states. */
+/**
+ * The dates the guest asked for: the requested stay. A null requested date is unknown and shows as not stated, so the
+ * booked date never stands in for it and hides a difference from HMS. The booking dates are used only on an older
+ * payload with no requested pair, and for a cancellation, which asks about the stay as booked.
+ */
 export function askedDates(amendment: QuoteAmendment): { arrival: string | null; departure: string | null } {
+  const asked = (requested: string | null | undefined, booked: string | null) =>
+    requested === undefined || (requested === null && amendment.kind === 'cancel') ? booked : requested;
   return {
-    arrival: amendment.requestedArrival ?? amendment.arrival,
-    departure: amendment.requestedDeparture ?? amendment.departure,
+    arrival: asked(amendment.requestedArrival, amendment.arrival),
+    departure: asked(amendment.requestedDeparture, amendment.departure),
   };
 }
 

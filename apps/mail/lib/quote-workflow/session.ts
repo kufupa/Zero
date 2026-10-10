@@ -186,13 +186,15 @@ export function quoteRunBlockReason(
   return `Finish the PDF for option ${pendingLetter} first, then run option ${optionLetter(targetIndex)}.`;
 }
 
+/** Children's ages as typed: whole years 0 to 17, at most 9, the same limits the saved work item takes. */
 export function parseChildrenAges(raw: string): number[] {
   return raw
     .split(',')
     .map((part) => part.trim())
     .filter((part) => part !== '')
     .map((part) => Number(part))
-    .filter((age) => Number.isFinite(age) && age >= 0);
+    .filter((age) => Number.isInteger(age) && age >= 0 && age <= 17)
+    .slice(0, 9);
 }
 
 export function formatQuoteStepInputs(inputs: Record<string, unknown>): string {
@@ -761,6 +763,17 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
   return copy;
 }
 
+/**
+ * A copy of a row on the dinner allowance is on it too. After the B&B fallback the dinner charge lives in the header's
+ * dinnerAllowanceGroupIds, by row id, so a copy left out of it would be quoted without dinner.
+ */
+function withDinnerCopies(session: QuoteSession, copies: ReadonlyArray<readonly [string, string]>): QuoteSession {
+  const ids = session.staffHeader.dinnerAllowanceGroupIds;
+  const added = ids?.length ? copies.filter(([source]) => ids.includes(source)).map(([, copy]) => copy) : [];
+  if (!ids || !added.length) return session;
+  return { ...session, staffHeader: { ...session.staffHeader, dinnerAllowanceGroupIds: [...ids, ...added] } };
+}
+
 /** Steps for the groups. An option the edit did not touch keeps its step, so a running or failed option stays as it was. */
 function rePlanSteps(
   session: QuoteSession,
@@ -799,11 +812,21 @@ function replaceStayRows(current: StayGroupRequirement[], next: StayGroupRequire
 function editStays(
   session: QuoteSession,
   groups: StayGroupRequirement[],
-  affected: ReadonlySet<string>,
+  touched: ReadonlySet<string>,
   keepRatesOf?: string,
 ): QuoteSession {
   const running = session.steps.find((step) => step.id === session.runningStepId);
   const keys = requestedQuoteKeys(groups);
+  // The once-per-quote charges (shuttle, flat other) go on the first stay. When an edit moves which stay that is, or
+  // leaves one stay, a kept run that has them where they no longer belong (or lacks them) is stale too.
+  const misplaced = Object.entries(session.staffQuotes)
+    .filter(
+      ([key, run]) =>
+        keys.includes(key) &&
+        Boolean(run.onceExtras) !== runCarriesOnceExtras({ groups, staffHeader: session.staffHeader }, key),
+    )
+    .map(([key]) => key);
+  const affected: ReadonlySet<string> = misplaced.length ? new Set([...touched, ...misplaced]) : touched;
   const selectedStayKey =
     session.selectedStayKey && keys.includes(session.selectedStayKey)
       ? session.selectedStayKey
@@ -868,6 +891,7 @@ export function removedStayFor(session: QuoteSession, stayId: string): RemovedSt
     rows,
     index: session.groups.findIndex((group) => stayIdOf(group) === stayId),
     inputRevision: session.inputRevision,
+    sharedRows: session.groups.filter((group) => stayIdOf(group) !== stayId && keys.has(stayKeyForGroup(group))),
     staffQuotes: keepKeys(session.staffQuotes, keys, true),
     stayPdfs: keepKeys(session.stayPdfs, keys, true),
     offers: session.offers.filter((offer) => keys.has(offer.quoteRequestKey)),
@@ -905,10 +929,15 @@ export function dinnerAllowanceStillRequired(
 
 /** A quote run and the actions it offers belong to one selection and one input revision. Once either moves on, they are stale. */
 export function quoteRunIsCurrent(
-  session: Pick<QuoteSession, 'binding' | 'inputRevision'>,
-  run: { selectionEpoch: number; inputRevision: number },
+  session: Pick<QuoteSession, 'binding' | 'inputRevision' | 'stayRevision'>,
+  run: { selectionEpoch: number; inputRevision: number; stayRevision?: number },
 ): boolean {
-  return (session.binding?.selectionEpoch ?? 0) === run.selectionEpoch && session.inputRevision === run.inputRevision;
+  return (
+    (session.binding?.selectionEpoch ?? 0) === run.selectionEpoch &&
+    session.inputRevision === run.inputRevision &&
+    // A row edit after a run ends does not move inputRevision. The rows the run read must still be the rows.
+    (run.stayRevision === undefined || session.stayRevision === run.stayRevision)
+  );
 }
 
 export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAction): QuoteSession {
@@ -1222,7 +1251,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (!requestMatchesCurrent(session, action.payload.selectionEpoch, action.payload.inputRevision)) {
         return session;
       }
-      if (action.stayRevision !== undefined && action.stayRevision !== session.stayRevision) return session;
+      // No stay-revision check: an edit to the run's own stay drops its run, so the revisionRef match below already
+      // proves its rows are unchanged. An edit to another stay must not throw the cards away.
       const source = session.staffSource;
       if (!source || source.sourceHash !== action.sourceHash) return session;
       if (source.messageId !== action.payload.messageId) return session;
@@ -1312,7 +1342,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const stayId = stayIdOf(source);
       const copy = copyRow(source, `r_${action.token}`, stayId);
       const groups = insertAfterStay(pinStay(session.groups, stayId), stayId, [copy]);
-      return editStays(session, groups, new Set([stayKeyForGroup(source)]));
+      return editStays(withDinnerCopies(session, [[source.id, copy.id]]), groups, new Set([stayKeyForGroup(source)]));
     }
     case 'remove_row': {
       const source = session.groups.find((group) => group.id === action.groupId);
@@ -1329,7 +1359,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const stayId = `s_${action.token}`;
       const copies = rows.map((row, index) => copyRow(row, `r_${action.token}_${index}`, stayId));
       const groups = insertAfterStay(pinStay(session.groups, action.stayId), action.stayId, copies);
-      return editStays(session, groups, dateKeysOf(rows));
+      const pairs = rows.map((row, index) => [row.id, copies[index]!.id] as const);
+      return editStays(withDinnerCopies(session, pairs), groups, dateKeysOf(rows));
     }
     case 'remove_stay': {
       const rows = session.groups.filter((group) => stayIdOf(group) === action.stayId);
@@ -1346,8 +1377,21 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const groups = [...session.groups.slice(0, at), ...removal.rows, ...session.groups.slice(at)];
       const keys = dateKeysOf(removal.rows);
       const restored = editStays(session, groups, keys);
-      // The rates were got under one input revision. They come back only if no edit has moved it since.
+      // The rates were got under one input revision. They come back only if no edit has moved it since, and if the
+      // other stays on those dates are as they were: a row edit there does not move the revision but changes the price.
       if (restored.inputRevision !== removal.inputRevision) return restored;
+      const sharedNow = session.groups.filter((group) => keys.has(stayKeyForGroup(group)));
+      if (JSON.stringify(sharedNow) !== JSON.stringify(removal.sharedRows ?? [])) return restored;
+      // A run priced the once-per-quote extras for where its stay stood then. If the stays left now put them elsewhere
+      // (say it is now the only stay), the run's total is wrong, so its rates and PDF stay gone.
+      const placed = { groups, staffHeader: restored.staffHeader };
+      if (
+        Object.entries(removal.staffQuotes).some(
+          ([key, run]) => Boolean(run.onceExtras) !== runCarriesOnceExtras(placed, key),
+        )
+      ) {
+        return restored;
+      }
       const staffQuotes = { ...restored.staffQuotes, ...removal.staffQuotes };
       const offers = [
         ...restored.offers,

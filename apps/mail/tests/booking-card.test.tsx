@@ -1059,6 +1059,41 @@ describe('bindUsePriorQuoteForBooking', () => {
     ).toEqual(['John Smith', 'Jane Doe']);
   });
 
+  it('carries whether the reused quote already charged the once-per-quote extras', async () => {
+    const ready = (onceExtras?: boolean) => async () => ({
+      status: 'ready' as const,
+      draft: { rooms: [] } as unknown as BookingDraftReady['draft'],
+      options: {} as BookingDraftReady['options'],
+      messageId: 'mail-1',
+      selectionEpoch: 1,
+      inputRevision: 1,
+      revisionRef: 'rev-1',
+      workflowRunId: 'run-1',
+      totalMinor: 100,
+      currency: 'ZAR',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      roomCode: 'STQN',
+      rateCode: 'BAR',
+      board: 'bb' as const,
+      ...(onceExtras === undefined ? {} : { onceExtras }),
+    });
+    const args = {
+      source,
+      workflowRunId: 'run-1',
+      revisionRef: 'rev-1',
+      threadId: 'thread-1',
+      messageId: 'mail-1',
+      selectionEpoch: 1,
+      inputRevision: 1,
+      analysis: luna,
+    };
+    const withShuttle = await bindUsePriorQuoteForBooking({ ...args, mutate: ready(true) });
+    expect(withShuttle.status === 'ok' && withShuttle.payload.onceExtras).toBe(true);
+    const older = await bindUsePriorQuoteForBooking({ ...args, mutate: ready() });
+    expect(older.status === 'ok' && older.payload.onceExtras).toBe(false);
+  });
+
   it('maps a room-only revision board onto the reused offer', () => {
     expect(offerBoardFromRevision('room_only')).toBe('room_only');
     expect(offerBoardFromRevision('dinner_bed_breakfast')).toBe('dinner_bb');

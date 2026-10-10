@@ -122,7 +122,6 @@ describe('Save reply on the webmail panel', () => {
           base64: 'JVBERi0xLjQ=',
         },
       ],
-      replaceExisting: false,
     });
     expect(sendCommand).not.toHaveBeenCalled();
     await waitFor(() =>
@@ -132,8 +131,8 @@ describe('Save reply on the webmail panel', () => {
     );
   });
 
-  it('asks Replace current draft? before overwriting, and overwrites only on confirm', async () => {
-    const conflict = Object.assign(new Error('DRAFT_REPLACE_CONFIRM_REQUIRED'), {
+  it('asks Replace current draft? before overwriting, and replaces only the draft the prompt named', async () => {
+    const conflict = Object.assign(new Error('DRAFT_REPLACE_CONFIRM_REQUIRED:draft-0:rev-3'), {
       data: { code: 'CONFLICT' },
     });
     saveReplyMutate
@@ -148,8 +147,8 @@ describe('Save reply on the webmail panel', () => {
 
     await waitFor(() => expect(saveReplyMutate).toHaveBeenCalledTimes(2));
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Replace current draft?'));
-    expect(saveReplyMutate.mock.calls[0]?.[0]).toMatchObject({ replaceExisting: false });
-    expect(saveReplyMutate.mock.calls[1]?.[0]).toMatchObject({ replaceExisting: true });
+    expect(saveReplyMutate.mock.calls[0]?.[0]).not.toHaveProperty('replaceDraft');
+    expect(saveReplyMutate.mock.calls[1]?.[0]).toMatchObject({ replaceDraft: 'draft-0:rev-3' });
     await waitFor(() =>
       expect(result.current.draftStatus?.message).toBe(
         'Replaced this thread\'s draft with the reply and PDF. Nothing is sent.',
@@ -158,7 +157,7 @@ describe('Save reply on the webmail panel', () => {
   });
 
   it('leaves the existing draft alone when staff cancel the replace prompt', async () => {
-    const conflict = Object.assign(new Error('DRAFT_REPLACE_CONFIRM_REQUIRED'), {
+    const conflict = Object.assign(new Error('DRAFT_REPLACE_CONFIRM_REQUIRED:draft-0:rev-3'), {
       data: { code: 'CONFLICT' },
     });
     saveReplyMutate.mockRejectedValueOnce(conflict);

@@ -6,7 +6,9 @@ import { EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/i
 import type { MailExtractionPayload } from '../src/ai/extraction/schema.js';
 import {
   aiValueAt,
+  correctionsCarryTo,
   dismissWorkItem,
+  ensureWorkItem,
   ensureWorkItemForMessage,
   formStays,
   listWorkItems,
@@ -407,6 +409,80 @@ describe('work item upsert', () => {
       const [item] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
       expect(item!.extractionId).toBe(second);
     }));
+
+  it('never moves the work item back to an older read a slow caller still holds', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'up2');
+      const older = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await db
+        .update(mailExtraction)
+        .set({ createdAt: new Date(Date.now() - 60_000) })
+        .where(eq(mailExtraction.id, older));
+      const newer = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(item?.extractionId).toBe(newer);
+      const late = await ensureWorkItem(db, {
+        transportId: CENTURION,
+        threadId: 'thread-up2',
+        messageId,
+        kind: 'quote',
+        extractionId: older,
+      });
+      expect(late.extractionId).toBe(newer);
+      const [row] = await db.select().from(workItem).where(eq(workItem.id, item!.id));
+      expect(row!.extractionId).toBe(newer);
+    }));
+
+  it('keeps the item on the read she corrected when a re-read puts the stays in another order', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'up3');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'up3');
+      await recordFieldEvent(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        type: 'field.edit',
+        fieldPath: `stays[${STAY_ONE}].requested.arrival`,
+        value: '2027-10-25',
+      });
+      // Same mail read again with the stays swapped: positional ids now name the other stay.
+      const swapped = payload();
+      const [one, two] = swapped.stays;
+      swapped.stays = [
+        { ...two!, id: STAY_ONE, rows: two!.rows.map((row) => ({ ...row, id: ROW_SINGLE })) },
+        { ...one!, id: STAY_TWO, rows: one!.rows.map((row, index) => ({ ...row, id: [ROW_STAY_TWO, 'r_eeee1111'][index]! })) },
+      ];
+      await insertRead(db, messageId, { version: 'extract-v2', payload: swapped });
+
+      const after = await readyWork(db, 'up3');
+      expect(after.extractionId).toBe(first);
+      expect(after.analysis.groups.map((group) => [group.roomPreference, group.arrivalDate])).toEqual([
+        ['Single', '2027-10-25'],
+        ['Double/Twin', '2027-10-25'],
+        ['Double/Twin', '2027-11-17'],
+      ]);
+    }));
+});
+
+describe('corrections carry to a re-read', () => {
+  it('keeps her row value off a same-type row that a re-read swapped in', () => {
+    const before = payload();
+    before.stays[0]!.rows.push({ id: 'r_bbbb3333', roomType: 'Double/Twin', rooms: 1, adultsPerRoom: 1, childAges: [], board: 'bb' });
+    const after = payload();
+    const [single, twin] = after.stays[0]!.rows;
+    after.stays[0]!.rows = [
+      single!,
+      { ...twin!, rooms: 1, adultsPerRoom: 1 },
+      { ...twin!, id: 'r_bbbb3333' },
+    ];
+    const state = { [`stays[${STAY_ONE}].rows[${ROW_TWIN}].adults`]: 3 };
+    expect(correctionsCarryTo(before, after, state)).toBe(false);
+    expect(correctionsCarryTo(before, before, state)).toBe(true);
+    const reRead = payload();
+    reRead.stays[0]!.rows[1] = { ...reRead.stays[0]!.rows[1]!, adultsPerRoom: 3 };
+    expect(correctionsCarryTo(payload(), reRead, state)).toBe(true);
+  });
 });
 
 describe('field events', () => {
@@ -615,6 +691,27 @@ describe('field events', () => {
         }),
       ).toEqual({ status: 'not_found' });
       expect(await eventsFor(db, work.workItemId)).toHaveLength(0);
+    }));
+});
+
+describe('cleared values on reopen', () => {
+  it('keeps a meal plan she cleared to "Not stated yet" as not stated, not the default', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'b1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'b1');
+      expect(work.analysis.groups[1]!.board).toBe('bb');
+      await recordFieldEvent(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        type: 'field.edit',
+        fieldPath: `stays[${STAY_ONE}].rows[${ROW_TWIN}].board`,
+        value: null,
+      });
+      const after = await readyWork(db, 'b1');
+      expect(after.analysis.groups[1]!.board).toBe('unknown');
+      expect(after.analysis.groups[1]!.fields.board).toBe('staff_corrected');
     }));
 });
 

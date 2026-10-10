@@ -1683,62 +1683,66 @@ export const draftsRouter = tRouter({
       if (input.html !== undefined) patch.htmlBody = input.html || null;
       if (input.threadId !== undefined) patch.threadId = input.threadId || null;
       if (input.replyToMessageId !== undefined) patch.replyToMessageId = input.replyToMessageId;
-      const [updated] = await db
-        .update(mailDraft)
-        .set(patch)
-        .where(
-          and(
-            eq(mailDraft.id, input.id),
-            eq(mailDraft.transportId, transportId),
-            eq(mailDraft.isSent, false),
-            eq(mailDraft.status, 'active'),
-          ),
-        )
-        .returning({ id: mailDraft.id });
-      if (!updated) {
-        throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
-      }
+      // The body and its revision commit together. saveReply locks this row and reads the latest revision, so a hand
+      // edit is never saved without the revision that tells a confirmed replace the draft changed.
+      await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(mailDraft)
+          .set(patch)
+          .where(
+            and(
+              eq(mailDraft.id, input.id),
+              eq(mailDraft.transportId, transportId),
+              eq(mailDraft.isSent, false),
+              eq(mailDraft.status, 'active'),
+            ),
+          )
+          .returning({ id: mailDraft.id });
+        if (!updated) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_SEND_CLAIMED' });
+        }
 
-      const mergedRows = await db
-        .select()
-        .from(mailDraft)
-        .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
-        .limit(1);
-      const merged = mergedRows[0]!;
-      const latestRevision = await db
-        .select()
-        .from(mailDraftRevision)
-        .where(eq(mailDraftRevision.draftId, input.id))
-        .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
-        .limit(1);
+        const mergedRows = await tx
+          .select()
+          .from(mailDraft)
+          .where(and(eq(mailDraft.id, input.id), eq(mailDraft.transportId, transportId)))
+          .limit(1);
+        const merged = mergedRows[0]!;
+        const latestRevision = await tx
+          .select()
+          .from(mailDraftRevision)
+          .where(eq(mailDraftRevision.draftId, input.id))
+          .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
+          .limit(1);
 
-      const changed =
-        latestRevision[0]?.subject !== merged.subject ||
-        latestRevision[0]?.textBody !== merged.textBody ||
-        latestRevision[0]?.htmlBody !== merged.htmlBody ||
-        JSON.stringify(latestRevision[0]?.toAddresses ?? []) !==
-          JSON.stringify(merged.toAddresses ?? []) ||
-        JSON.stringify(latestRevision[0]?.ccAddresses ?? []) !==
-          JSON.stringify(merged.ccAddresses ?? []) ||
-        JSON.stringify(latestRevision[0]?.bccAddresses ?? []) !==
-          JSON.stringify(merged.bccAddresses ?? []);
+        const changed =
+          latestRevision[0]?.subject !== merged.subject ||
+          latestRevision[0]?.textBody !== merged.textBody ||
+          latestRevision[0]?.htmlBody !== merged.htmlBody ||
+          JSON.stringify(latestRevision[0]?.toAddresses ?? []) !==
+            JSON.stringify(merged.toAddresses ?? []) ||
+          JSON.stringify(latestRevision[0]?.ccAddresses ?? []) !==
+            JSON.stringify(merged.ccAddresses ?? []) ||
+          JSON.stringify(latestRevision[0]?.bccAddresses ?? []) !==
+            JSON.stringify(merged.bccAddresses ?? []);
 
-      if (changed) {
-        await db.insert(mailDraftRevision).values({
-          id: randomUUID(),
-          draftId: input.id,
-          generationId: merged.generationId,
-          actorUserId: ctx.sessionUser.id,
-          kind: 'edited',
-          toAddresses: merged.toAddresses,
-          ccAddresses: merged.ccAddresses,
-          bccAddresses: merged.bccAddresses,
-          subject: merged.subject,
-          textBody: merged.textBody,
-          htmlBody: merged.htmlBody,
-          attachments: merged.attachments ?? [],
-        });
-      }
+        if (changed) {
+          await tx.insert(mailDraftRevision).values({
+            id: randomUUID(),
+            draftId: input.id,
+            generationId: merged.generationId,
+            actorUserId: ctx.sessionUser.id,
+            kind: 'edited',
+            toAddresses: merged.toAddresses,
+            ccAddresses: merged.ccAddresses,
+            bccAddresses: merged.bccAddresses,
+            subject: merged.subject,
+            textBody: merged.textBody,
+            htmlBody: merged.htmlBody,
+            attachments: merged.attachments ?? [],
+          });
+        }
+      });
       return { id: input.id };
     }),
 
@@ -1768,8 +1772,10 @@ export const draftsRouter = tRouter({
 
   /**
    * Save the pane's reply to the thread's one active draft, as a revision. Any other active draft (an AI draft,
-   * someone else's, or one edited by hand since the last save) is replaced only with replaceExisting (the UI asks
-   * first). Replacing discards it and starts a new draft; it is never overwritten.
+   * someone else's, or one edited by hand since the last save) is refused with DRAFT_REPLACE_CONFIRM_REQUIRED:<token>,
+   * the token naming that draft and its latest revision. The UI asks, then sends the token back as replaceDraft, and the
+   * draft is replaced only if it is still that draft at that revision (else DRAFT_CHANGED). Replacing discards it and
+   * starts a new draft; it is never overwritten.
    */
   saveReply: mailboxProcedure
     .input(
@@ -1780,7 +1786,7 @@ export const draftsRouter = tRouter({
         subject: z.string().max(998).default(''),
         html: z.string(),
         attachments: z.array(serializedAttachmentInput).max(32).default([]),
-        replaceExisting: z.boolean().default(false),
+        replaceDraft: z.string().max(200).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -1819,8 +1825,13 @@ export const draftsRouter = tRouter({
             untouchedSavedReply =
               latest?.id.startsWith(SAVED_REPLY_REVISION_PREFIX) === true &&
               latest.actorUserId === ctx.sessionUser.id;
-            if (!untouchedSavedReply && !input.replaceExisting) {
-              throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_REPLACE_CONFIRM_REQUIRED' });
+            // The confirm names the draft as staff saw it. Someone else's newer work since then asks again.
+            const replaceToken = `${prior.id}:${latest?.id ?? ''}`;
+            if (!untouchedSavedReply && input.replaceDraft === undefined) {
+              throw new TRPCError({ code: 'CONFLICT', message: `DRAFT_REPLACE_CONFIRM_REQUIRED:${replaceToken}` });
+            }
+            if (!untouchedSavedReply && input.replaceDraft !== replaceToken) {
+              throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
             }
             if (!untouchedSavedReply) {
               // Replace = discard, the status delete gives it (as useFollowUp does). The old draft keeps its

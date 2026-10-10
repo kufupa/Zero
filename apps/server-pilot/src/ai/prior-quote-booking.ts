@@ -245,6 +245,15 @@ function extrasHeaderFromFacts(
   return out;
 }
 
+/**
+ * Whether the revision's approved extras include a once-per-quote charge: the shuttle, or a per-trip or one-item other
+ * charge. A combined quote charges these once, so a reused quote says whether its total already has them.
+ */
+export function revisionCarriesOnceExtras(run: PriorQuoteRun, revisionId: string): boolean {
+  const extras = extrasHeaderFromFacts(proposalFactsForRevision(run, revisionId), 0);
+  return Boolean(extras.shuttleRequested) || extras.other?.unit === 'per_trip' || extras.other?.unit === 'item';
+}
+
 /** A stored row price in the input shape, so a re-quote asks for the same price again. */
 function rowPriceInputFor(price: RowPrice): StaffRowPriceInput {
   if (price.source === 'saved') return { groupId: price.groupId, source: 'saved', customRateId: price.customRateId };

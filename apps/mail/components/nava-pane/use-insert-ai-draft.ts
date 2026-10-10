@@ -49,10 +49,16 @@ function confirmReplaceDraft(): boolean {
   } catch { return false; }
 }
 
-/** The server's refusal to replace an AI, other-person or hand-edited draft without a confirm (see drafts.saveReply). */
-function isReplaceDraftRequired(error: unknown): boolean {
+const REPLACE_CONFIRM_PREFIX = 'DRAFT_REPLACE_CONFIRM_REQUIRED:';
+
+/**
+ * The server's refusal to replace an AI, other-person or hand-edited draft without a confirm (see drafts.saveReply).
+ * Returns the token naming that draft as it is now, which the confirmed save sends back; null for any other error.
+ */
+function replaceDraftToken(error: unknown): string | null {
   const maybe = error as { data?: { code?: string }; message?: string };
-  return maybe.data?.code === 'CONFLICT' && maybe.message === 'DRAFT_REPLACE_CONFIRM_REQUIRED';
+  if (maybe.data?.code !== 'CONFLICT' || !maybe.message?.startsWith(REPLACE_CONFIRM_PREFIX)) return null;
+  return maybe.message.slice(REPLACE_CONFIRM_PREFIX.length);
 }
 
 /** 'selected' is one date option's reply; 'all' is one reply carrying every completed option; 'saved' is the thread's saved reply. */
@@ -491,7 +497,7 @@ export function useInsertAiDraft({
       toast.error('Make the PDF and finish the reply before saving it. Sample rates are never used.');
       return;
     }
-    const saveDraft = (replaceExisting: boolean) =>
+    const saveDraft = (replaceDraft?: string) =>
       trpcClient.drafts.saveReply.mutate({
         threadId: staffSource.threadId,
         replyToMessageId: staffSource.messageId,
@@ -499,7 +505,7 @@ export function useInsertAiDraft({
         subject: replySubject(activeEmail.subject),
         html: reviewedDraft.html,
         attachments: reviewedDraft.attachments.map(pdfUploadInput),
-        replaceExisting,
+        ...(replaceDraft === undefined ? {} : { replaceDraft }),
       });
     saveInFlight.current = true;
     setIsDraftPending(true);
@@ -507,11 +513,13 @@ export function useInsertAiDraft({
     try {
       let saved: Awaited<ReturnType<typeof saveDraft>>;
       try {
-        saved = await saveDraft(false);
+        saved = await saveDraft();
       } catch (error) {
-        if (!isReplaceDraftRequired(error)) throw error;
+        const token = replaceDraftToken(error);
+        if (token === null) throw error;
         if (!confirmReplaceDraft()) return;
-        saved = await saveDraft(true);
+        // Replaces only the draft the prompt was about. If it changed meanwhile the server says DRAFT_CHANGED.
+        saved = await saveDraft(token);
       }
       const message = saved.replaced
         ? 'Replaced this thread\'s draft with the reply and PDF. Nothing is sent.'
