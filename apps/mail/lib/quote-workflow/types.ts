@@ -51,7 +51,15 @@ export type StayGroupRequirement = {
   fields: Record<string, FactProvenance>;
   /** HMS rate code pinned from a rate card. Cleared when staff change the board, dates or room type by hand. */
   rateCode?: string;
+  /** The price staff chose for this row instead of HMS's nightly rate. Absent means HMS prices the row. */
+  rowPrice?: RowPriceChoice;
 };
+
+/** Staff's price for one row (KTD6). A saved rate is named by id; its name and amount are copied for display. */
+export type RowPriceChoice =
+  | { source: 'saved'; customRateId: string; name: string; amountMinor: number }
+  | { source: 'one_off'; amountMinor: number }
+  | { source: 'override'; rateCode: string; amountMinor: number; note: string };
 
 export type QuoteReviewItemKind =
   | 'pricing_fact'
@@ -202,6 +210,21 @@ export type RateOption = {
   currency: string;
   priced: 'full' | 'summary';
   selected: boolean;
+  /** Staff-only label. Ranking, matching and pricing never read it. */
+  hint?: 'event_rate';
+};
+
+/** What one row was charged on its last run: HMS's nightly rates, the rates charged, and for an override its HMS comment. */
+export type StaffRowRate = {
+  groupId: string;
+  source: 'hms' | 'saved' | 'one_off' | 'override';
+  hmsNightlyMinor: number[];
+  nightlyMinor: number[];
+  customRateName?: string;
+  rateCode?: string;
+  note?: string;
+  /** The line staff paste into the HMS comments. Never shown to the client. */
+  hmsComment?: string;
 };
 
 export type StaffQuoteAllocation = {
@@ -233,6 +256,8 @@ export type StaffQuoteAllocation = {
   screenshots?: string[];
   /** Rate options from this run. Carried on the allocation because the pane dispatches the allocation alone. */
   rateOptions?: RateOption[];
+  /** Each row's charged rate from this run, with the HMS comment for an override. */
+  rowRates?: StaffRowRate[];
 };
 
 /** The HMS company or agency staff picked with Find in HMS. nativeId is HMS's id; the server re-checks it before any rate. */

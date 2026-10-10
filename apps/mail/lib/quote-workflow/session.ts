@@ -742,7 +742,10 @@ function blankRow(
   return { id, stayId, ...dates, childrenAges: [], specialRequests: [], fields: {} };
 }
 
-/** A duplicate row: the same values under a new id and stay, with no rate pin. Staff own every value in the copy. */
+/**
+ * A duplicate row: the same values under a new id and stay, with no rate pin or row price. Staff own every value in the
+ * copy, and an approved override belongs to the row it was approved for.
+ */
 function copyRow(source: StayGroupRequirement, id: string, stayId: string): StayGroupRequirement {
   const copy: StayGroupRequirement = {
     ...source,
@@ -754,6 +757,7 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
     fields: Object.fromEntries(Object.keys(source.fields).map((key) => [key, 'staff_corrected' as const])),
   };
   delete copy.rateCode;
+  delete copy.rowPrice;
   return copy;
 }
 
@@ -1279,12 +1283,12 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         group.id === action.groupId ? applyGroupPatch(group, action.patch) : group,
       );
       const patched = groups.find((group) => group.id === action.groupId)!;
-      // A rate pick keeps its own cards on screen while the pinned re-run is pending. Other edits clear them.
+      // A rate pick or a row price keeps its own cards on screen while the re-run is pending. Other edits clear them.
       return editStays(
         session,
         groups,
         new Set([stayKeyForGroup(target), stayKeyForGroup(patched)]),
-        'rateCode' in action.patch ? action.groupId : undefined,
+        'rateCode' in action.patch || 'rowPrice' in action.patch ? action.groupId : undefined,
       );
     }
     case 'add_stay': {

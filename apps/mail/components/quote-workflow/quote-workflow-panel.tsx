@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import {
   allocationTotal,
   amendmentOf,
@@ -28,6 +29,7 @@ import type {
   QuoteSession,
   QuoteToolStep,
   RateOption,
+  RowPriceChoice,
   StaffQuoteHeader,
   StaffExtraField,
   StaffQuoteOtherUnit,
@@ -56,6 +58,7 @@ import { NotSupportedList } from './not-supported-list';
 import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
 import { RateCards } from './rate-cards';
+import { RowRateControls, savedPrice, useSavedRates, type SavedRate, type SavedRatesClient } from './rate-controls';
 import { StayCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
 import { WorkflowBadge, type QuoteIntent } from './workflow-badge';
@@ -805,6 +808,14 @@ function ratesBlockReason(session: QuoteSession, nextStep: QuoteToolStep | undef
   return 'Nothing is ready to search yet.';
 }
 
+/** A row price or rate change waiting to reach the session. Once every `check` has landed, the stay re-runs. */
+type PinRun = { stepId: string; changes: { groupId: string; check: Partial<StayGroupRequirement> }[] };
+
+/** Equal for a session check. A cleared price (undefined) matches a row with no price. */
+function sameValue(current: unknown, wanted: unknown): boolean {
+  return JSON.stringify(current) === JSON.stringify(wanted);
+}
+
 export function QuoteWorkflowPanel({
   session,
   onPatchGroup,
@@ -833,6 +844,7 @@ export function QuoteWorkflowPanel({
   paneSave,
   partySuggestions,
   partyIndex,
+  rates,
 }: {
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
@@ -840,6 +852,8 @@ export function QuoteWorkflowPanel({
   partySuggestions?: PartySuggestion[];
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
+  /** The saved rates for each row's price. Null or absent: no saved-rate picker, but one-off and override still show. */
+  rates?: SavedRatesClient | null;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   /** Adds, duplicates or removes a room or a stay. The shell keeps a removed stay for Undo. */
   onStayAction?: (action: StayEditAction) => void;
@@ -871,15 +885,22 @@ export function QuoteWorkflowPanel({
   /** Loads one HMS audit screenshot of a completed staff quote run. */
   onLoadRunScreenshot?: LoadRunScreenshot;
 }) {
-  // A rate card tapped and waiting for its pin to reach the session. The re-run starts once the pin is there, so it reads it.
-  const [pinRun, setPinRun] = useState<{ groupId: string; rateCode: string; stepId: string } | null>(null);
+  // A row price or rate tapped and waiting for its pin to reach the session. The re-run starts once every pin is there, so it reads them.
+  const [pinRun, setPinRun] = useState<PinRun | null>(null);
   useEffect(() => {
     if (!pinRun) return;
-    const group = session.groups.find((item) => item.id === pinRun.groupId);
-    if (group?.rateCode !== pinRun.rateCode) return;
+    const landed = pinRun.changes.every(({ groupId, check }) => {
+      const group = session.groups.find((item) => item.id === groupId);
+      return (
+        group !== undefined &&
+        Object.entries(check).every(([key, value]) => sameValue(group[key as keyof StayGroupRequirement], value))
+      );
+    });
+    if (!landed) return;
     setPinRun(null);
     onRunStep?.(pinRun.stepId);
   }, [pinRun, session.groups, onRunStep]);
+  const saved = useSavedRates(rates ?? null);
   if (session.phase === 'idle') {
     return <StatusNote>Select an email in Outlook. Nava will read it and list what the quote needs.</StatusNote>;
   }
@@ -936,15 +957,26 @@ export function QuoteWorkflowPanel({
 
   const header = session.staffHeader ?? emptyStaffQuoteHeader();
   const stays = groupStays(formGroups);
+  // Row names for the price boxes: "Room 1", or "Stay 1 · Room 1" when the quote has more than one stay.
+  const rowLabels = new Map<string, string>();
+  stays.forEach((stay, stayIndex) =>
+    stay.rows.forEach((row, rowIndex) =>
+      rowLabels.set(row.id, stays.length > 1 ? `Stay ${stayIndex + 1} · Room ${rowIndex + 1}` : `Room ${rowIndex + 1}`),
+    ),
+  );
   const nextStep = pickNextRunnableStep(session.steps, session.runningStepId);
   const ratesReason = ratesBlockReason(session, nextStep);
   const running = Boolean(session.runningStepId) || Boolean(hmsQueue?.pending);
   const showRates = session.phase !== 'failed' && session.phase !== 'missing_source';
+  /** The stay step a row belongs to. A re-run of that step prices the row. */
+  const stepFor = (group: StayGroupRequirement) =>
+    session.steps.find((item) => item.kind === 'quote_stay' && item.shareKey === stayKeyForGroup(group));
   // Rate cards show for a room group with two or more options. One option keeps the plain result below.
   const rateGroups = session.groups.flatMap((group) => {
     const options = (session.rateOptions ?? []).filter((option) => option.groupId === group.id);
     if (options.length < 2) return [];
-    const step = session.steps.find((item) => item.kind === 'quote_stay' && item.shareKey === stayKeyForGroup(group));
+    const step = stepFor(group);
+    const pinned = pinRun?.changes.find((change) => change.groupId === group.id);
     return [
       {
         group,
@@ -952,11 +984,8 @@ export function QuoteWorkflowPanel({
         step,
         blockReason: step ? quoteRunBlockReason(session, step) : 'Nothing is ready to search yet.',
         pendingRateCode:
-          pinRun?.groupId === group.id
-            ? pinRun.rateCode
-            : step !== undefined && session.runningStepId === step.id
-              ? (group.rateCode ?? null)
-              : null,
+          pinned?.check.rateCode ??
+          (step !== undefined && session.runningStepId === step.id ? (group.rateCode ?? null) : null),
       },
     ];
   });
@@ -964,10 +993,41 @@ export function QuoteWorkflowPanel({
   const pickRate = (option: RateOption) => {
     const group = session.groups.find((item) => item.id === option.groupId);
     if (!group || !onPatchGroup) return;
-    const step = session.steps.find((item) => item.kind === 'quote_stay' && item.shareKey === stayKeyForGroup(group));
+    const step = stepFor(group);
     if (!step || quoteRunBlockReason(session, step)) return;
     onPatchGroup(group.id, { board: option.board, roomCodes: [option.roomCode], rateCode: option.rateCode });
-    setPinRun({ groupId: group.id, rateCode: option.rateCode, stepId: step.id });
+    setPinRun({ stepId: step.id, changes: [{ groupId: group.id, check: { rateCode: option.rateCode } }] });
+  };
+  /**
+   * Sets the price on rows, then re-runs their stay so the totals follow. Only rows in one stay re-run together. Rows that
+   * span stays are set but not re-run. Returns whether a re-run started.
+   */
+  const setRowPrices = (changes: { group: StayGroupRequirement; rowPrice: RowPriceChoice | undefined }[]): boolean => {
+    if (!onPatchGroup || changes.length === 0) return false;
+    for (const { group, rowPrice } of changes) onPatchGroup(group.id, { rowPrice });
+    const steps = changes.map(({ group }) => stepFor(group));
+    const first = steps[0];
+    if (first === undefined || steps.some((step) => step?.id !== first.id) || quoteRunBlockReason(session, first)) {
+      return false;
+    }
+    setPinRun({
+      stepId: first.id,
+      changes: changes.map(({ group, rowPrice }) => ({ groupId: group.id, check: { rowPrice } })),
+    });
+    return true;
+  };
+  /** A saved rate was edited or archived. Rows priced from it follow: an archived rate sends them back to the HMS rate. */
+  const followSavedRate = (rateId: string, next: SavedRate | null) => {
+    const affected = session.groups.filter(
+      (group) => group.rowPrice?.source === 'saved' && group.rowPrice.customRateId === rateId,
+    );
+    if (affected.length === 0) return;
+    const rerun = setRowPrices(affected.map((group) => ({ group, rowPrice: next ? savedPrice(next) : undefined })));
+    const many = affected.length > 1;
+    const subject = many ? `${affected.length} rows that used this saved rate` : 'A row that used this saved rate';
+    const verb = many ? 'are' : 'is';
+    const outcome = next ? `${verb} now priced at the new amount` : `${verb} back on the HMS rate`;
+    toast.warning(`${subject} ${outcome}.${rerun ? '' : ' Get rates from HMS to update the totals.'}`);
   };
 
   return (
@@ -1051,18 +1111,47 @@ export function QuoteWorkflowPanel({
             </Disclosure>
           ) : null}
           {hmsQueue ? <HmsQueueStatusLine pending={hmsQueue.pending} status={hmsQueue.status} /> : null}
-          {rateGroups.map((rates) => (
-            <Fragment key={rates.group.id}>
-              <RateCards
-                options={rates.options}
-                partyName={contractPartyName(header)}
-                disabled={running || pinRun !== null || rates.blockReason !== null}
-                pendingRateCode={rates.pendingRateCode}
-                onPick={pickRate}
-              />
-              {rates.blockReason ? <p className="text-[11px] text-[#64748b]">{rates.blockReason}</p> : null}
-            </Fragment>
-          ))}
+          {session.groups.map((group) => {
+            const rateGroup = rateGroups.find((item) => item.group.id === group.id);
+            const step = stepFor(group);
+            const rowRate = session.staffQuotes[stayKeyForGroup(group)]?.rowRates?.find(
+              (item) => item.groupId === group.id,
+            );
+            const priceRunning =
+              pinRun?.changes.some((change) => change.groupId === group.id) === true ||
+              (step !== undefined && session.runningStepId === step.id);
+            return (
+              <Fragment key={group.id}>
+                {showRates ? (
+                  <RowRateControls
+                    group={group}
+                    label={rowLabels.get(group.id) ?? 'Room'}
+                    rowRate={rowRate}
+                    saved={saved}
+                    pending={priceRunning}
+                    busy={running || pinRun !== null}
+                    blockReason={step ? quoteRunBlockReason(session, step) : 'Nothing is ready to search yet.'}
+                    onSetPrice={(rowPrice) => setRowPrices([{ group, rowPrice }])}
+                    onSavedRateChanged={followSavedRate}
+                  />
+                ) : null}
+                {rateGroup ? (
+                  <>
+                    <RateCards
+                      options={rateGroup.options}
+                      partyName={contractPartyName(header)}
+                      disabled={running || pinRun !== null || rateGroup.blockReason !== null}
+                      pendingRateCode={rateGroup.pendingRateCode}
+                      onPick={pickRate}
+                    />
+                    {rateGroup.blockReason ? (
+                      <p className="text-[11px] text-[#64748b]">{rateGroup.blockReason}</p>
+                    ) : null}
+                  </>
+                ) : null}
+              </Fragment>
+            );
+          })}
           {session.offers.length ? (
             <div className="flex flex-col gap-2">
               <h3 className="text-[11.5px] font-semibold text-[#475569]">Results</h3>
