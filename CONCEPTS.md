@@ -413,6 +413,36 @@ Whether the mail reader may load remote `http(s)` images for a message. Defaults
 
 *Avoid: treating Trust Sender as exact-email-only; hotel operational mail is multi-address on shared domains.*
 
+## Nava pane work
+
+### Work item
+
+One person's job on one inbound mail: a `work_item` row per (thread, kind, source message), where kind is a mail type (`quote`, `booking`, `amendment`, `cancellation`, `voucher_pop`, `spam`, `other`). It stores only the status a person sees (`needs_you`, `review`, `done`, `dismissed`). Its `state` holds the fields she has set, so a re-extraction never overwrites them, plus the HMS before-state snapshot an approval checks. The inbound read never creates a spam work item; opening a spam mail in the pane can, and the needs-you list hides it. Distinct from the `ai_workflow_run` jobs linked to it, whose run state (`queued`, `retry_wait`, `claimed`, `running`, ...) drives the needs-you chips.
+
+### Work event
+
+One append-only `work_event` row per decision on a work item: a field edit, accept or reject, a rate choice, an approval grant or consumption, write evidence, or a status change (`review.ok` and `review.flag` are in the vocabulary but nothing writes them yet). A trigger refuses UPDATE and DELETE, and the foreign key is RESTRICT, so deleting mail cannot erase the record. Stay and row field events use stable extraction ids in `field_path`, such as `stays[s_…].rows[r_…].count`; contact edits use `contact.<field>`, and rate events `quote.rows[<group id>].rate`. It is the authoritative HITL record; `hitl_event` is the best-effort telemetry log.
+
+### Extraction
+
+The stored read of one admitted inbound mail: one `mail_extraction` row per (message, extractor version), with status `succeeded` or `failed`. Its payload holds the contact, agency, stays and rows with stable ids (`s_` hashes the message id and stay position, `r_` the stay id and row position), requested and booked dates, confirmation numbers and missing items. Card numbers are masked before storage. The pane reads the latest succeeded row. A mail with no succeeded read shows its latest failure reason, or is read live when there is none.
+
+### Needs-you list
+
+The open work items on both pane surfaces, from `listWorkItems`. By default it shows `needs_you` and `review` items and leaves out spam and trashed threads. The `queued` and `in_hms` chips come from the item's latest HMS-lane run, so a follow-up or extraction run never moves them. Rows sort by chip, then oldest mail first.
+
+### Saved rate
+
+A named nightly rate per transport (`custom_rate`), used as one row's `saved` price source. Archived rather than deleted, so a quote keeps the name and amount it used: its `rate.saved` event copies both, when the mail has a quote work item. One active name per transport. Room codes are stored (empty means every room type) but do not yet limit which rows can use a rate. Distinct from a one-off rate, which is typed on one row and has no name.
+
+### Override
+
+A row priced by staff at a rate code and an override rate, source `override`, with a required note saying who approved it and why. It is recorded as a `rate.override` work event when the mail has a quote work item. The client Excel and PDF lines carry only the final nightly rate, not the note. Booking drafts flag `manual_rate_change` whenever any row is staff-priced, because HMS's create tool books at its own rate plan. Distinct from `resolveApprovedOverride`, a whole-total adjustment packet that sets no line rate.
+
+### Approval
+
+The server-side grant for one HMS write. `approveHmsWrite` is the only producer of `approval.granted`: it binds the form the person saw to the HMS before-state read and to one `hms_write` run. The HMS snapshot must be under 30 minutes old. An older one is re-read, or the approval is refused, and the grant expires 30 minutes after its read. The run consumes the grant once, while it holds the lease, by writing `approval.consumed`; a unique index allows one consumption per grant. Consumption also refuses a changed form, an altered grant or a lost lease. Distinct from draft approval (`draft-approval.ts`), which covers draft-only replies and never an HMS write.
+
 ## Hotel taxonomy UI
 
 ### Hotel category
@@ -576,6 +606,8 @@ The versioned JSON RPC message contract exchanged over `window.chrome.webview.po
 - **"proof green" / PROOF_EXIT=0** is Packaging gate only — Payload gate (field contract + live fixture) and Tool promotion HITL are separate; do not promote the next PMS tool on packaging alone.
 - **"Office.js Web Add-in"** had been assumed to work across all Outlook clients — modern Office.js web taskpanes strictly require an Exchange or Microsoft 365 mailbox and fail to load on POP3/IMAP accounts in Outlook 2016 desktop. VSTO COM Add-ins (.NET/C#) remain mandatory for non-Exchange local POP3 environments.
 - **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.
+- **"override"** can mean the per-row price source (`override`, with a rate code, a rate and a required note) or `resolveApprovedOverride`, a whole-total adjustment packet that sets no line rate.
+- **"approval"** can mean the HMS write grant (`approval.granted`, with the 30-minute snapshot rule) or the draft-only approval in `draft-approval.ts`.
 
 ## Pilot measurement
 
