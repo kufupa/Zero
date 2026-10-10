@@ -1,14 +1,18 @@
-import { zodToJsonSchema } from 'zod-to-json-schema';
-import { z } from 'zod';
-import type { ModelAdapter } from '../bedrock/adapter.js';
-import { maskCardNumbers } from '../card-mask.js';
 import { EXTRACTION_MODEL_ID, invokeBounded, usageOf, type ModelUsage } from './extract.js';
+import type { ModelAdapter } from '../bedrock/adapter.js';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import { maskCardNumbers } from '../card-mask.js';
+import { z } from 'zod';
 
 /** Second call, made only for non-English mail. Its own deadline, so a slow translation never delays the read. */
 export const TRANSLATE_DEADLINE_MS = 40_000;
 const MAX_TRANSLATE_OUTPUT_TOKENS = 12_000;
 const TRANSLATE_MAX_CHARS = 12_000;
 const TRANSLATE_MAX_SEGMENT_CHARS = 2_000;
+/** Past this many segments the model merges or drops entries (88+ short lines failed, 26 held), so short ones are packed. */
+const TRANSLATE_MAX_SEGMENTS = 30;
+/** Packed groups hold about this share of the text, which keeps them at or under 25. */
+const TRANSLATE_PACKED_GROUPS = 12;
 
 export const TRANSLATE_RULES = `Translate the numbered segments of one email into English. Return exactly one entry per input segment, in the same order, with no merges, splits or omissions.
 - clean is natural, readable English.
@@ -41,7 +45,8 @@ export type InboundTranslation =
 
 /**
  * Splits the body on blank lines into the segments the model aligns with. Over the character cap the tail is
- * dropped and `truncated` is set, so the stored translation says it covers only part of the mail.
+ * dropped and `truncated` is set, so the stored translation says it covers only part of the mail. A mail with more
+ * than TRANSLATE_MAX_SEGMENTS parts has neighbouring parts joined by line breaks, so the model aligns a few dozen.
  */
 export function splitSegments(bodyText: string): { segments: string[]; truncated: boolean } {
   const segments: string[] = [];
@@ -60,7 +65,23 @@ export function splitSegments(bodyText: string): { segments: string[]; truncated
     segments.push(piece);
     total += piece.length;
   }
-  return { segments, truncated };
+  return { segments: packSegments(segments, total), truncated };
+}
+
+/** Joins neighbouring segments until each group reaches its share of the text. Never splits or reorders. */
+function packSegments(segments: string[], total: number): string[] {
+  if (segments.length <= TRANSLATE_MAX_SEGMENTS) return segments;
+  const target = Math.min(TRANSLATE_MAX_SEGMENT_CHARS, Math.ceil(total / TRANSLATE_PACKED_GROUPS));
+  const groups: string[] = [];
+  let group = '';
+  for (const segment of segments) {
+    if (group && group.length + 1 + segment.length > target) {
+      groups.push(group);
+      group = segment;
+    } else group = group ? `${group}\n${segment}` : segment;
+  }
+  if (group) groups.push(group);
+  return groups;
 }
 
 /**
