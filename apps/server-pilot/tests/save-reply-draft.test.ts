@@ -293,6 +293,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const [kept] = await db.select().from(mailDraft).where(eq(mailDraft.id, tabB.id));
           expect(kept).toMatchObject({ status: 'active' });
           expect(kept?.htmlBody).toContain('Tab B newer');
+
+          // Tab B discards its draft. Tab A's confirm still names a draft that is gone, so nothing comes back.
+          await db.update(mailDraft).set({ status: 'discarded' }).where(eq(mailDraft.id, tabB.id));
+          const gone = await refusalOf(nava.drafts.saveReply(saveInput('<p>Tab A</p>', tabAToken)));
+          expect(gone.message).toBe('DRAFT_CHANGED');
+          const active = await db
+            .select()
+            .from(mailDraft)
+            .where(and(eq(mailDraft.threadId, THREAD_ID), eq(mailDraft.status, 'active')));
+          expect(active).toHaveLength(0);
         });
       },
       30000,

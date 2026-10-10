@@ -1814,6 +1814,10 @@ export const draftsRouter = tRouter({
             )
             .limit(1)
             .for('update');
+          // The draft the confirm named was discarded or sent meanwhile: ask again rather than undo that.
+          if (!prior && input.replaceDraft !== undefined) {
+            throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
+          }
           let untouchedSavedReply = false;
           if (prior) {
             const [latest] = await tx
