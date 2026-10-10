@@ -582,6 +582,8 @@ async function queuePosition(db: DB, run: AiWorkflowRun): Promise<number> {
     .where(
       and(
         eq(aiWorkflowRun.executorLane, 'hms'),
+        // Pane jobs only: an hms_write run in the lane is never ahead of a job in this queue.
+        eq(aiWorkflowRun.runKind, 'read_tool'),
         inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
         or(
           gt(aiWorkflowRun.priority, run.priority),

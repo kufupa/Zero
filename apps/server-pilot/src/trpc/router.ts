@@ -25,6 +25,7 @@ import { paneStayLookupRouter } from './routes/pane-stay-lookup.js';
 import { panePartyLookupRouter } from './routes/pane-party-lookup.js';
 import { workItemsRouter } from './routes/work-items.js';
 import { ratesRouter } from './routes/rates.js';
+import { hmsApprovalRouter } from './routes/hms-approval.js';
 
 export const appRouter = router({
   mail: mailRouter,
@@ -48,6 +49,7 @@ export const appRouter = router({
   panePartyLookup: panePartyLookupRouter,
   workItems: workItemsRouter,
   rates: ratesRouter,
+  hmsApproval: hmsApprovalRouter,
 });
 
 export type AppRouter = typeof appRouter;

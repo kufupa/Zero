@@ -5,6 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { login, playwright, readSecret } from './fetch-quote.mjs';
+import { labGuard, parsePenalty } from './cancel-stay-rules.mjs';
 
 const TARGET = {
   confirmation: '11110906-1',
@@ -41,6 +42,18 @@ function sameStay(identity) {
     && identity.lastName.toLowerCase() === TARGET.lastName.toLowerCase()
     && identity.firstName.toLowerCase() === TARGET.firstName.toLowerCase()
     && identity.arrival.toUpperCase() === TARGET.arrival;
+}
+
+// Text of every visible window, so a penalty charge is seen the same way on every page.
+async function visibleWindowTexts(page) {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('.x-window')]
+      .filter((node) => {
+        const box = node.getBoundingClientRect();
+        return box.width > 0 && box.height > 0;
+      })
+      .map((node) => (node.innerText || '').replace(/\s+/g, ' ').slice(0, 400)),
+  );
 }
 
 async function openTarget(page) {
@@ -98,11 +111,16 @@ async function cancelOpenRecord(page) {
   }
   const dialog = page.locator('.x-window:visible').filter({ hasText: 'Cancellation Reason' });
   await dialog.waitFor();
+  // A charge on screen refuses before a reason is picked or OK is clicked, as in cancel-stay-rules runCancelDialog.
+  const penaltyBefore = parsePenalty(await visibleWindowTexts(page));
+  if (penaltyBefore) return { refusedPenalty: penaltyBefore };
   await dialog.locator('textarea:visible').fill('Lab proof cancel');
   await dialog.locator('.x-form-arrow-trigger').click();
   const option = page.locator('.x-boundlist-item:visible').first();
   await option.click();
   await page.waitForTimeout(300);
+  const penaltyNow = parsePenalty(await visibleWindowTexts(page));
+  if (penaltyNow) return { refusedPenalty: penaltyNow };
   const clicked = await page.evaluate(() => {
     const windows = [...document.querySelectorAll('.x-window')].filter((node) => {
       const box = node.getBoundingClientRect();
@@ -131,27 +149,41 @@ async function cancelOpenRecord(page) {
     });
     return windows.map((node) => (node.innerText || '').replace(/\s+/g, ' ').slice(0, 240));
   });
+  // A penalty after OK is left for a person: nothing is clicked on it, and the run reports needs check.
+  const penaltyAfter = parsePenalty(followUp);
+  if (penaltyAfter) return { penaltyPending: penaltyAfter };
   const extra = followUp.find((text) => /11110906-1/.test(text));
   if (extra) {
+    // The full text of every visible window is read in the same call as the click, so a penalty that appeared after
+    // the read above stops the click instead of being confirmed.
     const confirmed = await page.evaluate(() => {
-      const windows = [...document.querySelectorAll('.x-window')].filter((node) => {
+      const visible = [...document.querySelectorAll('.x-window')].filter((node) => {
         const box = node.getBoundingClientRect();
-        return box.width > 0 && box.height > 0 && /11110906-1/.test(node.innerText || '') && !/Cancellation Reason/.test(node.innerText || '');
+        return box.width > 0 && box.height > 0;
       });
-      if (windows.length !== 1) return false;
+      const penalty = visible
+        .map((node) => (node.innerText || '').replace(/\s+/g, ' '))
+        .find((text) => /penalt/i.test(text));
+      if (penalty) return { clicked: false, penalty };
+      const windows = visible.filter(
+        (node) => /11110906-1/.test(node.innerText || '') && !/Cancellation Reason/.test(node.innerText || ''),
+      );
+      if (windows.length !== 1) return { clicked: false };
       const ok = [...windows[0].querySelectorAll('.x-btn')].filter((button) => {
         const box = button.getBoundingClientRect();
         return box.width > 0 && box.height > 0 && (button.innerText || '').trim() === 'OK';
       });
-      if (ok.length !== 1) return false;
+      if (ok.length !== 1) return { clicked: false };
       ok[0].click();
-      return true;
+      return { clicked: true };
     });
-    if (!confirmed) throw new Error(`ABORT_FOLLOWUP:${JSON.stringify(followUp)}`);
+    if (confirmed.penalty) return { penaltyPending: parsePenalty([confirmed.penalty]) ?? confirmed.penalty };
+    if (!confirmed.clicked) throw new Error(`ABORT_FOLLOWUP:${JSON.stringify(followUp)}`);
   } else if (followUp.length) {
     throw new Error(`ABORT_UNKNOWN_DIALOG:${JSON.stringify(followUp)}`);
   }
   await page.waitForTimeout(2000);
+  return { penaltyPending: null };
 }
 
 async function main() {
@@ -187,12 +219,27 @@ async function main() {
       result.outcome = 'aborted_identity';
       return;
     }
+    // The guard runs on the record HMS shows: last name Labtest and an arrival in 2027 or later.
+    const lab = labGuard({ lastName: before.lastName, arrival: before.arrival });
+    if (!lab.ok) {
+      result.outcome = 'refused_not_lab';
+      result.reason = lab.reason;
+      return;
+    }
     if (/cancel/i.test(before.status)) {
       result.outcome = 'already_cancelled';
       result.cancelled = true;
       return;
     }
-    await cancelOpenRecord(page);
+    const cancel = await cancelOpenRecord(page);
+    const penalty = cancel.refusedPenalty ?? cancel.penaltyPending;
+    if (penalty) {
+      result.penaltyText = penalty.text;
+      result.penaltyAmount = penalty.amount;
+      result.outcome = cancel.refusedPenalty ? 'refused_penalty' : 'cancel_penalty_pending';
+      await shot(page, dir, 'penalty.png');
+      return;
+    }
     const after = await readIdentity(page);
     result.after = after;
     result.cancelled = sameStay({ ...after, status: before.status }) && /cancel/i.test(after.status);
@@ -206,9 +253,10 @@ async function main() {
     await writeFile(join(dir, 'cancel-result.json'), JSON.stringify(result, null, 2));
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
+    // Every path reports here, including the early returns above, so a refusal never exits 0.
+    process.stdout.write(`${result.outcome}\n`);
+    if (result.outcome !== 'cancelled' && result.outcome !== 'already_cancelled') process.exitCode = 2;
   }
-  process.stdout.write(`${result.outcome}\n`);
-  if (result.outcome !== 'cancelled' && result.outcome !== 'already_cancelled') process.exitCode = 2;
 }
 
 main().catch((error) => {

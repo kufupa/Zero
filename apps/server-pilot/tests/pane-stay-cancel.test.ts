@@ -690,8 +690,10 @@ describe('pane cancel modes', () => {
     expect(calls.map((call) => call.mode)).toEqual(['preview']);
   });
 
-  it('a charge that opens after the OK comes back with its text, and the cancel is not refused', async () => {
-    enableCancel({ commit: { outcome: 'cancelled', statusAfter: 'Cancelled', penaltyText: CHARGE } });
+  it('a charge that opens after the OK is needs check, not cancelled, and its text comes back', async () => {
+    enableCancel({
+      commit: { outcome: 'cancel_penalty_pending', statusAfter: 'Cancelled', penaltyText: CHARGE },
+    });
     const preview = await previewCancel({ ...stay, owner });
     await expect(
       commitCancel({
@@ -700,7 +702,12 @@ describe('pane cancel modes', () => {
         reason: 'Duplicate Booking',
         previewDigest: preview.previewDigest as string,
       }),
-    ).resolves.toMatchObject({ outcome: 'cancelled', statusAfter: 'Cancelled', penaltyText: CHARGE });
+    ).resolves.toMatchObject({
+      outcome: 'cancel_penalty_pending',
+      statusAfter: 'Cancelled',
+      penaltyText: CHARGE,
+      message: expect.stringContaining('penalty'),
+    });
   });
 
   it('reason is required and a stale digest refuses in on mode, before any second run', async () => {

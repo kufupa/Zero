@@ -26,6 +26,19 @@ export interface S3PutOptions {
   key: string;
   body: Buffer | Uint8Array | Readable;
   contentType: string;
+  /** Write once: fails with PreconditionFailed when the key already exists (sealed evidence). */
+  ifNoneMatch?: boolean;
+}
+
+/** Thrown by a write-once put whose key already exists. */
+export class S3KeyExistsError extends Error {
+  readonly key: string;
+
+  constructor(key: string) {
+    super('S3 object already exists');
+    this.name = 'S3KeyExistsError';
+    this.key = key;
+  }
 }
 
 export interface S3PutResult {
@@ -107,15 +120,22 @@ export class RealS3Storage implements S3Storage {
 
   async putObject(opts: S3PutOptions): Promise<S3PutResult> {
     const body = await toBuffer(opts.body);
-    await this.client.send(
-      new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: opts.key,
-        Body: body,
-        ContentType: opts.contentType,
-        ServerSideEncryption: 'AES256',
-      }),
-    );
+    try {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: opts.key,
+          Body: body,
+          ContentType: opts.contentType,
+          ServerSideEncryption: 'AES256',
+          ...(opts.ifNoneMatch ? { IfNoneMatch: '*' } : {}),
+        }),
+      );
+    } catch (err: unknown) {
+      const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+      if (opts.ifNoneMatch && status === 412) throw new S3KeyExistsError(opts.key);
+      throw err;
+    }
     return { key: opts.key, bucket: this.bucket, bytes: body.byteLength };
   }
 
@@ -256,6 +276,7 @@ export class FakeS3Storage implements S3Storage {
   async putObject(opts: S3PutOptions): Promise<S3PutResult> {
     const body = await toBuffer(opts.body);
     this.calls.push({ op: 'PUT', key: opts.key });
+    if (opts.ifNoneMatch && this.stored.has(opts.key)) throw new S3KeyExistsError(opts.key);
     this.stored.set(opts.key, { body, contentType: opts.contentType });
     return { key: opts.key, bucket: this.bucket, bytes: body.byteLength };
   }
