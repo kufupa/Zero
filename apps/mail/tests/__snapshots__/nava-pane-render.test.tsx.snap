@@ -130,7 +130,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
         </div>
         <section
           aria-label="Contact"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           id="quote-contact"
         >
           <div
@@ -1009,7 +1009,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
         </div>
         <section
           aria-label="Contact"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           id="quote-contact"
         >
           <div
@@ -1199,7 +1199,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
           </div>
           <section
             aria-label="Stay details"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -2270,7 +2270,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
           </section>
           <section
             aria-label="Rates from HMS"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -2396,7 +2396,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
           </section>
           <section
             aria-label="Quote documents"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -2477,7 +2477,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
         </div>
         <section
           aria-label="Reply"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
         >
           <div
             class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -2856,7 +2856,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
         </div>
         <section
           aria-label="Contact"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           id="quote-contact"
         >
           <div
@@ -3046,7 +3046,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
           </div>
           <section
             aria-label="Stay details"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -4117,7 +4117,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
           </section>
           <section
             aria-label="Rates from HMS"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -4243,7 +4243,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
           </section>
           <section
             aria-label="Quote documents"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -4324,7 +4324,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
         </div>
         <section
           aria-label="Reply"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
         >
           <div
             class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -4898,7 +4898,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
         </div>
         <section
           aria-label="Contact"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           id="quote-contact"
         >
           <div
@@ -5031,7 +5031,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
         </section>
         <section
           aria-label="Find the booking"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
         >
           <div
             class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -5121,7 +5121,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
           </div>
           <section
             aria-label="Stay details"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -6192,7 +6192,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
           </section>
           <section
             aria-label="Rates from HMS"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -6318,7 +6318,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
           </section>
           <section
             aria-label="Quote documents"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -6399,7 +6399,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
         </div>
         <section
           aria-label="Reply"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
         >
           <div
             class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -6638,7 +6638,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
         </div>
         <section
           aria-label="Contact"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           id="quote-contact"
         >
           <div
@@ -6771,7 +6771,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
         </section>
         <section
           aria-label="Find the booking"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
         >
           <div
             class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -6861,7 +6861,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
           </div>
           <section
             aria-label="Stay details"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -7932,7 +7932,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
           </section>
           <section
             aria-label="Rates from HMS"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -8058,7 +8058,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
           </section>
           <section
             aria-label="Quote documents"
-            class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           >
             <div
               class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
@@ -8139,7 +8139,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
         </div>
         <section
           aria-label="Reply"
-          class="overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
         >
           <div
             class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
