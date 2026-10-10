@@ -12,12 +12,14 @@ import {
   noteFragments,
   parseAe4Config,
   parseTrpcBatch,
+  planAe4Stay,
   randToMinor,
   ratesRunOf,
   storedWorkView,
   textHasAmount,
   textHasNote,
   xlsxText,
+  type Ae4StayRead,
   type Ae4Summary,
 } from '../scripts/nava-ae4-override-proof';
 import { KNOWN_WRITE_PROCEDURES } from '../scripts/nava-preview-run';
@@ -261,7 +263,9 @@ describe('config', () => {
       rateMinor: 185_000,
       note: NOTE,
       allowNoEvent: false,
+      allowEdits: false,
     });
+    expect(parseAe4Config(['--threads', 't-1'], env({ NAVA_PROOF_ALLOW_EDITS: '1' }), dir).inputs.allowEdits).toBe(true);
   });
 
   it('refuses more than one thread, a stay before 2027 and bad inputs', () => {
@@ -298,6 +302,10 @@ describe('verdict', () => {
     workflowRunId: 'run',
     workEventId: null,
     hmsReads: 1,
+    editsAllowed: false,
+    filledFields: [],
+    activeMailboxSwitched: true,
+    restored: true,
     blocked: [],
     blocker: null,
   };
@@ -311,6 +319,11 @@ describe('verdict', () => {
     expect(ae4Failures({ ...passing, screenshots: { review: false, pane: true } })).toEqual([
       'a review screenshot is missing',
     ]);
+  });
+
+  it('fails when the switched default mailbox was not restored', () => {
+    expect(ae4Failures({ ...passing, restored: false })).toEqual(['the default mailbox was not restored after the run']);
+    expect(ae4Failures({ ...passing, activeMailboxSwitched: false, restored: false })).toEqual([]);
   });
 
   it('needs a quote work item unless the run allows no event', () => {
@@ -328,5 +341,73 @@ describe('verdict', () => {
       'blocker: timed out: the PDF',
       'PDF does not show the override rate',
     ]);
+  });
+});
+
+describe('the stay', () => {
+  const OPTIONS = [
+    { value: '', label: 'Choose a room type' },
+    { value: 'STQN', label: 'Standard Queen (STQN)' },
+    { value: 'STWN', label: 'Standard Twin (STWN)' },
+  ];
+  const inputs = { arrival: '2027-03-10', departure: '2027-03-11', room: 'STQN', board: 'bb' as const };
+  /** The live incident: a stored quote with 2026-11-02 to 06, one room, two adults, B&B. */
+  const stored: Ae4StayRead = {
+    rows: 1,
+    arrival: '2026-11-02',
+    departure: '2026-11-06',
+    roomValue: 'STWN',
+    roomOptions: OPTIONS,
+    rooms: '1',
+    adults: '2',
+    board: 'bb',
+  };
+
+  it('uses a stored stay as it is and types nothing', () => {
+    expect(planAe4Stay(stored, inputs)).toEqual([]);
+    expect(planAe4Stay({ ...stored, adults: '1', rooms: '3', board: 'room_only' }, inputs)).toEqual([]);
+  });
+
+  it('fills only what the stored stay is missing', () => {
+    expect(planAe4Stay({ ...stored, rooms: '' }, inputs)).toEqual([{ field: 'rooms', value: '1' }]);
+    expect(planAe4Stay({ ...stored, adults: '0', board: 'unknown' }, inputs)).toEqual([
+      { field: 'adults', value: '2' },
+      { field: 'board', value: 'bb' },
+    ]);
+    const asked = {
+      ...stored,
+      roomValue: 'Single',
+      roomOptions: [...OPTIONS, { value: 'Single', label: 'Email asked for Single — pick a room type' }],
+    };
+    expect(planAe4Stay(asked, inputs)).toEqual([{ field: 'roomType', value: 'STQN' }]);
+    expect(planAe4Stay({ ...stored, roomValue: '' }, inputs)).toEqual([{ field: 'roomType', value: 'STQN' }]);
+  });
+
+  it('never fills a date the stay has, and never guesses the other one', () => {
+    const fills = planAe4Stay({ ...stored, rooms: '' }, inputs);
+    expect(fills.some((fill) => fill.field === 'arrival' || fill.field === 'departure')).toBe(false);
+    expect(() => planAe4Stay({ ...stored, departure: '' }, inputs)).toThrow('only one of its dates');
+    expect(() => planAe4Stay({ ...stored, arrival: '' }, inputs)).toThrow('only one of its dates');
+  });
+
+  it('types the default stay only when the pane has none', () => {
+    expect(planAe4Stay({ ...stored, rows: 0, arrival: '', departure: '', roomValue: '', rooms: '', adults: '', board: '' }, inputs)).toEqual([
+      { field: 'stay', value: '' },
+      { field: 'arrival', value: '2027-03-10' },
+      { field: 'departure', value: '2027-03-11' },
+      { field: 'roomType', value: 'STQN' },
+      { field: 'rooms', value: '1' },
+      { field: 'adults', value: '2' },
+      { field: 'board', value: 'bb' },
+    ]);
+    // A blank row with no dates is no stay either: its dates come from the inputs.
+    expect(planAe4Stay({ ...stored, arrival: '', departure: '' }, inputs)).toEqual([
+      { field: 'arrival', value: '2027-03-10' },
+      { field: 'departure', value: '2027-03-11' },
+    ]);
+  });
+
+  it('refuses a quote with more than one row', () => {
+    expect(() => planAe4Stay({ ...stored, rows: 2 }, inputs)).toThrow('AE4 needs one stay with one room');
   });
 });

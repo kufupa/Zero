@@ -209,6 +209,8 @@ describe('verdict', () => {
     shownDeparture: '2026-11-06',
     arrivalMismatch: false,
     screenshots: { amend: true, pane: true },
+    activeMailboxSwitched: false,
+    restored: false,
     blocked: ['workItems.open (write)'],
     blocker: null,
   };

@@ -7,18 +7,25 @@
  *   - the Excel has one line per stay x room and one total row; the PDF exists and covers every stay.
  *
  * The driver opens one thread in /nava-preview, waits for the pane to read it, and sets the type to Quote if needed. Where
- * a room row is missing what the rates run needs, it fills it the way staff would and records what it used:
+ * a room row is missing what the rates run needs, it fills it the way staff would and records what it used (filledFields,
+ * roomSplitUsed). It edits a real thread, so it does so only with NAVA_PROOF_ALLOW_EDITS=1; without it a run that needs
+ * any fill (or the type change) stops with the blocker "needs_edits:<fields>" before touching the pane:
  *   - rooms: the deterministic split NAVA_AE1_ROOMS (default 15/15: room 1 of each stay gets 15, room 2 gets 15);
  *   - room type: where the select says "Email asked for X — pick a room type", the first listed HMS room type that
  *     matches X (Twin for "double/twin"; Queen, then King, for "single" or "double");
  *   - adults per room: 1 for a single, else 2 (NAVA_AE1_ADULTS overrides, e.g. "1/2");
  *   - meal plan: NAVA_AE1_BOARD (default bb) only where the pane has none.
- * A value the pane already has is kept. If the pane refuses a value (it does not take, or Get rates stays disabled), the
+ * A value the pane already has is kept, never overwritten. If the pane refuses a value (it does not take, or Get rates stays disabled), the
  * run stops with a blocker; it never works around a product rule.
  *
  * Then it runs each stay's own search ("Run Search availability <dates>" in the pane's HMS steps), waits for "k of N
  * stays rated", screenshots the rates step, prepares the combined quote PDF and downloads the Excel, and screenshots the
  * documents step. Guest details are masked in every screenshot.
+ *
+ * Mailbox: when NAVA_PREVIEW_TRANSPORT_ID is not the account's default mailbox, the driver makes it the default with
+ * connections.setDefault before opening the pane (the pane's PDF/Excel identity check uses the default) and always puts the
+ * previous default back afterwards (nava-proof-safety.ts withActiveMailbox). The summary records activeMailboxSwitched and
+ * restored; a failed restore fails the run. Only the driver's own two setDefault calls pass the guard.
  *
  * Guard: every tRPC request is checked by procedure name. Reads and the analysis pass. Of the writes only these pass:
  * workItems.open and workItems.recordEvent (the pane logs the field edits), workstation.executeStaffQuote once per stay
@@ -33,9 +40,11 @@
  * hitl_tool_run kind pdf when the ledger is on. The Excel writes nothing.
  *
  * Environment (values are never printed): NAVA_PREVIEW_BASE_URL, NAVA_PREVIEW_STORAGE_STATE, NAVA_PREVIEW_RESOLVE_TO,
- * NAVA_PREVIEW_TRANSPORT_ID, NAVA_PREVIEW_CHROMIUM as nava-preview-run.ts; NAVA_AE1_ROOMS, NAVA_AE1_ADULTS, NAVA_AE1_BOARD.
+ * NAVA_PREVIEW_TRANSPORT_ID, NAVA_PREVIEW_CHROMIUM as nava-preview-run.ts; NAVA_AE1_ROOMS, NAVA_AE1_ADULTS, NAVA_AE1_BOARD;
+ * NAVA_PROOF_ALLOW_EDITS=1 to let it fill missing room counts, adults, meal plans and room types (the AE1 email has no
+ * counts, so AE1 needs it on).
  *
- * Usage: nava-preview-gate.sh --ae1-rates <thread-id>   (signs in, then runs:)
+ * Usage: NAVA_PROOF_ALLOW_EDITS=1 nava-preview-gate.sh --ae1-rates <thread-id>   (signs in, then runs:)
  *   pnpm --dir apps/server-pilot exec tsx scripts/nava-ae1-rates-proof.ts --threads <id> --out <dir> --timeout-ms 600000
  *
  * Output: <out>/summary.json, rates.png, documents.png, pane.png, quote.pdf, quote.xlsx. The last stdout line is the
@@ -58,17 +67,27 @@ import {
   type StoredWorkView,
 } from './nava-ae4-override-proof';
 import {
+  allowEditsFrom,
+  browserMailboxApi,
   captureShots,
   countWorkbookLines,
   DOC_MS,
+  mailboxFailures,
+  MailboxSwitchError,
+  needsEditsMessage,
+  newMailboxPermit,
+  newMailboxSwitch,
   openProofPage,
   openThread,
   rateSegments,
   STEP_MS,
   SETTLE_MS,
   unexpectedBlocks,
+  withActiveMailbox,
+  withMailboxPermit,
   xlsxSheetRows,
   type GuardDecision,
+  type MailboxRecord,
 } from './nava-proof-kit';
 import { ANALYSIS_PROCEDURES, KNOWN_WRITE_PROCEDURES, parseRunConfig, READ_PROCEDURES, redactText, type RunConfig } from './nava-preview-run';
 
@@ -96,6 +115,8 @@ export type Ae1Inputs = {
   /** Adults per room for room 1, room 2, …; empty derives them from the asked room type. */
   adultsSplit: number[];
   board: Board;
+  /** NAVA_PROOF_ALLOW_EDITS=1: the driver may fill what the pane is missing. Off, a needed fill stops the run. */
+  allowEdits: boolean;
 };
 export type Ae1Config = RunConfig & { threadId: string; inputs: Ae1Inputs };
 
@@ -119,7 +140,7 @@ export function parseAe1Config(argv: readonly string[], env: NodeJS.ProcessEnv, 
   const adultsSplit = adultsRaw ? parseSplit(adultsRaw, 'NAVA_AE1_ADULTS', 9) : [];
   const board = env.NAVA_AE1_BOARD?.trim() || 'bb';
   if (!BOARDS.has(board)) throw new Error('NAVA_AE1_BOARD must be room_only, bb or dinner_bb');
-  return { ...base, threadId: base.selection.ids[0]!, inputs: { roomSplit, adultsSplit, board: board as Board } };
+  return { ...base, threadId: base.selection.ids[0]!, inputs: { roomSplit, adultsSplit, board: board as Board, allowEdits: allowEditsFrom(env) } };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -393,6 +414,19 @@ export function planRoomRows(rows: readonly PaneRoomRow[], inputs: Ae1Inputs): {
   return { plans, split: { rule: `${inputs.roomSplit.join('/')} rooms per stay where the pane has none`, rows: used } };
 }
 
+/** The fields a plan fills, as "stay<n>.room<m>.<field>". Empty when the pane already has every value the run needs. */
+export function filledFieldsOf(split: RoomSplit): string[] {
+  return split.rows.flatMap((row) => {
+    const where = `stay${row.stay}.room${row.room}`;
+    return [
+      row.roomTypeFilled ? `${where}.roomType` : null,
+      row.roomsFilled ? `${where}.rooms` : null,
+      row.adultsFilled ? `${where}.adults` : null,
+      row.boardFilled ? `${where}.board` : null,
+    ].filter((field): field is string => field !== null);
+  });
+}
+
 /** Browser-side: the Stay details step's room rows, in page order. Plain JS, no DOM types. */
 export const READ_ROWS_JS = `() => {
   const pane = document.querySelector('[data-preview-pane]');
@@ -438,7 +472,7 @@ async function readRoomRows(page: Page): Promise<PaneRoomRow[]> {
 // ---------------------------------------------------------------------------------------------------------------------
 // Summary
 
-export type Ae1Summary = {
+export type Ae1Summary = MailboxRecord & {
   ok: boolean;
   run: string;
   threadId: string;
@@ -468,6 +502,10 @@ export type Ae1Summary = {
   /** Exactly one total row, equal to the sum of the lines. */
   xlsxTotalRow: boolean | null;
   roomSplitUsed: RoomSplit;
+  /** NAVA_PROOF_ALLOW_EDITS was on. */
+  editsAllowed: boolean;
+  /** What the driver typed into the thread: "type" for the treat-as change, "stay<n>.room<m>.<field>" per filled value. */
+  filledFields: string[];
   screenshots: { rates: boolean; documents: boolean; pane: boolean };
   workflowRunIds: string[];
   blocked: string[];
@@ -494,6 +532,7 @@ export function ae1Failures(summary: Omit<Ae1Summary, 'ok' | 'failures'>): strin
     }
     if (summary.xlsxTotalRow !== true) failures.push('the Excel has no single total row that adds up');
   }
+  failures.push(...mailboxFailures(summary));
   const unexpected = unexpectedBlocks(summary.blocked, AE1_EXPECTED_BLOCKS);
   if (unexpected.length) failures.push(`the guard blocked: ${unexpected.join(', ')}`);
   if (!summary.screenshots.rates || !summary.screenshots.documents) failures.push('a screenshot is missing');
@@ -545,6 +584,10 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     xlsxExtraRows: null,
     xlsxTotalRow: null,
     roomSplitUsed: { rule: `${inputs.roomSplit.join('/')} rooms per stay where the pane has none`, rows: [] },
+    editsAllowed: inputs.allowEdits,
+    filledFields: [],
+    activeMailboxSwitched: false,
+    restored: false,
     screenshots: { rates: false, documents: false, pane: false },
     workflowRunIds: [],
     blocked: [],
@@ -567,7 +610,9 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
       throw new Blocker('treat-as select ("Nava reads this as") is missing');
     });
     if ((await type.inputValue()) !== 'quote') {
+      if (!inputs.allowEdits) throw new Blocker(needsEditsMessage(['type']));
       await type.selectOption('quote');
+      summary.filledFields.push('type');
       log('type set to Quote');
     }
     await waitFor('the room rows', SETTLE_MS, async () =>
@@ -586,6 +631,10 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
       throw new Blocker(error instanceof Error ? error.message : 'the room rows cannot be filled');
     }
     summary.roomSplitUsed = planned.split;
+    // A real thread: nothing is typed without NAVA_PROOF_ALLOW_EDITS=1, and a present value is never overwritten.
+    const fills = filledFieldsOf(planned.split);
+    if (fills.length && !inputs.allowEdits) throw new Blocker(needsEditsMessage(fills));
+    summary.filledFields.push(...fills);
     const details = pane.locator('section[aria-label="Stay details"]');
     for (const plan of planned.plans) {
       if (plan.roomType) await details.locator('select[aria-label="Room type"]').nth(plan.index).selectOption(plan.roomType);
@@ -740,14 +789,20 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     log(`screenshots: rates=${summary.screenshots.rates} documents=${summary.screenshots.documents}`);
   };
 
-  const { browser, context, page, captured } = await openProofPage(config, (url, postData) =>
-    classifyAe1Request(url, postData, state),
+  const permit = newMailboxPermit();
+  const mailbox = newMailboxSwitch();
+  const { browser, context, page, captured } = await openProofPage(
+    config,
+    withMailboxPermit((url, postData) => classifyAe1Request(url, postData, state), permit),
   );
   try {
     try {
-      await steps(page, captured);
+      // The run's transport is the active mailbox while the pane is open; the previous default comes back after.
+      await withActiveMailbox(browserMailboxApi(context, config.baseUrl, permit), config.transportId, mailbox, log, () =>
+        steps(page, captured),
+      );
     } catch (error) {
-      if (!(error instanceof Blocker)) throw error;
+      if (!(error instanceof Blocker) && !(error instanceof MailboxSwitchError)) throw error;
       summary.blocker = error.message;
       const shots = await captureShots(page, config.outDir, { rates: RATES_SECTION, documents: DOCUMENTS_SECTION }).catch(
         () => ({}) as Record<string, boolean>,
@@ -756,6 +811,8 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     }
     await context.close();
   } finally {
+    summary.activeMailboxSwitched = mailbox.activeMailboxSwitched;
+    summary.restored = mailbox.restored;
     await browser.close();
   }
   summary.ratesRuns = state.ratedStayKeys.length;

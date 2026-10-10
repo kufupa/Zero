@@ -17,16 +17,25 @@
 #   nava-preview-gate.sh --ae1-rates <thread-id> [--dry-run] AE1 multi-stay rates proof on one thread
 #   nava-preview-gate.sh --ae2-find <thread-id> [--dry-run]  AE2 amendment find proof on one thread
 #
-# --ae4 drives scripts/nava-ae4-override-proof.ts with the same sign-in: it sets the type to Quote, types one 2027 stay,
-# saves an NCOR1B override, prepares the PDF and the Excel and screenshots the row's review. Unlike the viewer gate it
-# writes: the work item and its field and rate events, one rates run (the one HMS call, a read) and the documents. No
-# HMS or mailbox write can pass its guard. Its last stdout line is the AE4 summary as one JSON line. Use an internal,
-# non-guest thread whose stored read is a quote request; NAVA_AE4_ALLOW_NO_EVENT=1 runs on any thread without the event.
+# --ae4 drives scripts/nava-ae4-override-proof.ts with the same sign-in: it uses the stay the pane already has (it
+# never overwrites a stored stay), saves an NCOR1B override, prepares the PDF and the Excel and screenshots the row's
+# review. Unlike the viewer gate it writes: the work item and its rate event, one rates run (the one HMS call, a read)
+# and the documents. No HMS or mailbox write can pass its guard. Its last stdout line is the AE4 summary as one JSON
+# line. Use an internal, non-guest thread whose stored read is a quote request; NAVA_AE4_ALLOW_NO_EVENT=1 runs on any
+# thread without the event.
 #
 # --ae1-rates drives scripts/nava-ae1-rates-proof.ts: on a multi-stay quote it fills missing room counts with the split
 # NAVA_AE1_ROOMS (default 15/15 per stay) and picks a listed room type for "Email asked for X", runs each stay's rates
 # search once, prepares the combined quote PDF and downloads the Excel. HMS: one rates read per stay, at most one party
 # search, no write. Writes: field.edit work events, per stay one ai_draft_generation and ai_workflow_run, the documents.
+#
+# Edits: a proof fills a field only where the pane is missing it, and only with NAVA_PROOF_ALLOW_EDITS=1 (default off).
+# Without it a run that needs a fill stops with the blocker "needs_edits:<fields>" before it types anything. AE1 needs it
+# on for the email's missing room counts: NAVA_PROOF_ALLOW_EDITS=1 nava-preview-gate.sh --ae1-rates <thread-id>.
+#
+# Mailbox: the pane's PDF/Excel identity check uses the account's default mailbox. When TRANSPORT_ID is not the default,
+# a proof makes it the default with connections.setDefault for the run and always puts the previous default back (the
+# summary's activeMailboxSwitched and restored; a failed restore fails the run).
 #
 # --ae2-find drives scripts/nava-ae2-find-proof.ts: on an amendment thread it clicks "Find this booking in HMS" once and
 # reports which of the email's dates the find sent and what HMS holds. HMS: one read-only find, no write. Writes: the
@@ -202,10 +211,12 @@ if [ "$MODE" = "dry-run" ] || [ "$AE4_DRY" = "1" ]; then
   if [ "$MODE" = "ae4" ]; then
     echo "proof:       AE4 discount override on thread ${AE4_THREAD}, ${AE4_TIMEOUT_MS} ms for the rates run"
     echo "hms:         one rates read (workstation.executeStaffQuote); every HMS write is blocked"
+    echo "edits:       NAVA_PROOF_ALLOW_EDITS=${NAVA_PROOF_ALLOW_EDITS:-0} (only missing stay fields; a stored stay is never overwritten)"
   elif [ "$MODE" = "ae1" ]; then
     echo "proof:       AE1 multi-stay rates on thread ${AE4_THREAD}, ${AE1_TIMEOUT_MS} ms per stay's rates run"
     echo "rooms:       ${NAVA_AE1_ROOMS:-15/15} per stay where the pane has no count (NAVA_AE1_ROOMS)"
     echo "hms:         one rates read per stay (workstation.executeStaffQuote), at most one party search; every HMS write is blocked"
+    echo "edits:       NAVA_PROOF_ALLOW_EDITS=${NAVA_PROOF_ALLOW_EDITS:-0} (AE1 needs 1 to fill the missing room counts)"
   elif [ "$MODE" = "ae2" ]; then
     echo "proof:       AE2 amendment find on thread ${AE4_THREAD}, ${AE2_TIMEOUT_MS} ms for the find job"
     echo "hms:         one read-only find (paneStayLookup.queueFind); every HMS and mailbox write is blocked"
