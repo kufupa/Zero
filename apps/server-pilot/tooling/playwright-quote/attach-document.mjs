@@ -267,8 +267,8 @@ async function openUploadForm(page) {
   });
 }
 
-// ponytail: the Documents tab, the upload form and the list are not captured from live HMS yet (U28-H2). Only reached
-// once ATTACH_VERIFIED=true.
+// ponytail: the Documents tab and Create/Upload Document were captured live (U28-H2); the upload and list read-back are
+// proven only once an H2 run attaches. Only reached once ATTACH_VERIFIED=true.
 async function uploadDocument(ctx, args, state) {
   const { page } = ctx;
   await page.getByText(/^Documents$/).first().click();
@@ -277,10 +277,32 @@ async function uploadDocument(ctx, args, state) {
   const listedBefore = await listedName.count();
   const form = await openUploadForm(page);
   await form.waitForLoadState('domcontentloaded');
-  await form.locator('input[type=file]').first().setInputFiles(args.file);
-  await form.locator('input[name=filename]:visible').first().fill(args.documentName);
+  await shot({ ...ctx, page: form }, 'form.png');
+  // In-page, every field is read from the popup window only, never from the record form behind it.
+  const popup = form === page
+    ? page.locator('.x-window:visible').filter({ has: page.locator('input[type=file]') }).last()
+    : form.locator('body');
+  // H5: uploadorcreatedoc U (upload) makes filename required; C sends no checkfile and needs a server path. The popup
+  // opens without the radio in its params, so U is set the way a click sets it (client-side field states only).
+  const radio = await form.evaluate(() => {
+    const win = window.Ext?.ComponentQuery?.query('window[itemId=BSUPLD]')[0];
+    const upload = win?.down('radio[name=uploadorcreatedoc][inputValue=U]');
+    if (!upload) return 'absent';
+    if (!upload.getValue()) upload.setValue(true);
+    return upload.getValue() ? 'U' : 'unset';
+  }).catch(() => 'absent');
+  if (radio === 'unset') throw new Error('upload_radio_not_set');
+  // H2 live: the form's filename field IS the file input, so the document name is the uploaded file's own name.
+  await popup.locator('input[type=file]').first().setInputFiles({
+    name: args.documentName,
+    mimeType: 'application/pdf',
+    buffer: await readFile(args.file),
+  });
+  // ponytail: description is optional in bsupld_processUpload; filled when the form shows it so the list reads clearly.
+  const description = popup.locator('input[name=description]:visible');
+  if (await description.count()) await description.first().fill(args.documentName);
   await shot({ ...ctx, page: form }, 'before.png');
-  await form.getByRole('button', { name: /^Upload$/ }).first().click();
+  await popup.getByRole('button', { name: /^Upload$/ }).first().click();
   // The route guard sets state.uploadSent when the upload leaves. Listed only when one more row shows the name.
   await page.waitForFunction(
     ({ name, before }) => [...document.querySelectorAll('body *')]
@@ -383,6 +405,7 @@ async function attachLive(args, dir) {
   return {
     outcome: attachOutcome(state),
     uploadSent: state.uploadSent,
+    listed: state.listed,
     screenshots: ctx.result.screenshots.map((path) => basename(path)),
     blocked: state.blocked,
     error: state.error,
