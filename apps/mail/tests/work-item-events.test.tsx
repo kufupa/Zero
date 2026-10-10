@@ -472,6 +472,50 @@ describe('useStoredWork', () => {
     expect(query).toHaveBeenCalledTimes(2);
   });
 
+  it('opens a missing work item in the mailbox its lookup was made in', async () => {
+    setMailCacheScope({ userId: 'user', activeTransportId: 'transport-a' });
+    try {
+      const { trpc } = fakeTrpc(() => ({ ...READY, workItemId: null, workItemStatus: null }));
+      const open = vi.fn(async (_input: unknown, _opts?: unknown) => READY);
+      const routes = { workItems: { ...trpc.workItems, open: { mutate: open } } };
+      const { result } = renderHook(() =>
+        useStoredWork({ trpc: routes, internetMessageId: 'm-1', scope: 'user:session:transport-a' }),
+      );
+      await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
+      expect(open.mock.calls).toEqual([[{ internetMessageId: 'm-1' }, { context: { activeTransportId: 'transport-a' } }]]);
+    } finally {
+      setMailCacheScope({ userId: null, activeTransportId: null });
+    }
+  });
+
+  it('never opens a work item in the mailbox switched to while the lookup was out', async () => {
+    setMailCacheScope({ userId: 'user', activeTransportId: 'transport-a' });
+    try {
+      const { trpc, query } = fakeTrpc(() => READY);
+      let answerA: (work: StoredWork) => void = () => undefined;
+      query.mockImplementationOnce(() => new Promise<StoredWork>((resolve) => (answerA = resolve)));
+      const open = vi.fn(async (_input: unknown, _opts?: unknown) => READY);
+      const routes = { workItems: { ...trpc.workItems, open: { mutate: open } } };
+      const { result, rerender } = renderHook(
+        ({ scope }: { scope: string }) => useStoredWork({ trpc: routes, internetMessageId: 'm-1', scope }),
+        { initialProps: { scope: 'user:session:transport-a' } },
+      );
+      // Mailbox A's lookup is out, pinned to A. She switches to mailbox B, whose lookup finds its own work item.
+      expect(query.mock.calls[0]).toEqual([{ internetMessageId: 'm-1' }, { context: { activeTransportId: 'transport-a' } }]);
+      setMailCacheScope({ userId: 'user', activeTransportId: 'transport-b' });
+      rerender({ scope: 'user:session:transport-b' });
+      await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
+      // A's read comes back late with no work item: no open goes out under B (the shared Message-ID's other mailbox).
+      await act(async () => {
+        answerA({ ...READY, workItemId: null, workItemStatus: null });
+        await Promise.resolve();
+      });
+      expect(open).not.toHaveBeenCalled();
+    } finally {
+      setMailCacheScope({ userId: null, activeTransportId: null });
+    }
+  });
+
   it('drops a failed save when a newer edit to the same field replaces it', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {

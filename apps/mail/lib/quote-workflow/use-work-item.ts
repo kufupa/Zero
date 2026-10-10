@@ -323,6 +323,8 @@ export function useStoredWork(args: {
       query: routes.getByMessage,
       open: routes.open,
       internetMessageId,
+      transportId,
+      isStale: () => !current,
       onRead: () => clearTimeout(timer),
       openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS,
     }).then(settle);
