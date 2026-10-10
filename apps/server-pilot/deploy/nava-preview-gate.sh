@@ -13,6 +13,13 @@
 #   nava-preview-gate.sh                                    run on the EC2 host
 #   nava-preview-gate.sh --dry-run                          plan and config check only
 #   nava-preview-gate.sh --summarize <results.json | run>   summary of an existing run
+#   nava-preview-gate.sh --ae4 <thread-id> [--dry-run]      AE4 discount-override proof on one thread
+#
+# --ae4 drives scripts/nava-ae4-override-proof.ts with the same sign-in: it sets the type to Quote, types one 2027 stay,
+# saves an NCOR1B override, prepares the PDF and the Excel and screenshots the row's review. Unlike the viewer gate it
+# writes: the work item and its field and rate events, one rates run (the one HMS call, a read) and the documents. No
+# HMS or mailbox write can pass its guard. Its last stdout line is the AE4 summary as one JSON line. Use an internal,
+# non-guest thread whose stored read is a quote request; NAVA_AE4_ALLOW_NO_EVENT=1 runs on any thread without the event.
 #
 # Secrets: the pilot password comes from Secrets Manager (or PLAYWRIGHT_REAL_MAIL_PASSWORD)
 # and goes to node on stdin only. No secret is printed, echoed, or put on a command line.
@@ -30,6 +37,8 @@ LATEST_COUNT=20
 SELECTION=(--latest "$LATEST_COUNT")
 if [ -n "${NAVA_PREVIEW_THREADS:-}" ]; then SELECTION=(--threads "$NAVA_PREVIEW_THREADS"); fi
 RUNNER_TIMEOUT_MS=90000
+# The AE4 rates run reads HMS (about 2 minutes); the runner waits up to its maximum for it.
+AE4_TIMEOUT_MS=600000
 PILOT_EMAIL="navaai@legacyhotels.co.za"
 PILOT_SECRET_ID="nava-zero/server-pilot/pilot-users"
 # NAVA_PREVIEW_OUT_ROOT is for tests and dry runs only; the EC2 run keeps the default.
@@ -42,6 +51,8 @@ ENV_FILE="${ENV_FILE:-${REPO_ROOT}/apps/server-pilot/.env.production}"
 
 MODE="run"
 SUMMARIZE_TARGET=""
+AE4_THREAD=""
+AE4_DRY=0
 case "${1:-}" in
   "") ;;
   --dry-run) MODE="dry-run" ;;
@@ -53,8 +64,25 @@ case "${1:-}" in
       exit 2
     fi
     ;;
+  --ae4)
+    MODE="ae4"
+    AE4_THREAD="${2:-}"
+    # The same id shape nava-preview-run.ts accepts for --threads.
+    if ! [[ "$AE4_THREAD" =~ ^[A-Za-z0-9_.:~@-]{1,128}$ ]]; then
+      echo "usage: $0 --ae4 <thread-id> [--dry-run]" >&2
+      exit 2
+    fi
+    case "${3:-}" in
+      "") ;;
+      --dry-run) AE4_DRY=1 ;;
+      *)
+        echo "usage: $0 --ae4 <thread-id> [--dry-run]" >&2
+        exit 2
+        ;;
+    esac
+    ;;
   *)
-    echo "usage: $0 [--dry-run | --summarize <results.json | run-dir>]" >&2
+    echo "usage: $0 [--dry-run | --summarize <results.json | run-dir> | --ae4 <thread-id> [--dry-run]]" >&2
     exit 2
     ;;
 esac
@@ -124,6 +152,9 @@ if [ "$MODE" = "summarize" ]; then
   exit 0
 fi
 
+RUN_PREFIX="gate"
+if [ "$MODE" = "ae4" ]; then RUN_PREFIX="ae4"; fi
+
 S3_BUCKET_NAME="${S3_BUCKET:-$(read_env_value S3_BUCKET "$ENV_FILE")}"
 AWS_REGION_NAME="${AWS_REGION:-$(read_env_value AWS_REGION "$ENV_FILE")}"
 AWS_REGION_NAME="${AWS_REGION_NAME:-af-south-1}"
@@ -133,7 +164,7 @@ if [ -n "$BETTER_AUTH_VALUE" ] && [ "$BETTER_AUTH_VALUE" != "$CANONICAL_ORIGIN" 
   fail "refusing: BETTER_AUTH_URL must be ${CANONICAL_ORIGIN}"
 fi
 
-if [ "$MODE" = "dry-run" ]; then
+if [ "$MODE" = "dry-run" ] || [ "$AE4_DRY" = "1" ]; then
   echo "nava-preview gate: dry run. No network, AWS or browser calls are made."
   for tool in node pnpm curl aws; do
     if command -v "$tool" >/dev/null 2>&1; then
@@ -144,10 +175,15 @@ if [ "$MODE" = "dry-run" ]; then
   done
   echo "origin:      ${CANONICAL_ORIGIN} (curl and Chromium pin ${CANONICAL_HOST} to ${RESOLVE_TO})"
   echo "transport:   ${TRANSPORT_ID} (sent as x-zero-active-transport)"
-  echo "selection:   ${SELECTION[*]}, ${RUNNER_TIMEOUT_MS} ms per thread"
+  if [ "$MODE" = "ae4" ]; then
+    echo "proof:       AE4 discount override on thread ${AE4_THREAD}, ${AE4_TIMEOUT_MS} ms for the rates run"
+    echo "hms:         one rates read (workstation.executeStaffQuote); every HMS write is blocked"
+  else
+    echo "selection:   ${SELECTION[*]}, ${RUNNER_TIMEOUT_MS} ms per thread"
+  fi
   echo "sign-in:     POST ${CANONICAL_ORIGIN}/api/auth/sign-in/email as the pilot operator account"
   echo "password:    Secrets Manager ${PILOT_SECRET_ID} (region ${AWS_REGION_NAME}), never printed"
-  echo "output:      ${OUT_ROOT}/gate-<UTC run id>/ (mode 700)"
+  echo "output:      ${OUT_ROOT}/${RUN_PREFIX}-<UTC run id>/ (mode 700)"
   if [ -n "$S3_BUCKET_NAME" ]; then
     echo "gallery:     s3://${S3_BUCKET_NAME}/${GATE_PREFIX}/<run id>/"
   else
@@ -170,7 +206,7 @@ require_tool curl
 require_tool aws
 [ -n "$BETTER_AUTH_VALUE" ] || fail "BETTER_AUTH_URL missing from ${ENV_FILE}"
 
-RUN_ID="gate-$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_ID="${RUN_PREFIX}-$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_DIR="${OUT_ROOT}/${RUN_ID}"
 AUTH_DIR=""
 cleanup() {
@@ -254,30 +290,38 @@ HUSKY=0 pnpm install --frozen-lockfile --reporter=silent || { echo "gate: pnpm i
 
 echo "run: ${RUN_ID}"
 echo "out: ${OUT_DIR}"
+if [ "$MODE" = "ae4" ]; then
+  RUNNER=(scripts/nava-ae4-override-proof.ts --threads "$AE4_THREAD" --out "$OUT_DIR" --timeout-ms "$AE4_TIMEOUT_MS")
+  RESULT_FILE="summary.json"
+  # The AE4 run dir holds only the proof's own files: the summary, two screenshots, the PDF and the Excel.
+  UPLOAD=(--exclude '*' --include 'summary.json' --include '*.png' --include 'quote.pdf' --include 'quote.xlsx')
+else
+  RUNNER=(scripts/nava-preview-run.ts "${SELECTION[@]}" --out "$OUT_DIR" --timeout-ms "$RUNNER_TIMEOUT_MS")
+  RESULT_FILE="results.json"
+  UPLOAD=(--exclude '*' --include 'results.json' --include 'index.html' --include 'threads/*')
+fi
+
 set +e
 NAVA_PREVIEW_BASE_URL="$CANONICAL_ORIGIN" \
 NAVA_PREVIEW_STORAGE_STATE="$AUTH_DIR/storage-state.json" \
 NAVA_PREVIEW_RESOLVE_TO="$RESOLVE_TO" \
 NAVA_PREVIEW_TRANSPORT_ID="$TRANSPORT_ID" \
-pnpm --dir apps/server-pilot exec tsx scripts/nava-preview-run.ts \
-  "${SELECTION[@]}" \
-  --out "$OUT_DIR" \
-  --timeout-ms "$RUNNER_TIMEOUT_MS"
+pnpm --dir apps/server-pilot exec tsx "${RUNNER[@]}"
 RUN_EXIT=$?
 set -e
 
-set +e
-summarize_run "$OUT_DIR"
-set -e
+# The AE4 runner prints its own one-line summary.
+if [ "$MODE" != "ae4" ]; then
+  set +e
+  summarize_run "$OUT_DIR"
+  set -e
+fi
 
-if [ -n "$S3_BUCKET_NAME" ] && [ -f "$OUT_DIR/results.json" ]; then
+if [ -n "$S3_BUCKET_NAME" ] && [ -f "$OUT_DIR/$RESULT_FILE" ]; then
   DEST="s3://${S3_BUCKET_NAME}/${GATE_PREFIX}/${RUN_ID}/"
   if aws s3 sync "$OUT_DIR" "$DEST" \
     --region "$AWS_REGION_NAME" \
-    --exclude '*' \
-    --include 'results.json' \
-    --include 'index.html' \
-    --include 'threads/*' \
+    "${UPLOAD[@]}" \
     --only-show-errors; then
     echo "gallery: ${DEST}"
     echo "fetch on the VPS: aws s3 sync ${DEST} ${OUT_DIR}-gallery/"
@@ -288,5 +332,9 @@ else
   echo "gallery: local only in ${OUT_DIR}"
 fi
 
-echo "runner exit: ${RUN_EXIT} (0 pass, 1 gate failure, 2 config or launch)"
+if [ "$MODE" = "ae4" ]; then
+  echo "runner exit: ${RUN_EXIT} (0 AE4 pass, 1 AE4 failed, 2 blocked, config or launch)"
+else
+  echo "runner exit: ${RUN_EXIT} (0 pass, 1 gate failure, 2 config or launch)"
+fi
 exit "$RUN_EXIT"

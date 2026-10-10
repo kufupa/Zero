@@ -587,7 +587,7 @@ async function listLatest(page: Page, count: number): Promise<string[]> {
  * Grows the viewport so the whole pane shows in the capture. The pane is as tall as the viewport and its body is the
  * only scroller, so the viewport grows by the body's overflow. Nothing is clicked or scrolled.
  */
-async function fitPaneToContent(page: Page): Promise<void> {
+export async function fitPaneToContent(page: Page): Promise<void> {
   await page.setViewportSize(VIEWPORT).catch(() => undefined);
   const overflow = await page
     .evaluate(`(${PANE_OVERFLOW_JS})()`)

@@ -158,6 +158,36 @@ describe('nava-preview-gate.sh --dry-run', () => {
   });
 });
 
+describe('nava-preview-gate.sh --ae4', () => {
+  it('plans the AE4 proof on one thread with one HMS read', () => {
+    const env = envFile(['S3_BUCKET=test-bucket-xyz', 'BETTER_AUTH_URL=https://nava.legacyhotels.co.za']);
+    const result = gateRun(['--ae4', 'thread-ae4', '--dry-run'], { ENV_FILE: env });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('AE4 discount override on thread thread-ae4');
+    expect(result.stdout).toContain('one rates read (workstation.executeStaffQuote)');
+    expect(result.stdout).toContain('/opt/nava/shared/nava-preview/ae4-<UTC run id>/');
+    expect(result.stdout).not.toContain('--latest 20');
+  });
+
+  it('refuses a missing or malformed thread id and an unknown trailing flag', () => {
+    for (const args of [['--ae4'], ['--ae4', 'bad id;rm'], ['--ae4', 'thread-ae4', '--now']]) {
+      const result = gateRun(args);
+      expect(result.status, args.join(' ')).toBe(2);
+      expect(result.stderr).toContain('usage:');
+    }
+  });
+
+  it('runs the AE4 runner and uploads only its own files', () => {
+    const script = readFileSync(gate, 'utf8');
+    expect(script).toContain(
+      'RUNNER=(scripts/nava-ae4-override-proof.ts --threads "$AE4_THREAD" --out "$OUT_DIR" --timeout-ms "$AE4_TIMEOUT_MS")',
+    );
+    expect(script).toContain(
+      "UPLOAD=(--exclude '*' --include 'summary.json' --include '*.png' --include 'quote.pdf' --include 'quote.xlsx')",
+    );
+  });
+});
+
 describe('nava-preview-gate.sh --summarize', () => {
   it('prints counts and thread ids, never subjects, emails or phone numbers', () => {
     const runDir = fixtureRun(['intent', 'intent', 'unsynced', 'timeout']);
