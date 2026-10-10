@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, notExists, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailThread, message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
@@ -519,6 +519,7 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
   if (!row?.kind || !row.payload) return null;
   return {
     id: row.id,
+    createdAt: row.createdAt,
     kind: row.kind as MailKind,
     payload: row.payload as MailExtractionPayload,
     attachments: row.attachments as AttachmentRead[] | null,
@@ -563,13 +564,78 @@ export async function ensureWorkItemForMessage(
       ),
     )
     .limit(1);
-  return ensureWorkItem(db, {
+  const item = await ensureWorkItem(db, {
     transportId: input.transportId,
     threadId: msg.threadId,
     messageId: input.messageId,
     kind: latest.kind,
     extractionId: latest.id,
     status: reply ? 'done' : undefined,
+  });
+  await dismissSupersededItems(db, {
+    transportId: input.transportId,
+    threadId: msg.threadId,
+    messageId: input.messageId,
+    latest,
+  });
+  return item;
+}
+
+/**
+ * A newer read that changes the kind gets its own work item, so the item made from the older read would stay in Needs
+ * you beside it. That older item is dismissed, with a system event, only while nobody has touched it: still needs_you,
+ * no saved values, no event from a person, and on a read older than the latest. Anything else is left as it is.
+ */
+async function dismissSupersededItems(
+  db: DB,
+  input: {
+    transportId: string;
+    threadId: string;
+    messageId: string;
+    latest: { id: string; kind: MailKind; createdAt: Date };
+  },
+): Promise<void> {
+  const staleItems = (tx: WorkTx) =>
+    tx
+      .select({ id: workItem.id })
+      .from(workItem)
+      .innerJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
+      .where(
+        and(
+          eq(workItem.transportId, input.transportId),
+          eq(workItem.threadId, input.threadId),
+          eq(workItem.sourceMessageId, input.messageId),
+          ne(workItem.kind, input.latest.kind),
+          eq(workItem.status, 'needs_you'),
+          sql`${workItem.state} = '{}'::jsonb`,
+          lt(mailExtraction.createdAt, input.latest.createdAt),
+          notExists(
+            tx
+              .select({ one: sql`1` })
+              .from(workEvent)
+              .where(and(eq(workEvent.workItemId, workItem.id), eq(workEvent.actorKind, 'user'))),
+          ),
+        ),
+      );
+  // Most calls find nothing, so the lock is only taken when there is something to dismiss.
+  if (!(await staleItems(db)).length) return;
+  await db.transaction(async (tx) => {
+    // The row lock holds off a field save (recordFieldEvent locks the same row) between this check and the update.
+    const stale = await staleItems(tx).for('update', { of: workItem });
+    if (!stale.length) return;
+    const ids = stale.map((row) => row.id);
+    await tx
+      .update(workItem)
+      .set({ status: 'dismissed', updatedAt: new Date() })
+      .where(inArray(workItem.id, ids));
+    await tx.insert(workEvent).values(
+      ids.map((workItemId) => ({
+        workItemId,
+        actorKind: 'system' as const,
+        type: 'status.changed' as const,
+        value: { from: 'needs_you', to: 'dismissed', reason: 'superseded_read', extractionId: input.latest.id },
+      })),
+    );
   });
 }
 

@@ -481,6 +481,64 @@ describe('work item upsert', () => {
       expect(work.workItemId).toBe(after?.id);
       expect(work.analysis.intent).toBe('quote');
       expect(work.analysis.groups[0]!.organisation).toBe('Horizon Trail Tours');
+
+      // Nobody touched the item from the older read, so it is dismissed with a system event and leaves Needs you.
+      const [stale] = await db.select().from(workItem).where(eq(workItem.id, before!.id));
+      expect(stale).toMatchObject({ kind: 'other', status: 'dismissed' });
+      expect(await eventsFor(db, before!.id)).toEqual([
+        expect.objectContaining({
+          actorKind: 'system',
+          type: 'status.changed',
+          value: expect.objectContaining({ from: 'needs_you', to: 'dismissed', extractionId: next }),
+        }),
+      ]);
+      const open = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(open.map((row) => row.id)).toEqual([after!.id]);
+      // A repeat changes nothing.
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(await eventsFor(db, before!.id)).toHaveLength(1);
+    }));
+
+  it('a kind-changing re-read never dismisses an older item she has edited, or one already done', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'fw2');
+      const old = await insertRead(db, messageId, { version: 'extract-v1', kind: 'other', payload: payload() });
+      await db
+        .update(mailExtraction)
+        .set({ createdAt: new Date(Date.now() - 60_000) })
+        .where(eq(mailExtraction.id, old));
+      const edited = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      expect(
+        await recordFieldEvent(db, {
+          transportId: CENTURION,
+          workItemId: edited!.id,
+          userId: USER,
+          type: 'field.edit',
+          fieldPath: 'contact.phone',
+          value: '+27 11 555 0100',
+        }),
+      ).toMatchObject({ status: 'recorded' });
+      // A second untouched item from the older read, already marked done: done items are never dismissed.
+      const messageTwo = await seedMail(db, 'fw3');
+      const oldTwo = await insertRead(db, messageTwo, { version: 'extract-v1', kind: 'other', payload: payload() });
+      await db
+        .update(mailExtraction)
+        .set({ createdAt: new Date(Date.now() - 60_000) })
+        .where(eq(mailExtraction.id, oldTwo));
+      const done = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: messageTwo });
+      await db.update(workItem).set({ status: 'done' }).where(eq(workItem.id, done!.id));
+
+      await insertRead(db, messageId, { version: 'extract-v2', kind: 'quote', payload: payload() });
+      await insertRead(db, messageTwo, { version: 'extract-v2', kind: 'quote', payload: payload() });
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: messageTwo });
+
+      const [keptEdited] = await db.select().from(workItem).where(eq(workItem.id, edited!.id));
+      expect(keptEdited!.status).toBe('needs_you');
+      const [keptDone] = await db.select().from(workItem).where(eq(workItem.id, done!.id));
+      expect(keptDone!.status).toBe('done');
+      const open = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(open.map((row) => row.id)).toContain(edited!.id);
     }));
 
   it('never moves the work item back to an older read a slow caller still holds', () =>
