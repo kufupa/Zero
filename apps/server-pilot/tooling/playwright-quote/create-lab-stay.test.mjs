@@ -176,6 +176,10 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   assert.ok(paneCommit !== -1 && cancelClick !== -1 && paneCommit < cancelClick);
   assert.match(source, /outcome = 'previewed'/);
   assert.match(source, /outcome = .committed./);
+  assert.match(source, /input\[name="createdby"\]/);
+  assert.match(source, /autoEmailCue/);
+  assert.match(source, /browser\.disconnect/);
+  assert.equal(source.includes('await browser.close()'), false);
   assert.equal(source.includes('x-tree-expander'), false);
   assert.equal(source.includes('const LAB'), false);
   assert.equal(source.includes('Nava'), false);

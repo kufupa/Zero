@@ -213,26 +213,51 @@ async function main() {
       const confirmation = process.env.LAB_CANCEL_CONFIRMATION;
       const search = page.getByPlaceholder(/Search by Name, Confirmation/i).first();
       await search.click();
-      await page.keyboard.press('Escape');
-      const range = page.getByText(/\w{3} \d{1,2}, \d{4} - \w{3} \d{1,2}, \d{4}/).first();
-      if (await range.count()) {
-        await range.click();
-        const dates = page.locator('input:visible');
-        const count = await dates.count();
-        if (count >= 2) {
-          await dates.nth(count - 2).fill('01-JUN-2027');
-          await dates.nth(count - 1).fill('30-JUN-2027');
+      await search.fill(confirmation);
+      const rangeLabel = page.getByText(/\w{3} \d{1,2}, \d{4} - \w{3} \d{1,2}, \d{4}/).last();
+      await rangeLabel.click({ force: true });
+      const cal = page.locator('[data-qtip*="calendar" i], .x-form-date-trigger:visible, .fa-calendar:visible').last();
+      if (await cal.count()) await cal.click({ force: true });
+      const next = page.locator('.x-datepicker-next, .x-datepicker-next a').first();
+      if (await next.count()) {
+        await next.waitFor({ timeout: 5000 });
+        for (let i = 0; i < 24; i += 1) {
+          const title = (await page.locator('.x-datepicker-month, .x-datepicker-month .x-btn-inner').first().innerText().catch(() => '')).trim();
+          if (/September 2027/i.test(title)) break;
+          await next.click();
+          await page.waitForTimeout(120);
         }
+        const day = page.locator('.x-datepicker-cell:not(.x-datepicker-prevday):not(.x-datepicker-nextday) a').filter({ hasText: /^14$/ }).first();
+        if (await day.count()) await day.click();
+        const apply = page.getByRole('button', { name: 'Apply', exact: true });
+        if (await apply.count()) await apply.click({ force: true });
+        else await page.locator('a.x-btn:visible').filter({ hasText: /^Apply$/ }).first().click({ force: true }).catch(() => {});
       }
-      await page.getByRole('button', { name: 'Run', exact: true }).click();
+      await page.waitForTimeout(400);
+      const runBtn = page.locator('a.x-btn:visible').filter({ hasText: /^Run$/ }).first();
+      await runBtn.click({ force: true });
       await page.getByText(confirmation, { exact: true }).first().click();
       await page.locator('input[name="confirmationnumber"]').waitFor();
       await page.waitForTimeout(1500);
+      const lastName = await page.locator('input[name="lastname"]').inputValue().catch(() => '');
+      const arrival = await page.locator('input[name="arrivaldate"]').inputValue().catch(() => '');
+      if (!/^labtest$/i.test(lastName) || !/2027/.test(arrival)) {
+        throw new Error('ABORT_NOT_LABTEST');
+      }
       const actions = page.getByText('Actions', { exact: true }).locator('xpath=following::*[contains(@class,"x-form-arrow-trigger")][1]');
       await actions.click();
       await page.getByText(/^Cancel Reservation$|^Cancel$/).last().click();
-      const yes = page.getByRole('button', { name: /yes|ok/i }).first();
-      if (await yes.count()) await yes.click();
+      const reason = page.locator('.x-window:visible').filter({ hasText: 'Cancellation Reason' });
+      if (await reason.count()) {
+        await reason.locator('textarea:visible').fill('Lab proof cancel');
+        await reason.locator('.x-form-arrow-trigger').first().click();
+        await page.locator('.x-boundlist-item:visible').first().click();
+        const ok = reason.locator('a.x-btn:visible').filter({ hasText: /^OK$/ }).last();
+        if (await ok.count()) await ok.click();
+      } else {
+        const yes = page.getByRole('button', { name: /yes|ok/i }).first();
+        if (await yes.count()) await yes.click();
+      }
       await page.waitForTimeout(2000);
       result.confirmationNumber = confirmation;
       result.statusAfterCancel = await page.locator('input[name="status"]').inputValue().catch(() => '');
@@ -318,6 +343,17 @@ async function main() {
       process.stdout.write(`${result.outcome}\n`);
       return;
     }
+    if (!stop.paneCommit) {
+      const identity = await page.evaluate(() => {
+        const value = (name) => [...document.querySelectorAll(`input[name="${name}"]`)]
+          .find((el) => el.getClientRects().length)?.value?.trim() || '';
+        return { lastName: value('lastname'), arrival: value('arrivaldate'), guarantee: value('guaranteetype') };
+      });
+      if (stay.lastName !== 'Labtest' || stay.arrival !== '2027-09-14'
+        || identity.lastName !== 'Labtest' || identity.arrival.toUpperCase() !== displayDate(stay.arrival).toUpperCase()
+        || stay.guaranteeType !== 'Non-Guaranteed Individual') throw new Error('ABORT_LAB_IDENTITY_BEFORE_SAVE');
+      result.labIdentityVerified = true;
+    }
     await clickTip(page, '^Save');
     await page.waitForTimeout(2500);
     const confirmation = await page.locator('input[name="confirmationnumber"]').inputValue().catch(() => '');
@@ -325,6 +361,10 @@ async function main() {
     result.saved = Boolean(result.confirmationNumber);
     result.clickedSave = true;
     result.message = await readMessage(page);
+    result.createdBy = await page.locator('input[name="createdby"]').inputValue().catch(() => '');
+    result.statusAfterSave = await page.locator('input[name="status"]').inputValue().catch(() => '');
+    result.autoEmailCue = /e-?mail|confirmation (has been )?sent|sent to/i.test(result.message || '');
+    await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
     await shot(page, dir, 'saved.png');
     if (!result.saved) {
       result.outcome = 'save_failed';
@@ -342,9 +382,34 @@ async function main() {
     let cancelled = false;
     for (let attempt = 1; attempt <= 2 && !cancelled; attempt += 1) {
       try {
+        const cancelIdentity = await page.evaluate(() => {
+          const value = (name) => [...document.querySelectorAll(`input[name="${name}"]`)]
+            .find((el) => el.getClientRects().length)?.value?.trim() || '';
+          return { confirmation: value('confirmationnumber'), lastName: value('lastname'), arrival: value('arrivaldate') };
+        });
+        if (!result.labIdentityVerified || cancelIdentity.confirmation !== result.confirmationNumber
+          || cancelIdentity.lastName !== 'Labtest' || cancelIdentity.arrival.toUpperCase() !== displayDate(stay.arrival).toUpperCase()) {
+          throw new Error('ABORT_LAB_IDENTITY_BEFORE_CANCEL');
+        }
         await clickTip(page, 'Cancel');
-        const yes = page.getByRole('button', { name: /yes|ok/i }).first();
-        if (await yes.count()) await yes.click();
+        const reason = page.locator('.x-window:visible').filter({ hasText: 'Cancellation Reason' }).last();
+        await reason.waitFor({ timeout: 10000 });
+        const detail = reason.locator('textarea:visible');
+        if (await detail.count()) await detail.fill('Lab verification');
+        await reason.locator('.x-form-arrow-trigger').first().click();
+        await page.locator('.x-boundlist-item:visible').filter({ hasText: /^Test Reservations$/ }).click();
+        await reason.locator('a.x-btn:visible').filter({ hasText: /^OK$/ }).last().click();
+        await page.waitForTimeout(1000);
+        const followUps = page.locator('.x-window:visible');
+        for (let index = 0; index < await followUps.count(); index += 1) {
+          const dialog = followUps.nth(index);
+          const text = await dialog.innerText();
+          if (!/cancellation penalty|cancel.*reservation|reservation.*cancel/i.test(text)) continue;
+          const current = await page.locator('input[name="confirmationnumber"]:visible').first().inputValue();
+          if (!result.labIdentityVerified || current.trim() !== result.confirmationNumber) throw new Error('ABORT_UNBOUND_CANCEL_DIALOG');
+          const ok = dialog.locator('a.x-btn:visible').filter({ hasText: /^OK$|^Yes$/ }).last();
+          if (await ok.count()) await ok.click();
+        }
         await page.waitForTimeout(2000);
         const status = await page.locator('input[name="status"]').inputValue().catch(() => '');
         result.statusAfterCancel = status;
@@ -363,16 +428,16 @@ async function main() {
     throw error;
   } finally {
     await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
-    await context.close().catch(() => {});
-    await browser.close().catch(() => {});
+    await Promise.race([context.close().catch(() => {}), new Promise((r) => setTimeout(r, 5000))]);
+    if (typeof browser.disconnect === 'function') browser.disconnect();
   }
   process.stdout.write(`${result.outcome}\n`);
   if (result.outcome !== 'saved_then_cancelled') process.exitCode = 2;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
+  main().then(() => process.exit(process.exitCode || 0)).catch((error) => {
     process.stderr.write(`${error.message || error}\n`);
-    process.exitCode = 2;
+    process.exit(2);
   });
 }
