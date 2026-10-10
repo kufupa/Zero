@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getDb, type DB } from '../../db/client.js';
 import {
@@ -28,7 +28,7 @@ import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-se
 import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
 import { resolveTriageEventClock } from '../triage-input.js';
 import { TRIAGE_REVIEWER_VERSION } from '../triage.js';
-import { ensureWorkItemForMessage } from '../work-items.js';
+import { ensureWorkItemForMessage, MESSAGE_ARRIVED_AT } from '../work-items.js';
 import {
   enqueueAiRun,
   markAiRunDeadLetter,
@@ -341,7 +341,7 @@ export async function runInboundExtraction(
 }
 
 /**
- * Spam for the thread, from its latest inbound read only: a blocked sender goes to spam, a spam read the guards allow
+ * Spam for the thread, from the read of its latest-arrived inbound only: a blocked sender goes to spam, a spam read the guards allow
  * goes to spam, and any other read lifts the mark (like the classifier: 'other' covers events, venue hire and
  * invoices). An older mail's read (the backfill runs newest first) never moves a thread a newer mail decided. A
  * person's lock keeps the thread as it is.
@@ -362,12 +362,8 @@ async function writeSpamDecision(
         eq(message.direction, 'inbound'),
       ),
     )
-    // Mail time, not import time: Outlook history imported today keeps its own date in receivedAt.
-    .orderBy(
-      desc(sql`coalesce(${message.receivedAt}, ${message.createdAt})`),
-      desc(message.createdAt),
-      desc(message.id),
-    )
+    // Arrival order (see messageArrivedAt), not import order or a sender's Date header. Ties: later stored, then id.
+    .orderBy(desc(MESSAGE_ARRIVED_AT), desc(message.createdAt), desc(message.id))
     .limit(1);
   if (latest?.id !== run.triggerMessageId) return;
   const blocked =

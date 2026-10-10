@@ -16,6 +16,7 @@ import { NAVA_USER_ID } from '../db/seed.js';
 import { alias } from 'drizzle-orm/pg-core';
 import { appendWorkEvent } from './work-events.js';
 import { randomUUID } from 'node:crypto';
+import { messageArrivedAt } from './work-items.js';
 
 /**
  * Quote follow-ups (R10). When a quote request's thread gets an outbound message (with or without the quote attached),
@@ -135,6 +136,7 @@ async function threadMessages(db: DB, transportId: string, threadId: string) {
       receivedAt: message.receivedAt,
       createdAt: message.createdAt,
       historyOnly: message.historyOnly,
+      pop3Uidl: message.pop3Uidl,
     })
     .from(message)
     .where(and(eq(message.transportId, transportId), eq(message.threadId, threadId)));
@@ -159,14 +161,9 @@ function deliveredTime(m: ThreadMessage): number | null {
 /** SQL twin of deliveredTime, for a `message` row. */
 const DELIVERED_AT = sql`coalesce(${message.sentAt}, case when ${message.historyOnly} then ${message.receivedAt} end)`;
 
-/**
- * When an inbound message arrived. Its date header is when the client wrote it, so live mail uses the later of that
- * and when Nava stored it: a reply written before the quote but delivered after still counts as after. Imported
- * history was stored long after it arrived, so it keeps its own date.
- */
+/** When an inbound message arrived: a reply written before the quote but delivered after counts as after. */
 function arrivedTime(m: ThreadMessage): number {
-  const written = (m.receivedAt ?? m.createdAt).getTime();
-  return m.historyOnly ? written : Math.max(written, m.createdAt.getTime());
+  return messageArrivedAt(m).getTime();
 }
 
 /** A client or staff reply after the quote: a follow-up on it is no longer wanted. */

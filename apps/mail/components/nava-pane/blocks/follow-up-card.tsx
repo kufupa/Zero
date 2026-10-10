@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { parseAsString, useQueryStates } from 'nuqs';
+import { composeHasUnsavedChanges, flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { sanitizeMailBodyHtml } from '@/lib/mail/sanitize-mail-body-html';
 import { FOLLOW_UP_COPY, followUpClientFromTrpc, type FollowUp } from '@/lib/quote-workflow/follow-up';
 import { createOperationId, type MailLocation } from '@/lib/workstation/bridge-protocol';
@@ -35,15 +36,20 @@ const sanitiseFollowUpHtml = (html: string) =>
 /**
  * Webmail only: opens the used draft in the reply box, the same compose state the thread's Edit draft sets. Any open
  * reply is closed first, so the composer remounts with this draft; left open it would keep the replaced reply's body
- * and only switch where it saves, and the next save would overwrite the follow-up.
+ * and only switch where it saves, and the next save would overwrite the follow-up. Edits to that reply were saved
+ * before Use; any made since have no safe draft to go to (saving would land on the follow-up), so staff confirm first.
  */
 function OpenInReplyBox({ activeReplyId, draftId }: { activeReplyId: string; draftId: string }) {
-  const [, setCompose] = useQueryStates({
+  const [compose, setCompose] = useQueryStates({
     mode: parseAsString,
     activeReplyId: parseAsString,
     draftId: parseAsString,
   });
   async function open() {
+    // Already open on the follow-up: its edits save to it, so there is nothing to close.
+    if (compose.mode && compose.draftId === draftId) return;
+    // oxlint-disable-next-line no-alert
+    if (composeHasUnsavedChanges() && !window.confirm(FOLLOW_UP_COPY.discardReply)) return;
     await setCompose({ mode: null, activeReplyId: null, draftId: null });
     await setCompose({ mode: 'reply', activeReplyId, draftId });
   }
@@ -104,6 +110,8 @@ export function FollowUpCard({
     setBusy('using');
     setNotice(null);
     try {
+      // Save what the reply box holds first (webmail; no composer in Outlook), so a replace sets aside the saved text.
+      await flushComposeBeforeLeave();
       const result = await client.use({ draftId: followUp.id, replaceActive });
       if (result.status === 'used') {
         setFollowUp(result.followUp);

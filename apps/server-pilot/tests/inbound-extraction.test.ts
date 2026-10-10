@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
@@ -335,6 +335,73 @@ describe('inbound extraction stored read', () => {
       } finally {
         __setDbForTests(null);
       }
+    }));
+
+  it('arrival, not the Date header, orders mail: a reply sent before the request arrived does not answer it, and a late-delivered mail decides spam', () =>
+    withIngestionDb(async ({ db }) => {
+      const at = (hhmm: string) => new Date(`2026-10-08T${hhmm}:00Z`);
+      const model = fakeModel(() => AE1_OUTPUT);
+      const staffReply = (id: string, threadId: string, sentAt: Date) =>
+        db.insert(message).values({
+          id,
+          transportId: TRANSPORT,
+          threadId,
+          direction: 'outbound',
+          fromAddress: 'centurion@legacyhotels.co.za',
+          toAddresses: ['sender@example.com'],
+          subject: 'Re: Rooms request',
+          textBody: 'Thanks.',
+          receivedAt: sentAt,
+          sentAt,
+        });
+      // POP3 mail whose Date header says 08:00, fetched at 10:00. A reply sent at 09:00 predates its arrival; one
+      // at 11:00 answers it.
+      const early = await seedMail(db, 'thread-arrival-early', AE1_TEXT);
+      const late = await seedMail(db, 'thread-arrival-late', AE1_TEXT);
+      await db
+        .update(message)
+        .set({ receivedAt: at('08:00'), createdAt: at('10:00'), pop3Uidl: sql`'uidl-' || ${message.id}` })
+        .where(inArray(message.id, [early, late]));
+      await staffReply('reply-before-arrival', 'thread-arrival-early', at('09:00'));
+      await staffReply('reply-after-arrival', 'thread-arrival-late', at('11:00'));
+      await readMail(db, early, selectionFor(AE1_TEXT), model.adapter);
+      await readMail(db, late, selectionFor(AE1_TEXT), model.adapter);
+      const statusOf = async (messageId: string) =>
+        (await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId)))[0]?.status;
+      expect(await statusOf(early)).toBe('needs_you');
+      expect(await statusOf(late)).toBe('done');
+
+      // POP3: spam dated 09:00 fetched 09:01; a real request dated 08:00 fetched at 10:00, after it. The request is
+      // the newest mail, so its read lifts the mark.
+      const legit = await seedMail(db, 'thread-arrival-spam', AE1_TEXT);
+      await db
+        .update(message)
+        .set({ receivedAt: at('08:00'), createdAt: at('10:00'), pop3Uidl: 'uidl-legit' })
+        .where(eq(message.id, legit));
+      await db.insert(message).values({
+        id: 'spam-before-legit',
+        transportId: TRANSPORT,
+        threadId: 'thread-arrival-spam',
+        direction: 'inbound',
+        fromAddress: 'promo@example.net',
+        subject: 'Prize',
+        textBody: SPAM_TEXT,
+        receivedAt: at('09:00'),
+        createdAt: at('09:01'),
+        pop3Uidl: 'uidl-spam',
+      });
+      await db.update(mailThread).set({ spamAt: at('09:02') }).where(eq(mailThread.id, 'thread-arrival-spam'));
+      const gateOpen = {
+        ...ON,
+        AI_WRITE_GATE_ENABLED: 'true',
+        INBOUND_TRIAGE_CLASSIFIER: 'off',
+      } as NodeJS.ProcessEnv;
+      expect(await readMail(db, legit, selectionFor(AE1_TEXT), model.adapter, { env: gateOpen })).toBe('stored');
+      const [thread] = await db
+        .select({ spamAt: mailThread.spamAt })
+        .from(mailThread)
+        .where(eq(mailThread.id, 'thread-arrival-spam'));
+      expect(thread?.spamAt).toBeNull();
     }));
 
   it('a timeout stores a failed read with a reason, and a rerun with the same key is a no-op', () =>

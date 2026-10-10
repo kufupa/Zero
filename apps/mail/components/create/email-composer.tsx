@@ -62,7 +62,7 @@ import {
 } from '@/lib/compose-attachment-policy';
 import { resolveComposeEscapeAction } from '@/lib/mail/thread-open-stability';
 import { drainAttachmentIntakeQueue } from '@/lib/attachment-intake-queue';
-import { registerComposeFlush } from '@/lib/mail/compose-flush-registry';
+import { registerComposeFlush, registerComposeUnsavedCheck } from '@/lib/mail/compose-flush-registry';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
 import { emailListSignature } from '@/lib/mail/compose-signatures';
 import { TemplateButton } from './template-button';
@@ -978,6 +978,11 @@ export function EmailComposer({
 
   useEffect(() => {
     const flush = async () => {
+      if (needsSave()) {
+        await saveDraft();
+      }
+    };
+    const needsSave = () => {
       const values = getValues();
       const action = resolveComposeCloseAction({
         hasUnsavedChanges: hasSynchronousDraftChanges(),
@@ -989,12 +994,14 @@ export function EmailComposer({
         aiBlocked: false,
         intent: 'threadSwitch',
       });
-      if (action === 'flushAndLeave') {
-        await saveDraft();
-      }
+      return action === 'flushAndLeave';
     };
     registerComposeFlush(flush);
-    return () => registerComposeFlush(null);
+    registerComposeUnsavedCheck(needsSave);
+    return () => {
+      registerComposeFlush(null);
+      registerComposeUnsavedCheck(null);
+    };
   }, [hasSynchronousDraftChanges, initialMessage, editor, saveDraft, getValues]);
 
   useEffect(() => {

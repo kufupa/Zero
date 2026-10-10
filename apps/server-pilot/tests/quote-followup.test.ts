@@ -835,9 +835,10 @@ describe('quote follow-up clocks, claims and overtaken suggestions', () => {
       await sendReply(db, { id: 'out-late-delivery', threadId: 'thread-late-delivery', sentAt: FRI_SEND });
       await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
       await clientReplies(db, 'thread-late-delivery', 'in-late-delivery', new Date('2026-10-09T07:00:00Z'));
+      // POP3 keeps the client's Date header in receivedAt; Nava fetched it after the quote went out.
       await db
         .update(message)
-        .set({ createdAt: new Date('2026-10-09T09:00:00Z') })
+        .set({ createdAt: new Date('2026-10-09T09:00:00Z'), pop3Uidl: 'uidl-late-delivery' })
         .where(eq(message.id, 'in-late-delivery'));
 
       expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toMatchObject({
