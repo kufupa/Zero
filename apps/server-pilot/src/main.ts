@@ -3,6 +3,7 @@ import { pruneOutlookAuthorizationHistory } from './outlook-security/retention.j
 import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js';
 import { createOutlookSyncNativeHandler } from './http/outlook-sync-native.js';
 import { seedLiveAdmissionBaseline } from './mail/ingest/live-admission.js';
+import { runQuoteFollowupSweep } from './ai/quote-followup.js';
 import { createOutlookNativeHandler } from './http/outlook-native.js';
 import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
 import { createEmlDownloadHandler } from './http/eml-download.js';
@@ -153,9 +154,18 @@ const outlookRetentionTimer = setInterval(() => {
 }, 60 * 60_000);
 outlookRetentionTimer.unref();
 
+// Quote follow-up sweep (R10). Does nothing unless QUOTE_FOLLOWUPS=on. A failed pass is retried on the next tick.
+const quoteFollowupTimer = setInterval(() => {
+  void runQuoteFollowupSweep({ db: getDb() }).catch((error) => {
+    console.error('quote follow-up sweep failed', error);
+  });
+}, 5 * 60_000);
+quoteFollowupTimer.unref();
+
 function shutdown(signal: string) {
   console.log(`${signal} received, shutting down`);
   clearInterval(outlookRetentionTimer);
+  clearInterval(quoteFollowupTimer);
   server.close(() => {
     void stopOutlookSyncDrain()
       .then(() => closeDb())

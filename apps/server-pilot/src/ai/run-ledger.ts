@@ -255,6 +255,8 @@ export interface EnqueueAiRunInput {
   admissionSnapshotId?: string;
   admissionSnapshotHash?: string;
   executorLane?: AiExecutorLane;
+  /** Work item the run serves. Nullable on the row (SET NULL), so the run outlives the item. */
+  workItemId?: string;
   /** Closed, trusted read request; only present for read_tool runs. */
   readRequest?: Record<string, unknown>;
   /** Private typed receipt reference; only present for read_tool runs. */
@@ -475,6 +477,7 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
         }
       : {}),
     executorLane: input.executorLane ?? 'default',
+    workItemId: input.workItemId ?? null,
     state: 'queued' as const,
     createdAt: now,
     updatedAt: now,
