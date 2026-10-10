@@ -498,15 +498,6 @@ export function classifyCancelCommit(
   confirmation: string,
   digest: string,
 ): ToolRunFields {
-  // A penalty after the OK needs a person even when the booking reads Cancelled, so it is checked first.
-  if (value.outcome === 'cancel_penalty_pending') {
-    return {
-      status: 'unconfirmed',
-      errorCode: 'cancel_penalty_pending',
-      confirmationNo: identifierOrNull(confirmation),
-      inputDigest: digest,
-    };
-  }
   const cancelled = value.outcome === 'cancelled' || value.statusAfter?.toLowerCase() === 'cancelled';
   if (cancelled) {
     return {

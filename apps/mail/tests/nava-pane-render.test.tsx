@@ -53,7 +53,6 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     // A stored read for the mail. Null leaves the workItems route out, so the pane reads live as before.
     storedWork: null as null | Record<string, unknown>,
     recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
-    retryTranslation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'capped', translation: null })),
   },
 }));
 
@@ -182,7 +181,6 @@ vi.mock('../providers/query-provider', () => ({
       return {
         getByMessage: { query: async () => stored },
         recordEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
-        retryTranslation: { mutate: (input: unknown) => bridgeMockState.retryTranslation(input) },
       };
     },
     quoteWorkflow: {
@@ -790,87 +788,4 @@ describe('NavaPane screen states', () => {
     ).toBeDefined();
     expect(screen.queryByText(/add-in is too old/)).toBeNull();
   });
-});
-
-describe('NavaPane contact and translation on both surfaces', () => {
-  const FRENCH_TRANSLATION = {
-    status: 'succeeded',
-    truncated: false,
-    segments: [
-      { clean: 'Good evening, we need three rooms.', literal: 'Good evening, we have need of three rooms.' },
-    ],
-  };
-  const STORED_FRENCH = {
-    status: 'ready',
-    workItemId: 'wi-fr',
-    workItemStatus: 'needs_you',
-    extractionId: 'ex-fr',
-    refs: { r_1: { stayId: 's_1', rowId: 'r_1' } },
-    analysis: {
-      intent: 'quote',
-      groups: [
-        {
-          id: 'r_1',
-          arrivalDate: '2026-10-31',
-          departureDate: '2026-11-07',
-          quantity: 3,
-          adults: 2,
-          childrenAges: [],
-          board: 'bb',
-          specialRequests: [],
-          fields: {},
-        },
-      ],
-      secondaryAsks: [],
-      alternatives: [],
-      source: 'luna',
-      aiUnavailable: false,
-    },
-    contact: { name: 'Marie Dupont', company: null, endClient: null, email: 'marie.dupont@example.fr', phone: null },
-    language: 'fr',
-    translation: FRENCH_TRANSLATION,
-  };
-
-  beforeEach(() => {
-    localStorage.setItem('nava_onboarding_completed', 'true');
-  });
-
-  afterEach(() => {
-    bridgeMockState.storedWork = null;
-    bridgeMockState.retryTranslation.mockClear();
-    localStorage.clear();
-    sessionStorage.clear();
-    cleanup();
-  });
-
-  for (const [surface, preview] of [
-    ['the Outlook pane', false],
-    ['the webmail panel', true],
-  ] as const) {
-    it(`${surface}: the contact block sits above the translation, which is open on Clean`, async () => {
-      bridgeMockState.storedWork = STORED_FRENCH;
-      render(<NavaPane bridge={fakeBridge} preview={preview} />);
-      const translation = await screen.findByRole('region', { name: 'Translation' });
-      expect(screen.getByRole('tab', { name: 'Clean' }).getAttribute('aria-selected')).toBe('true');
-      expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('marie.dupont@example.fr');
-      const contact = screen.getByRole('region', { name: 'Contact' });
-      expect(contact.compareDocumentPosition(translation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-
-    it(`${surface}: an English mail shows the contact block and no translation`, async () => {
-      bridgeMockState.storedWork = { ...STORED_FRENCH, language: 'en', translation: null };
-      render(<NavaPane bridge={fakeBridge} preview={preview} />);
-      await waitFor(() => expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('marie.dupont@example.fr'));
-      expect(screen.queryByRole('region', { name: 'Translation' })).toBeNull();
-    });
-
-    it(`${surface}: a failed translation says so and retries from the pane`, async () => {
-      bridgeMockState.storedWork = { ...STORED_FRENCH, translation: { status: 'failed' } };
-      bridgeMockState.retryTranslation.mockResolvedValueOnce({ status: 'done', translation: FRENCH_TRANSLATION });
-      render(<NavaPane bridge={fakeBridge} preview={preview} />);
-      fireEvent.click(await screen.findByRole('button', { name: 'Retry translation' }));
-      await waitFor(() => expect(screen.getByRole('tablist', { name: 'Translation view' })).toBeDefined());
-      expect(bridgeMockState.retryTranslation).toHaveBeenCalledWith({ workItemId: 'wi-fr' });
-    });
-  }
 });

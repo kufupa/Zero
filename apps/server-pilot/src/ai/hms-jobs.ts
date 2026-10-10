@@ -7,24 +7,18 @@
  *
  * User jobs (priority 10) take the property lock and wait for it. Prefetch
  * jobs (priority 0) try the lock once, yield to a staff quote in flight, and
- * requeue on contention. Availability probes (U10) are a third kind, enqueued
- * from a stored quote extraction behind HMS_AVAILABILITY_PREFETCH=on.
+ * requeue on contention.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { and, desc, eq, gt, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import { aiWorkflowRun, mailThread, message } from '../db/schema/mail.js';
-import { mailExtraction, workItem } from '../db/schema/work.js';
+import { workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
-import {
-  availabilityRequestSchema,
-  availabilityRequestsFor,
-  probeAvailability,
-} from './hms-availability.js';
 import { classifyFind, classifySearch, recordedToolRun, toolInputDigest } from './hitl-tool-run.js';
 import {
   findStay,
@@ -58,23 +52,6 @@ export function hmsJobQueueEnabled(env: NodeJS.Dict<string> = process.env): bool
   return env.HMS_JOB_QUEUE === 'on';
 }
 
-/** Availability probes for quote stays (U10). Off (the default) unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on. */
-export function availabilityPrefetchEnabled(env: NodeJS.Dict<string> = process.env): boolean {
-  return env.HMS_AVAILABILITY_PREFETCH === 'on' && hmsJobQueueEnabled(env);
-}
-
-const AVAILABILITY_PROBES_PER_HOUR_DEFAULT = 6;
-
-/**
- * Availability probes per transport per hour (HMS_AVAILABILITY_PER_HOUR). Counted apart from confirmation prefetch
- * (HMS_PREFETCH_PER_HOUR) and kept smaller: a probe is a full Hotel Availability read. Unset or invalid means 6.
- */
-export function availabilityProbesPerHour(env: NodeJS.Dict<string> = process.env): number {
-  const raw = env.HMS_AVAILABILITY_PER_HOUR?.trim();
-  const parsed = raw ? Number(raw) : Number.NaN;
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : AVAILABILITY_PROBES_PER_HOUR_DEFAULT;
-}
-
 export const HMS_JOB_PRIORITY_USER = 10;
 export const HMS_JOB_PRIORITY_PREFETCH = 0;
 const JOB_MAX_ATTEMPTS = 3;
@@ -104,7 +81,6 @@ export const hmsJobRequestSchema = z.discriminatedUnion('kind', [
       departure: ISO_DAY.optional(),
     })
     .strict(),
-  availabilityRequestSchema,
 ]);
 export type HmsJobRequest = z.infer<typeof hmsJobRequestSchema>;
 
@@ -247,13 +223,7 @@ export async function queueUserHmsJob(
   return run;
 }
 
-// Each prefetch kind has its own hourly budget, so availability probes never use up confirmation prefetch.
-async function countRecentPrefetches(
-  db: DB,
-  transportId: string,
-  kind: 'find' | 'availability',
-  since: Date,
-): Promise<number> {
+async function countRecentPrefetches(db: DB, transportId: string, since: Date): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(aiWorkflowRun)
@@ -262,7 +232,6 @@ async function countRecentPrefetches(
         eq(aiWorkflowRun.transportId, transportId),
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
         eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
-        sql`${aiWorkflowRun.readRequest}->>'kind' = ${kind}`,
         gt(aiWorkflowRun.createdAt, since),
       ),
     );
@@ -306,7 +275,6 @@ export async function prefetchHmsConfirmations(
     const used = await countRecentPrefetches(
       db,
       run.transportId,
-      'find',
       new Date(Date.now() - PREFETCH_WINDOW_MS),
     );
     if (used >= env.HMS_PREFETCH_PER_HOUR) break;
@@ -332,71 +300,6 @@ export async function prefetchHmsConfirmations(
 /** Fire-and-forget from the worker after a triage commit. Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1. */
 export function schedulePrefetchForInbound(run: AiWorkflowRun): void {
   void prefetchHmsConfirmations(run).catch(() => undefined);
-}
-
-/**
- * Availability probes for an admitted quote's stored extraction: one per complete stay, at prefetch priority and under
- * their own hourly cap (HMS_AVAILABILITY_PER_HOUR), separate from confirmation prefetch. Only quote mail, never spam. The same stay on the same day is one job, whichever mail carried
- * it. Returns how many jobs were created.
- */
-export async function prefetchAvailabilityForExtraction(
-  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
-  db: DB = getDb(),
-  env: NodeJS.Dict<string> = process.env,
-): Promise<number> {
-  if (!availabilityPrefetchEnabled(env) || run.runKind !== 'inbound_extraction') return 0;
-  const [extraction] = await db
-    .select({ threadId: message.threadId, payload: mailExtraction.payload, spamAt: mailThread.spamAt })
-    .from(mailExtraction)
-    .innerJoin(message, eq(message.id, mailExtraction.messageId))
-    .innerJoin(mailThread, eq(mailThread.id, message.threadId))
-    .where(
-      and(
-        eq(mailExtraction.messageId, run.triggerMessageId),
-        eq(mailExtraction.kind, 'quote'),
-        eq(mailExtraction.status, 'succeeded'),
-        eq(message.transportId, run.transportId),
-      ),
-    )
-    .orderBy(desc(mailExtraction.createdAt))
-    .limit(1);
-  if (!extraction || extraction.spamAt) return 0;
-  const perHour = availabilityProbesPerHour(env);
-  const workItemId = await latestWorkItemId(db, run.transportId, extraction.threadId);
-  const dayKey = new Date().toISOString().slice(0, 10);
-  let created = 0;
-  for (const request of availabilityRequestsFor(extraction.payload)) {
-    const used = await countRecentPrefetches(
-      db,
-      run.transportId,
-      'availability',
-      new Date(Date.now() - PREFETCH_WINDOW_MS),
-    );
-    if (used >= perHour) break;
-    const digest = createHash('sha256').update(JSON.stringify(request)).digest('hex').slice(0, 16);
-    const result = await enqueueHmsJob(
-      {
-        transportId: run.transportId,
-        threadId: extraction.threadId,
-        triggerMessageId: run.triggerMessageId,
-        workItemId,
-        userId: null,
-        request,
-        priority: HMS_JOB_PRIORITY_PREFETCH,
-        idempotencyKey: `hms-job:availability:${run.transportId}:${digest}:${dayKey}`,
-      },
-      db,
-    );
-    if (result.created) created += 1;
-  }
-  return created;
-}
-
-/** Fire-and-forget from the worker after a quote extraction is stored. Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on. */
-export function scheduleAvailabilityPrefetch(
-  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
-): void {
-  void prefetchAvailabilityForExtraction(run).catch(() => undefined);
 }
 
 async function requeueRun(
@@ -495,34 +398,32 @@ export async function executeHmsJob(input: {
     inputDigest: toolInputDigest(request as Record<string, unknown>),
   };
   const result =
-    request.kind === 'availability'
-      ? await probeAvailability(request, { lock: deps.lock, acquisition: deps.acquisition })
-      : request.kind === 'find'
-        ? await recordedToolRun(
-            { kind: 'stay_lookup', ...audit },
-            () =>
-              findStay(
-                {
-                  confirmation: request.confirmation,
-                  ...(request.arrival ? { arrival: request.arrival } : {}),
-                },
-                deps,
-              ),
-            classifyFind,
-          )
-        : await recordedToolRun(
-            { kind: 'guest_search', ...audit },
-            () =>
-              searchGuest(
-                {
-                  lastName: request.lastName,
-                  arrival: request.arrival,
-                  ...(request.departure ? { departure: request.departure } : {}),
-                },
-                deps,
-              ),
-            classifySearch,
-          );
+    request.kind === 'find'
+      ? await recordedToolRun(
+          { kind: 'stay_lookup', ...audit },
+          () =>
+            findStay(
+              {
+                confirmation: request.confirmation,
+                ...(request.arrival ? { arrival: request.arrival } : {}),
+              },
+              deps,
+            ),
+          classifyFind,
+        )
+      : await recordedToolRun(
+          { kind: 'guest_search', ...audit },
+          () =>
+            searchGuest(
+              {
+                lastName: request.lastName,
+                arrival: request.arrival,
+                ...(request.departure ? { departure: request.departure } : {}),
+              },
+              deps,
+            ),
+          classifySearch,
+        );
 
   const outcome: string = result.outcome;
   if (outcome === 'refused_lock_busy') {
@@ -582,8 +483,6 @@ async function queuePosition(db: DB, run: AiWorkflowRun): Promise<number> {
     .where(
       and(
         eq(aiWorkflowRun.executorLane, 'hms'),
-        // Pane jobs only: an hms_write run in the lane is never ahead of a job in this queue.
-        eq(aiWorkflowRun.runKind, 'read_tool'),
         inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
         or(
           gt(aiWorkflowRun.priority, run.priority),
@@ -625,11 +524,8 @@ export async function readHmsJobView(
     | {
         transportId: string;
         threadId: string;
-        kind: 'find' | 'search_guest' | 'availability';
+        kind: 'find' | 'search_guest';
         confirmation?: string;
-        /** A stay's dates pick its availability snapshot. */
-        arrival?: string;
-        departure?: string;
       },
   db: DB = getDb(),
 ): Promise<HmsJobView | null> {
@@ -655,12 +551,6 @@ export async function readHmsJobView(
               sql`${aiWorkflowRun.readRequest}->>'kind' = ${input.kind}`,
               ...(input.confirmation
                 ? [sql`${aiWorkflowRun.readRequest}->>'confirmation' = ${input.confirmation}`]
-                : []),
-              ...(input.arrival
-                ? [sql`${aiWorkflowRun.readRequest}->>'arrival' = ${input.arrival}`]
-                : []),
-              ...(input.departure
-                ? [sql`${aiWorkflowRun.readRequest}->>'departure' = ${input.departure}`]
                 : []),
             ),
           )

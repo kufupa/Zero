@@ -14,7 +14,6 @@ export const ALLOW_REAL_GUEST_FLAG = '--allow-real-guest';
 const REQUIRED_FLAGS = ['--confirmation', '--arrival', '--mode', '--out'];
 const MODES = new Set(['preview', 'commit']);
 const OK_OUTCOMES = new Set(['preview_ok', 'cancelled', 'already_cancelled']);
-// cancel_penalty_pending is neither OK nor refused: exit 1, and the pane reports it as needs check.
 const REFUSED_OUTCOMES = new Set([
   'refused_not_lab',
   'refused_identity_mismatch',
@@ -311,10 +310,7 @@ export async function runCancelDialog({ args, record, result, io }) {
   result.readbackMethod = 'settle';
   await io.shot('readback.png');
   io.mark('readback');
-  // A charge that opened after the OK is a pending penalty. It needs a person even when HMS reads Cancelled.
-  result.outcome = result.penaltyPending
-    ? 'cancel_penalty_pending'
-    : resolveOutcome({ mode: 'commit', statusBefore: record.status, statusAfter: result.statusAfter });
+  result.outcome = resolveOutcome({ mode: 'commit', statusBefore: record.status, statusAfter: result.statusAfter });
   return result;
 }
 

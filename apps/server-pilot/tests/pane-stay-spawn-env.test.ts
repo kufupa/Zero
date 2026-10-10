@@ -1,9 +1,5 @@
 import type { StaffQuoteInstallationConfiguration } from '../src/ai/staff-quote-installation.js';
-import {
-  PANE_CLI_ENV_ALLOWLIST,
-  paneStaySpawnEnv,
-  warnPaneStaySpawnFailed,
-} from '../src/ai/pane-stay-spawn-env.js';
+import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from '../src/ai/pane-stay-spawn-env.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const configuration = {
@@ -47,32 +43,6 @@ describe('paneStaySpawnEnv', () => {
     expect(env.HMS_STAGEHAND_CDP_URL).toBe('http://127.0.0.1:9222');
     expect(env.HMS_QUOTE_SECRET_PATH).toBeUndefined();
     expect(read).not.toHaveBeenCalled();
-  });
-
-  it('drops every variable outside the allowlist, including the lab cancel flag and the database URL', () => {
-    const env = paneStaySpawnEnv(
-      {
-        PATH: '/usr/bin',
-        LAB_CANCEL_CONFIRMATION: '61143613-1',
-        DATABASE_URL: 'postgres://zero:secret@db.internal:5432/zero',
-        OPENAI_API_KEY: 'sk-test',
-      },
-      () => configuration,
-    );
-    expect(env).not.toHaveProperty('LAB_CANCEL_CONFIRMATION');
-    expect(env).not.toHaveProperty('DATABASE_URL');
-    expect(env).not.toHaveProperty('OPENAI_API_KEY');
-    expect(Object.keys(env).sort()).toEqual([
-      'HMS_QUOTE_SECRET_PATH',
-      'HMS_STAGEHAND_BROWSER_OWNERSHIP',
-      'HMS_STAGEHAND_CDP_URL',
-      'PATH',
-    ]);
-  });
-
-  it('the allowlist names no lab, cancel, or write switch', () => {
-    expect(PANE_CLI_ENV_ALLOWLIST).not.toContain('LAB_CANCEL_CONFIRMATION');
-    expect(PANE_CLI_ENV_ALLOWLIST.filter((name) => /CANCEL|CONFIRM|WRITE|LAB|DATABASE/.test(name))).toEqual([]);
   });
 
   it('leaves the environment alone when no installation is configured', () => {

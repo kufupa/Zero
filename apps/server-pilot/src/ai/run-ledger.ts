@@ -46,11 +46,6 @@ export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
 /** Pane HMS lookups queued as read_tool runs on the hms lane (CLI-backed; no read-service admission). */
 export const HMS_JOB_PROMPT_VERSION = 'hms-job/1';
 export const READ_TOOL_RUN_KIND = 'read_tool' as const;
-/**
- * Approved HMS write. Only an explicit hms_write claim takes these runs, once, from queued. The generic worker
- * never claims them, and stale-lease reclaim never touches them: a lost lease becomes needs-check (hms-approval.ts).
- */
-export const HMS_WRITE_RUN_KIND = 'hms_write' as const;
 export const MAIL_BASELINE_GENERATION_VERSION = 'mail-baseline-generation-v1';
 
 /** Stable analytics generation identity for retries and immutable restatements. */
@@ -230,7 +225,6 @@ export async function reserveReadAttempt(
 export type AiFailureClass =
   | 'RUN_DEADLINE'
   | 'LEASE_LOST'
-  | 'NEEDS_CHECK'
   | 'POLICY_BLOCK'
   | 'AUTH'
   | 'PROPERTY_MISMATCH'
@@ -261,10 +255,6 @@ export interface EnqueueAiRunInput {
   admissionSnapshotId?: string;
   admissionSnapshotHash?: string;
   executorLane?: AiExecutorLane;
-  /** Work item the run serves. Nullable on the row (SET NULL), so the run outlives the item. */
-  workItemId?: string;
-  /** Claim order within the lane: higher first. Absent means 0. */
-  priority?: number;
   /** Closed, trusted read request; only present for read_tool runs. */
   readRequest?: Record<string, unknown>;
   /** Private typed receipt reference; only present for read_tool runs. */
@@ -485,8 +475,6 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
         }
       : {}),
     executorLane: input.executorLane ?? 'default',
-    workItemId: input.workItemId ?? null,
-    priority: input.priority ?? 0,
     state: 'queued' as const,
     createdAt: now,
     updatedAt: now,
@@ -602,7 +590,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const staleClaim = and(
     inArray(aiWorkflowRun.state, ['claimed', 'running']),
     lte(aiWorkflowRun.updatedAt, staleBefore),
-    ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
+    ne(aiWorkflowRun.runKind, 'hms_write'),
   );
   const runDeadlineMs = env.HMS_RUN_DEADLINE_MS;
   const scope = scopePredicates({
@@ -612,29 +600,24 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
     idempotencyPrefix: input.idempotencyPrefix,
   });
 
-  // hms_write: only an explicit hms_write claim takes it, and only from queued (never retry_wait). Stale claimed or
-  // running write runs are never reclaimed here (staleClaim excludes them); the lost-lease sweep handles them.
-  const hmsWriteClaim = input.runKind === HMS_WRITE_RUN_KIND;
-  // One predicate for the candidate select and the claim CAS below, so a row cannot pass one and fail the other.
-  const claimable = and(
-    eq(aiWorkflowRun.executorLane, input.lane),
-    hmsWriteClaim ? undefined : ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
-    ...scope,
-    or(
-      and(
-        inArray(aiWorkflowRun.state, hmsWriteClaim ? ['queued'] : ['queued', 'retry_wait']),
-        or(sql`${aiWorkflowRun.nextRunAt} IS NULL`, lte(aiWorkflowRun.nextRunAt, now)),
-      ),
-      staleClaim,
-    ),
-  );
-
   return db.transaction(async (tx) => {
     for (let attempt = 0; attempt < 32; attempt++) {
       const [candidate] = await tx
         .select()
         .from(aiWorkflowRun)
-        .where(claimable)
+        .where(
+          and(
+            eq(aiWorkflowRun.executorLane, input.lane),
+            ...scope,
+            or(
+              and(
+                inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
+                or(sql`${aiWorkflowRun.nextRunAt} IS NULL`, lte(aiWorkflowRun.nextRunAt, now)),
+              ),
+              staleClaim,
+            ),
+          ),
+        )
         .orderBy(desc(aiWorkflowRun.priority), aiWorkflowRun.createdAt)
         .limit(1)
         .for('update', { skipLocked: true });
@@ -689,7 +672,20 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
               }
             : {}),
         })
-        .where(and(eq(aiWorkflowRun.id, candidate.id), claimable))
+        .where(
+          and(
+            eq(aiWorkflowRun.id, candidate.id),
+            eq(aiWorkflowRun.executorLane, input.lane),
+            ...scope,
+            or(
+              and(
+                inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
+                or(sql`${aiWorkflowRun.nextRunAt} IS NULL`, lte(aiWorkflowRun.nextRunAt, now)),
+              ),
+              staleClaim,
+            ),
+          ),
+        )
         .returning();
 
       if (claimed) return claimed;

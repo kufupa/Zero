@@ -174,11 +174,7 @@ export function priceSummary(price: RowPriceChoice | undefined, rowRate: StaffRo
   }
   const hmsNote = rowRate && rowRate.source !== 'hms' && hmsFirst !== undefined ? ` (HMS ${draftMoney(hmsFirst)})` : '';
   if (price.source === 'saved') {
-    // The run copies the saved rate's name and amount, so its row rate is what was charged.
-    const ran = rowRate?.source === 'saved';
-    const name = (ran ? rowRate.customRateName : undefined) ?? price.name;
-    const amount = (ran ? rowRate.nightlyMinor[0] : undefined) ?? price.amountMinor;
-    return `${name}, saved rate, ${draftMoney(amount)} a night${hmsNote}`;
+    return `${price.name}, saved rate, ${draftMoney(price.amountMinor)} a night${hmsNote}`;
   }
   if (price.source === 'one_off') return `Typed rate, ${draftMoney(price.amountMinor)} a night${hmsNote}`;
   return `${price.rateCode} override, ${draftMoney(price.amountMinor)} a night${hmsNote}`;
@@ -442,7 +438,7 @@ function SavedRatePicker({
           id={`${id}-manager`}
           label={label}
           saved={saved}
-          busy={busy}
+          disabled={busy}
           onSavedRateChanged={onSavedRateChanged}
         />
       ) : null}
@@ -455,34 +451,19 @@ function SavedRateManager({
   id,
   label,
   saved,
-  busy,
+  disabled,
   onSavedRateChanged,
 }: {
   id: string;
   label: string;
   saved: SavedRatesState;
-  busy: boolean;
+  disabled: boolean;
   onSavedRateChanged: (id: string, next: SavedRate | null) => void;
 }) {
   const fieldId = useId();
   const [editing, setEditing] = useState<{ id: string; name: string; amount: string } | null>(null);
   const [adding, setAdding] = useState({ name: '', amount: '' });
   const [error, setError] = useState<string | null>(null);
-  // One saved-rate write at a time, so a second click never races the first.
-  const [saving, setSaving] = useState(false);
-  const disabled = busy || saving;
-
-  const write = async (run: () => Promise<void>, fallback: string) => {
-    setError(null);
-    setSaving(true);
-    try {
-      await run();
-    } catch (err) {
-      setError(saveError(err, fallback));
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const addRate = async () => {
     const draft = readSavedRateDraft(adding.name, adding.amount);
@@ -490,10 +471,13 @@ function SavedRateManager({
       setError(draft.message);
       return;
     }
-    await write(async () => {
+    setError(null);
+    try {
       await saved.create({ name: draft.name, amountMinor: draft.amountMinor });
       setAdding({ name: '', amount: '' });
-    }, "Couldn't add this rate. Try again.");
+    } catch (err) {
+      setError(saveError(err, "Couldn't add this rate. Try again."));
+    }
   };
 
   const saveEdit = async () => {
@@ -503,18 +487,25 @@ function SavedRateManager({
       setError(draft.message);
       return;
     }
-    await write(async () => {
+    setError(null);
+    try {
       const updated = await saved.update({ id: editing.id, name: draft.name, amountMinor: draft.amountMinor });
       setEditing(null);
       onSavedRateChanged(updated.id, updated);
-    }, "Couldn't save this rate. Try again.");
+    } catch (err) {
+      setError(saveError(err, "Couldn't save this rate. Try again."));
+    }
   };
 
-  const archive = (rate: SavedRate) =>
-    write(async () => {
+  const archive = async (rate: SavedRate) => {
+    setError(null);
+    try {
       await saved.archive(rate.id);
       onSavedRateChanged(rate.id, null);
-    }, "Couldn't delete this rate. Try again.");
+    } catch (err) {
+      setError(saveError(err, "Couldn't delete this rate. Try again."));
+    }
+  };
 
   return (
     <div id={id} className="flex flex-col gap-2 rounded-[3px] bg-[#f8fafc] p-2">

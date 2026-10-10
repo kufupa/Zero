@@ -167,15 +167,6 @@ export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
   };
 }
 
-/** The contact block's fields. Each is one `contact.<field>` event path. `company` is the sender's organisation. */
-export type ContactField = 'name' | 'company' | 'endClient' | 'email' | 'phone';
-export type StoredContact = Record<ContactField, string | null>;
-/** The translation the pane shows: aligned segments, or failed. Null when the read has none. */
-export type StoredTranslation =
-  | { status: 'succeeded'; segments: Array<{ clean: string; literal: string }>; truncated: boolean }
-  | { status: 'failed' }
-  | null;
-
 /** A mail's stored read from workItems.getByMessage. Ready carries its work item and analysis; none means read it live. */
 export type StoredWork =
   | { status: 'none' }
@@ -188,10 +179,6 @@ export type StoredWork =
       /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
-      contact: StoredContact;
-      /** The read's source language (ISO 639-1), or null when unclear. */
-      language: string | null;
-      translation: StoredTranslation;
     };
 
 /** A field event as the server takes it. Edit, accept and reject only. */
@@ -204,13 +191,9 @@ export type RecordFieldEventInput = {
   msSinceOpen?: number;
 };
 
-/** The outcome of a translation retry. Only `done` carries a translation; the rest say why it did not run. */
-export type TranslationRetryResult = { status: string; translation?: StoredTranslation };
-
 type WorkItemsClient = {
   getByMessage?: { query: (input: { internetMessageId: string }) => Promise<StoredWork> };
   recordEvent?: { mutate: (input: RecordFieldEventInput) => Promise<unknown> };
-  retryTranslation?: { mutate: (input: { workItemId: string }) => Promise<TranslationRetryResult> };
 };
 
 export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {

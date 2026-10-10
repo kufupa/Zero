@@ -30,7 +30,7 @@ Provisioned AWS resources for the mail pilot. All created via AWS CLI from lapto
 | S3 mail bucket | `nava-zero-mail-845242190536-af-south-1` |
 | S3 SSE | AES256 |
 | S3 public access block | all 4 blocks enabled (private) |
-| S3 lifecycle | Retain `raw-mime/*`, `attachments/*` and `outlook-sync-originals/v1/*` indefinitely; transition eligible objects to Intelligent-Tiering after 30d. Incomplete multipart abort 1d; temporary `hms-browser-proof-transfer/v1/*` expire 1d; uncommitted `outlook-sync-staging/v1/*` expire 7d; sealed HMS write evidence `hms-write-evidence/v1/*` expires 90d. |
+| S3 lifecycle | Retain `raw-mime/*`, `attachments/*` and `outlook-sync-originals/v1/*` indefinitely; transition eligible objects to Intelligent-Tiering after 30d. Incomplete multipart abort 1d; temporary `hms-browser-proof-transfer/v1/*` expire 1d; uncommitted `outlook-sync-staging/v1/*` expire 7d. |
 | S3 CORS | Cutover overlap: canonical + legacy + localhost GET/HEAD. Final after 24h: canonical + localhost GET/HEAD; legacy removed. No wildcard origins. |
 | Bootstrap bucket (Task 1) | `nava-zero-bootstrap-845242190536` |
 
@@ -111,7 +111,7 @@ NAVA_MAIL_BUCKET="nava-zero-mail-${AWS_ACCOUNT_ID}-af-south-1"
 aws s3api create-bucket --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --create-bucket-configuration LocationConstraint=af-south-1 || true
 aws s3api put-public-access-block --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 aws s3api put-bucket-encryption --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-aws s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --transition-default-minimum-object-size all_storage_classes_128K --lifecycle-configuration '{"Rules":[{"ID":"archive-raw-mime-30d","Status":"Enabled","Filter":{"Prefix":"raw-mime/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"archive-attachments-30d","Status":"Enabled","Filter":{"Prefix":"attachments/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"archive-outlook-sync-originals-30d","Status":"Enabled","Filter":{"Prefix":"outlook-sync-originals/v1/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"outlook-sync-staging-expire-7d","Status":"Enabled","Filter":{"Prefix":"outlook-sync-staging/v1/"},"Expiration":{"Days":7},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"abort-incomplete-multipart-1d","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"HmsBrowserProofTransferExpire1Day","Status":"Enabled","Filter":{"Prefix":"hms-browser-proof-transfer/v1/"},"Expiration":{"Days":1}},{"ID":"hms-write-evidence-expire-90d","Status":"Enabled","Filter":{"Prefix":"hms-write-evidence/v1/"},"Expiration":{"Days":90}}]}'
+aws s3api put-bucket-lifecycle-configuration --region "$AWS_REGION" --bucket "$NAVA_MAIL_BUCKET" --transition-default-minimum-object-size all_storage_classes_128K --lifecycle-configuration '{"Rules":[{"ID":"archive-raw-mime-30d","Status":"Enabled","Filter":{"Prefix":"raw-mime/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"archive-attachments-30d","Status":"Enabled","Filter":{"Prefix":"attachments/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"archive-outlook-sync-originals-30d","Status":"Enabled","Filter":{"Prefix":"outlook-sync-originals/v1/"},"Transitions":[{"Days":30,"StorageClass":"INTELLIGENT_TIERING"}]},{"ID":"outlook-sync-staging-expire-7d","Status":"Enabled","Filter":{"Prefix":"outlook-sync-staging/v1/"},"Expiration":{"Days":7},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"abort-incomplete-multipart-1d","Status":"Enabled","Filter":{"Prefix":""},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}},{"ID":"HmsBrowserProofTransferExpire1Day","Status":"Enabled","Filter":{"Prefix":"hms-browser-proof-transfer/v1/"},"Expiration":{"Days":1}}]}'
 # Proof wrappers semantically merge/read back this named rule; never replace
 # unrelated lifecycle rules during ordinary proof operation.
 # Browser attachment fetch and catch-up upload. Origin allowlist only — never *.
@@ -142,8 +142,6 @@ Tier transitions are asynchronous and do not restore files already deleted by le
 The bootstrap command above is for initial provisioning. On an existing bucket, read and
 back up the complete lifecycle configuration, replace only the named mail rules, preserve
 unrelated rules and `TransitionDefaultMinimumObjectSize`, then read back and verify.
-HMS write evidence (`hms-write-evidence/v1/*`) is sealed PNG proof of an HMS write: write-once, SSE, sha256 recorded in the work event. It expires after 90 days and shares no prefix with the mail rules above. Live merge: back up the configuration, add only the `hms-write-evidence-expire-90d` rule, and keep the rest.
-
 Temporary proof transfers and incomplete multipart uploads are not retained email data;
 their one-day cleanup remains enabled. Any future committed mailbox-sync object prefix
 must use the same no-expiration retention policy; abandoned staging uploads are separate.
