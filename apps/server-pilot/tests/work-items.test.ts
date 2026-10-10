@@ -192,6 +192,18 @@ describe('stored read for the pane', () => {
       expect(work.workItemStatus).toBe('needs_you');
     }));
 
+  it('marks a do-not-reply sender on the stored read, as the live read does, so the pane hides its reply controls', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'nr1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const lookup = { transportId: CENTURION, internetMessageId: '<nr1@example.com>' };
+      expect(await storedWorkFor(db, lookup)).toMatchObject({ status: 'ready', analysis: { noReplySender: false } });
+
+      await db.update(message).set({ fromAddress: 'notifications@vouchers.example' }).where(eq(message.id, messageId));
+      expect(await storedWorkFor(db, lookup)).toMatchObject({ status: 'ready', analysis: { noReplySender: true } });
+      expect(await openStoredWork(db, lookup)).toMatchObject({ status: 'ready', analysis: { noReplySender: true } });
+    }));
+
   it('reads a stored read without writing: no work item is made or moved until the pane opens one', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'ro1');

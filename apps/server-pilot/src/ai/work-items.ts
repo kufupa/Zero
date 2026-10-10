@@ -10,6 +10,7 @@ import {
   questionItems,
 } from './quote-workflow-analyse-selection.js';
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
+import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 
 /**
@@ -715,7 +716,8 @@ export type StoredWork =
       workItemStatus: string | null;
       extractionId: string;
       refs: Record<string, GroupRef>;
-      analysis: StoredAnalysis;
+      /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
+      analysis: StoredAnalysis & { noReplySender: boolean };
       contact: StoredContact;
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
@@ -741,7 +743,7 @@ async function messageFor(db: DB, input: { transportId: string; internetMessageI
   const internetMessageId = canonicalInternetMessageId(input.internetMessageId);
   if (!internetMessageId) return null;
   const found = await db
-    .select({ id: message.id, threadId: message.threadId })
+    .select({ id: message.id, threadId: message.threadId, fromAddress: message.fromAddress })
     .from(message)
     .where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, internetMessageId)))
     .limit(2);
@@ -753,10 +755,11 @@ type ReadyRead = NonNullable<Awaited<ReturnType<typeof succeededRead>>>;
 /** The pane's ready view of a read with her saved values. The item can stay on an earlier read (see ensureWorkItem). */
 async function readyView(
   db: DB,
-  messageId: string,
+  msg: { id: string; fromAddress: string | null },
   latest: ReadyRead,
   item: Pick<WorkItemRef, 'id' | 'status' | 'state' | 'extractionId'> | null,
 ): Promise<StoredWork> {
+  const messageId = msg.id;
   const read =
     item?.extractionId && item.extractionId !== latest.id
       ? ((await succeededRead(db, messageId, item.extractionId)) ?? latest)
@@ -769,7 +772,8 @@ async function readyView(
     workItemStatus: item?.status ?? null,
     extractionId: read.id,
     refs: stored.refs,
-    analysis: stored.analysis,
+    // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
+    analysis: { ...stored.analysis, noReplySender: isNoReplyAddress(msg.fromAddress) },
     contact: storedContact(read.payload, state),
     language: read.language,
     translation: storedTranslation(read.translation),
@@ -801,7 +805,7 @@ export async function storedWorkFor(
       ),
     )
     .limit(1);
-  return readyView(db, msg.id, latest, item ?? null);
+  return readyView(db, msg, latest, item ?? null);
 }
 
 /**
@@ -823,7 +827,7 @@ export async function openStoredWork(
     kind: latest.kind,
     extractionId: latest.id,
   });
-  return readyView(db, msg.id, latest, item);
+  return readyView(db, msg, latest, item);
 }
 
 export type FieldEventResult =
