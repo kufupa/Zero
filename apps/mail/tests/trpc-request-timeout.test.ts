@@ -63,6 +63,7 @@ describe('procedure-specific request deadlines', () => {
   it('gives a browser find and guest-name search six minutes, longer than their five-minute server bound', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.findStay?batch=1')).toBe(360_000);
     expect(trpcRequestTimeoutMs('/api/trpc/paneStayLookup.searchGuest?batch=1')).toBe(360_000);
+    expect(trpcRequestTimeoutMs('/api/trpc/hmsApproval.reread?batch=1')).toBe(360_000);
   });
   it('gives the Find in HMS party search six minutes, and leaves its neighbours short', () => {
     expect(trpcRequestTimeoutMs('/api/trpc/panePartyLookup.findParty?batch=1')).toBe(360_000);

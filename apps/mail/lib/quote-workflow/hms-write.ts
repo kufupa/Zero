@@ -29,11 +29,12 @@ export type HmsWriteView = {
 
 export type HmsApproved = { grantId: string; runId: string; hmsReadAt: string; expiresAt: string };
 
-export type HmsReviewed = {
-  runId: string;
-  status: 'done' | 'needs_you';
-  reread: 'hms_reread' | 'reread_failed' | 'not_wired' | null;
-};
+export type HmsReviewed = { runId: string; status: 'done' | 'needs_you' };
+
+/** hmsApproval.reread: the fresh HMS read is stored as the snapshot, or the reason it was not. */
+export type HmsReread =
+  | { status: 'stored'; readAt: string }
+  | { status: 'refused'; reason: string };
 
 export type HmsEvidenceReply =
   | { status: 'ok'; dataUrl: string }
@@ -48,6 +49,7 @@ export type HmsApprovalClient = {
   approve: (input: { workItemId: string }) => Promise<HmsApproved>;
   review: (input: HmsReviewInput) => Promise<HmsReviewed>;
   resolveNeedsCheck: (input: { workItemId: string; note: string }) => Promise<unknown>;
+  reread: (input: { workItemId: string }) => Promise<HmsReread>;
   evidence: (input: { workItemId: string; eventId: string }) => Promise<HmsEvidenceReply>;
 };
 
@@ -57,6 +59,7 @@ type TrpcHmsApprovalRoutes = {
     approve?: { mutate: HmsApprovalClient['approve'] };
     review?: { mutate: HmsApprovalClient['review'] };
     resolveNeedsCheck?: { mutate: HmsApprovalClient['resolveNeedsCheck'] };
+    reread?: { mutate: HmsApprovalClient['reread'] };
     evidence?: { query: HmsApprovalClient['evidence'] };
   };
 };
@@ -69,13 +72,15 @@ export function hmsApprovalFromTrpc(trpc: unknown): HmsApprovalClient | null {
   const approve = routes?.approve;
   const review = routes?.review;
   const resolve = routes?.resolveNeedsCheck;
+  const reread = routes?.reread;
   const evidence = routes?.evidence;
-  if (!writeState || !approve || !review || !resolve || !evidence) return null;
+  if (!writeState || !approve || !review || !resolve || !reread || !evidence) return null;
   return {
     writeState: (input) => writeState.query(input),
     approve: (input) => approve.mutate(input),
     review: (input) => review.mutate(input),
     resolveNeedsCheck: (input) => resolve.mutate(input),
+    reread: (input) => reread.mutate(input),
     evidence: (input) => evidence.query(input),
   };
 }
@@ -104,6 +109,8 @@ export const HMS_WRITE_COPY = {
     'Re-read HMS first. The last read of this booking is missing or more than 30 minutes old.',
   reread: 'Re-read HMS',
   rereadFailed: 'Nava could not read HMS again. Try again.',
+  rereading: 'Reading the booking in HMS again…',
+  rereadDone: 'HMS read again. Check the values, then approve again.',
   needsCheckIntro:
     'Nava cannot tell what HMS holds now. Check the booking in HMS, then say what you checked.',
   checkLabel: 'What did you check in HMS?',
@@ -116,7 +123,8 @@ export const HMS_WRITE_COPY = {
   reviewedOk: 'Reviewed OK. This item is done.',
   flagged: 'Flagged. This item is back in Needs you.',
   flagNoteNeeded: 'Add a note saying what is wrong before you flag this write.',
-  rereadNotWired: 'HMS was not read again. Re-read HMS before you approve.',
+  rereadNeeded: 'HMS was not read again. Re-read HMS before you approve.',
+  changedQueued: 'The values changed after you approved them, so the queued write will not run.',
   expired: 'Screenshots expired. HMS screenshots are kept for 90 days.',
   someExpired: 'Some screenshots expired and are no longer shown.',
 } as const;
@@ -218,6 +226,16 @@ export function writeStatusOf(view: HmsWriteView): WriteStatus {
     return { ...base, phase: 'idle', message: null, review: false, approve: !closed };
   }
   if (IN_FLIGHT.has(run.state)) {
+    // A queued write whose form changed can never run (the server refuses its approval). Approving again replaces it.
+    if (run.state === 'queued' && base.changed) {
+      return {
+        ...base,
+        phase: 'running',
+        message: HMS_WRITE_COPY.changedQueued,
+        review: false,
+        approve: !closed,
+      };
+    }
     const label = RUN_LABEL[run.state] ?? 'Running';
     return {
       ...base,

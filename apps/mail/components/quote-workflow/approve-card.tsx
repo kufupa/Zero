@@ -31,18 +31,12 @@ export function ApproveCard({
   workItemId,
   writesEnabled,
   confirmation,
-  onRereadHms,
 }: {
   client: HmsApprovalClient | null;
   workItemId: string;
   writesEnabled: boolean;
   /** The HMS confirmation number, for the Copy link and Copy confirmation handoff. */
   confirmation: string | null;
-  /**
-   * U26: re-reads HMS for this booking and stores the snapshot. Offered when the snapshot is missing or older than 30
-   * minutes. Without it the card says to re-read HMS and does not offer a re-read.
-   */
-  onRereadHms?: () => Promise<void>;
 }) {
   if (!client) return null;
   if (!writesEnabled) {
@@ -52,14 +46,7 @@ export function ApproveCard({
       </WriteFrame>
     );
   }
-  return (
-    <LiveWriteCard
-      client={client}
-      workItemId={workItemId}
-      confirmation={confirmation}
-      onRereadHms={onRereadHms}
-    />
-  );
+  return <LiveWriteCard client={client} workItemId={workItemId} confirmation={confirmation} />;
 }
 
 /** The write's state for one work item. Re-read after each action, and every few seconds while a run is moving. */
@@ -100,24 +87,16 @@ function LiveWriteCard({
   client,
   workItemId,
   confirmation,
-  onRereadHms,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   confirmation: string | null;
-  onRereadHms?: () => Promise<void>;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId);
   return (
     <WriteFrame confirmation={confirmation}>
       {view ? (
-        <WriteBody
-          client={client}
-          workItemId={workItemId}
-          view={view}
-          onChanged={refresh}
-          onRereadHms={onRereadHms}
-        />
+        <WriteBody client={client} workItemId={workItemId} view={view} onChanged={refresh} />
       ) : failed ? (
         <div role="alert" className="flex flex-wrap items-center gap-2 text-[12px] text-[#334155]">
           <span>{HMS_WRITE_COPY.loadFailed}</span>
@@ -160,13 +139,11 @@ function WriteBody({
   workItemId,
   view,
   onChanged,
-  onRereadHms,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   view: HmsWriteView;
   onChanged: () => void;
-  onRereadHms?: () => Promise<void>;
 }) {
   const status = writeStatusOf(view);
   const rows = writeRowsOf(view);
@@ -183,7 +160,6 @@ function WriteBody({
           status={status}
           canApprove={rows.length > 0}
           onChanged={onChanged}
-          onRereadHms={onRereadHms}
         />
       ) : null}
       {status.phase === 'needs_check' ? (
@@ -218,14 +194,12 @@ function ApproveSection({
   status,
   canApprove,
   onChanged,
-  onRereadHms,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   status: WriteStatus;
   canApprove: boolean;
   onChanged: () => void;
-  onRereadHms?: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -245,12 +219,17 @@ function ApproveSection({
       .finally(() => setBusy(false));
   };
 
+  // A fresh HMS read stored as the snapshot (KTD11). The server reads the booking the form names.
   const reread = () => {
-    if (!onRereadHms) return;
     setBusy(true);
     setError(null);
-    onRereadHms()
-      .then(onChanged, () => setError(HMS_WRITE_COPY.rereadFailed))
+    client
+      .reread({ workItemId })
+      .then(
+        (reply) =>
+          reply.status === 'stored' ? onChanged() : setError(HMS_WRITE_COPY.rereadFailed),
+        () => setError(HMS_WRITE_COPY.rereadFailed),
+      )
       .finally(() => setBusy(false));
   };
 
@@ -263,7 +242,7 @@ function ApproveSection({
         <p className="text-[12px] text-amber-900">{HMS_WRITE_COPY.rereadFirst}</p>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
-        {status.reread && onRereadHms ? (
+        {status.reread ? (
           <button type="button" className={writeClasses.secondary} disabled={busy} onClick={reread}>
             {HMS_WRITE_COPY.reread}
           </button>

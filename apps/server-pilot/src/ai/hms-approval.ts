@@ -6,6 +6,7 @@ import { aiWorkflowRun } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { S3KeyExistsError, getS3Storage, type S3Storage } from '../storage/s3.js';
+import { maskCardNumbers } from './card-mask.js';
 import { canonicalJson } from './draft-approval.js';
 import {
   HMS_WRITE_RUN_KIND,
@@ -338,6 +339,42 @@ export async function endHmsWriteRun(input: {
 }
 
 /**
+ * A queued write that no runner has claimed has not touched HMS. Once the form changed after its approval, its grant can
+ * never be consumed (consume refuses state_changed), so it would only block the new approval as write_in_flight. It is
+ * superseded instead. The update matches only the queued state, so a run a runner has claimed in the meantime is kept,
+ * and the approval is refused as in flight.
+ */
+async function supersedeChangedQueuedWrite(
+  db: DB,
+  workItemId: string,
+  currentFormDigest: string,
+  now: Date,
+): Promise<void> {
+  const run = await latestWriteRun(db, workItemId);
+  if (run?.state !== 'queued') return;
+  const grantId = grantIdForRun(run);
+  const [row] = grantId
+    ? await db
+        .select({ value: workEvent.value })
+        .from(workEvent)
+        .where(
+          and(
+            eq(workEvent.id, grantId),
+            eq(workEvent.workItemId, workItemId),
+            eq(workEvent.type, 'approval.granted'),
+          ),
+        )
+        .limit(1)
+    : [];
+  const grant = hmsWriteGrantSchema.safeParse(row?.value);
+  if (grant.success && grant.data.formDigest === currentFormDigest) return;
+  await db
+    .update(aiWorkflowRun)
+    .set({ state: 'superseded', lastError: 'form_changed', finishedAt: now, updatedAt: now })
+    .where(and(eq(aiWorkflowRun.id, run.id), eq(aiWorkflowRun.state, 'queued')));
+}
+
+/**
  * Server-side approval of one HMS write. The client sends only the work item id. The server recomputes the form
  * digest from stored state. A stale or missing snapshot is re-read first (KTD11) when a reader is supplied.
  */
@@ -362,6 +399,7 @@ export async function approveHmsWrite(input: {
     if (!item) throw new HmsApprovalError('not_found');
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
     if (!item.threadId || !item.sourceMessageId) throw new HmsApprovalError('source_mail_missing');
+    await supersedeChangedQueuedWrite(tx as DB, item.id, formDigest(item.state), now);
     await assertNoOpenWrite(tx as DB, item.id);
 
     let state = item.state;
@@ -912,18 +950,15 @@ async function reviewForRun(db: DB, workItemId: string, runId: string) {
   return row ? (row.type === 'review.ok' ? 'ok' : 'flag') : null;
 }
 
-export type HmsReviewResult = {
-  runId: string;
-  status: 'done' | 'needs_you';
-  /** Set on a flag: whether the HMS re-read ran, failed, or is not wired yet (U26). */
-  reread: 'hms_reread' | 'reread_failed' | 'not_wired' | null;
-};
+export type HmsReviewResult = { runId: string; status: 'done' | 'needs_you' };
 
 /**
  * Review of an executed write, as an event with actor = session user. Review needs an outcome: a run that succeeded, or
  * one that stopped after sealing evidence. Nothing is reviewed while a needs-check is open. OK closes the item (done).
- * Flag needs a note, returns the item to needs_you and, on an executed write, re-reads HMS first so the next approval
- * binds the current booking. Only one decision per run.
+ * Flag needs a note and returns the item to needs_you. It also drops the stored snapshot: it was read before the write
+ * changed HMS, so it must not back the next approval. That approval waits for a fresh read (prepareHmsWriteSnapshot,
+ * the hmsApproval.reread procedure), which is not run here so HMS is never read under the work-item row lock.
+ * Only one decision per run.
  */
 export async function reviewHmsWrite(input: {
   db?: DB;
@@ -932,8 +967,6 @@ export async function reviewHmsWrite(input: {
   workItemId: string;
   decision: 'ok' | 'flag';
   note?: string;
-  /** U26 passes its HMS re-read here. Without it a flag records reread 'not_wired'. */
-  rereadHmsState?: () => Promise<unknown>;
   now?: Date;
 }): Promise<HmsReviewResult> {
   const db = input.db ?? getDb();
@@ -965,29 +998,14 @@ export async function reviewHmsWrite(input: {
 
     const status = input.decision === 'ok' ? 'done' : 'needs_you';
     const state: Record<string, unknown> = { ...item.state };
-    let reread: HmsReviewResult['reread'] = null;
-    if (input.decision === 'flag') {
-      reread = 'not_wired';
-      if (input.rereadHmsState) {
-        try {
-          state[HMS_SNAPSHOT_KEY] = {
-            digest: hmsStateDigest(await input.rereadHmsState()),
-            readAt: now.toISOString(),
-          };
-          reread = 'hms_reread';
-        } catch {
-          // A flag is still recorded when HMS cannot be read. The next approval then needs a re-read.
-          reread = 'reread_failed';
-        }
-      }
-    }
+    if (input.decision === 'flag') delete state[HMS_SNAPSHOT_KEY];
     await tx.insert(workEvent).values({
       workItemId: item.id,
       at: now,
       actorKind: 'user',
       actorUserId: input.actorUserId,
       type: input.decision === 'ok' ? 'review.ok' : 'review.flag',
-      value: input.decision === 'ok' ? { runId: run.id } : { runId: run.id, note, reread },
+      value: input.decision === 'ok' ? { runId: run.id } : { runId: run.id, note },
     });
     await tx.insert(workEvent).values({
       workItemId: item.id,
@@ -1001,7 +1019,7 @@ export async function reviewHmsWrite(input: {
       .update(workItem)
       .set({ status, state, updatedAt: now })
       .where(eq(workItem.id, item.id));
-    return { runId: run.id, status, reread };
+    return { runId: run.id, status };
   });
 }
 
@@ -1027,6 +1045,18 @@ export type HmsWriteStateView = {
   /** True while a needs-check blocks approval and review: the outcome is unknown until someone reads HMS back. */
   needsCheck: boolean;
 };
+
+/** KTD13: every string the cards show passes the card mask, whoever wrote the value. */
+function maskedStrings<T>(value: T): T {
+  if (typeof value === 'string') return maskCardNumbers(value) as T;
+  if (Array.isArray(value)) return value.map(maskedStrings) as T;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, maskedStrings(child)]),
+    ) as T;
+  }
+  return value;
+}
 
 /**
  * What the approve and review cards show for one work item: the form, the snapshot's age and display values, the latest
@@ -1105,8 +1135,8 @@ export async function hmsWriteStateOf(input: {
   }
   return {
     status: item.status,
-    form: formOf(item.state),
-    before: storedValues.success ? storedValues.data : null,
+    form: maskedStrings(formOf(item.state)),
+    before: storedValues.success ? maskedStrings(storedValues.data) : null,
     snapshot: snapshot
       ? { readAt: snapshot.readAt, stale: snapshotStale(snapshot.readAt, now) }
       : null,

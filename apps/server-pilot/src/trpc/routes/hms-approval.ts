@@ -8,6 +8,7 @@ import {
   resolveHmsNeedsCheck,
   reviewHmsWrite,
 } from '../../ai/hms-approval.js';
+import { parseHmsWriteForm, prepareHmsWriteSnapshot } from '../../ai/pane-hms-write.js';
 import { mailboxProcedure, router } from '../trpc.js';
 
 const uuid = z.string().uuid();
@@ -72,8 +73,31 @@ export const hmsApprovalRouter = router({
         workItemId: input.workItemId,
         decision: input.decision,
         note: input.decision === 'flag' ? input.note : undefined,
-        // U26 passes its HMS re-read here. Until then a Flag is logged with reread 'not_wired'.
       });
+    } catch (err) {
+      return refusal(err);
+    }
+  }),
+  /**
+   * Re-reads the booking the form names and stores it as the snapshot the next approval binds (KTD11). Used after a
+   * flag and when the snapshot is missing or 30 minutes old. One browser read under the property lock.
+   */
+  reread: mailboxProcedure.input(stateInput).mutation(async ({ input, ctx }) => {
+    const view = await hmsWriteStateOf({
+      transportId: ctx.activeTransportId,
+      workItemId: input.workItemId,
+    });
+    if (!view) throw new TRPCError({ code: 'NOT_FOUND', message: 'not_found' });
+    const form = parseHmsWriteForm(view.form);
+    if (!form) return { status: 'refused' as const, reason: 'form_invalid' };
+    try {
+      const read = await prepareHmsWriteSnapshot({
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+        confirmation: form.confirmation,
+        arrival: form.arrival,
+      });
+      return read.status === 'stored' ? { status: 'stored' as const, readAt: read.readAt } : read;
     } catch (err) {
       return refusal(err);
     }

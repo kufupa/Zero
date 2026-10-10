@@ -884,11 +884,7 @@ describe('HMS write review and write state', () => {
       await expect(review(db, workItemId)).rejects.toMatchObject({ refusal: 'write_in_flight' });
 
       const runId = await runApprovedWrite(db);
-      await expect(review(db, workItemId)).resolves.toEqual({
-        runId,
-        status: 'done',
-        reread: null,
-      });
+      await expect(review(db, workItemId)).resolves.toEqual({ runId, status: 'done' });
       const [item] = await db.select().from(workItem).where(eq(workItem.id, workItemId));
       expect(item?.status).toBe('done');
       const reviewed = await db
@@ -904,7 +900,7 @@ describe('HMS write review and write state', () => {
     });
   });
 
-  it('a flag needs a note, returns the executed write to needs_you, and re-reads HMS when a re-read is wired', async () => {
+  it('a flag needs a note, returns the executed write to needs_you, and drops the pre-write snapshot so the next approval re-reads', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedItem(db);
       await approve(db, workItemId);
@@ -916,25 +912,43 @@ describe('HMS write review and write state', () => {
         refusal: 'note_required',
       });
 
-      await expect(
-        flag({ note: 'Arrival is 2 Nov in HMS', rereadHmsState: async () => HMS_CHANGED }),
-      ).resolves.toEqual({ runId, status: 'needs_you', reread: 'hms_reread' });
+      await expect(flag({ note: 'Arrival is 2 Nov in HMS' })).resolves.toEqual({
+        runId,
+        status: 'needs_you',
+      });
       const [item] = await db.select().from(workItem).where(eq(workItem.id, workItemId));
       expect(item?.status).toBe('needs_you');
-      expect(item?.state).toMatchObject({
-        hmsSnapshot: { digest: hmsStateDigest(HMS_CHANGED), readAt: at(5).toISOString() },
+      // The snapshot was read before the write changed HMS. It is gone, so it cannot back a new approval.
+      expect(item?.state).not.toHaveProperty('hmsSnapshot');
+      await expect(approve(db, workItemId, { now: at(6) })).rejects.toMatchObject({
+        refusal: 'snapshot_missing',
+      });
+      const fresh = await approve(db, workItemId, {
+        now: at(6),
+        rereadHmsState: async () => HMS_CHANGED,
+      });
+      expect((await grantRow(db, fresh.grantId)).value).toMatchObject({
+        hmsBeforeDigest: hmsStateDigest(HMS_CHANGED),
       });
       const events = await db.select().from(workEvent).where(eq(workEvent.workItemId, workItemId));
       expect(events.find((row) => row.type === 'review.flag')).toMatchObject({
         actorUserId: USER,
-        value: { runId, note: 'Arrival is 2 Nov in HMS', reread: 'hms_reread' },
+        value: { runId, note: 'Arrival is 2 Nov in HMS' },
       });
-      // One decision per run.
+    });
+  });
+
+  it('one decision per run', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      await runApprovedWrite(db);
+      await review(db, workItemId, { decision: 'flag', note: 'Rate is off' });
       await expect(review(db, workItemId)).rejects.toMatchObject({ refusal: 'already_reviewed' });
     });
   });
 
-  it('the procedure takes a flag only with a note, logs reread not_wired until U26 wires the re-read, and hides other transports', async () => {
+  it('the procedure takes a flag only with a note, refuses a re-read of a form it cannot read, and hides other transports', async () => {
     await withIngestionDb(async ({ db, sql }) => {
       const workItemId = await seedItem(db);
       await approve(db, workItemId);
@@ -949,13 +963,69 @@ describe('HMS write review and write state', () => {
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
       await expect(
         caller.hmsApproval.review({ workItemId, decision: 'flag', note: 'Check arrival in HMS' }),
-      ).resolves.toEqual({ runId, status: 'needs_you', reread: 'not_wired' });
+      ).resolves.toEqual({ runId, status: 'needs_you' });
+      // This form names no booking to read (no confirmation, arrival or action), so nothing reaches HMS.
+      await expect(caller.hmsApproval.reread({ workItemId })).resolves.toEqual({
+        status: 'refused',
+        reason: 'form_invalid',
+      });
       await expect(
         callerFor('transport-nava').hmsApproval.review({ workItemId, decision: 'ok' }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });
       await expect(
         callerFor('transport-nava').hmsApproval.writeState({ workItemId }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      await expect(
+        callerFor('transport-nava').hmsApproval.reread({ workItemId }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    });
+  });
+
+  it('a form changed while its write is still queued supersedes that run, so approving again is not stuck', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      const first = await approve(db, workItemId);
+      // Unchanged form: the queued run stands and a second approval is refused as in flight.
+      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'write_in_flight' });
+      await db
+        .update(workItem)
+        .set({
+          state: {
+            ...EDITED_FORM,
+            hmsSnapshot: { digest: hmsStateDigest(HMS_BEFORE), readAt: NOW.toISOString() },
+          },
+        })
+        .where(eq(workItem.id, workItemId));
+      expect(
+        (await hmsWriteStateOf({ db, transportId: TRANSPORT_ID, workItemId, now: NOW }))?.grant,
+      ).toMatchObject({ grantId: first.grantId, fingerprintMatches: false });
+      const second = await approve(db, workItemId);
+      expect(await runRow(db, first.runId)).toMatchObject({
+        state: 'superseded',
+        lastError: 'form_changed',
+      });
+      const claim = await claimWrite(db);
+      expect(claim.runId).toBe(second.runId);
+      const used = await consumeHmsWriteApproval({
+        db,
+        runId: claim.runId,
+        fence: claim.fence,
+        now: NOW,
+      });
+      expect(used.grantId).toBe(second.grantId);
+
+      // A claimed run may be reading HMS already. It is never superseded: the approval stays refused as in flight.
+      await db
+        .update(workItem)
+        .set({
+          state: {
+            ...FORM,
+            hmsSnapshot: { digest: hmsStateDigest(HMS_BEFORE), readAt: NOW.toISOString() },
+          },
+        })
+        .where(eq(workItem.id, workItemId));
+      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'write_in_flight' });
+      expect((await runRow(db, claim.runId)).state).toBe('claimed');
     });
   });
 
@@ -977,6 +1047,33 @@ describe('HMS write review and write state', () => {
         db,
       );
       await expect(review(db, workItemId)).rejects.toMatchObject({ refusal: 'needs_check_open' });
+    });
+  });
+
+  it('the write state masks card numbers in the values the cards show (KTD13), and leaves the digest alone', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const form = { guestNote: 'Card 4111 1111 1111 1111 CVV 123', rooms: 2 };
+      const workItemId = await seedItem(db, { form });
+      await db
+        .update(workItem)
+        .set({
+          state: {
+            ...form,
+            hmsSnapshot: {
+              digest: hmsStateDigest(HMS_BEFORE),
+              readAt: NOW.toISOString(),
+              values: { guestNote: ['pay with 4111111111111111'] },
+            },
+          },
+        })
+        .where(eq(workItem.id, workItemId));
+      const view = await hmsWriteStateOf({ db, transportId: TRANSPORT_ID, workItemId, now: NOW });
+      expect(view?.form).toEqual({ guestNote: 'Card [card ••••1111] CVV [code masked]', rooms: 2 });
+      expect(view?.before).toEqual({ guestNote: ['pay with [card ••••1111]'] });
+      const grant = await approve(db, workItemId);
+      expect((await grantRow(db, grant.grantId)).value).toMatchObject({
+        formDigest: formDigest(form),
+      });
     });
   });
 

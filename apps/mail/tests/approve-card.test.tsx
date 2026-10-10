@@ -28,7 +28,7 @@ const APPROVED: HmsApproved = {
   hmsReadAt: READ_AT,
   expiresAt: READ_AT,
 };
-const REVIEWED: HmsReviewed = { runId: 'run-1', status: 'done', reread: null };
+const REVIEWED: HmsReviewed = { runId: 'run-1', status: 'done' };
 
 type Run = NonNullable<HmsWriteView['run']>;
 
@@ -63,6 +63,7 @@ function fakeClient(view: HmsWriteView): HmsApprovalClient {
     approve: vi.fn(async () => APPROVED),
     review: vi.fn(async () => REVIEWED),
     resolveNeedsCheck: vi.fn(async () => ({ runId: 'run-1', resolution: 'staff_checked' })),
+    reread: vi.fn(async () => ({ status: 'stored' as const, readAt: READ_AT })),
     evidence: vi.fn(async () => ({
       status: 'unavailable' as const,
       reason: 'evidence_unavailable',
@@ -110,22 +111,39 @@ describe('ApproveCard approval', () => {
     expect(screen.getByRole('button', { name: 'Approve again' })).toBeTruthy();
   });
 
-  it('blocks approval on a stale HMS read and offers a re-read only when a callback is wired', async () => {
+  it('blocks approval on a stale HMS read, and Re-read HMS stores a fresh read then reads the state again', async () => {
     const stale = viewWith({ snapshot: { readAt: READ_AT, stale: true } });
-    const first = renderCard(fakeClient(stale));
+    const client = fakeClient(stale);
+    renderCard(client);
     expect(await screen.findByText(/Re-read HMS first/)).toBeTruthy();
     expect(
       screen.getByRole('button', { name: 'Approve these values' }).hasAttribute('disabled'),
     ).toBe(true);
-    expect(screen.queryByRole('button', { name: 'Re-read HMS' })).toBeNull();
-    first.unmount();
-
-    const onRereadHms = vi.fn(async () => {});
-    const client = fakeClient(stale);
-    renderCard(client, { onRereadHms });
-    fireEvent.click(await screen.findByRole('button', { name: 'Re-read HMS' }));
-    await waitFor(() => expect(onRereadHms).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Re-read HMS' }));
+    await waitFor(() => expect(client.reread).toHaveBeenCalledWith({ workItemId: WORK_ITEM }));
     await waitFor(() => expect(client.writeState).toHaveBeenCalledTimes(2));
+  });
+
+  it('says so when the re-read is refused, and reads nothing again', async () => {
+    const client = fakeClient(viewWith({ snapshot: null }));
+    vi.mocked(client.reread).mockResolvedValueOnce({ status: 'refused', reason: 'form_invalid' });
+    renderCard(client);
+    fireEvent.click(await screen.findByRole('button', { name: 'Re-read HMS' }));
+    expect(await screen.findByText('Nava could not read HMS again. Try again.')).toBeTruthy();
+    expect(client.writeState).toHaveBeenCalledTimes(1);
+  });
+
+  it('a write still queued with values changed since approval can be approved again', async () => {
+    const client = fakeClient(
+      viewWith({
+        grant: { grantId: 'grant-1', consumed: false, fingerprintMatches: false },
+        run: runWith('queued'),
+      }),
+    );
+    renderCard(client);
+    expect(await screen.findByText(/the queued write will not run/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve again' }));
+    await waitFor(() => expect(client.approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM }));
   });
 
   it('treats a missing HMS read the same as a stale one', async () => {
@@ -275,7 +293,7 @@ describe('ApproveCard gated off', () => {
 });
 
 describe('hmsApprovalFromTrpc and refusals', () => {
-  it('binds all five routes, and is null while any is missing', async () => {
+  it('binds all six routes, and is null while any is missing', async () => {
     expect(hmsApprovalFromTrpc({})).toBeNull();
     expect(hmsApprovalFromTrpc({ hmsApproval: { writeState: { query: vi.fn() } } })).toBeNull();
 
@@ -286,6 +304,7 @@ describe('hmsApprovalFromTrpc and refusals', () => {
         approve: { mutate: approve },
         review: { mutate: vi.fn(async () => REVIEWED) },
         resolveNeedsCheck: { mutate: vi.fn(async () => ({})) },
+        reread: { mutate: vi.fn(async () => ({ status: 'stored' as const, readAt: READ_AT })) },
         evidence: { query: vi.fn(async () => ({ status: 'unavailable' as const, reason: 'x' })) },
       },
     });
@@ -327,6 +346,12 @@ describe('writeRowsOf and writeStatusOf', () => {
   it('opens approval only when nothing is moving, no check is open, and no executed write awaits review', () => {
     expect(writeStatusOf(viewWith()).approve).toBe(true);
     expect(writeStatusOf(viewWith({ run: runWith('running') })).approve).toBe(false);
+    expect(writeStatusOf(viewWith({ run: runWith('queued') })).approve).toBe(false);
+    const changed = { grantId: 'grant-1', consumed: false, fingerprintMatches: false };
+    expect(writeStatusOf(viewWith({ grant: changed, run: runWith('queued') })).approve).toBe(true);
+    expect(writeStatusOf(viewWith({ grant: changed, run: runWith('claimed') })).approve).toBe(
+      false,
+    );
     expect(writeStatusOf(viewWith({ run: runWith('succeeded') })).approve).toBe(false);
     expect(
       writeStatusOf(viewWith({ run: runWith('succeeded', { reviewed: 'flag' }) })).approve,

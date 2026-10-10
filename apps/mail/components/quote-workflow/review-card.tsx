@@ -75,6 +75,21 @@ export function ReviewCard({
       : { status: 'unavailable', reason: reply.reason };
   };
 
+  // A flag drops the snapshot the write was approved from, so HMS is read again for the next approval (KTD11).
+  const rereadAfterFlag = () => {
+    setRereadNote(HMS_WRITE_COPY.rereading);
+    client
+      .reread({ workItemId })
+      .then(
+        (reply) =>
+          setRereadNote(
+            reply.status === 'stored' ? HMS_WRITE_COPY.rereadDone : HMS_WRITE_COPY.rereadNeeded,
+          ),
+        () => setRereadNote(HMS_WRITE_COPY.rereadNeeded),
+      )
+      .finally(onChanged);
+  };
+
   const decide = (decision: 'ok' | 'flag') => {
     const text = note.trim();
     if (decision === 'flag' && text.length < HMS_NOTE_MIN) {
@@ -87,11 +102,11 @@ export function ReviewCard({
     setError(null);
     client
       .review(input)
-      .then((reply) => {
+      .then(() => {
         toast.success(decision === 'ok' ? HMS_WRITE_COPY.reviewedOk : HMS_WRITE_COPY.flagged);
         setOutcome(decision);
-        setRereadNote(reply.reread === 'hms_reread' ? null : HMS_WRITE_COPY.rereadNotWired);
         onChanged();
+        if (decision === 'flag') rereadAfterFlag();
       })
       .catch((err: unknown) => setError(refusalCopy(err)))
       .finally(() => setBusy(false));

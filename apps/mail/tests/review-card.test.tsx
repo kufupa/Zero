@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import type { HmsApprovalClient, HmsReviewed, HmsWriteView } from '../lib/quote-workflow/hms-write';
+import type { HmsApprovalClient, HmsReread, HmsWriteView } from '../lib/quote-workflow/hms-write';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ReviewCard } from '../components/quote-workflow/review-card';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -26,7 +26,9 @@ function runWith(patch: Partial<Run> = {}): Run {
   };
 }
 
-function fakeClient(reread: HmsReviewed['reread'] = null): HmsApprovalClient {
+function fakeClient(
+  reread: HmsReread = { status: 'stored', readAt: '2026-10-10T09:00:00.000Z' },
+): HmsApprovalClient {
   return {
     writeState: vi.fn(async () => {
       throw new Error('not used here');
@@ -34,8 +36,9 @@ function fakeClient(reread: HmsReviewed['reread'] = null): HmsApprovalClient {
     approve: vi.fn(async () => {
       throw new Error('not used here');
     }),
-    review: vi.fn(async () => ({ runId: 'run-1', status: 'needs_you' as const, reread })),
+    review: vi.fn(async () => ({ runId: 'run-1', status: 'needs_you' as const })),
     resolveNeedsCheck: vi.fn(async () => ({})),
+    reread: vi.fn(async () => reread),
     evidence: vi.fn(async () => ({ status: 'ok' as const, dataUrl: PNG })),
   };
 }
@@ -119,8 +122,8 @@ describe('ReviewCard decision', () => {
     expect(client.review).not.toHaveBeenCalled();
   });
 
-  it('a flag with a note is sent, returns the item to Needs you, and says HMS was not read again', async () => {
-    const client = fakeClient('not_wired');
+  it('a flag with a note is sent, returns the item to Needs you, then reads HMS again for the next approval', async () => {
+    const client = fakeClient();
     const onChanged = renderReview(client);
     fireEvent.change(screen.getByLabelText('What is wrong? A note is needed to flag.'), {
       target: { value: '  Room type is wrong  ' },
@@ -134,23 +137,32 @@ describe('ReviewCard decision', () => {
       }),
     );
     expect(await screen.findByText('Flagged. This item is back in Needs you.')).toBeTruthy();
+    await waitFor(() => expect(client.reread).toHaveBeenCalledWith({ workItemId: WORK_ITEM }));
     expect(
-      screen.getByText('HMS was not read again. Re-read HMS before you approve.'),
+      await screen.findByText('HMS read again. Check the values, then approve again.'),
     ).toBeTruthy();
-    expect(onChanged).toHaveBeenCalledTimes(1);
+    // Once for the flag, once after the re-read stored the new snapshot.
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
   });
 
-  it('a flag that HMS re-read for does not show the not-read note', async () => {
-    const client = fakeClient('hms_reread');
+  it('a flag whose re-read is refused says HMS was not read again', async () => {
+    const client = fakeClient({ status: 'refused', reason: 'refused_flag_off' });
     renderReview(client);
     fireEvent.change(screen.getByLabelText('What is wrong? A note is needed to flag.'), {
       target: { value: 'Rate is off' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Flag' }));
-    expect(await screen.findByText('Flagged. This item is back in Needs you.')).toBeTruthy();
     expect(
-      screen.queryByText('HMS was not read again. Re-read HMS before you approve.'),
-    ).toBeNull();
+      await screen.findByText('HMS was not read again. Re-read HMS before you approve.'),
+    ).toBeTruthy();
+  });
+
+  it('Review OK reads nothing again', async () => {
+    const client = fakeClient();
+    renderReview(client);
+    fireEvent.click(screen.getByRole('button', { name: 'Review OK' }));
+    expect(await screen.findByText('Reviewed OK. This item is done.')).toBeTruthy();
+    expect(client.reread).not.toHaveBeenCalled();
   });
 
   it('a write already reviewed shows its decision and no review controls', () => {
