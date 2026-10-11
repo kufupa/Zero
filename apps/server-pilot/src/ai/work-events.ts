@@ -11,6 +11,8 @@ export const PANE_ACTION_TYPES = [
   'pane.opened',
   'copy.hms_line',
   'copy.confirmation',
+  'copy.link',
+  'copy.contact',
   'reply.inserted',
   'reply.saved',
   'pdf.created',
@@ -22,6 +24,7 @@ export const PANE_ACTION_TYPES = [
 export type PaneActionType = (typeof PANE_ACTION_TYPES)[number];
 export const PANE_ACTION_KINDS = ['selected', 'all', 'saved', 'option', 'combined', 'comment', 'booking'] as const;
 export const PANE_ACTION_BLOCKS = ['notes'] as const;
+export const PANE_ACTION_FIELDS = ['name', 'company', 'endClient', 'email', 'phone'] as const;
 export const PANE_ACTION_BATCH_MAX = 50;
 
 export type PaneActionEvent = {
@@ -30,6 +33,7 @@ export type PaneActionEvent = {
   surface?: 'outlook' | 'web';
   kind?: (typeof PANE_ACTION_KINDS)[number];
   block?: (typeof PANE_ACTION_BLOCKS)[number];
+  field?: (typeof PANE_ACTION_FIELDS)[number];
 };
 
 /**

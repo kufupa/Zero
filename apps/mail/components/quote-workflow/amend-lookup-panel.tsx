@@ -219,7 +219,15 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           <AskRow
             label="Confirmation"
             value={amendment.confirmationNumber ?? 'Not in the email'}
-            actions={handoffNumber ? <HmsLinkActions confirmation={handoffNumber} /> : null}
+            actions={
+              handoffNumber ? (
+                <HmsLinkActions
+                  confirmation={handoffNumber}
+                  guestSurname={amendment.guestLastName}
+                  arrival={amendment.arrival}
+                />
+              ) : null
+            }
             pii
           />
           <AskRow label="Guest last name" value={amendment.guestLastName ?? 'Not in the email'} pii />

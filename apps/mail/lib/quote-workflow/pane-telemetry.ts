@@ -13,6 +13,8 @@ export const PANE_ACTION_TYPES = [
   'pane.opened',
   'copy.hms_line',
   'copy.confirmation',
+  'copy.link',
+  'copy.contact',
   'reply.inserted',
   'reply.saved',
   'pdf.created',
@@ -24,12 +26,20 @@ export const PANE_ACTION_TYPES = [
 export type PaneActionType = (typeof PANE_ACTION_TYPES)[number];
 export const PANE_ACTION_KINDS = ['selected', 'all', 'saved', 'option', 'combined', 'comment', 'booking'] as const;
 export type PaneActionKind = (typeof PANE_ACTION_KINDS)[number];
+export const PANE_ACTION_FIELDS = ['name', 'company', 'endClient', 'email', 'phone'] as const;
+export type PaneActionField = (typeof PANE_ACTION_FIELDS)[number];
 /** Which block a copy_hms_line copied. `notes` is the HMS notes block (rate-controls). */
 export const PANE_ACTION_BLOCKS = ['notes'] as const;
 export type PaneActionBlock = (typeof PANE_ACTION_BLOCKS)[number];
 export type PaneSurface = 'outlook' | 'web';
 
-export type PaneAction = { type: PaneActionType; ms?: number; kind?: PaneActionKind; block?: PaneActionBlock };
+export type PaneAction = {
+  type: PaneActionType;
+  ms?: number;
+  kind?: PaneActionKind;
+  block?: PaneActionBlock;
+  field?: PaneActionField;
+};
 export type PaneActionEvent = PaneAction & { surface?: PaneSurface };
 export type PaneActionBatch = { workItemId: string; events: PaneActionEvent[] };
 /** A work item and the mailbox it lives in. A null transport means the mailbox active when the batch is sent. */

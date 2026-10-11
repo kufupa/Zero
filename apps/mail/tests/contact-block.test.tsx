@@ -9,7 +9,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SelectedEmailBlock } from '@/components/nava-pane/blocks/selected-email';
 import { unmaskedPii } from './helpers/pii-marks';
 
-afterEach(() => cleanup());
+function setClipboard(value: unknown) {
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value });
+}
+
+afterEach(() => {
+  cleanup();
+  setClipboard(undefined);
+});
 
 const PRIYA: StoredContact = {
   name: 'Priya Naidoo',
@@ -67,6 +74,17 @@ describe('ContactBlock', () => {
     for (const label of ['Name', 'Company / agency', 'End client', 'Email', 'Phone']) {
       expect((screen.getByLabelText(label) as HTMLInputElement).readOnly).toBe(false);
     }
+  });
+
+  it('copies a populated contact value with one click', async () => {
+    const writeText = vi.fn(async () => {});
+    setClipboard({ writeText });
+    render(<ContactBlock contact={PRIYA} onEdit={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy email' }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('priya@example.com'));
+    expect(writeText).toHaveBeenCalledTimes(1);
   });
 
   it('shows a missing phone as an empty field she can type into, and reports the change with its field', () => {

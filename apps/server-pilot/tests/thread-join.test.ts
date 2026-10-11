@@ -47,6 +47,7 @@ function minimalParsed(
     textBody: overrides.textBody ?? 'Thread join body',
     htmlBody: overrides.htmlBody ?? null,
     receivedAt: overrides.receivedAt ?? new Date('2026-07-02T12:00:00.000Z'),
+    deliveredAt: overrides.deliveredAt ?? null,
     attachments: overrides.attachments ?? [],
     rawHeaderLines: overrides.rawHeaderLines ?? [],
     ...overrides,

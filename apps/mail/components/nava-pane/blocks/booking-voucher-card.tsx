@@ -32,6 +32,14 @@ export function BookingVoucherCard({
   writesEnabled?: boolean;
 }) {
   const amendment = amendmentOf(session);
+  const lunaGroups = session.analysis?.luna?.groups ?? [];
+  const guestName = lunaGroups.flatMap((group) => group.guestNames).find((name) => name.trim());
+  const guestNameParts = guestName?.trim().split(/\s+/).filter(Boolean) ?? [];
+  const guestSurname =
+    amendment?.guestLastName ?? (guestNameParts.length > 1 ? guestNameParts.at(-1) : null);
+  // On an amendment the luna groups hold the requested dates, so only the booked arrival (null when the mail does not
+  // state it) goes to HMS. The requested arrival never stands in for it.
+  const arrival = amendment ? amendment.arrival : lunaGroups.find((group) => group.arrival)?.arrival;
   return (
     <>
       <AmendLookupPanel session={session} trpc={trpcClient} />
@@ -43,6 +51,8 @@ export function BookingVoucherCard({
           workItemId={workItemId}
           writesEnabled={writesEnabled}
           confirmation={amendment?.confirmationNumber ?? null}
+          guestSurname={guestSurname}
+          arrival={arrival}
           requireStoredWrite={!amendment}
         />
       ) : null}

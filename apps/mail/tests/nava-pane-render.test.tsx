@@ -850,6 +850,65 @@ describe('NavaPane screen states', () => {
     expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-04');
     expect((screen.getAllByLabelText(/Departure/i)[0] as HTMLInputElement).value).toBe('2026-11-05');
   });
+
+  it('stored: shows a multi-row room total on the stay without assigning it to either row', async () => {
+    const group = STORED_READY.analysis.groups[0]!;
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      refs: {
+        r_1: { stayId: 's_1', rowId: 'r_1' },
+        r_2: { stayId: 's_1', rowId: 'r_2' },
+      },
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: [
+          { ...group, stayId: 's_1', quantity: undefined },
+          { ...group, id: 'r_2', stayId: 's_1', quantity: undefined },
+        ],
+        requestedRoomsByStay: { s_1: 30 },
+      },
+    };
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+
+    expect(await screen.findByText('30 rooms requested in total')).toBeDefined();
+  });
+
+  it('stored: moves a single-row total to the stay when a second room row is added', async () => {
+    const group = STORED_READY.analysis.groups[0]!;
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: [{ ...group, stayId: 's_1', quantity: 6, fields: { ...group.fields, quantity: 'defaulted' } }],
+        requestedRoomsByStay: { s_1: 6 },
+      },
+    };
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+
+    expect(screen.queryByText('6 rooms requested in total')).toBeNull();
+    expect(screen.getByRole('group', { name: 'Rooms for stay 1, room 1' }).textContent).toContain('6');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add room' }));
+
+    await waitFor(() => expect(screen.getByText('6 rooms requested in total')).toBeDefined());
+    const roomCounts = screen.getAllByRole('group', { name: /Rooms for/ });
+    expect(roomCounts).toHaveLength(2);
+    expect(roomCounts.every((group) => group.textContent?.includes('–'))).toBe(true);
+  });
+
+  it('stored: does not use sender fallback after extraction is ready, even when contact values are empty', async () => {
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      contact: { name: null, company: null, endClient: null, email: null, phone: null },
+    };
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('');
+  });
 });
 
 describe('NavaPane contact and translation on both surfaces', () => {
@@ -909,12 +968,66 @@ describe('NavaPane contact and translation on both surfaces', () => {
   ] as const) {
     it(`${surface}: the contact block sits above the translation, which is open on Clean`, async () => {
       bridgeMockState.storedWork = STORED_FRENCH;
-      render(<NavaPane bridge={fakeBridge} preview={preview} />);
+      const { container } = render(<NavaPane bridge={fakeBridge} preview={preview} />);
       const translation = await screen.findByRole('region', { name: 'Translation' });
       expect(screen.getByRole('tab', { name: 'Clean' }).getAttribute('aria-selected')).toBe('true');
       expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('marie.dupont@example.fr');
       const contact = screen.getByRole('region', { name: 'Contact' });
+      const selectedEmail = container.querySelector('#quote-selected-message');
+      expect(selectedEmail).not.toBeNull();
+      expect(contact.compareDocumentPosition(selectedEmail!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(contact.compareDocumentPosition(translation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it(surface + ': uses the external sender as a name and email fallback while the read is unavailable', async () => {
+      bridgeMockState.storedWork = null;
+      render(<NavaPane bridge={fakeBridge} preview={preview} />);
+      await waitFor(() => {
+        expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('David Miller');
+        expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('guest@example.com');
+      });
+    });
+
+    it(surface + ': does not use an own-domain forward as the contact fallback', async () => {
+      const forwardedBridge = {
+        ...fakeBridge,
+        activeEmail: {
+          ...fakeBridge.activeEmail,
+          senderName: 'Hotel Staff',
+          senderEmail: 'staff@legacyhotels.co.za',
+        },
+      } as unknown as PaneBridge;
+      bridgeMockState.storedWork = null;
+      render(<NavaPane bridge={forwardedBridge} preview={preview} />);
+      await waitFor(() => {
+        expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
+        expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('');
+      });
+    });
+
+    it(`${surface}: refreshes sender fallback when a selected message lacks a Message-ID`, async () => {
+      bridgeMockState.storedWork = null;
+      const bridgeFor = (entryId: string, senderName: string, senderEmail: string) =>
+        ({
+          ...fakeBridge,
+          activeEmail: {
+            ...fakeBridge.activeEmail,
+            entryId,
+            internetMessageId: undefined,
+            senderName,
+            senderEmail,
+          },
+        }) as unknown as PaneBridge;
+      const { rerender } = render(
+        <NavaPane bridge={bridgeFor('001', 'Alice Adams', 'alice@example.com')} preview={preview} />,
+      );
+      await waitFor(() => expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Alice Adams'));
+
+      rerender(<NavaPane bridge={bridgeFor('002', 'Barbara Jones', 'barbara@example.net')} preview={preview} />);
+      await waitFor(() => {
+        expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Barbara Jones');
+        expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('barbara@example.net');
+      });
     });
 
     it(`${surface}: an English mail shows the contact block and no translation`, async () => {

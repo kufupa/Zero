@@ -155,7 +155,7 @@ export function aiValueAt(payload: MailExtractionPayload | null | undefined, pat
   return parsed.field === 'removed' ? false : row[ROW_KEYS[parsed.field]];
 }
 
-type FormStay = Pick<ExtractionStay, 'id' | 'requested' | 'rows'>;
+type FormStay = Pick<ExtractionStay, 'id' | 'requested' | 'rows' | 'totalRooms'>;
 
 /**
  * The stays and rows the form shows: the extraction's, then any the person added (ids only in `state`), less any she
@@ -169,7 +169,7 @@ export function formStays(payload: MailExtractionPayload, state: WorkState): For
     if (!path) continue;
     let stay = stays.find((item) => item.id === path.stayId);
     if (!stay) {
-      stay = { id: path.stayId, requested: { arrival: null, departure: null }, rows: [] };
+      stay = { id: path.stayId, requested: { arrival: null, departure: null }, totalRooms: null, rows: [] };
       stays.push(stay);
     }
     if (path.rowId !== null && !stay.rows.some((row) => row.id === path.rowId)) {
@@ -181,7 +181,20 @@ export function formStays(payload: MailExtractionPayload, state: WorkState): For
     if (removed.has(stay.id)) return [];
     const rows = stay.rows.filter((row) => !removed.has(row.id));
     // A stay whose every row she removed is gone too.
-    return stay.rows.length > 0 && rows.length === 0 ? [] : [{ ...stay, rows }];
+    if (stay.rows.length > 0 && rows.length === 0) return [];
+    const projectedRows = rows.map((row) => {
+      const countPath = `stays[${stay.id}].rows[${row.id}].count`;
+      if (
+        rows.length === 1 &&
+        row.rooms === null &&
+        stay.totalRooms !== null &&
+        !Object.hasOwn(state, countPath)
+      ) {
+        return { ...row, rooms: stay.totalRooms };
+      }
+      return row;
+    });
+    return [{ ...stay, rows: projectedRows }];
   });
 }
 
@@ -232,6 +245,21 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
   const flags: LunaAnalysis['flags'] = [];
   if (failures.length) flags.push('attachment_unread');
   const stays = formStays(payload, state);
+  const totalRoomsDefaultRowIds = new Set(
+    stays.flatMap((stay) => {
+      if (stay.rows.length !== 1 || stay.totalRooms === null) return [];
+      const row = stay.rows[0]!;
+      const sourceRow = payload.stays.find((item) => item.id === stay.id)?.rows.find((item) => item.id === row.id);
+      const countPath = `stays[${stay.id}].rows[${row.id}].count`;
+      const countWasDefaulted = sourceRow ? sourceRow.rooms === null : row.rooms === stay.totalRooms;
+      return countWasDefaulted && !Object.hasOwn(state, countPath) ? [row.id] : [];
+    }),
+  );
+  const requestedRoomsByStay = Object.fromEntries(
+    stays.flatMap((stay) => {
+      return stay.totalRooms !== null ? [[stay.id, stay.totalRooms]] : [];
+    }),
+  );
   if (stays.length > 1) flags.push('multi_date');
   if (kind === 'amendment' || kind === 'cancellation') flags.push('amendment_or_cancel');
 
@@ -299,6 +327,7 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
     const slot = order[index];
     if (!slot) return;
     group.id = slot.groupId;
+    if (slot.rowId && totalRoomsDefaultRowIds.has(slot.rowId)) group.fields.quantity = 'defaulted';
     const stayPath = `stays[${slot.stayId}].requested`;
     const corrected: Array<[string, string]> = [
       ['arrivalDate', `${stayPath}.arrival`],
@@ -329,6 +358,7 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
       reviewItems: [...failures, ...questionItems(mapped.missing)],
+      requestedRoomsByStay,
       source: 'luna' as const,
       aiUnavailable: false as const,
       luna,
@@ -492,23 +522,55 @@ export function outboundSentAfter(at: Date) {
  */
 export const OUTLOOK_SYNCED = sql<boolean>`(${message.sourceProvenance}->>'canonicalContentVersion') is not null`;
 
+const DELIVERY_TIME_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+const DELIVERY_TIME_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Decodes the raw `timestamp` text of a bare SQL value as the mail table's timestamp columns do (UTC wall time). */
+function decodeDeliveredAt(raw: string | null): Date | null {
+  return raw === null ? null : new Date(`${raw}+0000`);
+}
+
 /**
- * When an inbound message reached the mailbox. POP3 stores the sender's Date header in receivedAt, which can be hours
- * before (or, with a wrong clock, after) delivery, so a row POP3 created arrived when Nava fetched it. Outlook sync
- * stores Outlook's delivery time in receivedAt, which holds for history imported long after and for an imported row
- * POP3 matched later (its createdAt is the import time). With neither, the stored time.
+ * ISO timestamps written by POP3 ingest/backfill, normalized to UTC and the mail table's timestamp type. The driver
+ * passes timestamp text through unparsed, so the decoder makes a selected value a Date like a column would.
+ */
+export const MESSAGE_DELIVERED_AT = sql`case
+  when ${message.sourceProvenance}->>'deliveredAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'
+    then (${message.sourceProvenance}->>'deliveredAt')::timestamptz at time zone 'UTC'
+  else null
+end`.mapWith(decodeDeliveredAt);
+
+/**
+ * When an inbound message reached the mailbox. A non-Outlook POP3 row uses the top Received stamp when it is within
+ * five minutes after or thirty days before createdAt; otherwise it uses createdAt. The sender's Date header in
+ * receivedAt is not a delivery clock. Outlook-synced and non-POP3 rows keep receivedAt ?? createdAt.
  */
 export function messageArrivedAt(m: {
   receivedAt: Date | null;
+  deliveredAt: Date | null;
   createdAt: Date;
   pop3Uidl: string | null;
   outlookSynced: boolean;
 }): Date {
-  return m.pop3Uidl === null || m.outlookSynced ? (m.receivedAt ?? m.createdAt) : m.createdAt;
+  if (m.pop3Uidl === null || m.outlookSynced) return m.receivedAt ?? m.createdAt;
+  const deliveredAt = m.deliveredAt?.getTime();
+  const createdAt = m.createdAt.getTime();
+  return Number.isFinite(deliveredAt) &&
+    deliveredAt! <= createdAt + DELIVERY_TIME_FUTURE_TOLERANCE_MS &&
+    deliveredAt! >= createdAt - DELIVERY_TIME_MAX_AGE_MS
+    ? m.deliveredAt!
+    : m.createdAt;
 }
 
 /** SQL twin of messageArrivedAt, for a `message` row. */
-export const MESSAGE_ARRIVED_AT = sql`case when ${message.pop3Uidl} is null or ${OUTLOOK_SYNCED} then coalesce(${message.receivedAt}, ${message.createdAt}) else ${message.createdAt} end`;
+export const MESSAGE_ARRIVED_AT = sql`case
+  when ${message.pop3Uidl} is null or ${OUTLOOK_SYNCED}
+    then coalesce(${message.receivedAt}, ${message.createdAt})
+  when ${MESSAGE_DELIVERED_AT} between ${message.createdAt} - interval '30 days'
+    and ${message.createdAt} + interval '5 minutes'
+    then ${MESSAGE_DELIVERED_AT}
+  else ${message.createdAt}
+end`;
 
 /** The message's latest succeeded read, or the one with `id` when given. */
 async function succeededRead(db: DB, messageId: string, id?: string) {
@@ -705,6 +767,7 @@ type ThreadMail = {
   direction: 'inbound' | 'outbound';
   fromAddress: string;
   receivedAt: Date | null;
+  deliveredAt: Date | null;
   sentAt: Date | null;
   createdAt: Date;
   historyOnly: boolean;
@@ -847,6 +910,7 @@ export async function planThreadWork(
       direction: message.direction,
       fromAddress: message.fromAddress,
       receivedAt: message.receivedAt,
+      deliveredAt: MESSAGE_DELIVERED_AT,
       sentAt: message.sentAt,
       createdAt: message.createdAt,
       historyOnly: message.historyOnly,

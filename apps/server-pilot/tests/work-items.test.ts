@@ -18,6 +18,7 @@ import {
   parseFieldPath,
   recordFieldEvent,
   refreshThreadWork,
+  storedAnalysis,
   storedTranslation,
   storedWorkFor,
   validFieldValue,
@@ -854,6 +855,84 @@ describe('field events', () => {
     expect(undone.map((stay) => stay.id)).toEqual([STAY_ONE, STAY_TWO]);
   });
 
+  it('uses totalRooms for a single row when its count is missing', () => {
+    const extracted = payload();
+    extracted.stays[1]!.totalRooms = 6;
+    extracted.stays[1]!.rows[0]!.rooms = null;
+
+    expect(formStays(extracted, {})[1]!.rows[0]!.rooms).toBe(6);
+    const analysis = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis;
+    const projected = analysis.groups.find((group) => group.stayId === STAY_TWO)!;
+    expect(projected.quantity).toBe(6);
+    expect(projected.fields.quantity).toBe('defaulted');
+    expect(analysis.requestedRoomsByStay).toEqual({ [STAY_TWO]: 6 });
+  });
+
+  it('keeps totalRooms at stay level when a second row makes the projected stay multi-row', () => {
+    const extracted = payload();
+    extracted.stays[1]!.totalRooms = 6;
+    extracted.stays[1]!.rows[0]!.rooms = null;
+    const state = { [`stays[${STAY_TWO}].rows[r_user02].roomType`]: 'Family' };
+
+    const stay = formStays(extracted, state).find((item) => item.id === STAY_TWO)!;
+    expect(stay.rows.map((row) => row.rooms)).toEqual([null, null]);
+    const analysis = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, state).analysis;
+    expect(analysis.requestedRoomsByStay).toEqual({ [STAY_TWO]: 6 });
+  });
+
+  it('keeps a multi-row total at stay level instead of allocating it to rows', () => {
+    const extracted = payload();
+    extracted.stays[0]!.totalRooms = 30;
+    extracted.stays[0]!.rows = extracted.stays[0]!.rows.map((row) => ({ ...row, rooms: null }));
+
+    const stays = formStays(extracted, {});
+    expect(stays[0]!.rows.map((row) => row.rooms)).toEqual([null, null]);
+    expect(stays[0]!.totalRooms).toBe(30);
+    expect(
+      storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis
+        .requestedRoomsByStay,
+    ).toEqual({ [STAY_ONE]: 30 });
+  });
+
+  it('preserves an explicit room-row count when a stay total is also present', () => {
+    const extracted = payload();
+    extracted.stays[1]!.totalRooms = 6;
+    extracted.stays[1]!.rows[0]!.rooms = 4;
+
+    expect(formStays(extracted, {})[1]!.rows[0]!.rooms).toBe(4);
+  });
+
+  it('reopens the stay total on the one row left after a removal, with no count saved for it', () => {
+    // The pane saves no count for a total that moves with the rows. These are the paths it saves for add, remove, add.
+    const extracted = payload();
+    extracted.stays[1]!.totalRooms = 6;
+    extracted.stays[1]!.rows[0]!.rooms = null;
+    const added = { [`stays[${STAY_TWO}].rows[r_user01].removed`]: null, [`stays[${STAY_TWO}].rows[r_user01].childAges`]: [] };
+    const removed = { ...added, [`stays[${STAY_TWO}].rows[r_user01].removed`]: true };
+    const addedAgain = {
+      ...removed,
+      [`stays[${STAY_TWO}].rows[r_user02].removed`]: null,
+      [`stays[${STAY_TWO}].rows[r_user02].childAges`]: [],
+    };
+    const roomsOf = (state: Record<string, unknown>) =>
+      formStays(extracted, state).find((stay) => stay.id === STAY_TWO)!.rows.map((row) => row.rooms);
+    const analysisOf = (state: Record<string, unknown>) =>
+      storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, state).analysis;
+
+    // Two rows: the total stays at stay level and neither row takes it.
+    expect(roomsOf(added)).toEqual([null, null]);
+    expect(analysisOf(added).requestedRoomsByStay).toEqual({ [STAY_TWO]: 6 });
+    // One row left: the total is that row's count again, and the read still marks it as the default.
+    expect(roomsOf(removed)).toEqual([6]);
+    expect(analysisOf(removed).groups.find((group) => group.stayId === STAY_TWO)).toMatchObject({
+      quantity: 6,
+      fields: { quantity: 'defaulted' },
+    });
+    // Added again: two rows, so the total moves back to the stay.
+    expect(roomsOf(addedAgain)).toEqual([null, null]);
+    expect(analysisOf(addedAgain).requestedRoomsByStay).toEqual({ [STAY_TWO]: 6 });
+  });
+
   it('keeps a person value through a re-extraction, and the work item stays the same', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'r1');
@@ -1497,17 +1576,29 @@ describe('pane telemetry and staff notes (v5 B1, B2)', () => {
             { type: 'pane.opened', surface: 'outlook' },
             { type: 'hms.lookup.finished', ms: 4200 },
             { type: 'copy.hms_line', kind: 'comment' },
+            { type: 'copy.link', surface: 'web' },
+            { type: 'copy.contact', field: 'email', surface: 'web' },
           ],
         }),
-      ).toEqual({ recorded: 3 });
+      ).toEqual({ recorded: 5 });
 
       const logged = await eventsFor(db, work.workItemId);
-      expect(logged).toHaveLength(before + 3);
-      const actions = logged.filter((event) => ['pane.opened', 'hms.lookup.finished', 'copy.hms_line'].includes(event.type));
-      expect(actions.map((event) => event.type).sort()).toEqual(['copy.hms_line', 'hms.lookup.finished', 'pane.opened']);
+      expect(logged).toHaveLength(before + 5);
+      const actions = logged.filter((event) =>
+        ['pane.opened', 'hms.lookup.finished', 'copy.hms_line', 'copy.link', 'copy.contact'].includes(event.type),
+      );
+      expect(actions.map((event) => event.type).sort()).toEqual([
+        'copy.contact',
+        'copy.hms_line',
+        'copy.link',
+        'hms.lookup.finished',
+        'pane.opened',
+      ]);
       expect(actions.every((event) => event.actorKind === 'user' && event.actorUserId === USER)).toBe(true);
       expect(actions.find((event) => event.type === 'hms.lookup.finished')!.value).toEqual({ ms: 4200 });
       expect(actions.find((event) => event.type === 'copy.hms_line')!.value).toEqual({ kind: 'comment' });
+      expect(actions.find((event) => event.type === 'copy.link')!.value).toEqual({ surface: 'web' });
+      expect(actions.find((event) => event.type === 'copy.contact')!.value).toEqual({ field: 'email', surface: 'web' });
       expect(actions.find((event) => event.type === 'pane.opened')!.value).toEqual({ surface: 'outlook' });
     }));
 
@@ -1542,6 +1633,12 @@ describe('pane telemetry and staff notes (v5 B1, B2)', () => {
           type,
         ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
       }
+      await expect(
+        route.recordActions({ workItemId: work.workItemId, events: [{ type: 'copy.contact' } as never] }),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      await expect(
+        route.recordActions({ workItemId: work.workItemId, events: [{ type: 'copy.contact', field: 'message' } as never] }),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
       await expect(
         route.recordActions({ workItemId: work.workItemId, events: [{ type: 'pane.opened', text: 'Dear Sir' } as never] }),
       ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
@@ -2594,5 +2691,227 @@ describe('reply link backfill: hotel copies, guest reopens, person touches (C2b)
         byKind: {},
         byReason: {},
       });
+    }));
+});
+
+describe('trusted POP3 delivery clock (KTD-1)', () => {
+  async function setPop3Clock(
+    db: DB,
+    id: string,
+    clock: {
+      receivedAt: string | null;
+      createdAt: string;
+      deliveredAt?: string;
+      outlookSynced?: boolean;
+    },
+  ): Promise<void> {
+    const sourceProvenance = {
+      ...(clock.outlookSynced ? { canonicalContentVersion: 'fixture-v1' } : {}),
+      ...(clock.deliveredAt ? { deliveredAt: new Date(clock.deliveredAt).toISOString() } : {}),
+    };
+    await db
+      .update(message)
+      .set({
+        pop3Uidl: `uidl-${id}`,
+        receivedAt: clock.receivedAt ? new Date(clock.receivedAt) : null,
+        createdAt: new Date(clock.createdAt),
+        sourceProvenance: Object.keys(sourceProvenance).length > 0 ? sourceProvenance : null,
+      })
+      .where(eq(message.id, `msg-${id}`));
+  }
+
+  it('persists the parsed top Received date in sourceProvenance during POP3 ingest', () =>
+    withDb(async (db) => {
+      const { parseRawMessage } = await import('../src/mail/ingest/parse-message.js');
+      const { persistInboundMessage } = await import('../src/mail/ingest/store.js');
+      const { FakeS3Storage } = await import('../src/storage/s3.js');
+      const raw = Buffer.from(
+        [
+          'Received: from first-hop.example by mailbox.example; Tue, 06 Oct 2026 10:00:00 +0000',
+          'Received: from earlier-hop.example by first-hop.example; Tue, 06 Oct 2026 08:00:00 +0000',
+          `X-Zero-Mailbox: ${MAILBOX}`,
+          'From: guest@example.test',
+          `To: ${MAILBOX}`,
+          'Date: Tue, 06 Oct 2026 07:00:00 +0000',
+          'Message-ID: delivered-at-store@example.test',
+          'Subject: delivery timestamp persistence',
+          'Content-Type: text/plain; charset=utf-8',
+          '',
+          'Please quote.',
+        ].join('\r\n'),
+      );
+      const storage = new FakeS3Storage('work-items-delivered-at-test');
+      const messageId = 'msg-delivered-at-store';
+      const parsed = await parseRawMessage(raw, { messageId, storage });
+      const stored = await persistInboundMessage(
+        parsed,
+        raw,
+        { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: 'uidl-delivered-at-store', messageId },
+        { db, storage, skipAiEnqueue: true },
+      );
+      if (stored.kind !== 'stored') throw new Error(`expected stored, got ${stored.kind}`);
+      const [row] = await db.select().from(message).where(eq(message.id, messageId));
+
+      expect(row?.sourceProvenance).toEqual({ deliveredAt: '2026-10-06T10:00:00.000Z' });
+      expect(row?.receivedAt).toEqual(new Date('2026-10-06T07:00:00.000Z'));
+    }));
+
+  it('closes a POP3 request on a valid top Received time before the reply, despite later import', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-before-reply';
+      const request = await guestMail(db, 'delivered-before-reply', threadId, '2027-10-01T09:30:00Z');
+      await setPop3Clock(db, 'delivered-before-reply', {
+        receivedAt: '2027-10-01T09:30:00Z',
+        createdAt: '2027-10-01T10:00:00Z',
+        deliveredAt: '2027-10-01T08:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const reply = await hotelMail(db, 'delivered-before-reply-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([
+        expect.objectContaining({
+          workItemId: item!.id,
+          to: 'done',
+          reason: 'hotel_replied',
+          sentMessageId: reply,
+        }),
+      ]);
+    }));
+
+  it('falls back to createdAt when POP3 has no deliveredAt, preserving the #157 guard', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-no-delivered-at';
+      const request = await guestMail(db, 'no-delivered-at', threadId, '2027-10-01T08:00:00Z');
+      await setPop3Clock(db, 'no-delivered-at', {
+        receivedAt: '2027-10-01T08:00:00Z',
+        createdAt: '2027-10-01T10:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'no-delivered-at-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
+  it('does not use the sender Date header when trusted delivery followed the reply', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-after-reply';
+      const request = await guestMail(db, 'delivered-after-reply', threadId, '2027-10-01T08:00:00Z');
+      await setPop3Clock(db, 'delivered-after-reply', {
+        receivedAt: '2027-10-01T08:00:00Z',
+        createdAt: '2027-10-01T08:58:00Z',
+        deliveredAt: '2027-10-01T09:01:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'delivered-after-reply-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
+  it('ignores a deliveredAt more than five minutes after createdAt', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-too-future';
+      const request = await guestMail(db, 'delivered-too-future', threadId, '2027-10-01T08:30:00Z');
+      await setPop3Clock(db, 'delivered-too-future', {
+        receivedAt: '2027-10-01T08:30:00Z',
+        createdAt: '2027-10-01T08:00:00Z',
+        deliveredAt: '2027-10-01T10:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'delivered-too-future-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([
+        expect.objectContaining({ workItemId: item!.id, to: 'done', reason: 'hotel_replied' }),
+      ]);
+    }));
+
+  it('ignores a deliveredAt more than thirty days before createdAt', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-too-old';
+      const request = await guestMail(db, 'delivered-too-old', threadId, '2027-08-22T08:00:00Z');
+      await setPop3Clock(db, 'delivered-too-old', {
+        receivedAt: '2027-08-22T08:00:00Z',
+        createdAt: '2027-10-01T10:00:00Z',
+        deliveredAt: '2027-08-22T08:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'delivered-too-old-out', threadId, '2027-09-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
+  it('keeps a request open when its follow-up delivery overtakes the reply', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-follow-up';
+      const request = await guestMail(db, 'delivered-follow-up-request', threadId, '2027-10-01T07:00:00Z');
+      await setPop3Clock(db, 'delivered-follow-up-request', {
+        receivedAt: '2027-10-01T07:00:00Z',
+        createdAt: '2027-10-01T07:30:00Z',
+        deliveredAt: '2027-10-01T08:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'delivered-follow-up-out', threadId, '2027-10-01T09:00:00Z');
+
+      const followUp = await guestMail(db, 'delivered-follow-up', threadId, '2027-10-01T08:30:00Z');
+      await setPop3Clock(db, 'delivered-follow-up', {
+        receivedAt: '2027-10-01T08:30:00Z',
+        createdAt: '2027-10-01T08:58:00Z',
+        deliveredAt: '2027-10-01T09:01:00Z',
+      });
+
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+      expect(followUp).toBe('msg-delivered-follow-up');
+    }));
+
+  it('keeps the Outlook-synced receivedAt rule when POP3 later matches the row', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-outlook-delivered-at';
+      const request = await guestMail(db, 'outlook-delivered-at', threadId, '2027-10-01T10:00:00Z');
+      await setPop3Clock(db, 'outlook-delivered-at', {
+        receivedAt: '2027-10-01T08:00:00Z',
+        createdAt: '2027-10-01T10:30:00Z',
+        deliveredAt: '2027-10-01T09:30:00Z',
+        outlookSynced: true,
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const reply = await hotelMail(db, 'outlook-delivered-at-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([
+        expect.objectContaining({
+          workItemId: item!.id,
+          to: 'done',
+          reason: 'hotel_replied',
+          sentMessageId: reply,
+        }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('does not close on a tie and repeats idempotently', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-at-tie';
+      const request = await guestMail(db, 'delivered-at-tie', threadId, '2027-10-01T08:00:00Z');
+      await setPop3Clock(db, 'delivered-at-tie', {
+        receivedAt: '2027-10-01T08:00:00Z',
+        createdAt: '2027-10-01T10:00:00Z',
+        deliveredAt: '2027-10-01T09:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'delivered-at-tie-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
     }));
 });

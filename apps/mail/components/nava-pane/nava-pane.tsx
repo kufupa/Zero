@@ -17,6 +17,7 @@ import {
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
+import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { savedRatesFromTrpc } from '@/components/quote-workflow/rate-controls';
@@ -107,6 +108,31 @@ import { useSavedReply } from './use-saved-reply';
 import { useSystemCheck } from './use-system-check';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
+type SenderFallback = Pick<StoredContact, 'name' | 'email'>;
+
+/** Returns only a proven external sender. If either identity is missing, the fallback stays blank. */
+function externalSenderFallback(
+  activeEmail: NonNullable<PaneBridge['activeEmail']> | null,
+  mailboxEmail: string | undefined,
+): SenderFallback | null {
+  if (!activeEmail || !mailboxEmail) return null;
+  const address = (value: string) => {
+    const extracted = value.match(/<\s*([^<>]+)\s*>/)?.[1] ?? value;
+    const clean = extracted.trim();
+    const match = /^([^@\s<>]+)@((?:[^@\s<>.]+\.)+[^@\s<>.]+)$/.exec(clean);
+    if (!match) return null;
+    return { display: clean, normalized: clean.toLowerCase(), domain: match[2]!.toLowerCase() };
+  };
+  const sender = address(activeEmail.senderEmail);
+  const mailbox = address(mailboxEmail);
+  if (!sender || !mailbox || sender.normalized === mailbox.normalized || sender.domain === mailbox.domain) return null;
+
+  const displayName = activeEmail.senderName.trim().replace(/\s+/g, ' ');
+  return {
+    name: displayName && displayName.toLowerCase() !== sender.normalized ? displayName : null,
+    email: sender.display,
+  };
+}
 
 // One client for the pane's life, so screenshot loaders keep their identity across renders.
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
@@ -300,6 +326,10 @@ export function NavaPane({
     internetMessageId: activeEmail?.internetMessageId ?? null,
     scope: currentScope,
   });
+  const senderFallback =
+    storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
+  const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
+    (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
   const storedOverridden = Boolean(quoteSession.treatAs || quoteSession.staffNote);
   // The pane's work item for telemetry (v5 B1). Opening a stored read with a work item is the pane.opened action.
   const surface = onOpenThread ? 'web' : 'outlook';
@@ -1360,19 +1390,19 @@ export function NavaPane({
               />
             </div>
 
-            {/* Email context for the selected email; until one is selected, an empty state. */}
-            <SelectedEmailBlock activeEmail={activeEmail} />
-
-            {/* Contact block (U16): the core details, pre-filled. Then the translation, only for mail not in English. */}
+            {/* Contact is the first selected-message context. Extraction values win; only an external sender can fill its early fallback. */}
             {activeEmail ? (
               <ContactBlock
                 // ContactBlock takes `contact` once, at mount. The key moves when the read lands, also for a read with
                 // no work item (its open failed), so the read's contact always fills the fields.
-                key={`${activeEmail.internetMessageId ?? ''}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
+                key={`${contactMessageKey}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
                 contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
+                senderFallback={senderFallback}
                 onEdit={storedWork.recordContact}
               />
             ) : null}
+            {/* Email context for the selected email; until one is selected, an empty state. */}
+            <SelectedEmailBlock activeEmail={activeEmail} />
             {storedWork.pane.state === 'ready' ? (
               <TranslationBox
                 key={storedWork.pane.workItemId ?? activeEmail?.internetMessageId ?? ''}

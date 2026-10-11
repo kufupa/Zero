@@ -3,6 +3,7 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
 import { HmsLinkActions } from '../components/quote-workflow/hms-link-actions';
 import { setMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import {
@@ -17,6 +18,9 @@ import {
 } from '@/lib/quote-workflow/pane-telemetry';
 
 const WORK_ITEM = '5f1c0a52-7c1e-4b8e-9d3a-2a6f0c1d9e11';
+const LANDING = 'https://hms.example.test/';
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn() }));
+vi.mock('sonner', () => ({ toast }));
 
 function owner(workItemId: string, transportId: string | null = 'mailbox-a'): PaneOwner {
   return { workItemId, transportId };
@@ -26,9 +30,15 @@ function pageHide() {
   window.dispatchEvent(new Event('pagehide'));
 }
 
+function setClipboard(value: unknown) {
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value });
+}
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllEnvs();
+  setClipboard(undefined);
   setPaneTelemetryScope(null);
   setMailCacheScope({ userId: null, activeTransportId: null });
 });
@@ -152,6 +162,121 @@ describe('pane telemetry wiring', () => {
     expect(mutate).toHaveBeenCalledWith(
       { workItemId: 'wi-3', events: [{ type: 'item.dismissed', surface: 'outlook' }] },
       { context: { activeTransportId: 'mailbox-b' } },
+    );
+  });
+
+  it('records link and contact copy success with field names only', async () => {
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
+    const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ recorded: 1 }));
+    const writeText = vi.fn(async () => undefined);
+    bindPaneTelemetry({ workItems: { recordActions: { mutate } } });
+    setClipboard({ writeText });
+    setPaneTelemetryScope({ workItemId: WORK_ITEM, transportId: 'mailbox-a', surface: 'web' });
+
+    render(
+      <>
+        <ContactBlock
+          contact={{
+            name: 'Priya Naidoo',
+            company: 'Example Agency',
+            endClient: null,
+            email: 'priya@example.com',
+            phone: null,
+          }}
+          onEdit={vi.fn()}
+        />
+        <HmsLinkActions confirmation="64318608-1" />
+      </>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy email' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied email' })).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied for HMS' })).toBeDefined());
+    pageHide();
+
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+    expect(mutate).toHaveBeenCalledWith(
+      {
+        workItemId: WORK_ITEM,
+        events: [
+          { type: 'copy.contact', field: 'email', surface: 'web' },
+          { type: 'copy.link', surface: 'web' },
+          { type: 'copy.link', surface: 'web' },
+        ],
+      },
+      { context: { activeTransportId: 'mailbox-a' } },
+    );
+    const recorded = JSON.stringify(mutate.mock.calls);
+    expect(recorded).not.toContain('priya@example.com');
+    expect(recorded).not.toContain('64318608-1');
+  });
+
+  it('records a link copy that finishes after the pane moves on on the item it started on', async () => {
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
+    const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ recorded: 1 }));
+    let finishWrite: () => void = () => undefined;
+    const writeText = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = () => resolve();
+        }),
+    );
+    bindPaneTelemetry({ workItems: { recordActions: { mutate } } });
+    setClipboard({ writeText });
+    setPaneTelemetryScope({ workItemId: 'wi-1', transportId: 'mailbox-a', surface: 'web' });
+
+    render(<HmsLinkActions confirmation="64318608-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    setPaneTelemetryScope({ workItemId: 'wi-2', transportId: 'mailbox-a', surface: 'web' });
+    finishWrite();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeDefined());
+    pageHide();
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledWith(
+      { workItemId: 'wi-1', events: [{ type: 'copy.link', surface: 'web' }] },
+      { context: { activeTransportId: 'mailbox-a' } },
+    );
+  });
+
+  it('records a contact copy that finishes after the pane moves on on the item it started on', async () => {
+    const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ recorded: 1 }));
+    let finishWrite: () => void = () => undefined;
+    const writeText = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = () => resolve();
+        }),
+    );
+    bindPaneTelemetry({ workItems: { recordActions: { mutate } } });
+    setClipboard({ writeText });
+    setPaneTelemetryScope({ workItemId: 'wi-1', transportId: 'mailbox-a', surface: 'web' });
+
+    render(
+      <ContactBlock
+        contact={{
+          name: 'Priya Naidoo',
+          company: 'Example Agency',
+          endClient: null,
+          email: 'priya@example.com',
+          phone: null,
+        }}
+        onEdit={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Copy email' }));
+    setPaneTelemetryScope({ workItemId: 'wi-2', transportId: 'mailbox-a', surface: 'web' });
+    finishWrite();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied email' })).toBeDefined());
+    pageHide();
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledWith(
+      { workItemId: 'wi-1', events: [{ type: 'copy.contact', field: 'email', surface: 'web' }] },
+      { context: { activeTransportId: 'mailbox-a' } },
     );
   });
 });

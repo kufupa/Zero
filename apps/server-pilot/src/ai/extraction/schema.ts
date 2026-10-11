@@ -22,6 +22,7 @@ const dateRange = z.object({
     .nullable()
     .describe('ISO YYYY-MM-DD checkout day (exclusive), or null if not stated.'),
 });
+const extractionOriginSchema = z.enum(['person', 'system_notice']);
 
 export const mailExtractionSchema = z.object({
   sourceLanguage: z
@@ -29,6 +30,10 @@ export const mailExtractionSchema = z.object({
     .nullable()
     .describe('ISO 639-1 code of the main body text, lower case, e.g. "en" or "fr". Null if unclear.'),
   kind: z.enum(MAIL_KINDS),
+  origin: extractionOriginSchema
+    .nullable()
+    .optional()
+    .describe('Person-authored email, system-generated channel/agent notice, or null when unclear.'),
   agency: nullableText.describe(
     'The organisation of the sender (the From address), from the From domain, signature or letterhead. Null for a private sender.',
   ),
@@ -104,15 +109,31 @@ export type ExtractionStay = {
   totalRooms: number | null;
   rows: ExtractionRow[];
 };
+
+const storedExtractionRowSchema = mailExtractionSchema.shape.stays.element.shape.rows.element.extend({
+  id: z.string(),
+});
+const storedExtractionStaySchema = mailExtractionSchema.shape.stays.element.extend({
+  id: z.string(),
+  rows: z.array(storedExtractionRowSchema),
+});
+
+/** Stored mail-extraction payload. Optional origin keeps pre-origin rows readable. */
+export const mailExtractionPayloadSchema = z.object({
+  origin: extractionOriginSchema
+    .nullable()
+    .optional()
+    .describe('Person-authored email or a system-generated notice; absent in older stored payloads.'),
+  contact: mailExtractionSchema.shape.contact,
+  agency: mailExtractionSchema.shape.agency,
+  endClient: mailExtractionSchema.shape.endClient,
+  confirmationNumbers: mailExtractionSchema.shape.confirmationNumbers,
+  stays: z.array(storedExtractionStaySchema),
+  missing: mailExtractionSchema.shape.missing,
+});
+
 /** The stored payload (mail_extraction.payload). Every string is card-masked and capped. */
-export type MailExtractionPayload = {
-  contact: { name: string | null; email: string | null; phone: string | null };
-  agency: string | null;
-  endClient: string | null;
-  confirmationNumbers: string[];
-  stays: ExtractionStay[];
-  missing: Array<{ field: string; question: string }>;
-};
+export type MailExtractionPayload = z.infer<typeof mailExtractionPayloadSchema>;
 export type SanitizedExtraction = {
   kind: MailKind;
   sourceLanguage: string | null;
@@ -201,6 +222,7 @@ export function sanitizeExtraction(
       ? output.sourceLanguage
       : null,
     payload: {
+      origin: output.origin ?? null,
       contact: {
         name: cleanText(output.contact.name),
         email: email && sourceLower.includes(email.toLowerCase()) ? email : null,

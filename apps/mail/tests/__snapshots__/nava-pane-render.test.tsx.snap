@@ -61,6 +61,201 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
             Needs you
           </button>
         </div>
+        <section
+          aria-label="Contact"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          id="quote-contact"
+        >
+          <div
+            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+          >
+            <h3
+              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
+            >
+              Contact
+            </h3>
+          </div>
+          <div
+            class="flex flex-col gap-3 p-3"
+          >
+            <div
+              class="grid grid-cols-2 gap-x-2.5 gap-y-2"
+            >
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-name"
+                  >
+                    <span>
+                      Name
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-name"
+                    maxlength="200"
+                    value="David Miller"
+                  />
+                  <button
+                    aria-label="Copy name"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-company"
+                  >
+                    <span>
+                      Company / agency
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    id="quote-contact-company"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy company / agency"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-endClient"
+                  >
+                    <span>
+                      End client
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-endClient"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy end client"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-email"
+                  >
+                    <span>
+                      Email
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-email"
+                    maxlength="200"
+                    value="guest@example.com"
+                  />
+                  <button
+                    aria-label="Copy email"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-phone"
+                  >
+                    <span>
+                      Phone
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-phone"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy phone"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
         <div
           class="flex items-center justify-between gap-2 rounded-[4px] border border-[#e2e8f0] bg-white px-2.5 py-2"
           id="quote-selected-message"
@@ -131,143 +326,6 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
           </span>
         </div>
         <section
-          aria-label="Contact"
-          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-          id="quote-contact"
-        >
-          <div
-            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-          >
-            <h3
-              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
-            >
-              Contact
-            </h3>
-          </div>
-          <div
-            class="flex flex-col gap-3 p-3"
-          >
-            <div
-              class="grid grid-cols-2 gap-x-2.5 gap-y-2"
-            >
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-name"
-                  >
-                    <span>
-                      Name
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-name"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-company"
-                  >
-                    <span>
-                      Company / agency
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  id="quote-contact-company"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-endClient"
-                  >
-                    <span>
-                      End client
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-endClient"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-email"
-                  >
-                    <span>
-                      Email
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-email"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-phone"
-                  >
-                    <span>
-                      Phone
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-phone"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-            </div>
-          </div>
-        </section>
-        <section
           aria-labelledby="amend-lookup-title"
           class="flex flex-col gap-3 rounded-sm border border-[#e2e8f0] bg-white px-3 py-3 text-[#1e293b]"
           data-testid="amend-lookup-panel"
@@ -333,6 +391,12 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
                       type="button"
                     >
                       Copy confirmation
+                    </button>
+                    <button
+                      class="rounded-sm border border-[#0066cc] bg-white px-2.5 py-1 text-[11.5px] font-medium text-[#0066cc]"
+                      type="button"
+                    >
+                      Copy for HMS
                     </button>
                     <span
                       class="text-[11px] text-amber-900"
@@ -948,6 +1012,201 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
             Needs you
           </button>
         </div>
+        <section
+          aria-label="Contact"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          id="quote-contact"
+        >
+          <div
+            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+          >
+            <h3
+              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
+            >
+              Contact
+            </h3>
+          </div>
+          <div
+            class="flex flex-col gap-3 p-3"
+          >
+            <div
+              class="grid grid-cols-2 gap-x-2.5 gap-y-2"
+            >
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-name"
+                  >
+                    <span>
+                      Name
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-name"
+                    maxlength="200"
+                    value="David Miller"
+                  />
+                  <button
+                    aria-label="Copy name"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-company"
+                  >
+                    <span>
+                      Company / agency
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    id="quote-contact-company"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy company / agency"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-endClient"
+                  >
+                    <span>
+                      End client
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-endClient"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy end client"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-email"
+                  >
+                    <span>
+                      Email
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-email"
+                    maxlength="200"
+                    value="guest@example.com"
+                  />
+                  <button
+                    aria-label="Copy email"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-phone"
+                  >
+                    <span>
+                      Phone
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-phone"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy phone"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
         <div
           class="flex items-center justify-between gap-2 rounded-[4px] border border-[#e2e8f0] bg-white px-2.5 py-2"
           id="quote-selected-message"
@@ -1017,143 +1276,6 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
              Synced
           </span>
         </div>
-        <section
-          aria-label="Contact"
-          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-          id="quote-contact"
-        >
-          <div
-            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-          >
-            <h3
-              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
-            >
-              Contact
-            </h3>
-          </div>
-          <div
-            class="flex flex-col gap-3 p-3"
-          >
-            <div
-              class="grid grid-cols-2 gap-x-2.5 gap-y-2"
-            >
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-name"
-                  >
-                    <span>
-                      Name
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-name"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-company"
-                  >
-                    <span>
-                      Company / agency
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  id="quote-contact-company"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-endClient"
-                  >
-                    <span>
-                      End client
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-endClient"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-email"
-                  >
-                    <span>
-                      Email
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-email"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-phone"
-                  >
-                    <span>
-                      Phone
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-phone"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-            </div>
-          </div>
-        </section>
         <p
           class="px-1 text-[11px] text-[#64748b]"
         >
@@ -2801,6 +2923,201 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
             Needs you
           </button>
         </div>
+        <section
+          aria-label="Contact"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          id="quote-contact"
+        >
+          <div
+            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+          >
+            <h3
+              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
+            >
+              Contact
+            </h3>
+          </div>
+          <div
+            class="flex flex-col gap-3 p-3"
+          >
+            <div
+              class="grid grid-cols-2 gap-x-2.5 gap-y-2"
+            >
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-name"
+                  >
+                    <span>
+                      Name
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-name"
+                    maxlength="200"
+                    value="David Miller"
+                  />
+                  <button
+                    aria-label="Copy name"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-company"
+                  >
+                    <span>
+                      Company / agency
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    id="quote-contact-company"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy company / agency"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-endClient"
+                  >
+                    <span>
+                      End client
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-endClient"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy end client"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-email"
+                  >
+                    <span>
+                      Email
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-email"
+                    maxlength="200"
+                    value="guest@example.com"
+                  />
+                  <button
+                    aria-label="Copy email"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-phone"
+                  >
+                    <span>
+                      Phone
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-phone"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy phone"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
         <div
           class="flex items-center justify-between gap-2 rounded-[4px] border border-[#e2e8f0] bg-white px-2.5 py-2"
           id="quote-selected-message"
@@ -2870,143 +3187,6 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
              Synced
           </span>
         </div>
-        <section
-          aria-label="Contact"
-          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-          id="quote-contact"
-        >
-          <div
-            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-          >
-            <h3
-              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
-            >
-              Contact
-            </h3>
-          </div>
-          <div
-            class="flex flex-col gap-3 p-3"
-          >
-            <div
-              class="grid grid-cols-2 gap-x-2.5 gap-y-2"
-            >
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-name"
-                  >
-                    <span>
-                      Name
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-name"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-company"
-                  >
-                    <span>
-                      Company / agency
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  id="quote-contact-company"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-endClient"
-                  >
-                    <span>
-                      End client
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-endClient"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-email"
-                  >
-                    <span>
-                      Email
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-email"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-phone"
-                  >
-                    <span>
-                      Phone
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-phone"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-            </div>
-          </div>
-        </section>
         <p
           class="px-1 text-[11px] text-[#64748b]"
         >
@@ -4849,6 +5029,201 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
             Needs you
           </button>
         </div>
+        <section
+          aria-label="Contact"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          id="quote-contact"
+        >
+          <div
+            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+          >
+            <h3
+              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
+            >
+              Contact
+            </h3>
+          </div>
+          <div
+            class="flex flex-col gap-3 p-3"
+          >
+            <div
+              class="grid grid-cols-2 gap-x-2.5 gap-y-2"
+            >
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-name"
+                  >
+                    <span>
+                      Name
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-name"
+                    maxlength="200"
+                    value="David Miller"
+                  />
+                  <button
+                    aria-label="Copy name"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-company"
+                  >
+                    <span>
+                      Company / agency
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    id="quote-contact-company"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy company / agency"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-endClient"
+                  >
+                    <span>
+                      End client
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-endClient"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy end client"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-email"
+                  >
+                    <span>
+                      Email
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-email"
+                    maxlength="200"
+                    value="guest@example.com"
+                  />
+                  <button
+                    aria-label="Copy email"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-phone"
+                  >
+                    <span>
+                      Phone
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-phone"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy phone"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
         <div
           class="flex items-center justify-between gap-2 rounded-[4px] border border-[#e2e8f0] bg-white px-2.5 py-2"
           id="quote-selected-message"
@@ -4918,143 +5293,6 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
              Synced
           </span>
         </div>
-        <section
-          aria-label="Contact"
-          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-          id="quote-contact"
-        >
-          <div
-            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-          >
-            <h3
-              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
-            >
-              Contact
-            </h3>
-          </div>
-          <div
-            class="flex flex-col gap-3 p-3"
-          >
-            <div
-              class="grid grid-cols-2 gap-x-2.5 gap-y-2"
-            >
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-name"
-                  >
-                    <span>
-                      Name
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-name"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-company"
-                  >
-                    <span>
-                      Company / agency
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  id="quote-contact-company"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-endClient"
-                  >
-                    <span>
-                      End client
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-endClient"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-email"
-                  >
-                    <span>
-                      Email
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-email"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-phone"
-                  >
-                    <span>
-                      Phone
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-phone"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-            </div>
-          </div>
-        </section>
         <section
           aria-label="Find the booking"
           class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
@@ -6602,6 +6840,201 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
             Needs you
           </button>
         </div>
+        <section
+          aria-label="Contact"
+          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+          id="quote-contact"
+        >
+          <div
+            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+          >
+            <h3
+              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
+            >
+              Contact
+            </h3>
+          </div>
+          <div
+            class="flex flex-col gap-3 p-3"
+          >
+            <div
+              class="grid grid-cols-2 gap-x-2.5 gap-y-2"
+            >
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-name"
+                  >
+                    <span>
+                      Name
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-name"
+                    maxlength="200"
+                    value="David Miller"
+                  />
+                  <button
+                    aria-label="Copy name"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-company"
+                  >
+                    <span>
+                      Company / agency
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    id="quote-contact-company"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy company / agency"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-endClient"
+                  >
+                    <span>
+                      End client
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-endClient"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy end client"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-email"
+                  >
+                    <span>
+                      Email
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-email"
+                    maxlength="200"
+                    value="guest@example.com"
+                  />
+                  <button
+                    aria-label="Copy email"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+              <div
+                class="flex flex-col gap-1"
+              >
+                <div
+                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
+                >
+                  <label
+                    class="flex items-center gap-1.5"
+                    for="quote-contact-phone"
+                  >
+                    <span>
+                      Phone
+                    </span>
+                  </label>
+                </div>
+                <div
+                  class="flex min-w-0 gap-1"
+                >
+                  <input
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] min-w-0"
+                    data-pii="true"
+                    id="quote-contact-phone"
+                    maxlength="200"
+                    value=""
+                  />
+                  <button
+                    aria-label="Copy phone"
+                    class="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                    disabled=""
+                    type="button"
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
         <div
           class="flex items-center justify-between gap-2 rounded-[4px] border border-[#e2e8f0] bg-white px-2.5 py-2"
           id="quote-selected-message"
@@ -6671,143 +7104,6 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
              Synced
           </span>
         </div>
-        <section
-          aria-label="Contact"
-          class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-          id="quote-contact"
-        >
-          <div
-            class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-          >
-            <h3
-              class="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]"
-            >
-              Contact
-            </h3>
-          </div>
-          <div
-            class="flex flex-col gap-3 p-3"
-          >
-            <div
-              class="grid grid-cols-2 gap-x-2.5 gap-y-2"
-            >
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-name"
-                  >
-                    <span>
-                      Name
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-name"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-company"
-                  >
-                    <span>
-                      Company / agency
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  id="quote-contact-company"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-endClient"
-                  >
-                    <span>
-                      End client
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-endClient"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-email"
-                  >
-                    <span>
-                      Email
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-email"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <div
-                  class="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]"
-                >
-                  <label
-                    class="flex items-center gap-1.5"
-                    for="quote-contact-phone"
-                  >
-                    <span>
-                      Phone
-                    </span>
-                  </label>
-                </div>
-                <input
-                  class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                  data-pii="true"
-                  id="quote-contact-phone"
-                  maxlength="200"
-                  value=""
-                />
-              </div>
-            </div>
-          </div>
-        </section>
         <section
           aria-label="Find the booking"
           class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"

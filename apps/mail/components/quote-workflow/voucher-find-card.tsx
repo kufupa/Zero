@@ -294,7 +294,7 @@ function SearchRow({ row }: { row: GuestSearchRow }) {
     <div className="rounded-xs flex flex-col gap-1 border border-[#e2e8f0] p-2">
       <p data-pii className={valueClass}>{`${guest} · ${row.confirmation}`}</p>
       <p className={captionClass}>{`${dates} · ${row.status || 'status not shown'}`}</p>
-      <HmsLinkActions confirmation={row.confirmation} />
+      <HmsLinkActions confirmation={row.confirmation} guestSurname={row.lastName} arrival={row.arrival} />
     </div>
   );
 }

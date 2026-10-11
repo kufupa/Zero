@@ -13,10 +13,11 @@ import {
   type HmsReviewed,
   type HmsWriteView,
 } from '../lib/quote-workflow/hms-write';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ApproveCard } from '../components/quote-workflow/approve-card';
 import { BookingVoucherCard } from '../components/nava-pane/blocks/booking-voucher-card';
 import { initialQuoteSession } from '../lib/quote-workflow/session';
+import type { QuoteAmendment, QuoteAnalysis, QuoteSession } from '../lib/quote-workflow/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 
@@ -477,6 +478,79 @@ describe('BookingVoucherCard write card', () => {
     paneWrite.view = viewWith({ form: attachForm, before: null });
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
+  });
+
+  describe('the HMS copy on an amendment', () => {
+    const LANDING = 'https://hms.example.test/';
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    });
+
+    /** An amend whose mail gives the requested dates. The booked arrival is `booked`, or absent when that is null. */
+    function amendSession(booked: string | null): QuoteSession {
+      const amendment: QuoteAmendment = {
+        kind: 'amend',
+        confirmationNumber: CONFIRMATION,
+        guestLastName: 'Mokoena',
+        arrival: booked,
+        departure: '2026-11-04',
+        requestedArrival: '2026-11-02',
+        requestedDeparture: '2026-11-04',
+        requestedChange: 'Move the arrival to 2 Nov',
+      };
+      const luna = {
+        groups: [
+          {
+            arrival: '2026-11-02',
+            departure: '2026-11-04',
+            rooms: 1,
+            adultsPerRoom: 2,
+            childAges: [],
+            board: null,
+            roomPreference: null,
+            guestNames: [],
+          },
+        ],
+      };
+      const analysis = { intent: 'other', groups: [], secondaryAsks: [], alternatives: [], amendment, luna };
+      return { ...initialQuoteSession(), analysis: analysis as unknown as QuoteAnalysis };
+    }
+
+    /** Renders the card on the amendment and returns what Copy for HMS wrote to the clipboard. */
+    async function copiedForHms(session: QuoteSession): Promise<string> {
+      vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
+      const writeText = vi.fn(async (_text: string) => undefined);
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+      paneWrite.view = viewWith();
+      render(
+        <BookingVoucherCard
+          session={session}
+          internetMessageId={null}
+          syncCommitted={null}
+          syncPending={false}
+          workItemId={WORK_ITEM}
+          writesEnabled
+        />,
+      );
+      // The amend lookup panel has its own Copy for HMS, so the click goes to the write card's.
+      const card = (await screen.findByRole('heading', { name: 'Booking in HMS' })).closest('section');
+      fireEvent.click(within(card!).getByRole('button', { name: 'Copy for HMS' }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      return String(writeText.mock.calls[0]?.[0]);
+    }
+
+    it('leaves the arrival out when the mail does not state the booked one, never the requested date', async () => {
+      expect(await copiedForHms(amendSession(null))).toBe(
+        `${LANDING}\nConfirmation: ${CONFIRMATION}\nGuest surname: Mokoena`,
+      );
+    });
+
+    it('copies the booked arrival the mail states', async () => {
+      expect(await copiedForHms(amendSession('2026-10-30'))).toBe(
+        `${LANDING}\nConfirmation: ${CONFIRMATION}\nGuest surname: Mokoena\nArrival: 2026-10-30`,
+      );
+    });
   });
 });
 

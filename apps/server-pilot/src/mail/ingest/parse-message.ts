@@ -65,6 +65,8 @@ export interface ParsedInboundMessage {
   textBody: string | null;
   htmlBody: string | null;
   receivedAt: Date | null;
+  /** Receiving server's top-most Received stamp; null when absent or malformed. */
+  deliveredAt: Date | null;
   attachments: ParsedAttachment[];
   /** Raw header lines kept for quarantine diagnostics. */
   rawHeaderLines: { key: string; line: string }[];
@@ -75,6 +77,38 @@ export interface ParseOptions {
   messageId: string;
   /** Optional S3 storage override (tests inject a fake). */
   storage?: S3Storage;
+}
+
+/**
+ * Parse the date suffix of the first Received header in an RFC822 header block.
+ * Raw MIME ingestion and the existing-row backfill share this parser so both
+ * use the top-most server stamp, never the sender's Date header.
+ */
+export function parseTopReceivedDate(rawMimePrefix: Buffer | string): Date | null {
+  try {
+    const raw = Buffer.isBuffer(rawMimePrefix) ? rawMimePrefix.toString('latin1') : rawMimePrefix;
+    const headerBlock = raw.split(/\r?\n\r?\n/, 1)[0] ?? '';
+    let name: string | null = null;
+    let value = '';
+    for (const line of headerBlock.split(/\r?\n/)) {
+      if (/^[\t ]/.test(line)) {
+        if (name) value += ` ${line.trim()}`;
+        continue;
+      }
+      if (name === 'received') return parseReceivedDate(value);
+      const colon = line.indexOf(':');
+      if (colon <= 0) {
+        name = null;
+        value = '';
+        continue;
+      }
+      name = line.slice(0, colon).trim().toLowerCase();
+      value = line.slice(colon + 1).trim();
+    }
+    return name === 'received' ? parseReceivedDate(value) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -279,6 +313,8 @@ export function buildParsedMessage(args: {
   const dateVal = headers.get('date');
   const receivedAt =
     dateVal instanceof Date ? dateVal : typeof dateVal === 'string' ? parseDate(dateVal) : null;
+  const firstReceived = rawHeaderLines.find((header) => header.key.toLowerCase() === 'received');
+  const deliveredAt = firstReceived ? parseReceivedDate(firstReceived.line) : null;
 
   return {
     ownerHeaderValue: ownerHeaderValue ? ownerHeaderValue.toLowerCase() : null,
@@ -294,6 +330,7 @@ export function buildParsedMessage(args: {
     textBody: text,
     htmlBody: html,
     receivedAt,
+    deliveredAt,
     attachments,
     rawHeaderLines,
   };
@@ -436,6 +473,105 @@ function extractAddresses(v: unknown): string[] {
 function parseDate(raw: string): Date | null {
   const d = new Date(raw);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+const RFC_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const RFC_WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const RFC_ZONE_OFFSETS: Record<string, number> = {
+  ut: 0,
+  utc: 0,
+  gmt: 0,
+  est: -5 * 60,
+  edt: -4 * 60,
+  cst: -6 * 60,
+  cdt: -5 * 60,
+  mst: -7 * 60,
+  mdt: -6 * 60,
+  pst: -8 * 60,
+  pdt: -7 * 60,
+  z: 0,
+};
+
+function parseReceivedDate(raw: string): Date | null {
+  const unfolded = raw.replace(/\r?\n[\t ]+/g, ' ').trim();
+  const value = unfolded.replace(/^received\s*:/i, '').trim();
+  const withoutComments = stripRfcComments(value);
+  if (!withoutComments) return null;
+  const semicolon = withoutComments.lastIndexOf(';');
+  if (semicolon < 0) return null;
+  const dateText = withoutComments.slice(semicolon + 1).trim();
+  if (!dateText) return null;
+  const match = /^(?:(sun|mon|tue|wed|thu|fri|sat),[\t ]*)?(\d{1,2})[\t ]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[\t ]+(\d{4})[\t ]+([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?[\t ]+([a-z]{1,5}|[+-]\d{2}:?\d{2})$/i.exec(dateText);
+  if (!match) return null;
+
+  const day = Number(match[2]);
+  const month = RFC_MONTHS.indexOf(match[3]!.toLowerCase());
+  const year = Number(match[4]);
+  const hour = Number(match[5]);
+  const minute = Number(match[6]);
+  const second = Number(match[7] ?? '0');
+  if (month < 0 || year < 100) return null;
+
+  const localTime = new Date(Date.UTC(year, month, day, hour, minute, second));
+  if (
+    localTime.getUTCFullYear() !== year ||
+    localTime.getUTCMonth() !== month ||
+    localTime.getUTCDate() !== day ||
+    localTime.getUTCHours() !== hour ||
+    localTime.getUTCMinutes() !== minute ||
+    localTime.getUTCSeconds() !== second
+  ) {
+    return null;
+  }
+  const weekday = match[1]?.toLowerCase();
+  if (weekday && RFC_WEEKDAYS[localTime.getUTCDay()] !== weekday) return null;
+
+  const zone = match[8]!;
+  const numericZone = /^([+-])(\d{2}):?(\d{2})$/.exec(zone);
+  let offsetMinutes: number | undefined;
+  if (numericZone) {
+    const hours = Number(numericZone[2]);
+    const minutes = Number(numericZone[3]);
+    if (hours > 23 || minutes > 59) return null;
+    offsetMinutes = (numericZone[1] === '+' ? 1 : -1) * (hours * 60 + minutes);
+  } else {
+    offsetMinutes = RFC_ZONE_OFFSETS[zone.toLowerCase()];
+  }
+  if (offsetMinutes === undefined) return null;
+
+  const deliveredAt = new Date(localTime.getTime() - offsetMinutes * 60_000);
+  return Number.isNaN(deliveredAt.getTime()) ? null : deliveredAt;
+}
+
+/** Remove balanced RFC comments while refusing unclosed or unmatched parentheses. */
+function stripRfcComments(raw: string): string | null {
+  let output = '';
+  let depth = 0;
+  let escaped = false;
+  for (const char of raw) {
+    if (depth > 0) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '(') {
+        depth += 1;
+      } else if (char === ')') {
+        depth -= 1;
+      }
+      continue;
+    }
+    if (char === '(') {
+      depth = 1;
+      output += ' ';
+    } else if (char === ')') {
+      return null;
+    } else {
+      output += char;
+    }
+  }
+  if (depth !== 0 || escaped) return null;
+  return output.replace(/[\t ]+/g, ' ').trim();
 }
 
 /** Drain a Readable into a Buffer (used for attachment S3 PUT). */
