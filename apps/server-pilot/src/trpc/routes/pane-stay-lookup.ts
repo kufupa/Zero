@@ -6,9 +6,13 @@ import {
   searchGuest,
 } from '../../ai/pane-stay-lookup.js';
 import {
+  cancelHmsBatch,
+  enqueueHmsBatch,
+  HmsBatchInputError,
   hmsJobQueueEnabled,
   guestSearchPrefetchIdempotencyKey,
   queueUserHmsJob,
+  readHmsBatchView,
   readHmsJobView,
   registerJobScreenshotRun,
 } from '../../ai/hms-jobs.js';
@@ -60,6 +64,17 @@ const queueSearchGuestInput = z
   .strict()
   .refine((input) => !input.autoStart || !input.departure, {
     message: 'Auto-started guest searches must not include departure',
+  });
+const hmsBatchIdInput = z.object({ batchId: z.string().uuid() }).strict();
+const hmsBatchQueueInput = z
+  .object({
+    batchId: z.string().uuid(),
+    workItemIds: z.array(z.string().uuid()).min(1),
+  })
+  .strict()
+  .refine((input) => new Set(input.workItemIds).size === input.workItemIds.length, {
+    message: 'workItemIds must be unique',
+    path: ['workItemIds'],
   });
 // Poll by run id, or resume the latest job of one kind on a thread after a remount.
 const jobStatusInput = z.union([
@@ -172,6 +187,33 @@ export const paneStayLookupRouter = router({
       if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'thread has no inbound mail' });
       return { runId: run.id };
     }),
+  // Work-item IDs are validated as one batch; disabled queue remains a no-op like queueFind.
+  queueBatch: mailboxProcedure.input(hmsBatchQueueInput).mutation(async ({ input, ctx }) => {
+    if (!hmsJobQueueEnabled()) return null;
+    try {
+      return await enqueueHmsBatch({
+        batchId: input.batchId,
+        transportId: ctx.activeTransportId,
+        userId: ctx.sessionUser.id,
+        workItemIds: input.workItemIds,
+      });
+    } catch (error) {
+      if (error instanceof HmsBatchInputError) {
+        throw new TRPCError({ code: error.trpcCode, message: error.message });
+      }
+      throw error;
+    }
+  }),
+  batchStatus: mailboxProcedure.input(hmsBatchIdInput).query(({ input, ctx }) =>
+    hmsJobQueueEnabled()
+      ? readHmsBatchView({ batchId: input.batchId, transportId: ctx.activeTransportId })
+      : null,
+  ),
+  cancelBatch: mailboxProcedure.input(hmsBatchIdInput).mutation(({ input, ctx }) =>
+    hmsJobQueueEnabled()
+      ? cancelHmsBatch({ batchId: input.batchId, transportId: ctx.activeTransportId })
+      : null,
+  ),
   jobStatus: mailboxProcedure.input(jobStatusInput).query(({ input, ctx }) =>
     hmsJobQueueEnabled() ? readHmsJobView({ transportId: ctx.activeTransportId, ...input }) : null,
   ),

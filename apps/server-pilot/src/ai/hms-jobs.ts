@@ -12,7 +12,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
-import { and, desc, eq, gt, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
@@ -128,6 +128,48 @@ export type HmsJobView = {
   result: Record<string, unknown> | null;
 };
 
+export type HmsBatchStatus = 'queued' | 'running' | 'partial' | 'done' | 'failed' | 'cancelled';
+export type HmsBatchItemStatus = HmsJobStatus | 'skipped' | 'reused' | 'cancelled';
+export type HmsBatchSkipReason = 'insufficient_data' | 'spam';
+
+export type HmsBatchItemView = {
+  itemIndex: number;
+  workItemId: string;
+  status: HmsBatchItemStatus;
+  reason: HmsBatchSkipReason | null;
+  runId: string | null;
+  request: HmsJobRequest | null;
+  /** The linked lookup view, including its persisted snapshot when one exists. */
+  job: HmsJobView | null;
+};
+
+export type HmsBatchView = {
+  batchId: string;
+  status: HmsBatchStatus;
+  summary: {
+    total: number;
+    queued: number;
+    running: number;
+    retrying: number;
+    done: number;
+    failed: number;
+    cancelled: number;
+    skipped: number;
+    reused: number;
+  };
+  items: HmsBatchItemView[];
+};
+
+export class HmsBatchInputError extends Error {
+  constructor(
+    message: string,
+    readonly trpcCode: 'BAD_REQUEST' | 'NOT_FOUND' | 'CONFLICT',
+  ) {
+    super(message);
+    this.name = 'HmsBatchInputError';
+  }
+}
+
 type Mark = {
   runId: string;
   claimOwner: string;
@@ -201,6 +243,22 @@ function prefetchConfirmations(payload: unknown, subject: string | null, textBod
   return [...new Set([...extractionConfirmations(payload), ...text])].slice(0, PREFETCH_PER_MAIL_MAX);
 }
 
+export function selectHmsBatchRequest(input: {
+  kind: string | null;
+  payload: unknown;
+  subject: string | null;
+  textBody: string | null;
+}): { request: HmsJobRequest } | { skipped: 'insufficient_data' } {
+  const confirmation = prefetchConfirmations(input.payload, input.subject, input.textBody)[0];
+  if (confirmation) return { request: { kind: 'find', confirmation } };
+
+  const lastName = explicitGuestSurname(input.subject, input.textBody);
+  const arrival = extractUniqueArrivalForHmsPrefetch(input.kind ?? '', input.payload);
+  const search = hmsJobRequestSchema.safeParse({ kind: 'search_guest', lastName, arrival });
+  if (search.success) return { request: search.data };
+  return { skipped: 'insufficient_data' };
+}
+
 async function latestWorkItemId(db: DB, transportId: string, threadId: string): Promise<string | null> {
   const item = await latestWorkItem(db, transportId, threadId);
   return item?.id ?? null;
@@ -261,46 +319,57 @@ async function latestInboundMessageId(
   return trigger?.id ?? null;
 }
 
+type HmsJobEnqueueInput = {
+  transportId: string;
+  threadId: string;
+  triggerMessageId: string;
+  workItemId: string | null;
+  userId: string | null;
+  request: HmsJobRequest;
+  priority: number;
+  idempotencyKey: string;
+  createdAt?: Date;
+  nextRunAt?: Date;
+  extraMetrics?: Record<string, unknown>;
+};
+
+function hmsJobInsertValues(input: HmsJobEnqueueInput): typeof aiWorkflowRun.$inferInsert {
+  const now = new Date();
+  const createdAt = input.createdAt ?? now;
+  return {
+    id: randomUUID(),
+    transportId: input.transportId,
+    threadId: input.threadId,
+    triggerMessageId: input.triggerMessageId,
+    workItemId: input.workItemId,
+    runKind: 'read_tool',
+    idempotencyKey: input.idempotencyKey,
+    modelId: NOT_APPLICABLE_MODEL_ID,
+    promptVersion: HMS_JOB_PROMPT_VERSION,
+    readRequest: input.request,
+    executorLane: 'hms',
+    priority: input.priority,
+    state: 'queued',
+    nextRunAt: input.nextRunAt ?? now,
+    metrics: {
+      hmsJob: true,
+      prefetch: input.priority === HMS_JOB_PRIORITY_PREFETCH,
+      userId: input.userId,
+      owner: input.userId ? `${input.userId}:${input.transportId}` : null,
+      ...input.extraMetrics,
+    },
+    createdAt,
+    updatedAt: now,
+  };
+}
+
 export async function enqueueHmsJob(
-  input: {
-    transportId: string;
-    threadId: string;
-    triggerMessageId: string;
-    workItemId: string | null;
-    userId: string | null;
-    request: HmsJobRequest;
-    priority: number;
-    idempotencyKey: string;
-  },
+  input: HmsJobEnqueueInput,
   db: DB = getDb(),
 ): Promise<{ run: AiWorkflowRun; created: boolean }> {
-  const now = new Date();
   const [inserted] = await db
     .insert(aiWorkflowRun)
-    .values({
-      id: randomUUID(),
-      transportId: input.transportId,
-      threadId: input.threadId,
-      triggerMessageId: input.triggerMessageId,
-      workItemId: input.workItemId,
-      runKind: 'read_tool',
-      idempotencyKey: input.idempotencyKey,
-      modelId: NOT_APPLICABLE_MODEL_ID,
-      promptVersion: HMS_JOB_PROMPT_VERSION,
-      readRequest: input.request,
-      executorLane: 'hms',
-      priority: input.priority,
-      state: 'queued',
-      nextRunAt: now,
-      metrics: {
-        hmsJob: true,
-        prefetch: input.priority === HMS_JOB_PRIORITY_PREFETCH,
-        userId: input.userId,
-        owner: input.userId ? `${input.userId}:${input.transportId}` : null,
-      },
-      createdAt: now,
-      updatedAt: now,
-    })
+    .values(hmsJobInsertValues(input))
     .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey })
     .returning();
   if (inserted) return { run: inserted, created: true };
@@ -359,6 +428,498 @@ export async function queueUserHmsJob(
   return run;
 }
 
+const HMS_BATCH_INSERT_CHUNK = 500;
+const HMS_BATCH_RESULT_FRESH_MS = 60 * 60_000;
+
+type HmsBatchEnqueueInput = {
+  batchId: string;
+  transportId: string;
+  userId: string;
+  workItemIds: string[];
+};
+
+type HmsBatchScope = { batchId: string; transportId: string };
+
+type HmsBatchLink = {
+  batchId: string;
+  itemIndex: number;
+  workItemId: string;
+  idempotencyKey: string;
+  status: 'reused' | 'cancelled';
+  linkedRunId: string;
+};
+
+type HmsBatchSource = {
+  workItemId: string;
+  threadId: string;
+  triggerMessageId: string;
+  spamAt: Date | null;
+  extraction: { status: string; kind: string | null; payload: unknown } | null;
+  subject: string | null;
+  textBody: string | null;
+};
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function batchItemIdempotencyKey(batchId: string, workItemId: string): string {
+  return `hms-job:batch:${batchId}:${workItemId}`;
+}
+
+// Lock order: this transaction lock is taken only in enqueueHmsBatch and cancelHmsBatch, and nothing inside those
+// transactions takes the property lock (paneStayPropertyLock) or the guest-prefetch lock. Property-lock holders (HMS
+// spawns, the staff quote, the read service) never enqueue batch or prefetch rows, so no path nests the two locks.
+// One lock per transport, not per batch: overlapping batches must see each other's runs before they reuse or insert,
+// or the same work item is read twice.
+async function acquireHmsBatchLock(db: DB, input: { transportId: string }): Promise<void> {
+  await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${'hms-batch:' + input.transportId}, 0))`);
+}
+
+function batchMembershipWhere(input: HmsBatchScope) {
+  return and(
+    eq(aiWorkflowRun.transportId, input.transportId),
+    eq(aiWorkflowRun.runKind, 'read_tool'),
+    eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+    or(
+      sql`${aiWorkflowRun.metrics}->>'batchId' = ${input.batchId}`,
+      sql`${aiWorkflowRun.metrics}->'batchLinks' @> ${JSON.stringify([{ batchId: input.batchId }])}::jsonb`,
+    ),
+  );
+}
+
+// Locking reads take rows in id order, the same order the restart sweep uses, so no two transactions wait on each other.
+async function hmsBatchRows(db: DB, input: HmsBatchScope, forUpdate = false): Promise<AiWorkflowRun[]> {
+  const query = db
+    .select()
+    .from(aiWorkflowRun)
+    .where(batchMembershipWhere(input))
+    .orderBy(aiWorkflowRun.id);
+  return forUpdate ? query.for('update') : query;
+}
+
+function batchMemberships(rows: AiWorkflowRun[], batchId: string): Array<{ itemIndex: number; workItemId: string }> {
+  const memberships: Array<{ itemIndex: number; workItemId: string }> = [];
+  for (const row of rows) {
+    const metrics = objectRecord(row.metrics);
+    if (metrics.batchId === batchId && typeof row.workItemId === 'string') {
+      const itemIndex = Number(metrics.itemIndex);
+      if (Number.isInteger(itemIndex) && itemIndex >= 0) memberships.push({ itemIndex, workItemId: row.workItemId });
+    }
+    if (!Array.isArray(metrics.batchLinks)) continue;
+    for (const value of metrics.batchLinks) {
+      const link = objectRecord(value);
+      const itemIndex = Number(link.itemIndex);
+      if (
+        link.batchId === batchId &&
+        typeof link.workItemId === 'string' &&
+        Number.isInteger(itemIndex) &&
+        itemIndex >= 0
+      ) {
+        memberships.push({ itemIndex, workItemId: link.workItemId });
+      }
+    }
+  }
+  return memberships;
+}
+
+function assertBatchReplayMatches(
+  rows: AiWorkflowRun[],
+  input: HmsBatchEnqueueInput,
+): void {
+  const existing = batchMemberships(rows, input.batchId).sort((a, b) => a.itemIndex - b.itemIndex);
+  if (
+    existing.length !== input.workItemIds.length ||
+    existing.some((item, index) => item.itemIndex !== index || item.workItemId !== input.workItemIds[index])
+  ) {
+    throw new HmsBatchInputError('batchId was already used for a different work-item list', 'CONFLICT');
+  }
+}
+
+async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise<HmsBatchSource[]> {
+  const rows: Array<{
+    workItemId: string;
+    threadId: string;
+    triggerMessageId: string;
+    spamAt: Date | null;
+    subject: string | null;
+    textBody: string | null;
+  }> = [];
+  for (let start = 0; start < input.workItemIds.length; start += HMS_BATCH_INSERT_CHUNK) {
+    const ids = input.workItemIds.slice(start, start + HMS_BATCH_INSERT_CHUNK);
+    rows.push(
+      ...(await db
+        .select({
+          workItemId: workItem.id,
+          threadId: mailThread.id,
+          triggerMessageId: message.id,
+          spamAt: mailThread.spamAt,
+          subject: message.subject,
+          textBody: message.textBody,
+        })
+        .from(workItem)
+        .innerJoin(
+          mailThread,
+          and(eq(mailThread.id, workItem.threadId), eq(mailThread.transportId, input.transportId)),
+        )
+        .innerJoin(
+          message,
+          and(
+            eq(message.id, workItem.sourceMessageId),
+            eq(message.transportId, input.transportId),
+            eq(message.threadId, workItem.threadId),
+            eq(message.direction, 'inbound'),
+          ),
+        )
+        .where(and(eq(workItem.transportId, input.transportId), inArray(workItem.id, ids)))),
+    );
+  }
+  if (new Set(rows.map((row) => row.workItemId)).size !== input.workItemIds.length) {
+    throw new HmsBatchInputError('one or more work items are unavailable', 'NOT_FOUND');
+  }
+
+  const extractions = new Map<string, { status: string; kind: string | null; payload: unknown }>();
+  const messageIds = rows.map((row) => row.triggerMessageId);
+  for (let start = 0; start < messageIds.length; start += HMS_BATCH_INSERT_CHUNK) {
+    const ids = messageIds.slice(start, start + HMS_BATCH_INSERT_CHUNK);
+    const versions = await db
+      .select({
+        messageId: mailExtraction.messageId,
+        status: mailExtraction.status,
+        kind: mailExtraction.kind,
+        payload: mailExtraction.payload,
+      })
+      .from(mailExtraction)
+      .where(inArray(mailExtraction.messageId, ids))
+      .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id));
+    for (const version of versions) {
+      // Only a succeeded version carries a payload. A newer failed or pending version must not hide an older
+      // succeeded one; with none, selectHmsBatchRequest falls back to the message text.
+      if (version.status !== 'succeeded') continue;
+      if (!extractions.has(version.messageId)) {
+        extractions.set(version.messageId, {
+          status: version.status,
+          kind: version.kind,
+          payload: version.payload,
+        });
+      }
+    }
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    extraction: extractions.get(row.triggerMessageId) ?? null,
+  }));
+}
+
+function hmsRequestKey(request: HmsJobRequest): string {
+  if (request.kind === 'find') {
+    return JSON.stringify({ kind: request.kind, confirmation: request.confirmation, arrival: request.arrival ?? null });
+  }
+  if (request.kind === 'search_guest') {
+    return JSON.stringify({
+      kind: request.kind,
+      lastName: request.lastName.trim().replace(/\s+/g, ' ').toLowerCase(),
+      arrival: request.arrival,
+      departure: request.departure ?? null,
+    });
+  }
+  return JSON.stringify(request);
+}
+
+function batchPrefetchKeys(
+  transportId: string,
+  threadId: string,
+  request: HmsJobRequest,
+  now: Date,
+): string[] {
+  if (request.kind === 'find') {
+    const today = now.toISOString().slice(0, 10);
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10);
+    return [today, yesterday].map((day) => `hms-job:prefetch:${transportId}:${request.confirmation}:${day}`);
+  }
+  if (request.kind === 'search_guest') {
+    return [guestSearchPrefetchIdempotencyKey(transportId, threadId, request.lastName, request.arrival)];
+  }
+  return [];
+}
+
+function isReusableHmsRun(run: AiWorkflowRun, request: HmsJobRequest, now: Date): boolean {
+  const parsed = hmsJobRequestSchema.safeParse(run.readRequest);
+  if (!parsed.success || hmsRequestKey(parsed.data) !== hmsRequestKey(request)) return false;
+  if (run.state === 'queued' || run.state === 'claimed' || run.state === 'running' || run.state === 'retry_wait') {
+    return true;
+  }
+  return (
+    run.state === 'succeeded' &&
+    run.readResult !== null &&
+    run.readResult !== undefined &&
+    run.finishedAt !== null &&
+    run.finishedAt.getTime() <= now.getTime() &&
+    now.getTime() - run.finishedAt.getTime() < HMS_BATCH_RESULT_FRESH_MS
+  );
+}
+
+async function loadReusableHmsRuns(
+  db: DB,
+  input: HmsBatchEnqueueInput,
+  requests: Array<{ source: HmsBatchSource; request: HmsJobRequest }>,
+  now: Date,
+): Promise<AiWorkflowRun[]> {
+  const sourceIds = requests.map(({ source }) => source.workItemId);
+  const allPrefetchKeys = [
+    ...new Set(
+      requests.flatMap(({ source, request }) =>
+        batchPrefetchKeys(input.transportId, source.threadId, request, now),
+      ),
+    ),
+  ];
+  // Pass 1, unlocked: collect every candidate id across the chunks.
+  const candidateIds = new Set<string>();
+  for (let start = 0; start < Math.max(sourceIds.length, allPrefetchKeys.length); start += HMS_BATCH_INSERT_CHUNK) {
+    const ids = sourceIds.slice(start, start + HMS_BATCH_INSERT_CHUNK);
+    const keys = allPrefetchKeys.slice(start, start + HMS_BATCH_INSERT_CHUNK);
+    // A run also serves every work item in its batchLinks, so a link to the item is a match, not only workItemId.
+    const candidatePredicates = [
+      ...(ids.length
+        ? [
+            inArray(aiWorkflowRun.workItemId, ids),
+            ...ids.map(
+              (id) => sql`${aiWorkflowRun.metrics}->'batchLinks' @> ${JSON.stringify([{ workItemId: id }])}::jsonb`,
+            ),
+          ]
+        : []),
+      ...(keys.length ? [inArray(aiWorkflowRun.idempotencyKey, keys)] : []),
+    ];
+    if (candidatePredicates.length === 0) continue;
+    const found = await db
+      .select({ id: aiWorkflowRun.id })
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.transportId, input.transportId),
+          eq(aiWorkflowRun.runKind, 'read_tool'),
+          eq(aiWorkflowRun.executorLane, 'hms'),
+          eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+          or(
+            inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
+            and(eq(aiWorkflowRun.state, 'succeeded'), gte(aiWorkflowRun.finishedAt, new Date(now.getTime() - HMS_BATCH_RESULT_FRESH_MS))),
+          ),
+          or(...candidatePredicates),
+        ),
+      );
+    for (const row of found) candidateIds.add(row.id);
+  }
+  if (candidateIds.size === 0) return [];
+  // Pass 2 locks every candidate in ONE statement, in id order, before any insert. The restart sweep also locks in
+  // id order, so the two cannot wait on each other; a lock statement per chunk could.
+  return db
+    .select()
+    .from(aiWorkflowRun)
+    .where(inArray(aiWorkflowRun.id, [...candidateIds]))
+    .orderBy(aiWorkflowRun.id)
+    .for('update');
+}
+
+function hmsBatchLink(input: {
+  batchId: string;
+  itemIndex: number;
+  workItemId: string;
+  linkedRunId: string;
+}): HmsBatchLink {
+  return {
+    ...input,
+    idempotencyKey: batchItemIdempotencyKey(input.batchId, input.workItemId),
+    status: 'reused',
+  };
+}
+
+function hmsBatchSkippedValues(
+  input: HmsBatchEnqueueInput,
+  source: HmsBatchSource,
+  itemIndex: number,
+  now: Date,
+  reason: HmsBatchSkipReason,
+) {
+  return {
+    id: randomUUID(),
+    transportId: input.transportId,
+    threadId: source.threadId,
+    triggerMessageId: source.triggerMessageId,
+    workItemId: source.workItemId,
+    runKind: 'read_tool' as const,
+    idempotencyKey: batchItemIdempotencyKey(input.batchId, source.workItemId),
+    modelId: NOT_APPLICABLE_MODEL_ID,
+    promptVersion: HMS_JOB_PROMPT_VERSION,
+    readRequest: null,
+    executorLane: 'hms' as const,
+    priority: HMS_JOB_PRIORITY_PREFETCH,
+    state: 'succeeded' as const,
+    nextRunAt: null,
+    finishedAt: now,
+    metrics: {
+      hmsJob: false,
+      batchId: input.batchId,
+      itemIndex,
+      batchItemStatus: 'skipped',
+      batchItemReason: reason,
+    },
+    createdAt: new Date(now.getTime() + itemIndex),
+    updatedAt: now,
+  };
+}
+
+function appendBatchLink(run: { metrics?: unknown }, link: HmsBatchLink): void {
+  const metrics = objectRecord(run.metrics);
+  const links = Array.isArray(metrics.batchLinks) ? metrics.batchLinks : [];
+  run.metrics = { ...metrics, batchLinks: [...links, link] };
+}
+
+/** Enqueues all eligible items atomically; skipped items are durable markers, reused lookups add only a metrics link. */
+export async function enqueueHmsBatch(
+  input: HmsBatchEnqueueInput,
+  db: DB = getDb(),
+): Promise<HmsBatchView | null> {
+  if (!hmsJobQueueEnabled()) return null;
+  if (input.workItemIds.length === 0) {
+    throw new HmsBatchInputError('a batch must contain at least one work item', 'BAD_REQUEST');
+  }
+  if (new Set(input.workItemIds).size !== input.workItemIds.length) {
+    throw new HmsBatchInputError('workItemIds must be unique', 'BAD_REQUEST');
+  }
+
+  return db.transaction(async (tx) => {
+    const scoped = tx as unknown as DB;
+    const scope = { batchId: input.batchId, transportId: input.transportId };
+    await acquireHmsBatchLock(scoped, scope);
+    const existing = await hmsBatchRows(scoped, scope);
+    if (existing.length > 0) {
+      assertBatchReplayMatches(existing, input);
+      const replay = await readHmsBatchView(scope, scoped);
+      if (!replay) throw new Error(`failed to read existing HMS batch ${input.batchId}`);
+      return replay;
+    }
+
+    const sources = await loadHmsBatchSources(scoped, input);
+    const sourceById = new Map(sources.map((source) => [source.workItemId, source]));
+    const orderedSources = input.workItemIds.map((id) => sourceById.get(id)!);
+    const now = new Date();
+    // Spam gets no lookup: the thread-state gate (spamAt) the automatic prefetch also applies. An extraction label
+    // alone is not spam, because staff can clear spam on a thread whose extraction still says spam.
+    const selections = orderedSources.map((source): { skipped: HmsBatchSkipReason } | { request: HmsJobRequest } => {
+      if (source.spamAt) return { skipped: 'spam' };
+      // No succeeded extraction still leaves the message text, so a confirmation in the subject or body queues.
+      return selectHmsBatchRequest({
+        kind: source.extraction?.kind ?? null,
+        payload: source.extraction?.payload ?? null,
+        subject: source.subject,
+        textBody: source.textBody,
+      });
+    });
+    const requested = orderedSources.flatMap((source, itemIndex) => {
+      const selection = selections[itemIndex]!;
+      return 'request' in selection ? [{ source, request: selection.request }] : [];
+    });
+    const reusable = await loadReusableHmsRuns(scoped, input, requested, now);
+    const reusableBySignature = new Map<string, AiWorkflowRun[]>();
+    for (const run of reusable) {
+      const request = hmsJobRequestSchema.safeParse(run.readRequest);
+      if (!request.success || !isReusableHmsRun(run, request.data, now)) continue;
+      const signature = hmsRequestKey(request.data);
+      reusableBySignature.set(signature, [...(reusableBySignature.get(signature) ?? []), run]);
+    }
+    for (const runs of reusableBySignature.values()) {
+      runs.sort((left, right) => {
+        const leftActive = left.state === 'queued' || left.state === 'claimed' || left.state === 'running' || left.state === 'retry_wait';
+        const rightActive = right.state === 'queued' || right.state === 'claimed' || right.state === 'running' || right.state === 'retry_wait';
+        if (leftActive !== rightActive) return leftActive ? -1 : 1;
+        return right.createdAt.getTime() - left.createdAt.getTime();
+      });
+    }
+
+    const insertRows: Array<typeof aiWorkflowRun.$inferInsert> = [];
+    const newRunBySignature = new Map<string, typeof aiWorkflowRun.$inferInsert>();
+    const linksByExistingRunId = new Map<string, HmsBatchLink[]>();
+    for (const [itemIndex, source] of orderedSources.entries()) {
+      const selection = selections[itemIndex]!;
+      if ('skipped' in selection) {
+        insertRows.push(hmsBatchSkippedValues(input, source, itemIndex, now, selection.skipped));
+        continue;
+      }
+
+      const request = selection.request;
+      const signature = hmsRequestKey(request);
+      const linkedRun = reusableBySignature.get(signature)?.[0];
+      if (linkedRun) {
+        const link = hmsBatchLink({
+          batchId: input.batchId,
+          itemIndex,
+          workItemId: source.workItemId,
+          linkedRunId: linkedRun.id,
+        });
+        linksByExistingRunId.set(linkedRun.id, [...(linksByExistingRunId.get(linkedRun.id) ?? []), link]);
+        continue;
+      }
+
+      const plannedRun = newRunBySignature.get(signature);
+      if (plannedRun) {
+        appendBatchLink(plannedRun, hmsBatchLink({
+          batchId: input.batchId,
+          itemIndex,
+          workItemId: source.workItemId,
+          linkedRunId: String(plannedRun.id),
+        }));
+        continue;
+      }
+
+      const job = hmsJobInsertValues({
+        transportId: input.transportId,
+        threadId: source.threadId,
+        triggerMessageId: source.triggerMessageId,
+        workItemId: source.workItemId,
+        userId: input.userId,
+        request,
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: batchItemIdempotencyKey(input.batchId, source.workItemId),
+        createdAt: new Date(now.getTime() + itemIndex),
+        nextRunAt: now,
+        extraMetrics: {
+          batchId: input.batchId,
+          itemIndex,
+          batchItemStatus: 'queued',
+        },
+      });
+      newRunBySignature.set(signature, job);
+      insertRows.push(job);
+    }
+
+    for (let start = 0; start < insertRows.length; start += HMS_BATCH_INSERT_CHUNK) {
+      await scoped
+        .insert(aiWorkflowRun)
+        .values(insertRows.slice(start, start + HMS_BATCH_INSERT_CHUNK))
+        .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey });
+    }
+    for (const [runId, links] of linksByExistingRunId) {
+      const run = reusable.find((candidate) => candidate.id === runId);
+      if (!run) continue;
+      const metrics = objectRecord(run.metrics);
+      const oldLinks = Array.isArray(metrics.batchLinks) ? metrics.batchLinks : [];
+      await scoped
+        .update(aiWorkflowRun)
+        .set({ metrics: { ...metrics, batchLinks: [...oldLinks, ...links] } })
+        .where(eq(aiWorkflowRun.id, runId));
+    }
+
+    const view = await readHmsBatchView(scope, scoped);
+    if (!view || view.items.length !== input.workItemIds.length) {
+      throw new Error(`HMS batch ${input.batchId} did not persist all items`);
+    }
+    return view;
+  });
+}
+
 // Each prefetch kind has its own hourly budget, so reads of one kind never use another kind's cap.
 async function countRecentPrefetches(
   db: DB,
@@ -374,6 +935,8 @@ async function countRecentPrefetches(
         eq(aiWorkflowRun.transportId, transportId),
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
         eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+        // Staff batch rows share the prefetch priority but carry batchId: they neither use nor are capped by these budgets.
+        sql`${aiWorkflowRun.metrics}->>'batchId' IS NULL`,
         sql`${aiWorkflowRun.readRequest}->>'kind' = ${kind}`,
         gt(aiWorkflowRun.createdAt, since),
       ),
@@ -820,7 +1383,11 @@ async function queuePosition(db: DB, run: AiWorkflowRun): Promise<number> {
   return Number(row?.n ?? 0) + 1;
 }
 
-async function toView(db: DB, run: AiWorkflowRun): Promise<HmsJobView> {
+async function toView(
+  db: DB,
+  run: AiWorkflowRun,
+  options: { includePosition?: boolean } = {},
+): Promise<HmsJobView> {
   const request = hmsJobRequestSchema.safeParse(run.readRequest);
   const status = STATUS_BY_STATE[run.state];
   const result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
@@ -829,7 +1396,7 @@ async function toView(db: DB, run: AiWorkflowRun): Promise<HmsJobView> {
     request: request.success ? request.data : null,
     prefetch: run.priority === HMS_JOB_PRIORITY_PREFETCH,
     status,
-    position: status === 'queued' ? await queuePosition(db, run) : null,
+    position: status === 'queued' && options.includePosition !== false ? await queuePosition(db, run) : null,
     attempts: run.attempts,
     failureClass: run.failureClass,
     asOf: typeof result?.asOf === 'string' ? result.asOf : null,
@@ -909,6 +1476,190 @@ export async function readHmsJobView(
   return run ? toView(db, run) : null;
 }
 
+function batchEffectiveStatus(item: HmsBatchItemView): HmsJobStatus | 'cancelled' {
+  if (item.status === 'skipped') return 'done';
+  if (item.status === 'cancelled') return 'cancelled';
+  if (item.status === 'reused') return item.job?.status ?? 'done';
+  return item.status;
+}
+
+function hmsBatchRollup(items: HmsBatchItemView[]): HmsBatchStatus {
+  const effective = items.map(batchEffectiveStatus);
+  if (effective.includes('cancelled')) return 'cancelled';
+
+  const hasQueued = effective.some((status) => status === 'queued' || status === 'retrying');
+  const hasRunning = effective.includes('running');
+  if (hasQueued || hasRunning) {
+    const started = items.some((item) =>
+      item.status !== 'skipped' &&
+      item.status !== 'cancelled' &&
+      item.job !== null &&
+      (item.job.status !== 'queued' || item.job.attempts > 0),
+    );
+    return started ? 'running' : 'queued';
+  }
+
+  const failed = effective.filter((status) => status === 'failed').length;
+  if (failed > 0) return failed === items.length ? 'failed' : 'partial';
+  return 'done';
+}
+
+function hmsBatchSummary(items: HmsBatchItemView[]): HmsBatchView['summary'] {
+  const summary: HmsBatchView['summary'] = {
+    total: items.length,
+    queued: 0,
+    running: 0,
+    retrying: 0,
+    done: 0,
+    failed: 0,
+    cancelled: 0,
+    skipped: 0,
+    reused: 0,
+  };
+  for (const item of items) summary[item.status] += 1;
+  return summary;
+}
+
+/** Reads durable batch membership and the linked job snapshots; no pane state is required after remount. */
+export async function readHmsBatchView(input: HmsBatchScope, db: DB = getDb()): Promise<HmsBatchView | null> {
+  const rows = await hmsBatchRows(db, input);
+  if (rows.length === 0) return null;
+
+  const items: HmsBatchItemView[] = [];
+  for (const run of rows) {
+    const metrics = objectRecord(run.metrics);
+    if (metrics.batchId === input.batchId && typeof metrics.itemIndex === 'number') {
+      if (metrics.batchItemStatus === 'skipped') {
+        items.push({
+          itemIndex: metrics.itemIndex,
+          workItemId: run.workItemId ?? '',
+          status: 'skipped',
+          reason:
+            metrics.batchItemReason === 'insufficient_data' || metrics.batchItemReason === 'spam'
+              ? metrics.batchItemReason
+              : null,
+          runId: null,
+          request: null,
+          job: null,
+        });
+      } else {
+        const job = await toView(db, run, { includePosition: false });
+        items.push({
+          itemIndex: metrics.itemIndex,
+          workItemId: run.workItemId ?? '',
+          status: metrics.batchItemStatus === 'cancelled' ? 'cancelled' : job.status,
+          reason: null,
+          runId: run.id,
+          request: job.request,
+          job,
+        });
+      }
+    }
+
+    if (!Array.isArray(metrics.batchLinks)) continue;
+    for (const value of metrics.batchLinks) {
+      const link = objectRecord(value);
+      if (
+        link.batchId !== input.batchId ||
+        typeof link.itemIndex !== 'number' ||
+        typeof link.workItemId !== 'string'
+      ) {
+        continue;
+      }
+      const job = await toView(db, run, { includePosition: false });
+      items.push({
+        itemIndex: link.itemIndex,
+        workItemId: link.workItemId,
+        status: link.status === 'cancelled' ? 'cancelled' : 'reused',
+        reason: null,
+        runId: typeof link.linkedRunId === 'string' ? link.linkedRunId : run.id,
+        request: job.request,
+        job,
+      });
+    }
+  }
+
+  items.sort((left, right) => left.itemIndex - right.itemIndex);
+  if (items.some((item, index) => item.itemIndex !== index)) {
+    throw new Error(`HMS batch ${input.batchId} has incomplete item membership`);
+  }
+  return {
+    batchId: input.batchId,
+    status: hmsBatchRollup(items),
+    summary: hmsBatchSummary(items),
+    items,
+  };
+}
+
+/** Cancels this batch's unclaimed remainder without stopping a lookup another batch still reuses. */
+export async function cancelHmsBatch(input: HmsBatchScope, db: DB = getDb()): Promise<HmsBatchView | null> {
+  return db.transaction(async (tx) => {
+    const scoped = tx as unknown as DB;
+    await acquireHmsBatchLock(scoped, input);
+    const rows = await hmsBatchRows(scoped, input, true);
+    const now = new Date();
+    for (const run of rows) {
+      const metrics = objectRecord(run.metrics);
+      let nextMetrics = metrics;
+      let changed = false;
+      const primaryItem = metrics.batchId === input.batchId;
+      const queued = run.state === 'queued' || run.state === 'retry_wait';
+      const cancelPrimary =
+        primaryItem &&
+        queued &&
+        metrics.batchItemStatus !== 'skipped' &&
+        metrics.batchItemStatus !== 'cancelled';
+      if (cancelPrimary) {
+        nextMetrics = { ...nextMetrics, batchItemStatus: 'cancelled' };
+        changed = true;
+      }
+      let batchLinks = Array.isArray(metrics.batchLinks) ? metrics.batchLinks : [];
+      if (Array.isArray(metrics.batchLinks) && queued) {
+        let linkChanged = false;
+        batchLinks = metrics.batchLinks.map((value) => {
+          const link = objectRecord(value);
+          if (link.batchId === input.batchId && link.status === 'reused') {
+            linkChanged = true;
+            return { ...link, status: 'cancelled' };
+          }
+          return value;
+        });
+        if (linkChanged) {
+          nextMetrics = { ...nextMetrics, batchLinks };
+          changed = true;
+        }
+      }
+      const primaryCancelled =
+        cancelPrimary ||
+        (typeof metrics.batchId === 'string' && metrics.batchItemStatus === 'cancelled');
+      const hasOtherBatchConsumers = batchLinks.some((value) => objectRecord(value).status === 'reused');
+      const cancelRun = queued && primaryCancelled && !hasOtherBatchConsumers;
+      changed ||= cancelRun;
+      if (!changed) continue;
+      await scoped
+        .update(aiWorkflowRun)
+        .set({
+          metrics: nextMetrics,
+          ...(cancelRun
+            ? {
+                state: 'superseded',
+                nextRunAt: null,
+                claimOwner: null,
+                claimToken: null,
+                deadlineAt: null,
+                lastError: 'HMS_BATCH_CANCELLED',
+                failureClass: null,
+                finishedAt: now,
+                updatedAt: now,
+              }
+            : {}),
+        })
+        .where(eq(aiWorkflowRun.id, run.id));
+    }
+    return readHmsBatchView(input, scoped);
+  });
+}
+
 /**
  * Re-registers a job's screenshot directory for the web process, which keeps
  * no record of lookups the worker ran. Only the owner's own job on this
@@ -940,39 +1691,126 @@ export async function registerJobScreenshotRun(
 /** A claim whose heartbeat is older than this belongs to a dead worker: three lease heartbeats of slack. */
 const HMS_CLAIM_STALE_MS = 60_000;
 
+/** Postgres deadlock_detected (40P01) or serialization_failure (40001), also when drizzle wraps the driver error. */
+function isLockConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && typeof current === 'object' && current !== null; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (code === '40P01' || code === '40001') return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+const RESTART_SWEEP_ATTEMPTS = 4;
+const RESTART_SWEEP_BACKOFF_MS = 100;
+
 /**
  * Runs at worker start. Read runs that a dead hms worker still held go back to
  * retry_wait now, not after the stale-claim timeout. A claim with a fresh
- * heartbeat belongs to a live worker and is left alone.
+ * heartbeat belongs to a live worker and is left alone. A lock conflict rolls
+ * back and retries with backoff. If every attempt conflicts, it rethrows, and
+ * createHmsRecoveryGate keeps HMS reads unclaimed until a later sweep succeeds.
  */
 export async function requeueHmsReadsAfterRestart(
   input: { ownerId: string },
   db: DB = getDb(),
 ): Promise<number> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await requeueStaleHmsReads(input, db);
+    } catch (error) {
+      if (!isLockConflict(error) || attempt >= RESTART_SWEEP_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, RESTART_SWEEP_BACKOFF_MS * 2 ** (attempt - 1)));
+    }
+  }
+}
+
+async function requeueStaleHmsReads(input: { ownerId: string }, db: DB): Promise<number> {
   const now = new Date();
-  const rows = await db
-    .update(aiWorkflowRun)
-    .set({
-      state: 'retry_wait',
-      claimOwner: null,
-      claimToken: null,
-      nextRunAt: now,
-      // The dead worker's claim deadline may already be past; the next claim sets a fresh one (as requeueRun does).
-      deadlineAt: null,
-      lastError: 'hms worker restarted',
-      failureClass: 'LEASE_LOST',
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(aiWorkflowRun.executorLane, 'hms'),
-        eq(aiWorkflowRun.runKind, 'read_tool'),
-        inArray(aiWorkflowRun.state, ['claimed', 'running']),
-        like(aiWorkflowRun.claimOwner, 'hms-ai-worker-%'),
-        ne(aiWorkflowRun.claimOwner, input.ownerId),
-        lt(aiWorkflowRun.heartbeatAt, new Date(now.getTime() - HMS_CLAIM_STALE_MS)),
-      ),
-    )
-    .returning({ id: aiWorkflowRun.id });
-  return rows.length;
+  return db.transaction(async (tx) => {
+    const staleRuns = await tx
+      .select()
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.executorLane, 'hms'),
+          eq(aiWorkflowRun.runKind, 'read_tool'),
+          inArray(aiWorkflowRun.state, ['claimed', 'running']),
+          like(aiWorkflowRun.claimOwner, 'hms-ai-worker-%'),
+          ne(aiWorkflowRun.claimOwner, input.ownerId),
+          lt(aiWorkflowRun.heartbeatAt, new Date(now.getTime() - HMS_CLAIM_STALE_MS)),
+        ),
+      )
+      .orderBy(aiWorkflowRun.id)
+      // Plain FOR UPDATE, not SKIP LOCKED: this sweep runs once at startup, so a skipped row keeps its dead worker's
+      // deadline and can fail with RUN_DEADLINE. Waiting in id order matches the batch paths' lock order.
+      .for('update');
+
+    for (const run of staleRuns) {
+      const metrics = objectRecord(run.metrics);
+      const previousCrashes = Number(metrics.crashCount);
+      const crashCount = (Number.isInteger(previousCrashes) && previousCrashes >= 0 ? previousCrashes : 0) + 1;
+      const deadLetter = crashCount >= 3;
+      await tx
+        .update(aiWorkflowRun)
+        .set({
+          state: deadLetter ? 'dead_letter' : 'retry_wait',
+          claimOwner: null,
+          claimToken: null,
+          nextRunAt: deadLetter ? null : now,
+          // The dead worker's deadline may have elapsed; a retry gets a fresh one on claim.
+          deadlineAt: null,
+          lastError: deadLetter ? 'HMS_RESTART_LIMIT' : 'hms worker restarted',
+          failureClass: 'LEASE_LOST',
+          finishedAt: deadLetter ? now : null,
+          metrics: { ...metrics, crashCount },
+          updatedAt: now,
+        })
+        .where(eq(aiWorkflowRun.id, run.id));
+    }
+    return staleRuns.length;
+  });
+}
+
+export type HmsRecoveryGate = { mayClaim(): Promise<boolean> };
+
+const HMS_RECOVERY_RETRY_MIN_MS = 1_000;
+const HMS_RECOVERY_RETRY_MAX_MS = 30_000;
+
+/**
+ * Keeps HMS read claims closed until a restart sweep succeeds. Without it, a stale job whose deadline has passed is
+ * claimed and dead-lettered as RUN_DEADLINE. A failed sweep keeps the gate closed and retries on a later tick, with
+ * exponential backoff. The worker stays up meanwhile.
+ */
+export function createHmsRecoveryGate(
+  input: { ownerId: string },
+  deps: { sweep?: (sweepInput: { ownerId: string }) => Promise<number>; now?: () => number } = {},
+): HmsRecoveryGate {
+  const sweep = deps.sweep ?? ((sweepInput: { ownerId: string }) => requeueHmsReadsAfterRestart(sweepInput));
+  const now = deps.now ?? Date.now;
+  let pending = true;
+  let nextAttemptAt = 0;
+  let backoffMs = HMS_RECOVERY_RETRY_MIN_MS;
+  return {
+    async mayClaim() {
+      if (!pending) return true;
+      const at = now();
+      if (at < nextAttemptAt) return false;
+      try {
+        const requeued = await sweep(input);
+        pending = false;
+        if (requeued > 0) console.log(JSON.stringify({ ok: true, hmsReadsRequeued: requeued }));
+        return true;
+      } catch (error) {
+        console.warn('hms_recovery_pending', {
+          retryInMs: backoffMs,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        nextAttemptAt = at + backoffMs;
+        backoffMs = Math.min(backoffMs * 2, HMS_RECOVERY_RETRY_MAX_MS);
+        return false;
+      }
+    },
+  };
 }
