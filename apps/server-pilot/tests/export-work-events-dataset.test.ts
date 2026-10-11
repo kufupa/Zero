@@ -8,9 +8,10 @@ import {
 } from '../scripts/export-work-events-dataset.js';
 import { evalLabel, workEvent, workItem, type WorkEventType } from '../src/db/schema/work.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
-import type { LabelCase } from '../src/ai/label-scorers.js';
+import { parseLabelCases, type LabelCase } from '../src/ai/label-scorers.js';
+import type { GoldenRow } from '../src/ai/reservationist-backtest.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { eq } from 'drizzle-orm';
@@ -410,6 +411,198 @@ describe('work-event label export', () => {
         });
       } finally {
         log.mockRestore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+function goldenCase(
+  id: string,
+  split: 'dev' | 'holdout',
+  triggerId: string,
+  contextIds: string[] = [],
+): GoldenRow {
+  const email = (messageId: string) => ({
+    id: messageId,
+    direction: 'inbound',
+    eventAt: null,
+    from: 'guest@example.com',
+    subject: 'Booking enquiry',
+    text: 'Please book two rooms.',
+  });
+  return {
+    id,
+    split,
+    type: 'create',
+    trigger: email(triggerId),
+    context: contextIds.map(email),
+    expected: {},
+    recordedReads: [],
+  } as GoldenRow;
+}
+
+describe('golden-set pinning and contact hashes', () => {
+  it('keeps a golden holdout thread in holdout and a golden dev thread in dev, and the rest on the hash split', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const edit: Edit = {
+        type: 'field.edit',
+        fieldPath: `stays[${STAY_A}].requested.arrival`,
+        aiValue: '2027-10-26',
+        value: '2027-10-27',
+        at: 1,
+      };
+      const holdout = await seedItem(db, 'thread-holdout');
+      const dev = await seedItem(db, 'thread-dev');
+      const free = await seedItem(db, 'thread-free');
+      for (const item of [holdout, dev, free]) await addEvents(db, item, [edit]);
+      const golden = [
+        goldenCase('case-holdout', 'holdout', 'msg-thread-holdout'),
+        goldenCase('case-dev', 'dev', 'msg-thread-dev'),
+      ];
+
+      const { cases, golden: stats, warnings } = await exportLabels(db, { golden });
+
+      expect(stats).toEqual({ matched: 2, total: 2 });
+      expect(warnings).toEqual([]);
+      expect(cases.find((row) => row.work_item_id === holdout)).toMatchObject({
+        split: 'holdout',
+        split_source: 'golden',
+      });
+      expect(cases.find((row) => row.work_item_id === dev)).toMatchObject({
+        split: 'dev',
+        split_source: 'golden',
+      });
+      expect(cases.find((row) => row.work_item_id === free)).toMatchObject({
+        split: splitFor(free),
+        split_source: 'hash',
+      });
+
+      const holdoutOnly = await exportLabels(db, { golden, split: 'holdout' });
+      expect(holdoutOnly.cases.map((row) => row.work_item_id)).toContain(holdout);
+      expect(holdoutOnly.cases.every((row) => row.split === 'holdout')).toBe(true);
+    });
+  });
+
+  it('a thread with both dev and holdout golden cases is holdout', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const item = await seedItem(db, 'thread-mixed');
+      await seedInboxThread(db, {
+        threadId: 'thread-mixed',
+        transportId: TRANSPORT_ID,
+        transportEmail: TRANSPORT_EMAIL,
+        messageId: 'msg-mixed-2',
+        messageIdHeader: 'mixed-2@example.com',
+        fromAddress: 'guest@example.com',
+        textBody: 'Please book two rooms.',
+      });
+      await addEvents(db, item, [
+        { type: 'field.edit', fieldPath: `stays[${STAY_A}].rows[${ROW_A}].count`, aiValue: 2, value: 3, at: 1 },
+      ]);
+      const golden = [
+        goldenCase('case-dev', 'dev', 'msg-thread-mixed'),
+        goldenCase('case-holdout', 'holdout', 'msg-mixed-2', ['msg-thread-mixed']),
+      ];
+
+      const { cases } = await exportLabels(db, { golden });
+
+      expect(cases).toHaveLength(1);
+      expect(cases[0]).toMatchObject({ split: 'holdout', split_source: 'golden' });
+    });
+  });
+
+  it('a golden split beats a stored eval_label split, so a holdout thread never lands in dev', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const item = await seedItem(db, 'thread-pinned');
+      await addEvents(db, item, [
+        {
+          type: 'field.edit',
+          fieldPath: `stays[${STAY_A}].requested.departure`,
+          aiValue: '2027-10-28',
+          value: '2027-10-29',
+          at: 1,
+        },
+      ]);
+      await db.insert(evalLabel).values({
+        workItemId: item,
+        fieldPath: `stays[${STAY_A}].requested.departure`,
+        labelKind: 'correction',
+        split: 'dev',
+      });
+
+      const { cases } = await exportLabels(db, {
+        golden: [goldenCase('case-pinned', 'holdout', 'msg-thread-pinned')],
+      });
+
+      expect(cases[0]).toMatchObject({ split: 'holdout', split_source: 'golden' });
+    });
+  });
+
+  it('a golden case whose message is not in this database warns, and its thread keeps the hash split', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const item = await seedItem(db, 'thread-elsewhere');
+      await addEvents(db, item, [
+        {
+          type: 'field.edit',
+          fieldPath: `stays[${STAY_A}].requested.arrival`,
+          aiValue: '2027-10-26',
+          value: '2027-10-27',
+          at: 1,
+        },
+      ]);
+
+      const result = await exportLabels(db, {
+        golden: [goldenCase('case-elsewhere', 'holdout', 'msg-not-here')],
+      });
+
+      expect(result.golden).toEqual({ matched: 0, total: 1 });
+      expect(result.warnings).toEqual([expect.stringContaining('1 of 1 golden cases have no message')]);
+      expect(result.cases[0]).toMatchObject({ split: splitFor(item), split_source: 'hash' });
+    });
+  });
+
+  it('records the transport and a salted hash of each address and phone, taken before masking, and no raw value', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const item = await seedItem(db, 'thread-contact');
+      await addEvents(db, item, [
+        { type: 'field.edit', fieldPath: 'contact.email', aiValue: 'jane@hotel.co.za', value: 'Jen@Hotel.co.za', at: 1 },
+        { type: 'field.edit', fieldPath: 'contact.phone', aiValue: '082 555 1234', value: '+27 82 555 1234', at: 2 },
+      ]);
+
+      const { cases } = await exportLabels(db);
+      const [row] = cases;
+      expect(row!.transport_id).toBe(TRANSPORT_ID);
+      const email = row!.labels.find((label) => label.field_id === 'contact.email')!;
+      expect(email.human_value).toBe('[email]');
+      expect(email.value_hash).toEqual({
+        salt: expect.any(String),
+        ai: expect.any(String),
+        human: expect.any(String),
+      });
+      expect(email.value_hash!.ai).not.toBe(email.value_hash!.human);
+      const phone = row!.labels.find((label) => label.field_id === 'contact.phone')!;
+      expect(phone.value_hash!.salt).not.toBe(email.value_hash!.salt);
+      expect(JSON.stringify(cases)).not.toMatch(/jane@hotel|jen@hotel|555 1234/i);
+      expect(parseLabelCases(cases.map((c) => JSON.stringify(c)).join('\n'))).toHaveLength(1);
+    });
+  });
+
+  it('main reads --golden-set and reports a golden case whose message is not in the database', async () => {
+    await withIngestionDb(async ({ url }) => {
+      const dir = mkdtempSync(join(tmpdir(), 'work-events-golden-'));
+      const golden = join(dir, 'golden.jsonl');
+      writeFileSync(golden, `${JSON.stringify(goldenCase('case-elsewhere', 'holdout', 'msg-not-here'))}\n`);
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await main(['--out', join(dir, 'out.jsonl'), '--golden-set', golden], { DATABASE_URL: url })).toBe(0);
+        const summary = JSON.parse(String(log.mock.calls.at(-1)?.[0])) as { golden: unknown; warnings: string[] };
+        expect(summary.golden).toEqual({ matched: 0, total: 1 });
+        expect(summary.warnings).toEqual([expect.stringContaining('1 of 1 golden cases have no message')]);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('warning: 1 of 1 golden cases'));
+      } finally {
+        log.mockRestore();
+        warn.mockRestore();
         rmSync(dir, { recursive: true, force: true });
       }
     });

@@ -7,16 +7,20 @@
  * Field events count only for extraction fields (stays[...] and contact.*). Follow-up draft decisions reuse one path for
  * different drafts, and rate.* events are not labels.
  *
- *   export-work-events-dataset.ts [--out FILE] [--split dev|holdout|test] [--time-split] [--write-labels]
+ *   export-work-events-dataset.ts [--out FILE] [--split dev|holdout|test] [--time-split] [--write-labels] [--golden-set FILE]
  *
  * The dataset JSONL has one row per labelled work item: its masked source mail, the staff-accepted kind and its labels.
  * The default run is read-only. --write-labels also inserts the eval_label rows (one per source event, ON CONFLICT DO
  * NOTHING on source_event_id, so a re-run adds nothing). Every value and mail text is masked: card numbers, security
  * codes, e-mail addresses and phone numbers.
  *
- * Split, per work item: sha256(work item id) bucket 0-59 dev, 60-79 holdout, 80-99 test. A work item keeps the split its
- * eval_label rows already carry, so a holdout item never moves. --time-split: an item whose latest label event is within
- * 30 days is test; older items split dev/holdout 3:1 by the same hash.
+ * Split, per work item: a thread that holds a golden-set case takes that case's split (holdout wins when its cases
+ * disagree). The golden set is read from .private/reservationist-backtest/golden-set.jsonl when that file exists;
+ * --golden-set names another file, and then it must exist. A golden case whose message is not in this database adds a
+ * warning, and its thread takes the hash split. Any other work item keeps the split its eval_label rows already carry, so
+ * a holdout item never moves; otherwise sha256(work item id) bucket 0-59 dev, 60-79 holdout, 80-99 test. --time-split:
+ * an item whose latest label event is within 30 days is test; older items split dev/holdout 3:1 by the same hash.
+ * split_source says which rule applied.
  *
  * Writes only the JSONL file (apps/server-pilot/.private/ by default, gitignored) and, with --write-labels, eval_label.
  */
@@ -28,20 +32,21 @@ import {
   workEvent,
   workItem,
 } from '../src/db/schema/work.js';
-import { EVAL_SCHEMA_VERSION, type LabelCase, type Split } from '../src/ai/label-scorers.js';
+import { contactValueHash, EVAL_SCHEMA_VERSION, type LabelCase, type Split } from '../src/ai/label-scorers.js';
 import { maskMailText, maskMailValue as maskValue } from '../src/ai/card-mask.js';
+import { readGoldenSet, type GoldenRow } from '../src/ai/reservationist-backtest.js';
 import { contactFieldOf, parseFieldPath } from '../src/ai/work-items.js';
 import { mailboxTransport, message } from '../src/db/schema/mail.js';
 import { createDb, type DB } from '../src/db/client.js';
 import { dirname, join, resolve } from 'node:path';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { asc, inArray } from 'drizzle-orm';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 export type LabelKind = (typeof EVAL_LABEL_KINDS)[number];
-export type SplitSource = 'stored' | 'hash' | 'time';
+export type SplitSource = 'golden' | 'stored' | 'hash' | 'time';
 
 export type LabelEvent = {
   id: string;
@@ -81,6 +86,7 @@ export type LabelRecord = {
 
 const PRIVATE_ROOT = fileURLToPath(new URL('../.private/', import.meta.url));
 const DEFAULT_OUT = join(PRIVATE_ROOT, 'work-events-eval', 'work-events-v2.jsonl');
+const DEFAULT_GOLDEN_SET = join(PRIVATE_ROOT, 'reservationist-backtest', 'golden-set.jsonl');
 const LABEL_EVENT_TYPES = [
   'field.edit',
   'field.accept',
@@ -92,7 +98,7 @@ const CORRECTION_TYPES: ReadonlySet<string> = new Set(['field.edit', 'field.reje
 const DAY_MS = 86_400_000;
 const TIME_TEST_DAYS = 30;
 const USAGE =
-  'usage: export-work-events-dataset.ts [--out FILE] [--split dev|holdout|test] [--time-split] [--write-labels]';
+  'usage: export-work-events-dataset.ts [--out FILE] [--split dev|holdout|test] [--time-split] [--write-labels] [--golden-set FILE]';
 
 /** An extraction field the pane edits, as recordFieldEvent accepts it. */
 const isExtractionField = (path: string) =>
@@ -163,15 +169,41 @@ export function splitFor(
   return bucket < 80 ? 'holdout' : 'test';
 }
 
+/** Thread id to split for the golden cases. `threadOf` maps a message id to its thread, from the database. */
+export function goldenThreadSplits(
+  golden: readonly GoldenRow[],
+  threadOf: ReadonlyMap<string, string | null>,
+): { splits: Map<string, Split>; matched: number } {
+  const splits = new Map<string, Split>();
+  let matched = 0;
+  for (const row of golden) {
+    const threads = [row.trigger.id, ...row.context.map((item) => item.id)].flatMap((id) => {
+      const thread = threadOf.get(id);
+      return thread ? [thread] : [];
+    });
+    if (threads.length) matched += 1;
+    for (const thread of threads) {
+      const prior = splits.get(thread);
+      splits.set(thread, prior !== undefined && prior !== row.split ? 'holdout' : row.split);
+    }
+  }
+  return { splits, matched };
+}
+
 /**
- * Labels for every labelled work item, and the dataset cases. A work item's split is its stored eval_label split when it
- * has one, else splitFor. `split` filters the cases only; the labels are always complete, so --write-labels never
- * depends on the filter.
+ * Labels for every labelled work item, and the dataset cases. A work item's split is its golden thread's split when it has
+ * one, else its stored eval_label split, else splitFor. `split` filters the cases only; the labels are always complete, so
+ * --write-labels never depends on the filter.
  */
 export async function exportLabels(
   db: DB,
-  options: { split?: Split; timeSplit?: boolean; now?: Date } = {},
-): Promise<{ cases: LabelCase[]; records: LabelRecord[] }> {
+  options: { split?: Split; timeSplit?: boolean; now?: Date; golden?: readonly GoldenRow[] } = {},
+): Promise<{
+  cases: LabelCase[];
+  records: LabelRecord[];
+  golden: { matched: number; total: number };
+  warnings: string[];
+}> {
   return db.transaction(
     async (tx) => {
       const events = await tx
@@ -192,14 +224,37 @@ export async function exportLabels(
         const label = labelOf(event);
         return label ? [label] : [];
       });
+
+      const golden = options.golden ?? [];
+      const goldenMessageIds = [
+        ...new Set(golden.flatMap((row) => [row.trigger.id, ...row.context.map((item) => item.id)])),
+      ];
+      const threadOf = new Map<string, string | null>();
+      if (goldenMessageIds.length) {
+        const found = await tx
+          .select({ id: message.id, threadId: message.threadId })
+          .from(message)
+          .where(inArray(message.id, goldenMessageIds));
+        for (const row of found) threadOf.set(row.id, row.threadId);
+      }
+      const { splits: goldenSplits, matched } = goldenThreadSplits(golden, threadOf);
+      const goldenStats = { matched, total: golden.length };
+      const warnings =
+        matched < golden.length
+          ? [
+              `${golden.length - matched} of ${golden.length} golden cases have no message in this database: their threads take the hash split`,
+            ]
+          : [];
+
       const itemIds = [...new Set(labels.map((label) => label.workItemId))];
-      if (!itemIds.length) return { cases: [], records: [] };
+      if (!itemIds.length) return { cases: [], records: [], golden: goldenStats, warnings };
 
       const items = await tx
         .select({
           id: workItem.id,
           kind: workItem.kind,
           transportId: workItem.transportId,
+          threadId: workItem.threadId,
           sourceMessageId: workItem.sourceMessageId,
           extractionId: workItem.extractionId,
         })
@@ -261,14 +316,22 @@ export async function exportLabels(
           ? (versionOf.get(item.extractionId) ?? null)
           : null;
         const stored = storedSplit.get(item.id);
+        const fromGolden = item.threadId ? goldenSplits.get(item.threadId) : undefined;
         const split =
+          fromGolden ??
           stored ??
           splitFor(item.id, {
             timeSplit: options.timeSplit,
             latestAt: latestAt.get(item.id),
             now: options.now,
           });
-        const splitSource: SplitSource = stored ? 'stored' : options.timeSplit ? 'time' : 'hash';
+        const splitSource: SplitSource = fromGolden
+          ? 'golden'
+          : stored
+            ? 'stored'
+            : options.timeSplit
+              ? 'time'
+              : 'hash';
         for (const label of itemLabels) {
           records.push({
             workItemId: item.id,
@@ -287,6 +350,7 @@ export async function exportLabels(
           schema_version: EVAL_SCHEMA_VERSION,
           work_item_id: item.id,
           message_id: item.sourceMessageId,
+          transport_id: item.transportId,
           kind: item.kind,
           extractor_version: extractionVersion,
           mailbox: maskAddress(mailboxOf.get(item.transportId) ?? null),
@@ -302,10 +366,17 @@ export async function exportLabels(
             ai_source: label.aiSource,
             ai_value: maskValue(label.aiValue),
             human_value: maskValue(label.humanValue),
+            // Hashed from the raw values, before masking, so a changed address still mismatches in the scorer.
+            value_hash: contactValueHash(
+              label.fieldPath,
+              label.aiValue,
+              label.humanValue,
+              randomBytes(16).toString('hex'),
+            ),
           })),
         });
       }
-      return { cases, records };
+      return { cases, records, golden: goldenStats, warnings };
     },
     { isolationLevel: 'repeatable read', accessMode: 'read only' },
   );
@@ -344,6 +415,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       split: { type: 'string' },
       'time-split': { type: 'boolean' },
       'write-labels': { type: 'boolean' },
+      'golden-set': { type: 'string' },
     },
   });
   if (
@@ -359,6 +431,10 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     return 2;
   }
 
+  const goldenPath = values['golden-set'] ?? DEFAULT_GOLDEN_SET;
+  const useGolden = values['golden-set'] !== undefined || existsSync(goldenPath);
+  const golden = useGolden ? readGoldenSet(goldenPath) : [];
+
   const { db, conn } = createDb(url);
   let result: Awaited<ReturnType<typeof exportLabels>>;
   let inserted: number | null = null;
@@ -366,11 +442,19 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
     result = await exportLabels(db, {
       split: values.split as Split | undefined,
       timeSplit: values['time-split'] === true,
+      golden,
     });
     if (values['write-labels']) inserted = await writeEvalLabels(db, result.records);
   } finally {
     await conn.end();
   }
+  const warnings = [
+    ...(useGolden
+      ? []
+      : [`no golden set at ${goldenPath}: every thread takes its hash split, golden holdout included`]),
+    ...result.warnings,
+  ];
+  for (const warning of warnings) console.error(`warning: ${warning}`);
 
   const out = resolve(values.out ?? DEFAULT_OUT);
   mkdirSync(dirname(out), { recursive: true, mode: 0o700 });
@@ -389,6 +473,8 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
       labels: result.records.length,
       labelsBySplit,
       evalLabelInserted: inserted,
+      golden: result.golden,
+      warnings,
     }),
   );
   return 0;

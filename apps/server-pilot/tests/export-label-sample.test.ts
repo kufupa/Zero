@@ -164,6 +164,63 @@ describe('export-label-sample', () => {
     });
   });
 
+  it('counts a message once, samples its latest succeeded extraction, and ignores a later failed run', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const OLD = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      const NEW = '00000000-0000-4000-8000-000000000001';
+      await seedInboxThread(db, {
+        threadId: 'thread-twice',
+        transportId: TRANSPORT_ID,
+        transportEmail: TRANSPORT_EMAIL,
+        messageId: 'msg-twice',
+        fromAddress: `guest@${DEV[0]}`,
+        subject: 'Two versions',
+        textBody: 'Please book two rooms.',
+      });
+      // The newer succeeded version has the smaller id, so only created_at, not id order, can pick it.
+      await db.insert(mailExtraction).values([
+        {
+          id: OLD,
+          messageId: 'msg-twice',
+          extractorVersion: 'extractor-v4',
+          status: 'succeeded',
+          kind: 'quote',
+          payload: { kind: 'quote', rooms: 1 },
+          createdAt: new Date('2026-10-01T00:00:00Z'),
+        },
+        {
+          id: NEW,
+          messageId: 'msg-twice',
+          extractorVersion: EXTRACTOR,
+          status: 'succeeded',
+          kind: 'quote',
+          payload: { kind: 'quote', rooms: 2 },
+          createdAt: new Date('2026-10-05T00:00:00Z'),
+        },
+        {
+          messageId: 'msg-twice',
+          extractorVersion: 'extractor-v6',
+          status: 'failed',
+          kind: 'quote',
+          payload: null,
+          createdAt: new Date('2026-10-09T00:00:00Z'),
+        },
+      ]);
+
+      const { available, picked } = await selectSample(db, { perKind: PER_KIND, seed: SEED });
+
+      expect(available.quote).toBe(1);
+      expect(picked).toEqual([
+        expect.objectContaining({
+          messageId: 'msg-twice',
+          extractionId: NEW,
+          extractorVersion: EXTRACTOR,
+          kind: 'quote',
+        }),
+      ]);
+    });
+  });
+
   it('writes one masked row per pick, with a 0600 file', async () => {
     await withIngestionDb(async ({ db, url }) => {
       await seedRows(db, dataset());

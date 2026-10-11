@@ -21,7 +21,7 @@ import { createDb, type DB } from '../src/db/client.js';
 import { message } from '../src/db/schema/mail.js';
 import { dirname, join, resolve } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -66,17 +66,33 @@ export function sampleSplitOf(domain: string): SampleSplit {
   return domainDigest(domain).readUInt32BE(0) % 100 < HOLDOUT_PERCENT ? 'holdout' : 'dev';
 }
 
-/** Every succeeded inbound extraction, by kind: all cancellations, the other kinds up to perKind, in seeded order. */
+/**
+ * Every succeeded inbound extraction by kind, one per message. A re-run under a new extractor version adds a row, so a
+ * message keeps only its latest succeeded one (created_at, then id) and counts once. All cancellations, the other kinds
+ * up to perKind, in seeded order.
+ */
 export async function selectSample(
   db: DB,
   options: { perKind: number; seed: string },
 ): Promise<{ available: Record<string, number>; picked: PickedRow[] }> {
-  const counts = await db
-    .select({ kind: mailExtraction.kind, n: sql<number>`count(*)::int` })
+  const latest = db
+    .selectDistinctOn([mailExtraction.messageId], {
+      extractionId: mailExtraction.id,
+      messageId: mailExtraction.messageId,
+      kind: mailExtraction.kind,
+      extractorVersion: mailExtraction.extractorVersion,
+      payload: mailExtraction.payload,
+    })
     .from(mailExtraction)
     .innerJoin(message, eq(message.id, mailExtraction.messageId))
     .where(and(eq(mailExtraction.status, 'succeeded'), eq(message.direction, 'inbound')))
-    .groupBy(mailExtraction.kind);
+    .orderBy(mailExtraction.messageId, desc(mailExtraction.createdAt), desc(mailExtraction.id))
+    .as('latest');
+
+  const counts = await db
+    .select({ kind: latest.kind, n: sql<number>`count(*)::int` })
+    .from(latest)
+    .groupBy(latest.kind);
   const available: Record<string, number> = Object.fromEntries(MAIL_KINDS.map((kind) => [kind, 0]));
   for (const row of counts) if (row.kind) available[row.kind] = row.n;
 
@@ -84,24 +100,18 @@ export async function selectSample(
   for (const kind of MAIL_KINDS) {
     const query = db
       .select({
-        extractionId: mailExtraction.id,
-        messageId: mailExtraction.messageId,
-        extractorVersion: mailExtraction.extractorVersion,
-        payload: mailExtraction.payload,
+        extractionId: latest.extractionId,
+        messageId: latest.messageId,
+        extractorVersion: latest.extractorVersion,
+        payload: latest.payload,
         fromAddress: message.fromAddress,
         subject: message.subject,
         textBody: message.textBody,
       })
-      .from(mailExtraction)
-      .innerJoin(message, eq(message.id, mailExtraction.messageId))
-      .where(
-        and(
-          eq(mailExtraction.status, 'succeeded'),
-          eq(message.direction, 'inbound'),
-          eq(mailExtraction.kind, kind),
-        ),
-      )
-      .orderBy(sql`md5(${mailExtraction.id}::text || ${options.seed}::text)`);
+      .from(latest)
+      .innerJoin(message, eq(message.id, latest.messageId))
+      .where(eq(latest.kind, kind))
+      .orderBy(sql`md5(${latest.extractionId}::text || ${options.seed}::text)`);
     const rows = kind === 'cancellation' ? await query : await query.limit(options.perKind);
     picked.push(...rows.map((row) => ({ ...row, kind })));
   }

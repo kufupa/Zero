@@ -68,6 +68,29 @@ describe('maskContactDetails', () => {
       'R 12 500 on 2027-10-26, confirmation 57291630-1, 2 rooms',
     );
   });
+
+  it('masks a phone on the line after a date, and never joins the two across the newline', () => {
+    expect(maskContactDetails('2027-05-12\n0825551234')).toBe('2027-05-12\n[phone]');
+    expect(maskContactDetails('2027-05-12\r\n082 555 1234')).toBe('2027-05-12\r\n[phone]');
+  });
+
+  it('masks a phone beside a bracketed date, and keeps the date', () => {
+    expect(maskContactDetails('Call 0825551234 (2027-11-13)')).toBe('Call [phone] (2027-11-13)');
+    expect(maskContactDetails('Arrival 2027-05-12 0825551234')).toBe('Arrival 2027-05-12 [phone]');
+    expect(maskContactDetails('Arrival 2027-05-12 082 555 1234')).toBe('Arrival 2027-05-12 [phone]');
+  });
+
+  it('masks a run of 7 or more digits, and a spaced or bracketed international number', () => {
+    expect(maskContactDetails('line 5551234 today')).toBe('line [phone] today');
+    expect(maskContactDetails('+27 (0)82 555 1234 for the group')).toBe('[phone] for the group');
+    expect(maskContactDetails('(021) 555 1234 office')).toBe('[phone] office');
+  });
+
+  it('masks a dashed phone at 9 to 15 digits starting with 0, and keeps a dashed reference', () => {
+    expect(maskContactDetails('call 082-555-1234 or 57291630-1')).toBe(
+      'call [phone] or 57291630-1',
+    );
+  });
 });
 
 describe('maskMailText', () => {

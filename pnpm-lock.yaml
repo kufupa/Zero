@@ -781,9 +781,6 @@ importers:
       '@mastra/core':
         specifier: 1.70.0
         version: 1.70.0(express@5.2.1)(rxjs@7.8.2)(zod-to-json-schema@3.25.2(zod@3.25.67))(zod@3.25.67)
-      '@mastra/evals':
-        specifier: 1.10.2
-        version: 1.10.2(@mastra/core@1.70.0(express@5.2.1)(rxjs@7.8.2)(zod-to-json-schema@3.25.2(zod@3.25.67))(zod@3.25.67))(vitest@3.2.4(@types/debug@4.1.12)(@types/node@22.15.29)(happy-dom@12.10.3)(jiti@2.4.2)(jsdom@23.2.0)(lightningcss@1.30.1)(msw@2.10.4(@types/node@22.15.29)(typescript@5.8.3))(tsx@4.20.5)(yaml@2.8.0))
       '@mastra/libsql':
         specifier: 1.23.2
         version: 1.23.2(@mastra/core@1.70.0(express@5.2.1)(rxjs@7.8.2)(zod-to-json-schema@3.25.2(zod@3.25.67))(zod@3.25.67))
@@ -2882,16 +2879,6 @@ packages:
     engines: {node: '>=22.13.0'}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
-
-  '@mastra/evals@1.10.2':
-    resolution: {integrity: sha512-Tms55WxxcwyTBixWiHVdE+hf1YWbM+7tCwhza17uWn3+GUyBAaCycESGUjyIdSyUeeaw4lH0rjjEBoG4Q/ESJQ==}
-    engines: {node: '>=22.13.0'}
-    peerDependencies:
-      '@mastra/core': '>=1.0.0-0 <2.0.0-0'
-      vitest: '>=3.0.0 <5.0.0'
-    peerDependenciesMeta:
-      vitest:
-        optional: true
 
   '@mastra/libsql@1.23.2':
     resolution: {integrity: sha512-4ymFlEf0RWYULj4bUk93vHx4JkWm66nuAP0BuC2lDi0OgjvWczNh29S7suer8/QkEAFP0tO0l291Xqx/3Q31mw==}
@@ -6440,10 +6427,6 @@ packages:
     resolution: {integrity: sha512-bKw/r35jR3HGt5PEPm1ljsQQGyCrR8sFGNiN5L+ykDHdpO8Smxkrkla9Yi6NkQyUrb8V54PGhfMs6NrIwtxtdw==}
     engines: {node: '>= 6'}
 
-  compromise@14.18.0:
-    resolution: {integrity: sha512-SCNTeMZN8ZnvDz96igAjV2QuvvmcKA1bVDbFr8IH672Ec9w+fTSxixIPGgrlivaxU+jyk/Ei3AT3gGtP23n6Vg==}
-    engines: {node: '>=18'}
-
   compute-cosine-similarity@1.1.0:
     resolution: {integrity: sha512-FXhNx0ILLjGi9Z9+lglLzM12+0uoTnYkHm7GiadXDAr0HGVLm25OivUS1B/LPkbzzvlcXz/1EvWg9ZYyJSdhTw==}
 
@@ -7006,10 +6989,6 @@ packages:
 
   effect@3.16.12:
     resolution: {integrity: sha512-N39iBk0K71F9nb442TLbTkjl24FLUzuvx2i1I2RsEAQsdAdUTuUoW0vlfUXgkMTUOnYqKnWcFfqw4hK4Pw27hg==}
-
-  efrt@2.9.0:
-    resolution: {integrity: sha512-ZMAvlcu4AfmtJ4K/0hs0uofVUZPSeLG/w4yOyZawQLl9YEy8iDKIxIIPsUAlS907clC7bgD17e73vi5unwNE/g==}
-    engines: {node: '>=12.0.0'}
 
   electron-to-chromium@1.5.177:
     resolution: {integrity: sha512-7EH2G59nLsEMj97fpDuvVcYi6lwTcM1xuWw3PssD8xzboAW7zj7iB3COEEEATUfjLHrs5uKBLQT03V/8URx06g==}
@@ -7759,10 +7738,6 @@ packages:
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
 
-  grad-school@0.0.9:
-    resolution: {integrity: sha512-/aoG9CJz/1gB7x5XKp9i7ggA4k+MqZD7Neph3crfrOLWERkeJFXDXzNefvPW0j97iGTNYqTL+rpBEcz83MTmZw==}
-    engines: {node: '>=12'}
-
   graphemer@1.4.0:
     resolution: {integrity: sha512-EtKwoO6kxCL9WO5xipiHTZlSzBm7WLT627TqC/uVRd0HKmq8NXyebnNYxDoBi7wt8eTWrUrKXCOVaFq9x1kgag==}
 
@@ -8461,10 +8436,6 @@ packages:
 
   keyv@4.5.4:
     resolution: {integrity: sha512-oxVHkHR/EJf2CNXnWxRLW6mg7JyCCUcG0DtEGmL2ctUo1PNTin1PUil+r/+4r5MpVgC/fn1kjsx7mjSujKqIpw==}
-
-  keyword-extractor@0.0.28:
-    resolution: {integrity: sha512-oi7dSPpYtW/3fE0vZiqQgZ8mW3F1V9K4+rBJ0FcVrdXBEQuhZ0zKj7sX74eqGASuepLHf9aYdeonyKHWhYpHQA==}
-    engines: {node: '>= 0.10.0'}
 
   kind-of@6.0.3:
     resolution: {integrity: sha512-dcS1ul+9tmeD95T+x28/ehLgd9mENa3LsvDTtzm3vyBEO7RPptvAD+t44WVXaUjTBRcrpFeFlC8WCruUR456hw==}
@@ -10633,10 +10604,6 @@ packages:
     resolution: {integrity: sha512-uaW0WwXKpL9blXE2o0bRhoL2EGXIrZxQ2ZQ4mgcfoBxdFmQold+qWsD2jLrfZ0trjKL6vOw0j//eAwcALFjKSw==}
     engines: {node: '>= 18'}
 
-  sentiment@5.0.2:
-    resolution: {integrity: sha512-ZeC3y0JsOYTdwujt5uOd7ILJNilbgFzUtg/LEG4wUv43LayFNLZ28ec8+Su+h3saHlJmIwYxBzfDHHZuiMA15g==}
-    engines: {node: '>=8.0'}
-
   serve-static@1.16.3:
     resolution: {integrity: sha512-x0RTqQel6g5SY7Lg6ZreMmsOzncHFU7nhnRWkKgWuMTu5NN0DR5oruckMqRvacAN9d5w6ARnRBXl9xhDCgfMeA==}
     engines: {node: '>= 0.8.0'}
@@ -10861,10 +10828,6 @@ packages:
     resolution: {integrity: sha512-dz2mUgmsI7m/FMe+BoxZ2+73X1TUoQvjCdnq8vbIAnHlvWfVZleNUR+lw+QgHA2dlJig+hUWC9bFYdNFGGy2bA==}
     engines: {node: '>=14.18.0'}
 
-  string-similarity@4.0.4:
-    resolution: {integrity: sha512-/q/8Q4Bl4ZKAPjj8WerIBJWALKkaPRfrvhfF8k/B23i4nzrlRj2/go1m90In7nG/3XDSbOo0+pu6RvCTM9RGMQ==}
-    deprecated: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
-
   string-strip-html@13.4.12:
     resolution: {integrity: sha512-mr1GM1TFcwDkYwLE7TNkHY+Lf3YFEBa19W9KntZoJJSbrKF07W4xmLkPnqf8cypEGyr+dc1H9hsdTw5VSNVGxg==}
     engines: {node: '>=14.18.0'}
@@ -10973,10 +10936,6 @@ packages:
 
   stylis@4.3.6:
     resolution: {integrity: sha512-yQ3rwFWRfwNUY7H5vpU0wfdkNSnvnJinhF9830Swlaxl03zsOjCfmX0ugac+3LtK0lYSgwL/KXc8oYL3mG4YFQ==}
-
-  suffix-thumb@6.0.0:
-    resolution: {integrity: sha512-HsCTMLaupbob5ZG//ZW6PSj446tHT5kSJ1qXS5F/qO2Nt13uAn6ZLPhJQ/H6bN/jVQCb+pcqe2psEwy4Mp5+Vw==}
-    engines: {node: '>=18'}
 
   superjson@2.2.2:
     resolution: {integrity: sha512-5JRxVqC8I8NuOUjzBbvVJAKNM8qoVuH0O77h4WInc/qC2q5IreqKxYwgkga3PfA22OayK2ikceb/B26dztPl+Q==}
@@ -14033,16 +13992,6 @@ snapshots:
       - workflow
       - zod-openapi
       - zod-to-json-schema
-
-  '@mastra/evals@1.10.2(@mastra/core@1.70.0(express@5.2.1)(rxjs@7.8.2)(zod-to-json-schema@3.25.2(zod@3.25.67))(zod@3.25.67))(vitest@3.2.4(@types/debug@4.1.12)(@types/node@22.15.29)(happy-dom@12.10.3)(jiti@2.4.2)(jsdom@23.2.0)(lightningcss@1.30.1)(msw@2.10.4(@types/node@22.15.29)(typescript@5.8.3))(tsx@4.20.5)(yaml@2.8.0))':
-    dependencies:
-      '@mastra/core': 1.70.0(express@5.2.1)(rxjs@7.8.2)(zod-to-json-schema@3.25.2(zod@3.25.67))(zod@3.25.67)
-      compromise: 14.18.0
-      keyword-extractor: 0.0.28
-      sentiment: 5.0.2
-      string-similarity: 4.0.4
-    optionalDependencies:
-      vitest: 3.2.4(@types/debug@4.1.12)(@types/node@22.15.29)(happy-dom@12.10.3)(jiti@2.4.2)(jsdom@23.2.0)(lightningcss@1.30.1)(msw@2.10.4(@types/node@22.15.29)(typescript@5.8.3))(tsx@4.20.5)(yaml@2.8.0)
 
   '@mastra/libsql@1.23.2(@mastra/core@1.70.0(express@5.2.1)(rxjs@7.8.2)(zod-to-json-schema@3.25.2(zod@3.25.67))(zod@3.25.67))':
     dependencies:
@@ -18061,12 +18010,6 @@ snapshots:
       has-own-prop: 2.0.0
       repeat-string: 1.6.1
 
-  compromise@14.18.0:
-    dependencies:
-      efrt: 2.9.0
-      grad-school: 0.0.9
-      suffix-thumb: 6.0.0
-
   compute-cosine-similarity@1.1.0:
     dependencies:
       compute-dot: 1.1.0
@@ -18534,8 +18477,6 @@ snapshots:
     dependencies:
       '@standard-schema/spec': 1.0.0
       fast-check: 3.23.2
-
-  efrt@2.9.0: {}
 
   electron-to-chromium@1.5.177: {}
 
@@ -19661,8 +19602,6 @@ snapshots:
 
   graceful-fs@4.2.11: {}
 
-  grad-school@0.0.9: {}
-
   graphemer@1.4.0: {}
 
   graphql@16.11.0: {}
@@ -20406,8 +20345,6 @@ snapshots:
   keyv@4.5.4:
     dependencies:
       json-buffer: 3.0.1
-
-  keyword-extractor@0.0.28: {}
 
   kind-of@6.0.3: {}
 
@@ -23245,8 +23182,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  sentiment@5.0.2: {}
-
   serve-static@1.16.3:
     dependencies:
       encodeurl: 2.0.0
@@ -23511,8 +23446,6 @@ snapshots:
       codsen-utils: 1.6.7
       rfdc: 1.4.1
 
-  string-similarity@4.0.4: {}
-
   string-strip-html@13.4.12:
     dependencies:
       '@types/lodash-es': 4.17.12
@@ -23648,8 +23581,6 @@ snapshots:
       inline-style-parser: 0.2.4
 
   stylis@4.3.6: {}
-
-  suffix-thumb@6.0.0: {}
 
   superjson@2.2.2:
     dependencies:

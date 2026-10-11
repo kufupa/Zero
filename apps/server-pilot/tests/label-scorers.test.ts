@@ -1,7 +1,10 @@
 import {
+  baselineCorrect,
   candidateCorrect,
+  contactValueHash,
   evaluateLabelGates,
   fieldClassOf,
+  finalLabels,
   LABEL_GATES,
   parseLabelCases,
   scoreKind,
@@ -28,14 +31,16 @@ function payload(
     departure: string | null;
     rooms: number | null;
     name: string | null;
+    email: string | null;
+    phone: string | null;
     stays: MailExtractionPayload['stays'];
   }> = {},
 ): MailExtractionPayload {
   return {
     contact: {
       name: overrides.name === undefined ? 'Jane Smith' : overrides.name,
-      email: '[email]',
-      phone: null,
+      email: overrides.email === undefined ? '[email]' : overrides.email,
+      phone: overrides.phone === undefined ? null : overrides.phone,
     },
     agency: null,
     endClient: null,
@@ -74,6 +79,7 @@ function label(overrides: Partial<LabelRow>): LabelRow {
     ai_source: 'extractor-v3',
     ai_value: '2027-10-26',
     human_value: '2027-10-27',
+    value_hash: null,
     ...overrides,
   };
 }
@@ -88,6 +94,7 @@ function caseOf(
     schema_version: 'work-event-label/v2',
     work_item_id: id,
     message_id: `msg-${id}`,
+    transport_id: 'transport-1',
     kind,
     extractor_version: 'extractor-v3',
     mailbox: '[email]@legacyhotels.co.za',
@@ -157,16 +164,44 @@ describe('per-field scorers', () => {
     expect(candidateCorrect(removed, payload({ stays: [] }))).toBe(true);
   });
 
-  it('compares contact values in masked form on both sides', () => {
-    const email = label({ field_id: 'contact.email', ai_value: '[email]', human_value: '[email]' });
-    expect(candidateCorrect(email, payload())).toBe(true);
-    const noEmail = { ...payload(), contact: { name: 'Jane Smith', email: null, phone: null } };
-    expect(
-      candidateCorrect(
-        label({ field_id: 'contact.email', ai_value: null, human_value: '[email]' }),
-        noEmail,
-      ),
-    ).toBe(false);
+  it('compares an address by hash of its raw value, so a changed address is still a mismatch', () => {
+    const kept = label({
+      label_kind: 'confirmation',
+      field_id: 'contact.email',
+      ai_value: '[email]',
+      human_value: '[email]',
+      value_hash: contactValueHash('contact.email', 'Jane@Hotel.co.za', 'Jane@Hotel.co.za', 'salt-1'),
+    });
+    expect(candidateCorrect(kept, payload({ email: 'jane@hotel.co.za' }))).toBe(true);
+    expect(candidateCorrect(kept, payload({ email: 'jane@other.co.za' }))).toBe(false);
+    expect(candidateCorrect(kept, payload({ email: null }))).toBe(false);
+
+    const corrected = label({
+      field_id: 'contact.email',
+      ai_value: '[email]',
+      human_value: '[email]',
+      value_hash: contactValueHash('contact.email', 'jane@hotel.co.za', 'jen@hotel.co.za', 'salt-1'),
+    });
+    expect(baselineCorrect(corrected)).toBe(false);
+    expect(candidateCorrect(corrected, payload({ email: 'jen@hotel.co.za' }))).toBe(true);
+    expect(candidateCorrect(corrected, payload({ email: 'jane@hotel.co.za' }))).toBe(false);
+  });
+
+  it('compares a phone by its digits, so spacing and a leading + do not count as a change', () => {
+    const phone = label({
+      label_kind: 'correction',
+      field_id: 'contact.phone',
+      ai_value: '[phone]',
+      human_value: '[phone]',
+      value_hash: contactValueHash('contact.phone', '082 555 1234', '+27 82 555 1234', 'salt-2'),
+    });
+    expect(candidateCorrect(phone, payload({ phone: '+27825551234' }))).toBe(true);
+    expect(candidateCorrect(phone, payload({ phone: '082 555 1234' }))).toBe(false);
+  });
+
+  it('a label without hashes never matches a contact value', () => {
+    const bare = label({ field_id: 'contact.email', ai_value: '[email]', human_value: '[email]' });
+    expect(candidateCorrect(bare, payload({ email: 'jane@hotel.co.za' }))).toBe(false);
   });
 
   it('a scorer step returns 1 for a right value and 0 for a wrong one, with no judge', async () => {
@@ -256,6 +291,27 @@ describe('scoreLabelCases', () => {
     expect(summary.bySplit.test).toMatchObject({ n: 0, pct: null });
     expect(summary.gapPoints).toBe(0);
     expect(summary.unanswered).toBe(0);
+  });
+
+  it('scores only the last edit of a field, so an earlier value that staff changed again is not gold', async () => {
+    const twice = caseOf('w-twice', 'dev', [
+      label({ field_id: ARRIVAL, ai_value: '2027-10-26', human_value: '2027-10-27' }),
+      label({ field_id: ARRIVAL, ai_value: '2027-10-27', human_value: '2027-10-28' }),
+    ]);
+    expect(finalLabels(twice.labels).map((row) => row.human_value)).toEqual(['2027-10-28']);
+
+    const kept = await scoreLabelCases(
+      [twice],
+      new Map([['w-twice', answered(payload({ arrival: '2027-10-28' }))]]),
+    );
+    expect(kept.stays).toMatchObject({ n: 1, correct: 1, pct: 100 });
+    expect(kept.byField['stay.arrival']).toMatchObject({ n: 1, baselinePct: 0, candidatePct: 100 });
+
+    const superseded = await scoreLabelCases(
+      [twice],
+      new Map([['w-twice', answered(payload({ arrival: '2027-10-27' }))]]),
+    );
+    expect(superseded.stays).toMatchObject({ n: 1, correct: 0, pct: 0 });
   });
 
   it('counts a case with no extraction as wrong, so an incomplete run cannot pass', async () => {

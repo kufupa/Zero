@@ -23,6 +23,12 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { RequestContext } from '@mastra/core/request-context';
+import { eq } from 'drizzle-orm';
+import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
+import { extractInboundMail } from '../src/ai/extraction/extract.js';
+import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
+import { getDb } from '../src/db/client.js';
+import { mailboxTransport } from '../src/db/schema/mail.js';
 import { createAzureLunaModel, lunaProviderOptions } from '../src/ai/bedrock/luna.js';
 import {
   CENTURION_HOTEL_RULES,
@@ -328,7 +334,51 @@ function latestById<T extends { id: string }>(path: string): T[] {
  * --dataset: each labelled case through the production extraction. The case's masked mail is the trigger, under its
  * own message id, so the extraction's stable stay and row ids match the labels' field ids.
  */
+/**
+ * One dataset case through inbound extraction, as the inbound worker runs it. The stored message, its thread and its
+ * attachments come from the database through the worker's loader, and the sender and mailbox are the stored ones. The
+ * masked case text is not replayed: it would lose the facts the worker reads.
+ */
+export async function replayExtraction(
+  row: Pick<LabelCase, 'message_id' | 'transport_id'>,
+  adapter: ModelAdapter,
+): Promise<Pick<DatasetTrace, 'extraction' | 'usage' | 'error'>> {
+  const messageId = row.message_id;
+  const transportId = row.transport_id;
+  const missing = {
+    extraction: null,
+    usage: null,
+    error: `message ${messageId ?? '(none)'} is not in the database`,
+  };
+  if (!messageId || !transportId) return missing;
+  const selection = await loadSyncedQuoteSelectionFromMailbox({ transportId, messageId });
+  if (!selection) return missing;
+  const [transport] = await getDb()
+    .select({ email: mailboxTransport.email })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.id, transportId))
+    .limit(1);
+  const res = await extractInboundMail({
+    adapter,
+    selection,
+    messageId,
+    from: selection.fromAddress ?? null,
+    mailbox: transport?.email ?? null,
+  });
+  const usage = {
+    inputTokens: res.usage.inputTokens,
+    outputTokens: res.usage.outputTokens,
+    costUsd: res.usage.costUsd,
+  };
+  return res.ok
+    ? { extraction: { kind: res.kind, payload: res.payload }, usage }
+    : { extraction: null, usage, error: res.reason };
+}
+
 async function runDataset(runId: string, datasetPath: string): Promise<number> {
+  if (!process.env.DATABASE_URL?.trim()) {
+    throw new Error('dataset replay loads each stored message: set DATABASE_URL to the database the dataset was exported from');
+  }
   const cases = parseLabelCases(readFileSync(datasetPath, 'utf8'));
   if (!cases.length) throw new Error(`dataset ${datasetPath} has no cases`);
   const dir = join(ROOT, runId);
@@ -361,28 +411,10 @@ async function runDataset(runId: string, datasetPath: string): Promise<number> {
   let finished = 0;
   await mapLimit(todo, CONCURRENCY, async (row: LabelCase) => {
     const started = Date.now();
-    const mail = {
-      trigger: {
-        id: row.message_id ?? row.work_item_id,
-        direction: 'inbound',
-        eventAt: null,
-        from: row.from ?? '',
-        subject: row.subject,
-        text: row.text,
-      },
-      context: [],
-    };
     let trace: DatasetTrace;
     try {
-      const res = await runProductionTarget('extract', mail, adapter, row.mailbox);
-      trace = {
-        id: row.work_item_id,
-        split: row.split,
-        extraction: res.target === 'extract' ? res.extraction : null,
-        usage: res.usage,
-        ms: Date.now() - started,
-        ...(res.error ? { error: res.error } : {}),
-      };
+      const res = await replayExtraction(row, adapter);
+      trace = { id: row.work_item_id, split: row.split, ...res, ms: Date.now() - started };
     } catch (err) {
       trace = {
         id: row.work_item_id,

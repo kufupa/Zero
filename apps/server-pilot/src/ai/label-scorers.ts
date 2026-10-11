@@ -2,22 +2,35 @@
  * Label dataset contract, per-field scorers and pass criteria for the label backtest (v5 B4). Pure: no database, no model
  * and no network. The scorers are deterministic createScorer steps (function steps only, no LLM judge). A label is scored
  * only when a person made it: a correction (the value they kept) or a confirmation (the AI value they kept unchanged).
- * Notes and run flags carry no extraction field, so they are not scored.
+ * Notes and run flags carry no extraction field, so they are not scored. Of a field's labels only the last counts: an
+ * earlier edit that staff changed again is not gold. An address or phone is masked in the dataset, so it compares by a
+ * salted hash of its raw value (computed before masking) rather than by its masked text.
  */
 import { aiValueAt, contactFieldOf, parseFieldPath } from './work-items.js';
 import { EVAL_LABEL_KINDS, EVAL_LABEL_SPLITS } from '../db/schema/work.js';
 import type { MailExtractionPayload } from './extraction/schema.js';
 import { createScorer } from '@mastra/core/evals';
 import { maskMailText } from './card-mask.js';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 export const EVAL_SCHEMA_VERSION = 'work-event-label/v2' as const;
 export type Split = (typeof EVAL_LABEL_SPLITS)[number];
+export type LabelKind = (typeof EVAL_LABEL_KINDS)[number];
+
+const valueHashSchema = z.object({
+  salt: z.string().min(1),
+  ai: z.string().nullable(),
+  human: z.string().nullable(),
+});
+/** Salted hashes of a contact label's AI and kept values, from the raw values. Null for every other field. */
+export type ValueHash = z.infer<typeof valueHashSchema>;
 
 const labelCaseSchema = z.object({
   schema_version: z.literal(EVAL_SCHEMA_VERSION),
   work_item_id: z.string().min(1),
   message_id: z.string().nullable(),
+  transport_id: z.string().nullable(),
   kind: z.string(),
   extractor_version: z.string().nullable(),
   mailbox: z.string().nullable(),
@@ -25,7 +38,7 @@ const labelCaseSchema = z.object({
   subject: z.string(),
   text: z.string(),
   split: z.enum(EVAL_LABEL_SPLITS),
-  split_source: z.enum(['stored', 'hash', 'time']),
+  split_source: z.enum(['golden', 'stored', 'hash', 'time']),
   labels: z.array(
     z.object({
       event_id: z.string(),
@@ -34,6 +47,7 @@ const labelCaseSchema = z.object({
       ai_source: z.string().nullable(),
       ai_value: z.unknown(),
       human_value: z.unknown(),
+      value_hash: valueHashSchema.nullable(),
     }),
   ),
 });
@@ -105,7 +119,67 @@ function maskStrings(value: unknown): unknown {
   return value;
 }
 
-/** Whether the candidate gets this label's field right. Removal is presence; other fields compare masked values. */
+/**
+ * The labels that count: the last correction or confirmation for each field of the case. Staff who change a value twice
+ * leave two labels, and only the final one is the value they kept. Labels arrive oldest first, as the export writes them.
+ */
+export function finalLabels(labels: readonly LabelRow[]): LabelRow[] {
+  const last = new Map<string, LabelRow>();
+  for (const label of labels) if (scoreable(label)) last.set(label.field_id, label);
+  return [...last.values()];
+}
+
+/** Address and phone: the two contact fields the masks change. They compare by hash, not by masked text. */
+const HASHED_FIELD_CLASSES: ReadonlySet<string> = new Set(['contact.email', 'contact.phone']);
+const isHashedField = (fieldId: string) => HASHED_FIELD_CLASSES.has(fieldClassOf(fieldId));
+
+/** A contact value as it is compared: an address lowercased, a phone reduced to its digits and leading +. */
+function normalizeContact(fieldId: string, value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const text = value.trim();
+  return fieldClassOf(fieldId) === 'contact.phone' ? text.replace(/[^\d+]/g, '') : text.toLowerCase();
+}
+
+/** Salted SHA-256 of a normalized contact value. The salt is random per label, so the same address never links two labels. */
+function hashContact(salt: string, normalized: string | null): string | null {
+  return normalized === null
+    ? null
+    : createHash('sha256').update(`${salt}\0${normalized}`).digest('hex');
+}
+
+/**
+ * The hashes an address or phone label carries, taken from the raw values before masking. Other fields carry none.
+ * The export calls this; the scorer compares a candidate's raw value against them.
+ */
+export function contactValueHash(
+  fieldId: string,
+  aiValue: unknown,
+  humanValue: unknown,
+  salt: string,
+): ValueHash | null {
+  if (!isHashedField(fieldId)) return null;
+  return {
+    salt,
+    ai: hashContact(salt, normalizeContact(fieldId, aiValue)),
+    human: hashContact(salt, normalizeContact(fieldId, humanValue)),
+  };
+}
+
+/** The hash of the value a person kept: the AI hash for a confirmation, the edited value's hash for a correction. */
+const keptHashOf = (hash: ValueHash, kind: LabelKind) =>
+  kind === 'confirmation' ? hash.ai : hash.human;
+
+/** Whether the candidate's raw contact value is the value the person kept. A label without hashes never matches. */
+function hashedMatch(label: LabelRow, candidate: unknown): boolean {
+  if (!label.value_hash) return false;
+  const kept = keptHashOf(label.value_hash, label.label_kind);
+  return hashContact(label.value_hash.salt, normalizeContact(label.field_id, candidate)) === kept;
+}
+
+/**
+ * Whether the candidate gets this label's field right. Removal is presence; addresses and phones compare by hash; other
+ * fields compare masked values.
+ */
 export function candidateCorrect(label: LabelRow, payload: MailExtractionPayload): boolean {
   const truth = truthOf(label);
   const fieldClass = fieldClassOf(label.field_id);
@@ -118,12 +192,17 @@ export function candidateCorrect(label: LabelRow, payload: MailExtractionPayload
         : (stay?.rows.some((row) => row.id === path.rowId) ?? false);
     return present === (truth !== true);
   }
+  if (isHashedField(label.field_id)) return hashedMatch(label, aiValueAt(payload, label.field_id));
   return sameValue(maskStrings(aiValueAt(payload, label.field_id)), maskStrings(truth));
 }
 
 /** The baseline is production's own value (the AI value stored on the label), scored the same way. */
 export function baselineCorrect(label: LabelRow): boolean {
   if (isRemovalClass(fieldClassOf(label.field_id))) return truthOf(label) !== true;
+  if (isHashedField(label.field_id)) {
+    if (!label.value_hash) return false;
+    return label.value_hash.ai === keptHashOf(label.value_hash, label.label_kind);
+  }
   return sameValue(maskStrings(label.ai_value), maskStrings(truthOf(label)));
 }
 
@@ -249,7 +328,7 @@ export async function scoreLabelCases(
       if (trace?.extraction && (await scoreKind(row.kind, trace.extraction.kind)) === 1)
         kind.cand += 1;
     }
-    for (const label of row.labels.filter(scoreable)) {
+    for (const label of finalLabels(row.labels)) {
       const fieldClass = fieldClassOf(label.field_id);
       const base = baselineCorrect(label) ? 1 : 0;
       const cand = answered ? await scoreField(label, payload) : 0;
