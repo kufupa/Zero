@@ -50,6 +50,8 @@
  *   pnpm --dir apps/server-pilot exec tsx scripts/nava-ae1-rates-proof.ts --threads <id> --out <dir> --timeout-ms 600000
  * Dry plan: add --dry-plan. It reads the Stay details rows, prints each count and its source (the read, or
  * NAVA_AE1_ROOMS) and what a real run would need, and makes no edit and no HMS call. The last stdout line is the plan.
+ * A thread that is not Quote has no rows until it is switched, so its plan stops at "not planned" (edits allowed) or at
+ * needs_edits:type; a real run with edits allowed switches it first.
  *
  * Output: <out>/summary.json, rates.png, documents.png, pane.png, quote.pdf, quote.xlsx. The last stdout line is the
  * summary as one JSON line. Exit 0 pass, 1 AE1 failed, 2 blocked before the proof could finish.
@@ -497,6 +499,27 @@ export function blockerOfPlan(split: RoomSplit, inputs: Pick<Ae1Inputs, 'allowEd
   return fills.length && !inputs.allowEdits ? needsEditsMessage(fills) : null;
 }
 
+/**
+ * The count stop on the rows as the pane shows them: a row whose count neither the read nor NAVA_AE1_ROOMS gives. It is
+ * checked before the room types are planned, so such a row reports "needs_edits:rooms" even when its room type cannot be
+ * named either.
+ */
+export function countsBlocker(rows: readonly PaneRoomRow[], inputs: Pick<Ae1Inputs, 'roomSplit'>): string | null {
+  const missing = rows.some((row) => row.rooms === null && (inputs.roomSplit[row.room - 1] ?? null) === null);
+  return missing ? needsEditsMessage(['rooms']) : null;
+}
+
+/**
+ * The stop a dry plan makes before it reads any room row, or null. A thread that is not Quote shows its rows only once it is
+ * switched to Quote, and a plan makes no edit, so such a thread cannot be planned.
+ */
+export function planStopBeforeRows(typeIsQuote: boolean, allowEdits: boolean): string | null {
+  if (typeIsQuote) return null;
+  return allowEdits
+    ? 'not planned: switch the thread to Quote first; its room rows cannot be planned without that edit'
+    : needsEditsMessage(['type']);
+}
+
 /** Browser-side: the Stay details step's room rows, in page order. Plain JS, no DOM types. */
 export const READ_ROWS_JS = `() => {
   const pane = document.querySelector('[data-preview-pane]');
@@ -673,7 +696,8 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     }).catch((): StoredWorkView | null => null);
     summary.storedWorkflow = stored?.status === 'ready' ? stored.workflow : null;
 
-    // 2. Type: Quote, as staff would set it.
+    // 2. Type: Quote, as staff would set it. A thread that is not Quote shows its room rows only after this switch, so its
+    // counts can be checked only after it: with edits allowed, a rooms stop then leaves the switch in place and nothing else.
     const pane = page.locator('[data-preview-pane]');
     const type = pane.locator('select[aria-label="Nava reads this as"]');
     await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
@@ -694,11 +718,13 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     // 3. Fill what each room row is missing. Every edit lands before the first rates run, so no run goes stale.
     const rows = await readRoomRows(page);
     summary.paneRows = rows.length;
+    // The count check runs first: a row with no count reports "needs_edits:rooms" even when its room type cannot be named.
+    const countStop = countsBlocker(rows, inputs);
     let planned: ReturnType<typeof planRoomRows>;
     try {
       planned = planRoomRows(rows, inputs);
     } catch (error) {
-      throw new Blocker(error instanceof Error ? error.message : 'the room rows cannot be filled');
+      throw new Blocker(countStop ?? (error instanceof Error ? error.message : 'the room rows cannot be filled'));
     }
     summary.roomSplitUsed = planned.split;
     // Nothing is typed into a real thread before the plan clears: no invented count, and no fill without edits allowed.
@@ -968,23 +994,29 @@ export async function readAe1Plan(config: Ae1Config, log: (line: string) => void
     await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
       throw new Blocker('treat-as select ("Nava reads this as") is missing');
     });
-    // A real run without edits stops on a type other than Quote before it reads the rows. The plan still reads them.
-    const typeChange = (await type.inputValue()) !== 'quote';
-    const typeBlocker = typeChange && !inputs.allowEdits ? needsEditsMessage(['type']) : null;
-    if (typeChange) plan.wouldFill.push('type');
+    // A thread that is not Quote has no rows to read until it is switched, and a plan makes no edit: the plan stops here.
+    const typeIsQuote = (await type.inputValue()) === 'quote';
+    if (!typeIsQuote) plan.wouldFill.push('type');
+    const typeStop = planStopBeforeRows(typeIsQuote, inputs.allowEdits);
+    if (typeStop) {
+      plan.blocker = typeStop;
+      return;
+    }
     await waitFor('the room rows', SETTLE_MS, async () =>
       (await pane.locator('section[aria-label="Stay details"] [role="group"][aria-label^="Rooms for stay "]').count()) > 0
         ? true
         : null,
     ).catch(() => undefined);
+    let countStop: string | null = null;
     try {
       const rows = await readRoomRows(page);
       plan.paneRows = rows.length;
+      countStop = countsBlocker(rows, inputs);
       plan.roomSplit = planRoomRows(rows, inputs).split;
       plan.wouldFill.push(...filledFieldsOf(plan.roomSplit));
-      plan.blocker = typeBlocker ?? blockerOfPlan(plan.roomSplit, inputs);
+      plan.blocker = blockerOfPlan(plan.roomSplit, inputs);
     } catch (error) {
-      plan.blocker = typeBlocker ?? (error instanceof Error ? error.message : 'the room rows cannot be filled');
+      plan.blocker = countStop ?? (error instanceof Error ? error.message : 'the room rows cannot be filled');
     }
   };
 

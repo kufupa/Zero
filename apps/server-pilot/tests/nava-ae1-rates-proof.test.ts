@@ -14,6 +14,7 @@ import {
   blockerOfPlan,
   classifyAe1Request,
   classifyDryPlanRequest,
+  countsBlocker,
   documentStayCount,
   dryPlanLines,
   filledFieldsOf,
@@ -22,6 +23,7 @@ import {
   parseAe1Config,
   pickRoomOption,
   planRoomRows,
+  planStopBeforeRows,
   roomRuleOf,
   stayKeyOfRatesInput,
   type Ae1DryPlan,
@@ -360,6 +362,26 @@ describe('the blocker a run stops with', () => {
   it('states where the counts came from', () => {
     expect(roomRuleOf({ roomSplit: [] })).toBe("the read's counts only (NAVA_AE1_ROOMS unset)");
     expect(roomRuleOf({ roomSplit: [15, 15] })).toBe('NAVA_AE1_ROOMS 15/15 where the read has no count');
+  });
+
+  it('checks the counts before any room type, so a row with neither reports the count', () => {
+    const bare = pane({ roomValue: '', roomOptions: ROOM_OPTIONS(), rooms: null, adults: null, board: 'unknown' });
+    // The room type cannot be named: planRoomRows throws on it, and the count stop must still be the blocker.
+    expect(() => planRoomRows([bare], inputs)).toThrow('has no room type and the email names none');
+    expect(countsBlocker([bare], inputs)).toBe('needs_edits:rooms');
+    expect(countsBlocker([bare], { ...inputs, roomSplit: [15] })).toBeNull();
+    expect(countsBlocker([pane({})], inputs)).toBeNull();
+  });
+});
+
+describe('a thread that is not Quote', () => {
+  it('is planned only once it is Quote: a plan reads no rows of a thread that is not', () => {
+    expect(planStopBeforeRows(true, false)).toBeNull();
+    expect(planStopBeforeRows(true, true)).toBeNull();
+    expect(planStopBeforeRows(false, false)).toBe('needs_edits:type');
+    expect(planStopBeforeRows(false, true)).toBe(
+      'not planned: switch the thread to Quote first; its room rows cannot be planned without that edit',
+    );
   });
 });
 

@@ -103,8 +103,12 @@ const STAYS = [
   ['2026-11-17', '2026-11-18'],
 ] as const;
 
-/** The AE1 pane: two stays with two room rows each. `rooms` is the count the read gives every row ('' for none). */
-function ae1Page(rooms = '30'): string {
+/**
+ * The AE1 pane: two stays with two room rows each. `rooms` is the count the read gives every row ('' for none); `single`
+ * is the room type the email asks for on the single rows. `notQuote` is a thread read as not a quote: the pane shows no
+ * Stay details until its type is set to Quote, and then shows them.
+ */
+function ae1Page(rooms = '30', options: { single?: string; notQuote?: boolean } = {}): string {
   const row = (stay: number, room: number, asked: string) => `
     <div class="room" data-stay="${stay - 1}">
       <select aria-label="Room type">
@@ -117,9 +121,11 @@ function ae1Page(rooms = '30'): string {
       <input aria-hidden="true" type="number" aria-label="Adults" class="sr-only" value="">
       <select aria-label="Meal plan"><option value="unknown" selected>Not stated yet</option><option value="bb">B&amp;B</option></select>
     </div>`;
+  const single = options.single ?? 'Single';
+  const stayDetails = `<section aria-label="Stay details">${row(1, 1, single)}${row(1, 2, 'Double/twin')}${row(2, 1, single)}${row(2, 2, 'Double/twin')}</section>`;
   const body = `
-    <select aria-label="Nava reads this as"><option value="quote" selected>Quote request</option></select>
-    <section aria-label="Stay details">${row(1, 1, 'Single')}${row(1, 2, 'Double/twin')}${row(2, 1, 'Single')}${row(2, 2, 'Double/twin')}</section>
+    <select aria-label="Nava reads this as">${options.notQuote ? '<option value="other" selected>Not a quote</option>' : ''}<option value="quote"${options.notQuote ? '' : ' selected'}>Quote request</option></select>
+    ${options.notQuote ? '' : stayDetails}
     <section aria-label="Rates from HMS">
       <p id="rated">0 of 2 stays rated</p>
       <button id="get">Get rates from HMS</button>
@@ -133,6 +139,14 @@ function ae1Page(rooms = '30'): string {
   const script = `
     const stays = ${JSON.stringify(STAYS)};
     const runs = [];
+    ${
+      options.notQuote
+        ? `// The Stay details appear once the thread is Quote, as the pane shows them.
+    document.querySelector('select[aria-label="Nava reads this as"]').addEventListener('change', (event) => {
+      if (event.target.value === 'quote') document.querySelector('[data-preview-pane] main').insertAdjacentHTML('afterbegin', ${JSON.stringify(stayDetails)});
+    });`
+        : ''
+    }
     // The pane logs every field edit (workItems.recordEvent); the drivers must not cause one without leave.
     document.querySelectorAll('section[aria-label="Stay details"] input, section[aria-label="Stay details"] select').forEach((el) =>
       el.addEventListener('input', () => trpc('workItems.recordEvent', { field: el.getAttribute('aria-label') })),
@@ -333,9 +347,110 @@ describe('AE1 driver against a scripted pane', () => {
     },
     120_000,
   );
+
+  it.skipIf(!chromiumBinary)(
+    'with no room count and a room type it cannot name, stops on needs_edits:rooms and types nothing',
+    async () => {
+      const base = await serve(ae1Page('', { single: 'Family' }), ae1Handlers());
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-no-rooms-type'), '--timeout-ms', '20000'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
+      const summary = await runAe1(config, () => undefined);
+      expect(summary.ok).toBe(false);
+      expect(summary.blocker).toBe('needs_edits:rooms');
+      expect(summary.filledFields).toEqual([]);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+      expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'a thread that is not Quote is switched first, and a rooms stop after the switch fills nothing else',
+    async () => {
+      const base = await serve(ae1Page('', { notQuote: true }), ae1Handlers());
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-not-quote-no-rooms'), '--timeout-ms', '20000'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
+      const summary = await runAe1(config, () => undefined);
+      expect(summary.blocker).toBe('needs_edits:rooms');
+      // The rows show only once the thread is Quote, so the switch is the one edit a rooms stop can leave behind.
+      expect(summary.filledFields).toEqual(['type']);
+      expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'a thread that is not Quote without NAVA_PROOF_ALLOW_EDITS stops on needs_edits:type and changes nothing',
+    async () => {
+      const base = await serve(ae1Page('30', { notQuote: true }), ae1Handlers());
+      const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-not-quote'), '--timeout-ms', '20000'], env(base), dir);
+      const summary = await runAe1(config, () => undefined);
+      expect(summary.blocker).toBe('needs_edits:type');
+      expect(summary.filledFields).toEqual([]);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+    },
+    120_000,
+  );
 });
 
 describe('AE1 dry plan against a scripted pane', () => {
+  it.skipIf(!chromiumBinary)(
+    'with edits allowed, a thread that is not Quote is not planned: its rows cannot be read without the switch',
+    async () => {
+      const base = await serve(ae1Page('30', { notQuote: true }), ae1Handlers());
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-plan-not-quote'), '--dry-plan'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
+      const plan = await readAe1Plan(config, () => undefined);
+      expect(plan.blocker).toBe(
+        'not planned: switch the thread to Quote first; its room rows cannot be planned without that edit',
+      );
+      expect(plan.roomSplit).toBeNull();
+      expect(plan.paneRows).toBe(0);
+      expect(plan.wouldFill).toEqual(['type']);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+      expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'without edits, a thread that is not Quote is blocked on needs_edits:type',
+    async () => {
+      const base = await serve(ae1Page('30', { notQuote: true }), ae1Handlers());
+      const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-plan-not-quote-no-edits'), '--dry-plan'], env(base), dir);
+      const plan = await readAe1Plan(config, () => undefined);
+      expect(plan.blocker).toBe('needs_edits:type');
+      expect(plan.wouldFill).toEqual(['type']);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'names needs_edits:rooms, not the room type, when a row has no count and a type it cannot name',
+    async () => {
+      const base = await serve(ae1Page('', { single: 'Family' }), ae1Handlers());
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-plan-rooms-type'), '--dry-plan'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
+      const plan = await readAe1Plan(config, () => undefined);
+      expect(plan.blocker).toBe('needs_edits:rooms');
+      expect(plan.paneRows).toBe(4);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+    },
+    120_000,
+  );
+
   it.skipIf(!chromiumBinary)(
     'prints the read counts with their source, and makes no edit and no HMS request',
     async () => {
