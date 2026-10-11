@@ -15,9 +15,9 @@ import {
 } from '../src/trpc/routes/workstation.js';
 
 /**
- * A staff quote with two room rows: HMS prices both, but every room option has buildingCode null, so composeAllocation
- * cannot build a shared pool id and the capture stays partial. The block is deliberate; these tests pin only what the
- * failure says about itself.
+ * A staff quote with two room rows: HMS prices both with buildingCode null. At inventory 40 the STQN row is above that
+ * type's profile capacity (34), so the room profile does not hold, composeAllocation reports it out of date, and the
+ * capture stays partial. The block is deliberate; these tests pin only what the failure says about itself.
  */
 
 const contractPath = fileURLToPath(new URL('../tooling/playwright-quote/quote-contract.mjs', import.meta.url));
@@ -42,10 +42,11 @@ const request = {
 
 type Contract = {
   normalizeQuoteRequest: (input: unknown) => { ok: boolean; request: { rooms: Array<{ id: string }> } };
-  composeAllocation: (groups: unknown[], propertyCode: string) => { status: string; reason: string };
+  composeAllocation: (groups: unknown[], propertyCode: string) => { status: string; reason: string; pools: { id: string }[] };
+  aggregateOutcome: (input: { groups: unknown[]; allocation: unknown }) => { outcome: string };
 };
 
-function option(room: string, building: string | null) {
+function option(room: string, building: string | null, inventory = 40) {
   return {
     id: `HRCEN:${room}:BAR`,
     room: { code: room, label: `Standard ${room}`, buildingCode: building },
@@ -57,7 +58,7 @@ function option(room: string, building: string | null) {
     matchStatus: 'match',
     issues: [],
     details: { status: 'complete' },
-    nightly: ['2026-11-12', '2026-11-13'].map((date) => ({ date, inventory: 40, price: { amount: '1543.21', currency: 'ZAR' } })),
+    nightly: ['2026-11-12', '2026-11-13'].map((date) => ({ date, inventory, price: { amount: '1543.21', currency: 'ZAR' } })),
   };
 }
 
@@ -68,7 +69,7 @@ afterEach(async () => {
 });
 
 /** The capture fetch-quote leaves for this request: audited, complete, partial only because the allocation is unknown. */
-async function jointInventoryCapture(building: string | null) {
+async function jointInventoryCapture(building: string | null, inventory = 40) {
   const contract = (await import(contractPath)) as Contract;
   const normalized = contract.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
   const groups = normalized.rooms.map((room, index) => ({
@@ -77,19 +78,20 @@ async function jointInventoryCapture(building: string | null) {
     outcome: 'quote',
     issues: [],
     completeness: { search: 'complete', requiredFacts: 'complete' },
-    options: [option(index === 0 ? 'STQN' : 'STWN', building)],
+    options: [option(index === 0 ? 'STQN' : 'STWN', building, inventory)],
   }));
   root = join(privateRoot, `test-${randomUUID()}`);
   const evidence = join(root, 'out', 'run-2026-11-12T08-00-00Z');
   await mkdir(evidence, { recursive: true });
+  const allocation = contract.composeAllocation(groups, 'HRCEN');
   const capture = {
     schemaVersion: 2,
-    outcome: 'partial',
+    outcome: contract.aggregateOutcome({ groups, allocation }).outcome,
     propertyCode: 'HRCEN',
     observedAt: new Date(Date.now() - 1000).toISOString(),
     requested: normalized,
     groups,
-    allocation: contract.composeAllocation(groups, 'HRCEN'),
+    allocation,
     issues: [],
     searchCompleteness: { status: 'complete' },
     audit: { status: 'complete' },
@@ -99,28 +101,50 @@ async function jointInventoryCapture(building: string | null) {
   return { evidence, capture };
 }
 
-async function readerFailure(): Promise<unknown> {
-  const { evidence } = await jointInventoryCapture(null);
+function readFrom(evidence: string) {
   const read = createExistingOwnerNativeQuoteReader({
     owner,
     outputDir: join(root, 'out'),
     dispatch: async () => ({ stdout: `Evidence: ${evidence}\n` }),
   });
-  return read(request as never, new AbortController().signal).then(
+  return read(request as never, new AbortController().signal);
+}
+
+async function readerFailure(): Promise<unknown> {
+  const { evidence } = await jointInventoryCapture(null);
+  return readFrom(evidence).then(
     () => null,
     (error: unknown) => error,
   );
 }
 
+describe('a capture inside the verified room profile', () => {
+  it('reads through as a quote', async () => {
+    const { evidence } = await jointInventoryCapture(null, 30);
+    const source = await readFrom(evidence);
+    expect(source.ref).toMatch(/^native-quote:[0-9a-f]{64}$/);
+    expect(source.result.outcome).toBe('quote');
+    expect(source.result.groups).toHaveLength(2);
+  });
+
+  it('is rejected when its allocation pool id is not what the contract recomputes from the rows', async () => {
+    const { evidence, capture } = await jointInventoryCapture(null, 30);
+    const tampered = structuredClone(capture);
+    tampered.allocation.pools[0].id = 'HRCEN:B9:STQN';
+    await writeFile(join(evidence, 'result.json'), JSON.stringify(tampered));
+    await expect(readFrom(evidence)).rejects.toThrow('native_quote_capture_scope_or_completeness_invalid');
+  });
+});
+
 describe('the joint-inventory block carries its diagnostics', () => {
-  it('stays blocked, and says the allocation is unknown because HMS gave no building for each priced row', async () => {
+  it('stays blocked, and says the room profile is out of date because STQN is above its capacity and HMS gave no building', async () => {
     const error = await readerFailure();
     expect(error).toBeInstanceOf(ReservationistTaskEvidenceUnavailable);
     const gap = error as ReservationistTaskEvidenceUnavailable;
     expect(gap.code).toBe('native_quote_business_evidence_unavailable');
     expect(gap.detail).toEqual({
       allocationStatus: 'unknown',
-      allocationReason: 'Source did not prove a shared inventory-pool identity.',
+      allocationReason: 'Room profile out of date: observed HMS room types, inventory or building codes no longer match the verified property profile.',
       sharedInventoryPoolGap: true,
       rows: [
         { row: 1, outcome: 'quote', roomCode: 'STQN', rateCode: 'BAR', buildingCode: 'null' },
