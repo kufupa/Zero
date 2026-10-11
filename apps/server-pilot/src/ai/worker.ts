@@ -162,11 +162,12 @@ import { buildQuoteStayReadData, quoteStayReadDataSchema } from '../hms/quote-st
 import { persistAiCandidateDraft, loadLatestThreadAffectingDraftRevisionId } from './drafts.js';
 import { scheduleInboundTriageAnalyseWarm } from './quote-workflow-warmer.js';
 import {
+  createHmsRecoveryGate,
   executeHmsJob,
   hmsJobQueueEnabled,
-  requeueHmsReadsAfterRestart,
   scheduleAvailabilityPrefetch,
   schedulePrefetchForInbound,
+  type HmsRecoveryGate,
 } from './hms-jobs.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { persistMailBaselineProjection } from '../metrics/mail-baseline-projection.js';
@@ -5403,6 +5404,8 @@ function maybeInitHmsRuntime(lane: AiExecutorLane): void {
 
 export type RunAiWorkerOnceOptions = {
   shutdownSignal?: AbortSignal;
+  /** Lane hms claims wait on this until the restart sweep has succeeded. */
+  hmsRecovery?: HmsRecoveryGate;
   readToolExecutor?: NonNullable<Parameters<typeof executeAiRun>[1]>['readToolExecutor'];
   mailBaselineExtractionRoute?: NonNullable<
     Parameters<typeof executeAiRun>[1]
@@ -5426,6 +5429,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   const lane = env.AI_WORKER_LANE;
   const {
     shutdownSignal,
+    hmsRecovery,
     readToolExecutor,
     mailBaselineExtractionRoute,
     mailBaselineExtractionRouteFactory,
@@ -5458,6 +5462,8 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
         ...(hmsJobsOnly ? { promptVersion: HMS_JOB_PROMPT_VERSION } : {}),
       }
     : scope;
+  // Lane hms also claims HMS reads (jobs-only and read-service modes), so it waits for the restart sweep first.
+  if (lane === 'hms' && hmsRecovery && !(await hmsRecovery.mayClaim())) return false;
   const claimed = await claimNextAiRun({ ownerId: owner, lane, ...claimScope });
   if (!claimed) {
     // Jobs-only hms worker: no maintenance, as before this lane claimed jobs.
@@ -5521,11 +5527,14 @@ export async function runHmsJobOnce(
   options: {
     shutdownSignal?: AbortSignal;
     db?: DB;
+    /** Claims wait until the restart sweep has succeeded; the loop passes its gate. */
+    recovery?: HmsRecoveryGate;
     /** Test seam. Production runs the claimed job through executeAiRun. */
     execute?: (runId: string) => Promise<unknown>;
   } = {},
 ): Promise<boolean> {
   if (!hmsJobQueueEnabled()) return false;
+  if (options.recovery && !(await options.recovery.mayClaim())) return false;
   const claimed = await claimNextAiRun({
     ownerId: aiWorkerOwnerId('hms'),
     lane: 'hms',
@@ -5565,9 +5574,9 @@ async function runHmsWriteSweepLoop(signal: AbortSignal): Promise<void> {
 }
 
 /** Claims pane HMS jobs one at a time until the signal aborts. Runs alongside the default loop, so triage never waits on HMS. */
-async function runHmsJobLoop(signal: AbortSignal): Promise<void> {
+async function runHmsJobLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Promise<void> {
   while (!signal.aborted) {
-    const worked = await runHmsJobOnce({ shutdownSignal: signal }).catch((error: unknown) => {
+    const worked = await runHmsJobOnce({ shutdownSignal: signal, recovery }).catch((error: unknown) => {
       console.error('hms_job_loop_failed', error instanceof Error ? error.message : String(error));
       return false;
     });
@@ -5662,10 +5671,12 @@ export async function runAiWorkerLoop(
   };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
+  // Restart sweep for HMS reads: the first tick runs it, and no lane-hms claim happens until it succeeds.
+  const hmsRecovery = createHmsRecoveryGate({ ownerId: aiWorkerOwnerId('hms') });
   // HMS_JOB_QUEUE=on: the default worker also claims pane HMS jobs. Scoped (proof) loops never do.
   const hmsJobs =
     resolveWorkerLane() === 'default' && hmsJobQueueEnabled() && !scope.idempotencyPrefix
-      ? runHmsJobLoop(shutdown.signal)
+      ? runHmsJobLoop(shutdown.signal, hmsRecovery)
       : null;
   // Lost hms_write leases become needs-check here, whatever the HMS flags. Scoped (proof) loops never run it.
   const hmsWriteSweep =
@@ -5678,6 +5689,7 @@ export async function runAiWorkerLoop(
       const worked = await runAiWorkerOnce({
         ...scope,
         shutdownSignal: shutdown.signal,
+        hmsRecovery,
         mailBaselineExtractionRouteFactory,
       });
       if (!worked) {
@@ -5742,11 +5754,8 @@ async function main() {
     return;
   }
 
-  // Proof isolation: ops-hms-shadow start sets AI_WORKER_IDEMPOTENCY_PREFIX.
-  if (env.AI_WORKER_LANE === 'hms' || hmsJobQueueEnabled()) {
-    const requeued = await requeueHmsReadsAfterRestart({ ownerId: aiWorkerOwnerId('hms') });
-    if (requeued > 0) console.log(JSON.stringify({ ok: true, hmsReadsRequeued: requeued }));
-  }
+  // Proof isolation: ops-hms-shadow start sets AI_WORKER_IDEMPOTENCY_PREFIX. The HMS restart sweep runs inside the
+  // loop (createHmsRecoveryGate), so a failed sweep never stops the worker from starting.
   const idempotencyPrefix = process.env.AI_WORKER_IDEMPOTENCY_PREFIX?.trim();
   await runAiWorkerLoop(
     5_000,

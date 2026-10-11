@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { appRouter } from '../src/trpc/router.js';
 import {
   cancelHmsBatch,
+  createHmsRecoveryGate,
   enqueueHmsBatch,
   enqueueHmsJob,
   HMS_JOB_PRIORITY_PREFETCH,
@@ -15,6 +16,7 @@ import {
   type HmsBatchView,
   type HmsJobRequest,
 } from '../src/ai/hms-jobs.js';
+import { runHmsJobOnce } from '../src/ai/worker.js';
 import { paneStayLookupLoaders } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { parseEnv } from '../src/env.js';
@@ -236,7 +238,10 @@ async function finishJob(db: DB, run: AiWorkflowRun): Promise<void> {
   if (!marked) throw new Error('markAiRunSucceeded fenced out');
 }
 
-/** One batch run held by a worker whose heartbeat went stale long ago: what the restart sweep must requeue. */
+/**
+ * One batch run held by a worker whose heartbeat went stale long ago, with its deadline already elapsed: what the
+ * restart sweep must requeue, and what a claim without recovery would dead-letter as RUN_DEADLINE.
+ */
 async function seedDeadClaim(db: DB): Promise<string> {
   const [item] = await seedBatchItems(db, 1);
   const batch = await enqueueBatch(
@@ -251,6 +256,7 @@ async function seedDeadClaim(db: DB): Promise<string> {
       claimOwner: 'hms-ai-worker-dead-1',
       claimToken: randomUUID(),
       heartbeatAt: new Date(Date.now() - 2 * 60 * 60_000),
+      deadlineAt: new Date(Date.now() - 60_000),
       updatedAt: new Date(Date.now() - 2 * 60 * 60_000),
     })
     .where(eq(aiWorkflowRun.id, runId));
@@ -1129,13 +1135,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
       expect(run).toMatchObject({ state: 'retry_wait', metrics: { crashCount: 1 } });
     }));
 
-  it('does not crash the worker when every restart sweep attempt deadlocks', () =>
+  it('rethrows the lock conflict once every restart sweep attempt deadlocks, leaving the run untouched', () =>
     withSeededTestDb(async (db) => {
       const runId = await seedDeadClaim(db);
       const alwaysDeadlocked = {
         transaction: () => Promise.reject(Object.assign(new Error('deadlock detected'), { code: '40P01' })),
       } as unknown as DB;
-      await expect(requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-new-1' }, alwaysDeadlocked)).resolves.toBe(0);
+      await expect(requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-new-1' }, alwaysDeadlocked)).rejects.toMatchObject({
+        code: '40P01',
+      });
       const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId));
       expect(run?.state).toBe('running');
     }));
@@ -1164,5 +1172,52 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
       );
       expect(later.items.every((item) => item.status === 'reused')).toBe(true);
       expect(later.items.map((item) => item.runId)).toEqual(first.items.map((item) => item.runId));
+    }));
+
+  it('claims no HMS read until a restart sweep succeeds, then requeues the stale job with a fresh deadline', () =>
+    withSeededTestDb(async (db) => {
+      const runId = await seedDeadClaim(db);
+      let sweepsFailing = true;
+      let sweepCalls = 0;
+      // While sweepsFailing, every transaction hits a deadlock, so each sweep call exhausts its retries and throws.
+      const contended = {
+        transaction: (run: (tx: DB) => Promise<unknown>) =>
+          sweepsFailing
+            ? Promise.reject(Object.assign(new Error('deadlock detected'), { code: '40P01' }))
+            : db.transaction((tx) => run(tx as DB)),
+      } as unknown as DB;
+      let clock = Date.now();
+      const recovery = createHmsRecoveryGate(
+        { ownerId: 'hms-ai-worker-new-1' },
+        {
+          sweep: (input) => {
+            sweepCalls += 1;
+            return requeueHmsReadsAfterRestart(input, contended);
+          },
+          now: () => clock,
+        },
+      );
+      const execute = vi.fn(async () => undefined);
+      const tick = () => runHmsJobOnce({ db, execute, recovery });
+
+      // Each failing tick retries the sweep once its backoff has passed. A tick inside the backoff does not.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        expect(await tick()).toBe(false);
+        expect(await tick()).toBe(false);
+        clock += 60_000;
+      }
+      expect(sweepCalls).toBe(3);
+      expect(execute).not.toHaveBeenCalled();
+      // The stale claim is still held by the dead worker, not dead-lettered as RUN_DEADLINE.
+      const [stale] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId));
+      expect(stale).toMatchObject({ state: 'running', claimOwner: 'hms-ai-worker-dead-1' });
+
+      sweepsFailing = false;
+      expect(await tick()).toBe(true);
+      expect(sweepCalls).toBe(4);
+      expect(execute).toHaveBeenCalledWith(runId);
+      const [recovered] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId));
+      expect(recovered?.metrics).toMatchObject({ crashCount: 1 });
+      expect(recovered?.deadlineAt?.getTime()).toBeGreaterThan(Date.now());
     }));
 });

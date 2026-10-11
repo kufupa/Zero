@@ -1709,9 +1709,8 @@ const RESTART_SWEEP_BACKOFF_MS = 100;
  * Runs at worker start. Read runs that a dead hms worker still held go back to
  * retry_wait now, not after the stale-claim timeout. A claim with a fresh
  * heartbeat belongs to a live worker and is left alone. A lock conflict rolls
- * back and retries with backoff. If every attempt conflicts, it logs and
- * returns 0 instead of throwing, so the worker still starts; those claims wait
- * for the normal stale-claim path.
+ * back and retries with backoff. If every attempt conflicts, it rethrows, and
+ * createHmsRecoveryGate keeps HMS reads unclaimed until a later sweep succeeds.
  */
 export async function requeueHmsReadsAfterRestart(
   input: { ownerId: string },
@@ -1721,11 +1720,7 @@ export async function requeueHmsReadsAfterRestart(
     try {
       return await requeueStaleHmsReads(input, db);
     } catch (error) {
-      if (!isLockConflict(error)) throw error;
-      if (attempt >= RESTART_SWEEP_ATTEMPTS) {
-        console.warn('hms_restart_sweep_deferred', { code: 'lock_conflict', attempts: attempt });
-        return 0;
-      }
+      if (!isLockConflict(error) || attempt >= RESTART_SWEEP_ATTEMPTS) throw error;
       await new Promise((resolve) => setTimeout(resolve, RESTART_SWEEP_BACKOFF_MS * 2 ** (attempt - 1)));
     }
   }
@@ -1776,4 +1771,46 @@ async function requeueStaleHmsReads(input: { ownerId: string }, db: DB): Promise
     }
     return staleRuns.length;
   });
+}
+
+export type HmsRecoveryGate = { mayClaim(): Promise<boolean> };
+
+const HMS_RECOVERY_RETRY_MIN_MS = 1_000;
+const HMS_RECOVERY_RETRY_MAX_MS = 30_000;
+
+/**
+ * Keeps HMS read claims closed until a restart sweep succeeds. Without it, a stale job whose deadline has passed is
+ * claimed and dead-lettered as RUN_DEADLINE. A failed sweep keeps the gate closed and retries on a later tick, with
+ * exponential backoff. The worker stays up meanwhile.
+ */
+export function createHmsRecoveryGate(
+  input: { ownerId: string },
+  deps: { sweep?: (sweepInput: { ownerId: string }) => Promise<number>; now?: () => number } = {},
+): HmsRecoveryGate {
+  const sweep = deps.sweep ?? ((sweepInput: { ownerId: string }) => requeueHmsReadsAfterRestart(sweepInput));
+  const now = deps.now ?? Date.now;
+  let pending = true;
+  let nextAttemptAt = 0;
+  let backoffMs = HMS_RECOVERY_RETRY_MIN_MS;
+  return {
+    async mayClaim() {
+      if (!pending) return true;
+      const at = now();
+      if (at < nextAttemptAt) return false;
+      try {
+        const requeued = await sweep(input);
+        pending = false;
+        if (requeued > 0) console.log(JSON.stringify({ ok: true, hmsReadsRequeued: requeued }));
+        return true;
+      } catch (error) {
+        console.warn('hms_recovery_pending', {
+          retryInMs: backoffMs,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        nextAttemptAt = at + backoffMs;
+        backoffMs = Math.min(backoffMs * 2, HMS_RECOVERY_RETRY_MAX_MS);
+        return false;
+      }
+    },
+  };
 }
