@@ -1,5 +1,6 @@
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { workItemsFromTrpc, type NeedsYouRow } from '@/lib/quote-workflow/backend-bind';
+import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Notice, SecondaryButton } from '../pane-ui';
 import { Button } from '@/components/ui/button';
@@ -110,7 +111,10 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
         notice: null,
       }));
       mutate({ workItemId })
-        .then(() => load())
+        .then(() => {
+          trackPaneAction({ type: 'item.dismissed' }, workItemId);
+          return load();
+        })
         .catch(() => {
           dismissed.current.delete(workItemId);
           if (mounted.current) {

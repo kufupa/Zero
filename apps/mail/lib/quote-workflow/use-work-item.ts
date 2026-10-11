@@ -117,6 +117,25 @@ export function stayRowId(stayId: string): string {
   return `${stayId}_row`;
 }
 
+const CONTACT_PATHS = ['name', 'company', 'endClient', 'email', 'phone'].map((field) => `contact.${field}`);
+
+/**
+ * The extraction field paths the pane shows for these groups and the contact block. A group with no stored ref (a row
+ * she added) has no path. Only names are sent: the server reads each AI value and skips any field she edited.
+ */
+export function shownFieldPaths(refs: Refs, groups: StayGroupRequirement[]): string[] {
+  const paths: string[] = [];
+  for (const group of groups) {
+    const ref = refOf(refs, group);
+    if (!ref) continue;
+    const stay = `stays[${ref.stayId}]`;
+    paths.push(...datesAt(stay, group).map((event) => event.path));
+    const rowId = ref.rowId ?? stayRowId(ref.stayId);
+    if (STABLE_ID.test(rowId)) paths.push(...rowFieldsAt(`${stay}.rows[${rowId}]`, group).map((event) => event.path));
+  }
+  return [...paths, ...CONTACT_PATHS];
+}
+
 function sameValue(a: FieldEvent['value'] | undefined, b: FieldEvent['value']): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
@@ -395,6 +414,28 @@ export function useStoredWork(args: {
   );
 
   /**
+   * Called when she proceeds with the read (Get rates). The fields shown for these groups and the contact block go to the
+   * server as accepts (v5 B2). The server skips any she edited, so a repeat call adds nothing. It goes out after the saves
+   * in flight, so an edit she just made lands first. A failed call is dropped: a missing accept only loses a label.
+   */
+  const acceptUnedited = useCallback(
+    (groups: StayGroupRequirement[]) => {
+      const accept = workItemsFromTrpc(trpcRef.current).acceptFields;
+      if (!accept || !readyWorkItemId || !readyRefs) return;
+      flushAll();
+      const workItemId = readyWorkItemId;
+      const fieldPaths = shownFieldPaths(readyRefs, groups);
+      const pinned = inMailbox(readyTransportId);
+      void Promise.allSettled(inFlight.current.values())
+        .then(() =>
+          pinned ? accept.mutate({ workItemId, fieldPaths }, pinned) : accept.mutate({ workItemId, fieldPaths }),
+        )
+        .catch(() => undefined);
+    },
+    [readyRefs, readyWorkItemId, readyTransportId, flushAll],
+  );
+
+  /**
    * Asks for the stored translation again. The answer replaces the stored translation on the pane, if the same mail is
    * still on screen. A call that fails leaves the translation as it was.
    */
@@ -423,6 +464,7 @@ export function useStoredWork(args: {
     retry,
     recordGroups,
     recordContact,
+    acceptUnedited,
     retryTranslation,
     translationBusy: translating !== null && translating === readyWorkItemId,
     saveFailed,

@@ -233,6 +233,12 @@ type WorkItemsClient = {
   recordEvent?: {
     mutate: (input: RecordFieldEventInput, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
   };
+  acceptFields?: {
+    mutate: (
+      input: { workItemId: string; fieldPaths: string[] },
+      opts?: { context: Record<string, unknown> },
+    ) => Promise<unknown>;
+  };
   retryTranslation?: { mutate: (input: { workItemId: string }) => Promise<TranslationRetryResult> };
   list?: { query: (input: { limit?: number }) => Promise<NeedsYouRow[]> };
   dismiss?: { mutate: (input: { workItemId: string }) => Promise<unknown> };

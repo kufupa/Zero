@@ -165,17 +165,20 @@ export async function bindQualifiedStaffWorkbook(args: {
   }
 }
 
-/** The "Download Excel" handler: checks the approved quote, asks the server, and saves the file. */
+/**
+ * The "Download Excel" handler: checks the approved quote, asks the server, and saves the file. Resolves true when the
+ * file was saved, so the caller can record it.
+ */
 export async function downloadStaffQuoteWorkbook(args: {
   session: QuoteSession;
   mutate?: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffWorkbookResult>;
   notify?: (message: string) => void;
   download?: (blob: Blob, fileName: string) => void;
-}): Promise<void> {
+}): Promise<boolean> {
   const request = workbookRequestFor(args.session);
   if (request.status === 'unavailable') {
     args.notify?.(request.reason);
-    return;
+    return false;
   }
   const bound = await bindQualifiedStaffWorkbook({
     mutate: args.mutate,
@@ -183,5 +186,9 @@ export async function downloadStaffQuoteWorkbook(args: {
     expectedTotalMinor: request.expectedTotalMinor,
     download: args.download,
   });
-  if (bound.status === 'unavailable') args.notify?.(bound.reason);
+  if (bound.status === 'unavailable') {
+    args.notify?.(bound.reason);
+    return false;
+  }
+  return true;
 }

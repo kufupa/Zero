@@ -5,6 +5,7 @@ import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-fligh
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { requireMultiOptionDraft, type CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
+import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { trpcClient } from '@/providers/query-provider';
 
@@ -457,6 +458,7 @@ export function useInsertAiDraft({
           : 'Outlook accepted the request, but could not confirm the draft. Check Outlook Drafts before trying again.';
       const message = [summary, ...details].join(' ');
       setDraftStatus({ key, message });
+      trackPaneAction({ type: 'reply.inserted', kind: attempt.scope });
       if (details.length || !opened) toast.warning(`${replyLabel}${message}`);
       else toast.success(`${replyLabel}${message}`);
     } catch (err) {
@@ -548,6 +550,7 @@ export function useInsertAiDraft({
         ? 'Replaced this thread\'s draft with the reply and PDF. Nothing is sent.'
         : 'Saved the reply and PDF as this thread\'s draft. Nothing is sent.';
       setDraftStatus({ key, message });
+      trackPaneAction({ type: 'reply.saved', kind: scope });
       toast.success(message);
     } catch (error) {
       const draftChanged = (error as { message?: string }).message === 'DRAFT_CHANGED';

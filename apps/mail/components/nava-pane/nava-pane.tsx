@@ -33,6 +33,7 @@ import {
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
 import { storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
+import { bindPaneTelemetry, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import {
   bindGetPriorStaffQuoteRequote,
   bindListThreadQuoteRevisions,
@@ -114,6 +115,8 @@ const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
 const PANE_PARTY_INDEX = partyIndexFromTrpc(trpcClient);
 // The saved rates for each row's price (R7). Null when the rates route is missing, so only one-off and override show.
 const PANE_SAVED_RATES = savedRatesFromTrpc(trpcClient);
+// Pane action telemetry goes out through this client (v5 B1). Until it is bound, actions are dropped.
+bindPaneTelemetry(trpcClient);
 
 /**
  * Pane body. The route calls useOutlookBridge() once and passes the result in as `bridge`.
@@ -170,7 +173,12 @@ export function NavaPane({
   });
   const trackStaffQuoteRun = <T,>(run: Promise<T>): Promise<T> => {
     setQuoteRunPending(true);
-    return run.finally(() => setQuoteRunPending(false));
+    const startedAt = Date.now();
+    trackPaneAction({ type: 'hms.lookup.started' });
+    return run.finally(() => {
+      setQuoteRunPending(false);
+      trackPaneAction({ type: 'hms.lookup.finished', ms: Math.max(0, Date.now() - startedAt) });
+    });
   };
   const requoteSameStayRef = useRef<(row: PriorStaffQuoteRequoteRow) => void>(() => {});
   const selectedKey = activeEmail?.entryId
@@ -290,6 +298,13 @@ export function NavaPane({
     scope: currentScope,
   });
   const storedOverridden = Boolean(quoteSession.treatAs || quoteSession.staffNote);
+  // The pane's work item for telemetry (v5 B1). Opening a stored read with a work item is the pane.opened action.
+  const surface = onOpenThread ? 'web' : 'outlook';
+  const paneWorkItemId = storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null;
+  useEffect(() => {
+    setPaneTelemetryScope(paneWorkItemId ? { workItemId: paneWorkItemId, surface } : null);
+    if (paneWorkItemId) trackPaneAction({ type: 'pane.opened' }, paneWorkItemId);
+  }, [paneWorkItemId, surface]);
   /** A staff edit to the stay rows. On a stored read it is logged against the work item, so it is there on reopen. */
   const editStayRows = (action: QuoteSessionAction) => {
     const before = quoteSessionRef.current;
@@ -630,6 +645,8 @@ export function NavaPane({
       session: quoteSessionRef.current,
       mutate: staffQuoteFromTrpc(trpcClient).workstation.quoteWorkbook?.mutate,
       notify: (message) => toast.warning(message),
+    }).then((saved) => {
+      if (saved) trackPaneAction({ type: 'excel.downloaded' });
     }).finally(() => {
       workbookInFlight.current = false;
       setWorkbookPending(false);
@@ -886,6 +903,8 @@ export function NavaPane({
     }
     const stayGroups = groupsForQuoteStep(quoteSession, step);
     const staff = staffQuoteFromTrpc(trpcClient);
+    // Get rates is where she proceeds with the read as shown, so unedited AI fields are accepted (v5 B2).
+    if (!storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
     const run = bindExecuteStaffQuote({
       mutate: staff.workstation.executeStaffQuote?.mutate,
       source,
@@ -1027,6 +1046,7 @@ export function NavaPane({
           inputRevision,
           selectedOfferIds,
         });
+        trackPaneAction({ type: 'pdf.created', kind: 'combined' });
       }).finally(() => {
         pdfInFlight.current = false;
       });
@@ -1098,6 +1118,7 @@ export function NavaPane({
         inputRevision,
         selectedOfferIds,
       });
+      trackPaneAction({ type: 'pdf.created', kind: 'option' });
     });
   };
 

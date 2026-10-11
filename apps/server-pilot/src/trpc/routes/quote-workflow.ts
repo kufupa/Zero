@@ -35,6 +35,9 @@ import {
   type PaneStayResult,
 } from '../../ai/pane-stay-save.js';
 import { isNoReplyAddress } from '../../mail/conversation-signals.js';
+import { recordStaffNote } from '../../ai/work-events.js';
+import { workItemIdForMail } from '../../ai/work-items.js';
+import { getDb } from '../../db/client.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
@@ -170,6 +173,16 @@ export const quoteWorkflowRouter = router({
       });
       if (outcome.kind === 'fallback') {
         console.warn('quote_workflow_fallback', outcome.reason);
+      }
+      // The "Tell Nava" text is kept masked on the mail's work item (v5 B2). Best effort: the answer does not wait on it.
+      const note = input.staffNote?.trim();
+      if (note && internetMessageId) {
+        try {
+          const workItemId = await workItemIdForMail(getDb(), { transportId: ctx.activeTransportId, internetMessageId });
+          if (workItemId) await recordStaffNote(getDb(), { workItemId, userId: ctx.sessionUser.id, note });
+        } catch (error) {
+          console.warn('staff_note_not_kept', error instanceof Error ? error.message : 'unknown');
+        }
       }
       // The sender decides whether staff can answer, so the pane hides Insert draft for an automated one. Read per request.
       return { ...payload, noReplySender: isNoReplyAddress(synced.fromAddress) };

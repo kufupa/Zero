@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 
 import { Field, SecondaryButton, paneFieldClass } from '@/components/nava-pane/pane-ui';
 import { draftMoney } from '@/lib/quote-workflow/multi-option-draft';
+import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseZarInput } from '@/lib/quote-workflow/zar-input';
 import type { RowPriceChoice, StaffRowRate, StayGroupRequirement } from '@/lib/quote-workflow/types';
 
@@ -266,8 +267,10 @@ export function RowRateControls({
   const copyComment = async () => {
     const comment = rowRate?.hmsComment;
     if (!comment) return;
-    if (await copyText(comment)) toast.success('HMS comment copied. Paste it into HMS.');
-    else toast.error("Couldn't copy. Select the HMS comment text and copy it.");
+    if (await copyText(comment)) {
+      trackPaneAction({ type: 'copy.hms_line', kind: 'comment' });
+      toast.success('HMS comment copied. Paste it into HMS.');
+    } else toast.error("Couldn't copy. Select the HMS comment text and copy it.");
   };
 
   const finishForm = (which: 'one_off' | 'override', next?: RowPriceChoice) => {

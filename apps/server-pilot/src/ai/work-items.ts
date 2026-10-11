@@ -898,6 +898,103 @@ export async function recordFieldEvent(
   });
 }
 
+/**
+ * Logs field.accept for each extraction field a person proceeded with and never edited (v5 B2). A path that already has
+ * an edit, reject or accept is skipped, as is one the extraction has no value for. The accepted value is the AI value, as
+ * recordFieldEvent stores it. Paths outside the item's extraction shape are ignored.
+ */
+export async function acceptUneditedFields(
+  db: DB,
+  input: { transportId: string; workItemId: string; userId: string; fieldPaths: string[] },
+): Promise<{ status: 'not_found' } | { status: 'recorded'; accepted: number }> {
+  return db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({ extractionId: workItem.extractionId, state: workItem.state })
+      .from(workItem)
+      .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+      .limit(1)
+      .for('update');
+    if (!item) return { status: 'not_found' as const };
+    const paths = [...new Set(input.fieldPaths)].filter(
+      (path) => !path.endsWith('.removed') && (contactFieldOf(path) !== null || parseFieldPath(path) !== null),
+    );
+    if (!paths.length) return { status: 'recorded' as const, accepted: 0 };
+    const seen = await tx
+      .select({ path: workEvent.fieldPath })
+      .from(workEvent)
+      .where(
+        and(
+          eq(workEvent.workItemId, input.workItemId),
+          inArray(workEvent.type, ['field.edit', 'field.reject', 'field.accept']),
+          inArray(workEvent.fieldPath, paths),
+        ),
+      );
+    const touched = new Set(seen.map((row) => row.path));
+    const [read] = item.extractionId
+      ? await tx
+          .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion })
+          .from(mailExtraction)
+          .where(eq(mailExtraction.id, item.extractionId))
+          .limit(1)
+      : [];
+    const accepts = paths
+      .filter((path) => !touched.has(path))
+      .map((path) => ({
+        path,
+        aiValue: aiValueAt(read?.payload as MailExtractionPayload | null | undefined, path),
+      }))
+      .filter((accept) => accept.aiValue !== null && accept.aiValue !== undefined);
+    if (!accepts.length) return { status: 'recorded' as const, accepted: 0 };
+    await tx.insert(workEvent).values(
+      accepts.map((accept) => ({
+        workItemId: input.workItemId,
+        actorKind: 'user',
+        actorUserId: input.userId,
+        type: 'field.accept' as const,
+        fieldPath: accept.path,
+        aiValue: accept.aiValue,
+        value: accept.aiValue,
+        aiSource: read?.version ?? null,
+      })),
+    );
+    await tx
+      .update(workItem)
+      .set({
+        state: { ...item.state, ...Object.fromEntries(accepts.map((accept) => [accept.path, accept.aiValue])) },
+        updatedAt: new Date(),
+      })
+      .where(eq(workItem.id, input.workItemId));
+    return { status: 'recorded' as const, accepted: accepts.length };
+  });
+}
+
+/**
+ * The work item the pane edits for this mail (the kind of its latest read), or null when it has none yet. Notes find
+ * their item here and never open one.
+ */
+export async function workItemIdForMail(
+  db: DB,
+  input: { transportId: string; internetMessageId: string },
+): Promise<string | null> {
+  const msg = await messageFor(db, input);
+  if (!msg) return null;
+  const latest = await succeededRead(db, msg.id);
+  if (!latest) return null;
+  const [item] = await db
+    .select({ id: workItem.id })
+    .from(workItem)
+    .where(
+      and(
+        eq(workItem.transportId, input.transportId),
+        eq(workItem.threadId, msg.threadId),
+        eq(workItem.kind, latest.kind),
+        eq(workItem.sourceMessageId, msg.id),
+      ),
+    )
+    .limit(1);
+  return item?.id ?? null;
+}
+
 /** Dismisses an open item and logs the change. Only needs_you and review items dismiss. Null when not in transport. */
 export async function dismissWorkItem(
   db: DB,
