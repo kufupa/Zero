@@ -1,5 +1,7 @@
 import { eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomUUID } from 'node:crypto';
+import postgres from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 import type { AttachmentRead } from '../src/ai/extraction/extract.js';
 import { EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
@@ -23,6 +25,7 @@ import {
 import { maskStaffNote, recordStaffNote } from '../src/ai/work-events.js';
 import { HMS_JOB_PROMPT_VERSION, NOT_APPLICABLE_MODEL_ID } from '../src/ai/run-ledger.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
+import * as schema from '../src/db/schema/index.js';
 import { aiWorkflowRun, mailboxTransport, mailDraft, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { user } from '../src/db/schema/auth.js';
@@ -1544,13 +1547,25 @@ describe('pane telemetry and staff notes (v5 B1, B2)', () => {
     }));
 
   it('keeps one copy of a note when the same note is recorded by calls that overlap', () =>
-    withDb(async (db) => {
+    withIngestionDb(async ({ db, url }) => {
       const messageId = await seedMail(db, 'tn2');
       await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
       const work = await readyWork(db, 'tn2');
 
-      const note = 'Hold the twin rooms for the 12th';
-      await Promise.all([1, 2, 3, 4].map(() => recordStaffNote(db, { workItemId: work.workItemId, userId: USER, note })));
+      // Four connections, so the calls really overlap in the database. The shared test pool holds one connection and
+      // runs them one after another, which would pass with the row lock removed.
+      const pool = postgres(url, { max: 4, onnotice: () => undefined });
+      const pooled = drizzle(pool, { schema });
+      try {
+        // Opens all four connections before the calls start, so they overlap from their first query.
+        await Promise.all([1, 2, 3, 4].map(() => pool`SELECT 1`));
+        const note = 'Hold the twin rooms for the 12th';
+        await Promise.all(
+          [1, 2, 3, 4].map(() => recordStaffNote(pooled, { workItemId: work.workItemId, userId: USER, note })),
+        );
+      } finally {
+        await pool.end();
+      }
       const notes = (await eventsFor(db, work.workItemId)).filter((event) => event.type === 'note.staff');
       expect(notes).toHaveLength(1);
     }));

@@ -421,8 +421,9 @@ export function useStoredWork(args: {
    * Called when she proceeds with the read (Get rates). The fields shown for these groups and the contact block go to the
    * server as accepts (v5 B2). A field she edited here is never sent, even while its save is pending, failed or being
    * retried, since the server has not seen that edit yet. The server skips any edit it has, so a repeat call adds nothing.
-   * It goes out after the saves in flight, so an edit she just made lands first. A failed call is dropped: a missing
-   * accept only loses a label.
+   * It goes out after the saves in flight settle, so an edit she just made lands first. The list is checked again at that
+   * point, so an edit made while those saves were out is never accepted. A failed call is dropped: a missing accept only
+   * loses a label.
    */
   const acceptUnedited = useCallback(
     (groups: StayGroupRequirement[]) => {
@@ -430,15 +431,16 @@ export function useStoredWork(args: {
       if (!accept || !readyWorkItemId || !readyRefs) return;
       flushAll();
       const workItemId = readyWorkItemId;
-      const fieldPaths = shownFieldPaths(readyRefs, groups).filter(
-        (path) => !edited.current.has(saveKey(workItemId, path)),
-      );
-      if (!fieldPaths.length) return;
+      const shown = shownFieldPaths(readyRefs, groups);
       const pinned = inMailbox(readyTransportId);
       void Promise.allSettled(inFlight.current.values())
-        .then(() =>
-          pinned ? accept.mutate({ workItemId, fieldPaths }, pinned) : accept.mutate({ workItemId, fieldPaths }),
-        )
+        .then(() => {
+          // Every field she edited on this screen, including one still pending, failed or retrying, is left out.
+          const fieldPaths = shown.filter((path) => !edited.current.has(saveKey(workItemId, path)));
+          if (!fieldPaths.length) return;
+          const input = { workItemId, fieldPaths };
+          return pinned ? accept.mutate(input, pinned) : accept.mutate(input);
+        })
         .catch(() => undefined);
     },
     [readyRefs, readyWorkItemId, readyTransportId, flushAll],
