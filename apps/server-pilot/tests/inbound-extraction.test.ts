@@ -39,12 +39,33 @@ import {
   AE1_TEXT,
   AE2_OUTPUT,
   AE2_TEXT,
+  CHANNEL_AMENDMENT_OUTPUT,
+  CHANNEL_AMENDMENT_TEXT,
+  CHANNEL_BOOKING_FROM,
+  CHANNEL_BOOKING_OUTPUT,
+  CHANNEL_BOOKING_SUBJECT,
+  CHANNEL_BOOKING_TEXT,
+  CHANNEL_BOOKING_VOUCHER_TEXT,
+  CHANNEL_CANCELLATION_OUTPUT,
+  CHANNEL_CANCELLATION_TEXT,
+  CHANNEL_INTEGRATION_FAILURE_OUTPUT,
+  CHANNEL_INTEGRATION_FAILURE_TEXT,
   echoTranslation,
   fakeModel,
+  GROUP_RATE_ENQUIRY_OUTPUT,
+  GROUP_RATE_ENQUIRY_SUBJECT,
+  GROUP_RATE_ENQUIRY_TEXT,
   hangingResponder,
   SPAM_OUTPUT,
   SPAM_TEXT,
   selectionFor,
+  STAFF_FORWARD_BOOKING_FROM,
+  STAFF_FORWARD_BOOKING_GUEST_EMAIL,
+  STAFF_FORWARD_BOOKING_OUTPUT,
+  STAFF_FORWARD_BOOKING_SUBJECT,
+  STAFF_FORWARD_BOOKING_TEXT,
+  STANDALONE_POP_OUTPUT,
+  STANDALONE_POP_TEXT,
   STAFF_FORWARD_FROM,
   STAFF_FORWARD_SUBJECT,
   STAFF_FORWARD_TEXT,
@@ -58,6 +79,81 @@ const TRANSPORT = 'transport-centurion';
 const ON = { INBOUND_EXTRACTION: 'on' } as NodeJS.ProcessEnv;
 const CAPPED = { INBOUND_EXTRACTION: 'on', INBOUND_EXTRACTION_MAX_PER_HOUR: '1' } as NodeJS.ProcessEnv;
 const CARD_DIGITS = /4111[ -]?1111[ -]?1111[ -]?1111/;
+
+const KIND_SCENARIOS = [
+  {
+    name: 'channel new booking notice with an attached voucher',
+    threadId: 'kind-channel-booking',
+    text: CHANNEL_BOOKING_TEXT,
+    subject: CHANNEL_BOOKING_SUBJECT,
+    from: CHANNEL_BOOKING_FROM,
+    output: CHANNEL_BOOKING_OUTPUT,
+    kind: 'booking',
+    origin: 'system_notice',
+  },
+  {
+    name: 'channel modification notice',
+    threadId: 'kind-channel-amendment',
+    text: CHANNEL_AMENDMENT_TEXT,
+    subject: 'Reservation updated',
+    from: CHANNEL_BOOKING_FROM,
+    output: CHANNEL_AMENDMENT_OUTPUT,
+    kind: 'amendment',
+    origin: 'system_notice',
+  },
+  {
+    name: 'channel cancellation notice',
+    threadId: 'kind-channel-cancellation',
+    text: CHANNEL_CANCELLATION_TEXT,
+    subject: 'Reservation cancelled',
+    from: CHANNEL_BOOKING_FROM,
+    output: CHANNEL_CANCELLATION_OUTPUT,
+    kind: 'cancellation',
+    origin: 'system_notice',
+  },
+  {
+    name: 'failed integration alert describing a new booking',
+    threadId: 'kind-channel-integration-failure',
+    text: CHANNEL_INTEGRATION_FAILURE_TEXT,
+    subject: 'Integration alert',
+    from: CHANNEL_BOOKING_FROM,
+    output: CHANNEL_INTEGRATION_FAILURE_OUTPUT,
+    kind: 'booking',
+    origin: 'system_notice',
+  },
+  {
+    name: 'standalone proof of payment for an existing booking',
+    threadId: 'kind-standalone-pop',
+    text: STANDALONE_POP_TEXT,
+    subject: 'Remittance advice',
+    from: 'Alex Finance <alex.finance@example.test>',
+    output: STANDALONE_POP_OUTPUT,
+    kind: 'voucher_pop',
+    origin: 'person',
+  },
+  {
+    name: 'staff forward of a guest booking request',
+    threadId: 'kind-staff-forward-booking',
+    text: STAFF_FORWARD_BOOKING_TEXT,
+    subject: STAFF_FORWARD_BOOKING_SUBJECT,
+    from: STAFF_FORWARD_BOOKING_FROM,
+    output: STAFF_FORWARD_BOOKING_OUTPUT,
+    kind: 'booking',
+    origin: 'person',
+    contactEmail: STAFF_FORWARD_BOOKING_GUEST_EMAIL,
+    notContactEmail: 'sam@legacyhotels.co.za',
+  },
+  {
+    name: 'group rate enquiry with promotional-sounding language',
+    threadId: 'kind-group-rate-enquiry',
+    text: GROUP_RATE_ENQUIRY_TEXT,
+    subject: GROUP_RATE_ENQUIRY_SUBJECT,
+    from: 'Pat Morgan <pat@example.test>',
+    output: GROUP_RATE_ENQUIRY_OUTPUT,
+    kind: 'quote',
+    origin: 'person',
+  },
+] as const;
 
 beforeEach(() => __resetInboundExtractionCapForTests());
 afterEach(() => vi.unstubAllEnvs());
@@ -114,6 +210,45 @@ async function rowFor(db: DB, messageId: string) {
 }
 
 describe('inbound extraction stored read', () => {
+  for (const scenario of KIND_SCENARIOS) {
+    it(`${scenario.name} => ${scenario.kind} / ${scenario.origin}`, () =>
+      withIngestionDb(async ({ db }) => {
+        const messageId = await seedMail(
+          db,
+          scenario.threadId,
+          scenario.text,
+          'inbound',
+          scenario.from,
+        );
+        const model = fakeModel(() => scenario.output);
+        const selection = selectionFor(scenario.text, scenario.subject);
+        if (scenario.threadId === 'kind-channel-booking') {
+          selection.attachments.push({
+            id: 'attachment-channel-booking-voucher',
+            filename: 'reservation-voucher.txt',
+            mimeType: 'text/plain',
+            byteSize: CHANNEL_BOOKING_VOUCHER_TEXT.length,
+            text: CHANNEL_BOOKING_VOUCHER_TEXT,
+            bytesPresent: true,
+          });
+        }
+
+        expect(await readMail(db, messageId, selection, model.adapter)).toBe('stored');
+        const row = await rowFor(db, messageId);
+        expect(row).toMatchObject({ status: 'succeeded', kind: scenario.kind });
+        expect(row?.payload).toMatchObject({ origin: scenario.origin });
+        if ('contactEmail' in scenario) {
+          const payload = row!.payload as MailExtractionPayload;
+          expect(payload.contact.email).toBe(scenario.contactEmail);
+          expect(payload.contact.email).not.toBe(scenario.notContactEmail);
+        }
+        expect(model.calls).toHaveLength(1);
+        if (scenario.threadId === 'kind-channel-booking') {
+          expect(model.calls[0]?.userPrompt).toContain(CHANNEL_BOOKING_VOUCHER_TEXT);
+        }
+      }));
+  }
+
   it('AE1: two date sets make two stays with stable ids, and the agency is the sender, not the end client', () =>
     withIngestionDb(async ({ db }) => {
       const messageId = await seedMail(db, 'thread-ae1', AE1_TEXT, 'inbound', AE1_FROM);
@@ -711,6 +846,54 @@ describe('flags, cap parsing and the rules', () => {
     expect(user).toContain('Mailbox: centurion@legacyhotels.co.za\nFrom: hara@legacyhotels.co.za\n\n');
     // No mailbox, no line: the From address alone, as before.
     expect(buildInboundPrompt(selectionFor(AE1_TEXT), 'hara@legacyhotels.co.za').user).not.toContain('Mailbox:');
+  });
+
+  it('the generic mail-kind rules separate reservation action, origin, forwards and commercial enquiries', () => {
+    const { system } = buildInboundPrompt(selectionFor(GROUP_RATE_ENQUIRY_TEXT));
+    expect(system).toContain(
+      'determined by the reservation action the email carries, regardless of who sent it',
+    );
+    expect(system).toContain(
+      'System-generated notices from booking channels, travel agents, central reservation systems or corporate booking tools count the same as person-written mail.',
+    );
+    expect(system).toContain(
+      'For mail-kind mapping, these action/document rules take precedence over hotel workflow examples above: an invoice, folio, or other payment notice that is a payment document for an existing booking is voucher_pop when there is no reservation action.',
+    );
+    expect(system).toContain(
+      'A notice that a new reservation was made or confirmed is booking;',
+    );
+    expect(system).toContain(
+      'A voucher, proof of payment, remittance or other payment document for an existing booking with no new, changed or cancelled reservation action is voucher_pop.',
+    );
+    expect(system).toContain('Integration-failure alerts inherit the reservation action they describe');
+    expect(system).toContain(
+      "origin is an optional top-level field: 'person' for a message written by a person, 'system_notice' for a system-generated",
+    );
+    expect(system).toContain(
+      'For contact, use the forwarded original sender or booker; never use the hotel staff sender or staff signature as the guest contact.',
+    );
+    expect(system).toContain(
+      'Hotel-directed enquiries about rates, availability, groups, conferences or events are never spam, even if the wording resembles marketing;',
+    );
+    expect(system).toContain('Cold sales/promotions aimed at the hotel remain spam.');
+  });
+
+  it('includes attached voucher text with a channel booking notice', () => {
+    const selection = selectionFor(CHANNEL_BOOKING_TEXT, CHANNEL_BOOKING_SUBJECT);
+    selection.attachments.push({
+      id: 'attachment-channel-booking-voucher',
+      filename: 'reservation-voucher.txt',
+      mimeType: 'text/plain',
+      byteSize: CHANNEL_BOOKING_VOUCHER_TEXT.length,
+      text: CHANNEL_BOOKING_VOUCHER_TEXT,
+      bytesPresent: true,
+    });
+
+    const prompt = buildInboundPrompt(selection);
+    expect(prompt.user).toContain(CHANNEL_BOOKING_VOUCHER_TEXT);
+    expect(prompt.system).toContain(
+      'If a reservation notice also includes a voucher, proof of payment, remittance or payment document, classify its reservation action (booking, amendment or cancellation), not the attachment.',
+    );
   });
 
   it('the rules no longer send 10+ rooms to other, and a 30-room rooms-only group is a quote', () => {
