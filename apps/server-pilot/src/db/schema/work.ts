@@ -45,6 +45,7 @@ export const WORK_EVENT_TYPES = [
   'review.ok',
   'review.flag',
   'status.changed',
+  'source.delivered_at.backfilled',
   'rate.saved',
   'rate.one_off',
   'rate.override',

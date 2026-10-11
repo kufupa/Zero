@@ -80,6 +80,19 @@ const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_MAX_MS = 15 * 60 * 1_000;
 const CANDIDATE_ATTACHMENT_CLEANUP_INSERT_CHUNK_SIZE = 250;
 export const INGEST_UIDL_CLAIM_LEASE_MS = 10 * 60 * 1_000;
 
+/** Add the trusted arrival stamp without replacing existing provenance keys or an existing stamp. */
+function mergeDeliveredAtSourceProvenance(deliveredAt: Date) {
+  const iso = deliveredAt.toISOString();
+  return sql`case
+    when ${message.sourceProvenance} is null then jsonb_build_object('deliveredAt', ${iso}::text)
+    when jsonb_typeof(${message.sourceProvenance}) = 'object'
+      and ${message.sourceProvenance} ? 'deliveredAt' then ${message.sourceProvenance}
+    when jsonb_typeof(${message.sourceProvenance}) = 'object'
+      then ${message.sourceProvenance} || jsonb_build_object('deliveredAt', ${iso}::text)
+    else ${message.sourceProvenance}
+  end`;
+}
+
 type RoutedTransport = {
   id: string;
   email: string;
@@ -507,6 +520,9 @@ export async function persistInboundMessage(
           rawMimeS3Key,
           receivedAt: parsed.receivedAt,
           updatedAt: new Date(),
+          ...(parsed.deliveredAt
+            ? { sourceProvenance: mergeDeliveredAtSourceProvenance(parsed.deliveredAt) }
+            : {}),
         })
         .where(and(eq(message.id, canonical.id), eq(message.transportId, canonical.transportId)));
       if (parsed.attachments.length > 0) {
@@ -585,6 +601,9 @@ export async function persistInboundMessage(
           rawMimeS3Key: found.rawMimeS3Key ?? rawMimeS3Key,
           textBody: found.textBody ?? parsed.textBody,
           htmlBody: found.htmlBody ?? sanitizeHtmlBodyForStorage(parsed.htmlBody),
+          ...(parsed.deliveredAt
+            ? { sourceProvenance: mergeDeliveredAtSourceProvenance(parsed.deliveredAt) }
+            : {}),
         })
         .where(eq(message.id, found.id));
       if (parsed.attachments.length) {
@@ -656,6 +675,10 @@ export async function persistInboundMessage(
         : opts.directionOverride === 'outbound';
 
     const persistedHeaders = canonicalizePersistedHeaders(parsed);
+    const sourceProvenance = {
+      ...(ambiguousSource ? { source: 'pop3', attention: 'AMBIGUOUS_IDENTITY' } : {}),
+      ...(parsed.deliveredAt ? { deliveredAt: parsed.deliveredAt.toISOString() } : {}),
+    };
 
     await tx.insert(message).values({
       id: messageId,
@@ -664,9 +687,7 @@ export async function persistInboundMessage(
       ingestMailboxId: meta.ingestMailboxId,
       direction: isHotelSent ? 'outbound' : 'inbound',
       historyOnly: ambiguousSource,
-      sourceProvenance: ambiguousSource
-        ? { source: 'pop3', attention: 'AMBIGUOUS_IDENTITY' }
-        : null,
+      sourceProvenance: Object.keys(sourceProvenance).length > 0 ? sourceProvenance : null,
       pop3Uidl: meta.pop3Uidl,
       ownerHeaderValue: parsed.ownerHeaderValue,
       messageIdHeader: persistedHeaders.messageIdHeader,

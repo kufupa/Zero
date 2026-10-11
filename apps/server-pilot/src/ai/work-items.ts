@@ -492,23 +492,55 @@ export function outboundSentAfter(at: Date) {
  */
 export const OUTLOOK_SYNCED = sql<boolean>`(${message.sourceProvenance}->>'canonicalContentVersion') is not null`;
 
+const DELIVERY_TIME_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+const DELIVERY_TIME_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Decodes the raw `timestamp` text of a bare SQL value as the mail table's timestamp columns do (UTC wall time). */
+function decodeDeliveredAt(raw: string | null): Date | null {
+  return raw === null ? null : new Date(`${raw}+0000`);
+}
+
 /**
- * When an inbound message reached the mailbox. POP3 stores the sender's Date header in receivedAt, which can be hours
- * before (or, with a wrong clock, after) delivery, so a row POP3 created arrived when Nava fetched it. Outlook sync
- * stores Outlook's delivery time in receivedAt, which holds for history imported long after and for an imported row
- * POP3 matched later (its createdAt is the import time). With neither, the stored time.
+ * ISO timestamps written by POP3 ingest/backfill, normalized to UTC and the mail table's timestamp type. The driver
+ * passes timestamp text through unparsed, so the decoder makes a selected value a Date like a column would.
+ */
+export const MESSAGE_DELIVERED_AT = sql`case
+  when ${message.sourceProvenance}->>'deliveredAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'
+    then (${message.sourceProvenance}->>'deliveredAt')::timestamptz at time zone 'UTC'
+  else null
+end`.mapWith(decodeDeliveredAt);
+
+/**
+ * When an inbound message reached the mailbox. A non-Outlook POP3 row uses the top Received stamp when it is within
+ * five minutes after or thirty days before createdAt; otherwise it uses createdAt. The sender's Date header in
+ * receivedAt is not a delivery clock. Outlook-synced and non-POP3 rows keep receivedAt ?? createdAt.
  */
 export function messageArrivedAt(m: {
   receivedAt: Date | null;
+  deliveredAt: Date | null;
   createdAt: Date;
   pop3Uidl: string | null;
   outlookSynced: boolean;
 }): Date {
-  return m.pop3Uidl === null || m.outlookSynced ? (m.receivedAt ?? m.createdAt) : m.createdAt;
+  if (m.pop3Uidl === null || m.outlookSynced) return m.receivedAt ?? m.createdAt;
+  const deliveredAt = m.deliveredAt?.getTime();
+  const createdAt = m.createdAt.getTime();
+  return Number.isFinite(deliveredAt) &&
+    deliveredAt! <= createdAt + DELIVERY_TIME_FUTURE_TOLERANCE_MS &&
+    deliveredAt! >= createdAt - DELIVERY_TIME_MAX_AGE_MS
+    ? m.deliveredAt!
+    : m.createdAt;
 }
 
 /** SQL twin of messageArrivedAt, for a `message` row. */
-export const MESSAGE_ARRIVED_AT = sql`case when ${message.pop3Uidl} is null or ${OUTLOOK_SYNCED} then coalesce(${message.receivedAt}, ${message.createdAt}) else ${message.createdAt} end`;
+export const MESSAGE_ARRIVED_AT = sql`case
+  when ${message.pop3Uidl} is null or ${OUTLOOK_SYNCED}
+    then coalesce(${message.receivedAt}, ${message.createdAt})
+  when ${MESSAGE_DELIVERED_AT} between ${message.createdAt} - interval '30 days'
+    and ${message.createdAt} + interval '5 minutes'
+    then ${MESSAGE_DELIVERED_AT}
+  else ${message.createdAt}
+end`;
 
 /** The message's latest succeeded read, or the one with `id` when given. */
 async function succeededRead(db: DB, messageId: string, id?: string) {
@@ -705,6 +737,7 @@ type ThreadMail = {
   direction: 'inbound' | 'outbound';
   fromAddress: string;
   receivedAt: Date | null;
+  deliveredAt: Date | null;
   sentAt: Date | null;
   createdAt: Date;
   historyOnly: boolean;
@@ -847,6 +880,7 @@ export async function planThreadWork(
       direction: message.direction,
       fromAddress: message.fromAddress,
       receivedAt: message.receivedAt,
+      deliveredAt: MESSAGE_DELIVERED_AT,
       sentAt: message.sentAt,
       createdAt: message.createdAt,
       historyOnly: message.historyOnly,

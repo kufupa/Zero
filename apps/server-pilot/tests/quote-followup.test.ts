@@ -498,6 +498,33 @@ describe('follow-up suggestions are discarded once a reply overtakes them', () =
     });
   });
 
+  it('the candidate prefilter sees trusted POP3 delivery just after createdAt', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      await suggestionFor(db, 'thread-delivered-at-prefilter');
+      await clientReplies(
+        db,
+        'thread-delivered-at-prefilter',
+        'in-delivered-at-prefilter',
+        new Date('2026-10-09T07:59:00Z'),
+      );
+      await db
+        .update(message)
+        .set({
+          receivedAt: new Date('2026-10-09T07:59:00Z'),
+          createdAt: new Date('2026-10-09T07:59:00Z'),
+          pop3Uidl: 'uidl-delivered-at-prefilter',
+          sourceProvenance: { deliveredAt: '2026-10-09T08:01:00.000Z' },
+        })
+        .where(eq(message.id, 'in-delivered-at-prefilter'));
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toMatchObject({
+        discarded: 1,
+      });
+      expect((await threadDrafts(db, 'thread-delivered-at-prefilter'))[0]?.status).toBe('discarded');
+    });
+  });
+
   it('a reply from staff after the suggestion exists discards it', async () => {
     await withIngestionDb(async ({ db }) => {
       await seedNavaUser(db);
@@ -826,6 +853,33 @@ describe('quote follow-up clocks, claims and overtaken suggestions', () => {
         queued: 0,
       });
       expect((await loadItem(db, itemId)).sentMessageId).toBeNull();
+    });
+  });
+
+  it('a quote links to the first send after the request arrived, not after its POP3 Date header', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-link-arrival', REQUEST_AT);
+      // The sender's Date header is hours before the trusted delivery, and Nava imported the mail later.
+      await db
+        .update(message)
+        .set({
+          pop3Uidl: 'uidl-link-arrival',
+          receivedAt: new Date('2026-10-05T05:00:00Z'),
+          createdAt: new Date('2026-10-05T09:00:00Z'),
+          sourceProvenance: { deliveredAt: '2026-10-05T07:00:00.000Z' },
+        })
+        .where(eq(message.id, 'thread-link-arrival-request'));
+      // A send between the Date header and the delivery went out before the request reached the mailbox.
+      await sendReply(db, {
+        id: 'out-before-delivery',
+        threadId: 'thread-link-arrival',
+        sentAt: new Date('2026-10-05T06:00:00Z'),
+      });
+      await sendReply(db, { id: 'out-quote-arrival', threadId: 'thread-link-arrival', sentAt: FRI_SEND });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toMatchObject({ linked: 1 });
+      expect(await loadItem(db, itemId)).toMatchObject({ sentMessageId: 'out-quote-arrival' });
     });
   });
 
