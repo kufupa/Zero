@@ -4454,6 +4454,7 @@ export async function executeAiRun(
           expectedStates: ['running'],
           metrics: { triageRetired: true },
         });
+        if (retired) schedulePrefetchForInbound(runWithFence);
         return { runId, state: retired ? 'succeeded' : 'retry_wait' };
       }
       let output: WorkflowTriageOutput;
@@ -4656,6 +4657,7 @@ export async function executeAiRun(
         }
       });
 
+      schedulePrefetchForInbound(runWithFence);
       return { runId, state: 'succeeded' };
     }
 
@@ -5284,7 +5286,11 @@ export async function executeAiRun(
         mailBaselineRoute: baselineRoute,
       });
       // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
-      if (extracted.state === 'succeeded') scheduleAvailabilityPrefetch(runWithFence);
+      if (extracted.state === 'succeeded') {
+        scheduleAvailabilityPrefetch(runWithFence);
+        // U3 reads the committed extraction; the scheduler waits for matching triage too when that run exists.
+        schedulePrefetchForInbound(runWithFence);
+      }
       return extracted;
     }
 
@@ -5493,7 +5499,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     // HMS lane: live factory only — never createMockCandidateSession.
     ...(lane === 'hms' ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() } : {}),
   });
-  // The live inbound trigger is the classifier run, or the extraction run once the classifier is retired. Never both.
+  // The live triage warmer follows the classifier run, or the extraction run once the classifier is retired.
   const inboundTriggerKind = isInboundTriageClassifierEnabled(process.env)
     ? 'inbound_triage'
     : 'inbound_extraction';
@@ -5501,8 +5507,6 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     // Fire-and-forget after the commit, never inside the admission
     // transaction. Off unless LUNA_ANALYSE_WARMER=on (see quote-workflow-warmer.ts).
     scheduleInboundTriageAnalyseWarm(claimed);
-    // Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1; live inbound only.
-    schedulePrefetchForInbound(claimed);
   }
   return true;
 }

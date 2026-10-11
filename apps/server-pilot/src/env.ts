@@ -124,6 +124,8 @@ export interface MailEnv {
   HMS_PREFETCH_ENABLED: boolean;
   /** Prefetch runs enqueued per transport in a rolling hour. */
   HMS_PREFETCH_PER_HOUR: number;
+  /** Guest-name search prefetches enqueued per transport in a rolling hour. */
+  HMS_GUEST_PREFETCH_PER_HOUR: number;
   HMS_RUN_DEADLINE_MS: number;
   HMS_HEALTH_STATUS_PATH: string;
   HMS_CIRCUIT_COOLDOWN_MS: number;
@@ -403,6 +405,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     HMS_LANE_PAUSED: false,
     HMS_PREFETCH_ENABLED: false,
     HMS_PREFETCH_PER_HOUR: 30,
+    HMS_GUEST_PREFETCH_PER_HOUR: 12,
     HMS_RUN_DEADLINE_MS: 150_000,
     HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
     HMS_CIRCUIT_COOLDOWN_MS: 30_000,
@@ -494,6 +497,9 @@ export function parseEnv(input: EnvInput): MailEnv {
   env.HMS_PREFETCH_PER_HOUR = input.HMS_PREFETCH_PER_HOUR
     ? toInt('HMS_PREFETCH_PER_HOUR', input.HMS_PREFETCH_PER_HOUR)
     : 30;
+  env.HMS_GUEST_PREFETCH_PER_HOUR = input.HMS_GUEST_PREFETCH_PER_HOUR
+    ? toInt('HMS_GUEST_PREFETCH_PER_HOUR', input.HMS_GUEST_PREFETCH_PER_HOUR)
+    : 12;
   env.HMS_HEALTH_STATUS_PATH = hmsControl.healthPath;
   env.HMS_RUN_DEADLINE_MS = input.HMS_RUN_DEADLINE_MS
     ? toInt('HMS_RUN_DEADLINE_MS', input.HMS_RUN_DEADLINE_MS)

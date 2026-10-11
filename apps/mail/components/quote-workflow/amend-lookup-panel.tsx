@@ -300,6 +300,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           queuing={find.queuing}
           detail={AMEND_FIND_COPY.looking}
           onRetry={find.retry}
+          statusFailed={find.statusFailed}
         />
         <div aria-live="polite">
           {note ? (
@@ -323,6 +324,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           searching={searching}
           queuing={search.queuing}
           view={searchView}
+          statusFailed={search.statusFailed}
           run={searchRun}
           onRetry={search.retry}
           onSearch={(form) => {
@@ -371,6 +373,7 @@ function GuestSearchSection({
   searching,
   queuing,
   view,
+  statusFailed,
   run,
   onRetry,
   onSearch,
@@ -383,6 +386,7 @@ function GuestSearchSection({
   searching: boolean;
   queuing: boolean;
   view: HmsJobView | null;
+  statusFailed: boolean;
   run: HmsSearchRun | null;
   onRetry: () => void;
   onSearch: (form: SearchForm) => void;
@@ -443,7 +447,13 @@ function GuestSearchSection({
       </button>
       {hint ? <p className={captionClass}>{hint}</p> : null}
       <div aria-live="polite" className="flex flex-col gap-2">
-        <HmsJobStatusLine view={view} queuing={queuing} detail={AMEND_FIND_COPY.searching} onRetry={onRetry} />
+        <HmsJobStatusLine
+          view={view}
+          queuing={queuing}
+          detail={AMEND_FIND_COPY.searching}
+          onRetry={onRetry}
+          statusFailed={statusFailed}
+        />
         {run ? <SearchResult run={run} busy={busy} onPick={onPick} /> : null}
         {view?.status === 'done' ? <HmsAsOf asOf={view.asOf} /> : null}
       </div>

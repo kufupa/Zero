@@ -16,12 +16,18 @@ import {
   type GuestSearchReply,
   type HmsJobView,
 } from '../lib/quote-workflow/amend-find';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { VoucherFindCard } from '../components/quote-workflow/voucher-find-card';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 
-afterEach(() => cleanup());
+let restoreClipboard: () => void = () => {};
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+  restoreClipboard();
+  restoreClipboard = () => {};
+});
 
 const AS_OF = '2026-10-09T08:05:00.000Z';
 
@@ -47,48 +53,82 @@ const SMITH_ROW = {
   departure: '2026-11-14',
 };
 
+type JobStatusQuery = (input: { threadId: string; kind: 'find' | 'search_guest' | 'availability'; lastName?: string; arrival?: string; departure?: string | null }) => Promise<HmsJobView | null>;
+
 // The trpc client the pane passes in: the voucher check and the guest-name search job routes, and nothing else.
 // Each queued search runs its mock and is stored as a finished job, so jobStatus answers on the first poll.
-function fakeTrpc(options: { reply: VoucherFindReply; search?: GuestSearchReply }) {
+function fakeTrpc(options: {
+  reply: VoucherFindReply;
+  search?: GuestSearchReply;
+  resumed?: HmsJobView | null;
+  status?: JobStatusQuery;
+  /** The server's job queue is off: queueSearchGuest queues nothing and returns no run id. */
+  queueOff?: boolean;
+}) {
   const voucherFind = vi.fn(async (_input: { internetMessageId: string }) => options.reply);
   const searchGuest = vi.fn(
     async (_input: { lastName: string; arrival: string; departure?: string }) =>
       options.search ?? { outcome: 'ok', rows: [SMITH_ROW], screenshots: [], runId: null },
   );
   const jobs = new Map<string, HmsJobView>();
+  if (options.resumed) jobs.set(options.resumed.runId, options.resumed);
   let issued = 0;
+  const queueSearchGuest = vi.fn(async ({
+    threadId: _threadId,
+    autoStart: _autoStart,
+    ...input
+  }: GuestSearchInput & { threadId: string; autoStart?: true }) => {
+    if (options.queueOff) return { runId: null };
+    const reply = await searchGuest(input);
+    const runId = `run-${++issued}`;
+    jobs.set(runId, {
+      runId,
+      request: { kind: 'search_guest', ...input },
+      prefetch: false,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: AS_OF,
+      result: { ...reply, kind: 'search_guest', asOf: AS_OF },
+    });
+    return { runId };
+  });
   return {
     trpc: {
       quoteWorkflow: { voucherFind: { query: voucherFind } },
       paneStayLookup: {
         queueFind: { mutate: vi.fn() },
-        queueSearchGuest: {
-          mutate: async ({ threadId: _threadId, ...input }: GuestSearchInput & { threadId: string }) => {
-            const reply = await searchGuest(input);
-            const runId = `run-${++issued}`;
-            jobs.set(runId, {
-              runId,
-              request: { kind: 'search_guest', ...input },
-              prefetch: false,
-              status: 'done',
-              position: null,
-              attempts: 1,
-              failureClass: null,
-              asOf: AS_OF,
-              result: { ...reply, kind: 'search_guest', asOf: AS_OF },
-            });
-            return { runId };
-          },
-        },
+        queueSearchGuest: { mutate: queueSearchGuest },
+        searchGuest: { mutate: searchGuest },
         jobStatus: {
-          query: async (input: { runId: string } | { threadId: string }) =>
-            'runId' in input ? (jobs.get(input.runId) ?? null) : null,
+          query: async (
+            input:
+              | { runId: string }
+              | {
+                  threadId: string;
+                  kind: 'find' | 'search_guest' | 'availability';
+                  lastName?: string;
+                  arrival?: string;
+                  departure?: string | null;
+                },
+          ) => {
+            if ('threadId' in input && options.status) return options.status(input);
+            if ('runId' in input) return jobs.get(input.runId) ?? null;
+            const found = options.resumed ?? null;
+            if (found?.request?.kind !== 'search_guest') return null;
+            if (input.lastName && found.request.lastName.toLowerCase() !== input.lastName.toLowerCase()) return null;
+            if (input.arrival && found.request.arrival !== input.arrival) return null;
+            if ('departure' in input && (found.request.departure ?? null) !== input.departure) return null;
+            return found;
+          },
         },
         screenshot: { query: vi.fn() },
       },
     },
     voucherFind,
     searchGuest,
+    queueSearchGuest,
   };
 }
 
@@ -108,13 +148,18 @@ describe('voucher find card: what shows', () => {
     }
   });
 
-  it('shows the guest and arrival Luna read, with the save action and the file name', async () => {
-    const { trpc } = fakeTrpc({ reply: VOUCHER });
+  it('shows the guest, automatically finds one booking, and keeps the save action and file name', async () => {
+    const { trpc, searchGuest } = fakeTrpc({ reply: VOUCHER });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
     expect(screen.getByText(`Guest Smith · arriving ${formatStayDate('2026-11-12')}`)).toBeTruthy();
     expect(screen.getByRole('button', { name: VOUCHER_COPY.save })).toBeTruthy();
     expect(screen.getByText('Smith_VCH_1879000.pdf')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy for HMS' })).toBeTruthy();
+    const saveAndMatch = screen.getByTestId('voucher-save-and-match');
+    expect(saveAndMatch.contains(screen.getByRole('button', { name: VOUCHER_COPY.save }))).toBe(true);
+    expect(saveAndMatch.contains(screen.getByRole('button', { name: 'Copy for HMS' }))).toBe(true);
+    expect(searchGuest).toHaveBeenCalledWith({ lastName: 'Smith', arrival: '2026-11-12' });
   });
 
   it('says what it could not read and offers no search when the surname or arrival is missing', async () => {
@@ -141,23 +186,226 @@ describe('voucher find card: what shows', () => {
     const { rerender, container } = render(
       <VoucherFindCard internetMessageId="first@host" trpc={trpc} download={vi.fn()} />,
     );
-    expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: VOUCHER_COPY.save })).toBeTruthy();
     rerender(<VoucherFindCard internetMessageId={null} trpc={trpc} download={vi.fn()} />);
     await waitFor(() => expect(container.querySelector('section')).toBeNull());
   });
 });
 
 describe('voucher find card: the existing search', () => {
-  it('runs the guest search only on click, with the surname and arrival, and shows each row with its own HMS actions', async () => {
-    const { trpc, searchGuest } = fakeTrpc({ reply: VOUCHER });
+  it('starts the existing guest search on open, with the surname and arrival', async () => {
+    const { trpc, searchGuest, queueSearchGuest } = fakeTrpc({ reply: VOUCHER });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    await screen.findByRole('button', { name: VOUCHER_COPY.search });
-    expect(searchGuest).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: VOUCHER_COPY.search }));
     await waitFor(() => expect(screen.getByText('John Smith · 57291630-1')).toBeTruthy());
     expect(searchGuest).toHaveBeenCalledTimes(1);
     expect(searchGuest).toHaveBeenCalledWith({ lastName: 'Smith', arrival: '2026-11-12' });
-    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
+    expect(queueSearchGuest).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      autoStart: true,
+    });
+    expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Copy for HMS' })).toBeTruthy();
+  });
+
+  it('with the job queue off, opening the card runs no HMS search and the Find button runs one on click', async () => {
+    const { trpc, searchGuest, queueSearchGuest } = fakeTrpc({ reply: VOUCHER, queueOff: true });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+    await waitFor(() => expect(queueSearchGuest).toHaveBeenCalledWith(expect.objectContaining({ autoStart: true })));
+    expect(searchGuest).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.search }));
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(searchGuest).toHaveBeenCalledTimes(1);
+    expect(searchGuest).toHaveBeenCalledWith({ lastName: 'Smith', arrival: '2026-11-12' });
+  });
+
+  it('hydrates a matching prefetched result on open and never queues another lookup', async () => {
+    const prefetched: HmsJobView = {
+      runId: 'prefetch-1',
+      request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
+      prefetch: true,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: AS_OF,
+      result: { outcome: 'ok', rows: [SMITH_ROW], screenshots: [], runId: null },
+    };
+    const { trpc, searchGuest, queueSearchGuest } = fakeTrpc({ reply: VOUCHER, resumed: prefetched });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.getByTestId('hms-as-of').textContent).toMatch(/^Looked up in HMS /);
+    expect(searchGuest).not.toHaveBeenCalled();
+    expect(queueSearchGuest).not.toHaveBeenCalled();
+  });
+
+  it('keeps Find hidden until a slow read-back settles, then shows the existing result', async () => {
+    const prefetched: HmsJobView = {
+      runId: 'prefetch-slow',
+      request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
+      prefetch: true,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: AS_OF,
+      result: { outcome: 'ok', rows: [SMITH_ROW], screenshots: [], runId: null },
+    };
+    let answerRead: (job: HmsJobView | null) => void = () => {};
+    const status = vi.fn<JobStatusQuery>(
+      () =>
+        new Promise<HmsJobView | null>((resolve) => {
+          answerRead = resolve;
+        }),
+    );
+    const { trpc, searchGuest, queueSearchGuest } = fakeTrpc({ reply: VOUCHER, status });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    // The read-back is still in flight: the card is up, and there is no Find button a click could queue a search from.
+    await waitFor(() => expect(status).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(VOUCHER_COPY.caption)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
+
+    answerRead(prefetched);
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
+    expect(searchGuest).not.toHaveBeenCalled();
+    expect(queueSearchGuest).not.toHaveBeenCalled();
+  });
+
+  it('keeps a single surname-mismatching row as a candidate instead of promoting it to a voucher match', async () => {
+    const unrelated = { ...SMITH_ROW, lastName: 'Jones', firstName: 'Jane' };
+    const { trpc } = fakeTrpc({ reply: VOUCHER, search: { outcome: 'ok', rows: [unrelated], screenshots: [], runId: null } });
+    const { container } = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    expect(await screen.findByText('Jane Jones · 57291630-1')).toBeTruthy();
+    expect(screen.getByText(VOUCHER_COPY.pickRow)).toBeTruthy();
+    expect(container.querySelector('[data-testid="voucher-matched-booking"]')).toBeNull();
+  });
+
+  it('does not promote a narrower one-row search when an unfiltered search is ambiguous', async () => {
+    const narrow: HmsJobView = {
+      runId: 'narrow-1',
+      request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12', departure: '2026-11-14' },
+      prefetch: false,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: AS_OF,
+      result: { outcome: 'ok', rows: [SMITH_ROW], screenshots: [], runId: null },
+    };
+    const secondRow = { ...SMITH_ROW, confirmation: '57291630-2', firstName: 'James' };
+    const status = vi.fn<JobStatusQuery>(async ({ departure }) => (departure === null ? null : narrow));
+    const { trpc, searchGuest, queueSearchGuest } = fakeTrpc({
+      reply: VOUCHER,
+      resumed: narrow,
+      status,
+      search: { outcome: 'ok', rows: [SMITH_ROW, secondRow], screenshots: [], runId: null },
+    });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.getByText('James Smith · 57291630-2')).toBeTruthy();
+    expect(screen.getByText(VOUCHER_COPY.pickRow)).toBeTruthy();
+    expect(screen.queryByTestId('voucher-matched-booking')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Copy for HMS' })).toHaveLength(2);
+    expect(status).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      kind: 'search_guest',
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      departure: null,
+    });
+    expect(queueSearchGuest).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      autoStart: true,
+    });
+    expect(searchGuest).toHaveBeenCalledWith({ lastName: 'Smith', arrival: '2026-11-12' });
+  });
+
+  it('surfaces a failed resume read and retries it before queueing', async () => {
+    const status = vi
+      .fn<JobStatusQuery>()
+      .mockRejectedValueOnce(new Error('temporary network failure'))
+      .mockResolvedValueOnce(null);
+    const { trpc, queueSearchGuest } = fakeTrpc({ reply: VOUCHER, status });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    expect(await screen.findByText('Could not check for an existing HMS lookup.')).toBeTruthy();
+    expect(queueSearchGuest).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    await waitFor(() => expect(queueSearchGuest).toHaveBeenCalledTimes(1));
+    expect(status).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses a retry status read to hydrate a job instead of creating a duplicate', async () => {
+    const prefetched: HmsJobView = {
+      runId: 'prefetch-after-retry',
+      request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
+      prefetch: true,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: AS_OF,
+      result: { outcome: 'ok', rows: [SMITH_ROW], screenshots: [], runId: null },
+    };
+    const status = vi
+      .fn<JobStatusQuery>()
+      .mockRejectedValueOnce(new Error('temporary network failure'))
+      .mockResolvedValueOnce(prefetched);
+    const { trpc, queueSearchGuest } = fakeTrpc({ reply: VOUCHER, status });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    expect(await screen.findByText('Could not check for an existing HMS lookup.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(queueSearchGuest).not.toHaveBeenCalled();
+    expect(status).toHaveBeenCalledTimes(2);
+  });
+
+  it('copies the HMS landing page with the matched confirmation, surname and arrival in one action', async () => {
+    const landing = 'https://hms.example.test/';
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', landing);
+    const prior = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    restoreClipboard = () => {
+      if (prior) Object.defineProperty(navigator, 'clipboard', prior);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    };
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+    await screen.findByText('John Smith · 57291630-1');
+    fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS' }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        `${landing}\nConfirmation: 57291630-1\nGuest surname: Smith\nArrival: 2026-11-12`,
+      ),
+    );
+    expect(await screen.findByRole('button', { name: 'Copied for HMS' })).toBeTruthy();
+  });
+
+  it('shows multiple matches without choosing one for the attachment row', async () => {
+    const secondRow = { ...SMITH_ROW, confirmation: '57291630-2', firstName: 'James' };
+    const { trpc } = fakeTrpc({
+      reply: VOUCHER,
+      search: { outcome: 'ok', rows: [SMITH_ROW, secondRow], screenshots: [], runId: null },
+    });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.getByText('James Smith · 57291630-2')).toBeTruthy();
+    expect(screen.getByText(VOUCHER_COPY.pickRow)).toBeTruthy();
+    expect(screen.queryByTestId('voucher-matched-booking')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Copy for HMS' })).toHaveLength(2);
   });
 
   it('reads a booking number only from HMS rows, never from the voucher text', async () => {
@@ -170,7 +418,6 @@ describe('voucher find card: the existing search', () => {
       search: { outcome: 'ok', rows: [], screenshots: [], runId: null },
     });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.search }));
     await waitFor(() =>
       expect(screen.getByText(noSearchMatchCopy('Smith', '2026-11-12'))).toBeTruthy(),
     );
@@ -185,12 +432,38 @@ describe('voucher find card: the existing search', () => {
       throw new Error('socket closed');
     });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.search }));
     expect(await screen.findByText(/could not read the HMS search/i)).toBeTruthy();
   });
 
+  it('retries an auto-start after the queue call fails', async () => {
+    const { trpc, queueSearchGuest } = fakeTrpc({ reply: VOUCHER });
+    queueSearchGuest.mockRejectedValueOnce(new Error('temporary queue failure'));
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    expect(await screen.findByText(/could not read the HMS search/i)).toBeTruthy();
+    expect(queueSearchGuest).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(queueSearchGuest).toHaveBeenCalledTimes(2);
+    const idempotentAutoStart = {
+      threadId: 'thread-1',
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      autoStart: true,
+    };
+    expect(queueSearchGuest).toHaveBeenNthCalledWith(1, idempotentAutoStart);
+    expect(queueSearchGuest).toHaveBeenNthCalledWith(2, idempotentAutoStart);
+  });
+
   it("never reads back another guest's search from the same thread, and still reads back this guest's", async () => {
-    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    const { trpc, searchGuest } = fakeTrpc({ reply: VOUCHER });
+    searchGuest.mockImplementation(async ({ lastName }) => ({
+      outcome: 'ok',
+      rows: lastName === 'Jones' ? [{ ...SMITH_ROW, lastName: 'Jones', firstName: 'Jane' }] : [SMITH_ROW],
+      screenshots: [],
+      runId: null,
+    }));
     const JONES: VoucherFindReply = { ...VOUCHER, messageId: 'm2', guest: { lastName: 'Jones', arrival: '2026-11-12' } };
     trpc.quoteWorkflow.voucherFind.query = vi.fn(async ({ internetMessageId }: { internetMessageId: string }) =>
       internetMessageId === 'second@host' ? JONES : VOUCHER,
@@ -199,19 +472,21 @@ describe('voucher find card: the existing search', () => {
     const byRun = trpc.paneStayLookup.jobStatus.query;
     const latest: HmsJobView[] = [];
     const queue = trpc.paneStayLookup.queueSearchGuest.mutate;
-    trpc.paneStayLookup.queueSearchGuest.mutate = async (input) => {
+    trpc.paneStayLookup.queueSearchGuest.mutate = vi.fn(async (input) => {
       const started = await queue(input);
-      const view = await byRun({ runId: started.runId });
+      const view = await byRun({ runId: started.runId! });
       if (view) latest.unshift(view);
       return started;
-    };
-    trpc.paneStayLookup.jobStatus.query = async (input: { runId: string } | { threadId: string; arrival?: string }) =>
+    });
+    trpc.paneStayLookup.jobStatus.query = async (input: { runId: string } | { threadId: string; lastName?: string; arrival?: string }) =>
       'runId' in input
         ? byRun(input)
-        : (latest.find((view) => !input.arrival || view.request?.arrival === input.arrival) ?? null);
+        : (latest.find((view) =>
+            (!input.arrival || view.request?.arrival === input.arrival) &&
+            (!input.lastName || (view.request?.kind === 'search_guest' && view.request.lastName.toLowerCase() === input.lastName.toLowerCase())),
+          ) ?? null);
 
     const { rerender } = render(<VoucherFindCard internetMessageId="first@host" trpc={trpc} download={vi.fn()} />);
-    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.search }));
     await screen.findByText('John Smith · 57291630-1');
 
     rerender(<VoucherFindCard internetMessageId="second@host" trpc={trpc} download={vi.fn()} />);
@@ -259,7 +534,7 @@ describe('voucher find card: saving the file', () => {
   });
 });
 
-describe('voucher find bind and copy', () => {
+describe('voucher find bind and search gate', () => {
   it('binds quoteWorkflow.voucherFind off a tRPC client, and null when the route is missing', async () => {
     const { trpc, voucherFind } = fakeTrpc({ reply: VOUCHER });
     const client = voucherFindClientFromTrpc(trpc);
@@ -277,6 +552,13 @@ describe('voucher find bind and copy', () => {
     expect(canSearchVoucher({ lastName: 'Smith', arrival: '2026-11-12' })).toBe(true);
     expect(canSearchVoucher({ lastName: 'Smith', arrival: null })).toBe(false);
     expect(canSearchVoucher({ lastName: null, arrival: '2026-11-12' })).toBe(false);
+    expect(
+      canSearchVoucher({
+        lastName: 'Smith',
+        arrival: '2026-11-12',
+        conflicts: { lastNames: ['Smith', 'Jones'], arrivals: [] },
+      }),
+    ).toBe(false);
   });
 });
 
@@ -304,7 +586,7 @@ describe('voucher find card: waiting for the sync', () => {
         syncPending={false}
       />,
     );
-    expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: VOUCHER_COPY.save })).toBeTruthy();
     expect(voucherFind).toHaveBeenCalledTimes(2);
     expect(screen.queryByText(VOUCHER_COPY.waitingForSync)).toBeNull();
   });
@@ -345,7 +627,7 @@ describe('voucher find card: waiting for the sync', () => {
     rerender(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} syncCommitted={6} />);
     expect(voucherFind).toHaveBeenCalledTimes(1);
     settleFirst({ status: 'unsynced' });
-    expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: VOUCHER_COPY.save })).toBeTruthy();
     expect(voucherFind).toHaveBeenCalledTimes(2);
   });
 
@@ -374,7 +656,7 @@ describe('voucher find card: waiting for the sync', () => {
       );
     }
     settleFirst(VOUCHER);
-    expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: VOUCHER_COPY.save })).toBeTruthy();
     expect(voucherFind).toHaveBeenCalledTimes(1);
   });
 });
@@ -433,7 +715,7 @@ describe('voucher find card: a voucher PDF that could not be read', () => {
   it('adds no line of its own, since the quote panel names the unread file, and keeps the search', async () => {
     const { trpc } = fakeTrpc({ reply: { ...VOUCHER, unreadPdfs: 1 } });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    expect(await screen.findByRole('button', { name: VOUCHER_COPY.search })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: VOUCHER_COPY.save })).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
@@ -473,10 +755,6 @@ describe('voucher find card: guest details are marked for the preview gate (H6b)
   it('marks the guest line, the file name and each HMS row with data-pii', async () => {
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     const { container } = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    const search = await screen.findByRole('button', { name: VOUCHER_COPY.search });
-    // Let the job hook's resume effect run first, or it clears the search the click starts.
-    await act(async () => {});
-    fireEvent.click(search);
     await screen.findByText('John Smith · 57291630-1');
     expect(screen.getByText(`Guest Smith · arriving ${formatStayDate('2026-11-12')}`).hasAttribute('data-pii')).toBe(true);
     expect(unmaskedPii(container, ['Smith', 'John', '57291630-1'])).toEqual([]);
@@ -496,10 +774,6 @@ describe('voucher find card: guest details are marked for the preview gate (H6b)
 
     const { trpc } = fakeTrpc({ reply: VOUCHER, search: { outcome: 'ok', rows: [], screenshots: [], runId: null } });
     const { container } = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
-    const search = await screen.findByRole('button', { name: VOUCHER_COPY.search });
-    // Let the job hook's resume effect run first, or it clears the search the click starts.
-    await act(async () => {});
-    fireEvent.click(search);
     await screen.findByText(noSearchMatchCopy('Smith', '2026-11-12'));
     expect(unmaskedPii(container, ['Smith'])).toEqual([]);
   });

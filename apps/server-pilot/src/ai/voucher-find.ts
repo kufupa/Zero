@@ -186,9 +186,9 @@ const KNOWN_LABELS =
 const UNKNOWN_LABEL_COLON = /[A-Za-z]\s*:/;
 // Where a value ends on the same line: a known label with a colon, a known label after a column gap, or a known label
 // followed by a number ("Departure 15 Nov"). A bare known word after one space, such as the surname "Price", is not a
-// boundary.
+// boundary. Natural arrival phrases such as "is arriving on 12 Nov" are also a boundary after the guest name.
 const NEXT_LABEL = new RegExp(
-  `\\s+(?=(?:${KNOWN_LABELS})\\s*:)|\\s{2,}(?=(?:${KNOWN_LABELS})\\b)|\\s+(?=(?:${KNOWN_LABELS})\\s+\\d)`,
+  `\\s+(?=(?:${KNOWN_LABELS})\\s*:)|\\s{2,}(?=(?:${KNOWN_LABELS})\\b)|\\s+(?=(?:(?:is|will(?:\\s+be)?)\\s+)?(?:${KNOWN_LABELS})(?:\\s+(?:on|at))?\\s+\\d)`,
   'i',
 );
 // Where a field starts over: a colon, a column gap, a tab or a pipe. The text back to here is the field a label sits in.

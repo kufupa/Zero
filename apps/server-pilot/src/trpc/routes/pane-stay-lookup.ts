@@ -7,6 +7,7 @@ import {
 } from '../../ai/pane-stay-lookup.js';
 import {
   hmsJobQueueEnabled,
+  guestSearchPrefetchIdempotencyKey,
   queueUserHmsJob,
   readHmsJobView,
   registerJobScreenshotRun,
@@ -54,8 +55,12 @@ const queueSearchGuestInput = z
     lastName: searchGuestInput.shape.lastName,
     arrival,
     departure: arrival.optional(),
+    autoStart: z.literal(true).optional(),
   })
-  .strict();
+  .strict()
+  .refine((input) => !input.autoStart || !input.departure, {
+    message: 'Auto-started guest searches must not include departure',
+  });
 // Poll by run id, or resume the latest job of one kind on a thread after a remount.
 const jobStatusInput = z.union([
   z.object({ runId: z.string().uuid() }).strict(),
@@ -68,7 +73,7 @@ const jobStatusInput = z.union([
       lastName: searchGuestInput.shape.lastName.optional(),
       // An availability snapshot is picked by its stay's dates, and by its rooms when two stays share the dates.
       arrival: arrival.optional(),
-      departure: arrival.optional(),
+      departure: arrival.nullable().optional(),
       rooms: availabilityRequestSchema.shape.rooms.optional(),
     })
     .strict(),
@@ -153,6 +158,16 @@ export const paneStayLookupRouter = router({
           arrival: input.arrival,
           departure: input.departure,
         },
+        ...(input.autoStart
+          ? {
+              idempotencyKey: guestSearchPrefetchIdempotencyKey(
+                ctx.activeTransportId,
+                input.threadId,
+                input.lastName,
+                input.arrival,
+              ),
+            }
+          : {}),
       });
       if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'thread has no inbound mail' });
       return { runId: run.id };

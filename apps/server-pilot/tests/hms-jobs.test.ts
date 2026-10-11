@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import {
   canClaimReadToolRun,
@@ -13,6 +13,8 @@ import {
   enqueueHmsJob,
   executeHmsJob,
   extractHmsConfirmations,
+  extractUniqueArrivalForHmsPrefetch,
+  guestSearchPrefetchIdempotencyKey,
   hmsJobQueueEnabled,
   hmsJobRequestSchema,
   HMS_JOB_PRIORITY_PREFETCH,
@@ -24,13 +26,14 @@ import {
 } from '../src/ai/hms-jobs.js';
 import { paneStayLookupLoaders, type PaneStayLookupSpawnResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
-import { aiDraftGeneration, aiWorkflowRun, message, mailThread } from '../src/db/schema/mail.js';
+import { aiDraftGeneration, aiWorkflowRun, mailboxTransport, message, mailThread } from '../src/db/schema/mail.js';
+import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { runHmsJobOnce } from '../src/ai/worker.js';
 import type { DB } from '../src/db/client.js';
 import { parseEnv } from '../src/env.js';
 import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
-import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
-import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
+import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
+import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
 const reachable = await probeTestDb();
 const TENANT = 'tenant-centurion';
@@ -160,11 +163,93 @@ describe('U23 HMS job queue (pure)', () => {
     ).toBe(false);
   });
 
+  it('uses only a unique, valid arrival from the extraction for guest prefetch', () => {
+    expect(
+      extractUniqueArrivalForHmsPrefetch('booking', {
+        stays: [{ requested: { arrival: '2026-11-12' } }],
+      }),
+    ).toBe('2026-11-12');
+    expect(
+      extractUniqueArrivalForHmsPrefetch('amendment', {
+        stays: [
+          {
+            requested: { arrival: '2026-12-01' },
+            booked: { arrival: '2026-11-12' },
+          },
+        ],
+      }),
+    ).toBe('2026-11-12');
+    expect(
+      extractUniqueArrivalForHmsPrefetch('booking', {
+        stays: [
+          { requested: { arrival: '2026-11-12' } },
+          { requested: { arrival: '2026-12-01' } },
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      extractUniqueArrivalForHmsPrefetch('booking', {
+        stays: [{ requested: { arrival: 'not-a-date' } }],
+      }),
+    ).toBeNull();
+    expect(extractUniqueArrivalForHmsPrefetch('booking', { stays: [{ requested: { arrival: null } }] })).toBeNull();
+    expect(
+      extractUniqueArrivalForHmsPrefetch('booking', {
+        stays: [{ requested: { arrival: '2026-11-12' } }, { requested: { arrival: null } }],
+      }),
+    ).toBeNull();
+    expect(
+      extractUniqueArrivalForHmsPrefetch('booking', {
+        stays: [{ requested: { arrival: '2026-11-12' } }, { requested: { arrival: 'invalid' } }],
+      }),
+    ).toBeNull();
+  });
+
+  it('builds one stable guest-prefetch key from transport, thread, normalized surname and arrival', () => {
+    const key = guestSearchPrefetchIdempotencyKey(TRANSPORT_ID, 'thread-1', ' Smith  Jones ', '2026-11-12');
+    expect(key).toMatch(new RegExp(`^hms-job:prefetch-guest:${TRANSPORT_ID}:thread-1:`));
+    expect(key).toBe(guestSearchPrefetchIdempotencyKey(TRANSPORT_ID, 'thread-1', 'smith jones', '2026-11-12'));
+    expect(key).not.toBe(guestSearchPrefetchIdempotencyKey(TRANSPORT_ID, 'thread-2', 'Smith Jones', '2026-11-12'));
+    expect(key).not.toBe(guestSearchPrefetchIdempotencyKey(TRANSPORT_ID, 'thread-1', 'Smith Jones', '2026-11-13'));
+  });
+
   it('turns the job queue on only for HMS_JOB_QUEUE=on', () => {
     expect(hmsJobQueueEnabled({})).toBe(false);
     expect(hmsJobQueueEnabled({ HMS_JOB_QUEUE: '1' })).toBe(false);
     expect(hmsJobQueueEnabled({ HMS_JOB_QUEUE: 'off' })).toBe(false);
     expect(hmsJobQueueEnabled({ HMS_JOB_QUEUE: 'on' })).toBe(true);
+  });
+
+  it('defaults the separate guest-search prefetch cap to 12 per transport per hour', () => {
+    const base = {
+      NODE_ENV: 'test',
+      PORT: '8788',
+      DATABASE_URL: 'postgres://zero:secret@127.0.0.1:5432/test',
+      BETTER_AUTH_URL: 'http://localhost:8788',
+      BETTER_AUTH_SECRET: 'x'.repeat(32),
+      AWS_REGION: 'af-south-1',
+      S3_BUCKET: 'hms-prefetch-test',
+    };
+    expect(parseEnv(base).HMS_GUEST_PREFETCH_PER_HOUR).toBe(12);
+    expect(parseEnv({ ...base, HMS_GUEST_PREFETCH_PER_HOUR: '4' }).HMS_GUEST_PREFETCH_PER_HOUR).toBe(4);
+  });
+
+  it('returns before database access when HMS_PREFETCH_ENABLED is off', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    const env = {
+      ...parseEnv({
+        NODE_ENV: 'test',
+        PORT: '8788',
+        DATABASE_URL: 'postgres://zero:secret@127.0.0.1:5432/test',
+        BETTER_AUTH_URL: 'http://localhost:8788',
+        BETTER_AUTH_SECRET: 'x'.repeat(32),
+        AWS_REGION: 'af-south-1',
+        S3_BUCKET: 'hms-prefetch-test',
+      }),
+      HMS_PREFETCH_ENABLED: false,
+    };
+
+    await expect(prefetchHmsConfirmations({} as AiWorkflowRun, {} as DB, env)).resolves.toBe(0);
   });
 
   it('lets pane jobs claim without the read service, and nothing else on a read-only lane', () => {
@@ -500,15 +585,20 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(asOf).toBeLessThanOrEqual(Date.now() + 1000);
     }));
 
-  it('the classifier run still prefetches while the classifier is on; a sent copy never does', () =>
+  it('prefetches from the successful extraction rather than the classifier run or a sent copy', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
       const triage = await insertInboundExtraction(db, threadId, messageId, 'inbound_triage');
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: ['1234567-1'],
+      });
+      const extraction = await insertInboundExtraction(db, threadId, messageId);
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
       const sentCopy = { ...triage, idempotencyKey: `external-sent-baseline:${messageId}` };
       expect(await prefetchHmsConfirmations(sentCopy, db, env)).toBe(0);
-      expect(await prefetchHmsConfirmations(triage, db, env)).toBe(1);
+      expect(await prefetchHmsConfirmations(triage, db, env)).toBe(0);
+      expect(await prefetchHmsConfirmations(extraction, db, env)).toBe(1);
     }));
 
   it('a duplicate prefetch is a no-op, and the hourly cap holds per transport', () =>
@@ -516,6 +606,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1 and 7654321-2');
       const inbound = await insertInboundExtraction(db, threadId, messageId);
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: ['1234567-1', '7654321-2'],
+      });
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true, HMS_PREFETCH_PER_HOUR: 1 };
       expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(1);
       expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(0);
@@ -536,6 +629,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
       const inbound = await insertInboundExtraction(db, threadId, messageId);
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: ['1234567-1'],
+      });
       await enqueueHmsJob(
         {
           transportId: TRANSPORT_ID,
@@ -563,6 +659,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
       const inbound = await insertInboundExtraction(db, threadId, messageId);
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: ['1234567-1'],
+      });
       const base = parseEnv(process.env as Record<string, string | undefined>);
       expect(await prefetchHmsConfirmations(inbound, db, { ...base, HMS_PREFETCH_ENABLED: false })).toBe(0);
       const backfill = { ...inbound, admissionSnapshotId: null };
@@ -573,6 +672,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
       const inbound = await insertInboundExtraction(db, threadId, messageId);
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: ['1234567-1'],
+      });
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
       expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(0);
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
@@ -580,6 +682,459 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(0);
       await db.update(mailThread).set({ spamAt: null }).where(eq(mailThread.id, threadId));
       expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(1);
+    }));
+
+  it('uses an extraction confirmation even when the number is absent from the mail body', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking request');
+      await db.update(message).set({ textBody: 'Please confirm the booking.' }).where(eq(message.id, messageId));
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: ['7654321-2'],
+      });
+      const run = await insertInboundExtraction(db, threadId, messageId);
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await prefetchHmsConfirmations(run, db, env)).toBe(1);
+      const [job] = await db
+        .select({ readRequest: aiWorkflowRun.readRequest })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION));
+      expect(job?.readRequest).toMatchObject({ kind: 'find', confirmation: '7654321-2' });
+    }));
+
+  it('queues one stable guest search from explicit guest and extraction arrival when no confirmation exists', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking request');
+      await db
+        .update(message)
+        .set({ textBody: 'Please book this stay.\nGuest: John Smith arriving 12 November.' })
+        .where(eq(message.id, messageId));
+      const run = await insertInboundExtraction(db, threadId, messageId);
+      await insertStoredExtraction(db, messageId, 'amendment', {
+        confirmationNumbers: [],
+        stays: [
+          {
+            requested: { arrival: '2026-12-01', departure: '2026-12-03' },
+            booked: { arrival: '2026-11-12', departure: '2026-11-14' },
+          },
+        ],
+      });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await prefetchHmsConfirmations(run, db, env)).toBe(1);
+      const replay = { ...run, id: randomUUID(), idempotencyKey: `${run.idempotencyKey}:replay` };
+      expect(await prefetchHmsConfirmations(replay, db, env)).toBe(0);
+      const [job] = await db
+        .select({ id: aiWorkflowRun.id, readRequest: aiWorkflowRun.readRequest, idempotencyKey: aiWorkflowRun.idempotencyKey })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION));
+      expect(job?.readRequest).toMatchObject({ kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' });
+      expect(job?.idempotencyKey).toMatch(new RegExp(`^hms-job:prefetch-guest:${TRANSPORT_ID}:${threadId}:`));
+      expect(job?.idempotencyKey).not.toContain('Smith');
+      const resumed = await readHmsJobView(
+        { transportId: TRANSPORT_ID, threadId, kind: 'search_guest', lastName: 'smith', arrival: '2026-11-12' },
+        db,
+      );
+      expect(resumed).toMatchObject({ runId: job!.id, status: 'queued', prefetch: true });
+    }));
+
+  it('reuses the prefetched stable key when the pane auto-starts the same guest request', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking request');
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: [],
+        stays: [{ requested: { arrival: '2026-11-12' } }],
+      });
+      const key = guestSearchPrefetchIdempotencyKey(TRANSPORT_ID, threadId, 'Smith', '2026-11-12');
+      const prefetch = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: key,
+        },
+        db,
+      );
+      const autoStart = await queueUserHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          threadId,
+          request: { kind: 'search_guest', lastName: 'smith', arrival: '2026-11-12' },
+          idempotencyKey: guestSearchPrefetchIdempotencyKey(TRANSPORT_ID, threadId, 'smith', '2026-11-12'),
+        },
+        db,
+      );
+
+      expect(prefetch.run.priority).toBe(HMS_JOB_PRIORITY_PREFETCH);
+      expect(autoStart?.id).toBe(prefetch.run.id);
+      const rows = await db
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, key));
+      expect(rows).toHaveLength(1);
+    }));
+
+  it('does not guess a guest surname from the booker contact or conflicting guest labels', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+      const cases = [
+        {
+          textBody: 'Please arrange the stay.',
+          payload: {
+            contact: { name: 'Jane Smith' },
+            confirmationNumbers: [],
+            stays: [{ requested: { arrival: '2026-11-12' } }],
+          },
+        },
+        {
+          textBody: 'Guest: John Smith\nGuest: Jane Jones',
+          payload: { confirmationNumbers: [], stays: [{ requested: { arrival: '2026-11-12' } }] },
+        },
+      ];
+      for (const fixture of cases) {
+        const { threadId, messageId } = await seedThread(db, 'Booking request');
+        await db.update(message).set({ textBody: fixture.textBody }).where(eq(message.id, messageId));
+        const run = await insertInboundExtraction(db, threadId, messageId);
+        await insertStoredExtraction(db, messageId, 'booking', fixture.payload);
+        expect(await prefetchHmsConfirmations(run, db, env)).toBe(0);
+      }
+    }));
+
+  it.each(['quote', 'spam', 'other'] as const)('does not prefetch guest or confirmation reads for extraction kind %s', (kind) =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
+      await db.update(message).set({ textBody: 'Guest: John Smith' }).where(eq(message.id, messageId));
+      const run = await insertInboundExtraction(db, threadId, messageId);
+      await insertStoredExtraction(db, messageId, kind, {
+        confirmationNumbers: ['1234567-1'],
+        stays: [{ requested: { arrival: '2026-11-12' }, booked: { arrival: '2026-11-12' } }],
+      });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+      expect(await prefetchHmsConfirmations(run, db, env)).toBe(0);
+    }));
+
+  it('keeps a search_guest budget separate and capped per transport per hour', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const env = {
+        ...parseEnv(process.env as Record<string, string | undefined>),
+        HMS_PREFETCH_ENABLED: true,
+        HMS_PREFETCH_PER_HOUR: 0,
+        HMS_GUEST_PREFETCH_PER_HOUR: 1,
+      };
+      const makeRequest = async (lastName: string) => {
+        const { threadId, messageId } = await seedThread(db, 'Booking request');
+        await db.update(message).set({ textBody: `Guest: ${lastName}` }).where(eq(message.id, messageId));
+        const run = await insertInboundExtraction(db, threadId, messageId);
+        await insertStoredExtraction(db, messageId, 'booking', {
+          confirmationNumbers: [],
+          stays: [{ requested: { arrival: '2026-11-12', departure: '2026-11-14' } }],
+        });
+        return run;
+      };
+      const first = await makeRequest('Smith');
+      const second = await makeRequest('Jones');
+      expect(await prefetchHmsConfirmations(first, db, env)).toBe(1);
+      expect(await prefetchHmsConfirmations(second, db, env)).toBe(0);
+    }));
+
+  it('holds the guest hourly cap when two eligible messages prefetch concurrently', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    const env = {
+      ...parseEnv(process.env as Record<string, string | undefined>),
+      HMS_PREFETCH_ENABLED: true,
+      HMS_PREFETCH_PER_HOUR: 0,
+      HMS_GUEST_PREFETCH_PER_HOUR: 1,
+    };
+    // Real separate connections with committed fixtures. One shared connection would re-enter the advisory lock.
+    const setup = openTestDbSession();
+    const left = openTestDbSession();
+    const right = openTestDbSession();
+    const suffix = randomUUID();
+    const transportId = `guest-cap-transport-${suffix}`;
+    const mailbox = `guest-cap-${suffix}@zero.test`;
+    const messageIds: string[] = [];
+    try {
+      await setup.db
+        .insert(mailboxTransport)
+        .values({ id: transportId, email: mailbox, ownerHeaderValue: mailbox, isActive: true });
+      const makeRequest = async (lastName: string): Promise<AiWorkflowRun> => {
+        const threadId = `guest-cap-thread-${randomUUID()}`;
+        const messageId = `guest-cap-msg-${randomUUID()}`;
+        messageIds.push(messageId);
+        await setup.db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
+        await setup.db.insert(message).values({
+          id: messageId,
+          transportId,
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'guest@example.test',
+          subject: 'Booking request',
+          textBody: `Guest: ${lastName}`,
+          receivedAt: new Date(),
+        });
+        const [run] = await setup.db
+          .insert(aiWorkflowRun)
+          .values({
+            id: randomUUID(),
+            transportId,
+            threadId,
+            triggerMessageId: messageId,
+            runKind: 'inbound_extraction',
+            idempotencyKey: `inbound-extraction:${messageId}`,
+            modelId: 'amazon.nova-lite-v1:0',
+            promptVersion: 'triage-v6',
+            admissionSnapshotId: `snapshot-${randomUUID()}`,
+            state: 'succeeded',
+            executorLane: 'default',
+            priority: 0,
+          })
+          .returning();
+        if (!run) throw new Error('inbound extraction seed failed');
+        await setup.db.insert(mailExtraction).values({
+          id: randomUUID(),
+          messageId,
+          extractorVersion: `hms-prefetch-test-${randomUUID()}`,
+          status: 'succeeded',
+          kind: 'booking',
+          payload: {
+            confirmationNumbers: [],
+            stays: [{ requested: { arrival: '2026-11-12', departure: '2026-11-14' } }],
+          },
+        });
+        return run;
+      };
+      const firstRun = await makeRequest('Smith');
+      const secondRun = await makeRequest('Jones');
+
+      // Hold the transport's cap lock on a third connection. Both prefetches must wait behind it, not count past it.
+      let markLocked = () => {};
+      let failLocked: (error: unknown) => void = () => {};
+      const locked = new Promise<void>((resolve, reject) => {
+        markLocked = resolve;
+        failLocked = reject;
+      });
+      let releaseLock = () => {};
+      const released = new Promise<void>((resolve) => {
+        releaseLock = resolve;
+      });
+      const holder = setup.db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${'hms-prefetch:search_guest:' + transportId}, 0))`,
+        );
+        markLocked();
+        await released;
+      });
+      // A holder that fails before taking the lock fails the wait, so the test reports the error instead of hanging.
+      holder.catch(failLocked);
+      let settledWhileHeld = 0;
+      let doneWhileHeld = 0;
+      let queued: number[] = [];
+      try {
+        await locked;
+        const first = prefetchHmsConfirmations(firstRun, left.db, env).then((count) => {
+          settledWhileHeld += 1;
+          return count;
+        });
+        const second = prefetchHmsConfirmations(secondRun, right.db, env).then((count) => {
+          settledWhileHeld += 1;
+          return count;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        doneWhileHeld = settledWhileHeld;
+        releaseLock();
+        await holder;
+        queued = await Promise.all([first, second]);
+      } finally {
+        // Release on every path, so the holder's transaction and its connection end even when a step above failed.
+        releaseLock();
+        await holder.catch(() => undefined);
+      }
+      expect(doneWhileHeld).toBe(0);
+      expect(queued.reduce((sum, count) => sum + count, 0)).toBe(1);
+      const rows = await setup.db
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.transportId, transportId),
+            eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+            eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+          ),
+        );
+      expect(rows).toHaveLength(1);
+    } finally {
+      try {
+        await setup.db.delete(aiWorkflowRun).where(eq(aiWorkflowRun.transportId, transportId));
+        if (messageIds.length > 0) {
+          await setup.db.delete(mailExtraction).where(inArray(mailExtraction.messageId, messageIds));
+        }
+        await setup.db.delete(message).where(eq(message.transportId, transportId));
+        await setup.db.delete(mailThread).where(eq(mailThread.transportId, transportId));
+        await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+      } finally {
+        await Promise.all([setup.close(), left.close(), right.close()]);
+      }
+    }
+  });
+
+  it('uses the current message work item, not an older superseded thread item', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Current booking request');
+      const oldMessageId = `old-${randomUUID()}`;
+      await db.insert(message).values({
+        id: oldMessageId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        direction: 'inbound',
+        fromAddress: 'guest@example.test',
+        subject: 'Earlier booking request',
+        textBody: 'Older request',
+        receivedAt: new Date(Date.now() - 60_000),
+        createdAt: new Date(Date.now() - 60_000),
+      });
+      await db.update(message).set({ textBody: 'Guest: John Smith' }).where(eq(message.id, messageId));
+      const run = await insertInboundExtraction(db, threadId, messageId);
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: [],
+        stays: [{ requested: { arrival: '2026-11-12' } }],
+      });
+      const oldItemId = randomUUID();
+      await db.insert(workItem).values({
+        id: oldItemId,
+        transportId: TRANSPORT_ID,
+        threadId,
+        sourceMessageId: oldMessageId,
+        kind: 'booking',
+        status: 'dismissed',
+        updatedAt: new Date(Date.now() + 60_000),
+      });
+      const [currentItem] = await db
+        .insert(workItem)
+        .values({
+          id: randomUUID(),
+          transportId: TRANSPORT_ID,
+          threadId,
+          sourceMessageId: messageId,
+          kind: 'booking',
+          status: 'needs_you',
+        })
+        .returning({ id: workItem.id });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await prefetchHmsConfirmations(run, db, env)).toBe(1);
+      const [job] = await db
+        .select({ workItemId: aiWorkflowRun.workItemId })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION));
+      expect(job?.workItemId).toBe(currentItem!.id);
+    }));
+
+  it('waits for the matching triage result before queueing, and skips spam decided by triage', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking request');
+      const snapshotId = `snapshot-${randomUUID()}`;
+      const triage = await insertInboundExtraction(db, threadId, messageId, 'inbound_triage', snapshotId);
+      await db.update(aiWorkflowRun).set({ state: 'running' }).where(eq(aiWorkflowRun.id, triage.id));
+      const extraction = await insertInboundExtraction(db, threadId, messageId, 'inbound_extraction', snapshotId);
+      await db.update(message).set({ textBody: 'Guest: John Smith' }).where(eq(message.id, messageId));
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: [],
+        stays: [{ requested: { arrival: '2026-11-12' } }],
+      });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await prefetchHmsConfirmations(extraction, db, env)).toBe(0);
+      await db.update(mailThread).set({ spamAt: new Date() }).where(eq(mailThread.id, threadId));
+      await db.update(aiWorkflowRun).set({ state: 'succeeded' }).where(eq(aiWorkflowRun.id, triage.id));
+      expect(await prefetchHmsConfirmations(triage, db, env)).toBe(0);
+    }));
+
+  it('queues after extraction and triage both succeed, regardless of which succeeds last', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking request');
+      const snapshotId = `snapshot-${randomUUID()}`;
+      const triage = await insertInboundExtraction(db, threadId, messageId, 'inbound_triage', snapshotId);
+      await db.update(aiWorkflowRun).set({ state: 'running' }).where(eq(aiWorkflowRun.id, triage.id));
+      const extraction = await insertInboundExtraction(db, threadId, messageId, 'inbound_extraction', snapshotId);
+      await db.update(message).set({ textBody: 'Guest: John Smith' }).where(eq(message.id, messageId));
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: [],
+        stays: [{ requested: { arrival: '2026-11-12' } }],
+      });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await prefetchHmsConfirmations(extraction, db, env)).toBe(0);
+      await db.update(aiWorkflowRun).set({ state: 'succeeded' }).where(eq(aiWorkflowRun.id, triage.id));
+      expect(await prefetchHmsConfirmations(triage, db, env)).toBe(1);
+    }));
+
+  it.each(['done', 'dismissed'] as const)('skips a thread whose latest work item is %s', (status) =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking request');
+      await db.update(message).set({ textBody: 'Guest: John Smith' }).where(eq(message.id, messageId));
+      const run = await insertInboundExtraction(db, threadId, messageId);
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: [],
+        stays: [{ requested: { arrival: '2026-11-12' } }],
+      });
+      await db.insert(workItem).values({
+        id: randomUUID(),
+        transportId: TRANSPORT_ID,
+        threadId,
+        sourceMessageId: messageId,
+        kind: 'booking',
+        status,
+      });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+      expect(await prefetchHmsConfirmations(run, db, env)).toBe(0);
+    }));
+
+  it('skips staff-sent, outbound sent-copy, and history-only mail', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+      for (const condition of ['staff', 'verified-staff-alias', 'sent', 'message-history', 'thread-history'] as const) {
+        const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
+        const run = await insertInboundExtraction(db, threadId, messageId);
+        await insertStoredExtraction(db, messageId, 'booking', { confirmationNumbers: ['1234567-1'] });
+        if (condition === 'staff') {
+          await db.update(message).set({ fromAddress: TRANSPORT_EMAIL }).where(eq(message.id, messageId));
+        } else if (condition === 'verified-staff-alias') {
+          const staffAlias = `reservations@${TRANSPORT_EMAIL.slice(TRANSPORT_EMAIL.lastIndexOf('@') + 1)}`;
+          await db.update(message).set({ fromAddress: staffAlias }).where(eq(message.id, messageId));
+          await db.insert(message).values({
+            id: `sent-${randomUUID()}`,
+            transportId: TRANSPORT_ID,
+            threadId,
+            direction: 'outbound',
+            fromAddress: staffAlias,
+            toAddresses: ['guest@example.test'],
+            sentAt: new Date(),
+          });
+        } else if (condition === 'sent') {
+          await db.update(message).set({ direction: 'outbound' }).where(eq(message.id, messageId));
+        } else if (condition === 'message-history') {
+          await db.update(message).set({ historyOnly: true }).where(eq(message.id, messageId));
+        } else {
+          await db.update(mailThread).set({ historyOnly: true }).where(eq(mailThread.id, threadId));
+        }
+        expect(await prefetchHmsConfirmations(run, db, env)).toBe(0);
+      }
     }));
 
   it('the ai-worker claimer claims nothing while HMS_JOB_QUEUE is off', () =>
@@ -710,6 +1265,7 @@ async function insertInboundExtraction(
   threadId: string,
   messageId: string,
   kind: 'inbound_extraction' | 'inbound_triage' = 'inbound_extraction',
+  admissionSnapshotId = `snapshot-${randomUUID()}`,
 ): Promise<AiWorkflowRun> {
   const [row] = await db
     .insert(aiWorkflowRun)
@@ -723,7 +1279,7 @@ async function insertInboundExtraction(
         kind === 'inbound_triage' ? `inbound-triage:${messageId}` : `inbound-extraction:${messageId}`,
       modelId: 'amazon.nova-lite-v1:0',
       promptVersion: 'triage-v6',
-      admissionSnapshotId: `snapshot-${randomUUID()}`,
+      admissionSnapshotId,
       state: 'succeeded',
       executorLane: 'default',
       priority: 0,
@@ -731,5 +1287,21 @@ async function insertInboundExtraction(
     .returning();
   if (!row) throw new Error('inbound extraction seed failed');
   return row;
+}
+
+async function insertStoredExtraction(
+  db: DB,
+  messageId: string,
+  kind: 'quote' | 'booking' | 'amendment' | 'cancellation' | 'voucher_pop' | 'spam' | 'other',
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await db.insert(mailExtraction).values({
+    id: randomUUID(),
+    messageId,
+    extractorVersion: `hms-prefetch-test-${randomUUID()}`,
+    status: 'succeeded',
+    kind,
+    payload,
+  });
 }
 
