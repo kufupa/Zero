@@ -645,6 +645,12 @@ export function BookingCards({
         const request = room.request;
         const built = paneStayInputForRoom(request, choice);
         const group = groups.find((item) => item.id === room.groupId);
+        // The quoted rate for the room's HMS notes: the row's price choice, its approval note for an override, and the
+        // confirmation once Book in HMS has booked the room.
+        const price = group?.rowPrice;
+        const override = price?.source === 'override' ? price : null;
+        const commit = saves[key]?.commit;
+        const bookedCommit = commit?.status === 'booked' ? commit : null;
         const arrival = textValue(request.arrival);
         const departure = textValue(request.departure);
         const childCount = Array.isArray(request.childAges) ? request.childAges.length : 0;
@@ -794,11 +800,17 @@ export function BookingCards({
               block={hmsNotesBlock({
                 booker: choice.bookerName || contact?.name,
                 company: choice.organization || contact?.company,
+                confirmations: bookedCommit ? [bookedCommit.confirmationNumber] : [],
                 rooms: [
                   {
                     label: `Room ${roomIndex}`,
                     specialRequests: group?.specialRequests,
-                    rate: { code: textValue(request.ratePlan), board: BOARD_LABELS[room.board ?? ''] },
+                    authorisedBy: override?.note,
+                    rate: {
+                      code: textValue(request.ratePlan),
+                      nightlyMinor: price ? [price.amountMinor] : undefined,
+                      board: BOARD_LABELS[room.board ?? ''],
+                    },
                   },
                 ],
               })}

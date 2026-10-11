@@ -852,7 +852,11 @@ function quoteNotesBlock(
         rate: {
           code,
           label: rowRate?.customRateName ?? saved?.name ?? option?.rateLabel,
-          amountMinor: rowRate?.nightlyMinor[0] ?? group.rowPrice?.amountMinor,
+          nightlyMinor: rowRate?.nightlyMinor ?? (group.rowPrice ? [group.rowPrice.amountMinor] : undefined),
+          stay:
+            group.arrivalDate && group.departureDate
+              ? { arrival: group.arrivalDate, departure: group.departureDate }
+              : null,
           board: BOARD_LABELS[group.board],
         },
       };

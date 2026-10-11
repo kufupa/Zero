@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import {
+  CopyHmsNotesButton,
   hmsNotesBlock,
   readOneOff,
   readOverride,
@@ -631,7 +632,7 @@ describe('HMS notes block', () => {
           label: 'Room 1',
           specialRequests: ['Late check-in', 'Cot'],
           authorisedBy: NOTE,
-          rate: { code: 'NCOR1B', label: 'Corporate rate', amountMinor: 185000, board: 'Bed & breakfast' },
+          rate: { code: 'NCOR1B', label: 'Corporate rate', nightlyMinor: [185000], board: 'Bed & breakfast' },
         },
       ],
     });
@@ -664,8 +665,8 @@ describe('HMS notes block', () => {
     const block = hmsNotesBlock({
       booker: 'Jane Smith',
       rooms: [
-        { label: 'Stay 1 · Room 1', specialRequests: ['Cot'], rate: { code: 'NCOR1B', amountMinor: 185000, board: 'Room only' } },
-        { label: 'Stay 2 · Room 1', rate: { amountMinor: 210000 } },
+        { label: 'Stay 1 · Room 1', specialRequests: ['Cot'], rate: { code: 'NCOR1B', nightlyMinor: [185000], board: 'Room only' } },
+        { label: 'Stay 2 · Room 1', rate: { nightlyMinor: [210000] } },
         { label: 'Stay 2 · Room 2' },
       ],
     });
@@ -713,5 +714,93 @@ describe('HMS notes block', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(expected));
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('HMS notes copied. Paste them into the HMS comments.'));
     expect(trackPaneAction).toHaveBeenCalledWith({ type: 'copy.hms_line', block: 'notes' });
+  });
+
+  it('lists the nights that differ, each with its date, and reads one amount as the rate per night', () => {
+    expect(
+      hmsNotesBlock({
+        rooms: [
+          {
+            label: 'Room 1',
+            rate: {
+              code: 'NCOR1B',
+              nightlyMinor: [10001, 50000, 50000],
+              stay: { arrival: '2026-10-26', departure: '2026-10-29' },
+              board: 'Room only',
+            },
+          },
+        ],
+      }),
+    ).toBe('Rate: NCOR1B per night: 26 Oct R100.01; 27 Oct R500.00; 28 Oct R500.00, Room only');
+    // The dates roll over the month end.
+    expect(
+      hmsNotesBlock({
+        rooms: [{ label: 'Room 1', rate: { nightlyMinor: [10001, 20000, 30000], stay: { arrival: '2026-10-30', departure: '2026-11-02' } } }],
+      }),
+    ).toBe('Rate: per night: 30 Oct R100.01; 31 Oct R200.00; 1 Nov R300.00');
+    expect(
+      hmsNotesBlock({ rooms: [{ label: 'Room 1', rate: { code: 'BAR', nightlyMinor: [185000, 185000] } }] }),
+    ).toBe('Rate: BAR R1850.00 per night');
+  });
+
+  it('gives the range and the total when the nights do not match the stay dates, or there is no stay', () => {
+    expect(
+      hmsNotesBlock({
+        rooms: [
+          {
+            label: 'Room 1',
+            rate: {
+              code: 'NCOR1B',
+              nightlyMinor: [10001, 50000, 50000],
+              stay: { arrival: '2026-10-26', departure: '2026-10-28' },
+            },
+          },
+        ],
+      }),
+    ).toBe('Rate: NCOR1B from R100.01 to R500.00 per night, total R1100.01');
+    expect(hmsNotesBlock({ rooms: [{ label: 'Room 1', rate: { nightlyMinor: [10001, 50000] } }] })).toBe(
+      'Rate: from R100.01 to R500.00 per night, total R600.01',
+    );
+  });
+
+  it('the quote block lists the nights that differ, with their dates, not the first night as the rate', async () => {
+    const session = await pricedSession({
+      rowRates: [{ groupId: 'g1', source: 'hms', hmsNightlyMinor: [10001, 50000], nightlyMinor: [10001, 50000] }],
+    });
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    render(<QuoteWorkflowPanel session={session} contact={CONTACT} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS notes' }));
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        ['Booker: Jane Smith', 'Company: Acme Travel', 'Rate: per night: 12 Nov R100.01; 13 Nov R500.00, Bed & breakfast'].join(
+          '\n',
+        ),
+      ),
+    );
+  });
+
+  it('shows the block in a read-only box when the copy fails, so staff can copy it by hand', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn(async () => Promise.reject(new Error('denied'))) },
+      configurable: true,
+    });
+    Object.defineProperty(document, 'execCommand', { value: vi.fn(() => false), configurable: true });
+    try {
+      render(<CopyHmsNotesButton block={'Booker: Jane Smith\nRate: BAR'} />);
+      expect(screen.queryByRole('textbox', { name: 'HMS notes' })).toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS notes' }));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Couldn't copy. Select the notes text and copy it."));
+      const box = screen.getByRole('textbox', { name: 'HMS notes' }) as HTMLTextAreaElement;
+      expect(box.value).toBe('Booker: Jane Smith\nRate: BAR');
+      expect(box.readOnly).toBe(true);
+      expect(trackPaneAction).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(document, 'execCommand');
+    }
   });
 });

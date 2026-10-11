@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
-import { Field, SecondaryButton, paneFieldClass } from '@/components/nava-pane/pane-ui';
+import { Field, SecondaryButton, paneFieldClass, paneTextareaClass } from '@/components/nava-pane/pane-ui';
 import { draftMoney } from '@/lib/quote-workflow/multi-option-draft';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseZarInput } from '@/lib/quote-workflow/zar-input';
@@ -196,6 +196,9 @@ export function priceSummary(price: RowPriceChoice | undefined, rowRate: StaffRo
   return `${price.rateCode} override, ${draftMoney(price.amountMinor)} a night${hmsNote}`;
 }
 
+/** The stay a room's nights belong to. Its arrival date is the first night. */
+export type HmsNotesStay = { arrival: string; departure: string };
+
 /** One room for the HMS notes. Each field is optional: a field with no value adds no line. */
 export type HmsNotesRoom = {
   /** The room's name in the pane, e.g. "Room 1" or "Stay 2 · Room 1". It heads the room's lines when there are several rooms. */
@@ -203,7 +206,14 @@ export type HmsNotesRoom = {
   specialRequests?: string[];
   /** Who approved the discount and why, as staff typed it on the row's override. */
   authorisedBy?: string | null;
-  rate?: { code?: string | null; label?: string | null; amountMinor?: number | null; board?: string | null };
+  rate?: {
+    code?: string | null;
+    label?: string | null;
+    /** The amount for each night, in minor units. One amount is the rate for every night. */
+    nightlyMinor?: number[];
+    stay?: HmsNotesStay | null;
+    board?: string | null;
+  };
 };
 
 export type HmsNotesInput = {
@@ -213,17 +223,45 @@ export type HmsNotesInput = {
   rooms: HmsNotesRoom[];
 };
 
+const DAY_MS = 86_400_000;
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 function noteText(value: string | null | undefined): string {
   return value?.trim() ?? '';
 }
 
-/** The rate for the HMS notes, e.g. "NCOR1B R1850.00 per night, Bed & breakfast". The amount is written as the HMS comment writes it. */
+/** An amount in minor units as the HMS comment writes it, e.g. "R1850.00". */
+function randText(minor: number): string {
+  return `R${(minor / 100).toFixed(2)}`;
+}
+
+/**
+ * The price for the HMS notes. Nights at one amount read "R x per night". Nights that differ are listed one by one with
+ * their dates when the stay has one date per night; otherwise they read as a range with the total.
+ */
+function hmsPriceText(nightly: number[], stay: HmsNotesStay | null | undefined): string {
+  const [first] = nightly;
+  if (first === undefined) return '';
+  if (nightly.every((amount) => amount === first)) return `${randText(first)} per night`;
+  const start = Date.parse(`${stay?.arrival ?? ''}T00:00:00Z`);
+  const end = Date.parse(`${stay?.departure ?? ''}T00:00:00Z`);
+  if (Number.isFinite(start) && Math.round((end - start) / DAY_MS) === nightly.length) {
+    const nights = nightly.map((amount, index) => {
+      const night = new Date(start + index * DAY_MS);
+      return `${night.getUTCDate()} ${MONTHS[night.getUTCMonth()]} ${randText(amount)}`;
+    });
+    return `per night: ${nights.join('; ')}`;
+  }
+  const total = nightly.reduce((sum, amount) => sum + amount, 0);
+  return `from ${randText(Math.min(...nightly))} to ${randText(Math.max(...nightly))} per night, total ${randText(total)}`;
+}
+
+/** The rate for the HMS notes, e.g. "NCOR1B R1850.00 per night, Bed & breakfast". */
 function hmsRateLine(rate: HmsNotesRoom['rate']): string {
   const names = [noteText(rate?.code), noteText(rate?.label)].filter(
     (name, index, all) => name !== '' && all.indexOf(name) === index,
   );
-  const amount = rate?.amountMinor;
-  const price = amount == null ? '' : `R${(amount / 100).toFixed(2)} per night`;
+  const price = hmsPriceText(rate?.nightlyMinor ?? [], rate?.stay);
   return [[...names, price].filter(Boolean).join(' '), noteText(rate?.board)].filter(Boolean).join(', ');
 }
 
@@ -281,19 +319,39 @@ function saveError(err: unknown, fallback: string): string {
   return code === 'CONFLICT' ? CONFLICT_COPY : fallback;
 }
 
-/** Copies the HMS notes block (hmsNotesBlock) for staff to paste into HMS. Renders nothing for an empty block. */
+/**
+ * Copies the HMS notes block (hmsNotesBlock) for staff to paste into HMS. Renders nothing for an empty block. When the copy
+ * fails, the block shows in a read-only box, selected on focus, so staff can copy it by hand.
+ */
 export function CopyHmsNotesButton({ block }: { block: string }) {
+  const [copyFailed, setCopyFailed] = useState(false);
   if (!block) return null;
   const copy = async () => {
     if (await copyText(block)) {
+      setCopyFailed(false);
       trackPaneAction({ type: 'copy.hms_line', block: 'notes' });
       toast.success('HMS notes copied. Paste them into the HMS comments.');
-    } else toast.error("Couldn't copy. Select the notes text and copy it.");
+    } else {
+      setCopyFailed(true);
+      toast.error("Couldn't copy. Select the notes text and copy it.");
+    }
   };
   return (
-    <button type="button" className={outlineButtonClass} onClick={() => void copy()}>
-      Copy for HMS notes
-    </button>
+    <>
+      <button type="button" className={outlineButtonClass} onClick={() => void copy()}>
+        Copy for HMS notes
+      </button>
+      {copyFailed ? (
+        <textarea
+          aria-label="HMS notes"
+          className={paneTextareaClass}
+          readOnly
+          rows={block.split('\n').length}
+          value={block}
+          onFocus={(event) => event.currentTarget.select()}
+        />
+      ) : null}
+    </>
   );
 }
 

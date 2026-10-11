@@ -1364,4 +1364,37 @@ describe('booking card HMS notes copy', () => {
       expect(writeText).toHaveBeenCalledWith(['Booker: Pat Jones', 'Company: Bidvest Bank', 'Rate: TAXYZ'].join('\n')),
     );
   });
+
+  it('the room block carries the chosen rate and its approval note, and the confirmation once the room is booked', async () => {
+    const writeText = stubClipboard();
+    const { client } = paneClient();
+    const rowPrice = { source: 'override' as const, rateCode: 'NCOR1B', amountMinor: 185000, note: 'Thandi approved' };
+    render(
+      <BookingCards
+        draft={draftReady()}
+        groups={[{ ...g1, specialRequests: ['Cot'], rowPrice }]}
+        paneSave={client}
+        contact={CONTACT}
+      />,
+    );
+    const quoted = [
+      'Booker: Jane Smith',
+      'Company: Acme Travel',
+      'Special requests: Cot',
+      'Discount authorised by: Thandi approved',
+      'Rate: TAXYZ R1850.00 per night',
+    ];
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(quoted.join('\n')));
+
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    await screen.findByText('Booked in HMS – confirmation 98765-1');
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith([...quoted, 'Confirmation: 98765-1'].join('\n')));
+  });
 });
