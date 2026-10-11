@@ -218,6 +218,9 @@ export function useStoredWork(args: {
   const inFlight = useRef(new Map<string, Promise<void>>());
   // Sends that failed twice. Kept across mail changes until a retry or a newer edit to the same field.
   const failed = useRef(new Map<string, FieldSend>());
+  // Every save slot she edited on this screen. A save still pending, failed or retrying has not reached the server yet,
+  // so its field is never sent as an accept.
+  const edited = useRef(new Set<string>());
   const [saveFailed, setSaveFailed] = useState(false);
   // The work item whose translation is being asked for again, so "Translating…" shows for that mail only.
   const [translating, setTranslating] = useState<string | null>(null);
@@ -303,6 +306,7 @@ export function useStoredWork(args: {
   const schedule = useCallback(
     (path: string, workItemId: string, transportId: string | null, value: RecordFieldEventInput['value']) => {
       const key = saveKey(workItemId, path);
+      edited.current.add(key);
       const existing = pending.current.get(key);
       if (existing) clearTimeout(existing.timer);
       // A newer value for the field replaces one that failed to save.
@@ -415,8 +419,10 @@ export function useStoredWork(args: {
 
   /**
    * Called when she proceeds with the read (Get rates). The fields shown for these groups and the contact block go to the
-   * server as accepts (v5 B2). The server skips any she edited, so a repeat call adds nothing. It goes out after the saves
-   * in flight, so an edit she just made lands first. A failed call is dropped: a missing accept only loses a label.
+   * server as accepts (v5 B2). A field she edited here is never sent, even while its save is pending, failed or being
+   * retried, since the server has not seen that edit yet. The server skips any edit it has, so a repeat call adds nothing.
+   * It goes out after the saves in flight, so an edit she just made lands first. A failed call is dropped: a missing
+   * accept only loses a label.
    */
   const acceptUnedited = useCallback(
     (groups: StayGroupRequirement[]) => {
@@ -424,7 +430,10 @@ export function useStoredWork(args: {
       if (!accept || !readyWorkItemId || !readyRefs) return;
       flushAll();
       const workItemId = readyWorkItemId;
-      const fieldPaths = shownFieldPaths(readyRefs, groups);
+      const fieldPaths = shownFieldPaths(readyRefs, groups).filter(
+        (path) => !edited.current.has(saveKey(workItemId, path)),
+      );
+      if (!fieldPaths.length) return;
       const pinned = inMailbox(readyTransportId);
       void Promise.allSettled(inFlight.current.values())
         .then(() =>
@@ -459,6 +468,8 @@ export function useStoredWork(args: {
   return {
     pane,
     key,
+    /** The mailbox the shown read was looked up in, which owns its work item. Null while no read is shown. */
+    transportId: readyWorkItemId ? readyTransportId : null,
     /** How many times the person asked to read this mail again. A live read with a treat-as re-runs on it. */
     retryCount: retried,
     retry,

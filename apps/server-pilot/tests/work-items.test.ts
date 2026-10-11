@@ -1518,6 +1518,13 @@ describe('pane telemetry and staff notes (v5 B1, B2)', () => {
     expect(maskStaffNote('x'.repeat(2500))).toHaveLength(2000);
   });
 
+  it('masks a phone number written next to a date, and keeps the date when the number has no spaces', () => {
+    expect(maskStaffNote('Call 0825551234 (2027-11-13)')).toBe('Call [phone] (2027-11-13)');
+    // A spaced number joined to a bracketed date is masked whole, so none of its digits stay.
+    expect(maskStaffNote('Call 082 555 1234 (2027-11-13)')).toBe('Call [phone])');
+    expect(maskStaffNote('Call 082 (555) 1234 on 13/11/2027')).toBe('Call [phone] on 13/11/2027');
+  });
+
   it('keeps a masked staff note on the item once per text, and finds the item for the mail', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'tn1');
@@ -1534,6 +1541,18 @@ describe('pane telemetry and staff notes (v5 B1, B2)', () => {
       expect(notes).toHaveLength(1);
       expect(notes[0]!.value).toEqual({ text: 'Call [email] on [phone]. Card [card ••••1111]' });
       expect(notes[0]!.actorUserId).toBe(USER);
+    }));
+
+  it('keeps one copy of a note when the same note is recorded by calls that overlap', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'tn2');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'tn2');
+
+      const note = 'Hold the twin rooms for the 12th';
+      await Promise.all([1, 2, 3, 4].map(() => recordStaffNote(db, { workItemId: work.workItemId, userId: USER, note })));
+      const notes = (await eventsFor(db, work.workItemId)).filter((event) => event.type === 'note.staff');
+      expect(notes).toHaveLength(1);
     }));
 
   it('accepts unedited AI fields once, and never an edited, empty or unknown one', () =>
@@ -1571,5 +1590,42 @@ describe('pane telemetry and staff notes (v5 B1, B2)', () => {
         value: '2027-10-26',
         aiSource: 'extract-v1',
       });
+    }));
+
+  it('an accepted AI value reopens as the read, never as a staff correction', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'ta2');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'ta2');
+      const arrival = `stays[${STAY_ONE}].requested.arrival`;
+      const count = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`;
+      expect(
+        await centurionCaller().workItems.acceptFields({ workItemId: work.workItemId, fieldPaths: [arrival, count] }),
+      ).toEqual({ accepted: 2 });
+
+      const reopened = await readyWork(db, 'ta2');
+      expect(reopened.analysis.groups[0]).toMatchObject({ arrivalDate: '2027-10-26', quantity: 2 });
+      expect(reopened.analysis.groups[0]!.fields).toMatchObject({ arrivalDate: 'extracted', quantity: 'extracted' });
+      const [stored] = await db.select({ state: workItem.state }).from(workItem).where(eq(workItem.id, work.workItemId));
+      expect(stored!.state).toEqual({});
+    }));
+
+  it('an accept after an edit reopens as the read again, not as her correction', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'ta3');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'ta3');
+      const base = { transportId: CENTURION, workItemId: work.workItemId, userId: USER };
+      const arrival = `stays[${STAY_ONE}].requested.arrival`;
+      await recordFieldEvent(db, { ...base, type: 'field.edit', fieldPath: arrival, value: '2027-10-25' });
+
+      expect(await recordFieldEvent(db, { ...base, type: 'field.accept', fieldPath: arrival })).toEqual({
+        status: 'recorded',
+        aiValue: '2027-10-26',
+        value: '2027-10-26',
+      });
+      const reopened = await readyWork(db, 'ta3');
+      expect(reopened.analysis.groups[0]!.arrivalDate).toBe('2027-10-26');
+      expect(reopened.analysis.groups[0]!.fields.arrivalDate).toBe('extracted');
     }));
 });

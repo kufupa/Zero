@@ -33,7 +33,7 @@ import {
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
 import { storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
-import { bindPaneTelemetry, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
+import { bindPaneTelemetry, currentPaneOwner, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import {
   bindGetPriorStaffQuoteRequote,
   bindListThreadQuoteRevisions,
@@ -174,10 +174,12 @@ export function NavaPane({
   const trackStaffQuoteRun = <T,>(run: Promise<T>): Promise<T> => {
     setQuoteRunPending(true);
     const startedAt = Date.now();
-    trackPaneAction({ type: 'hms.lookup.started' });
+    // The lookup belongs to the item it started on. Staff may open another mail before it finishes.
+    const owner = currentPaneOwner();
+    trackPaneAction({ type: 'hms.lookup.started' }, owner);
     return run.finally(() => {
       setQuoteRunPending(false);
-      trackPaneAction({ type: 'hms.lookup.finished', ms: Math.max(0, Date.now() - startedAt) });
+      trackPaneAction({ type: 'hms.lookup.finished', ms: Math.max(0, Date.now() - startedAt) }, owner);
     });
   };
   const requoteSameStayRef = useRef<(row: PriorStaffQuoteRequoteRow) => void>(() => {});
@@ -301,10 +303,12 @@ export function NavaPane({
   // The pane's work item for telemetry (v5 B1). Opening a stored read with a work item is the pane.opened action.
   const surface = onOpenThread ? 'web' : 'outlook';
   const paneWorkItemId = storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null;
+  const paneTransportId = storedWork.transportId;
   useEffect(() => {
-    setPaneTelemetryScope(paneWorkItemId ? { workItemId: paneWorkItemId, surface } : null);
-    if (paneWorkItemId) trackPaneAction({ type: 'pane.opened' }, paneWorkItemId);
-  }, [paneWorkItemId, surface]);
+    const owner = paneWorkItemId ? { workItemId: paneWorkItemId, transportId: paneTransportId } : null;
+    setPaneTelemetryScope(owner ? { ...owner, surface } : null);
+    if (owner) trackPaneAction({ type: 'pane.opened' }, owner);
+  }, [paneWorkItemId, paneTransportId, surface]);
   /** A staff edit to the stay rows. On a stored read it is logged against the work item, so it is there on reopen. */
   const editStayRows = (action: QuoteSessionAction) => {
     const before = quoteSessionRef.current;
@@ -641,12 +645,13 @@ export function NavaPane({
     if (workbookInFlight.current) return;
     workbookInFlight.current = true;
     setWorkbookPending(true);
+    const owner = currentPaneOwner();
     void downloadStaffQuoteWorkbook({
       session: quoteSessionRef.current,
       mutate: staffQuoteFromTrpc(trpcClient).workstation.quoteWorkbook?.mutate,
       notify: (message) => toast.warning(message),
     }).then((saved) => {
-      if (saved) trackPaneAction({ type: 'excel.downloaded' });
+      if (saved) trackPaneAction({ type: 'excel.downloaded' }, owner);
     }).finally(() => {
       workbookInFlight.current = false;
       setWorkbookPending(false);
@@ -1002,6 +1007,8 @@ export function NavaPane({
    */
   const preparePdfFor = (stayKey: string | null) => {
     const session = quoteSessionRef.current;
+    // The PDF is recorded on the item it was made for, even if staff open another mail while it builds.
+    const owner = currentPaneOwner();
     if (dinnerAllowanceStillRequired(session.staffHeader)) {
       toast.warning('Enter the dinner allowance per person per night before preparing the PDF.');
       return;
@@ -1046,7 +1053,7 @@ export function NavaPane({
           inputRevision,
           selectedOfferIds,
         });
-        trackPaneAction({ type: 'pdf.created', kind: 'combined' });
+        trackPaneAction({ type: 'pdf.created', kind: 'combined' }, owner);
       }).finally(() => {
         pdfInFlight.current = false;
       });
@@ -1118,7 +1125,7 @@ export function NavaPane({
         inputRevision,
         selectedOfferIds,
       });
-      trackPaneAction({ type: 'pdf.created', kind: 'option' });
+      trackPaneAction({ type: 'pdf.created', kind: 'option' }, owner);
     });
   };
 

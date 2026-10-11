@@ -174,15 +174,18 @@ export const quoteWorkflowRouter = router({
       if (outcome.kind === 'fallback') {
         console.warn('quote_workflow_fallback', outcome.reason);
       }
-      // The "Tell Nava" text is kept masked on the mail's work item (v5 B2). Best effort: the answer does not wait on it.
+      // The "Tell Nava" text is kept masked on the mail's work item (v5 B2). Best effort and not awaited: a slow database
+      // never holds the answer, and a note that fails to save is logged, not thrown.
       const note = input.staffNote?.trim();
       if (note && internetMessageId) {
-        try {
-          const workItemId = await workItemIdForMail(getDb(), { transportId: ctx.activeTransportId, internetMessageId });
-          if (workItemId) await recordStaffNote(getDb(), { workItemId, userId: ctx.sessionUser.id, note });
-        } catch (error) {
+        const transportId = ctx.activeTransportId;
+        const userId = ctx.sessionUser.id;
+        void (async () => {
+          const workItemId = await workItemIdForMail(getDb(), { transportId, internetMessageId });
+          if (workItemId) await recordStaffNote(getDb(), { workItemId, userId, note });
+        })().catch((error: unknown) => {
           console.warn('staff_note_not_kept', error instanceof Error ? error.message : 'unknown');
-        }
+        });
       }
       // The sender decides whether staff can answer, so the pane hides Insert draft for an automated one. Read per request.
       return { ...payload, noReplySender: isNoReplyAddress(synced.fromAddress) };

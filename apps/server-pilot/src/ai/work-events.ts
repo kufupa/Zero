@@ -63,23 +63,30 @@ export async function recordPaneActions(
 /** The longest staff note kept as a work event. Longer text is cut after masking. */
 export const STAFF_NOTE_MAX = 2000;
 const EMAIL_IN_TEXT = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-/** Phone-like digit runs. Only 9 to 15 digits are masked, so dates and small counts stay. */
+/**
+ * A run of 7 or more digits, such as 0825551234. It is masked before the spaced form below, so a number written without
+ * spaces never joins the date after it in a bracket.
+ */
+const PHONE_DIGITS = /\+?\d{7,}/g;
+/** A phone number written with spaces, brackets, dashes or dots. Masked when it holds 9 or more digits, so dates stay. */
 const PHONE_IN_TEXT = /\+?\d[\d\s().-]{6,}\d/g;
 
-/** Masks card numbers and security codes (maskCardNumbers), then emails and phone-like digit runs, then caps the length. */
+/**
+ * Masks card numbers and security codes (maskCardNumbers), then emails and phone numbers, then caps the length. The
+ * phone rules err toward masking: a spaced run that a date has joined to is masked whole, and so is an oversized one.
+ */
 export function maskStaffNote(text: string): string {
   return maskCardNumbers(text)
     .replace(EMAIL_IN_TEXT, '[email]')
-    .replace(PHONE_IN_TEXT, (match) => {
-      const digits = match.replace(/\D/g, '').length;
-      return digits >= 9 && digits <= 15 ? '[phone]' : match;
-    })
+    .replace(PHONE_DIGITS, '[phone]')
+    .replace(PHONE_IN_TEXT, (match) => (match.replace(/\D/g, '').length >= 9 ? '[phone]' : match))
     .slice(0, STAFF_NOTE_MAX);
 }
 
 /**
  * Keeps the staff's "Tell Nava" text on the work item as a masked note.staff event. The same masked text is kept once per
- * item, so a re-read with the same note adds no second row.
+ * item, so a re-read with the same note adds no second row. The check and the insert share one transaction under the
+ * item's row lock, so calls that overlap cannot both see no note and both insert it.
  */
 export async function recordStaffNote(
   db: DB,
@@ -88,25 +95,28 @@ export async function recordStaffNote(
   const text = maskStaffNote(input.note.trim());
   if (!text) return;
   const payloadHash = createHash('sha256').update(text).digest('hex');
-  const [seen] = await db
-    .select({ id: workEvent.id })
-    .from(workEvent)
-    .where(
-      and(
-        eq(workEvent.workItemId, input.workItemId),
-        eq(workEvent.type, 'note.staff'),
-        eq(workEvent.payloadHash, payloadHash),
-      ),
-    )
-    .limit(1);
-  if (seen) return;
-  await db.insert(workEvent).values({
-    workItemId: input.workItemId,
-    actorKind: 'user',
-    actorUserId: input.userId,
-    type: 'note.staff',
-    value: { text },
-    payloadHash,
+  await db.transaction(async (tx) => {
+    await tx.select({ id: workItem.id }).from(workItem).where(eq(workItem.id, input.workItemId)).for('update');
+    const [seen] = await tx
+      .select({ id: workEvent.id })
+      .from(workEvent)
+      .where(
+        and(
+          eq(workEvent.workItemId, input.workItemId),
+          eq(workEvent.type, 'note.staff'),
+          eq(workEvent.payloadHash, payloadHash),
+        ),
+      )
+      .limit(1);
+    if (seen) return;
+    await tx.insert(workEvent).values({
+      workItemId: input.workItemId,
+      actorKind: 'user',
+      actorUserId: input.userId,
+      type: 'note.staff',
+      value: { text },
+      payloadHash,
+    });
   });
 }
 
