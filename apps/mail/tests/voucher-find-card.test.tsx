@@ -242,6 +242,40 @@ describe('voucher find card: the existing search', () => {
     expect(queueSearchGuest).not.toHaveBeenCalled();
   });
 
+  it('keeps Find hidden until a slow read-back settles, then shows the existing result', async () => {
+    const prefetched: HmsJobView = {
+      runId: 'prefetch-slow',
+      request: { kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' },
+      prefetch: true,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: AS_OF,
+      result: { outcome: 'ok', rows: [SMITH_ROW], screenshots: [], runId: null },
+    };
+    let answerRead: (job: HmsJobView | null) => void = () => {};
+    const status = vi.fn<JobStatusQuery>(
+      () =>
+        new Promise<HmsJobView | null>((resolve) => {
+          answerRead = resolve;
+        }),
+    );
+    const { trpc, searchGuest, queueSearchGuest } = fakeTrpc({ reply: VOUCHER, status });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    // The read-back is still in flight: the card is up, and there is no Find button a click could queue a search from.
+    await waitFor(() => expect(status).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(VOUCHER_COPY.caption)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
+
+    answerRead(prefetched);
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
+    expect(searchGuest).not.toHaveBeenCalled();
+    expect(queueSearchGuest).not.toHaveBeenCalled();
+  });
+
   it('keeps a single surname-mismatching row as a candidate instead of promoting it to a voucher match', async () => {
     const unrelated = { ...SMITH_ROW, lastName: 'Jones', firstName: 'Jane' };
     const { trpc } = fakeTrpc({ reply: VOUCHER, search: { outcome: 'ok', rows: [unrelated], screenshots: [], runId: null } });

@@ -919,8 +919,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
       // Hold the transport's cap lock on a third connection. Both prefetches must wait behind it, not count past it.
       let markLocked = () => {};
-      const locked = new Promise<void>((resolve) => {
+      let failLocked: (error: unknown) => void = () => {};
+      const locked = new Promise<void>((resolve, reject) => {
         markLocked = resolve;
+        failLocked = reject;
       });
       let releaseLock = () => {};
       const released = new Promise<void>((resolve) => {
@@ -933,21 +935,31 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         markLocked();
         await released;
       });
-      await locked;
+      // A holder that fails before taking the lock fails the wait, so the test reports the error instead of hanging.
+      holder.catch(failLocked);
       let settledWhileHeld = 0;
-      const first = prefetchHmsConfirmations(firstRun, left.db, env).then((count) => {
-        settledWhileHeld += 1;
-        return count;
-      });
-      const second = prefetchHmsConfirmations(secondRun, right.db, env).then((count) => {
-        settledWhileHeld += 1;
-        return count;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const doneWhileHeld = settledWhileHeld;
-      releaseLock();
-      await holder;
-      const queued = await Promise.all([first, second]);
+      let doneWhileHeld = 0;
+      let queued: number[] = [];
+      try {
+        await locked;
+        const first = prefetchHmsConfirmations(firstRun, left.db, env).then((count) => {
+          settledWhileHeld += 1;
+          return count;
+        });
+        const second = prefetchHmsConfirmations(secondRun, right.db, env).then((count) => {
+          settledWhileHeld += 1;
+          return count;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        doneWhileHeld = settledWhileHeld;
+        releaseLock();
+        await holder;
+        queued = await Promise.all([first, second]);
+      } finally {
+        // Release on every path, so the holder's transaction and its connection end even when a step above failed.
+        releaseLock();
+        await holder.catch(() => undefined);
+      }
       expect(doneWhileHeld).toBe(0);
       expect(queued.reduce((sum, count) => sum + count, 0)).toBe(1);
       const rows = await setup.db

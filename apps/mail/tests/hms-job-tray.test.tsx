@@ -189,6 +189,20 @@ describe('the age on a dated HMS snapshot', () => {
     expect(formatAsOfAgo(new Date(Date.parse(AS_OF) + 60_000).toISOString(), new Date(AS_OF))).toBe('just now');
   });
 
+  it('moves on while the card stays open, so an old result never reads "just now"', async () => {
+    vi.setSystemTime(new Date(AS_OF));
+    render(<HmsAsOf asOf={AS_OF} />);
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS just now');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+    });
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS 2 min ago');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+    });
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS 1 hr ago');
+  });
+
   it('shows nothing without a date, and no age for a value that is not a date', () => {
     const { container } = render(<HmsAsOf asOf={null} />);
     expect(container.textContent).toBe('');

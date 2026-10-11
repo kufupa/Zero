@@ -1,4 +1,5 @@
 import { Loader2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import type { HmsJobView } from '@/lib/quote-workflow/amend-find';
 import type { QueueStatus } from '@/lib/quote-workflow/types';
 
@@ -155,8 +156,17 @@ export function HmsJobStatusLine({
   );
 }
 
-/** "Looked up in HMS <time ago>" under a dated result. Renders nothing without a valid stamp. */
+/**
+ * "Looked up in HMS <time ago>" under a dated result. Renders nothing without a valid stamp. A once-a-minute tick
+ * re-renders the age, since an idle card gets no other update after its job settles.
+ */
 export function HmsAsOf({ asOf }: { asOf: string | null }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!asOf) return;
+    const timer = setInterval(() => setTick((tick) => tick + 1), 60_000);
+    return () => clearInterval(timer);
+  }, [asOf]);
   const ago = asOf ? formatAsOfAgo(asOf) : null;
   if (!ago) return null;
   return (

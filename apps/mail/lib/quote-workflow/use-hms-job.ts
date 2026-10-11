@@ -25,6 +25,11 @@ export type HmsJobState = {
   queueFailed: boolean;
   /** True when the read-back failed, so the pane can offer a safe retry. */
   statusFailed: boolean;
+  /**
+   * False until the read-back for the current scope answers. An auto-start is queued in that same step, so queuing,
+   * view and queueFailed cover it after this turns true.
+   */
+  readBackSettled: boolean;
   start: (request: HmsJobRequest, options?: HmsJobQueueOptions) => void;
   /** Queues the last request again, for a job that failed. */
   retry: () => void;
@@ -74,6 +79,7 @@ export function useHmsJob(input: {
   const [queuing, setQueuing] = useState(false);
   const [queueFailed, setQueueFailed] = useState(false);
   const [statusFailed, setStatusFailed] = useState(false);
+  const [readBackSettled, setReadBackSettled] = useState(false);
   const [statusRetryRound, setStatusRetryRound] = useState(0);
   // Each start and each scope change takes a new generation. An answer from an older one is dropped.
   const generation = useRef(0);
@@ -138,6 +144,7 @@ export function useHmsJob(input: {
     setQueuing(false);
     setQueueFailed(false);
     setStatusFailed(false);
+    setReadBackSettled(false);
     if (!transport || !resumeKind) return;
     let live = true;
     const query = {
@@ -150,6 +157,7 @@ export function useHmsJob(input: {
     transport.status(query).then(
       (found) => {
         if (!live || generation.current !== mine) return;
+        setReadBackSettled(true);
         if (found && resumedFor(found.request, resumeLastName, resumeArrival, resumeDeparture)) {
           lastRequest.current = found.request;
           lastRequestOptions.current = undefined;
@@ -165,6 +173,7 @@ export function useHmsJob(input: {
       },
       () => {
         if (!live || generation.current !== mine) return;
+        setReadBackSettled(true);
         setStatusFailed(true);
       },
     );
@@ -199,5 +208,5 @@ export function useHmsJob(input: {
     };
   }, [transport, runId]);
 
-  return { view, queuing, queueFailed, statusFailed, start, retry };
+  return { view, queuing, queueFailed, statusFailed, readBackSettled, start, retry };
 }

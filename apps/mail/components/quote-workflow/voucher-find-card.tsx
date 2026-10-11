@@ -166,7 +166,13 @@ export function VoucherFindCard({
     ...conflicts,
   ].filter((text): text is string => text !== null);
 
-  const searchIdle = searchJob.view === null && !searchJob.queuing && !searchJob.queueFailed && !searchJob.statusFailed;
+  // Find waits for the read-back and any auto-start. A click during a slow read-back would queue a second search.
+  const searchIdle =
+    searchJob.readBackSettled &&
+    searchJob.view === null &&
+    !searchJob.queuing &&
+    !searchJob.queueFailed &&
+    !searchJob.statusFailed;
   const searchRun: HmsSearchRun | null = searchRunFromJob(searchJob.view, searchJob.queueFailed);
   const singleMatch =
     searchRun?.kind === 'rows' &&
