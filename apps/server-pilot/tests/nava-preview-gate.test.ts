@@ -195,7 +195,7 @@ describe('nava-preview-gate.sh --ae1-rates and --ae2-find', () => {
     const result = gateRun(['--ae1-rates', 'thread-ae1', '--dry-run'], { ENV_FILE: env });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('AE1 multi-stay rates on thread thread-ae1');
-    expect(result.stdout).toContain('15/15 per stay where the pane has no count');
+    expect(result.stdout).toContain('none (counts from the read) per stay where the pane has no count');
     expect(result.stdout).toContain('one rates read per stay (workstation.executeStaffQuote)');
     expect(result.stdout).toContain('/opt/nava/shared/nava-preview/ae1-rates-<UTC run id>/');
     expect(result.stdout).toContain('s3://test-bucket-xyz/nava-preview-gate/<run id>/');
