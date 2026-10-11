@@ -17,12 +17,14 @@ import {
   openStoredWork,
   parseFieldPath,
   recordFieldEvent,
+  refreshThreadWork,
   storedTranslation,
   storedWorkFor,
   validFieldValue,
   workItemIdForMail,
 } from '../src/ai/work-items.js';
 import { maskStaffNote, recordStaffNote } from '../src/ai/work-events.js';
+import { parseReplyLinkArgs, runReplyLinkBackfill } from '../scripts/backfill-reply-link.js';
 import { HMS_JOB_PROMPT_VERSION, NOT_APPLICABLE_MODEL_ID } from '../src/ai/run-ledger.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import * as schema from '../src/db/schema/index.js';
@@ -1677,5 +1679,326 @@ describe('pane telemetry and staff notes (v5 B1, B2)', () => {
       const reopened = await readyWork(db, 'ta3');
       expect(reopened.analysis.groups[0]!.arrivalDate).toBe('2027-10-26');
       expect(reopened.analysis.groups[0]!.fields.arrivalDate).toBe('extracted');
+    }));
+});
+
+// Thread rules: reply link (C2), same-thread collapse (C3) and staff-sent other. Each mail has its own time, so the rules
+// see the order the mail arrived or was sent in.
+const MAILBOX = 'centurion@legacyhotels.co.za';
+const GUEST = 'sender@example.com';
+const STAFF = 'ops@legacyhotels.co.za';
+
+/** A guest mail on a thread, received at `at`. Returns its message id. */
+async function guestMail(db: DB, id: string, threadId: string, at: string, from = GUEST): Promise<string> {
+  const messageId = `msg-${id}`;
+  await seedInboxThread(db, {
+    threadId,
+    transportId: CENTURION,
+    transportEmail: MAILBOX,
+    messageId,
+    fromAddress: from,
+    subject: 'Rooms request',
+    textBody: 'Please quote.',
+    messageIdHeader: `${id}@example.com`,
+  });
+  await db.update(message).set({ receivedAt: new Date(at) }).where(eq(message.id, messageId));
+  return messageId;
+}
+
+/** A hotel mail on a thread, sent at `at`. A queued send has no sent time yet. */
+async function hotelMail(db: DB, id: string, threadId: string, at: string, queued = false): Promise<string> {
+  const messageId = `msg-${id}`;
+  await db.insert(message).values({
+    id: messageId,
+    transportId: CENTURION,
+    threadId,
+    direction: 'outbound',
+    fromAddress: MAILBOX,
+    toAddresses: [GUEST],
+    subject: 'Re: Rooms request',
+    textBody: 'Quoted.',
+    ownerHeaderValue: MAILBOX,
+    messageIdHeader: `${id}@example.com`,
+    sentAt: queued ? null : new Date(at),
+  });
+  return messageId;
+}
+
+/** A guest mail's read, as the inbound run stores it. */
+function readOf(db: DB, messageId: string, kind: 'quote' | 'other', version = 'extract-v1') {
+  return insertRead(db, messageId, { version, kind, payload: payload() });
+}
+
+/** The thread rules, run the way live admission runs them when a mail lands on the thread. */
+function refreshThread(db: DB, threadId: string) {
+  return refreshThreadWork(db, { transportId: CENTURION, threadId });
+}
+
+async function replyStatus(db: DB, workItemId: string) {
+  const [row] = await db.select({ status: workItem.status }).from(workItem).where(eq(workItem.id, workItemId));
+  return row!.status;
+}
+
+describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C3)', () => {
+  it('dismisses an older untouched request when a newer one lands on the thread', () =>
+    withDb(async (db) => {
+      const older = await guestMail(db, 'col-1', 'thread-col-1', '2027-10-01T08:00:00Z');
+      await readOf(db, older, 'quote');
+      const first = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: older });
+      const newer = await guestMail(db, 'col-2', 'thread-col-1', '2027-10-01T09:00:00Z');
+      await readOf(db, newer, 'quote');
+      const second = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: newer });
+
+      expect(await replyStatus(db, first!.id)).toBe('dismissed');
+      expect(await eventsFor(db, first!.id)).toEqual([
+        expect.objectContaining({
+          actorKind: 'system',
+          type: 'status.changed',
+          value: expect.objectContaining({
+            from: 'needs_you',
+            to: 'dismissed',
+            reason: 'superseded_by_thread',
+            supersededBy: second!.id,
+          }),
+        }),
+      ]);
+      expect(await replyStatus(db, second!.id)).toBe('needs_you');
+    }));
+
+  it('keeps an older request she has edited when a newer one lands on the thread', () =>
+    withDb(async (db) => {
+      const older = await guestMail(db, 'col-3', 'thread-col-3', '2027-10-01T08:00:00Z');
+      await readOf(db, older, 'quote');
+      const first = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: older });
+      expect(
+        await recordFieldEvent(db, {
+          transportId: CENTURION,
+          workItemId: first!.id,
+          userId: USER,
+          type: 'field.edit',
+          fieldPath: 'contact.phone',
+          value: '+27 11 555 0100',
+        }),
+      ).toMatchObject({ status: 'recorded' });
+      const newer = await guestMail(db, 'col-4', 'thread-col-3', '2027-10-01T09:00:00Z');
+      await readOf(db, newer, 'quote');
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: newer });
+      expect(await replyStatus(db, first!.id)).toBe('needs_you');
+    }));
+
+  it('a newer other mail never supersedes a request', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'col-5', 'thread-col-5', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const first = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const aside = await guestMail(db, 'col-6', 'thread-col-5', '2027-10-01T09:00:00Z');
+      await readOf(db, aside, 'other');
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: aside });
+      expect(await replyStatus(db, first!.id)).toBe('needs_you');
+    }));
+
+  it('a staff-sent other mail gets no needs-you; a guest other mail still does', () =>
+    withDb(async (db) => {
+      const staff = await guestMail(db, 'staff-1', 'thread-staff-1', '2027-10-01T08:00:00Z', STAFF);
+      await readOf(db, staff, 'other');
+      const staffItem = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: staff });
+      expect(staffItem).toMatchObject({ status: 'done' });
+      expect(await eventsFor(db, staffItem!.id)).toEqual([
+        expect.objectContaining({
+          actorKind: 'system',
+          value: expect.objectContaining({ from: 'needs_you', to: 'done', reason: 'staff_sent_other' }),
+        }),
+      ]);
+
+      const guest = await guestMail(db, 'staff-2', 'thread-staff-2', '2027-10-01T08:00:00Z');
+      await readOf(db, guest, 'other');
+      expect(await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: guest })).toMatchObject({
+        status: 'needs_you',
+      });
+    }));
+
+  it('a hotel reply after the request closes it, with its sent time and message', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'rp-1', 'thread-rp-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const reply = await hotelMail(db, 'rp-1-out', 'thread-rp-1', '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, 'thread-rp-1')).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: reply }),
+      ]);
+      const [closed] = await db.select().from(workItem).where(eq(workItem.id, item!.id));
+      const [sent] = await db.select({ sentAt: message.sentAt }).from(message).where(eq(message.id, reply));
+      expect(closed).toMatchObject({ status: 'done', sentMessageId: reply });
+      expect(closed!.sentAt).toEqual(sent!.sentAt);
+      expect(await eventsFor(db, item!.id)).toEqual([
+        expect.objectContaining({
+          actorKind: 'system',
+          value: expect.objectContaining({
+            from: 'needs_you',
+            to: 'done',
+            reason: 'hotel_replied',
+            sentMessageId: reply,
+          }),
+        }),
+      ]);
+
+      // A request that arrives after its reply starts done.
+      const late = await guestMail(db, 'rp-2', 'thread-rp-2', '2027-10-01T08:00:00Z');
+      await hotelMail(db, 'rp-2-out', 'thread-rp-2', '2027-10-01T09:00:00Z');
+      await readOf(db, late, 'quote');
+      expect(await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: late })).toMatchObject({
+        status: 'done',
+      });
+    }));
+
+  it('a hotel mail sent before the request does not close it', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'early-1', 'thread-early-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      await hotelMail(db, 'early-1-out', 'thread-early-1', '2027-10-01T07:00:00Z');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      expect(await refreshThread(db, 'thread-early-1')).toEqual([]);
+      const [row] = await db.select().from(workItem).where(eq(workItem.id, item!.id));
+      expect(row).toMatchObject({ status: 'needs_you', sentMessageId: null, sentAt: null });
+    }));
+
+  it('a queued send with no sent time is not a reply', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'queued-1', 'thread-queued-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'queued-1-out', 'thread-queued-1', '2027-10-01T09:00:00Z', true);
+      expect(await refreshThread(db, 'thread-queued-1')).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
+  it('a new guest mail reopens a closed request, and the link moves to the next hotel reply', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'reopen-1', 'thread-reopen-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const first = await hotelMail(db, 'reopen-1-a', 'thread-reopen-1', '2027-10-01T09:00:00Z');
+      await refreshThread(db, 'thread-reopen-1');
+
+      // The new guest mail has no read yet; live admission still runs the thread rules on it.
+      await guestMail(db, 'reopen-1-b', 'thread-reopen-1', '2027-10-01T10:00:00Z');
+      expect(await refreshThread(db, 'thread-reopen-1')).toEqual([
+        expect.objectContaining({ to: 'needs_you', reason: 'new_inbound', previousSentMessageId: first }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+
+      const second = await hotelMail(db, 'reopen-1-c', 'thread-reopen-1', '2027-10-01T11:00:00Z');
+      await refreshThread(db, 'thread-reopen-1');
+      const [row] = await db.select().from(workItem).where(eq(workItem.id, item!.id));
+      expect(row).toMatchObject({ status: 'done', sentMessageId: second });
+    }));
+
+  it('a later hotel reply moves the link to it, with no new status change', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'repoint-1', 'thread-repoint-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'repoint-1-a', 'thread-repoint-1', '2027-10-01T09:00:00Z');
+      await refreshThread(db, 'thread-repoint-1');
+      const later = await hotelMail(db, 'repoint-1-b', 'thread-repoint-1', '2027-10-01T10:00:00Z');
+
+      expect(await refreshThread(db, 'thread-repoint-1')).toEqual([
+        expect.objectContaining({ repoint: expect.objectContaining({ sentMessageId: later }) }),
+      ]);
+      const [row] = await db.select().from(workItem).where(eq(workItem.id, item!.id));
+      expect(row).toMatchObject({ status: 'done', sentMessageId: later });
+      expect(await eventsFor(db, item!.id)).toHaveLength(1);
+    }));
+
+  it('a request she dismissed stays dismissed through a hotel reply and a newer request', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'dismiss-1', 'thread-dismiss-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      expect(
+        await dismissWorkItem(db, { transportId: CENTURION, workItemId: item!.id, userId: USER }),
+      ).toEqual({ status: 'dismissed' });
+
+      await hotelMail(db, 'dismiss-1-out', 'thread-dismiss-1', '2027-10-01T09:00:00Z');
+      expect(await refreshThread(db, 'thread-dismiss-1')).toEqual([]);
+      const newer = await guestMail(db, 'dismiss-2', 'thread-dismiss-1', '2027-10-01T10:00:00Z');
+      await readOf(db, newer, 'quote');
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: newer });
+      expect(await replyStatus(db, item!.id)).toBe('dismissed');
+      expect(await eventsFor(db, item!.id)).toHaveLength(1);
+    }));
+
+  it('brings a superseded request back when its read lands again and no newer request is open', () =>
+    withDb(async (db) => {
+      const older = await guestMail(db, 'restore-1', 'thread-restore-1', '2027-10-01T08:00:00Z');
+      await readOf(db, older, 'quote');
+      const first = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: older });
+      const newer = await guestMail(db, 'restore-2', 'thread-restore-1', '2027-10-01T09:00:00Z');
+      await readOf(db, newer, 'quote');
+      const second = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: newer });
+      expect(await replyStatus(db, first!.id)).toBe('dismissed');
+
+      // She dismisses the newer request, then the older mail's read lands again with nothing newer open.
+      await dismissWorkItem(db, { transportId: CENTURION, workItemId: second!.id, userId: USER });
+      await readOf(db, older, 'quote', 'extract-v2');
+      expect(await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: older })).toMatchObject({
+        id: first!.id,
+        status: 'needs_you',
+      });
+      expect(await replyStatus(db, second!.id)).toBe('dismissed');
+      const open = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(open.map((row) => row.id)).toEqual([first!.id]);
+    }));
+});
+
+describe('reply link backfill (C2, C3)', () => {
+  it('is a dry run unless --apply is passed', () => {
+    expect(parseReplyLinkArgs([])).toEqual({ apply: false, help: false });
+    expect(parseReplyLinkArgs(['--apply', '--transport-id', CENTURION])).toEqual({
+      apply: true,
+      help: false,
+      transportId: CENTURION,
+    });
+    expect(() => parseReplyLinkArgs(['--write'])).toThrow();
+  });
+
+  it('a dry run counts the changes and writes nothing; apply writes them once', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'backfill-1', 'thread-backfill-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      // The reply is stored without the rules running on it, as a row from before the change would be.
+      await hotelMail(db, 'backfill-1-out', 'thread-backfill-1', '2027-10-01T09:00:00Z');
+
+      expect(await runReplyLinkBackfill({ db, apply: false })).toEqual({
+        apply: false,
+        threads: 1,
+        changes: 1,
+        byKind: { quote: 1 },
+        byReason: { hotel_replied: 1 },
+      });
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+      expect(await eventsFor(db, item!.id)).toEqual([]);
+
+      expect(await runReplyLinkBackfill({ db, apply: true })).toEqual({
+        apply: true,
+        threads: 1,
+        changes: 1,
+        byKind: { quote: 1 },
+        byReason: { hotel_replied: 1 },
+      });
+      expect(await replyStatus(db, item!.id)).toBe('done');
+      expect(await eventsFor(db, item!.id)).toHaveLength(1);
+
+      // A second apply still lists the thread, with nothing left to change.
+      expect(await runReplyLinkBackfill({ db, apply: true })).toEqual({
+        apply: true,
+        threads: 1,
+        changes: 0,
+        byKind: {},
+        byReason: {},
+      });
+      expect(await eventsFor(db, item!.id)).toHaveLength(1);
     }));
 });

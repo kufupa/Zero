@@ -10,8 +10,11 @@ import {
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushDue, flushOne } from '../src/mail/send/outbound-queue.js';
-import { message, outboundSendQueue } from '../src/db/schema/mail.js';
+import { mailboxTransport, message, outboundSendQueue } from '../src/db/schema/mail.js';
 import { callerFor } from './helpers/trpc-caller.js';
+import { seedInboxThread } from './helpers/seed-inbox-thread.js';
+import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
+import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { INGEST_EMAIL } from '../src/db/seed.js';
 import { and, eq } from 'drizzle-orm';
 
@@ -667,6 +670,52 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('outbound SMTP delivery outcom
         code: 'LEGACY_HEADER_ONLY_DELIVERY',
       });
       expect(scripted.send).toHaveBeenCalledTimes(1);
+    });
+  }, 30000);
+
+  it('a reply Nava sends on a thread closes the request it answers, with its sent time', async () => {
+    await withSeededTestDb(async (db) => {
+      const [transport] = await db
+        .select({ email: mailboxTransport.email })
+        .from(mailboxTransport)
+        .where(eq(mailboxTransport.id, transportId))
+        .limit(1);
+      await seedInboxThread(db, {
+        threadId: 'thread-nava-reply',
+        transportId,
+        transportEmail: transport!.email,
+        messageId: 'msg-nava-request',
+        fromAddress: 'guest@zero.test',
+        messageIdHeader: 'nava-request@zero.test',
+      });
+      await db.insert(mailExtraction).values({
+        messageId: 'msg-nava-request',
+        extractorVersion: 'extract-v1',
+        status: 'succeeded',
+        kind: 'quote',
+        payload: { stays: [] },
+      });
+      const request = await ensureWorkItemForMessage(db, { transportId, messageId: 'msg-nava-request' });
+      expect(request).toMatchObject({ status: 'needs_you' });
+
+      const scripted = scriptedTransport({
+        messageId: 'nava-reply@zero.test',
+        accepted: ['guest@zero.test'],
+        rejected: [],
+      });
+      __setSmtpTransportForTests(scripted.transport);
+      const caller = await callerFor('user-navaai', { db, requestedTransportId: transportId });
+      const result = await caller.mail.send({
+        to: ['guest@zero.test'],
+        subject: 'Re: Rooms request',
+        html: '<p>Quoted.</p>',
+        text: 'Quoted.',
+        threadId: 'thread-nava-reply',
+      });
+
+      expect(result).toMatchObject({ sent: true });
+      const [closed] = await db.select().from(workItem).where(eq(workItem.id, request!.id));
+      expect(closed).toMatchObject({ status: 'done', sentMessageId: result.messageId });
     });
   }, 30000);
 });
