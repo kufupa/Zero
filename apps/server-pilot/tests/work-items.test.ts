@@ -1,6 +1,5 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { eq } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
@@ -1967,7 +1966,14 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
       expect(await db.select().from(workItem).where(eq(workItem.id, legacy!.id))).toMatchObject([
         { status: 'done', sentMessageId: answer, sentAt: new Date('2027-10-01T09:00:00Z') },
       ]);
-      expect(await eventsFor(db, legacy!.id)).toEqual([]);
+      // The link records the close the rules made, the same event a hotel reply close writes, so the quote clock can use it.
+      expect(await eventsFor(db, legacy!.id)).toMatchObject([
+        {
+          actorKind: 'system',
+          type: 'status.changed',
+          value: { from: 'done', to: 'done', reason: 'hotel_replied', sentMessageId: answer },
+        },
+      ]);
 
       await guestMail(db, 'legacy-2', 'thread-legacy-1', '2027-10-01T10:00:00Z');
       expect(await refreshThread(db, 'thread-legacy-1')).toEqual([

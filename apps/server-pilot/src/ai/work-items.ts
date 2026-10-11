@@ -896,6 +896,28 @@ async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Prom
         updatedAt: now,
       })
       .where(eq(workItem.id, change.workItemId));
+    // The quote clock keys on a recorded hotel_replied close (CLOSED_BY_HOTEL_REPLY). A done item closed before the reply
+    // link existed has none, so its link records one, as the other close does. A link that moves on a close already
+    // recorded needs no second event.
+    const [recorded] = await tx
+      .select({ id: workEvent.id })
+      .from(workEvent)
+      .where(
+        and(
+          eq(workEvent.workItemId, change.workItemId),
+          eq(workEvent.type, 'status.changed'),
+          sql`${workEvent.value}->>'reason' = ${HOTEL_REPLIED}`,
+        ),
+      )
+      .limit(1);
+    if (!recorded) {
+      await tx.insert(workEvent).values({
+        workItemId: change.workItemId,
+        actorKind: 'system',
+        type: 'status.changed',
+        value: { from: 'done', to: 'done', reason: HOTEL_REPLIED, sentMessageId: change.repoint.sentMessageId },
+      });
+    }
     return;
   }
   const from = change.to === 'needs_you' ? 'done' : 'needs_you';

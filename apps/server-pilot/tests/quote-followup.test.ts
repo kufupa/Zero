@@ -1127,6 +1127,28 @@ describe('a quote a hotel reply closed (C2) keeps its follow-up clock', () => {
     });
   });
 
+  it('a legacy done quote that a later hotel reply links is clocked by the sweep', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      // Closed before the reply link existed: done, with no link and no hotel_replied event.
+      const itemId = await quoteRequest(db, 'thread-c2-legacy', REQUEST_AT, 'done');
+      await sendReply(db, { id: 'out-c2-legacy', threadId: 'thread-c2-legacy', sentAt: FRI_SEND });
+
+      // The rules link it to the hotel's reply, and record that link as the close.
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-legacy' });
+      expect(await loadItem(db, itemId)).toMatchObject({ status: 'done', sentMessageId: 'out-c2-legacy' });
+
+      // The sweep clocks it from the reply, as it does for any quote a hotel reply closed.
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+    });
+  });
+
   it('a reminder a person sends starts no second clock, so no second reminder', async () => {
     await withIngestionDb(async ({ db }) => {
       await seedNavaUser(db);
