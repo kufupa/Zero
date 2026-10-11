@@ -8,12 +8,16 @@ import {
   enqueueHmsJob,
   HMS_JOB_PRIORITY_PREFETCH,
   HMS_JOB_PRIORITY_USER,
+  prefetchHmsConfirmations,
   readHmsBatchView,
   requeueHmsReadsAfterRestart,
   selectHmsBatchRequest,
   type HmsBatchView,
   type HmsJobRequest,
 } from '../src/ai/hms-jobs.js';
+import { paneStayLookupLoaders } from '../src/ai/pane-stay-lookup.js';
+import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
+import { parseEnv } from '../src/env.js';
 import {
   claimNextAiRun,
   HMS_JOB_PROMPT_VERSION,
@@ -504,6 +508,40 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
       expect(batch.items[1]?.request).toEqual({ kind: 'search_guest', lastName: 'Smith', arrival: ARRIVAL });
     }));
 
+  it('skips a spam item without a lookup and queues the rest', () =>
+    withSeededTestDb(async (db) => {
+      const items = await seedBatchItems(db, 2);
+      await db.update(mailThread).set({ spamAt: new Date() }).where(eq(mailThread.id, items[0]!.threadId));
+      const batch = await enqueueBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: items.map((item) => item.workItemId),
+        },
+        db,
+      );
+      expect(batch.items.map((item) => item.status)).toEqual(['skipped', 'queued']);
+      expect(batch.items[0]).toMatchObject({ reason: 'spam', runId: null });
+    }));
+
+  it('batch enqueue and cancel never take the property lock', () =>
+    withSeededTestDb(async (db) => {
+      const [item] = await seedBatchItems(db, 1);
+      const takeLock = vi.fn(async () => {
+        throw new Error('batch path must not take the property lock');
+      });
+      paneStayLookupLoaders.lock = { withLock: takeLock } as unknown as PaneStayLock;
+      try {
+        const batchId = randomUUID();
+        await enqueueBatch({ batchId, transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, workItemIds: [item!.workItemId] }, db);
+        await expect(cancelHmsBatch({ batchId, transportId: TRANSPORT_ID }, db)).resolves.toMatchObject({ batchId });
+        expect(takeLock).not.toHaveBeenCalled();
+      } finally {
+        paneStayLookupLoaders.lock = null;
+      }
+    }));
+
   it('cancels only the queued remainder mid-batch and keeps running and done results', () =>
     withSeededTestDb(async (db) => {
       const items = await seedBatchItems(db, 3);
@@ -746,6 +784,52 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       await expect(enqueueHmsBatch(input, db)).resolves.toMatchObject({ batchId, status: 'queued' });
       expect(await batchRows(db, batchId)).toHaveLength(1);
+    }));
+
+  it('a staff batch does not spend the automatic guest prefetch cap', () =>
+    withSeededTestDb(async (db) => {
+      const [staffItem, inboundItem] = await seedBatchItems(db, 2, {
+        item: (index) =>
+          index === 0
+            ? {
+                kind: 'amendment',
+                payload: { confirmationNumbers: [], stays: [{ booked: { arrival: ARRIVAL } }] },
+                textBody: 'Guest: John Smith arriving 12 October.',
+              }
+            : {
+                kind: 'booking',
+                payload: { confirmationNumbers: [], stays: [{ requested: { arrival: ARRIVAL } }] },
+                textBody: 'Guest: Jane Doe arriving 12 October.',
+              },
+      });
+      // One staff search uses the whole HMS_GUEST_PREFETCH_PER_HOUR=1 budget if batch rows were counted.
+      await enqueueBatch(
+        { batchId: randomUUID(), transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, workItemIds: [staffItem!.workItemId] },
+        db,
+      );
+      const [inbound] = await db
+        .insert(aiWorkflowRun)
+        .values({
+          id: randomUUID(),
+          transportId: TRANSPORT_ID,
+          threadId: inboundItem!.threadId,
+          triggerMessageId: inboundItem!.messageId,
+          runKind: 'inbound_extraction',
+          idempotencyKey: `inbound-extraction:${inboundItem!.messageId}`,
+          modelId: 'amazon.nova-lite-v1:0',
+          promptVersion: 'triage-v6',
+          admissionSnapshotId: `snapshot-${randomUUID()}`,
+          state: 'succeeded',
+          executorLane: 'default',
+          priority: 0,
+        })
+        .returning();
+      const env = {
+        ...parseEnv(process.env as Record<string, string | undefined>),
+        HMS_PREFETCH_ENABLED: true,
+        HMS_GUEST_PREFETCH_PER_HOUR: 1,
+      };
+      expect(await prefetchHmsConfirmations(inbound!, db, env)).toBe(1);
     }));
 
   it('claims a staff lookup queued after the batch before any batch item', () =>

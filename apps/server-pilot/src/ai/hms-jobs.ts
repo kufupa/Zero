@@ -130,12 +130,13 @@ export type HmsJobView = {
 
 export type HmsBatchStatus = 'queued' | 'running' | 'partial' | 'done' | 'failed' | 'cancelled';
 export type HmsBatchItemStatus = HmsJobStatus | 'skipped' | 'reused' | 'cancelled';
+export type HmsBatchSkipReason = 'insufficient_data' | 'spam';
 
 export type HmsBatchItemView = {
   itemIndex: number;
   workItemId: string;
   status: HmsBatchItemStatus;
-  reason: 'insufficient_data' | null;
+  reason: HmsBatchSkipReason | null;
   runId: string | null;
   request: HmsJobRequest | null;
   /** The linked lookup view, including its persisted snapshot when one exists. */
@@ -452,6 +453,7 @@ type HmsBatchSource = {
   workItemId: string;
   threadId: string;
   triggerMessageId: string;
+  spamAt: Date | null;
   extraction: { status: string; kind: string | null; payload: unknown } | null;
   subject: string | null;
   textBody: string | null;
@@ -467,6 +469,9 @@ function batchItemIdempotencyKey(batchId: string, workItemId: string): string {
   return `hms-job:batch:${batchId}:${workItemId}`;
 }
 
+// Lock order: this transaction lock is taken only in enqueueHmsBatch and cancelHmsBatch, and nothing inside those
+// transactions takes the property lock (paneStayPropertyLock) or the guest-prefetch lock. Property-lock holders (HMS
+// spawns, the staff quote, the read service) never enqueue batch or prefetch rows, so no path nests the two locks.
 async function acquireHmsBatchLock(db: DB, input: HmsBatchScope): Promise<void> {
   await db.execute(
     sql`select pg_advisory_xact_lock(hashtextextended(${'hms-batch:' + input.transportId + ':' + input.batchId}, 0))`,
@@ -536,6 +541,7 @@ async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise
     workItemId: string;
     threadId: string;
     triggerMessageId: string;
+    spamAt: Date | null;
     subject: string | null;
     textBody: string | null;
   }> = [];
@@ -547,6 +553,7 @@ async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise
           workItemId: workItem.id,
           threadId: mailThread.id,
           triggerMessageId: message.id,
+          spamAt: mailThread.spamAt,
           subject: message.subject,
           textBody: message.textBody,
         })
@@ -708,7 +715,13 @@ function hmsBatchLink(input: {
   };
 }
 
-function hmsBatchSkippedValues(input: HmsBatchEnqueueInput, source: HmsBatchSource, itemIndex: number, now: Date) {
+function hmsBatchSkippedValues(
+  input: HmsBatchEnqueueInput,
+  source: HmsBatchSource,
+  itemIndex: number,
+  now: Date,
+  reason: HmsBatchSkipReason,
+) {
   return {
     id: randomUUID(),
     transportId: input.transportId,
@@ -730,7 +743,7 @@ function hmsBatchSkippedValues(input: HmsBatchEnqueueInput, source: HmsBatchSour
       batchId: input.batchId,
       itemIndex,
       batchItemStatus: 'skipped',
-      batchItemReason: 'insufficient_data',
+      batchItemReason: reason,
     },
     createdAt: new Date(now.getTime() + itemIndex),
     updatedAt: now,
@@ -772,16 +785,18 @@ export async function enqueueHmsBatch(
     const sourceById = new Map(sources.map((source) => [source.workItemId, source]));
     const orderedSources = input.workItemIds.map((id) => sourceById.get(id)!);
     const now = new Date();
-    const selections = orderedSources.map((source) =>
-      source.extraction?.status === 'succeeded'
+    // Spam gets no lookup, the same gate the automatic prefetch applies (spam thread or spam extraction).
+    const selections = orderedSources.map((source): { skipped: HmsBatchSkipReason } | { request: HmsJobRequest } => {
+      if (source.spamAt || source.extraction?.kind === 'spam') return { skipped: 'spam' };
+      return source.extraction?.status === 'succeeded'
         ? selectHmsBatchRequest({
             kind: source.extraction.kind,
             payload: source.extraction.payload,
             subject: source.subject,
             textBody: source.textBody,
           })
-        : { skipped: 'insufficient_data' as const },
-    );
+        : { skipped: 'insufficient_data' };
+    });
     const requested = orderedSources.flatMap((source, itemIndex) => {
       const selection = selections[itemIndex]!;
       return 'request' in selection ? [{ source, request: selection.request }] : [];
@@ -809,7 +824,7 @@ export async function enqueueHmsBatch(
     for (const [itemIndex, source] of orderedSources.entries()) {
       const selection = selections[itemIndex]!;
       if ('skipped' in selection) {
-        insertRows.push(hmsBatchSkippedValues(input, source, itemIndex, now));
+        insertRows.push(hmsBatchSkippedValues(input, source, itemIndex, now, selection.skipped));
         continue;
       }
 
@@ -899,6 +914,8 @@ async function countRecentPrefetches(
         eq(aiWorkflowRun.transportId, transportId),
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
         eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+        // Staff batch rows share the prefetch priority but carry batchId: they neither use nor are capped by these budgets.
+        sql`${aiWorkflowRun.metrics}->>'batchId' IS NULL`,
         sql`${aiWorkflowRun.readRequest}->>'kind' = ${kind}`,
         gt(aiWorkflowRun.createdAt, since),
       ),
@@ -1496,7 +1513,10 @@ export async function readHmsBatchView(input: HmsBatchScope, db: DB = getDb()): 
           itemIndex: metrics.itemIndex,
           workItemId: run.workItemId ?? '',
           status: 'skipped',
-          reason: metrics.batchItemReason === 'insufficient_data' ? 'insufficient_data' : null,
+          reason:
+            metrics.batchItemReason === 'insufficient_data' || metrics.batchItemReason === 'spam'
+              ? metrics.batchItemReason
+              : null,
           runId: null,
           request: null,
           job: null,
