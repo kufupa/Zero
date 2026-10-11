@@ -17,12 +17,14 @@ import type { DB } from '../src/db/client.js';
 import { eq } from 'drizzle-orm';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 const TRANSPORT_ID = 'transport-centurion';
 const TRANSPORT_EMAIL = 'centurion@legacyhotels.co.za';
 const STAY_A = 's_aaaa1111';
 const ROW_A = 'r_aaaa1111';
 const T0 = Date.parse('2026-10-10T09:00:00Z');
+const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
 type Edit = {
   type: WorkEventType;
@@ -217,7 +219,7 @@ describe('work-event label export', () => {
     });
   });
 
-  it('masks card numbers, addresses and phone numbers in the case text, the labels and the eval_label rows', async () => {
+  it('masks card numbers, addresses and phone numbers in the case text, the labels and the eval_label rows, and keeps the sender and mailbox domains as digests', async () => {
     await withIngestionDb(async ({ db }) => {
       const item = await seedItem(
         db,
@@ -249,13 +251,16 @@ describe('work-event label export', () => {
       expect(row.text).toContain('[card ••••1111]');
       expect(row.text).toContain('[phone]');
       expect(row.text).toContain('[email]');
-      expect(row.from).toBe('[email]@example.com');
+      expect(row.sender_domain_sha256).toBe(sha256('example.com'));
+      expect(row.mailbox_domain_sha256).toBe(sha256('legacyhotels.co.za'));
       expect(row.labels.find((label) => label.field_id === 'contact.email')?.human_value).toBe(
         '[email]',
       );
       expect(exported).not.toContain('4111111111111111');
       expect(exported).not.toContain('jane.smith@example.com');
       expect(exported).not.toContain('082 555 1234');
+      expect(exported).not.toContain('example.com');
+      expect(exported).not.toContain('legacyhotels.co.za');
     });
   });
 
@@ -538,6 +543,76 @@ describe('golden-set pinning and contact hashes', () => {
     });
   });
 
+  it('a stored holdout or test split beats a golden split, so a stored holdout or test thread never moves', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const field = `stays[${STAY_A}].requested.departure`;
+      const edit: Edit = {
+        type: 'field.edit',
+        fieldPath: field,
+        aiValue: '2027-10-28',
+        value: '2027-10-29',
+        at: 1,
+      };
+      const heldOut = await seedItem(db, 'thread-stored-holdout');
+      const tested = await seedItem(db, 'thread-stored-test');
+      await addEvents(db, heldOut, [edit]);
+      await addEvents(db, tested, [edit]);
+      await db.insert(evalLabel).values([
+        { workItemId: heldOut, fieldPath: field, labelKind: 'correction', split: 'holdout' },
+        { workItemId: tested, fieldPath: field, labelKind: 'correction', split: 'test' },
+      ]);
+
+      const { cases } = await exportLabels(db, {
+        golden: [
+          goldenCase('case-dev', 'dev', 'msg-thread-stored-holdout'),
+          goldenCase('case-holdout', 'holdout', 'msg-thread-stored-test'),
+        ],
+      });
+
+      expect(cases.find((row) => row.work_item_id === heldOut)).toMatchObject({
+        split: 'holdout',
+        split_source: 'stored',
+      });
+      expect(cases.find((row) => row.work_item_id === tested)).toMatchObject({
+        split: 'test',
+        split_source: 'stored',
+      });
+    });
+  });
+
+  it('fails the export when one work item has eval_label rows under two splits, rather than picking one', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const item = await seedItem(db, 'thread-conflict');
+      await addEvents(db, item, [
+        {
+          type: 'field.edit',
+          fieldPath: `stays[${STAY_A}].requested.arrival`,
+          aiValue: '2027-10-26',
+          value: '2027-10-27',
+          at: 1,
+        },
+      ]);
+      await db.insert(evalLabel).values([
+        {
+          workItemId: item,
+          fieldPath: `stays[${STAY_A}].requested.arrival`,
+          labelKind: 'correction',
+          split: 'dev',
+        },
+        {
+          workItemId: item,
+          fieldPath: `stays[${STAY_A}].requested.departure`,
+          labelKind: 'correction',
+          split: 'holdout',
+        },
+      ]);
+
+      await expect(exportLabels(db)).rejects.toThrow(
+        `eval_label rows for work item ${item} disagree on split (dev, holdout)`,
+      );
+    });
+  });
+
   it('a golden case whose message is not in this database warns, and its thread keeps the hash split', async () => {
     await withIngestionDb(async ({ db }) => {
       const item = await seedItem(db, 'thread-elsewhere');
@@ -584,6 +659,44 @@ describe('golden-set pinning and contact hashes', () => {
       expect(phone.value_hash!.salt).not.toBe(email.value_hash!.salt);
       expect(JSON.stringify(cases)).not.toMatch(/jane@hotel|jen@hotel|555 1234/i);
       expect(parseLabelCases(cases.map((c) => JSON.stringify(c)).join('\n'))).toHaveLength(1);
+    });
+  });
+
+  it('re-exporting unchanged labels writes the same file, and each label gets its own salt', async () => {
+    await withIngestionDb(async ({ db, url }) => {
+      const item = await seedItem(db, 'thread-stable-salt');
+      await addEvents(db, item, [
+        {
+          type: 'field.edit',
+          fieldPath: 'contact.email',
+          aiValue: 'jane@hotel.co.za',
+          value: 'Jen@Hotel.co.za',
+          at: 1,
+        },
+        {
+          type: 'field.edit',
+          fieldPath: 'contact.phone',
+          aiValue: '082 555 1234',
+          value: '+27 82 555 1234',
+          at: 2,
+        },
+      ]);
+      const dir = mkdtempSync(join(tmpdir(), 'work-events-stable-'));
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        expect(await main(['--out', join(dir, 'first.jsonl')], { DATABASE_URL: url })).toBe(0);
+        expect(await main(['--out', join(dir, 'second.jsonl')], { DATABASE_URL: url })).toBe(0);
+        const first = readFileSync(join(dir, 'first.jsonl'), 'utf8');
+        expect(readFileSync(join(dir, 'second.jsonl'), 'utf8')).toBe(first);
+
+        const [row] = parseLabelCases(first);
+        const salts = row!.labels.map((label) => label.value_hash!.salt);
+        expect(salts).toHaveLength(2);
+        expect(new Set(salts).size).toBe(2);
+      } finally {
+        log.mockRestore();
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

@@ -12,15 +12,16 @@
  * The dataset JSONL has one row per labelled work item: its masked source mail, the staff-accepted kind and its labels.
  * The default run is read-only. --write-labels also inserts the eval_label rows (one per source event, ON CONFLICT DO
  * NOTHING on source_event_id, so a re-run adds nothing). Every value and mail text is masked: card numbers, security
- * codes, e-mail addresses and phone numbers.
+ * codes, e-mail addresses and phone numbers. The sender and mailbox domains appear only as sha256 digests
+ * (sender_domain_sha256, mailbox_domain_sha256), the digest export-label-sample writes.
  *
- * Split, per work item: a thread that holds a golden-set case takes that case's split (holdout wins when its cases
- * disagree). The golden set is read from .private/reservationist-backtest/golden-set.jsonl when that file exists;
- * --golden-set names another file, and then it must exist. A golden case whose message is not in this database adds a
- * warning, and its thread takes the hash split. Any other work item keeps the split its eval_label rows already carry, so
- * a holdout item never moves; otherwise sha256(work item id) bucket 0-59 dev, 60-79 holdout, 80-99 test. --time-split:
- * an item whose latest label event is within 30 days is test; older items split dev/holdout 3:1 by the same hash.
- * split_source says which rule applied.
+ * Split, per work item, first rule that applies: a stored eval_label holdout or test split never moves; then the split of
+ * the item's golden thread (holdout wins when its cases disagree); then a stored dev split; then sha256(work item id)
+ * bucket 0-59 dev, 60-79 holdout, 80-99 test. The golden set is read from .private/reservationist-backtest/golden-set.jsonl
+ * when that file exists; --golden-set names another file, and then it must exist. A golden case whose message is not in
+ * this database adds a warning, and its thread moves on to the next rule. Stored eval_label rows that disagree on one
+ * work item fail the export. --time-split: an item whose latest label event is within 30 days is test; older items split
+ * dev/holdout 3:1 by the same hash. split_source says which rule applied.
  *
  * Writes only the JSONL file (apps/server-pilot/.private/ by default, gitignored) and, with --write-labels, eval_label.
  */
@@ -34,14 +35,14 @@ import {
 } from '../src/db/schema/work.js';
 import { contactValueHash, EVAL_SCHEMA_VERSION, type LabelCase, type Split } from '../src/ai/label-scorers.js';
 import { maskMailText, maskMailValue as maskValue } from '../src/ai/card-mask.js';
-import { readGoldenSet, type GoldenRow } from '../src/ai/reservationist-backtest.js';
+import { readGoldenSet, senderDomainOf, type GoldenRow } from '../src/ai/reservationist-backtest.js';
 import { contactFieldOf, parseFieldPath } from '../src/ai/work-items.js';
 import { mailboxTransport, message } from '../src/db/schema/mail.js';
 import { createDb, type DB } from '../src/db/client.js';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { asc, inArray } from 'drizzle-orm';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -144,9 +145,24 @@ export function labelOf(event: LabelEvent): Label | null {
   return null;
 }
 
-/** An address with its local part masked. The domain stays, since the extraction reads staff by domain. */
-export const maskAddress = (address: string | null): string | null =>
-  address === null ? null : maskMailText(address.replace(/^[^@\s]*@/, '[email]@'));
+/**
+ * sha256 hex of an address's domain: the digest export-label-sample writes as sender_domain_sha256, so the two exports
+ * join on it. Null when the address has no domain.
+ */
+export function domainSha256(address: string | null): string | null {
+  if (address === null) return null;
+  const domain = senderDomainOf(address);
+  return domain === 'unknown' ? null : createHash('sha256').update(domain).digest('hex');
+}
+
+/**
+ * The salt for one label's contact hashes: an HMAC of its source event id under a fixed key. An unchanged label gets the
+ * same salt on every export, so a re-export is identical, and two labels never share one. The key sits in this file, so
+ * the salt is not secret: a guessed phone or address can still be checked against its hash.
+ */
+const CONTACT_SALT_KEY = 'work-event-labels/contact-salt';
+export const contactSalt = (sourceEventId: string): string =>
+  createHmac('sha256', CONTACT_SALT_KEY).update(sourceEventId).digest('hex');
 
 /** Stable bucket 0-99 for a work item. */
 export function splitBucket(workItemId: string): number {
@@ -188,6 +204,29 @@ export function goldenThreadSplits(
     }
   }
   return { splits, matched };
+}
+
+/**
+ * The one stored split per work item. Stored rows that disagree (a label written before the item's split changed, say)
+ * fail the export: taking one row would move part of the item silently.
+ */
+export function storedSplitOf(rows: readonly { workItemId: string; split: string }[]): Map<string, Split> {
+  const seen = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const splits = seen.get(row.workItemId) ?? new Set<string>();
+    splits.add(row.split);
+    seen.set(row.workItemId, splits);
+  }
+  const splits = new Map<string, Split>();
+  for (const [workItemId, values] of seen) {
+    if (values.size > 1) {
+      throw new Error(
+        `eval_label rows for work item ${workItemId} disagree on split (${[...values].sort().join(', ')}); make them one split before exporting`,
+      );
+    }
+    splits.set(workItemId, [...values][0] as Split);
+  }
+  return splits;
 }
 
 /**
@@ -242,7 +281,7 @@ export async function exportLabels(
       const warnings =
         matched < golden.length
           ? [
-              `${golden.length - matched} of ${golden.length} golden cases have no message in this database: their threads take the hash split`,
+              `${golden.length - matched} of ${golden.length} golden cases have no message in this database: their threads keep a stored split, else take the hash split`,
             ]
           : [];
 
@@ -297,7 +336,7 @@ export async function exportLabels(
       const mailboxOf = new Map(transports.map((row) => [row.id, row.email]));
       const mailOf = new Map(mails.map((row) => [row.id, row]));
       const versionOf = new Map(extractions.map((row) => [row.id, row.version]));
-      const storedSplit = new Map(stored.map((row) => [row.workItemId, row.split as Split]));
+      const storedSplit = storedSplitOf(stored);
       const latestAt = new Map<string, Date>();
       for (const label of labels) {
         const prior = latestAt.get(label.workItemId);
@@ -317,7 +356,10 @@ export async function exportLabels(
           : null;
         const stored = storedSplit.get(item.id);
         const fromGolden = item.threadId ? goldenSplits.get(item.threadId) : undefined;
+        // A stored holdout or test split never moves. Then golden, then a stored dev split, then the hash or time split.
+        const pinned = stored === 'holdout' || stored === 'test' ? stored : undefined;
         const split =
+          pinned ??
           fromGolden ??
           stored ??
           splitFor(item.id, {
@@ -325,13 +367,15 @@ export async function exportLabels(
             latestAt: latestAt.get(item.id),
             now: options.now,
           });
-        const splitSource: SplitSource = fromGolden
-          ? 'golden'
-          : stored
-            ? 'stored'
-            : options.timeSplit
-              ? 'time'
-              : 'hash';
+        const splitSource: SplitSource = pinned
+          ? 'stored'
+          : fromGolden
+            ? 'golden'
+            : stored
+              ? 'stored'
+              : options.timeSplit
+                ? 'time'
+                : 'hash';
         for (const label of itemLabels) {
           records.push({
             workItemId: item.id,
@@ -353,8 +397,8 @@ export async function exportLabels(
           transport_id: item.transportId,
           kind: item.kind,
           extractor_version: extractionVersion,
-          mailbox: maskAddress(mailboxOf.get(item.transportId) ?? null),
-          from: maskAddress(mail?.fromAddress ?? null),
+          mailbox_domain_sha256: domainSha256(mailboxOf.get(item.transportId) ?? null),
+          sender_domain_sha256: domainSha256(mail?.fromAddress ?? null),
           subject: maskMailText(mail?.subject ?? ''),
           text: maskMailText(mail?.textBody ?? ''),
           split,
@@ -371,7 +415,7 @@ export async function exportLabels(
               label.fieldPath,
               label.aiValue,
               label.humanValue,
-              randomBytes(16).toString('hex'),
+              contactSalt(label.sourceEventId),
             ),
           })),
         });

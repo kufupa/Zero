@@ -26,6 +26,9 @@ const valueHashSchema = z.object({
 /** Salted hashes of a contact label's AI and kept values, from the raw values. Null for every other field. */
 export type ValueHash = z.infer<typeof valueHashSchema>;
 
+/** sha256 hex of a mail domain. The domains are kept only as digests, never in clear. */
+const domainDigestSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
 const labelCaseSchema = z.object({
   schema_version: z.literal(EVAL_SCHEMA_VERSION),
   work_item_id: z.string().min(1),
@@ -33,8 +36,8 @@ const labelCaseSchema = z.object({
   transport_id: z.string().nullable(),
   kind: z.string(),
   extractor_version: z.string().nullable(),
-  mailbox: z.string().nullable(),
-  from: z.string().nullable(),
+  mailbox_domain_sha256: domainDigestSchema.nullable(),
+  sender_domain_sha256: domainDigestSchema.nullable(),
   subject: z.string(),
   text: z.string(),
   split: z.enum(EVAL_LABEL_SPLITS),
