@@ -236,6 +236,27 @@ async function finishJob(db: DB, run: AiWorkflowRun): Promise<void> {
   if (!marked) throw new Error('markAiRunSucceeded fenced out');
 }
 
+/** One batch run held by a worker whose heartbeat went stale long ago: what the restart sweep must requeue. */
+async function seedDeadClaim(db: DB): Promise<string> {
+  const [item] = await seedBatchItems(db, 1);
+  const batch = await enqueueBatch(
+    { batchId: randomUUID(), transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, workItemIds: [item!.workItemId] },
+    db,
+  );
+  const runId = batch.items[0]!.runId!;
+  await db
+    .update(aiWorkflowRun)
+    .set({
+      state: 'running',
+      claimOwner: 'hms-ai-worker-dead-1',
+      claimToken: randomUUID(),
+      heartbeatAt: new Date(Date.now() - 2 * 60 * 60_000),
+      updatedAt: new Date(Date.now() - 2 * 60 * 60_000),
+    })
+    .where(eq(aiWorkflowRun.id, runId));
+  return runId;
+}
+
 function caller() {
   return appRouter.createCaller({
     auth: null as never,
@@ -1087,5 +1108,61 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
         runId: first.items[0]!.runId,
         job: { status: 'queued' },
       });
+    }));
+
+  it('retries the restart sweep after one deadlock and still requeues the dead run', () =>
+    withSeededTestDb(async (db) => {
+      const runId = await seedDeadClaim(db);
+      let attempts = 0;
+      // The first transaction fails with a deadlock; the retry runs the real sweep.
+      const deadlockOnce = {
+        transaction: (run: (tx: DB) => Promise<unknown>) =>
+          db.transaction((tx) => {
+            attempts += 1;
+            if (attempts === 1) return Promise.reject(Object.assign(new Error('deadlock detected'), { code: '40P01' }));
+            return run(tx as DB);
+          }),
+      } as unknown as DB;
+      await expect(requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-new-1' }, deadlockOnce)).resolves.toBe(1);
+      expect(attempts).toBe(2);
+      const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId));
+      expect(run).toMatchObject({ state: 'retry_wait', metrics: { crashCount: 1 } });
+    }));
+
+  it('does not crash the worker when every restart sweep attempt deadlocks', () =>
+    withSeededTestDb(async (db) => {
+      const runId = await seedDeadClaim(db);
+      const alwaysDeadlocked = {
+        transaction: () => Promise.reject(Object.assign(new Error('deadlock detected'), { code: '40P01' })),
+      } as unknown as DB;
+      await expect(requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-new-1' }, alwaysDeadlocked)).resolves.toBe(0);
+      const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId));
+      expect(run?.state).toBe('running');
+    }));
+
+  it('reuses lookups across more than one 500-item chunk in a single candidate lock pass', () =>
+    withSeededTestDb(async (db) => {
+      const items = await seedBatchItems(db, 600);
+      const first = await enqueueBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: items.map((item) => item.workItemId),
+        },
+        db,
+      );
+      expect(first.items.every((item) => item.status === 'queued')).toBe(true);
+      const later = await enqueueBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: items.map((item) => item.workItemId),
+        },
+        db,
+      );
+      expect(later.items.every((item) => item.status === 'reused')).toBe(true);
+      expect(later.items.map((item) => item.runId)).toEqual(first.items.map((item) => item.runId));
     }));
 });

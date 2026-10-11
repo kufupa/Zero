@@ -676,7 +676,8 @@ async function loadReusableHmsRuns(
       ),
     ),
   ];
-  const rows = new Map<string, AiWorkflowRun>();
+  // Pass 1, unlocked: collect every candidate id across the chunks.
+  const candidateIds = new Set<string>();
   for (let start = 0; start < Math.max(sourceIds.length, allPrefetchKeys.length); start += HMS_BATCH_INSERT_CHUNK) {
     const ids = sourceIds.slice(start, start + HMS_BATCH_INSERT_CHUNK);
     const keys = allPrefetchKeys.slice(start, start + HMS_BATCH_INSERT_CHUNK);
@@ -693,8 +694,8 @@ async function loadReusableHmsRuns(
       ...(keys.length ? [inArray(aiWorkflowRun.idempotencyKey, keys)] : []),
     ];
     if (candidatePredicates.length === 0) continue;
-    const candidates = await db
-      .select()
+    const found = await db
+      .select({ id: aiWorkflowRun.id })
       .from(aiWorkflowRun)
       .where(
         and(
@@ -708,12 +709,18 @@ async function loadReusableHmsRuns(
           ),
           or(...candidatePredicates),
         ),
-      )
-      .orderBy(aiWorkflowRun.id)
-      .for('update');
-    for (const candidate of candidates) rows.set(candidate.id, candidate);
+      );
+    for (const row of found) candidateIds.add(row.id);
   }
-  return [...rows.values()];
+  if (candidateIds.size === 0) return [];
+  // Pass 2 locks every candidate in ONE statement, in id order, before any insert. The restart sweep also locks in
+  // id order, so the two cannot wait on each other; a lock statement per chunk could.
+  return db
+    .select()
+    .from(aiWorkflowRun)
+    .where(inArray(aiWorkflowRun.id, [...candidateIds]))
+    .orderBy(aiWorkflowRun.id)
+    .for('update');
 }
 
 function hmsBatchLink(input: {
@@ -1684,15 +1691,47 @@ export async function registerJobScreenshotRun(
 /** A claim whose heartbeat is older than this belongs to a dead worker: three lease heartbeats of slack. */
 const HMS_CLAIM_STALE_MS = 60_000;
 
+/** Postgres deadlock_detected (40P01) or serialization_failure (40001), also when drizzle wraps the driver error. */
+function isLockConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && typeof current === 'object' && current !== null; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (code === '40P01' || code === '40001') return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+const RESTART_SWEEP_ATTEMPTS = 4;
+const RESTART_SWEEP_BACKOFF_MS = 100;
+
 /**
  * Runs at worker start. Read runs that a dead hms worker still held go back to
  * retry_wait now, not after the stale-claim timeout. A claim with a fresh
- * heartbeat belongs to a live worker and is left alone.
+ * heartbeat belongs to a live worker and is left alone. A lock conflict rolls
+ * back and retries with backoff. If every attempt conflicts, it logs and
+ * returns 0 instead of throwing, so the worker still starts; those claims wait
+ * for the normal stale-claim path.
  */
 export async function requeueHmsReadsAfterRestart(
   input: { ownerId: string },
   db: DB = getDb(),
 ): Promise<number> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await requeueStaleHmsReads(input, db);
+    } catch (error) {
+      if (!isLockConflict(error)) throw error;
+      if (attempt >= RESTART_SWEEP_ATTEMPTS) {
+        console.warn('hms_restart_sweep_deferred', { code: 'lock_conflict', attempts: attempt });
+        return 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, RESTART_SWEEP_BACKOFF_MS * 2 ** (attempt - 1)));
+    }
+  }
+}
+
+async function requeueStaleHmsReads(input: { ownerId: string }, db: DB): Promise<number> {
   const now = new Date();
   return db.transaction(async (tx) => {
     const staleRuns = await tx
