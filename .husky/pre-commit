@@ -4,10 +4,18 @@ set -e
 # Lint staged JS/TS only so submodule sources and untracked WIP cannot block the gate.
 # Full-tree lint remains `pnpm precommit` and CI.
 changed=$(git diff --cached --name-only --diff-filter=ACMR)
-# Entity literals in server-pilot src may only shrink (pnpm check:entities, about 1 s). Runs only when that tree,
-# its baseline or its checker is staged, so other commits pay nothing.
-if echo "$changed" | grep -qE '^apps/server-pilot/(src/|scripts/(check-entity-literals\.mjs|entity-literals-baseline\.json))'; then
-  pnpm --dir apps/server-pilot check:entities
+# Entity literals in server-pilot src may only shrink (check:entities, about 1 s). Runs only when that tree, its baseline
+# or its checker is staged (a removal counts too), so other commits pay nothing. It checks what the commit records: the
+# staged src, checker and baseline are exported from the index to a temp dir, so unstaged edits neither hide a literal
+# nor block a commit.
+if git diff --cached --name-only --no-renames | grep -qE '^apps/server-pilot/(src/|scripts/(check-entity-literals\.mjs|entity-literals-baseline\.json))'; then
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  tree=$(git write-tree)
+  git archive "$tree" apps/server-pilot/src apps/server-pilot/scripts/check-entity-literals.mjs \
+    apps/server-pilot/scripts/entity-literals-baseline.json > "$tmp/staged.tar"
+  tar -xf "$tmp/staged.tar" -C "$tmp"
+  node "$tmp/apps/server-pilot/scripts/check-entity-literals.mjs"
 fi
 staged=$(echo "$changed" | grep -E '\.(cjs|cts|js|jsx|mjs|mts|ts|tsx)$' | grep -v '^external/' || true)
 [ -n "$staged" ] || exit 0
