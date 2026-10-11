@@ -76,6 +76,7 @@ import {
   hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
+  partyLookupWaitReason,
   pickNextRunnableStep,
   quoteRunBlockReason,
   reduceQuoteSession,
@@ -751,6 +752,12 @@ export function NavaPane({
 
   requoteSameStayRef.current = (row) => {
     const session = quoteSessionRef.current;
+    // Same as Get rates: a party lookup that still decides the pick would reset this run.
+    const lookupWait = partyLookupWaitReason(session);
+    if (lookupWait) {
+      toast.warning(lookupWait);
+      return;
+    }
     const luna = session.analysis?.luna;
     const source = session.staffSource;
     const binding = session.binding;
@@ -781,6 +788,12 @@ export function NavaPane({
         toast.warning('The stays changed since this quote. Run the search for that stay again.');
         return;
       }
+      // The prior quote loaded after the click, so a lookup may have started since. The run must not start under it.
+      const lookupWaitNow = partyLookupWaitReason(quoteSessionRef.current);
+      if (lookupWaitNow) {
+        toast.warning(lookupWaitNow);
+        return;
+      }
       const run = bindExecuteStaffQuote({
         mutate: staff.workstation.executeStaffQuote?.mutate,
         source,
@@ -791,6 +804,11 @@ export function NavaPane({
         onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(groups)),
       });
       return trackStaffQuoteRun(run).then((remote) => {
+        // The reducer drops this result when the selection, inputs or stay rows moved on while HMS searched. Say so.
+        if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+          toast.warning('Details changed while HMS was searching — run Get rates again');
+          return;
+        }
         if (remote.status !== 'ok') {
           toast.warning(remote.reason);
           return;
@@ -921,6 +939,11 @@ export function NavaPane({
       onceExtras: rowsTakeOnceExtras(quoteSession, requestedQuoteKeys(stayGroups)),
     });
     void trackStaffQuoteRun(run).then((remote) => {
+      // The reducer drops a result whose selection or input moved on while HMS searched. Say so, rather than let it vanish.
+      if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision })) {
+        toast.warning('Details changed while HMS was searching — run Get rates again');
+        return;
+      }
       if (remote.status !== 'ok') {
         dispatchQuote({
           type: 'results_unavailable',
@@ -1403,6 +1426,7 @@ export function NavaPane({
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
               findParty={PANE_PARTY_FINDER}
+              onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
               partyIndex={PANE_PARTY_INDEX}
               rates={PANE_SAVED_RATES}
               onPatchGroup={(groupId, patch) => editStayRows({ type: 'patch_group', groupId, patch })}

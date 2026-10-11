@@ -10,6 +10,7 @@ import {
   newQuoteToken,
   optionLetter,
   pickNextRunnableStep,
+  partyLookupWaitReason,
   quoteRunBlockReason,
   ratedStayCount,
   requestedQuoteKeys,
@@ -304,6 +305,7 @@ function StaffPartyFields({
   findParty,
   partySuggestions,
   partyIndex,
+  onPartyLookupPending,
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
@@ -313,6 +315,8 @@ function StaffPartyFields({
   partySuggestions?: PartySuggestion[];
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
+  /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
+  onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
 }) {
   // Each field's picker searches that field's own text and holds only that kind: its results, its pick and its suggestions.
   // HOOK(#84, not on main): the HMS typeahead's onSearchName lands on the onSearchName prop below.
@@ -326,6 +330,7 @@ function StaffPartyFields({
         find={findParty}
         suggestions={partySuggestions}
         indexSearch={partyIndex}
+        onLookupPending={(pending) => onPartyLookupPending?.(kind, pending)}
         onPick={(party) =>
           onPatch?.({
             parties:
@@ -800,6 +805,8 @@ function intentOf(session: QuoteSession): QuoteIntent | null {
  * every row still needs a room type before rates run.
  */
 function ratesBlockReason(session: QuoteSession, nextStep: QuoteToolStep | undefined): string | null {
+  const lookupWait = partyLookupWaitReason(session);
+  if (lookupWait) return lookupWait;
   if (nextStep) {
     const stepWait = quoteRunBlockReason(session, nextStep);
     if (stepWait) return stepWait;
@@ -882,6 +889,7 @@ export function QuoteWorkflowPanel({
   onEditReply,
   onPatchStaffHeader,
   findParty,
+  onPartyLookupPending,
   onSelectStayKey,
   onTreatAs,
   onStaffNote,
@@ -925,6 +933,8 @@ export function QuoteWorkflowPanel({
   onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>) => void;
   /** HMS company and agency search for the quote header's Find in HMS picker. Null or absent: no picker. */
   findParty?: PartyFinder | null;
+  /** Tells the pane whether a company or agency search still decides its pick. A rates run waits for it. */
+  onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   onSelectStayKey?: (stayKey: string) => void;
   onTreatAs?: (treatAs: 'quote' | 'create_booking') => void;
   onStaffNote?: (note: string) => void;
@@ -1138,6 +1148,7 @@ export function QuoteWorkflowPanel({
             findParty={findParty}
             partySuggestions={partySuggestions}
             partyIndex={partyIndex}
+            onPartyLookupPending={onPartyLookupPending}
           />
           <Disclosure summary={<span>Extras: allowances, contact, notes</span>} defaultOpen={hasExtras(header)}>
             <StaffExtraFields header={header} onPatch={onPatchStaffHeader} />

@@ -165,6 +165,7 @@ export function PartyPicker({
   onSearchName,
   indexSearch,
   autoLookup = false,
+  onLookupPending,
 }: {
   /** The text to search for: this field's company or agency name. */
   name: string;
@@ -182,6 +183,8 @@ export function PartyPicker({
   indexSearch?: PartyIndexSearcher | null;
   /** Search HMS by itself for this field's name and pick the best match. Needs a kind. Off, the field keeps Find in HMS. */
   autoLookup?: boolean;
+  /** Told whether this field's automatic search still has to decide its pick. The pane holds a rates run until it does. */
+  onLookupPending?: (pending: boolean) => void;
 }) {
   const query = name.trim();
   const [state, setState] = useState<PickerState>(IDLE);
@@ -198,6 +201,9 @@ export function PartyPicker({
   const autoMemoKey = autoLookup && kind && query.length >= AUTO_LOOKUP_MIN_CHARS ? `${kind}:${searchKey(query)}` : null;
   const autoKey = pickedHere ? null : autoMemoKey;
   const autoReply = autoMemoKey ? (autoMemo.get(autoMemoKey)?.reply ?? null) : null;
+  // Still deciding the pick: the search has not answered, or it answered with a row that is not yet this field's pick.
+  const lookupPending =
+    Boolean(autoKey) && (!autoReply || (Boolean(autoReply.best) && autoPicked.current?.key !== autoKey));
 
   useEffect(() => {
     latest.current += 1;
@@ -245,7 +251,15 @@ export function PartyPicker({
     const best = autoReply.best;
     autoPicked.current = { key: autoKey, party: { kind: best.kind, nativeId: best.nativeId, name: best.name } };
     onPick({ kind: best.kind, nativeId: best.nativeId, name: best.name });
+    rerender();
   }, [autoKey, autoReply]);
+
+  // The pane holds a rates run until this field's search decides its pick. Reported on every render, so a session reset
+  // cannot drop it while the search runs. Released when the field unmounts.
+  useEffect(() => {
+    onLookupPending?.(lookupPending);
+  });
+  useEffect(() => () => onLookupPending?.(false), []);
 
   const searchAgain = () => {
     if (!autoMemoKey || !kind) return;
