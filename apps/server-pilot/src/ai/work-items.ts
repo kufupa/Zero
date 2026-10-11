@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, notExists, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { aiWorkflowRun, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
 import type { ExtractionRow, ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
@@ -10,6 +10,7 @@ import {
   questionItems,
 } from './quote-workflow-analyse-selection.js';
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
+import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 
@@ -419,8 +420,6 @@ export async function ensureWorkItem(
     messageId: string;
     kind: MailKind;
     extractionId: string;
-    /** Only the insert uses it. An existing item keeps its status. */
-    status?: 'needs_you' | 'done';
   },
 ): Promise<WorkItemRef> {
   await db
@@ -431,7 +430,6 @@ export async function ensureWorkItem(
       sourceMessageId: input.messageId,
       kind: input.kind,
       extractionId: input.extractionId,
-      ...(input.status ? { status: input.status } : {}),
     })
     .onConflictDoNothing({ target: [workItem.threadId, workItem.kind, workItem.sourceMessageId] });
   const select = (tx: WorkTx) =>
@@ -554,30 +552,16 @@ export async function ensureWorkItemForMessage(
     .limit(1);
   const latest = await succeededRead(db, input.messageId);
   if (!msg || !latest || latest.kind === 'spam') return null;
-  const [reply] = await db
-    .select({ id: message.id })
-    .from(message)
-    .where(
-      and(
-        eq(message.threadId, msg.threadId),
-        eq(message.transportId, input.transportId),
-        eq(message.direction, 'outbound'),
-        // After the request arrived, not after its Date header: a reply sent before delivery did not answer it.
-        outboundSentAfter(messageArrivedAt(msg)),
-      ),
-    )
-    .limit(1);
   const item = await ensureWorkItem(db, {
     transportId: input.transportId,
     threadId: msg.threadId,
     messageId: input.messageId,
     kind: latest.kind,
     extractionId: latest.id,
-    status: reply ? 'done' : undefined,
   });
   const current =
     item.status === 'dismissed'
-      ? await restoreSupersededItem(db, { workItemId: item.id, status: reply ? 'done' : 'needs_you', latestId: latest.id })
+      ? await restoreSupersededItem(db, { workItemId: item.id, status: 'needs_you', latestId: latest.id })
       : item;
   await dismissSupersededItems(db, {
     transportId: input.transportId,
@@ -585,16 +569,30 @@ export async function ensureWorkItemForMessage(
     messageId: input.messageId,
     latest,
   });
-  return current;
+  // A reply already on the thread closes the item here, and a newer request supersedes it (see refreshThreadWork).
+  if (msg.threadId) await refreshThreadWork(db, { transportId: input.transportId, threadId: msg.threadId });
+  const [fresh] = await db
+    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
+    .from(workItem)
+    .where(eq(workItem.id, current.id))
+    .limit(1);
+  return fresh ?? current;
 }
 
 /** The reason on a system dismissal of an item a kind-changing re-read replaced. */
 const SUPERSEDED_READ = 'superseded_read';
+/** The reason on a system dismissal of an older item a newer needs-you item on the same thread superseded (C3). */
+const SUPERSEDED_BY_THREAD = 'superseded_by_thread';
+/** The reasons on the thread's system status changes (refreshThreadWork). */
+const HOTEL_REPLIED = 'hotel_replied';
+const NEW_INBOUND = 'new_inbound';
+const STAFF_SENT_OTHER = 'staff_sent_other';
 
 /**
  * A later read can come back to a kind an earlier re-read moved away from (quote, other, quote). The item for that kind
  * was dismissed as superseded, so it is put back, with a system event, unless its last status change was someone's
- * own: a person's dismissal stands.
+ * own: a person's dismissal stands. An item the thread collapse dismissed (superseded_by_thread) comes back the same way;
+ * refreshThreadWork dismisses it again straight away while a newer needs-you item is still on the thread.
  */
 async function restoreSupersededItem(
   db: DB,
@@ -615,8 +613,9 @@ async function restoreSupersededItem(
       .where(and(eq(workEvent.workItemId, row.id), eq(workEvent.type, 'status.changed')))
       .orderBy(desc(workEvent.at), desc(workEvent.id))
       .limit(1);
+    const reason = (last?.value as { reason?: unknown } | null | undefined)?.reason;
     const superseded =
-      last?.actorKind === 'system' && (last.value as { reason?: unknown } | null)?.reason === SUPERSEDED_READ;
+      last?.actorKind === 'system' && (reason === SUPERSEDED_READ || reason === SUPERSEDED_BY_THREAD);
     if (!superseded) return row;
     await tx
       .update(workItem)
@@ -687,6 +686,281 @@ async function dismissSupersededItems(
         value: { from: 'needs_you', to: 'dismissed', reason: SUPERSEDED_READ, extractionId: input.latest.id },
       })),
     );
+  });
+}
+
+/** One mail on a thread, with the fields the thread rules read. */
+type ThreadMail = {
+  id: string;
+  direction: 'inbound' | 'outbound';
+  fromAddress: string;
+  receivedAt: Date | null;
+  sentAt: Date | null;
+  createdAt: Date;
+  historyOnly: boolean;
+  pop3Uidl: string | null;
+  outlookSynced: boolean;
+};
+
+/** When an inbound mail reached the mailbox, by the rule every work item order uses (messageArrivedAt). */
+function arrivedAt(m: ThreadMail): number {
+  return messageArrivedAt(m).getTime();
+}
+
+/**
+ * When a hotel mail left, counted as outboundSentAfter counts it: its sent time, or a history row's received time. A
+ * queued or failed Nava send has neither, so it is not a reply.
+ */
+function leftAt(m: ThreadMail): number | null {
+  const at = m.sentAt ?? (m.historyOnly ? m.receivedAt : null);
+  return at ? at.getTime() : null;
+}
+
+/**
+ * From the mailbox's own address, or from its domain when that domain is the hotel's. On a public provider (gmail.com,
+ * outlook.com, ...) the domain is shared by every sender, so only the exact mailbox address counts there.
+ * ponytail: aliases are not checked.
+ */
+function isStaffSender(fromAddress: string, mailboxEmail: string): boolean {
+  const from = normalizeEmailAddress(fromAddress);
+  const mailbox = normalizeEmailAddress(mailboxEmail);
+  if (!from.includes('@') || !mailbox.includes('@')) return false;
+  if (from === mailbox) return true;
+  const domainOf = (address: string) => address.slice(address.lastIndexOf('@') + 1);
+  const domain = domainOf(mailbox);
+  return !PUBLIC_MAIL_DOMAINS.has(domain) && domainOf(from) === domain;
+}
+
+/**
+ * One status change the thread's work makes. `repoint` moves the reply link of an item a reply already closed to the
+ * hotel's latest answer, and changes no status.
+ */
+export type ThreadWorkChange =
+  | { workItemId: string; kind: MailKind; to: 'done'; reason: typeof HOTEL_REPLIED; sentAt: Date; sentMessageId: string }
+  | { workItemId: string; kind: MailKind; to: 'done'; reason: typeof STAFF_SENT_OTHER }
+  | { workItemId: string; kind: MailKind; to: 'needs_you'; reason: typeof NEW_INBOUND; previousSentMessageId: string | null }
+  | { workItemId: string; kind: MailKind; to: 'dismissed'; reason: typeof SUPERSEDED_BY_THREAD; supersededBy: string }
+  | { workItemId: string; kind: MailKind; repoint: { sentAt: Date; sentMessageId: string } };
+
+/**
+ * The status changes the thread's work needs, read from its mail and items. A change only touches an untouched item: no
+ * event from a person and no saved values. Rules, on the source mail's time (arrivedAt):
+ * - Reply link (C2): a needs-you item is done (hotel_replied, sent_at and sent_message_id set) when the hotel's latest
+ *   mail after it is later than the guest's latest mail after it. A done item a later guest mail reopens goes back to
+ *   needs-you (new_inbound), and its reply link moves to the hotel's next answer. A done item with no reply link (closed
+ *   before the link existed) gets the same treatment, with the hotel's latest answer as its link. A person's close stays.
+ * - Same-thread collapse (C3): an older needs-you item is dismissed (superseded_by_thread) when a newer needs-you item of
+ *   any kind but other is on the thread. A newer "other" mail never supersedes a request.
+ * - Staff-sent other: an "other" mail from the mailbox's own address or domain gets no needs-you (done, staff_sent_other).
+ * Makes no writes. Items of kind spam are left out.
+ */
+export async function planThreadWork(
+  db: WorkTx,
+  input: { transportId: string; threadId: string },
+  opts: { lock?: boolean } = {},
+): Promise<ThreadWorkChange[]> {
+  // The item rows are locked before the mail is read (when asked), so the mail matches the items the plan changes. A live
+  // admission that reopens an item waits on this lock, and the mail it committed is in the read below.
+  const itemQuery = db
+    .select({
+      id: workItem.id,
+      kind: workItem.kind,
+      status: workItem.status,
+      sourceMessageId: workItem.sourceMessageId,
+      sentAt: workItem.sentAt,
+      sentMessageId: workItem.sentMessageId,
+      state: workItem.state,
+      // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
+      // "id" binds to the subquery's own table and the check is always false.
+      touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and we.actor_kind = 'user')`,
+    })
+    .from(workItem)
+    .where(
+      and(
+        eq(workItem.transportId, input.transportId),
+        eq(workItem.threadId, input.threadId),
+        inArray(workItem.status, ['needs_you', 'done']),
+        ne(workItem.kind, 'spam'),
+      ),
+    );
+  const items = await (opts.lock ? itemQuery.for('update', { of: workItem }) : itemQuery);
+  const [mailbox] = await db
+    .select({ email: mailboxTransport.email })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.id, input.transportId))
+    .limit(1);
+  const mail: ThreadMail[] = await db
+    .select({
+      id: message.id,
+      direction: message.direction,
+      fromAddress: message.fromAddress,
+      receivedAt: message.receivedAt,
+      sentAt: message.sentAt,
+      createdAt: message.createdAt,
+      historyOnly: message.historyOnly,
+      pop3Uidl: message.pop3Uidl,
+      outlookSynced: OUTLOOK_SYNCED,
+    })
+    .from(message)
+    .where(and(eq(message.transportId, input.transportId), eq(message.threadId, input.threadId)));
+
+  const byId = new Map(mail.map((m) => [m.id, m]));
+  const guest = mail.flatMap((m) => (m.direction === 'inbound' ? [{ m, at: arrivedAt(m) }] : []));
+  const hotel = mail.flatMap((m) => {
+    const at = m.direction === 'outbound' ? leftAt(m) : null;
+    return at === null ? [] : [{ m, at }];
+  });
+  const latest = <T extends { at: number }>(rows: T[]) =>
+    rows.reduce<T | undefined>((best, row) => (!best || row.at > best.at ? row : best), undefined);
+  const changes: ThreadWorkChange[] = [];
+  // The items that are needs-you once these changes land. Only untouched ones can be superseded.
+  const open: Array<{ id: string; kind: MailKind; at: number; untouched: boolean }> = [];
+  for (const item of items) {
+    const source = item.sourceMessageId ? byId.get(item.sourceMessageId) : undefined;
+    if (!source) continue;
+    const kind = item.kind as MailKind;
+    const at = arrivedAt(source);
+    const untouched = !item.touched && Object.keys(item.state ?? {}).length === 0;
+    if (!untouched) {
+      if (item.status === 'needs_you') open.push({ id: item.id, kind, at, untouched: false });
+      continue;
+    }
+    const lastGuest = latest(guest.filter((x) => x.at > at));
+    const lastHotel = latest(hotel.filter((x) => x.at > at));
+    // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
+    const answered = lastHotel !== undefined && (lastGuest === undefined || lastHotel.at > lastGuest.at);
+    const staffOther = kind === 'other' && isStaffSender(source.fromAddress, mailbox?.email ?? '');
+    if (item.status === 'needs_you') {
+      if (staffOther) {
+        changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
+      } else if (lastHotel && answered) {
+        changes.push({
+          workItemId: item.id,
+          kind,
+          to: 'done',
+          reason: HOTEL_REPLIED,
+          sentAt: new Date(lastHotel.at),
+          sentMessageId: lastHotel.m.id,
+        });
+      } else {
+        open.push({ id: item.id, kind, at, untouched: true });
+      }
+    } else if (!staffOther) {
+      // Closed by a hotel reply: reopened by a later guest mail, or re-pointed at the hotel's latest answer. A done row the
+      // rules closed before the reply link existed has no link, so the hotel's latest answer stands in for it (the
+      // backfill links it). Only a row a person touched is left alone, as above.
+      const linkedAt = item.sentAt ? item.sentAt.getTime() : lastHotel?.at;
+      if (lastGuest && linkedAt !== undefined && lastGuest.at > linkedAt && !answered) {
+        changes.push({
+          workItemId: item.id,
+          kind,
+          to: 'needs_you',
+          reason: NEW_INBOUND,
+          previousSentMessageId: item.sentMessageId,
+        });
+        open.push({ id: item.id, kind, at, untouched: true });
+      } else if (lastHotel && answered && lastHotel.m.id !== item.sentMessageId) {
+        changes.push({
+          workItemId: item.id,
+          kind,
+          repoint: { sentAt: new Date(lastHotel.at), sentMessageId: lastHotel.m.id },
+        });
+      }
+    }
+  }
+  for (const older of open.filter((x) => x.untouched)) {
+    const newer = open.find((x) => x.id !== older.id && x.at > older.at && x.kind !== 'other');
+    if (newer) {
+      changes.push({
+        workItemId: older.id,
+        kind: older.kind,
+        to: 'dismissed',
+        reason: SUPERSEDED_BY_THREAD,
+        supersededBy: newer.id,
+      });
+    }
+  }
+  return changes;
+}
+
+async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Promise<void> {
+  const now = new Date();
+  // A changed reply link clears the quote follow-up clock: the sweep (quote-followup) starts it again from the new link.
+  if ('repoint' in change) {
+    await tx
+      .update(workItem)
+      .set({
+        sentAt: change.repoint.sentAt,
+        sentMessageId: change.repoint.sentMessageId,
+        followUpDueAt: null,
+        updatedAt: now,
+      })
+      .where(eq(workItem.id, change.workItemId));
+    // The quote clock keys on a recorded hotel_replied close (CLOSED_BY_HOTEL_REPLY). A done item closed before the reply
+    // link existed has none, so its link records one, as the other close does. A link that moves on a close already
+    // recorded needs no second event.
+    const [recorded] = await tx
+      .select({ id: workEvent.id })
+      .from(workEvent)
+      .where(
+        and(
+          eq(workEvent.workItemId, change.workItemId),
+          eq(workEvent.type, 'status.changed'),
+          sql`${workEvent.value}->>'reason' = ${HOTEL_REPLIED}`,
+        ),
+      )
+      .limit(1);
+    if (!recorded) {
+      await tx.insert(workEvent).values({
+        workItemId: change.workItemId,
+        actorKind: 'system',
+        type: 'status.changed',
+        value: { from: 'done', to: 'done', reason: HOTEL_REPLIED, sentMessageId: change.repoint.sentMessageId },
+      });
+    }
+    return;
+  }
+  const from = change.to === 'needs_you' ? 'done' : 'needs_you';
+  const link =
+    change.to === 'done' && change.reason === HOTEL_REPLIED
+      ? { sentAt: change.sentAt, sentMessageId: change.sentMessageId, followUpDueAt: null }
+      : change.to === 'needs_you'
+        ? { sentAt: null, sentMessageId: null, followUpDueAt: null }
+        : {};
+  await tx
+    .update(workItem)
+    .set({ status: change.to, ...link, updatedAt: now })
+    .where(eq(workItem.id, change.workItemId));
+  const detail =
+    change.to === 'needs_you'
+      ? { sentMessageId: change.previousSentMessageId }
+      : change.to === 'dismissed'
+        ? { supersededBy: change.supersededBy }
+        : change.to === 'done' && change.reason === HOTEL_REPLIED
+          ? { sentMessageId: change.sentMessageId }
+          : {};
+  await tx.insert(workEvent).values({
+    workItemId: change.workItemId,
+    actorKind: 'system',
+    type: 'status.changed',
+    value: { from, to: change.to, reason: change.reason, ...detail },
+  });
+}
+
+/**
+ * Applies planThreadWork for one thread: the reply link (C2), the same-thread collapse (C3) and the staff-sent other rule.
+ * The plan is read again under the item row locks, the same lock a field save or a dismissal takes, so nothing a person
+ * touched after the first read is changed. Takes the lock only when there is something to change. Returns the changes made.
+ */
+export async function refreshThreadWork(
+  db: DB,
+  input: { transportId: string; threadId: string },
+): Promise<ThreadWorkChange[]> {
+  if (!(await planThreadWork(db, input)).length) return [];
+  return db.transaction(async (tx) => {
+    const changes = await planThreadWork(tx, input, { lock: true });
+    for (const change of changes) await applyThreadWorkChange(tx, change);
+    return changes;
   });
 }
 

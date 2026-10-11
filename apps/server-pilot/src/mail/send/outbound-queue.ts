@@ -28,6 +28,7 @@ import { refreshThreadAfterMessageRemoved } from '../../trpc/routes/mail-helpers
 import { extractMailBaselineEvidence } from '../../ai/mail-baseline-extraction.js';
 import { and, eq, gt, isNotNull, isNull, lte, or } from 'drizzle-orm';
 import { mailBaselineGenerationKey } from '../../ai/run-ledger.js';
+import { refreshThreadWork } from '../../ai/work-items.js';
 import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { maybeEnqueueLoopback } from '../fixture-loopback.js';
 import { getDb, type DB } from '../../db/client.js';
@@ -653,6 +654,23 @@ async function persistDeliveryOutcome(
   return observedAt;
 }
 
+/**
+ * C2: a reply Nava just sent closes the open work items it answers now, not on the thread's next refresh. It runs after
+ * the send is recorded and is best effort: a failure must never undo or repeat a delivery the recipient's server accepted.
+ */
+async function closeWorkForSentReply(db: DB, transportId: string, messageId: string): Promise<void> {
+  try {
+    const [sent] = await db
+      .select({ threadId: message.threadId })
+      .from(message)
+      .where(and(eq(message.id, messageId), eq(message.transportId, transportId)))
+      .limit(1);
+    if (sent) await refreshThreadWork(db, { transportId, threadId: sent.threadId });
+  } catch {
+    console.error(JSON.stringify({ event: 'sent_reply_work_link_failed' }));
+  }
+}
+
 async function finalizePersistedDelivery(
   row: ClaimedQueueRow,
   payload: OutboundMailPayload,
@@ -660,7 +678,7 @@ async function finalizePersistedDelivery(
   db: DB,
   acceptedObservedAt?: Date,
 ): Promise<SmtpSendResult> {
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const [claimed] = await tx
       .select({ id: outboundSendQueue.id })
       .from(outboundSendQueue)
@@ -779,6 +797,8 @@ async function finalizePersistedDelivery(
     });
     return cloneDeliveryOutcome(outcome);
   });
+  await closeWorkForSentReply(db, row.transportId, row.messageId);
+  return result;
 }
 
 async function finalizeLegacyHeaderOnlyDelivery(

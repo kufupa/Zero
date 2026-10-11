@@ -17,6 +17,7 @@ import {
 import { NAVA_USER_EMAIL, NAVA_USER_ID } from '../src/db/seed.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
+import { refreshThreadWork } from '../src/ai/work-items.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { toAiRunFence } from '../src/ai/run-ledger.js';
 import { user } from '../src/db/schema/auth.js';
@@ -1027,6 +1028,189 @@ describe('quote follow-up clocks, claims and overtaken suggestions', () => {
       expect((await threadDrafts(db, 'thread-late')).find((d) => d.id === draftId)?.status).toBe(
         'discarded',
       );
+    });
+  });
+});
+
+describe('a quote a hotel reply closed (C2) keeps its follow-up clock', () => {
+  it('the sweep starts the clock from the reply link, then queues one reminder when due', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-c2', REQUEST_AT);
+      await sendReply(db, { id: 'out-c2', threadId: 'thread-c2', sentAt: FRI_SEND });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2' });
+      expect(await loadItem(db, itemId)).toMatchObject({ status: 'done', sentMessageId: 'out-c2' });
+
+      // Stage one: the clock starts from the reply link, as it does for the send of an open quote.
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+
+      // Stage two: when due, one run is queued. It reopens the quote with a draft for her review.
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 1,
+        discarded: 0,
+      });
+      const { run, fence } = await claimRun(db, itemId);
+      expect(await executeQuoteFollowupRun({ run, fence, db, env: ON })).toEqual({
+        runId: run.id,
+        state: 'succeeded',
+      });
+      expect(await threadDrafts(db, 'thread-c2')).toEqual([
+        expect.objectContaining({ id: 'quote-followup:out-c2', status: 'candidate', replyToMessageId: 'out-c2' }),
+      ]);
+      expect(await loadItem(db, itemId)).toMatchObject({ status: 'needs_you', sentMessageId: 'out-c2' });
+
+      // The same reply link never starts a second clock or queues a second run.
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect(await followUpRuns(db, itemId)).toHaveLength(1);
+    });
+  });
+
+  it('a reply sent before QUOTE_FOLLOWUPS_SINCE starts no clock', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-c2-since', REQUEST_AT);
+      await sendReply(db, { id: 'out-c2-since', threadId: 'thread-c2-since', sentAt: FRI_SEND });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-since' });
+      const env = {
+        QUOTE_FOLLOWUPS: 'on',
+        QUOTE_FOLLOWUPS_SINCE: '2026-10-10T00:00:00Z',
+      } as NodeJS.ProcessEnv;
+
+      expect(await runQuoteFollowupSweep({ db, env, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toBeNull();
+    });
+  });
+
+  it('a client reply reopens a hotel-closed quote, and no reminder goes out for it', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-c2-reopen', REQUEST_AT);
+      await sendReply(db, { id: 'out-c2-reopen', threadId: 'thread-c2-reopen', sentAt: FRI_SEND });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-reopen' });
+      await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+
+      await clientReplies(db, 'thread-c2-reopen', 'in-c2-reopen', new Date('2026-10-12T07:00:00Z'));
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-reopen' });
+      expect(await loadItem(db, itemId)).toMatchObject({
+        status: 'needs_you',
+        sentMessageId: null,
+        followUpDueAt: null,
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toMatchObject({ queued: 0 });
+      expect(await followUpRuns(db, itemId)).toHaveLength(0);
+    });
+  });
+
+  it('a legacy done quote that a later hotel reply links is clocked by the sweep', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      // Closed before the reply link existed: done, with no link and no hotel_replied event.
+      const itemId = await quoteRequest(db, 'thread-c2-legacy', REQUEST_AT, 'done');
+      await sendReply(db, { id: 'out-c2-legacy', threadId: 'thread-c2-legacy', sentAt: FRI_SEND });
+
+      // The rules link it to the hotel's reply, and record that link as the close.
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-legacy' });
+      expect(await loadItem(db, itemId)).toMatchObject({ status: 'done', sentMessageId: 'out-c2-legacy' });
+
+      // The sweep clocks it from the reply, as it does for any quote a hotel reply closed.
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+    });
+  });
+
+  it('a reminder a person sends starts no second clock, so no second reminder', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-c2-reminder', REQUEST_AT);
+      await sendReply(db, { id: 'out-c2-quote', threadId: 'thread-c2-reminder', sentAt: FRI_SEND });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-reminder' });
+      await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
+      await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE });
+      const { run, fence } = await claimRun(db, itemId);
+      await executeQuoteFollowupRun({ run, fence, db, env: ON });
+
+      // A person sends the drafted reminder. Its send is the hotel's newest mail, so C2 closes the quote on it.
+      await sendReply(db, { id: 'out-c2-reminder', threadId: 'thread-c2-reminder', sentAt: WED_DUE });
+      await db
+        .update(mailDraft)
+        .set({ status: 'sent', isSent: true, sentMessageId: 'out-c2-reminder' })
+        .where(eq(mailDraft.id, 'quote-followup:out-c2-quote'));
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-reminder' });
+      expect(await loadItem(db, itemId)).toMatchObject({
+        status: 'done',
+        sentMessageId: 'out-c2-reminder',
+        followUpDueAt: null,
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: new Date('2026-10-20T08:00:00Z') })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect(await followUpRuns(db, itemId)).toHaveLength(1);
+    });
+  });
+
+  it('a hotel-closed quote a person has touched gets no clock and no reminder', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-c2-touched', REQUEST_AT);
+      await sendReply(db, { id: 'out-c2-touched', threadId: 'thread-c2-touched', sentAt: FRI_SEND });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-touched' });
+      await db.insert(workEvent).values({
+        workItemId: itemId,
+        actorKind: 'user',
+        actorUserId: 'user-ropperman',
+        type: 'field.edit',
+        fieldPath: 'contact.phone',
+        value: '0215550100',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect(await followUpRuns(db, itemId)).toHaveLength(0);
     });
   });
 });

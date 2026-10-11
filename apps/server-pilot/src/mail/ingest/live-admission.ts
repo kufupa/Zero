@@ -12,6 +12,7 @@ import {
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
 import { enqueueShadowPrediction } from '../../ai/shadow-evaluation.js';
+import { refreshThreadWork } from '../../ai/work-items.js';
 import {
   enqueueInboundExtraction,
   inboundExtractionEnabled,
@@ -376,6 +377,9 @@ export async function admitLiveMessage(
       updatedAt: new Date(),
     })
     .where(eq(mailThread.id, trigger.threadId));
+  // A reply that lands closes the thread's open items, and a newer request supersedes the older ones (C2, C3).
+  if (trigger.threadId)
+    await refreshThreadWork(db, { transportId: input.transportId, threadId: trigger.threadId });
   if (trigger.direction === 'outbound')
     await markThreadRead(db, input.transportId, [trigger.threadId]);
   else if (trigger.historyOnly) {
