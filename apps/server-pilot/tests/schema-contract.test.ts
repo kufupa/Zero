@@ -15,6 +15,8 @@ import {
   HITL_TOOL_RUN_STATUSES,
 } from '../src/db/schema/hitl.js';
 import {
+  EVAL_LABEL_KINDS,
+  EVAL_LABEL_SPLITS,
   MAIL_EXTRACTION_STATUSES,
   MAIL_KINDS,
   WORK_EVENT_ACTOR_KINDS,
@@ -534,6 +536,53 @@ describe('Nava work item schema', () => {
     const next = journal.entries.find((entry) => entry.idx === 47);
     expect(previous?.tag).toBe('0046_hitl_ledger');
     expect(next?.tag).toBe('0047_nava_work_items');
+    expect(next?.when).toBe((previous?.when ?? 0) + 1000);
+  });
+});
+
+const evalLabelMigrationDdl = readFileSync(
+  fileURLToPath(new URL('../drizzle/0048_eval_label.sql', import.meta.url)),
+  'utf8',
+);
+
+describe('eval label schema', () => {
+  it('keeps the 0048 DDL in step with the Drizzle table, definition by definition', () => {
+    expect(definitionDrift(evalLabelMigrationDdl, [schema.evalLabel])).toEqual([]);
+    for (const check of getTableConfig(schema.evalLabel).checks) {
+      expect(createTableBody(evalLabelMigrationDdl, 'eval_label'), check.name).toContain(
+        `CONSTRAINT "${check.name}"`,
+      );
+    }
+    const mutated = evalLabelMigrationDdl.replace(
+      'WHERE "source_event_id" IS NOT NULL',
+      'WHERE "source_event_id" IS NULL',
+    );
+    expect(definitionDrift(mutated, [schema.evalLabel])).not.toEqual([]);
+  });
+
+  it('keeps 0048 CHECK vocabularies in step with the TypeScript lists', () => {
+    const lines = evalLabelMigrationDdl.split('\n');
+    for (const [name, values] of [
+      ['eval_label_kind_check', EVAL_LABEL_KINDS],
+      ['eval_label_split_check', EVAL_LABEL_SPLITS],
+    ] as const) {
+      const line = lines.find((item) => item.includes(`CONSTRAINT "${name}"`));
+      const listed = [...(line ?? '').matchAll(/'([^']+)'/g)].map((match) => match[1]);
+      expect(listed, name).toEqual([...values]);
+    }
+  });
+
+  it('keeps 0048 additive and registers it directly after 0047 on a +1000ms clock', () => {
+    expect(evalLabelMigrationDdl).not.toMatch(/\b(DROP|ALTER)\s+/i);
+    const journal = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL('../drizzle/meta/_journal.json', import.meta.url)),
+        'utf8',
+      ),
+    ) as { entries: Array<{ idx: number; when: number; tag: string }> };
+    const previous = journal.entries.find((entry) => entry.idx === 47);
+    const next = journal.entries.find((entry) => entry.idx === 48);
+    expect(next?.tag).toBe('0048_eval_label');
     expect(next?.when).toBe((previous?.when ?? 0) + 1000);
   });
 });

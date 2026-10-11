@@ -48,8 +48,22 @@ export const WORK_EVENT_TYPES = [
   'rate.saved',
   'rate.one_off',
   'rate.override',
+  // Pane action telemetry (v5 B1) and staff notes (B2). Payload in `value`; no mail text.
+  'pane.opened',
+  'copy.hms_line',
+  'copy.confirmation',
+  'reply.inserted',
+  'reply.saved',
+  'pdf.created',
+  'excel.downloaded',
+  'hms.lookup.started',
+  'hms.lookup.finished',
+  'item.dismissed',
+  'note.staff',
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
+export const EVAL_LABEL_KINDS = ['correction', 'confirmation', 'run_flag', 'note'] as const;
+export const EVAL_LABEL_SPLITS = ['dev', 'holdout', 'test'] as const;
 
 /** One read of an admitted inbound message, per extractor version. Cascades with the message. */
 export const mailExtraction = pgTable(
@@ -193,5 +207,38 @@ export const customRate = pgTable(
       .on(t.transportId, t.name)
       .where(sql`${t.archivedAt} IS NULL`),
     check('custom_rate_amount_check', sql`${t.amountMinor} >= 0`),
+  ],
+);
+
+/**
+ * One eval label per (work item, field): what the AI read vs what a person kept (v5 flywheel).
+ * Hand-written migration: drizzle/0048_eval_label.sql. Derived data: rows go with the work item;
+ * the message and source event links are SET NULL. One label per source event, so a re-export is idempotent.
+ */
+export const evalLabel = pgTable(
+  'eval_label',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workItemId: uuid('work_item_id')
+      .notNull()
+      .references(() => workItem.id, { onDelete: 'cascade' }),
+    messageId: text('message_id').references(() => message.id, { onDelete: 'set null' }),
+    fieldPath: text('field_path').notNull(),
+    aiValue: jsonb('ai_value'),
+    humanValue: jsonb('human_value'),
+    labelKind: text('label_kind').notNull(),
+    sourceEventId: uuid('source_event_id').references(() => workEvent.id, { onDelete: 'set null' }),
+    extractorVersion: text('extractor_version'),
+    modelRoute: text('model_route'),
+    split: text('split').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('eval_label_split_field_idx').on(t.split, t.fieldPath),
+    uniqueIndex('eval_label_source_event_uidx')
+      .on(t.sourceEventId)
+      .where(sql`${t.sourceEventId} IS NOT NULL`),
+    check('eval_label_kind_check', sql`${t.labelKind} IN (${sqlList(EVAL_LABEL_KINDS)})`),
+    check('eval_label_split_check', sql`${t.split} IN (${sqlList(EVAL_LABEL_SPLITS)})`),
   ],
 );
