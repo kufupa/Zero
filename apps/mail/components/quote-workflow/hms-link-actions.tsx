@@ -3,10 +3,9 @@ import { toast } from 'sonner';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 
 /**
- * The HMS handoff for one confirmation number: Copy link and Copy confirmation, with Open HMS as the plain link. Copy
- * link copies the HMS landing page and the number finds the booking there. Copy link and Open HMS need
- * VITE_PUBLIC_HMS_LANDING_URL in the build. Without it only Copy confirmation shows. Open HMS has no link target:
- * the Outlook add-in opens non-Nava origins in the default browser.
+ * The HMS handoff for one confirmation number. Copy for HMS combines the configured landing URL with the confirmation
+ * and any known guest surname or arrival. A confirmation number by itself does not locate the booking. Copy link and
+ * Open HMS need VITE_PUBLIC_HMS_LANDING_URL in the build; without it Copy for HMS copies only the number.
  */
 
 const linkClass = 'text-[11.5px] font-medium text-[#0066cc] underline';
@@ -61,12 +60,30 @@ function copyWithSelection(text: string): boolean {
   }
 }
 
-type CopyTarget = 'link' | 'number';
+type CopyTarget = 'link' | 'number' | 'hms';
 
-/** Copy link and Copy confirmation for one HMS confirmation number. Renders nothing for an empty number. */
-export function HmsLinkActions({ confirmation }: { confirmation: string }) {
+/** Copy actions for one HMS confirmation number. Renders nothing for an empty number. */
+export function HmsLinkActions({
+  confirmation,
+  guestSurname,
+  arrival,
+}: {
+  confirmation: string;
+  guestSurname?: string | null;
+  arrival?: string | null;
+}) {
   const landing = hmsLandingUrl();
   const number = confirmation.trim();
+  const surname = guestSurname?.trim().replace(/[\r\n]+/g, ' ') ?? '';
+  const arrivalDate = arrival?.trim().replace(/[\r\n]+/g, ' ') ?? '';
+  const hmsCopy = landing
+    ? [
+        landing,
+        'Confirmation: ' + number,
+        ...(surname ? ['Guest surname: ' + surname] : []),
+        ...(arrivalDate ? ['Arrival: ' + arrivalDate] : []),
+      ].join('\n')
+    : number;
   const [feedback, setFeedback] = useState<{ target: CopyTarget; copied: boolean } | null>(null);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -82,11 +99,16 @@ export function HmsLinkActions({ confirmation }: { confirmation: string }) {
     const copied = await copyText(text);
     setFeedback({ target, copied });
     if (copied && target === 'number') trackPaneAction({ type: 'copy.confirmation' });
+    if (copied && (target === 'link' || target === 'hms')) trackPaneAction({ type: 'copy.link' });
     if (copied) {
       toast.success(
         target === 'link'
           ? 'HMS link copied. Paste it into a browser.'
-          : `Confirmation number ${text} copied.`,
+          : target === 'hms'
+            ? landing
+              ? 'HMS details copied.'
+              : `Confirmation number ${number} copied.`
+            : `Confirmation number ${text} copied.`,
       );
     }
     if (resetTimer.current) clearTimeout(resetTimer.current);
@@ -94,12 +116,20 @@ export function HmsLinkActions({ confirmation }: { confirmation: string }) {
   };
 
   const label = (target: CopyTarget, idle: string) =>
-    feedback?.target === target && feedback.copied ? 'Copied' : idle;
+    feedback?.target === target && feedback.copied
+      ? target === 'hms'
+        ? 'Copied for HMS'
+        : 'Copied'
+      : idle;
   const failure =
     feedback && !feedback.copied
       ? feedback.target === 'link'
         ? "Couldn't copy the link. Use Open HMS instead."
-        : "Couldn't copy. Select the number and copy it."
+        : feedback.target === 'hms'
+          ? landing
+            ? "Couldn't copy HMS details."
+            : "Couldn't copy. Select the number and copy it."
+          : "Couldn't copy. Select the number and copy it."
       : '';
 
   return (
@@ -111,6 +141,9 @@ export function HmsLinkActions({ confirmation }: { confirmation: string }) {
       ) : null}
       <button type="button" className={buttonClass} onClick={() => void copy('number', number)}>
         {label('number', 'Copy confirmation')}
+      </button>
+      <button type="button" className={buttonClass} onClick={() => void copy('hms', hmsCopy)}>
+        {label('hms', 'Copy for HMS')}
       </button>
       {landing ? (
         <a href={landing} className={linkClass}>

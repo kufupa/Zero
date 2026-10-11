@@ -53,6 +53,7 @@ export type AnalyseSelectionResult =
       status: 'ready';
       intent: QuoteAnalysis['intent'];
       groups: QuoteAnalysis['groups'];
+      requestedRoomsByStay?: QuoteAnalysis['requestedRoomsByStay'];
       secondaryAsks: QuoteAnalysis['secondaryAsks'];
       alternatives: QuoteAnalysis['alternatives'];
       sourceRevision: number;
@@ -156,6 +157,7 @@ export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
   return {
     intent: ready.intent,
     groups: ready.groups,
+    ...(ready.requestedRoomsByStay ? { requestedRoomsByStay: ready.requestedRoomsByStay } : {}),
     secondaryAsks: ready.secondaryAsks,
     alternatives: ready.alternatives,
     ...(ready.reviewItems?.length ? { reviewItems: ready.reviewItems } : {}),

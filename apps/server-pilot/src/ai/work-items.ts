@@ -155,7 +155,7 @@ export function aiValueAt(payload: MailExtractionPayload | null | undefined, pat
   return parsed.field === 'removed' ? false : row[ROW_KEYS[parsed.field]];
 }
 
-type FormStay = Pick<ExtractionStay, 'id' | 'requested' | 'rows'>;
+type FormStay = Pick<ExtractionStay, 'id' | 'requested' | 'rows' | 'totalRooms'>;
 
 /**
  * The stays and rows the form shows: the extraction's, then any the person added (ids only in `state`), less any she
@@ -169,7 +169,7 @@ export function formStays(payload: MailExtractionPayload, state: WorkState): For
     if (!path) continue;
     let stay = stays.find((item) => item.id === path.stayId);
     if (!stay) {
-      stay = { id: path.stayId, requested: { arrival: null, departure: null }, rows: [] };
+      stay = { id: path.stayId, requested: { arrival: null, departure: null }, totalRooms: null, rows: [] };
       stays.push(stay);
     }
     if (path.rowId !== null && !stay.rows.some((row) => row.id === path.rowId)) {
@@ -181,7 +181,20 @@ export function formStays(payload: MailExtractionPayload, state: WorkState): For
     if (removed.has(stay.id)) return [];
     const rows = stay.rows.filter((row) => !removed.has(row.id));
     // A stay whose every row she removed is gone too.
-    return stay.rows.length > 0 && rows.length === 0 ? [] : [{ ...stay, rows }];
+    if (stay.rows.length > 0 && rows.length === 0) return [];
+    const projectedRows = rows.map((row) => {
+      const countPath = `stays[${stay.id}].rows[${row.id}].count`;
+      if (
+        rows.length === 1 &&
+        row.rooms === null &&
+        stay.totalRooms !== null &&
+        !Object.hasOwn(state, countPath)
+      ) {
+        return { ...row, rooms: stay.totalRooms };
+      }
+      return row;
+    });
+    return [{ ...stay, rows: projectedRows }];
   });
 }
 
@@ -232,6 +245,21 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
   const flags: LunaAnalysis['flags'] = [];
   if (failures.length) flags.push('attachment_unread');
   const stays = formStays(payload, state);
+  const totalRoomsDefaultRowIds = new Set(
+    stays.flatMap((stay) => {
+      if (stay.rows.length !== 1 || stay.totalRooms === null) return [];
+      const row = stay.rows[0]!;
+      const sourceRow = payload.stays.find((item) => item.id === stay.id)?.rows.find((item) => item.id === row.id);
+      const countPath = `stays[${stay.id}].rows[${row.id}].count`;
+      const countWasDefaulted = sourceRow ? sourceRow.rooms === null : row.rooms === stay.totalRooms;
+      return countWasDefaulted && !Object.hasOwn(state, countPath) ? [row.id] : [];
+    }),
+  );
+  const requestedRoomsByStay = Object.fromEntries(
+    stays.flatMap((stay) => {
+      return stay.totalRooms !== null ? [[stay.id, stay.totalRooms]] : [];
+    }),
+  );
   if (stays.length > 1) flags.push('multi_date');
   if (kind === 'amendment' || kind === 'cancellation') flags.push('amendment_or_cancel');
 
@@ -299,6 +327,7 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
     const slot = order[index];
     if (!slot) return;
     group.id = slot.groupId;
+    if (slot.rowId && totalRoomsDefaultRowIds.has(slot.rowId)) group.fields.quantity = 'defaulted';
     const stayPath = `stays[${slot.stayId}].requested`;
     const corrected: Array<[string, string]> = [
       ['arrivalDate', `${stayPath}.arrival`],
@@ -329,6 +358,7 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
       reviewItems: [...failures, ...questionItems(mapped.missing)],
+      requestedRoomsByStay,
       source: 'luna' as const,
       aiUnavailable: false as const,
       luna,

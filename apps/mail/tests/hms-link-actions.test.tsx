@@ -180,3 +180,46 @@ describe('HmsLinkActions Copy link', () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 });
+
+describe('HmsLinkActions Copy for HMS', () => {
+  it('copies the landing URL, confirmation, guest surname and arrival in one write', async () => {
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
+    const writeText = vi.fn(async () => {});
+    setClipboard({ writeText });
+    render(
+      <HmsLinkActions
+        confirmation="64318608-1"
+        guestSurname="Smith"
+        arrival="2026-11-12"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied for HMS' })).toBeTruthy());
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith(
+      LANDING + '\nConfirmation: 64318608-1\nGuest surname: Smith\nArrival: 2026-11-12',
+    );
+  });
+
+  it('copies only the confirmation when no landing URL is configured', async () => {
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', '');
+    const writeText = vi.fn(async () => {});
+    setClipboard({ writeText });
+    render(
+      <HmsLinkActions
+        confirmation="64318608-1"
+        guestSurname="Smith"
+        arrival="2026-11-12"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied for HMS' })).toBeTruthy());
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith('64318608-1');
+    expect(toast.success).toHaveBeenCalledWith('Confirmation number 64318608-1 copied.');
+  });
+});

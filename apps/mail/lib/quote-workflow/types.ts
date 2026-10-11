@@ -175,6 +175,8 @@ export type QuoteWorkflowFallbackReason = 'timeout' | 'error' | 'disabled' | 'in
 export type QuoteAnalysis = {
   intent: QuoteIntent;
   groups: StayGroupRequirement[];
+  /** Extraction totals kept at stay level so row-count changes can promote or demote the one-row default. */
+  requestedRoomsByStay?: Record<string, number>;
   secondaryAsks: string[];
   alternatives: string[];
   reviewItems?: QuoteReviewItem[];
