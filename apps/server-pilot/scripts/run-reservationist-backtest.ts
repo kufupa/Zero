@@ -7,7 +7,12 @@
  *                                  extract: the inbound mail extraction. Both use the production prompt, adapter and
  *                                  deadline and read no HMS. agent: the reservationist agent at medium reasoning,
  *                                  HMS quote/party reads replayed. Default pane.
- *   score --run-id ID              field-level accuracy per split and the overfit alarm (dev - holdout > 10 points)
+ *   run --target extract --dataset FILE [--run-id ID]
+ *                                  the label dataset from export-work-events-dataset.ts: each labelled case through the
+ *                                  production extraction on its masked mail, with the mail's own message id. No golden
+ *                                  set and no HMS.
+ *   score --run-id ID              field-level accuracy per split and the overfit alarm (dev - holdout > 10 points).
+ *                                  For a dataset run: the label gates (label-scorers.ts). Exit 1 when a gate fails.
  *
  * Input: apps/server-pilot/.private/reservationist-backtest/golden-set.jsonl (gitignored). It is not exported from
  * prod by this script; a missing file fails with the expected path. Traces and scores land in <run-id>/ beside it.
@@ -18,6 +23,12 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { RequestContext } from '@mastra/core/request-context';
+import { eq } from 'drizzle-orm';
+import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
+import { extractInboundMail } from '../src/ai/extraction/extract.js';
+import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
+import { getDb } from '../src/db/client.js';
+import { mailboxTransport } from '../src/db/schema/mail.js';
 import { createAzureLunaModel, lunaProviderOptions } from '../src/ai/bedrock/luna.js';
 import {
   CENTURION_HOTEL_RULES,
@@ -50,7 +61,14 @@ import {
   type GoldenTrace,
   type ToolCall,
 } from '../src/ai/reservationist-backtest.js';
-import { validateRunId } from '../src/ai/reservationist-replay.js';
+import { fingerprint, validateRunId } from '../src/ai/reservationist-replay.js';
+import {
+  evaluateLabelGates,
+  parseLabelCases,
+  scoreLabelCases,
+  type CandidateTrace,
+  type LabelCase,
+} from '../src/ai/label-scorers.js';
 
 const ROOT = fileURLToPath(new URL('../.private/reservationist-backtest/', import.meta.url));
 const GOLDEN_SET = join(ROOT, 'golden-set.jsonl');
@@ -59,7 +77,7 @@ const CONCURRENCY = 8;
 const MAX_STEPS = 10;
 const MAX_MESSAGE_CHARS = 20_000;
 const USAGE =
-  'usage: run-reservationist-backtest.ts check | run [--target pane|extract|agent] [--subset 30] [--run-id ID] | score --run-id ID';
+  'usage: run-reservationist-backtest.ts check | run [--target pane|extract|agent] [--subset 30] [--run-id ID] | run --target extract --dataset FILE [--run-id ID] | score --run-id ID';
 
 type Trace = GoldenTrace & {
   id: string;
@@ -130,7 +148,7 @@ function check(): number {
   return problems.length ? 1 : 0;
 }
 
-type Manifest = { runId: string; target?: BacktestTarget; casesDigest?: string; cases: Array<{ id: string }> };
+type Manifest = { runId: string; target?: BacktestTarget; casesDigest?: string; cases: Array<{ id: string }>; dataset?: string };
 const readManifest = (dir: string): Manifest | null =>
   existsSync(join(dir, 'manifest.json')) ? (JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as Manifest) : null;
 
@@ -300,11 +318,144 @@ function score(runId: string): number {
   return summary.overfitAlarm || incomplete.length ? 1 : 0;
 }
 
+type DatasetTrace = CandidateTrace & { id: string; split: string; usage: unknown; ms: number };
+
+/** The newest row per id: a resumed run appends its retries. */
+function latestById<T extends { id: string }>(path: string): T[] {
+  if (!existsSync(path)) return [];
+  const rows = readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as T);
+  return [...new Map(rows.map((row) => [row.id, row])).values()];
+}
+
+/**
+ * --dataset: each labelled case through the production extraction. The case's masked mail is the trigger, under its
+ * own message id, so the extraction's stable stay and row ids match the labels' field ids.
+ */
+/**
+ * One dataset case through inbound extraction, as the inbound worker runs it. The stored message, its thread and its
+ * attachments come from the database through the worker's loader, and the sender and mailbox are the stored ones. The
+ * masked case text is not replayed: it would lose the facts the worker reads.
+ */
+export async function replayExtraction(
+  row: Pick<LabelCase, 'message_id' | 'transport_id'>,
+  adapter: ModelAdapter,
+): Promise<Pick<DatasetTrace, 'extraction' | 'usage' | 'error'>> {
+  const messageId = row.message_id;
+  const transportId = row.transport_id;
+  const missing = {
+    extraction: null,
+    usage: null,
+    error: `message ${messageId ?? '(none)'} is not in the database`,
+  };
+  if (!messageId || !transportId) return missing;
+  const selection = await loadSyncedQuoteSelectionFromMailbox({ transportId, messageId });
+  if (!selection) return missing;
+  const [transport] = await getDb()
+    .select({ email: mailboxTransport.email })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.id, transportId))
+    .limit(1);
+  const res = await extractInboundMail({
+    adapter,
+    selection,
+    messageId,
+    from: selection.fromAddress ?? null,
+    mailbox: transport?.email ?? null,
+  });
+  const usage = {
+    inputTokens: res.usage.inputTokens,
+    outputTokens: res.usage.outputTokens,
+    costUsd: res.usage.costUsd,
+  };
+  return res.ok
+    ? { extraction: { kind: res.kind, payload: res.payload }, usage }
+    : { extraction: null, usage, error: res.reason };
+}
+
+async function runDataset(runId: string, datasetPath: string): Promise<number> {
+  if (!process.env.DATABASE_URL?.trim()) {
+    throw new Error('dataset replay loads each stored message: set DATABASE_URL to the database the dataset was exported from');
+  }
+  const cases = parseLabelCases(readFileSync(datasetPath, 'utf8'));
+  if (!cases.length) throw new Error(`dataset ${datasetPath} has no cases`);
+  const dir = join(ROOT, runId);
+  const casesDigest = fingerprint(cases);
+  const prior = readManifest(dir);
+  if (prior && (prior.target !== 'extract' || prior.casesDigest !== casesDigest)) {
+    throw new Error(`run ${runId} was started with another dataset or other cases; start a new --run-id`);
+  }
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const tracesPath = join(dir, 'traces.jsonl');
+  const done = new Set(latestById<DatasetTrace>(tracesPath).filter((trace) => !trace.error).map((trace) => trace.id));
+  writePrivate(
+    join(dir, 'manifest.json'),
+    JSON.stringify(
+      {
+        runId,
+        target: 'extract',
+        dataset: resolve(datasetPath),
+        casesDigest,
+        cases: cases.map((row) => ({ id: row.work_item_id, split: row.split })),
+      },
+      null,
+      2,
+    ),
+  );
+  const { adapter } = resolveAdapter(true, null);
+  if (!adapter) throw new Error('AZURE_OPENAI_BASE_URL and AZURE_FOUNDRY_API_KEY required');
+  const todo = cases.filter((row) => !done.has(row.work_item_id));
+  console.log(JSON.stringify({ runId, target: 'extract', cases: cases.length, todo: todo.length }));
+  let finished = 0;
+  await mapLimit(todo, CONCURRENCY, async (row: LabelCase) => {
+    const started = Date.now();
+    let trace: DatasetTrace;
+    try {
+      const res = await replayExtraction(row, adapter);
+      trace = { id: row.work_item_id, split: row.split, ...res, ms: Date.now() - started };
+    } catch (err) {
+      trace = {
+        id: row.work_item_id,
+        split: row.split,
+        extraction: null,
+        usage: null,
+        ms: Date.now() - started,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+    appendPrivate(tracesPath, trace);
+    finished += 1;
+    console.log(
+      JSON.stringify({ n: finished, of: todo.length, id: row.work_item_id, kind: trace.extraction?.kind ?? null, ms: trace.ms, error: trace.error }),
+    );
+  });
+  return 0;
+}
+
+/** Label gates for a dataset run. Every case must have an answer; the gates come from label-scorers.ts. */
+async function scoreDataset(runId: string, manifest: Manifest): Promise<number> {
+  const dir = join(ROOT, runId);
+  const cases = parseLabelCases(readFileSync(manifest.dataset!, 'utf8'));
+  if (fingerprint(cases) !== manifest.casesDigest) {
+    throw new Error(`run ${runId} cases changed in the dataset since the run; start a new --run-id`);
+  }
+  const traces = new Map(latestById<DatasetTrace>(join(dir, 'traces.jsonl')).map((trace) => [trace.id, trace]));
+  const summary = await scoreLabelCases(cases, traces);
+  const gates = evaluateLabelGates(summary);
+  const report = { runId, dataset: manifest.dataset, traced: traces.size, ...summary, gates };
+  writePrivate(join(dir, 'summary.json'), JSON.stringify(report, null, 2));
+  console.log(JSON.stringify(report, null, 2));
+  for (const check of gates.checks) if (check.status === 'fail') console.error(`gate failed: ${check.name} (${check.detail})`);
+  return gates.pass ? 0 : 1;
+}
+
 async function main(argv: string[]): Promise<number> {
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { subset: { type: 'string' }, 'run-id': { type: 'string' }, target: { type: 'string' } },
+    options: { subset: { type: 'string' }, 'run-id': { type: 'string' }, target: { type: 'string' }, dataset: { type: 'string' } },
   });
   const [command, ...extra] = positionals;
   if (extra.length) {
@@ -312,6 +463,13 @@ async function main(argv: string[]): Promise<number> {
     return 2;
   }
   if (command === 'check') return check();
+  if (command === 'run' && values.dataset !== undefined) {
+    if (values.subset !== undefined || (values.target !== undefined && values.target !== 'extract')) {
+      console.error(USAGE);
+      return 2;
+    }
+    return runDataset(validateRunId(values['run-id'] ?? `${new Date().toISOString().slice(0, 10)}-${randomUUID().slice(0, 8)}`), values.dataset);
+  }
   if (command === 'run') {
     const subset = values.subset === undefined ? undefined : Number(values.subset);
     const target = (values.target ?? 'pane') as BacktestTarget;
@@ -322,7 +480,11 @@ async function main(argv: string[]): Promise<number> {
     const runId = values['run-id'] ?? `${new Date().toISOString().slice(0, 10)}-${randomUUID().slice(0, 8)}`;
     return run(validateRunId(runId), target, subset);
   }
-  if (command === 'score' && values['run-id']) return score(validateRunId(values['run-id']));
+  if (command === 'score' && values['run-id']) {
+    const runId = validateRunId(values['run-id']);
+    const manifest = readManifest(join(ROOT, runId));
+    return manifest?.dataset ? scoreDataset(runId, manifest) : score(runId);
+  }
   console.error(USAGE);
   return 2;
 }

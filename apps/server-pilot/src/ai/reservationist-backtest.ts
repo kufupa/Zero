@@ -477,7 +477,7 @@ export function replayRunners(row: GoldenRow) {
  * The golden row as the synced selection prod builds from the mailbox. The thread goes through prod's own causal
  * filter (orderCausalPreceding), so a later reply in the row's context never reaches the prompt.
  */
-export function goldenSelection(row: GoldenRow): SyncedQuoteSelection {
+export function goldenSelection(row: Pick<GoldenRow, 'trigger' | 'context'>): SyncedQuoteSelection {
   const at = (eventAt: string | null) => (eventAt ? new Date(eventAt) : null);
   return {
     subject: row.trigger.subject,
@@ -518,7 +518,7 @@ export type GoldenUsage = { inputTokens?: number; outputTokens?: number; costUsd
  */
 export async function runProductionTarget(
   target: 'pane' | 'extract',
-  row: GoldenRow,
+  row: Pick<GoldenRow, 'trigger' | 'context'>,
   adapter: ModelAdapter,
   mailbox?: string | null,
 ): Promise<GoldenTrace & { usage: GoldenUsage }> {
