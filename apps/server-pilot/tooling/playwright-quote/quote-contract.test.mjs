@@ -11,6 +11,7 @@ import {
   orderOptions,
   aggregateOutcome,
   profileHolds,
+  shortfallsOf,
 } from './quote-contract.mjs';
 import { profileFor } from './property-profile.mjs';
 
@@ -773,4 +774,44 @@ test('import has no CLI, browser or credential side effects', () => {
   assert.equal(child.status, 0, child.stderr);
   assert.equal(child.stdout.trim(), 'import only');
   assert.equal(child.stderr, '');
+});
+
+test('shortfallsOf names the room type, each short night, the demand and the supply for a row below its quantity', () => {
+  const short = roomGroup('a', 40, 'STQN', 'BAR', null, nights(34, 34), {
+    availability: 'unavailable',
+    room: { code: 'STQN', label: 'Standard Queen', buildingCode: null },
+  });
+  assert.deepEqual(shortfallsOf([short], 'OTHER'), [
+    { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2026-09-24', demand: 40, supply: 34 },
+    { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2026-09-25', demand: 40, supply: 34 },
+  ]);
+});
+
+test('shortfallsOf names a shared profile pool whose combined demand is above supply, and not a row that fits', () => {
+  const groups = [
+    roomGroup('a', 20, 'STQN', 'BAR', null, nights(34)),
+    roomGroup('b', 20, 'STQN', 'BARRO', null, nights(34)),
+  ];
+  assert.deepEqual(shortfallsOf(groups, 'HRCEN'), [
+    { roomCode: 'STQN', roomLabel: 'STQN', date: '2026-09-24', demand: 40, supply: 34 },
+  ]);
+  const mixed = [
+    roomGroup('a', 40, 'STQN', 'BAR', null, nights(34), {
+      availability: 'unavailable',
+      room: { code: 'STQN', label: 'Standard Queen', buildingCode: null },
+    }),
+    roomGroup('b', 30, 'STWN', 'BAR', null, nights(69), { room: { code: 'STWN', label: 'Standard Twin', buildingCode: null } }),
+  ];
+  assert.deepEqual(shortfallsOf(mixed, 'HRCEN').map((short) => short.roomCode), ['STQN']);
+});
+
+test('shortfallsOf finds nothing when every row and every shared pool fits', () => {
+  assert.deepEqual(shortfallsOf([
+    roomGroup('a', 17, 'STQN', 'BAR', null, nights(34)),
+    roomGroup('b', 17, 'STQN', 'BARRO', null, nights(34)),
+  ], 'HRCEN'), []);
+  assert.deepEqual(shortfallsOf([
+    roomGroup('a', 30, 'STQN', 'BAR', null, nights(34, 34)),
+    roomGroup('b', 30, 'STWN', 'BAR', null, nights(69, 69)),
+  ], 'HRCEN'), []);
 });

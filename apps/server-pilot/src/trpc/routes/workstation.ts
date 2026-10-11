@@ -185,9 +185,31 @@ export function staffQuoteFailureLog(error: unknown): {
   return { code: staffQuoteFailureCode(error), phase: staffQuoteFailurePhase(error), ...(detail ? { detail } : {}) };
 }
 
-/** The staff message when HMS priced every room but gave no building, so Nava cannot prove the rooms fit together. */
+/** The staff message when HMS gave no building and the property room profile is missing or out of date, so rooms cannot be pooled. */
 export const SHARED_INVENTORY_GAP_MESSAGE =
-  "HMS priced each room, but Nava can't yet confirm the rooms are available together (HMS gives no building). Quote each room type separately for now.";
+  'Room profile out of date or missing — check HMS room types. Quote each room type separately for now.';
+
+/** The first short room-night the reader proved, from its detail. Anything malformed is not copied to staff. */
+function insufficientShortfallOf(error: unknown): { roomLabel: string; date: string; supply: number } | undefined {
+  if (!(error instanceof ReservationistTaskEvidenceUnavailable) || !error.detail) return undefined;
+  const shortfall = error.detail.shortfall as { roomLabel?: unknown; date?: unknown; supply?: unknown } | undefined;
+  return typeof shortfall?.roomLabel === 'string' &&
+    typeof shortfall.date === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(shortfall.date) &&
+    Number.isInteger(shortfall.supply)
+    ? { roomLabel: shortfall.roomLabel, date: shortfall.date, supply: shortfall.supply as number }
+    : undefined;
+}
+
+/** Staff copy for a short room type: what is free on the short night, so staff quote fewer rooms or split the types. */
+export function insufficientInventoryMessage(shortfall: { roomLabel: string; date: string; supply: number }): string {
+  const night = new Date(`${shortfall.date}T00:00:00Z`).toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  });
+  return `Only ${shortfall.supply} ${shortfall.roomLabel} free on ${night} — quote fewer or split`;
+}
 
 function isHmsExecutionFailure(error: unknown, code: string, phase: string): boolean {
   if (HMS_EXECUTION_CODES.has(code) || HMS_EXECUTION_PHASE.test(phase)) return true;
@@ -214,6 +236,8 @@ export function staffQuoteFailureMessage(
   if (code === 'native_quote_business_evidence_unavailable' && nativeQuoteGapOf(error)?.sharedInventoryPoolGap) {
     return SHARED_INVENTORY_GAP_MESSAGE;
   }
+  const shortfall = code === 'native_quote_insufficient_inventory' ? insufficientShortfallOf(error) : undefined;
+  if (shortfall) return insufficientInventoryMessage(shortfall);
   const actions: Record<string, string> = {
     business_quote_policy_unavailable:
       'Verify VAT and tourism levy inclusion for the selected rate.',
@@ -233,6 +257,7 @@ export function staffQuoteFailureMessage(
     business_quote_source_expired: 'The price observation expired; rerun the quote.',
     native_quote_business_evidence_unavailable:
       'Verify rate eligibility and combined availability for these rooms.',
+    native_quote_insufficient_inventory: 'Verify combined availability for the requested rooms and dates.',
     native_quote_capture_scope_or_completeness_invalid: HMS_UNPRICEABLE_COMBINATION_MESSAGE,
     native_quote_capture_oversized: HMS_UNPRICEABLE_COMBINATION_MESSAGE,
     staff_quote_source_changed:

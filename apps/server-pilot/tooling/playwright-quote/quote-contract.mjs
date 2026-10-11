@@ -744,6 +744,46 @@ export function evaluateAllocation(groups = [], sourcePools = []) {
   };
 }
 
+/**
+ * The short room-nights a capture proves: a shared pool whose combined demand is above its supply, then any row whose own
+ * inventory is below its quantity. Each entry names the room type, its label, the night, the demand and the supply.
+ */
+export function shortfallsOf(groups = [], propertyCode) {
+  if (!Array.isArray(groups)) return [];
+  const labelOf = (code) => {
+    for (const group of groups) {
+      const row = (group?.options ?? []).find((option) => option?.room?.code === code && typeof option.room.label === 'string');
+      if (row?.room.label) return row.room.label;
+    }
+    return code;
+  };
+  const found = [];
+  const seen = new Set();
+  const add = (roomCode, date, demand, supply) => {
+    if (seen.has(`${roomCode}|${date}`)) return;
+    seen.add(`${roomCode}|${date}`);
+    found.push({ roomCode, roomLabel: labelOf(roomCode), date, demand, supply });
+  };
+  for (const pool of composeAllocation(groups, propertyCode).pools ?? []) {
+    const roomCode = pool.id.slice(pool.id.lastIndexOf(':') + 1);
+    for (const night of pool.nights) {
+      if (night.comparable && night.demand > night.supply) add(roomCode, night.date, night.demand, night.supply);
+    }
+  }
+  for (const group of groups) {
+    const quantity = group?.quantity ?? group?.request?.quantity;
+    for (const row of group?.options ?? []) {
+      if (row?.matchStatus !== 'match' || typeof row.room?.code !== 'string' || !Number.isInteger(quantity)) continue;
+      for (const night of row.nightly ?? []) {
+        if (Number.isInteger(night?.inventory) && night.inventory < quantity) {
+          add(row.room.code, night.date, quantity, night.inventory);
+        }
+      }
+    }
+  }
+  return found;
+}
+
 const MATCH_RANK = { match: 0, alternative: 1, unresolved: 2 };
 const ELIGIBILITY_RANK = { verified: 0, conditional: 1, unknown: 2 };
 const AVAILABILITY_RANK = { available: 0, restricted: 1, unknown: 2, unavailable: 3 };

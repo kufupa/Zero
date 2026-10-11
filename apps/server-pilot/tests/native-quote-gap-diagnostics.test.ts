@@ -167,7 +167,7 @@ describe('the joint-inventory block carries its diagnostics', () => {
     expect(log.detail?.rows.map((row) => row.buildingCode)).toEqual(['null', 'null']);
     expect(staffQuoteFailureMessage(error)).toBe(SHARED_INVENTORY_GAP_MESSAGE);
     expect(SHARED_INVENTORY_GAP_MESSAGE).toBe(
-      "HMS priced each room, but Nava can't yet confirm the rooms are available together (HMS gives no building). Quote each room type separately for now.",
+      'Room profile out of date or missing — check HMS room types. Quote each room type separately for now.',
     );
   });
 });
@@ -220,5 +220,152 @@ describe('other evidence gaps keep their messages', () => {
     const execution = Object.assign(new Error('EXECUTION_FAILURE'), { code: 'EXECUTION_FAILURE', phase: 'hotel_availability' });
     expect(staffQuoteFailureLog(execution)).toEqual({ code: 'EXECUTION_FAILURE', phase: 'hotel_availability' });
     expect(staffQuoteFailureLog(new Error('native_quote_capture_scope_or_completeness_invalid')).phase).toBe('unknown');
+  });
+});
+
+/** A one-type request for 40 rooms, and a two-row request that needs 20 + 20 of the same type. */
+const shortRequest = {
+  propertyCode: 'HRCEN',
+  arrivalDate: '2026-11-12',
+  departureDate: '2026-11-14',
+  requestedCurrency: 'ZAR',
+  details: 'full',
+  rooms: [{ id: 'room-1', quantity: 40, adults: 1, children: 0, childAges: [], required: { roomCodes: ['STQN'], rateCodes: ['BAR'] } }],
+};
+const sharedTypeRequest = {
+  ...shortRequest,
+  rooms: [
+    { id: 'room-1', quantity: 20, adults: 1, children: 0, childAges: [], required: { roomCodes: ['STQN'], rateCodes: ['BAR'] } },
+    { id: 'room-2', quantity: 20, adults: 1, children: 0, childAges: [], required: { roomCodes: ['STQN'], rateCodes: ['BARRO'] } },
+  ],
+};
+const standardQueen = { code: 'STQN', label: 'Standard Queen', buildingCode: null };
+
+function rowFor(room: { code: string; label?: string; buildingCode: string | null }, inventory: number, availability: string, rate = 'BAR') {
+  return {
+    id: `HRCEN:${room.code}:${rate}`,
+    room,
+    rate: { code: rate, label: 'Best Available' },
+    board: 'Bed & Breakfast',
+    held: false,
+    eligibility: 'verified',
+    availability,
+    matchStatus: 'match',
+    issues: [],
+    details: { status: 'complete' },
+    nightly: ['2026-11-12', '2026-11-13'].map((date) => ({ date, inventory, price: { amount: '1543.21', currency: 'ZAR' } })),
+  };
+}
+
+/** Writes the capture fetch-quote leaves for `req`: groups built from the normalized rooms, outcome and allocation recomputed. */
+async function captureFor(
+  req: { propertyCode: string } & Record<string, unknown>,
+  makeGroups: (rooms: unknown[]) => unknown[],
+  patch: Record<string, unknown> = {},
+) {
+  const contract = (await import(contractPath)) as Contract;
+  const normalized = contract.normalizeQuoteRequest({ schemaVersion: 2, ...req }).request;
+  const groups = makeGroups(normalized.rooms);
+  root = join(privateRoot, `test-${randomUUID()}`);
+  const evidence = join(root, 'out', 'run-2026-11-12T08-00-00Z');
+  await mkdir(evidence, { recursive: true });
+  const allocation = contract.composeAllocation(groups, req.propertyCode);
+  const capture = {
+    schemaVersion: 2,
+    outcome: contract.aggregateOutcome({ groups, allocation }).outcome,
+    propertyCode: req.propertyCode,
+    observedAt: new Date(Date.now() - 1000).toISOString(),
+    requested: normalized,
+    groups,
+    allocation,
+    issues: [],
+    searchCompleteness: { status: 'complete' },
+    audit: { status: 'complete' },
+    evidenceDirectory: evidence,
+    ...patch,
+  };
+  await writeFile(join(evidence, 'result.json'), JSON.stringify(capture));
+  return evidence;
+}
+
+function readerFor(evidence: string, req: { propertyCode: string }) {
+  const read = createExistingOwnerNativeQuoteReader({
+    owner: { ...owner, propertyCode: req.propertyCode },
+    outputDir: join(root, 'out'),
+    dispatch: async () => ({ stdout: `Evidence: ${evidence}\n` }),
+  });
+  return read(req as never, new AbortController().signal);
+}
+
+async function failureOf(evidence: string, req: { propertyCode: string }): Promise<unknown> {
+  return readerFor(evidence, req).then(
+    () => null,
+    (error: unknown) => error,
+  );
+}
+
+const oneRow = (rooms: unknown[]) => [
+  { id: 'room-1', request: rooms[0], outcome: 'unavailable', issues: [], completeness: { search: 'complete', requiredFacts: 'complete' }, options: [rowFor(standardQueen, 34, 'unavailable')] },
+];
+
+describe('a short-supply capture is insufficient, and says which room type and night is short', () => {
+  it('names the room type, the first short night and the supply for one row asking for more rooms than HMS holds', async () => {
+    const evidence = await captureFor(shortRequest, oneRow, { outcome: 'unavailable' });
+    const error = await failureOf(evidence, shortRequest);
+    expect(error).toBeInstanceOf(ReservationistTaskEvidenceUnavailable);
+    expect((error as ReservationistTaskEvidenceUnavailable).code).toBe('native_quote_insufficient_inventory');
+    expect((error as ReservationistTaskEvidenceUnavailable).detail).toEqual({
+      shortfall: { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2026-11-12', demand: 40, supply: 34 },
+    });
+    expect(staffQuoteFailureMessage(error)).toBe('Only 34 Standard Queen free on 12 Nov — quote fewer or split');
+    expect(staffQuoteFailureLog(error)).toEqual({ code: 'native_quote_insufficient_inventory', phase: 'qualification' });
+  });
+
+  it('names the shared type when two rows of it add up to more than the profile holds, not a scope error', async () => {
+    const evidence = await captureFor(sharedTypeRequest, (rooms) => [
+      { id: 'room-1', request: rooms[0], outcome: 'quote', issues: [], completeness: { search: 'complete', requiredFacts: 'complete' }, options: [rowFor(standardQueen, 34, 'available')] },
+      { id: 'room-2', request: rooms[1], outcome: 'quote', issues: [], completeness: { search: 'complete', requiredFacts: 'complete' }, options: [rowFor(standardQueen, 34, 'available', 'BARRO')] },
+    ]);
+    const error = await failureOf(evidence, sharedTypeRequest);
+    expect((error as ReservationistTaskEvidenceUnavailable).code).toBe('native_quote_insufficient_inventory');
+    expect((error as ReservationistTaskEvidenceUnavailable).detail).toEqual({
+      shortfall: { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2026-11-12', demand: 40, supply: 34 },
+    });
+  });
+
+  it('stays fail closed when the capture is not complete, even though HMS said unavailable', async () => {
+    const withIssue = await captureFor(shortRequest, oneRow, { outcome: 'unavailable', issues: [{ code: 'OPTION_LIMIT' }] });
+    expect((await failureOf(withIssue, shortRequest)) as Error).toHaveProperty('message', 'native_quote_capture_scope_or_completeness_invalid');
+    const partialSearch = await captureFor(shortRequest, (rooms) => [
+      { ...oneRow(rooms)[0] as object, completeness: { search: 'partial', requiredFacts: 'complete' } },
+    ], { outcome: 'unavailable' });
+    expect((await failureOf(partialSearch, shortRequest)) as Error).toHaveProperty('message', 'native_quote_capture_scope_or_completeness_invalid');
+  });
+
+  it('keeps an incomplete capture with a short allocation on the business-evidence gap, with the availability copy', async () => {
+    const evidence = await captureFor(sharedTypeRequest, (rooms) => [
+      { id: 'room-1', request: rooms[0], outcome: 'partial', issues: [], completeness: { search: 'complete', requiredFacts: 'complete' }, options: [rowFor(standardQueen, 34, 'available')] },
+      { id: 'room-2', request: rooms[1], outcome: 'quote', issues: [], completeness: { search: 'complete', requiredFacts: 'complete' }, options: [rowFor(standardQueen, 34, 'available', 'BARRO')] },
+    ], { outcome: 'partial' });
+    const error = await failureOf(evidence, sharedTypeRequest);
+    expect((error as ReservationistTaskEvidenceUnavailable).code).toBe('native_quote_business_evidence_unavailable');
+    expect(staffQuoteFailureMessage(error)).toBe('Verify rate eligibility and combined availability for these rooms.');
+  });
+
+  it('gives the room-profile copy when the property has no profile and HMS gave no building', async () => {
+    const otherRequest = {
+      ...shortRequest,
+      propertyCode: 'OTHER',
+      rooms: [
+        { id: 'room-1', quantity: 15, adults: 1, children: 0, childAges: [], required: { roomCodes: ['STQN'], rateCodes: ['BAR'] } },
+        { id: 'room-2', quantity: 15, adults: 2, children: 0, childAges: [], required: { roomCodes: ['STWN'], rateCodes: ['BAR'] } },
+      ],
+    };
+    const evidence = await captureFor(otherRequest, (rooms) => [
+      { id: 'room-1', request: rooms[0], outcome: 'quote', issues: [], completeness: { search: 'complete', requiredFacts: 'complete' }, options: [rowFor(standardQueen, 40, 'available')] },
+      { id: 'room-2', request: rooms[1], outcome: 'quote', issues: [], completeness: { search: 'complete', requiredFacts: 'complete' }, options: [rowFor({ code: 'STWN', label: 'Standard Twin', buildingCode: null }, 40, 'available')] },
+    ]);
+    const error = await failureOf(evidence, otherRequest);
+    expect(staffQuoteFailureMessage(error)).toBe(SHARED_INVENTORY_GAP_MESSAGE);
   });
 });

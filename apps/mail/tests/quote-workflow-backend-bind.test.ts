@@ -601,6 +601,33 @@ describe('staff quote execute/PDF header bind', () => {
     expect(mutate).not.toHaveBeenCalled();
   });
 
+  it('sends a mixed room-type stay as one executeStaffQuote run, with each type on its own group', async () => {
+    const sent: unknown[] = [];
+    const mutate = vi.fn(async (input: unknown) => {
+      sent.push(input);
+      return readyResult;
+    });
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [
+        { ...stay, id: 'g1', quantity: 20, roomPreference: 'STQN' },
+        { ...stay, id: 'g2', quantity: 10, roomPreference: 'STWN' },
+      ],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(result.status).toBe('ok');
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(sent[0]).toMatchObject({
+      groups: [
+        expect.objectContaining({ id: 'g1', roomCodes: ['STQN'], quantity: 20 }),
+        expect.objectContaining({ id: 'g2', roomCodes: ['STWN'], quantity: 10 }),
+      ],
+    });
+  });
+
   it('rejects a zero total and requires PDF hash to match actual bytes', async () => {
     const mutateQuote = vi.fn(async () => ({ ...readyResult, totalMinor: 0 }));
     const zero = await bindExecuteStaffQuote({
@@ -780,6 +807,24 @@ describe('staff quote no-matching-rate flag', () => {
     });
     expect(otherFailure.status).toBe('unavailable');
     expect(otherFailure).not.toHaveProperty('noMatchingRate', true);
+  });
+
+  it('shows the server short-supply message as the reason, not as a no-rate case', async () => {
+    const short = await bindExecuteStaffQuote({
+      mutate: vi.fn(async () => {
+        throw new Error('Only 34 Standard Queen free on 26 Oct — quote fewer or split');
+      }),
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [stay],
+      header,
+    });
+    expect(short).toEqual({
+      status: 'unavailable',
+      reason: 'Only 34 Standard Queen free on 26 Oct — quote fewer or split',
+      noMatchingRate: false,
+    });
   });
 });
 

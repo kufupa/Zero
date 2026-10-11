@@ -2703,6 +2703,22 @@ describe('why the PDF cannot be made: the reason names the check that failed', (
     return reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-1', 850000, s.inputRevision));
   }
 
+  /** One stay with two room types on the same dates (STQN and STWN), priced by one live staff run. */
+  function ratedMixedTypeStay(): QuoteSession {
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      groups: [
+        { ...quoteAnalysis.groups[0]!, id: 'g1', quantity: 20, roomPreference: 'STQN' },
+        { ...quoteAnalysis.groups[0]!, id: 'g2', quantity: 10, roomPreference: 'STWN' },
+      ],
+    };
+    const s = withStaffSource(analysisReady(analysis));
+    const run = staffQuoteFor(STAY_A, 'rev-1', 850000, s.inputRevision);
+    if (run.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    // One run prices the whole stay, and its offer covers every group on it (allocationFromStaffQuote).
+    return reduceQuoteSession(s, { ...run, offer: { ...run.offer, coversGroupIds: ['g1', 'g2'], quantity: 30 } });
+  }
+
   /** One stay with authorised (non-staff-run) results, nothing picked yet. */
   function authorisedResults(offers: QuoteOffer[] = [authorisedOffer]): QuoteSession {
     return reduceQuoteSession(withStaffSource(analysisReady()), {
@@ -2722,6 +2738,14 @@ describe('why the PDF cannot be made: the reason names the check that failed', (
 
   it('gives no reason once the PDF can be made', () => {
     const s = ratedSingleStay();
+    expect(pdfBlocker(s)).toBeNull();
+    expect(canCreatePdf(s)).toBe(true);
+    expect(pdfBlockReason(s)).toBeNull();
+  });
+
+  it('gives no reason for a mixed-type stay that one live run priced (no staff tick)', () => {
+    const s = ratedMixedTypeStay();
+    expect(s.groups.map((group) => group.roomPreference)).toEqual(['STQN', 'STWN']);
     expect(pdfBlocker(s)).toBeNull();
     expect(canCreatePdf(s)).toBe(true);
     expect(pdfBlockReason(s)).toBeNull();
