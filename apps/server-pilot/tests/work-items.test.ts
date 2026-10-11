@@ -1741,6 +1741,38 @@ async function hotelMail(db: DB, id: string, threadId: string, at: string, queue
   return messageId;
 }
 
+/**
+ * A hotel mail that reached the mailbox as inbound: a sent-item copy or a CC, from the hotel's own address. POP3 stored
+ * its Date header as the sent time; Nava fetched it at `arrivedAt`, the time that orders it against guest mail.
+ */
+async function staffCopy(
+  db: DB,
+  id: string,
+  threadId: string,
+  sentAt: string,
+  arrivedAt: string,
+  from = STAFF,
+): Promise<string> {
+  const messageId = `msg-${id}`;
+  await db.insert(message).values({
+    id: messageId,
+    transportId: CENTURION,
+    threadId,
+    direction: 'inbound',
+    fromAddress: from,
+    toAddresses: [MAILBOX],
+    subject: 'Re: Rooms request',
+    textBody: 'Quoted.',
+    ownerHeaderValue: MAILBOX,
+    messageIdHeader: `${id}@example.com`,
+    pop3Uidl: `uidl-${id}`,
+    receivedAt: new Date(sentAt),
+    sentAt: new Date(sentAt),
+    createdAt: new Date(arrivedAt),
+  });
+  return messageId;
+}
+
 /** A guest mail's read, as the inbound run stores it. */
 function readOf(db: DB, messageId: string, kind: 'quote' | 'other', version = 'extract-v1') {
   return insertRead(db, messageId, { version, kind, payload: payload() });
@@ -2098,6 +2130,103 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
         await connection.end();
       }
     }));
+
+  it('a hotel reply closes an untouched request when the copy of that reply from the hotel address lands after it', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'copy-1', 'thread-copy-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const reply = await hotelMail(db, 'copy-1-out', 'thread-copy-1', '2027-10-01T09:00:00Z');
+      await staffCopy(db, 'copy-1-cc', 'thread-copy-1', '2027-10-01T09:00:00Z', '2027-10-01T09:04:00Z');
+
+      expect(await refreshThread(db, 'thread-copy-1')).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: reply }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('a copy of the hotel reply from its own address is a hotel reply by itself, with its sent time', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'own-1', 'thread-own-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const copy = await staffCopy(db, 'own-1-cc', 'thread-own-1', '2027-10-01T09:00:00Z', '2027-10-01T09:02:00Z');
+
+      expect(await refreshThread(db, 'thread-own-1')).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: copy }),
+      ]);
+      const [closed] = await db.select().from(workItem).where(eq(workItem.id, item!.id));
+      expect(closed).toMatchObject({ status: 'done', sentMessageId: copy });
+      expect(closed!.sentAt).toEqual(new Date('2027-10-01T09:00:00Z'));
+    }));
+
+  it('a hotel copy that lands after the reply never reopens the request; a guest mail after it still does', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'own-2', 'thread-own-2', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const reply = await hotelMail(db, 'own-2-out', 'thread-own-2', '2027-10-01T09:00:00Z');
+      expect(await refreshThread(db, 'thread-own-2')).toEqual([expect.objectContaining({ reason: 'hotel_replied' })]);
+
+      await staffCopy(db, 'own-2-cc', 'thread-own-2', '2027-10-01T09:00:00Z', '2027-10-01T09:04:00Z');
+      expect(await refreshThread(db, 'thread-own-2')).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+
+      await guestMail(db, 'own-2-guest', 'thread-own-2', '2027-10-01T10:00:00Z');
+      expect(await refreshThread(db, 'thread-own-2')).toEqual([
+        expect.objectContaining({ to: 'needs_you', reason: 'new_inbound', previousSentMessageId: reply }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
+  it('a history reply with no sent time closes the request by its received time', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'hist-1', 'thread-hist-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await db.insert(message).values({
+        id: 'msg-hist-1-out',
+        transportId: CENTURION,
+        threadId: 'thread-hist-1',
+        direction: 'outbound',
+        historyOnly: true,
+        fromAddress: MAILBOX,
+        toAddresses: [GUEST],
+        subject: 'Re: Rooms request',
+        textBody: 'Quoted.',
+        ownerHeaderValue: MAILBOX,
+        messageIdHeader: 'hist-1-out@example.com',
+        receivedAt: new Date('2027-10-01T09:00:00Z'),
+        sentAt: null,
+      });
+      expect(await refreshThread(db, 'thread-hist-1')).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: 'msg-hist-1-out' }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('on a public mail provider the exact mailbox address is the hotel; another sender on that domain is still a guest', () =>
+    withDb(async (db) => {
+      await db.update(mailboxTransport).set({ email: 'desk@gmail.com' }).where(eq(mailboxTransport.id, CENTURION));
+      const request = await guestMail(db, 'pub-1', 'thread-pub-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await guestMail(db, 'pub-1-stranger', 'thread-pub-1', '2027-10-01T09:00:00Z', 'pat@gmail.com');
+      expect(await refreshThread(db, 'thread-pub-1')).toEqual([]);
+
+      const copy = await staffCopy(
+        db,
+        'pub-1-desk',
+        'thread-pub-1',
+        '2027-10-01T09:30:00Z',
+        '2027-10-01T09:31:00Z',
+        'desk@gmail.com',
+      );
+      expect(await refreshThread(db, 'thread-pub-1')).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: copy }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
 });
 
 describe('reply link backfill (C2, C3)', () => {
@@ -2148,5 +2277,94 @@ describe('reply link backfill (C2, C3)', () => {
         byReason: {},
       });
       expect(await eventsFor(db, item!.id)).toHaveLength(1);
+    }));
+});
+
+describe('reply link backfill: hotel copies, guest reopens, person touches (C2b)', () => {
+  it('the dry run counts each seeded thread outcome; a person-touched item is left alone; a second apply plans nothing', () =>
+    withDb(async (db) => {
+      // The hotel's copy alone answers the request.
+      const copyOnly = await guestMail(db, 'bf-copy', 'thread-bf-copy', '2027-10-01T08:00:00Z');
+      await readOf(db, copyOnly, 'quote');
+      const copyItem = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: copyOnly });
+      await staffCopy(db, 'bf-copy-cc', 'thread-bf-copy', '2027-10-01T09:00:00Z', '2027-10-01T09:04:00Z');
+
+      // The reply and its copy close the request once, on the reply.
+      const both = await guestMail(db, 'bf-both', 'thread-bf-both', '2027-10-01T08:00:00Z');
+      await readOf(db, both, 'quote');
+      const bothItem = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: both });
+      await hotelMail(db, 'bf-both-out', 'thread-bf-both', '2027-10-01T09:00:00Z');
+      await staffCopy(db, 'bf-both-cc', 'thread-bf-both', '2027-10-01T09:00:00Z', '2027-10-01T09:04:00Z');
+
+      // A legacy done request, closed by the copy, and a guest mail after it reopens it.
+      const reopen = await guestMail(db, 'bf-reopen', 'thread-bf-reopen', '2027-10-01T08:00:00Z');
+      const [reopenItem] = await db
+        .insert(workItem)
+        .values({
+          transportId: CENTURION,
+          threadId: 'thread-bf-reopen',
+          sourceMessageId: reopen,
+          kind: 'quote',
+          status: 'done',
+        })
+        .returning({ id: workItem.id });
+      await staffCopy(db, 'bf-reopen-cc', 'thread-bf-reopen', '2027-10-01T09:00:00Z', '2027-10-01T09:04:00Z');
+      await guestMail(db, 'bf-reopen-guest', 'thread-bf-reopen', '2027-10-01T10:00:00Z');
+
+      // A person edited the request, so the copy does not close it.
+      const touched = await guestMail(db, 'bf-touched', 'thread-bf-touched', '2027-10-01T08:00:00Z');
+      await readOf(db, touched, 'quote');
+      const touchedItem = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: touched });
+      expect(
+        await recordFieldEvent(db, {
+          transportId: CENTURION,
+          workItemId: touchedItem!.id,
+          userId: USER,
+          type: 'field.edit',
+          fieldPath: 'contact.phone',
+          value: '+27 11 555 0100',
+        }),
+      ).toMatchObject({ status: 'recorded' });
+      await staffCopy(db, 'bf-touched-cc', 'thread-bf-touched', '2027-10-01T09:00:00Z', '2027-10-01T09:04:00Z');
+
+      const counted = {
+        threads: 4,
+        changes: 3,
+        byKind: { quote: 3 },
+        byReason: { hotel_replied: 2, new_inbound: 1 },
+      };
+      expect(await runReplyLinkBackfill({ db, apply: false })).toEqual({ apply: false, ...counted });
+      expect(await replyStatus(db, copyItem!.id)).toBe('needs_you');
+
+      expect(await runReplyLinkBackfill({ db, apply: true })).toEqual({ apply: true, ...counted });
+      expect(
+        await db
+          .select({ status: workItem.status, sentMessageId: workItem.sentMessageId })
+          .from(workItem)
+          .where(eq(workItem.id, copyItem!.id)),
+      ).toEqual([{ status: 'done', sentMessageId: 'msg-bf-copy-cc' }]);
+      expect(
+        await db
+          .select({ status: workItem.status, sentMessageId: workItem.sentMessageId })
+          .from(workItem)
+          .where(eq(workItem.id, bothItem!.id)),
+      ).toEqual([{ status: 'done', sentMessageId: 'msg-bf-both-out' }]);
+      expect(
+        await db
+          .select({ status: workItem.status, sentMessageId: workItem.sentMessageId })
+          .from(workItem)
+          .where(eq(workItem.id, reopenItem!.id)),
+      ).toEqual([{ status: 'needs_you', sentMessageId: null }]);
+      expect(await replyStatus(db, touchedItem!.id)).toBe('needs_you');
+      expect(await eventsFor(db, touchedItem!.id)).toHaveLength(1);
+
+      // A second apply still lists the four threads, with nothing left to change.
+      expect(await runReplyLinkBackfill({ db, apply: true })).toEqual({
+        apply: true,
+        threads: 4,
+        changes: 0,
+        byKind: {},
+        byReason: {},
+      });
     }));
 });

@@ -746,9 +746,12 @@ export type ThreadWorkChange =
  * The status changes the thread's work needs, read from its mail and items. A change only touches an untouched item: no
  * event from a person and no saved values. Rules, on the source mail's time (arrivedAt):
  * - Reply link (C2): a needs-you item is done (hotel_replied, sent_at and sent_message_id set) when the hotel's latest
- *   mail after it is later than the guest's latest mail after it. A done item a later guest mail reopens goes back to
- *   needs-you (new_inbound), and its reply link moves to the hotel's next answer. A done item with no reply link (closed
- *   before the link existed) gets the same treatment, with the hotel's latest answer as its link. A person's close stays.
+ *   mail after it is later than the guest's latest mail after it. The hotel's mail is an outbound one, or an inbound one
+ *   from the mailbox's own address or domain (a copy of its reply, counted by when it left). A guest mail is any other
+ *   inbound one, counted by when it arrived, so an own-domain copy never reopens an item. A done item a later guest mail
+ *   reopens goes back to needs-you (new_inbound), and its reply link moves to the hotel's next answer. A done item with
+ *   no reply link (closed before the link existed) gets the same treatment, with the hotel's latest answer as its link.
+ *   A person's close stays.
  * - Same-thread collapse (C3): an older needs-you item is dismissed (superseded_by_thread) when a newer needs-you item of
  *   any kind but other is on the thread. A newer "other" mail never supersedes a request.
  * - Staff-sent other: an "other" mail from the mailbox's own address or domain gets no needs-you (done, staff_sent_other).
@@ -805,13 +808,19 @@ export async function planThreadWork(
     .where(and(eq(message.transportId, input.transportId), eq(message.threadId, input.threadId)));
 
   const byId = new Map(mail.map((m) => [m.id, m]));
-  const guest = mail.flatMap((m) => (m.direction === 'inbound' ? [{ m, at: arrivedAt(m) }] : []));
+  // The hotel's own mail lands as inbound too (a sent-item copy or a CC), so it is the hotel's answer, not a guest's.
+  const mailboxEmail = mailbox?.email ?? '';
+  const ownMail = (m: ThreadMail) => isStaffSender(m.fromAddress, mailboxEmail);
+  const guest = mail.flatMap((m) => (m.direction === 'inbound' && !ownMail(m) ? [{ m, at: arrivedAt(m) }] : []));
   const hotel = mail.flatMap((m) => {
-    const at = m.direction === 'outbound' ? leftAt(m) : null;
+    const at = m.direction === 'outbound' || ownMail(m) ? leftAt(m) : null;
     return at === null ? [] : [{ m, at }];
   });
-  const latest = <T extends { at: number }>(rows: T[]) =>
-    rows.reduce<T | undefined>((best, row) => (!best || row.at > best.at ? row : best), undefined);
+  // A tie (a copy has the reply's sent time) goes to the outbound row, then the lower id, so a rerun never moves a link.
+  const later = <T extends { at: number; m: ThreadMail }>(a: T, b: T) =>
+    a.at !== b.at ? a.at > b.at : a.m.direction !== b.m.direction ? a.m.direction === 'outbound' : a.m.id < b.m.id;
+  const latest = <T extends { at: number; m: ThreadMail }>(rows: T[]) =>
+    rows.reduce<T | undefined>((best, row) => (!best || later(row, best) ? row : best), undefined);
   const changes: ThreadWorkChange[] = [];
   // The items that are needs-you once these changes land. Only untouched ones can be superseded.
   const open: Array<{ id: string; kind: MailKind; at: number; untouched: boolean }> = [];
@@ -829,7 +838,7 @@ export async function planThreadWork(
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
     const answered = lastHotel !== undefined && (lastGuest === undefined || lastHotel.at > lastGuest.at);
-    const staffOther = kind === 'other' && isStaffSender(source.fromAddress, mailbox?.email ?? '');
+    const staffOther = kind === 'other' && ownMail(source);
     if (item.status === 'needs_you') {
       if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
