@@ -4,7 +4,6 @@
 import {
   canSearchVoucher,
   VOUCHER_COPY,
-  copyForHmsText,
   voucherConflictLines,
   voucherFindClientFromTrpc,
   voucherGuestLine,
@@ -19,13 +18,13 @@ import {
 } from '../lib/quote-workflow/amend-find';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { VoucherFindCard } from '../components/quote-workflow/voucher-find-card';
-import { hmsLandingUrl } from '../components/quote-workflow/hms-link-actions';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 
 let restoreClipboard: () => void = () => {};
 afterEach(() => {
   cleanup();
+  vi.unstubAllEnvs();
   restoreClipboard();
   restoreClipboard = () => {};
 });
@@ -311,7 +310,8 @@ describe('voucher find card: the existing search', () => {
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
     expect(screen.getByText('James Smith · 57291630-2')).toBeTruthy();
     expect(screen.getByText(VOUCHER_COPY.pickRow)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Copy for HMS' })).toBeNull();
+    expect(screen.queryByTestId('voucher-matched-booking')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Copy for HMS' })).toHaveLength(2);
     expect(status).toHaveBeenCalledWith({
       threadId: 'thread-1',
       kind: 'search_guest',
@@ -371,7 +371,9 @@ describe('voucher find card: the existing search', () => {
     expect(status).toHaveBeenCalledTimes(2);
   });
 
-  it('copies the HMS landing URL and matched confirmation in one action', async () => {
+  it('copies the HMS landing page with the matched confirmation, surname and arrival in one action', async () => {
+    const landing = 'https://hms.example.test/';
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', landing);
     const prior = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
     const writeText = vi.fn(async (_text: string) => undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
@@ -383,8 +385,12 @@ describe('voucher find card: the existing search', () => {
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
     await screen.findByText('John Smith · 57291630-1');
     fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(copyForHmsText(hmsLandingUrl(), '57291630-1')));
-    expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy();
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        `${landing}\nConfirmation: 57291630-1\nGuest surname: Smith\nArrival: 2026-11-12`,
+      ),
+    );
+    expect(await screen.findByRole('button', { name: 'Copied for HMS' })).toBeTruthy();
   });
 
   it('shows multiple matches without choosing one for the attachment row', async () => {
@@ -398,7 +404,8 @@ describe('voucher find card: the existing search', () => {
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
     expect(screen.getByText('James Smith · 57291630-2')).toBeTruthy();
     expect(screen.getByText(VOUCHER_COPY.pickRow)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Copy for HMS' })).toBeNull();
+    expect(screen.queryByTestId('voucher-matched-booking')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Copy for HMS' })).toHaveLength(2);
   });
 
   it('reads a booking number only from HMS rows, never from the voucher text', async () => {
@@ -527,7 +534,7 @@ describe('voucher find card: saving the file', () => {
   });
 });
 
-describe('voucher find bind and copy', () => {
+describe('voucher find bind and search gate', () => {
   it('binds quoteWorkflow.voucherFind off a tRPC client, and null when the route is missing', async () => {
     const { trpc, voucherFind } = fakeTrpc({ reply: VOUCHER });
     const client = voucherFindClientFromTrpc(trpc);
@@ -552,10 +559,6 @@ describe('voucher find bind and copy', () => {
         conflicts: { lastNames: ['Smith', 'Jones'], arrivals: [] },
       }),
     ).toBe(false);
-    expect(copyForHmsText('https://hms.example.test/', '57291630-1')).toBe(
-      'https://hms.example.test/\n57291630-1',
-    );
-    expect(copyForHmsText(null, '57291630-1')).toBe('57291630-1');
   });
 });
 

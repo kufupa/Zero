@@ -105,8 +105,3 @@ export function canSearchVoucher(
     (guest.conflicts?.arrivals.length ?? 0) < 2
   );
 }
-
-/** Clipboard text for the HMS handoff: landing page first, then the confirmed booking number. */
-export function copyForHmsText(landingUrl: string | null, confirmation: string): string {
-  return [landingUrl?.trim() ?? '', confirmation.trim()].filter(Boolean).join('\n');
-}

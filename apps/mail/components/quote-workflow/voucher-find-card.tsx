@@ -13,7 +13,6 @@ import {
 } from '@/lib/quote-workflow/amend-find';
 import {
   canSearchVoucher,
-  copyForHmsText,
   VOUCHER_COPY,
   voucherConflictLines,
   voucherFindClientFromTrpc,
@@ -24,7 +23,7 @@ import { downloadAttachmentViaBlob, type AttachmentAccessInput } from '@/lib/att
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Notice, SecondaryButton, Section } from '@/components/nava-pane/pane-ui';
-import { copyText, hmsLandingUrl, HmsLinkActions } from './hms-link-actions';
+import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
 
 const captionClass = 'text-[11px] text-[#64748b]';
@@ -309,24 +308,7 @@ function MatchedBooking({ row }: { row: GuestSearchRow }) {
       <p className={captionClass}>{VOUCHER_COPY.matchedBooking}</p>
       <p data-pii className={valueClass}>{`${guest} · ${row.confirmation}`}</p>
       <p className={captionClass}>{`${dates} · ${row.status || 'status not shown'}`}</p>
-      <CopyForHmsButton confirmation={row.confirmation} />
+      <HmsLinkActions confirmation={row.confirmation} guestSurname={row.lastName} arrival={row.arrival} />
     </div>
-  );
-}
-
-function CopyForHmsButton({ confirmation }: { confirmation: string }) {
-  const [copied, setCopied] = useState<boolean | null>(null);
-  const copy = async () => {
-    setCopied(await copyText(copyForHmsText(hmsLandingUrl(), confirmation)));
-  };
-  return (
-    <>
-      <SecondaryButton onClick={() => void copy()}>{copied ? 'Copied' : 'Copy for HMS'}</SecondaryButton>
-      {copied === false ? (
-        <span role="alert" className={captionClass}>
-          Could not copy. Select the confirmation and copy it.
-        </span>
-      ) : null}
-    </>
   );
 }
