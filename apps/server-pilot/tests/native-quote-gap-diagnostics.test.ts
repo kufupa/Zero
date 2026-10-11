@@ -389,3 +389,68 @@ describe('a short-supply capture is insufficient, and says which room type and n
     expect(staffQuoteFailureMessage(error)).toBe(SHARED_INVENTORY_GAP_MESSAGE);
   });
 });
+
+describe('a sell restriction on a night names the room type and the night, not the generic combination copy', () => {
+  // The AE1 shape: HMS answered both room types, but every matching row of each group is closed to sale on 18 Nov, so no row is offered.
+  const restrictedRequest = {
+    propertyCode: 'HRCEN',
+    arrivalDate: '2027-11-17',
+    departureDate: '2027-11-19',
+    requestedCurrency: 'ZAR',
+    details: 'summary',
+    rooms: [
+      { id: 'room-1', quantity: 1, adults: 1, children: 0, childAges: [], required: { roomCodes: ['STQN'], rateCodes: ['BAR'] } },
+      { id: 'room-2', quantity: 1, adults: 1, children: 0, childAges: [], required: { roomCodes: ['STWN'], rateCodes: ['BAR'] } },
+    ],
+  };
+  const closedOn18 = (roomCode: string, roomLabel: string) => ({ roomCode, roomLabel, date: '2027-11-18' });
+  const group = (id: string, request: unknown, nights: unknown[] | undefined, outcome = 'partial') => ({
+    id,
+    request,
+    outcome,
+    issues: [],
+    completeness: { search: 'complete', requiredFacts: 'complete' },
+    options: [],
+    ...(nights ? { restrictedNights: nights } : {}),
+  });
+
+  it('names each restricted room type and its night, and quotes nothing', async () => {
+    const evidence = await captureFor(restrictedRequest, (rooms) => [
+      group('room-1', rooms[0], [closedOn18('STQN', 'Standard Queen')]),
+      group('room-2', rooms[1], [closedOn18('STWN', 'Standard Twin')]),
+    ]);
+    const error = await failureOf(evidence, restrictedRequest);
+    expect(error).toBeInstanceOf(ReservationistTaskEvidenceUnavailable);
+    expect((error as ReservationistTaskEvidenceUnavailable).code).toBe('native_quote_restricted_nights');
+    expect((error as ReservationistTaskEvidenceUnavailable).detail).toEqual({
+      restrictedNights: [closedOn18('STQN', 'Standard Queen'), closedOn18('STWN', 'Standard Twin')],
+    });
+    expect(staffQuoteFailureMessage(error)).toBe(
+      'HMS restricts sale on 18 Nov 2027 for Standard Queen and Standard Twin. Choose other dates or quote this in HMS.',
+    );
+    expect(staffQuoteFailureLog(error)).toEqual({ code: 'native_quote_restricted_nights', phase: 'qualification' });
+  });
+
+  it('stays on the generic capture error when a group is neither a quote nor restricted, or the capture has an issue', async () => {
+    const plainPartial = await captureFor(restrictedRequest, (rooms) => [
+      group('room-1', rooms[0], [closedOn18('STQN', 'Standard Queen')]),
+      group('room-2', rooms[1], undefined),
+    ]);
+    expect((await failureOf(plainPartial, restrictedRequest)) as Error).toHaveProperty(
+      'message',
+      'native_quote_capture_scope_or_completeness_invalid',
+    );
+    const withIssue = await captureFor(
+      restrictedRequest,
+      (rooms) => [
+        group('room-1', rooms[0], [closedOn18('STQN', 'Standard Queen')]),
+        group('room-2', rooms[1], [closedOn18('STWN', 'Standard Twin')]),
+      ],
+      { issues: [{ code: 'OPTION_LIMIT' }] },
+    );
+    expect((await failureOf(withIssue, restrictedRequest)) as Error).toHaveProperty(
+      'message',
+      'native_quote_capture_scope_or_completeness_invalid',
+    );
+  });
+});

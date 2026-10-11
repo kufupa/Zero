@@ -211,6 +211,36 @@ export function insufficientInventoryMessage(shortfall: { roomLabel: string; dat
   return `Only ${shortfall.supply} ${shortfall.roomLabel} free on ${night} — quote fewer or split`;
 }
 
+/** The restricted nights the reader proved, from its detail. Anything malformed is not copied to staff. */
+function restrictedNightsDetailOf(error: unknown): { roomLabel: string; date: string }[] | undefined {
+  if (!(error instanceof ReservationistTaskEvidenceUnavailable) || !error.detail) return undefined;
+  const nights = error.detail.restrictedNights as { roomLabel?: unknown; date?: unknown }[] | undefined;
+  const valid =
+    Array.isArray(nights) &&
+    nights.length > 0 &&
+    nights.every((night) => typeof night?.roomLabel === 'string' && typeof night.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(night.date));
+  return valid ? (nights as { roomLabel: string; date: string }[]) : undefined;
+}
+
+/** Staff copy for a sell restriction: each night HMS closes, with the room types closed on it, so staff choose other dates or quote in HMS. */
+export function restrictedNightsMessage(nights: { roomLabel: string; date: string }[]): string {
+  const roomsByDate = new Map<string, string[]>();
+  for (const { roomLabel, date } of nights) roomsByDate.set(date, [...new Set([...(roomsByDate.get(date) ?? []), roomLabel])]);
+  const list = new Intl.ListFormat('en-GB', { style: 'long', type: 'conjunction' });
+  const clauses = [...roomsByDate]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([date, rooms]) => {
+      const night = new Date(`${date}T00:00:00Z`).toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        timeZone: 'UTC',
+      });
+      return `${night} for ${list.format(rooms)}`;
+    });
+  return `HMS restricts sale on ${clauses.join('; ')}. Choose other dates or quote this in HMS.`;
+}
+
 function isHmsExecutionFailure(error: unknown, code: string, phase: string): boolean {
   if (HMS_EXECUTION_CODES.has(code) || HMS_EXECUTION_PHASE.test(phase)) return true;
   return error instanceof Error && (error.name === 'TimeoutError' || /timeout/i.test(error.message));
@@ -238,6 +268,8 @@ export function staffQuoteFailureMessage(
   }
   const shortfall = code === 'native_quote_insufficient_inventory' ? insufficientShortfallOf(error) : undefined;
   if (shortfall) return insufficientInventoryMessage(shortfall);
+  const restricted = code === 'native_quote_restricted_nights' ? restrictedNightsDetailOf(error) : undefined;
+  if (restricted) return restrictedNightsMessage(restricted);
   const actions: Record<string, string> = {
     business_quote_policy_unavailable:
       'Verify VAT and tourism levy inclusion for the selected rate.',
@@ -258,6 +290,7 @@ export function staffQuoteFailureMessage(
     native_quote_business_evidence_unavailable:
       'Verify rate eligibility and combined availability for these rooms.',
     native_quote_insufficient_inventory: 'Verify combined availability for the requested rooms and dates.',
+    native_quote_restricted_nights: 'HMS restricts sale on some of these nights. Choose other dates or quote this in HMS.',
     native_quote_capture_scope_or_completeness_invalid: HMS_UNPRICEABLE_COMBINATION_MESSAGE,
     native_quote_capture_oversized: HMS_UNPRICEABLE_COMBINATION_MESSAGE,
     staff_quote_source_changed:

@@ -198,3 +198,35 @@ describe('isReservationistCleanNoMatch', () => {
     expect(isReservationistCleanNoMatch(null, request)).toBe(false);
   });
 });
+
+describe('the restricted night copy', () => {
+  it('names the night and each room type HMS restricts on it, so staff choose other dates or quote in HMS', () => {
+    const error = new ReservationistTaskEvidenceUnavailable('native_quote_restricted_nights', ['room sale on the restricted nights'], undefined, {
+      restrictedNights: [
+        { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2027-11-18' },
+        { roomCode: 'STWN', roomLabel: 'Standard Twin', date: '2027-11-18' },
+      ],
+    });
+    expect(staffQuoteFailureMessage(error)).toBe(
+      'HMS restricts sale on 18 Nov 2027 for Standard Queen and Standard Twin. Choose other dates or quote this in HMS.',
+    );
+  });
+
+  it('gives each night its own room types, and falls back to plain copy when the detail is missing or malformed', () => {
+    const mixed = new ReservationistTaskEvidenceUnavailable('native_quote_restricted_nights', ['room sale on the restricted nights'], undefined, {
+      restrictedNights: [
+        { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2027-11-17' },
+        { roomCode: 'STWN', roomLabel: 'Standard Twin', date: '2027-11-18' },
+      ],
+    });
+    expect(staffQuoteFailureMessage(mixed)).toBe(
+      'HMS restricts sale on 17 Nov 2027 for Standard Queen; 18 Nov 2027 for Standard Twin. Choose other dates or quote this in HMS.',
+    );
+    const plain = 'HMS restricts sale on some of these nights. Choose other dates or quote this in HMS.';
+    expect(staffQuoteFailureMessage(new Error('native_quote_restricted_nights'))).toBe(plain);
+    const malformed = new ReservationistTaskEvidenceUnavailable('native_quote_restricted_nights', ['room sale on the restricted nights'], undefined, {
+      restrictedNights: [{ roomLabel: 'Standard Queen', date: '18 Nov' }],
+    });
+    expect(staffQuoteFailureMessage(malformed)).toBe(plain);
+  });
+});

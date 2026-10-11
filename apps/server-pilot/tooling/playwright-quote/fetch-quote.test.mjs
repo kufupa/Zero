@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as quote from './fetch-quote.mjs';
-import { composeAllocation } from './quote-contract.mjs';
+import { composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 const { validateRequest, stayDates, displayDate } = quote;
 const request = {propertyCode:'HRCEN',arrivalDate:'2026-09-24',departureDate:'2026-09-27',rooms:[{quantity:2,adults:1,children:0,childAges:[]}]};
 test('input-gap invocation has durable events and explicit capture status without browser access',async t=>{
@@ -492,6 +492,16 @@ test('restriction-only source rows remain conditional information',()=>{
   const f=multipleSource();for(const room of f.data.children[0].children)room.children[0].restricted=true;
   const result=quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]);
   assert.ok(result.options.every(o=>o.availability==='restricted'&&o.eligibility==='conditional'));
+});
+test('a night HMS closes to sale on every matching row is named for each room type, while the rows stay restricted',()=>{
+  const f=multipleSource();
+  for(const room of f.data.children[0].children) room.children[0].columns.col2.restricted=true;
+  const result=quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]);
+  assert.ok(result.options.every(o=>o.availability==='restricted'&&o.eligibility==='conditional'));
+  assert.deepEqual(restrictedNightsOf(result.options),[
+    {roomCode:'STQN',roomLabel:'Standard Queen',date:'2026-09-25'},
+    {roomCode:'STWN',roomLabel:'Standard Twin',date:'2026-09-25'},
+  ]);
 });
 test('group searches respect PMS-locked restricted visibility; other searches inspect the full grid',()=>{
   assert.equal(quote.nativeRestrictedVisibility?.(request),true);

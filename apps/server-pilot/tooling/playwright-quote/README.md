@@ -213,7 +213,9 @@ sales restrictions and property configuration untouched. Preset returned no
 calendar despite positive BAR inventory and is not a sold-out oracle. Public
 eligibility starts at verified `BAR` / `BARRO`. Other returned rates stay
 conditional until entitlement is proven. Restricted rows are information, not
-eligible quotes. `includemultirateoptions` is Show Restricted Sell Options.
+eligible quotes. When every matching row of a group is restricted, the group
+lists each room type and night HMS closes to sale in `restrictedNights`; it is
+never a quote. `includemultirateoptions` is Show Restricted Sell Options.
 
 The tool enumerates source-bound room/rate options for each occupancy group.
 There is no Standard/first-row winner. Required lists are OR within a field

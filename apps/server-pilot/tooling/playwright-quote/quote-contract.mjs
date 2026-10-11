@@ -790,6 +790,26 @@ export function shortfallsOf(groups = [], propertyCode) {
   return found;
 }
 
+/**
+ * The stay nights HMS closes to sale for a room type. Only a group whose every matching row is restricted names any night, and a
+ * night is named for a room type only when every matching row of that type is closed on it. Length-of-stay restrictions close no night.
+ */
+export function restrictedNightsOf(options = []) {
+  const rows = options.filter((option) => option?.matchStatus === 'match' && typeof option.room?.code === 'string');
+  if (!rows.length || rows.some((option) => option.availability !== 'restricted')) return [];
+  const closed = (night) => night?.restricted === true || night?.rateAvailable === false || night?.restrictions?.combClosed === true;
+  const found = [];
+  for (const roomCode of new Set(rows.map((row) => row.room.code))) {
+    const roomRows = rows.filter((row) => row.room.code === roomCode);
+    for (const date of (roomRows[0].nightly ?? []).map((night) => night?.date)) {
+      if (roomRows.every((row) => (row.nightly ?? []).some((night) => night?.date === date && closed(night)))) {
+        found.push({ roomCode, roomLabel: roomRows[0].room.label || roomCode, date });
+      }
+    }
+  }
+  return found;
+}
+
 const MATCH_RANK = { match: 0, alternative: 1, unresolved: 2 };
 const ELIGIBILITY_RANK = { verified: 0, conditional: 1, unknown: 2 };
 const AVAILABILITY_RANK = { available: 0, restricted: 1, unknown: 2, unavailable: 3 };
