@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isReservationistCleanNoMatch } from '../src/ai/reservationist-evaluation-composition.js';
 import type { QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
+import { ReservationistTaskEvidenceUnavailable } from '../src/ai/reservationist-execution.js';
 import {
   staffQuoteFailureLog,
   staffQuoteFailureMessage,
@@ -94,6 +95,24 @@ describe('staffQuoteFailureMessage', () => {
   it('falls back to the generic message for unrecognised codes', () => {
     expect(staffQuoteFailureMessage(new Error('native_quote_owner_scope_mismatch'))).toBe(GENERIC);
     expect(staffQuoteFailureMessage(new Error('toString'))).toBe(GENERIC);
+  });
+});
+
+describe('the short room type copy', () => {
+  it('names the room type, the night and what is free, so staff quote fewer or split', () => {
+    const error = new ReservationistTaskEvidenceUnavailable('native_quote_insufficient_inventory', ['room inventory'], undefined, {
+      shortfall: { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2026-10-26', demand: 40, supply: 34 },
+    });
+    expect(staffQuoteFailureMessage(error)).toBe('Only 34 Standard Queen free on 26 Oct — quote fewer or split');
+  });
+
+  it('falls back to the availability copy when the shortfall is missing or has no usable date', () => {
+    const availability = 'Verify combined availability for the requested rooms and dates.';
+    expect(staffQuoteFailureMessage(new Error('native_quote_insufficient_inventory'))).toBe(availability);
+    const malformed = new ReservationistTaskEvidenceUnavailable('native_quote_insufficient_inventory', ['room inventory'], undefined, {
+      shortfall: { roomLabel: 'Standard Queen', date: '26 Oct', supply: 34 },
+    });
+    expect(staffQuoteFailureMessage(malformed)).toBe(availability);
   });
 });
 

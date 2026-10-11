@@ -1,0 +1,28 @@
+{
+  "propertyCode": "HRCEN",
+  "publishedRooms": 160,
+  "building": "none",
+  "roomCapacity": {
+    "DLXKNG": 8,
+    "DLXQN": 10,
+    "DLXTWN": 22,
+    "EXKNG": 5,
+    "LUXKNG": 4,
+    "SKNG": 6,
+    "STQN": 34,
+    "STWN": 69,
+    "SUITE": 2
+  },
+  "evidence": {
+    "derivation": "max observed nightly inventory per room type across 95 captures",
+    "derivedOn": "2026-10-10",
+    "capturesRead": 95,
+    "capturesWithSearchWindows": 92,
+    "sources": [
+      "HMS Hotel Availability captures (95 group-*-source.json, all HRCEN): max nightly inventory per room type sums to 160",
+      "HMS room rows in those captures: buildingCode null on all 433 room rows",
+      "Legacy Hotels brochure PDF (bookings.legacyhotels.co.za): 160 rooms; 91 twin rooms (STWN 69 + DLXTWN 22) and 44 queen rooms (STQN 34 + DLXQN 10)",
+      "Cvent and M&C listings: 160 rooms over six floors in one building"
+    ]
+  }
+}

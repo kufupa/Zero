@@ -418,11 +418,17 @@ it('uses a source-scoped room pool for one selected group when native building i
  const r=await resolveQuoteRevision({propertyCode:'HRCEN',authoredDate:'2026-10-04',selections:[{sourceRef:s.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'}],resolveSource:async()=>s,resolvePolicy:async()=>policy,admission:admission([s])});
  expect(r.totalMinor).toBe(220002);expect(r.groups[0].poolId).toContain('source-1');
 });
-it('does not merge independent unknown-building pools across selected groups',async()=>{
- const a=source(),b=source();a.result.groups[0].options[0].room.buildingCode=null;b.ref='source-2';b.request.rooms[0].id='g2';b.result.groups[0].id='g2';b.result.groups[0].request.id='g2';b.result.groups[0].options[0].room.buildingCode=null;
+it('refuses independent unknown-building pools across selected groups when the room profile does not hold',async()=>{
+ const a=source(),b=source();a.result.groups[0].options[0].room.buildingCode=null;a.result.groups[0].options[0].nightly.forEach(n=>{n.inventory=40;});b.ref='source-2';b.request.rooms[0].id='g2';b.result.groups[0].id='g2';b.result.groups[0].request.id='g2';b.result.groups[0].options[0].room.buildingCode=null;
  await expect(resolveQuoteRevision({propertyCode:'HRCEN',authoredDate:'2026-10-04',selections:[{sourceRef:a.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'},{sourceRef:b.ref,groupId:'g2',optionId:'HRCEN:STQN:BAR'}],resolveSource:async ref=>ref===a.ref?a:b,resolvePolicy:async()=>policy,admission:admission([a,b])})).rejects.toThrow('inventory_pool_unknown');
 });
 
+it('pools same-type unknown-building selections under the verified profile and refuses demand above observed supply',async()=>{
+ const pair=(quantity:number)=>{const a=source(),b=source();for(const r of [a,b])r.result.groups[0].options[0].room.buildingCode=null;b.ref='source-2';b.request.rooms[0].id='g2';b.result.groups[0].id='g2';b.result.groups[0].request.id='g2';for(const r of [a,b]){r.request.rooms[0].quantity=quantity;r.result.groups[0].request.quantity=quantity;}return{a,b};};
+ const run=({a,b}:ReturnType<typeof pair>)=>resolveQuoteRevision({propertyCode:'HRCEN',authoredDate:'2026-10-04',selections:[{sourceRef:a.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'},{sourceRef:b.ref,groupId:'g2',optionId:'HRCEN:STQN:BAR'}],resolveSource:async ref=>ref===a.ref?a:b,resolvePolicy:async()=>policy,admission:admission([a,b])});
+ expect((await run(pair(1))).groups.map(g=>g.poolId)).toEqual(['HRCEN:profile:STQN','HRCEN:profile:STQN']);
+ await expect(run(pair(2))).rejects.toThrow('joint_inventory_insufficient');
+});
 it('preserves source publication provenance without inventing an invoice-authored date',async()=>{
  const record=source(),termsPolicy={...policy,authoredDates:[],sourcePublications:[{sourceHash:policy.sourceHashes[0]!,publishedAt:'2026-09-11T07:43:58.000Z'}]};
  const r=await resolveQuoteRevision({admission:admission([record]),propertyCode:'HRCEN',selections:[{sourceRef:record.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'}],authoredDate:'2026-10-04',resolveSource:async()=>record,resolvePolicy:async()=>termsPolicy});

@@ -10,7 +10,10 @@ import {
   composeAllocation,
   orderOptions,
   aggregateOutcome,
+  profileHolds,
+  shortfallsOf,
 } from './quote-contract.mjs';
+import { profileFor } from './property-profile.mjs';
 
 const adultFixtureUrl = new URL('./examples/adult.json', import.meta.url);
 const childFixtureUrl = new URL('./examples/child.json', import.meta.url);
@@ -538,7 +541,7 @@ test('orderOptions ranks preferred hits inside a match class before displayed-ni
   assert.deepEqual(orderOptions(options).map((option) => option.roomCode), ['STWN', 'STQN']);
 });
 
-test('composeAllocation uses proven building/room pools and never invents identity', () => {
+test('composeAllocation uses proven building/room pools and invents none without a verified profile', () => {
   const night = (inventory) => [{ date: '2026-09-24', inventory }];
   const group = (id, quantity, roomCode, rateCode, buildingCode, inventory, matchStatus = 'match', eligibility = 'verified', availability = 'available') => ({
     id,
@@ -565,7 +568,7 @@ test('composeAllocation uses proven building/room pools and never invents identi
   assert.equal(composeAllocation([
     group('a', 1, 'STQN', 'BAR', null, 5),
     group('b', 1, 'STQN', 'BARRO', null, 5),
-  ], 'HRCEN').status, 'unknown');
+  ], 'OTHER').status, 'unknown');
   assert.equal(composeAllocation([
     group('a', 1, 'STQN', 'BAR', 'H1', 5),
     group('b', 1, 'STQN', 'BARRO', 'H1', 4),
@@ -578,6 +581,161 @@ test('composeAllocation uses proven building/room pools and never invents identi
     group('a', 2, 'STQN', 'BAR', 'H1', 1, 'match', 'conditional', 'restricted'),
     group('b', 2, 'STQN', 'BAR', 'H1', 1, 'match', 'conditional', 'restricted'),
   ], 'HRCEN').status, 'unknown');
+});
+
+// Rows as fetch-quote leaves them: one room/rate option per group, nightly inventory per date.
+const nights = (...inventories) => inventories.map((inventory, i) => ({ date: `2026-09-${24 + i}`, inventory }));
+const roomGroup = (id, quantity, roomCode, rateCode, buildingCode, nightly, option = {}) => ({
+  id,
+  request: { quantity, required: { roomCodes: [roomCode], rateCodes: [rateCode] } },
+  options: [{
+    room: { code: roomCode, buildingCode },
+    rate: { code: rateCode },
+    matchStatus: 'match',
+    eligibility: 'verified',
+    availability: 'available',
+    nightly,
+    ...option,
+  }],
+});
+
+test('AE1a: 30 STQN + 30 STWN on HRCEN with supply 34 and 69 on both nights is verified on two profile pools', () => {
+  const allocation = composeAllocation([
+    roomGroup('a', 30, 'STQN', 'BAR', null, nights(34, 34)),
+    roomGroup('b', 30, 'STWN', 'BAR', null, nights(69, 69)),
+  ], 'HRCEN');
+  assert.equal(allocation.status, 'verified_at_observation');
+  assert.deepEqual(allocation.pools.map((pool) => pool.id), ['HRCEN:profile:STQN', 'HRCEN:profile:STWN']);
+  assert.deepEqual(allocation.pools[0].nights.map((night) => [night.demand, night.supply]), [[30, 34], [30, 34]]);
+  assert.equal(allocation.poolBasis, 'property_profile');
+  assert.equal(allocation.profileDigest, profileFor('HRCEN').digest);
+  assert.equal(allocation.diagnostic, undefined);
+});
+
+test('AE1b: 40 STQN against 34 is insufficient on the STQN pool for every short night', () => {
+  const allocation = composeAllocation([
+    roomGroup('a', 25, 'STQN', 'BAR', null, nights(34, 34)),
+    roomGroup('b', 15, 'STQN', 'BARRO', null, nights(34, 34)),
+  ], 'HRCEN');
+  assert.equal(allocation.status, 'insufficient');
+  assert.equal(allocation.poolBasis, 'property_profile');
+  assert.deepEqual(allocation.pools.map((pool) => pool.id), ['HRCEN:profile:STQN']);
+  assert.deepEqual(allocation.pools[0].nights.map((night) => [night.date, night.demand, night.supply]), [
+    ['2026-09-24', 40, 34],
+    ['2026-09-25', 40, 34],
+  ]);
+});
+
+test('same room type across two rows sums against one profile pool: 20 + 20 STQN is short of 34, 17 + 17 fits', () => {
+  const short = composeAllocation([
+    roomGroup('a', 20, 'STQN', 'BAR', null, nights(34)),
+    roomGroup('b', 20, 'STQN', 'BARRO', null, nights(34)),
+  ], 'HRCEN');
+  assert.equal(short.status, 'insufficient');
+  assert.equal(short.pools[0].nights[0].demand, 40);
+  const fits = composeAllocation([
+    roomGroup('a', 17, 'STQN', 'BAR', null, nights(34)),
+    roomGroup('b', 17, 'STQN', 'BARRO', null, nights(34)),
+  ], 'HRCEN');
+  assert.equal(fits.status, 'verified_at_observation');
+  assert.equal(fits.pools[0].nights[0].demand, 34);
+});
+
+test('AE1c: HRCEN with STWN reporting 70, above its capacity of 69, is out of date and unknown', () => {
+  const allocation = composeAllocation([
+    roomGroup('a', 1, 'STQN', 'BAR', null, nights(34)),
+    roomGroup('b', 1, 'STWN', 'BAR', null, nights(70)),
+  ], 'HRCEN');
+  assert.equal(allocation.status, 'unknown');
+  assert.equal(allocation.diagnostic, 'room_profile_mismatch');
+  assert.match(allocation.reason, /^Room profile out of date/);
+  assert.deepEqual(allocation.pools, []);
+  assert.equal(allocation.poolBasis, undefined);
+});
+
+test('AE1d: a property without a verified profile keeps unknown for rows that HMS gave no building', () => {
+  const allocation = composeAllocation([
+    roomGroup('a', 1, 'STQN', 'BAR', null, nights(5)),
+    roomGroup('b', 1, 'STWN', 'BAR', null, nights(5)),
+  ], 'OTHER');
+  assert.equal(allocation.status, 'unknown');
+  assert.equal(allocation.reason, 'Source did not prove a shared inventory-pool identity.');
+  assert.equal(allocation.diagnostic, undefined);
+});
+
+test('a building on one row and none on another keeps the building pool, and the profile is not used', () => {
+  const allocation = composeAllocation([
+    roomGroup('a', 1, 'STQN', 'BAR', 'H1', nights(5)),
+    roomGroup('b', 1, 'STWN', 'BAR', null, nights(5)),
+  ], 'HRCEN');
+  assert.equal(allocation.status, 'unknown');
+  assert.equal(allocation.diagnostic, 'room_profile_mismatch');
+  assert.equal(allocation.poolBasis, undefined);
+});
+
+test('a room type outside the profile, or a malformed building, means the profile is not used and no pool is invented', () => {
+  const unknownRoom = composeAllocation([
+    roomGroup('a', 1, 'STQN', 'BAR', null, nights(5)),
+    roomGroup('b', 1, 'PENT', 'BAR', null, nights(5)),
+  ], 'HRCEN');
+  assert.equal(unknownRoom.status, 'unknown');
+  assert.equal(unknownRoom.diagnostic, 'room_profile_mismatch');
+  for (const malformed of ['', 7, {}, undefined]) {
+    const result = composeAllocation([
+      roomGroup('a', 1, 'STQN', 'BAR', malformed, nights(5)),
+      roomGroup('b', 1, 'STWN', 'BAR', null, nights(5)),
+    ], 'HRCEN');
+    assert.equal(result.status, 'unknown');
+    assert.deepEqual(result.pools, []);
+    assert.equal(result.poolBasis, undefined);
+  }
+});
+
+test('profileHolds checks every observed option, not only the selected ones', () => {
+  const selected = [roomGroup('a', 1, 'STQN', 'BAR', null, nights(34)), roomGroup('b', 1, 'STWN', 'BAR', null, nights(69))];
+  assert.equal(profileHolds('HRCEN', selected), true);
+  assert.equal(profileHolds('OTHER', selected), false);
+  const withAlternative = (room, nightly) => {
+    const group = roomGroup('a', 1, 'STQN', 'BAR', null, nights(34));
+    group.options.push({
+      room: { code: room, buildingCode: null }, rate: { code: 'BAR' }, matchStatus: 'alternative',
+      eligibility: 'verified', availability: 'available', nightly,
+    });
+    return group;
+  };
+  assert.equal(profileHolds('HRCEN', [withAlternative('SUITE', nights(2, 2)), selected[1]]), true);
+  // SUITE holds 2 rooms, so 3 observed is out of date even though the selected STQN row is fine.
+  assert.equal(profileHolds('HRCEN', [withAlternative('SUITE', nights(3, 2)), selected[1]]), false);
+  assert.equal(profileHolds('HRCEN', [withAlternative('PENT', nights(1)), selected[1]]), false);
+});
+
+test('R4: an unavailable group is insufficient on its pool, for a building or for the profile, never unknown', () => {
+  const built = composeAllocation([
+    roomGroup('a', 2, 'STQN', 'BAR', 'H1', nights(1, 1), { availability: 'unavailable' }),
+    roomGroup('b', 1, 'STWN', 'BAR', 'H1', nights(5, 5)),
+  ], 'HRCEN');
+  assert.equal(built.status, 'insufficient');
+  assert.deepEqual(built.pools.map((pool) => pool.id), ['HRCEN:H1:STQN', 'HRCEN:H1:STWN']);
+  const profiled = composeAllocation([
+    roomGroup('a', 2, 'STQN', 'BAR', null, nights(1, 1), { availability: 'unavailable' }),
+    roomGroup('b', 1, 'STWN', 'BAR', null, nights(5, 5)),
+  ], 'HRCEN');
+  assert.equal(profiled.status, 'insufficient');
+  assert.equal(profiled.pools[0].id, 'HRCEN:profile:STQN');
+  assert.equal(profiled.pools[0].nights[0].supply, 1);
+  assert.equal(profiled.diagnostic, undefined);
+});
+
+test('a profile allocation recomputes to the same result, and a tampered pool id does not match it', () => {
+  const groups = [
+    roomGroup('a', 30, 'STQN', 'BAR', null, nights(34)),
+    roomGroup('b', 30, 'STWN', 'BAR', null, nights(69)),
+  ];
+  const allocation = composeAllocation(groups, 'HRCEN');
+  assert.deepEqual(composeAllocation(groups, 'HRCEN'), allocation);
+  const tampered = structuredClone(allocation);
+  tampered.pools[1].id = 'HRCEN:profile:STQN';
+  assert.notDeepEqual(tampered, composeAllocation(groups, 'HRCEN'));
 });
 
 test('legacy sourceReference is retained as notes when no other caller context exists', () => {
@@ -616,4 +774,77 @@ test('import has no CLI, browser or credential side effects', () => {
   assert.equal(child.status, 0, child.stderr);
   assert.equal(child.stdout.trim(), 'import only');
   assert.equal(child.stderr, '');
+});
+
+test('shortfallsOf names the room type, each short night, the demand and the supply for a row below its quantity', () => {
+  const short = roomGroup('a', 40, 'STQN', 'BAR', null, nights(34, 34), {
+    availability: 'unavailable',
+    room: { code: 'STQN', label: 'Standard Queen', buildingCode: null },
+  });
+  assert.deepEqual(shortfallsOf([short], 'OTHER'), [
+    { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2026-09-24', demand: 40, supply: 34 },
+    { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2026-09-25', demand: 40, supply: 34 },
+  ]);
+});
+
+test('shortfallsOf names a shared profile pool whose combined demand is above supply, and not a row that fits', () => {
+  const groups = [
+    roomGroup('a', 20, 'STQN', 'BAR', null, nights(34)),
+    roomGroup('b', 20, 'STQN', 'BARRO', null, nights(34)),
+  ];
+  assert.deepEqual(shortfallsOf(groups, 'HRCEN'), [
+    { roomCode: 'STQN', roomLabel: 'STQN', date: '2026-09-24', demand: 40, supply: 34 },
+  ]);
+  const mixed = [
+    roomGroup('a', 40, 'STQN', 'BAR', null, nights(34), {
+      availability: 'unavailable',
+      room: { code: 'STQN', label: 'Standard Queen', buildingCode: null },
+    }),
+    roomGroup('b', 30, 'STWN', 'BAR', null, nights(69), { room: { code: 'STWN', label: 'Standard Twin', buildingCode: null } }),
+  ];
+  assert.deepEqual(shortfallsOf(mixed, 'HRCEN').map((short) => short.roomCode), ['STQN']);
+});
+
+test('shortfallsOf finds nothing when every row and every shared pool fits', () => {
+  assert.deepEqual(shortfallsOf([
+    roomGroup('a', 17, 'STQN', 'BAR', null, nights(34)),
+    roomGroup('b', 17, 'STQN', 'BARRO', null, nights(34)),
+  ], 'HRCEN'), []);
+  assert.deepEqual(shortfallsOf([
+    roomGroup('a', 30, 'STQN', 'BAR', null, nights(34, 34)),
+    roomGroup('b', 30, 'STWN', 'BAR', null, nights(69, 69)),
+  ], 'HRCEN'), []);
+});
+
+test('shortfallsOf names only the short group when another group has a usable room type (Greptile example)', () => {
+  // Group A accepts STQN or SKNG and SKNG fits; group B requires SUITE and is short. No pools are selected.
+  const acceptsEither = {
+    id: 'a',
+    request: { quantity: 2, required: { roomCodes: ['STQN', 'SKNG'], rateCodes: ['BAR'] } },
+    options: [
+      { room: { code: 'STQN', label: 'Standard Queen', buildingCode: null }, rate: { code: 'BAR' }, matchStatus: 'match', eligibility: 'verified', availability: 'unavailable', nightly: nights(1, 1) },
+      { room: { code: 'SKNG', label: 'Standard King', buildingCode: null }, rate: { code: 'BAR' }, matchStatus: 'match', eligibility: 'verified', availability: 'available', nightly: nights(5, 5) },
+    ],
+  };
+  const suite = roomGroup('b', 2, 'SUITE', 'BAR', null, nights(1, 1), {
+    availability: 'unavailable',
+    room: { code: 'SUITE', label: 'Suite', buildingCode: null },
+  });
+  assert.deepEqual(composeAllocation([acceptsEither, suite], 'HRCEN').pools, []);
+  assert.deepEqual(shortfallsOf([acceptsEither, suite], 'HRCEN'), [
+    { roomCode: 'SUITE', roomLabel: 'Suite', date: '2026-09-24', demand: 2, supply: 1 },
+    { roomCode: 'SUITE', roomLabel: 'Suite', date: '2026-09-25', demand: 2, supply: 1 },
+  ]);
+});
+
+test('shortfallsOf does not count a fitting alternative as a usable option for its group', () => {
+  const acceptsEither = {
+    id: 'a',
+    request: { quantity: 2, required: { roomCodes: ['STQN', 'SKNG'], rateCodes: ['BAR'] } },
+    options: [
+      { room: { code: 'STQN', label: 'Standard Queen', buildingCode: null }, rate: { code: 'BAR' }, matchStatus: 'match', eligibility: 'verified', availability: 'unavailable', nightly: nights(1) },
+      { room: { code: 'SKNG', label: 'Standard King', buildingCode: null }, rate: { code: 'BAR' }, matchStatus: 'alternative', eligibility: 'verified', availability: 'available', nightly: nights(5) },
+    ],
+  };
+  assert.deepEqual(shortfallsOf([acceptsEither], 'HRCEN').map((short) => short.roomCode), ['STQN']);
 });

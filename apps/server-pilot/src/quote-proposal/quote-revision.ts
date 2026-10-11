@@ -211,6 +211,7 @@ export async function resolveQuoteRevision(input: {
       n: { date: string; amount: string; currency: string }[],
       q: number,
     ) => { ok: boolean; perRoom?: { amount: string }; forQuantity?: { amount: string } };
+    profileHolds: (propertyCode: string, groups: unknown[]) => boolean;
   };
   const groups: SelectedQuoteGroup[] = [],
     seen = new Set<string>();
@@ -219,6 +220,8 @@ export async function resolveQuoteRevision(input: {
     if (seen.has(key)) throw new Error('duplicate_selection');
     seen.add(key);
     const s = await input.resolveSource(selection.sourceRef);
+    // Shared pools for rows with no HMS building need the verified property profile to hold for this source.
+    const profileOk = native.profileHolds(input.propertyCode, s.result.groups);
     if (
       s.ref !== selection.sourceRef ||
       !/^[a-f0-9]{64}$/.test(s.sha256) ||
@@ -359,7 +362,9 @@ export async function resolveQuoteRevision(input: {
         req.childAges.some((age) => !policy.childMealEntitlement!.childAges.includes(age)))
     )
       throw new Error('child_meal_entitlement_unproven');
-    if (!o.room.buildingCode && (o.room.buildingCode!==null||input.selections.length!==1)) throw new Error('inventory_pool_unknown');
+    // No HMS building: one row keeps its own source pool; several rows share the verified profile pool, else unknown.
+    if (!o.room.buildingCode && (o.room.buildingCode !== null || (input.selections.length !== 1 && !profileOk)))
+      throw new Error('inventory_pool_unknown');
     groups.push({
       id: selection.groupId,
       sourceRef: s.ref,
@@ -396,7 +401,11 @@ export async function resolveQuoteRevision(input: {
         vat: policy.vat,
         levy: policy.levy,
       },
-      poolId: o.room.buildingCode?`${input.propertyCode}:${o.room.buildingCode}:${o.room.code}`:`${input.propertyCode}:source:${s.ref}:${selection.groupId}:${o.room.code}`,
+      poolId: o.room.buildingCode
+        ? `${input.propertyCode}:${o.room.buildingCode}:${o.room.code}`
+        : input.selections.length === 1
+          ? `${input.propertyCode}:source:${s.ref}:${selection.groupId}:${o.room.code}`
+          : `${input.propertyCode}:profile:${o.room.code}`,
     });
   }
   const pools = new Map<string, { demand: number; supply: number }>();

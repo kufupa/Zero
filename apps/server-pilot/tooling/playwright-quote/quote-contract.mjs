@@ -1,3 +1,4 @@
+import { profileFor } from './property-profile.mjs';
 const SCHEMA_VERSION = 2;
 const MAX_GROUPS = 8;
 const MAX_NIGHTS = 30;
@@ -612,30 +613,55 @@ function hasSingletonSelection(group) {
     && Array.isArray(group?.required?.rateCodes) && group.required.rateCodes.length === 1;
 }
 
+const ROOM_PROFILE_OUT_OF_DATE = 'Room profile out of date: observed HMS room types, inventory or building codes no longer match the verified property profile.';
+
+// Every observed row: a profiled room type, no HMS building, per-night inventory within that type's capacity.
+function matchesProfile(profile, groups) {
+  if (!Array.isArray(groups)) return false;
+  return groups.every((group) => Array.isArray(group?.options) && group.options.every((row) => {
+    const code = row?.room?.code;
+    if (typeof code !== 'string' || !Object.hasOwn(profile.roomCapacity, code) || row.room.buildingCode !== null) return false;
+    return (row.nightly ?? []).every((night) => Number.isInteger(night?.inventory)
+      && night.inventory >= 0 && night.inventory <= profile.roomCapacity[code]);
+  }));
+}
+
+/** True only when propertyCode has a verified profile and the capture matches it. Any other shape means no profile pools. */
+export function profileHolds(propertyCode, groups = []) {
+  const profile = profileFor(propertyCode);
+  return profile !== null && matchesProfile(profile, groups);
+}
+
 export function composeAllocation(groups = [], propertyCode) {
   if (!Array.isArray(groups) || groups.length <= 1) {
     return { status: 'not_selected', reason: 'Single occupancy group; per-option inventory only.', pools: [] };
   }
+  const profile = profileFor(propertyCode);
+  const holds = profile !== null && matchesProfile(profile, groups);
   const selected = groups.map((group) => {
     const required = group.request?.required ?? group.required;
     const quantity = group.quantity ?? group.request?.quantity;
     const options = group.options ?? [];
     const singleton = Array.isArray(required?.roomCodes) && required.roomCodes.length === 1
       && Array.isArray(required?.rateCodes) && required.rateCodes.length === 1;
+    // An unavailable option keeps its pool, so its short night reads as insufficient rather than unidentified.
     const option = singleton
       ? options.find((row) => row.room?.code === required.roomCodes[0] && row.rate?.code === required.rateCodes[0]
-        && row.matchStatus === 'match' && row.eligibility === 'verified' && row.availability === 'available')
+        && row.matchStatus === 'match' && row.eligibility === 'verified' && ['available', 'unavailable'].includes(row.availability))
       : undefined;
     const building = option?.room?.buildingCode;
-    const poolId = typeof propertyCode === 'string' && propertyCode && option?.room?.code
-      && typeof building === 'string' && building
-      ? `${propertyCode}:${building}:${option.room.code}` : undefined;
+    // No HMS building: the room type is its own pool, but only while every observed row matches the verified profile.
+    const scope = typeof building === 'string' && building ? building : building === null && holds ? 'profile' : undefined;
+    const poolId = typeof propertyCode === 'string' && propertyCode && option?.room?.code && scope
+      ? `${propertyCode}:${scope}:${option.room.code}` : undefined;
     return {
       id: group.id,
       quantity,
       required,
       matchStatus: option?.matchStatus ?? group.matchStatus,
       poolId,
+      profilePool: scope === 'profile',
+      nullBuilding: building === null,
       nightly: option?.nightly,
     };
   });
@@ -660,7 +686,12 @@ export function composeAllocation(groups = [], propertyCode) {
     const nights = (group.nightly ?? []).map((night) => ({ date: night.date, supply: night.inventory }));
     if (nights.length) sourcePools.push({ id: group.poolId, nights });
   }
-  return evaluateAllocation(selected, sourcePools);
+  const allocation = evaluateAllocation(selected, sourcePools);
+  if (allocation.status === 'unknown' && profile !== null && !holds && selected.some((group) => group.nullBuilding)) {
+    return { ...allocation, reason: ROOM_PROFILE_OUT_OF_DATE, diagnostic: 'room_profile_mismatch' };
+  }
+  return allocation.pools.length && selected.some((group) => group.profilePool)
+    ? { ...allocation, poolBasis: 'property_profile', profileDigest: profile.digest } : allocation;
 }
 
 export function evaluateAllocation(groups = [], sourcePools = []) {
@@ -711,6 +742,52 @@ export function evaluateAllocation(groups = [], sourcePools = []) {
     reason: insufficient ? 'Combined demand exceeds proven same-pool supply on at least one night.' : 'Combined demand fits the proven same-pool observation.',
     pools,
   };
+}
+
+/**
+ * The short room-nights a capture proves: a shared pool whose combined demand is above its supply, then, for each group with no
+ * matching room type that fits every night, each matching row whose own inventory is below its quantity. Each entry names the
+ * room type, its label, the night, the demand and the supply.
+ */
+export function shortfallsOf(groups = [], propertyCode) {
+  if (!Array.isArray(groups)) return [];
+  const labelOf = (code) => {
+    for (const group of groups) {
+      const row = (group?.options ?? []).find((option) => option?.room?.code === code && typeof option.room.label === 'string');
+      if (row?.room.label) return row.room.label;
+    }
+    return code;
+  };
+  const found = [];
+  const seen = new Set();
+  const add = (roomCode, date, demand, supply) => {
+    if (seen.has(`${roomCode}|${date}`)) return;
+    seen.add(`${roomCode}|${date}`);
+    found.push({ roomCode, roomLabel: labelOf(roomCode), date, demand, supply });
+  };
+  for (const pool of composeAllocation(groups, propertyCode).pools ?? []) {
+    const roomCode = pool.id.slice(pool.id.lastIndexOf(':') + 1);
+    for (const night of pool.nights) {
+      if (night.comparable && night.demand > night.supply) add(roomCode, night.date, night.demand, night.supply);
+    }
+  }
+  for (const group of groups) {
+    const quantity = group?.quantity ?? group?.request?.quantity;
+    if (!Number.isInteger(quantity)) continue;
+    const rows = (group?.options ?? []).filter((row) => row?.matchStatus === 'match' && typeof row.room?.code === 'string');
+    // A matching room type with enough inventory on every night satisfies the group, so only a group with none names its short rows.
+    const satisfied = rows.some((row) => Array.isArray(row.nightly) && row.nightly.length > 0
+      && row.nightly.every((night) => Number.isInteger(night?.inventory) && night.inventory >= quantity));
+    if (satisfied) continue;
+    for (const row of rows) {
+      for (const night of row.nightly ?? []) {
+        if (Number.isInteger(night?.inventory) && night.inventory < quantity) {
+          add(row.room.code, night.date, quantity, night.inventory);
+        }
+      }
+    }
+  }
+  return found;
 }
 
 const MATCH_RANK = { match: 0, alternative: 1, unresolved: 2 };
