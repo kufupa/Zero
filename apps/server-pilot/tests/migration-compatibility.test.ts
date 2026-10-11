@@ -110,7 +110,7 @@ describe('read-only migration compatibility CLI on PostgreSQL', () => {
         expect(cli(url).stderr).toContain('mail_baseline_projection');
         await sql`ALTER TABLE ai_workflow_run DROP COLUMN priority`;
         expect(cli(url).stderr).toContain('ai_workflow_run.priority');
-        await sql`DROP TABLE work_event`;
+        await sql`DROP TABLE work_event CASCADE`;
         expect(cli(url).stderr).toContain('work_event');
       },
       { seed: false },
