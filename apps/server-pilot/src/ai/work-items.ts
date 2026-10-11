@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, notExists, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, notExists, notInArray, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
-import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
+import { sqlList } from '../db/schema/hitl.js';
+import { mailExtraction, TELEMETRY_EVENT_TYPES, workEvent, workItem } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
 import type { ExtractionRow, ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
 import {
@@ -634,7 +635,8 @@ async function restoreSupersededItem(
 /**
  * A newer read that changes the kind gets its own work item, so the item made from the older read would stay in Needs
  * you beside it. That older item is dismissed, with a system event, only while nobody has touched it: still needs_you,
- * no saved values, no event from a person, and on a read older than the latest. Anything else is left as it is.
+ * no saved values, no decision from a person (TELEMETRY_EVENT_TYPES do not count), and on a read older than the latest.
+ * Anything else is left as it is.
  */
 async function dismissSupersededItems(
   db: DB,
@@ -663,7 +665,13 @@ async function dismissSupersededItems(
             tx
               .select({ one: sql`1` })
               .from(workEvent)
-              .where(and(eq(workEvent.workItemId, workItem.id), eq(workEvent.actorKind, 'user'))),
+              .where(
+                and(
+                  eq(workEvent.workItemId, workItem.id),
+                  eq(workEvent.actorKind, 'user'),
+                  notInArray(workEvent.type, [...TELEMETRY_EVENT_TYPES]),
+                ),
+              ),
           ),
         ),
       );
@@ -744,7 +752,8 @@ export type ThreadWorkChange =
 
 /**
  * The status changes the thread's work needs, read from its mail and items. A change only touches an untouched item: no
- * event from a person and no saved values. Rules, on the source mail's time (arrivedAt):
+ * decision from a person (TELEMETRY_EVENT_TYPES do not count) and no saved values. Rules, on the source mail's time
+ * (arrivedAt):
  * - Reply link (C2): a needs-you item is done (hotel_replied, sent_at and sent_message_id set) when the hotel's latest
  *   mail after it is later than the guest's latest mail after it. The hotel's mail is an outbound one, or an inbound one
  *   from the mailbox's own address or domain (a copy of its reply, counted by when it left). A guest mail is any other
@@ -775,7 +784,7 @@ export async function planThreadWork(
       state: workItem.state,
       // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
       // "id" binds to the subquery's own table and the check is always false.
-      touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and we.actor_kind = 'user')`,
+      touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and we.actor_kind = 'user' and we.type not in (${sqlList(TELEMETRY_EVENT_TYPES)}))`,
     })
     .from(workItem)
     .where(

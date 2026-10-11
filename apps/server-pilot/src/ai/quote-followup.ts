@@ -28,7 +28,8 @@ import {
   sql,
 } from 'drizzle-orm';
 import { deriveReplySubject } from './workflows/candidate-draft.js';
-import { workEvent, workItem } from '../db/schema/work.js';
+import { sqlList } from '../db/schema/hitl.js';
+import { TELEMETRY_EVENT_TYPES, workEvent, workItem } from '../db/schema/work.js';
 import { canonicalInternetMessageId } from './quote-workflow-analyse-selection.js';
 import { textToSafeHtml } from './draft-evidence.js';
 import { getDb, type DB } from '../db/client.js';
@@ -70,7 +71,8 @@ const CLOSED_BY_HOTEL_REPLY = sql`(${workItem}.status = 'done' and ${workItem}.s
   select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id
     and we.type = 'status.changed' and we.value->>'reason' = 'hotel_replied')
   and not exists (
-  select 1 from ${workEvent} as wp where wp.work_item_id = ${workItem}.id and wp.actor_kind = 'user'))`;
+  select 1 from ${workEvent} as wp where wp.work_item_id = ${workItem}.id and wp.actor_kind = 'user'
+    and wp.type not in (${sqlList(TELEMETRY_EVENT_TYPES)})))`;
 /** The sweep's drafts: written as the system author, origin manual, under the id prefix (see writeFollowUp). */
 const IS_FOLLOW_UP_DRAFT = and(
   eq(mailDraft.createdByUserId, NAVA_USER_ID),

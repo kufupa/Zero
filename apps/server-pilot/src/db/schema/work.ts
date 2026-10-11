@@ -62,6 +62,24 @@ export const WORK_EVENT_TYPES = [
   'note.staff',
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
+/**
+ * User events that are not a person's decision on the item: pane telemetry (B1), the dismissal, and field.accept, which
+ * confirms an AI value as read without a correction. Any other event a person wrote counts as touching the item (the
+ * thread rules and the quote follow-up's close check both read it). Table-qualified SQL: sqlList in the readers.
+ */
+export const TELEMETRY_EVENT_TYPES = [
+  'pane.opened',
+  'copy.hms_line',
+  'copy.confirmation',
+  'reply.inserted',
+  'reply.saved',
+  'pdf.created',
+  'excel.downloaded',
+  'hms.lookup.started',
+  'hms.lookup.finished',
+  'item.dismissed',
+  'field.accept',
+] as const;
 export const EVAL_LABEL_KINDS = ['correction', 'confirmation', 'run_flag', 'note'] as const;
 export const EVAL_LABEL_SPLITS = ['dev', 'holdout', 'test'] as const;
 

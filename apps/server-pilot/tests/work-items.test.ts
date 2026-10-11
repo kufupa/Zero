@@ -23,7 +23,7 @@ import {
   validFieldValue,
   workItemIdForMail,
 } from '../src/ai/work-items.js';
-import { maskStaffNote, recordStaffNote } from '../src/ai/work-events.js';
+import { maskStaffNote, recordPaneActions, recordStaffNote } from '../src/ai/work-events.js';
 import { parseReplyLinkArgs, runReplyLinkBackfill } from '../scripts/backfill-reply-link.js';
 import { HMS_JOB_PROMPT_VERSION, NOT_APPLICABLE_MODEL_ID } from '../src/ai/run-ledger.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
@@ -2226,6 +2226,46 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
         expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: copy }),
       ]);
       expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('an item with only pane telemetry from a person is still closed by a hotel reply', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'tel-1', 'thread-tel-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      expect(
+        await recordPaneActions(db, {
+          transportId: CENTURION,
+          workItemId: item!.id,
+          userId: USER,
+          events: [{ type: 'pane.opened', surface: 'outlook' }],
+        }),
+      ).toBe('recorded');
+      const reply = await hotelMail(db, 'tel-1-out', 'thread-tel-1', '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, 'thread-tel-1')).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: reply }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('an item with a field edit from a person is not closed by a hotel reply', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'tel-2', 'thread-tel-2', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      // The event alone, with no saved value, so only the event type decides whether a person touched the item.
+      await db.insert(workEvent).values({
+        workItemId: item!.id,
+        actorKind: 'user',
+        actorUserId: USER,
+        type: 'field.edit',
+        value: { path: 'contact.phone' },
+      });
+      await hotelMail(db, 'tel-2-out', 'thread-tel-2', '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, 'thread-tel-2')).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
     }));
 });
 
