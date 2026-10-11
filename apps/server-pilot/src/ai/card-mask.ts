@@ -42,31 +42,36 @@ export function maskCardNumbers(text: string): string {
 
 const EMAIL_ADDRESS = /[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/gi;
 /*
- * The number patterns match only where a number stands on its own: the text edge, whitespace, a bracket or closing
- * punctuation sits on each side. A digit, dash or dot touching it means it is part of a longer token, such as the date
- * 2027-05-12 or the reference 57291630-1. Groups join by spaces or tabs only, never across a newline.
+ * A phone span is digit groups joined by spaces or tabs, one dash or dot, or a closing bracket, with an optional leading +
+ * and brackets around a group. Its edges are the text edge, whitespace, a bracket or closing punctuation, or a dash that
+ * follows or precedes a word (Cell-082…). A digit, letter, dash or dot touching it otherwise means it is part of a longer
+ * token, such as a reference. Joins are never across a line break.
  */
-const EDGE_BEFORE = '(?<![^\\s()[\\].,;:!?])';
-const EDGE_AFTER = '(?![^\\s()[\\].,;:!?])';
-/** Dashed or dotted digits, such as 082-555-1234 or 2027-05-12. Masked only at 9 to 15 digits starting with 0 or +. */
-const DASHED_NUMBER = new RegExp(`${EDGE_BEFORE}\\+?\\d+(?:[-.]\\d+)+${EDGE_AFTER}`, 'g');
-/** Digit groups joined by spaces, such as 0825551234, 082 555 1234 or +27 (0)82 555 1234. */
-const SPACED_NUMBER = new RegExp(
-  `${EDGE_BEFORE}\\+?\\(?\\d+\\)?(?:(?:[ \\t]+|(?<=\\)))\\+?\\(?\\d+\\)?)*${EDGE_AFTER}`,
+const EDGE_BEFORE = '(?:(?<![^\\s()[\\].,;:!?])|(?<=[A-Za-z]-))';
+const EDGE_AFTER = '(?:(?![^\\s()[\\].,;:!?])|(?=-[A-Za-z]))';
+const PHONE_SPAN = new RegExp(
+  `${EDGE_BEFORE}\\+?\\(?\\d+\\)?(?:(?:[ \\t]+|[.-]|(?<=\\)))\\(?\\d+\\)?)*${EDGE_AFTER}`,
   'g',
 );
 const DIGIT_GROUP = /\+?\(?\d+\)?/g;
+/**
+ * A date-shaped group (2027-05-12, 12.05.2027, 12/05/2027) or a line break. A phone span never crosses one: a date beside a
+ * phone stays, and a phone on one line is not joined to the next.
+ */
+const DATE_OR_BREAK = /((?<!\d)(?:\d{4}[-./]\d{2}[-./]\d{2}|\d{2}[-./]\d{2}[-./]\d{4})(?!\d)|\r\n|\n|\r)/;
 
 const digitsOf = (text: string) => text.replace(/\D/g, '');
 
 /**
- * Masks the phone parts of one run of digit groups. A group of 7 or more digits is a phone on its own. Otherwise a
- * window that starts with + or a trunk 0 and totals 9 to 15 digits is one, so a year or a day beside it stays.
+ * Masks the phone digits of one span. A single group of 7 or more digits is a phone on its own. In a span of several
+ * groups, a window that starts with + or a trunk 0 and totals 9 to 15 digits is a phone. The rest of the span stays as
+ * written, so 57291630-1 (no such window) is kept.
  */
-function maskDigitGroups(run: string): string {
-  const groups = [...run.matchAll(DIGIT_GROUP)];
+function maskSpan(span: string): string {
+  const groups = [...span.matchAll(DIGIT_GROUP)];
+  if (groups.length === 1) return digitsOf(span).length >= 7 ? '[phone]' : span;
   const counts = groups.map((group) => digitsOf(group[0]).length);
-  const phone = counts.map((count) => count >= 7);
+  const phone = counts.map(() => false);
   groups.forEach((group, start) => {
     if (!/^\+|^\(?0/.test(group[0])) return;
     let total = 0;
@@ -83,28 +88,25 @@ function maskDigitGroups(run: string): string {
     if (!phone[index]) continue;
     let last = index;
     while (last + 1 < groups.length && phone[last + 1]) last += 1;
-    out += `${run.slice(cursor, groups[index]!.index)}[phone]`;
+    out += `${span.slice(cursor, groups[index]!.index)}[phone]`;
     cursor = groups[last]!.index! + groups[last]![0].length;
     index = last;
   }
-  return out + run.slice(cursor);
+  return out + span.slice(cursor);
 }
 
 /**
- * Replace e-mail addresses with [email] and phone numbers with [phone]. A phone number is a run of 7 or more digits on its
- * own, or spaced or dashed digits of 9 to 15 that start with + or 0. Amounts, dates and dashed references such as
+ * Replace e-mail addresses with [email] and phone numbers with [phone]. A phone is a single run of 7 or more digits, or a
+ * span of digit groups that totals 9 to 15 digits from a + or a trunk 0. Mixed separators count: 082 555-1234,
+ * (021) 555-1234 and +27 82 555-1234. A span stops at a date or a line break. Amounts, dates and dashed references such as
  * 57291630-1 stay. Run maskCardNumbers first (see maskMailText).
  */
 export function maskContactDetails(text: string): string {
   return text
     .replace(EMAIL_ADDRESS, '[email]')
-    .replace(DASHED_NUMBER, (match) => {
-      const digits = digitsOf(match);
-      const phoneLike =
-        digits.length >= 9 && digits.length <= 15 && (match.startsWith('+') || digits.startsWith('0'));
-      return phoneLike ? '[phone]' : match;
-    })
-    .replace(SPACED_NUMBER, maskDigitGroups);
+    .split(DATE_OR_BREAK)
+    .map((part, index) => (index % 2 === 1 ? part : part.replace(PHONE_SPAN, maskSpan)))
+    .join('');
 }
 
 /** Every mail string that leaves the database for labelling or evals: card numbers, security codes, addresses, phones. */

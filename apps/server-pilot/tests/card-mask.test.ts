@@ -86,6 +86,22 @@ describe('maskContactDetails', () => {
     expect(maskContactDetails('(021) 555 1234 office')).toBe('[phone] office');
   });
 
+  it('masks a phone with mixed separators, with or without a date beside it', () => {
+    expect(maskContactDetails('082 555-1234')).toBe('[phone]');
+    expect(maskContactDetails('(021) 555-1234')).toBe('[phone]');
+    expect(maskContactDetails('+27 82 555-1234')).toBe('[phone]');
+    expect(maskContactDetails('Call 082 555-1234 or +27 82 555-1234 today')).toBe(
+      'Call [phone] or [phone] today',
+    );
+    expect(maskContactDetails('2027-05-12 082 555-1234')).toBe('2027-05-12 [phone]');
+    expect(maskContactDetails('12.05.2027 082 555-1234')).toBe('12.05.2027 [phone]');
+  });
+
+  it('never joins a phone to the line above or below it', () => {
+    expect(maskContactDetails('082\n0825551234')).toBe('082\n[phone]');
+    expect(maskContactDetails('2027-05-12\n082 555-1234')).toBe('2027-05-12\n[phone]');
+  });
+
   it('masks a dashed phone at 9 to 15 digits starting with 0, and keeps a dashed reference', () => {
     expect(maskContactDetails('call 082-555-1234 or 57291630-1')).toBe(
       'call [phone] or 57291630-1',
