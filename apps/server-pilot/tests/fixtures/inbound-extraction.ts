@@ -158,6 +158,121 @@ export const VOUCHER_OUTPUT = {
 
 export const SPAM_OUTPUT = { ...EMPTY_OUTPUT, sourceLanguage: 'en', kind: 'spam' };
 
+export const CHANNEL_BOOKING_FROM = 'Reservations <notices@example-channel.test>';
+export const CHANNEL_BOOKING_SUBJECT = 'New reservation confirmed - 73114001-1';
+export const CHANNEL_BOOKING_TEXT = [
+  'ExampleChannel reservation notification',
+  'A new reservation was created and confirmed for Grand Hotel.',
+  'Reservation number: 73114001-1',
+  'Guest: Jamie Carter',
+  'Guest email: jamie.carter@example.test',
+  'Stay: 20 to 22 November 2026, one double room.',
+  'The booking voucher is attached.',
+].join('\n');
+export const CHANNEL_BOOKING_VOUCHER_TEXT = [
+  'Reservation voucher for 73114001-1',
+  'Guest: Jamie Carter',
+  'Stay: 20 to 22 November 2026, one double room.',
+].join('\n');
+export const CHANNEL_BOOKING_OUTPUT = {
+  ...EMPTY_OUTPUT,
+  sourceLanguage: 'en',
+  kind: 'booking',
+  origin: 'system_notice',
+  contact: { name: 'Jamie Carter', email: 'jamie.carter@example.test', phone: null },
+  confirmationNumbers: ['73114001-1'],
+  stays: [
+    {
+      hotel: 'Grand Hotel',
+      requested: { arrival: '2026-11-20', departure: '2026-11-22' },
+      booked: null,
+      totalRooms: 1,
+      rows: [{ roomType: 'Double', rooms: 1, adultsPerRoom: 2, childAges: [], board: null }],
+    },
+  ],
+};
+
+export const CHANNEL_AMENDMENT_TEXT = [
+  'ExampleChannel reservation update',
+  'An existing reservation was modified: 73114001-1.',
+  'The guest changed the stay from 20-22 November to 20-23 November 2026.',
+].join('\n');
+export const CHANNEL_AMENDMENT_OUTPUT = {
+  ...CHANNEL_BOOKING_OUTPUT,
+  kind: 'amendment',
+  stays: [
+    {
+      ...CHANNEL_BOOKING_OUTPUT.stays[0],
+      requested: { arrival: '2026-11-20', departure: '2026-11-23' },
+      booked: { arrival: '2026-11-20', departure: '2026-11-22' },
+    },
+  ],
+};
+
+export const CHANNEL_CANCELLATION_TEXT = [
+  'ExampleChannel reservation update',
+  'The existing reservation 73114001-1 was cancelled.',
+].join('\n');
+export const CHANNEL_CANCELLATION_OUTPUT = {
+  ...CHANNEL_BOOKING_OUTPUT,
+  kind: 'cancellation',
+};
+
+export const CHANNEL_INTEGRATION_FAILURE_TEXT = [
+  'ExampleChannel integration alert',
+  'A new reservation, 73114002-1, was confirmed by the channel but failed to integrate into the hotel system.',
+].join('\n');
+export const CHANNEL_INTEGRATION_FAILURE_OUTPUT = {
+  ...CHANNEL_BOOKING_OUTPUT,
+  confirmationNumbers: ['73114002-1'],
+};
+
+export const STANDALONE_POP_TEXT = [
+  'Subject: Remittance advice for existing reservation 73114001-1',
+  'Payment has been made for this existing booking. Proof of payment is attached.',
+  'No reservation details have changed.',
+].join('\n');
+export const STANDALONE_POP_OUTPUT = {
+  ...EMPTY_OUTPUT,
+  sourceLanguage: 'en',
+  kind: 'voucher_pop',
+  origin: 'person',
+  contact: { name: 'Alex Finance', email: 'alex.finance@example.test', phone: null },
+  confirmationNumbers: ['73114001-1'],
+};
+
+export const STAFF_FORWARD_BOOKING_FROM = 'Sam Ndlovu <sam@legacyhotels.co.za>';
+export const STAFF_FORWARD_BOOKING_SUBJECT = 'FW: Booking request for Grand Hotel';
+export const STAFF_FORWARD_BOOKING_GUEST_EMAIL = 'guest@example.test';
+export const STAFF_FORWARD_BOOKING_TEXT = [
+  'Reservations team, please process the forwarded guest booking request.',
+  'Regards, Sam Ndlovu',
+  '',
+  'From: Jamie Carter <guest@example.test>',
+  'Subject: Please book a room at Grand Hotel',
+  'Please book one double room from 20 to 22 November 2026 under Jamie Carter.',
+  'My email is guest@example.test.',
+].join('\n');
+export const STAFF_FORWARD_BOOKING_OUTPUT = {
+  ...CHANNEL_BOOKING_OUTPUT,
+  origin: 'person',
+  contact: { name: 'Jamie Carter', email: STAFF_FORWARD_BOOKING_GUEST_EMAIL, phone: null },
+  confirmationNumbers: [],
+};
+
+export const GROUP_RATE_ENQUIRY_SUBJECT = 'Group accommodation rates for annual conference';
+export const GROUP_RATE_ENQUIRY_TEXT = [
+  'We are organising our annual conference and need group accommodation.',
+  'Please quote rates and availability for 30 rooms for 20 to 22 November 2026.',
+  'We are comparing promotional group packages, so please send your best rate.',
+].join('\n');
+export const GROUP_RATE_ENQUIRY_OUTPUT = {
+  ...EMPTY_OUTPUT,
+  sourceLanguage: 'en',
+  kind: 'quote',
+  origin: 'person',
+};
+
 export function selectionFor(bodyText: string, subject = 'Rooms request'): SyncedQuoteSelection {
   return {
     subject,
