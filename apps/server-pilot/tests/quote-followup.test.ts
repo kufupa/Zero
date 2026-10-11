@@ -1183,6 +1183,30 @@ describe('a quote a hotel reply closed (C2) keeps its follow-up clock', () => {
     });
   });
 
+  it('pane telemetry a person left on a hotel-closed quote does not stop its clock', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-c2-telemetry', REQUEST_AT);
+      await sendReply(db, { id: 'out-c2-telemetry', threadId: 'thread-c2-telemetry', sentAt: FRI_SEND });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-telemetry' });
+      await db.insert(workEvent).values({
+        workItemId: itemId,
+        actorKind: 'user',
+        actorUserId: 'user-ropperman',
+        type: 'pane.opened',
+        value: { surface: 'outlook' },
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+    });
+  });
+
   it('a hotel-closed quote a person has touched gets no clock and no reminder', async () => {
     await withIngestionDb(async ({ db }) => {
       await seedNavaUser(db);
@@ -1211,6 +1235,162 @@ describe('a quote a hotel reply closed (C2) keeps its follow-up clock', () => {
         discarded: 0,
       });
       expect(await followUpRuns(db, itemId)).toHaveLength(0);
+    });
+  });
+});
+
+const SENT_FROM_STAFF = 'ops@legacyhotels.co.za';
+const FORGED_FROM_HOTEL = 'intruder@legacyhotels.co.za';
+
+/** The transport has sent from this address before, on the thread and before the request: an earlier send, not a reply. */
+async function sentFromBefore(db: DB, threadId: string, from: string) {
+  const tag = from.split('@')[0];
+  await db.insert(message).values({
+    id: `${threadId}-earlier-${tag}`,
+    transportId: TRANSPORT,
+    threadId,
+    direction: 'outbound',
+    fromAddress: from,
+    toAddresses: ['guest@example.com'],
+    ccAddresses: [],
+    bccAddresses: [],
+    subject: 'Earlier',
+    textBody: 'Earlier.',
+    ownerHeaderValue: TRANSPORT_EMAIL,
+    messageIdHeader: `${threadId}-earlier-${tag}@example.com`,
+    references: [],
+    isRead: true,
+    isStarred: false,
+    sentAt: new Date('2026-10-01T08:00:00Z'),
+  });
+}
+
+/** A copy of the hotel's own reply that reached the mailbox: inbound, sent at `sentAt`, fetched at `arrivedAt`. */
+async function hotelCopy(
+  db: DB,
+  opts: { id: string; threadId: string; from: string; sentAt: Date; arrivedAt: Date },
+) {
+  await db.insert(message).values({
+    id: opts.id,
+    transportId: TRANSPORT,
+    threadId: opts.threadId,
+    direction: 'inbound',
+    fromAddress: opts.from,
+    toAddresses: ['guest@example.com'],
+    ccAddresses: [],
+    bccAddresses: [],
+    subject: 'Re: Quote request',
+    textBody: 'Please find our quote below.',
+    ownerHeaderValue: TRANSPORT_EMAIL,
+    messageIdHeader: `${opts.id}@example.com`,
+    pop3Uidl: `uidl-${opts.id}`,
+    references: [],
+    isRead: true,
+    isStarred: false,
+    receivedAt: opts.sentAt,
+    sentAt: opts.sentAt,
+    createdAt: opts.arrivedAt,
+  });
+}
+
+describe('a hotel copy as the reply link (C2b) neither clears nor restarts the follow-up clock', () => {
+  it('a copy fetched after its send time keeps the clock, and its reminder is drafted from the copy', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-c2b-clock', REQUEST_AT);
+      await sentFromBefore(db, 'thread-c2b-clock', SENT_FROM_STAFF);
+      await hotelCopy(db, {
+        id: 'in-c2b-copy',
+        threadId: 'thread-c2b-clock',
+        from: SENT_FROM_STAFF,
+        sentAt: FRI_SEND,
+        arrivedAt: new Date(FRI_SEND.getTime() + 4 * 60_000),
+      });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2b-clock' });
+      expect(await loadItem(db, itemId)).toMatchObject({ status: 'done', sentMessageId: 'in-c2b-copy' });
+
+      // The copy is the hotel's, so it is not a client's reply: the clock starts and stays, sweep after sweep.
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+      expect(
+        await runQuoteFollowupSweep({ db, env: ON, now: new Date(FRI_SEND.getTime() + 60 * 60_000) }),
+      ).toEqual({ linked: 0, cancelled: 0, queued: 0, discarded: 0 });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+
+      // When due, the run drafts the reminder replying to the copy (a copy is a sent message, as the hotel's answer).
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 1,
+        discarded: 0,
+      });
+      const { run, fence } = await claimRun(db, itemId);
+      expect(await executeQuoteFollowupRun({ run, fence, db, env: ON })).toEqual({
+        runId: run.id,
+        state: 'succeeded',
+      });
+      expect(await runOutcome(db, run.id)).toBe('drafted');
+      expect(await threadDrafts(db, 'thread-c2b-clock')).toEqual([
+        expect.objectContaining({
+          id: 'quote-followup:in-c2b-copy',
+          status: 'candidate',
+          replyToMessageId: 'in-c2b-copy',
+        }),
+      ]);
+    });
+  });
+
+  it('a copy from a sent-from address overtakes a follow-up draft; a forged copy from the hotel domain does not', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-c2b-overtake', REQUEST_AT);
+      await sentFromBefore(db, 'thread-c2b-overtake', SENT_FROM_STAFF);
+      await sendReply(db, { id: 'out-c2b-overtake', threadId: 'thread-c2b-overtake', sentAt: FRI_SEND });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2b-overtake' });
+      await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
+      await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE });
+      const { run, fence } = await claimRun(db, itemId);
+      await executeQuoteFollowupRun({ run, fence, db, env: ON });
+      const draftId = 'quote-followup:out-c2b-overtake';
+      expect(await threadDrafts(db, 'thread-c2b-overtake')).toEqual([
+        expect.objectContaining({ id: draftId, status: 'candidate' }),
+      ]);
+
+      // A forged copy from the hotel domain is nobody's answer: it discards nothing, and is no client's reply either.
+      const monday = new Date('2026-10-12T09:00:00Z');
+      await hotelCopy(db, {
+        id: 'in-c2b-forged',
+        threadId: 'thread-c2b-overtake',
+        from: FORGED_FROM_HOTEL,
+        sentAt: monday,
+        arrivedAt: monday,
+      });
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: monday })).toMatchObject({
+        cancelled: 0,
+        discarded: 0,
+      });
+      expect(await threadDrafts(db, 'thread-c2b-overtake')).toEqual([
+        expect.objectContaining({ id: draftId, status: 'candidate' }),
+      ]);
+
+      // The hotel's own copy from a sent-from address is its answer, so the draft is overtaken.
+      const monday10 = new Date('2026-10-12T10:00:00Z');
+      await hotelCopy(db, {
+        id: 'in-c2b-answer',
+        threadId: 'thread-c2b-overtake',
+        from: SENT_FROM_STAFF,
+        sentAt: monday10,
+        arrivedAt: monday10,
+      });
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: monday10 })).toMatchObject({ discarded: 1 });
+      expect(await threadDrafts(db, 'thread-c2b-overtake')).toEqual([
+        expect.objectContaining({ id: draftId, status: 'discarded' }),
+      ]);
     });
   });
 });
