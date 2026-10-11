@@ -11,14 +11,22 @@ import {
   READ_ROWS_JS,
   RUN_STEP,
   AE1_WRITE_PROCEDURES,
+  blockerOfPlan,
   classifyAe1Request,
+  classifyDryPlanRequest,
+  countsBlocker,
   documentStayCount,
+  dryPlanLines,
   filledFieldsOf,
+  fillKindsOf,
   newAe1GuardState,
   parseAe1Config,
   pickRoomOption,
   planRoomRows,
+  planStopBeforeRows,
+  roomRuleOf,
   stayKeyOfRatesInput,
+  type Ae1DryPlan,
   type Ae1Summary,
   type PaneRoomRow,
   type SelectOption,
@@ -188,15 +196,17 @@ describe('room rows', () => {
     board: 'unknown',
     ...extra,
   });
-  const inputs = { roomSplit: [15, 15], adultsSplit: [], board: 'bb' as const, allowEdits: true };
+  // No default count: a run uses the read's counts, and NAVA_AE1_ROOMS only where the read has none.
+  const inputs = { roomSplit: [] as number[], adultsSplit: [], board: 'bb' as const, allowEdits: true };
 
-  it('fills the AE1 rows with 15 + 15 per stay and records what it used', () => {
+  it('fills the rows NAVA_AE1_ROOMS counts 15 + 15 for, and records what it used', () => {
     const rows = [1, 2].flatMap((stayNumber) => [
       row({ stay: stayNumber, room: 1, roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single') }),
       row({ stay: stayNumber, room: 2, roomValue: 'Double/twin', roomOptions: ROOM_OPTIONS('Double/twin'), board: 'bb' }),
     ]);
-    const { plans, split } = planRoomRows(rows, inputs);
-    expect(split.rule).toBe('15/15 rooms per stay where the pane has none');
+    const { plans, split } = planRoomRows(rows, { ...inputs, roomSplit: [15, 15] });
+    expect(split.rule).toBe('NAVA_AE1_ROOMS 15/15 where the read has no count');
+    expect(split.rows.every((used) => used.roomsSource === 'NAVA_AE1_ROOMS')).toBe(true);
     expect(split.rows.map((used) => [used.stay, used.room, used.askedType, used.roomType, used.rooms, used.adults, used.board])).toEqual([
       [1, 1, 'Single', 'STQN', 15, 1, 'bb'],
       [1, 2, 'Double/twin', 'STWN', 15, 2, 'bb'],
@@ -246,6 +256,56 @@ describe('room rows', () => {
     ]);
   });
 
+  it('uses the read counts as they are, and no default', () => {
+    const rows = [
+      row({ roomValue: 'STWN', rooms: 30, adults: 2, board: 'bb' }),
+      row({ room: 2, roomValue: 'STQN', rooms: 30, adults: 1, board: 'bb' }),
+    ];
+    const { plans, split } = planRoomRows(rows, inputs);
+    expect(split.rule).toBe("the read's counts only (NAVA_AE1_ROOMS unset)");
+    expect(split.rows.map((used) => [used.rooms, used.roomsSource, used.roomsFilled])).toEqual([
+      [30, 'read', false],
+      [30, 'read', false],
+    ]);
+    expect(plans.map((plan) => plan.rooms)).toEqual([null, null]);
+    expect(filledFieldsOf(split)).toEqual([]);
+  });
+
+  it('marks a row no count reaches as missing, and that row blocks the run with or without edits', () => {
+    const { plans, split } = planRoomRows([row({ roomValue: 'STWN', adults: 2, board: 'bb' })], inputs);
+    expect(split.rows[0]).toMatchObject({ rooms: null, roomsFilled: true, roomsSource: 'missing' });
+    expect(plans[0]?.rooms).toBeNull();
+    expect(filledFieldsOf(split)).toEqual(['stay1.room1.rooms']);
+    expect(blockerOfPlan(split, { allowEdits: false })).toBe('needs_edits:rooms');
+    expect(blockerOfPlan(split, { allowEdits: true })).toBe('needs_edits:rooms');
+  });
+
+  it('fills only the rows the read leaves without a count', () => {
+    const rows = [
+      row({ room: 1, roomValue: 'STWN', rooms: 30, adults: 2, board: 'bb' }),
+      row({ room: 2, roomValue: 'STQN', adults: 1, board: 'bb' }),
+    ];
+    const { split } = planRoomRows(rows, { ...inputs, roomSplit: [15, 15] });
+    expect(split.rows.map((used) => [used.rooms, used.roomsSource])).toEqual([
+      [30, 'read'],
+      [15, 'NAVA_AE1_ROOMS'],
+    ]);
+    expect(filledFieldsOf(split)).toEqual(['stay1.room2.rooms']);
+  });
+
+  it('leaves a count missing when NAVA_AE1_ROOMS covers only some rows', () => {
+    const rows = [
+      row({ room: 1, roomValue: 'STWN', adults: 2, board: 'bb' }),
+      row({ room: 3, roomValue: 'STQN', adults: 1, board: 'bb' }),
+    ];
+    const { split } = planRoomRows(rows, { ...inputs, roomSplit: [15, 15] });
+    expect(split.rows.map((used) => [used.rooms, used.roomsSource])).toEqual([
+      [15, 'NAVA_AE1_ROOMS'],
+      [null, 'missing'],
+    ]);
+    expect(blockerOfPlan(split, { allowEdits: true })).toBe('needs_edits:rooms');
+  });
+
   it('lists no fills for a complete pane', () => {
     const { split } = planRoomRows([row({ roomValue: 'SKNG', rooms: 4, adults: 3, board: 'dinner_bb' })], inputs);
     expect(filledFieldsOf(split)).toEqual([]);
@@ -261,7 +321,143 @@ describe('room rows', () => {
     expect(() => planRoomRows([row({ roomValue: 'Family', roomOptions: ROOM_OPTIONS('Family') })], inputs)).toThrow(
       'no listed HMS room type matches "Family"',
     );
-    expect(() => planRoomRows([row({ room: 3, roomValue: 'STQN' })], inputs)).toThrow('NAVA_AE1_ROOMS gives only 2 counts');
+  });
+});
+
+describe('the blocker a run stops with', () => {
+  const inputs = { roomSplit: [] as number[], adultsSplit: [], board: 'bb' as const, allowEdits: false };
+  const pane = (extra: Partial<PaneRoomRow>): PaneRoomRow => ({
+    stay: 1,
+    room: 1,
+    roomValue: 'STWN',
+    roomOptions: ROOM_OPTIONS(),
+    rooms: 30,
+    adults: 2,
+    board: 'bb',
+    ...extra,
+  });
+
+  it('lists the kinds of value a run would type, rooms first', () => {
+    const { split } = planRoomRows(
+      [pane({ roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single'), rooms: null, adults: null, board: 'unknown' })],
+      { ...inputs, roomSplit: [15] },
+    );
+    expect(fillKindsOf(split)).toEqual(['rooms', 'roomType', 'adults', 'board']);
+  });
+
+  it('is null for a complete pane', () => {
+    const { split } = planRoomRows([pane({})], inputs);
+    expect(blockerOfPlan(split, inputs)).toBeNull();
+  });
+
+  it('names the fills without edits, and runs them with edits allowed', () => {
+    const { split } = planRoomRows(
+      [pane({ roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single'), board: 'unknown' })],
+      inputs,
+    );
+    expect(blockerOfPlan(split, { allowEdits: false })).toBe('needs_edits:roomType,board');
+    expect(blockerOfPlan(split, { allowEdits: true })).toBeNull();
+  });
+
+  it('states where the counts came from', () => {
+    expect(roomRuleOf({ roomSplit: [] })).toBe("the read's counts only (NAVA_AE1_ROOMS unset)");
+    expect(roomRuleOf({ roomSplit: [15, 15] })).toBe('NAVA_AE1_ROOMS 15/15 where the read has no count');
+  });
+
+  it('checks the counts before any room type, so a row with neither reports the count', () => {
+    const bare = pane({ roomValue: '', roomOptions: ROOM_OPTIONS(), rooms: null, adults: null, board: 'unknown' });
+    // The room type cannot be named: planRoomRows throws on it, and the count stop must still be the blocker.
+    expect(() => planRoomRows([bare], inputs)).toThrow('has no room type and the email names none');
+    expect(countsBlocker([bare], inputs)).toBe('needs_edits:rooms');
+    expect(countsBlocker([bare], { ...inputs, roomSplit: [15] })).toBeNull();
+    expect(countsBlocker([pane({})], inputs)).toBeNull();
+  });
+});
+
+describe('a thread that is not Quote', () => {
+  it('is planned only once it is Quote: a plan reads no rows of a thread that is not', () => {
+    expect(planStopBeforeRows(true, false)).toBeNull();
+    expect(planStopBeforeRows(true, true)).toBeNull();
+    expect(planStopBeforeRows(false, false)).toBe('needs_edits:type');
+    expect(planStopBeforeRows(false, true)).toBe(
+      'not planned: switch the thread to Quote first; its room rows cannot be planned without that edit',
+    );
+  });
+});
+
+describe('dry plan', () => {
+  it('lets reads and the analysis through, and refuses every write and HMS request', () => {
+    expect(classifyDryPlanRequest(url('mail.get,workItems.getByMessage')).allowed).toBe(true);
+    expect(classifyDryPlanRequest(url('quoteWorkflow.analyseSelection')).allowed).toBe(true);
+    expect(classifyDryPlanRequest(url('drafts.saveReply')).blocked).toEqual([{ procedure: 'drafts.saveReply', reason: 'write' }]);
+    expect(classifyDryPlanRequest(url('secret.thing')).blocked).toEqual([{ procedure: 'secret.thing', reason: 'unknown' }]);
+    expect(classifyDryPlanRequest(url('panePartyLookup.findParty')).blocked).toEqual([
+      { procedure: 'panePartyLookup.findParty', reason: 'hms' },
+    ]);
+    expect(classifyDryPlanRequest(url('workstation.executeStaffQuote')).blocked).toEqual([
+      { procedure: 'workstation.executeStaffQuote', reason: 'hms' },
+    ]);
+  });
+
+  it('prints each room count with its source and what a run would fill', () => {
+    const plan: Ae1DryPlan = {
+      dryPlan: true,
+      threadId: 't',
+      storedWorkflow: 'quote',
+      paneRows: 2,
+      roomSplit: {
+        rule: "the read's counts only (NAVA_AE1_ROOMS unset)",
+        rows: [
+          {
+            stay: 1,
+            room: 1,
+            askedType: 'Single',
+            roomType: 'STQN',
+            roomTypeFilled: true,
+            rooms: 30,
+            roomsFilled: false,
+            roomsSource: 'read',
+            adults: 1,
+            adultsFilled: true,
+            board: 'bb',
+            boardFilled: false,
+          },
+          {
+            stay: 1,
+            room: 2,
+            askedType: null,
+            roomType: 'STWN',
+            roomTypeFilled: false,
+            rooms: null,
+            roomsFilled: true,
+            roomsSource: 'missing',
+            adults: 2,
+            adultsFilled: false,
+            board: 'bb',
+            boardFilled: false,
+          },
+        ],
+      },
+      wouldFill: ['stay1.room1.roomType', 'stay1.room1.adults', 'stay1.room2.rooms'],
+      editsAllowed: false,
+      blocker: 'needs_edits:rooms',
+      blocked: ['panePartyLookup.findParty (hms)'],
+      activeMailboxSwitched: false,
+      restored: false,
+    };
+    expect(dryPlanLines(plan)).toEqual([
+      "dry plan: 2 room rows; rooms are the read's counts only (NAVA_AE1_ROOMS unset)",
+      'stay 1 room 1: rooms 30 from read; room type STQN (fill); adults 1 (fill); meal plan bb',
+      'stay 1 room 2: rooms none from missing; room type STWN; adults 2; meal plan bb',
+      'would fill: stay1.room1.roomType stay1.room1.adults stay1.room2.rooms',
+      'blocker: needs_edits:rooms',
+      'refused by the dry-plan guard: panePartyLookup.findParty (hms)',
+    ]);
+    expect(dryPlanLines({ ...plan, roomSplit: null, paneRows: 0, wouldFill: [], blocker: null, blocked: [] })).toEqual([
+      'dry plan: 0 room rows; rooms are not planned',
+      'would fill: nothing',
+      'blocker: none',
+    ]);
   });
 });
 
@@ -272,10 +468,15 @@ describe('config', () => {
     ...extra,
   });
 
-  it('defaults to 15/15 rooms and bed and breakfast', () => {
+  it('has no default room count, and defaults the meal plan to bed and breakfast', () => {
     const config = parseAe1Config(['--threads', 't-1', '--out', dir], env(), dir);
     expect(config.threadId).toBe('t-1');
-    expect(config.inputs).toEqual({ roomSplit: [15, 15], adultsSplit: [], board: 'bb', allowEdits: false });
+    expect(config.inputs).toEqual({ roomSplit: [], adultsSplit: [], board: 'bb', allowEdits: false });
+    expect(config.dryPlan).toBe(false);
+  });
+
+  it('reads --dry-plan', () => {
+    expect(parseAe1Config(['--threads', 'a', '--dry-plan'], env(), dir).dryPlan).toBe(true);
   });
 
   it('allows edits only with NAVA_PROOF_ALLOW_EDITS=1', () => {

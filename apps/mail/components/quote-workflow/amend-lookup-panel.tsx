@@ -81,8 +81,10 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   // Only a dash confirmation (57291630-1) is an HMS number. A bare number may be a billing or voucher reference, so it is not one.
   const hmsNumber = hmsNumberFor(confirmationNumber);
   const lookupable = hmsNumber !== null;
-  // The email's arrival rides with the find so HMS quick search covers that day. findRequestFor drops a non-date.
+  // The booked arrival rides with the find so HMS quick search covers that day. Without booked dates in the mail the
+  // find goes by confirmation number alone: the requested arrival never stands in (AE2). findRequestFor drops a non-date.
   const findArrival = amendment?.arrival ?? null;
+  const bookedMissing = !findArrival;
 
   // The find reads back the email's own number after a remount. A booking picked from a search is queued in this session.
   const find = useHmsJob({
@@ -257,6 +259,11 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           )}
         </div>
       </div>
+      {bookedMissing ? (
+        <p data-testid="booked-dates-missing" className={warnNoteClass}>
+          {AMEND_FIND_COPY.bookedMissing}
+        </p>
+      ) : null}
       <div className="flex flex-col gap-2">
         {found ? null : (
           <>

@@ -3,6 +3,23 @@ set -e
 # oxlint 1.9 does not honor ignorePatterns in .oxlintrc.json; keep CLI ignore too.
 # Lint staged JS/TS only so submodule sources and untracked WIP cannot block the gate.
 # Full-tree lint remains `pnpm precommit` and CI.
-staged=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(cjs|cts|js|jsx|mjs|mts|ts|tsx)$' | grep -v '^external/' || true)
+changed=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMR)
+# Entity literals in server-pilot src may only shrink (check:entities, about 1 s). Runs only when that tree, its baseline
+# or its checker is staged (a removal counts too), so other commits pay nothing. It checks what the commit records: the
+# staged src, checker and baseline are exported from the index to a temp dir, so unstaged edits neither hide a literal
+# nor block a commit.
+if git -c core.quotePath=false diff --cached --name-only --no-renames | grep -qE '^apps/server-pilot/(src/|scripts/(check-entity-literals\.mjs|entity-literals-baseline\.json))'; then
+  # The checker's main guard compares argv with its real path, so a symlinked $TMPDIR would make it exit 0 unchecked.
+  # Resolve the temp dir to its physical path first.
+  tmp=$(mktemp -d) || exit 1
+  tmp=$(cd "$tmp" && pwd -P) || exit 1
+  trap 'rm -rf "$tmp"' EXIT
+  tree=$(git write-tree)
+  git archive "$tree" apps/server-pilot/src apps/server-pilot/scripts/check-entity-literals.mjs \
+    apps/server-pilot/scripts/entity-literals-baseline.json > "$tmp/staged.tar"
+  tar -xf "$tmp/staged.tar" -C "$tmp"
+  node "$tmp/apps/server-pilot/scripts/check-entity-literals.mjs"
+fi
+staged=$(echo "$changed" | grep -E '\.(cjs|cts|js|jsx|mjs|mts|ts|tsx)$' | grep -v '^external/' || true)
 [ -n "$staged" ] || exit 0
 echo "$staged" | xargs pnpm dlx oxlint@1.9.0 --deny-warnings --ignore-pattern 'external/**'

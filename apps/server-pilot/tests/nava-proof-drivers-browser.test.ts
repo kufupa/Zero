@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildQuoteWorkbook } from '../src/quote-proposal/quote-workbook';
-import { parseAe1Config, runAe1 } from '../scripts/nava-ae1-rates-proof';
+import { parseAe1Config, readAe1Plan, runAe1 } from '../scripts/nava-ae1-rates-proof';
 import { parseAe2Config, runAe2 } from '../scripts/nava-ae2-find-proof';
 import { parseAe4Config, runAe4 } from '../scripts/nava-ae4-override-proof';
 
@@ -103,7 +103,12 @@ const STAYS = [
   ['2026-11-17', '2026-11-18'],
 ] as const;
 
-function ae1Page(): string {
+/**
+ * The AE1 pane: two stays with two room rows each. `rooms` is the count the read gives every row ('' for none); `single`
+ * is the room type the email asks for on the single rows. `notQuote` is a thread read as not a quote: the pane shows no
+ * Stay details until its type is set to Quote, and then shows them.
+ */
+function ae1Page(rooms = '30', options: { single?: string; notQuote?: boolean } = {}): string {
   const row = (stay: number, room: number, asked: string) => `
     <div class="room" data-stay="${stay - 1}">
       <select aria-label="Room type">
@@ -112,13 +117,15 @@ function ae1Page(): string {
         <option value="STWN">Standard Twin (STWN)</option><option value="STQN">Standard Queen (STQN)</option>
       </select>
       <div role="group" aria-label="Rooms for stay ${stay}, room ${room}"></div>
-      <input aria-hidden="true" type="number" aria-label="Rooms" class="sr-only" value="">
+      <input aria-hidden="true" type="number" aria-label="Rooms" class="sr-only" value="${rooms}">
       <input aria-hidden="true" type="number" aria-label="Adults" class="sr-only" value="">
       <select aria-label="Meal plan"><option value="unknown" selected>Not stated yet</option><option value="bb">B&amp;B</option></select>
     </div>`;
+  const single = options.single ?? 'Single';
+  const stayDetails = `<section aria-label="Stay details">${row(1, 1, single)}${row(1, 2, 'Double/twin')}${row(2, 1, single)}${row(2, 2, 'Double/twin')}</section>`;
   const body = `
-    <select aria-label="Nava reads this as"><option value="quote" selected>Quote request</option></select>
-    <section aria-label="Stay details">${row(1, 1, 'Single')}${row(1, 2, 'Double/twin')}${row(2, 1, 'Single')}${row(2, 2, 'Double/twin')}</section>
+    <select aria-label="Nava reads this as">${options.notQuote ? '<option value="other" selected>Not a quote</option>' : ''}<option value="quote"${options.notQuote ? '' : ' selected'}>Quote request</option></select>
+    ${options.notQuote ? '' : stayDetails}
     <section aria-label="Rates from HMS">
       <p id="rated">0 of 2 stays rated</p>
       <button id="get">Get rates from HMS</button>
@@ -132,6 +139,14 @@ function ae1Page(): string {
   const script = `
     const stays = ${JSON.stringify(STAYS)};
     const runs = [];
+    ${
+      options.notQuote
+        ? `// The Stay details appear once the thread is Quote, as the pane shows them.
+    document.querySelector('select[aria-label="Nava reads this as"]').addEventListener('change', (event) => {
+      if (event.target.value === 'quote') document.querySelector('[data-preview-pane] main').insertAdjacentHTML('afterbegin', ${JSON.stringify(stayDetails)});
+    });`
+        : ''
+    }
     // The pane logs every field edit (workItems.recordEvent); the drivers must not cause one without leave.
     document.querySelectorAll('section[aria-label="Stay details"] input, section[aria-label="Stay details"] select').forEach((el) =>
       el.addEventListener('input', () => trpc('workItems.recordEvent', { field: el.getAttribute('aria-label') })),
@@ -174,10 +189,10 @@ function ae1Workbook(): string {
   const line = (dateLabel: string, description: string, rateMinor: number) => ({
     dateLabel,
     description,
-    qty: 15,
+    qty: 30,
     nights: 1,
     rateMinor,
-    totalMinor: 15 * rateMinor,
+    totalMinor: 30 * rateMinor,
   });
   const lines = STAYS.flatMap(([a]) => [
     line(a, 'Standard Queen · 1 adult per room · Bed & Breakfast', 150_000),
@@ -248,18 +263,21 @@ describe('AE1 driver against a scripted pane', () => {
         blocked: ['panePartyLookup.findParty (second_party_lookup)'],
         screenshots: { rates: true, documents: true, pane: true },
       });
+      // The counts are the read's 30s: no room count is typed, and no default is in play.
+      expect(summary.roomSplitUsed.rule).toBe("the read's counts only (NAVA_AE1_ROOMS unset)");
       expect(summary.roomSplitUsed.rows.map((row) => `${row.askedType}->${row.roomType}x${row.rooms}/${row.adults}/${row.board}`)).toEqual([
-        'Single->STQNx15/1/bb',
-        'Double/twin->STWNx15/2/bb',
-        'Single->STQNx15/1/bb',
-        'Double/twin->STWNx15/2/bb',
+        'Single->STQNx30/1/bb',
+        'Double/twin->STWNx30/2/bb',
+        'Single->STQNx30/1/bb',
+        'Double/twin->STWNx30/2/bb',
       ]);
+      expect(summary.filledFields.filter((field) => field.endsWith('.rooms'))).toEqual([]);
       // What the rates runs carried is what the driver typed.
       const ratesInputs = calls.filter((call) => call.procedure === 'workstation.executeStaffQuote');
       expect(ratesInputs).toHaveLength(2);
       expect((ratesInputs[0]!.input as { groups: unknown[] }).groups).toEqual([
-        expect.objectContaining({ roomPreference: 'STQN', quantity: 15, adults: 1, board: 'bb' }),
-        expect.objectContaining({ roomPreference: 'STWN', quantity: 15, adults: 2, board: 'bb' }),
+        expect.objectContaining({ roomPreference: 'STQN', quantity: 30, adults: 1, board: 'bb' }),
+        expect.objectContaining({ roomPreference: 'STWN', quantity: 30, adults: 2, board: 'bb' }),
       ]);
       for (const file of ['quote.pdf', 'quote.xlsx', 'rates.png', 'documents.png', 'pane.png']) {
         expect(statSync(join(out, file)).size, file).toBeGreaterThan(0);
@@ -272,8 +290,8 @@ describe('AE1 driver against a scripted pane', () => {
   it.skipIf(!chromiumBinary)(
     'stops with a blocker when the pane does not take a room count',
     async () => {
-      // The Rooms inputs ignore typing, as a pane that refused the value would.
-      const html = ae1Page().replace(
+      // The read has no counts, so NAVA_AE1_ROOMS gives them. The Rooms inputs ignore typing, as a pane that refused the value would.
+      const html = ae1Page('').replace(
         'const stays =',
         `document.querySelectorAll('input[aria-label="Rooms"]').forEach((el) => el.addEventListener('input', () => { el.value = ''; }));
     const stays =`,
@@ -281,7 +299,7 @@ describe('AE1 driver against a scripted pane', () => {
       const base = await serve(html, ae1Handlers());
       const config = parseAe1Config(
         ['--threads', 't-1', '--out', join(dir, 'ae1-block'), '--timeout-ms', '20000'],
-        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1', NAVA_AE1_ROOMS: '15/15' }),
         dir,
       );
       const summary = await runAe1(config, () => undefined);
@@ -294,17 +312,207 @@ describe('AE1 driver against a scripted pane', () => {
   );
 
   it.skipIf(!chromiumBinary)(
-    'without NAVA_PROOF_ALLOW_EDITS stops with needs_edits and types nothing into the thread',
+    'without NAVA_PROOF_ALLOW_EDITS stops with needs_edits for the fills and types nothing into the thread',
     async () => {
       const base = await serve(ae1Page(), ae1Handlers());
       const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-no-edits'), '--timeout-ms', '20000'], env(base), dir);
       const summary = await runAe1(config, () => undefined);
       expect(summary.ok).toBe(false);
       expect(summary.editsAllowed).toBe(false);
-      expect(summary.blocker).toMatch(/^needs_edits:stay1\.room1\.roomType,stay1\.room1\.rooms,stay1\.room1\.adults,stay1\.room1\.board,/);
-      expect(summary.blocker?.split(',')).toHaveLength(16);
+      expect(summary.blocker).toBe('needs_edits:roomType,adults,board');
       expect(summary.filledFields).toEqual([]);
       expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+      expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'with no room count in the read and no NAVA_AE1_ROOMS, stops with needs_edits:rooms and never invents one',
+    async () => {
+      const base = await serve(ae1Page(''), ae1Handlers());
+      const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-no-rooms'), '--timeout-ms', '20000'], env(base), dir);
+      const summary = await runAe1(config, () => undefined);
+      expect(summary.ok).toBe(false);
+      expect(summary.blocker).toBe('needs_edits:rooms');
+      expect(summary.roomSplitUsed.rows.map((row) => [row.rooms, row.roomsSource])).toEqual([
+        [null, 'missing'],
+        [null, 'missing'],
+        [null, 'missing'],
+        [null, 'missing'],
+      ]);
+      expect(summary.filledFields).toEqual([]);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+      expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'with no room count and a room type it cannot name, stops on needs_edits:rooms and types nothing',
+    async () => {
+      const base = await serve(ae1Page('', { single: 'Family' }), ae1Handlers());
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-no-rooms-type'), '--timeout-ms', '20000'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
+      const summary = await runAe1(config, () => undefined);
+      expect(summary.ok).toBe(false);
+      expect(summary.blocker).toBe('needs_edits:rooms');
+      expect(summary.filledFields).toEqual([]);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+      expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'a thread that is not Quote is switched first, and a rooms stop after the switch fills nothing else',
+    async () => {
+      const base = await serve(ae1Page('', { notQuote: true }), ae1Handlers());
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-not-quote-no-rooms'), '--timeout-ms', '20000'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
+      const summary = await runAe1(config, () => undefined);
+      expect(summary.blocker).toBe('needs_edits:rooms');
+      // The rows show only once the thread is Quote, so the switch is the one edit a rooms stop can leave behind.
+      expect(summary.filledFields).toEqual(['type']);
+      expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'a thread that is not Quote without NAVA_PROOF_ALLOW_EDITS stops on needs_edits:type and changes nothing',
+    async () => {
+      const base = await serve(ae1Page('30', { notQuote: true }), ae1Handlers());
+      const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-not-quote'), '--timeout-ms', '20000'], env(base), dir);
+      const summary = await runAe1(config, () => undefined);
+      expect(summary.blocker).toBe('needs_edits:type');
+      expect(summary.filledFields).toEqual([]);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+    },
+    120_000,
+  );
+});
+
+describe('AE1 dry plan against a scripted pane', () => {
+  it.skipIf(!chromiumBinary)(
+    'with edits allowed, a thread that is not Quote is not planned: its rows cannot be read without the switch',
+    async () => {
+      const base = await serve(ae1Page('30', { notQuote: true }), ae1Handlers());
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-plan-not-quote'), '--dry-plan'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
+      const plan = await readAe1Plan(config, () => undefined);
+      expect(plan.blocker).toBe(
+        'not planned: switch the thread to Quote first; its room rows cannot be planned without that edit',
+      );
+      expect(plan.roomSplit).toBeNull();
+      expect(plan.paneRows).toBe(0);
+      expect(plan.wouldFill).toEqual(['type']);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+      expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'without edits, a thread that is not Quote is blocked on needs_edits:type',
+    async () => {
+      const base = await serve(ae1Page('30', { notQuote: true }), ae1Handlers());
+      const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-plan-not-quote-no-edits'), '--dry-plan'], env(base), dir);
+      const plan = await readAe1Plan(config, () => undefined);
+      expect(plan.blocker).toBe('needs_edits:type');
+      expect(plan.wouldFill).toEqual(['type']);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'names needs_edits:rooms, not the room type, when a row has no count and a type it cannot name',
+    async () => {
+      const base = await serve(ae1Page('', { single: 'Family' }), ae1Handlers());
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-plan-rooms-type'), '--dry-plan'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
+      const plan = await readAe1Plan(config, () => undefined);
+      expect(plan.blocker).toBe('needs_edits:rooms');
+      expect(plan.paneRows).toBe(4);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'prints the read counts with their source, and makes no edit and no HMS request',
+    async () => {
+      const base = await serve(ae1Page(), ae1Handlers());
+      const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-plan'), '--dry-plan'], env(base), dir);
+      const plan = await readAe1Plan(config, () => undefined);
+      expect(plan.blocker).toBe('needs_edits:roomType,adults,board');
+      expect(plan.editsAllowed).toBe(false);
+      expect(plan.paneRows).toBe(4);
+      expect(plan.roomSplit?.rule).toBe("the read's counts only (NAVA_AE1_ROOMS unset)");
+      expect(plan.roomSplit?.rows.map((row) => [row.stay, row.room, row.rooms, row.roomsSource])).toEqual([
+        [1, 1, 30, 'read'],
+        [1, 2, 30, 'read'],
+        [2, 1, 30, 'read'],
+        [2, 2, 30, 'read'],
+      ]);
+      expect(plan.wouldFill).toHaveLength(12);
+      expect(plan.wouldFill.filter((field) => field.endsWith('.rooms'))).toEqual([]);
+      // The pane's own party search is refused, and it is the only request the plan saw refused.
+      expect(plan.blocked).toEqual(['panePartyLookup.findParty (hms)']);
+      for (const name of [
+        'panePartyLookup.findParty',
+        'workstation.executeStaffQuote',
+        'workItems.recordEvent',
+        'workstation.qualifiedQuoteProposalPdf',
+        'workstation.quoteWorkbook',
+      ]) {
+        expect(calls.some((call) => call.procedure === name), name).toBe(false);
+      }
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'shows NAVA_AE1_ROOMS as the source of the counts the read lacks',
+    async () => {
+      const base = await serve(ae1Page(''), ae1Handlers());
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-plan-env'), '--dry-plan'],
+        env(base, { NAVA_AE1_ROOMS: '15/15' }),
+        dir,
+      );
+      const plan = await readAe1Plan(config, () => undefined);
+      expect(plan.roomSplit?.rows.map((row) => [row.rooms, row.roomsSource])).toEqual([
+        [15, 'NAVA_AE1_ROOMS'],
+        [15, 'NAVA_AE1_ROOMS'],
+        [15, 'NAVA_AE1_ROOMS'],
+        [15, 'NAVA_AE1_ROOMS'],
+      ]);
+      expect(plan.blocker).toBe('needs_edits:rooms,roomType,adults,board');
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'names needs_edits:rooms as the blocker when no count is given anywhere',
+    async () => {
+      const base = await serve(ae1Page(''), ae1Handlers());
+      const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-plan-missing'), '--dry-plan'], env(base), dir);
+      const plan = await readAe1Plan(config, () => undefined);
+      expect(plan.blocker).toBe('needs_edits:rooms');
+      expect(plan.roomSplit?.rows.every((row) => row.rooms === null && row.roomsSource === 'missing')).toBe(true);
       expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
     },
     120_000,

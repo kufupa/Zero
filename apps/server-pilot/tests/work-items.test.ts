@@ -307,6 +307,41 @@ describe('stored read for the pane', () => {
       expect(work.analysis.luna.flags).toContain('amendment_or_cancel');
     }));
 
+  it('gives an amendment with no booked dates in mail no booked dates, never the requested stay (AE2)', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'q4b');
+      await insertRead(db, messageId, {
+        version: 'extract-v1',
+        kind: 'amendment',
+        payload: {
+          ...payload(),
+          confirmationNumbers: ['57291630-1'],
+          stays: [
+            {
+              id: STAY_ONE,
+              hotel: null,
+              requested: { arrival: '2026-10-31', departure: '2026-11-07' },
+              booked: null,
+              totalRooms: null,
+              rows: [],
+            },
+          ],
+        },
+      });
+      const work = await readyWork(db, 'q4b');
+      expect(work.analysis.amendment).toEqual({
+        kind: 'amend',
+        confirmationNumber: '57291630-1',
+        guestLastName: null,
+        // The lookup gets no booked dates, and not the requested 31 Oct to 7 Nov standing in for them.
+        arrival: null,
+        departure: null,
+        requestedArrival: '2026-10-31',
+        requestedDeparture: '2026-11-07',
+        requestedChange: null,
+      });
+    }));
+
   it('flags an unread attachment and lists it as a review item', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'q5');

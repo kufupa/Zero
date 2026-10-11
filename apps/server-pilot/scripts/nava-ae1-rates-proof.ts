@@ -10,7 +10,9 @@
  * a room row is missing what the rates run needs, it fills it the way staff would and records what it used (filledFields,
  * roomSplitUsed). It edits a real thread, so it does so only with NAVA_PROOF_ALLOW_EDITS=1; without it a run that needs
  * any fill (or the type change) stops with the blocker "needs_edits:<fields>" before touching the pane:
- *   - rooms: the deterministic split NAVA_AE1_ROOMS (default 15/15: room 1 of each stay gets 15, room 2 gets 15);
+ *   - rooms: never invented. The read's counts are used as they are (the AE1 email asks 30 Single and 30 Double/Twin per
+ *     stay). Only a row the read has no count for takes NAVA_AE1_ROOMS, and with no such count the run stops with
+ *     "needs_edits:rooms";
  *   - room type: where the select says "Email asked for X — pick a room type", the first listed HMS room type that
  *     matches X (Twin for "double/twin"; Queen, then King, for "single" or "double");
  *   - adults per room: 1 for a single, else 2 (NAVA_AE1_ADULTS overrides, e.g. "1/2");
@@ -41,14 +43,20 @@
  *
  * Environment (values are never printed): NAVA_PREVIEW_BASE_URL, NAVA_PREVIEW_STORAGE_STATE, NAVA_PREVIEW_RESOLVE_TO,
  * NAVA_PREVIEW_TRANSPORT_ID, NAVA_PREVIEW_CHROMIUM as nava-preview-run.ts; NAVA_AE1_ROOMS, NAVA_AE1_ADULTS, NAVA_AE1_BOARD;
- * NAVA_PROOF_ALLOW_EDITS=1 to let it fill missing room counts, adults, meal plans and room types (the AE1 email has no
- * counts, so AE1 needs it on).
+ * NAVA_PROOF_ALLOW_EDITS=1 to let it fill missing room counts, adults, meal plans and room types. A room count is filled
+ * only from NAVA_AE1_ROOMS, never a default.
  *
  * Usage: NAVA_PROOF_ALLOW_EDITS=1 nava-preview-gate.sh --ae1-rates <thread-id>   (signs in, then runs:)
  *   pnpm --dir apps/server-pilot exec tsx scripts/nava-ae1-rates-proof.ts --threads <id> --out <dir> --timeout-ms 600000
+ * Dry plan: add --dry-plan. It reads the Stay details rows, prints each count and its source (the read, or
+ * NAVA_AE1_ROOMS) and what a real run would need, and makes no edit and no HMS call. The last stdout line is the plan.
+ * A thread that is not Quote has no rows until it is switched, so its plan stops at "not planned" (edits allowed) or at
+ * needs_edits:type; a real run with edits allowed switches it first.
  *
  * Output: <out>/summary.json, rates.png, documents.png, pane.png, quote.pdf, quote.xlsx. The last stdout line is the
  * summary as one JSON line. Exit 0 pass, 1 AE1 failed, 2 blocked before the proof could finish.
+ * A dry plan writes no file: its last stdout line is the plan as one JSON line. Exit 0 when a real run would go on,
+ * 2 when it would stop at the blocker the plan names.
  */
 import type { Locator, Page } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -89,7 +97,16 @@ import {
   type GuardDecision,
   type MailboxRecord,
 } from './nava-proof-kit';
-import { ANALYSIS_PROCEDURES, KNOWN_WRITE_PROCEDURES, parseRunConfig, READ_PROCEDURES, redactText, type RunConfig } from './nava-preview-run';
+import {
+  ANALYSIS_PROCEDURES,
+  classifyTrpcRequest,
+  HMS_READ_PROCEDURES,
+  KNOWN_WRITE_PROCEDURES,
+  parseRunConfig,
+  READ_PROCEDURES,
+  redactText,
+  type RunConfig,
+} from './nava-preview-run';
 
 export const PARTY_LOOKUP_PROCEDURE = 'panePartyLookup.findParty';
 export const PDF_PROCEDURE = 'workstation.qualifiedQuoteProposalPdf';
@@ -118,7 +135,12 @@ export type Ae1Inputs = {
   /** NAVA_PROOF_ALLOW_EDITS=1: the driver may fill what the pane is missing. Off, a needed fill stops the run. */
   allowEdits: boolean;
 };
-export type Ae1Config = RunConfig & { threadId: string; inputs: Ae1Inputs };
+export type Ae1Config = RunConfig & {
+  threadId: string;
+  inputs: Ae1Inputs;
+  /** --dry-plan: read the rows and print the plan. Edits nothing and makes no HMS call. */
+  dryPlan: boolean;
+};
 
 const BOARDS: ReadonlySet<string> = new Set(['room_only', 'bb', 'dinner_bb']);
 
@@ -135,12 +157,19 @@ export function parseAe1Config(argv: readonly string[], env: NodeJS.ProcessEnv, 
   if (base.selection.kind !== 'threads' || base.selection.ids.length !== 1) {
     throw new Error('AE1 runs on exactly one thread: --threads <id>');
   }
-  const roomSplit = parseSplit(env.NAVA_AE1_ROOMS?.trim() || '15/15', 'NAVA_AE1_ROOMS', 99);
+  // No default: a count comes from the read. NAVA_AE1_ROOMS only fills a row the read has no count for.
+  const roomsRaw = env.NAVA_AE1_ROOMS?.trim() || '';
+  const roomSplit = roomsRaw ? parseSplit(roomsRaw, 'NAVA_AE1_ROOMS', 99) : [];
   const adultsRaw = env.NAVA_AE1_ADULTS?.trim() || '';
   const adultsSplit = adultsRaw ? parseSplit(adultsRaw, 'NAVA_AE1_ADULTS', 9) : [];
   const board = env.NAVA_AE1_BOARD?.trim() || 'bb';
   if (!BOARDS.has(board)) throw new Error('NAVA_AE1_BOARD must be room_only, bb or dinner_bb');
-  return { ...base, threadId: base.selection.ids[0]!, inputs: { roomSplit, adultsSplit, board: board as Board, allowEdits: allowEditsFrom(env) } };
+  return {
+    ...base,
+    threadId: base.selection.ids[0]!,
+    inputs: { roomSplit, adultsSplit, board: board as Board, allowEdits: allowEditsFrom(env) },
+    dryPlan: argv.includes('--dry-plan'),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -296,6 +325,9 @@ export type PaneRoomRow = {
   board: string;
 };
 
+/** Where a row's room count came from: the read (the pane already had it), NAVA_AE1_ROOMS, or nowhere (missing). */
+export type RoomsSource = 'read' | 'NAVA_AE1_ROOMS' | 'missing';
+
 /** What the driver used for one row. Filled flags say which values it typed; the rest were the pane's. */
 export type RoomRowUsed = {
   stay: number;
@@ -304,8 +336,10 @@ export type RoomRowUsed = {
   askedType: string | null;
   roomType: string;
   roomTypeFilled: boolean;
-  rooms: number;
+  /** The count the row takes. Null when neither the read nor NAVA_AE1_ROOMS gives one (roomsSource "missing"). */
+  rooms: number | null;
   roomsFilled: boolean;
+  roomsSource: RoomsSource;
   adults: number;
   adultsFilled: boolean;
   board: string;
@@ -313,6 +347,13 @@ export type RoomRowUsed = {
 };
 
 export type RoomSplit = { rule: string; rows: RoomRowUsed[] };
+
+/** The rule the summary states for the counts: the explicit NAVA_AE1_ROOMS fill, or the read's counts alone. */
+export function roomRuleOf(inputs: Pick<Ae1Inputs, 'roomSplit'>): string {
+  return inputs.roomSplit.length
+    ? `NAVA_AE1_ROOMS ${inputs.roomSplit.join('/')} where the read has no count`
+    : "the read's counts only (NAVA_AE1_ROOMS unset)";
+}
 
 const ASKED_PREFIX = /^Email asked for /;
 const KNOWN_CODE = /\(([A-Z]{2,8})\)$/;
@@ -363,8 +404,9 @@ export type RowPlan = {
 };
 
 /**
- * What to type in each row, and what the run then used. Throws a Blocker message when a row needs a value the inputs do
- * not give (a room type the email does not name, a stay with more rooms than NAVA_AE1_ROOMS counts).
+ * What to type in each row, and what the run then used. Throws when a row needs a room type the inputs cannot name (the
+ * email names none, or no listed HMS type matches it). A count is never thrown for: a row the read and NAVA_AE1_ROOMS both
+ * lack is "missing", and blockerOfPlan stops the run on it.
  */
 export function planRoomRows(rows: readonly PaneRoomRow[], inputs: Ae1Inputs): { plans: RowPlan[]; split: RoomSplit } {
   const plans: RowPlan[] = [];
@@ -387,13 +429,13 @@ export function planRoomRows(rows: readonly PaneRoomRow[], inputs: Ae1Inputs): {
       roomTypeFilled = true;
     }
     const nth = (split: number[]) => split[row.room - 1] ?? null;
-    let rooms = row.rooms;
+    let rooms: number | null = row.rooms;
+    let roomsSource: RoomsSource = 'read';
     const roomsFilled = rooms === null;
     if (rooms === null) {
+      // Never a default: only NAVA_AE1_ROOMS gives a count the read lacks. With none, the row is "missing" and the run stops.
       rooms = nth(inputs.roomSplit);
-      if (rooms === null) {
-        throw new Error(`${where} has no room count and NAVA_AE1_ROOMS gives only ${inputs.roomSplit.length} counts`);
-      }
+      roomsSource = rooms === null ? 'missing' : 'NAVA_AE1_ROOMS';
     }
     let adults = row.adults;
     const adultsFilled = adults === null;
@@ -409,9 +451,22 @@ export function planRoomRows(rows: readonly PaneRoomRow[], inputs: Ae1Inputs): {
       adults: adultsFilled ? adults : null,
       board: boardFilled ? inputs.board : null,
     });
-    used.push({ stay: row.stay, room: row.room, askedType, roomType, roomTypeFilled, rooms, roomsFilled, adults, adultsFilled, board, boardFilled });
+    used.push({
+      stay: row.stay,
+      room: row.room,
+      askedType,
+      roomType,
+      roomTypeFilled,
+      rooms,
+      roomsFilled,
+      roomsSource,
+      adults,
+      adultsFilled,
+      board,
+      boardFilled,
+    });
   });
-  return { plans, split: { rule: `${inputs.roomSplit.join('/')} rooms per stay where the pane has none`, rows: used } };
+  return { plans, split: { rule: roomRuleOf(inputs), rows: used } };
 }
 
 /** The fields a plan fills, as "stay<n>.room<m>.<field>". Empty when the pane already has every value the run needs. */
@@ -425,6 +480,44 @@ export function filledFieldsOf(split: RoomSplit): string[] {
       row.boardFilled ? `${where}.board` : null,
     ].filter((field): field is string => field !== null);
   });
+}
+
+/** The kinds of value the run would type, in the order a blocker lists them: rooms first. */
+export function fillKindsOf(split: RoomSplit): string[] {
+  const kinds = new Set(filledFieldsOf(split).map((field) => field.split('.').pop()));
+  return ['rooms', 'roomType', 'adults', 'board'].filter((kind) => kinds.has(kind));
+}
+
+/**
+ * The blocker a run stops with before its first edit, or null. A count the read lacks and NAVA_AE1_ROOMS does not give is
+ * never invented: the run stops with exactly "needs_edits:rooms", edits allowed or not. Any other fill needs
+ * NAVA_PROOF_ALLOW_EDITS=1; without it the blocker names the kinds of value the run would type.
+ */
+export function blockerOfPlan(split: RoomSplit, inputs: Pick<Ae1Inputs, 'allowEdits'>): string | null {
+  if (split.rows.some((row) => row.roomsSource === 'missing')) return needsEditsMessage(['rooms']);
+  const fills = fillKindsOf(split);
+  return fills.length && !inputs.allowEdits ? needsEditsMessage(fills) : null;
+}
+
+/**
+ * The count stop on the rows as the pane shows them: a row whose count neither the read nor NAVA_AE1_ROOMS gives. It is
+ * checked before the room types are planned, so such a row reports "needs_edits:rooms" even when its room type cannot be
+ * named either.
+ */
+export function countsBlocker(rows: readonly PaneRoomRow[], inputs: Pick<Ae1Inputs, 'roomSplit'>): string | null {
+  const missing = rows.some((row) => row.rooms === null && (inputs.roomSplit[row.room - 1] ?? null) === null);
+  return missing ? needsEditsMessage(['rooms']) : null;
+}
+
+/**
+ * The stop a dry plan makes before it reads any room row, or null. A thread that is not Quote shows its rows only once it is
+ * switched to Quote, and a plan makes no edit, so such a thread cannot be planned.
+ */
+export function planStopBeforeRows(typeIsQuote: boolean, allowEdits: boolean): string | null {
+  if (typeIsQuote) return null;
+  return allowEdits
+    ? 'not planned: switch the thread to Quote first; its room rows cannot be planned without that edit'
+    : needsEditsMessage(['type']);
 }
 
 /** Browser-side: the Stay details step's room rows, in page order. Plain JS, no DOM types. */
@@ -583,7 +676,7 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     expectedXlsxRows: null,
     xlsxExtraRows: null,
     xlsxTotalRow: null,
-    roomSplitUsed: { rule: `${inputs.roomSplit.join('/')} rooms per stay where the pane has none`, rows: [] },
+    roomSplitUsed: { rule: roomRuleOf(inputs), rows: [] },
     editsAllowed: inputs.allowEdits,
     filledFields: [],
     activeMailboxSwitched: false,
@@ -603,7 +696,8 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     }).catch((): StoredWorkView | null => null);
     summary.storedWorkflow = stored?.status === 'ready' ? stored.workflow : null;
 
-    // 2. Type: Quote, as staff would set it.
+    // 2. Type: Quote, as staff would set it. A thread that is not Quote shows its room rows only after this switch, so its
+    // counts can be checked only after it: with edits allowed, a rooms stop then leaves the switch in place and nothing else.
     const pane = page.locator('[data-preview-pane]');
     const type = pane.locator('select[aria-label="Nava reads this as"]');
     await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
@@ -624,17 +718,20 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     // 3. Fill what each room row is missing. Every edit lands before the first rates run, so no run goes stale.
     const rows = await readRoomRows(page);
     summary.paneRows = rows.length;
+    // The count check runs first: a row with no count reports "needs_edits:rooms" even when its room type cannot be named.
+    const countStop = countsBlocker(rows, inputs);
     let planned: ReturnType<typeof planRoomRows>;
     try {
       planned = planRoomRows(rows, inputs);
     } catch (error) {
-      throw new Blocker(error instanceof Error ? error.message : 'the room rows cannot be filled');
+      throw new Blocker(countStop ?? (error instanceof Error ? error.message : 'the room rows cannot be filled'));
     }
     summary.roomSplitUsed = planned.split;
-    // A real thread: nothing is typed without NAVA_PROOF_ALLOW_EDITS=1, and a present value is never overwritten.
-    const fills = filledFieldsOf(planned.split);
-    if (fills.length && !inputs.allowEdits) throw new Blocker(needsEditsMessage(fills));
-    summary.filledFields.push(...fills);
+    // Nothing is typed into a real thread before the plan clears: no invented count, and no fill without edits allowed.
+    // A present value is never overwritten (planRoomRows keeps it).
+    const blocker = blockerOfPlan(planned.split, inputs);
+    if (blocker) throw new Blocker(blocker);
+    summary.filledFields.push(...filledFieldsOf(planned.split));
     const details = pane.locator('section[aria-label="Stay details"]');
     for (const plan of planned.plans) {
       if (plan.roomType) await details.locator('select[aria-label="Room type"]').nth(plan.index).selectOption(plan.roomType);
@@ -826,8 +923,152 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
   return { ...summary, ok: failures.length === 0, failures };
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Dry plan
+
+/** The HMS requests a dry plan refuses: the pane's own party search and the rates runs. */
+const DRY_PLAN_HMS: ReadonlySet<string> = new Set<string>([...HMS_READ_PROCEDURES, HMS_RATES_PROCEDURE]);
+
+export type DryPlanBlockReason = 'write' | 'unknown' | 'hms';
+
+/** The dry plan's guard: reads and the analysis only. Every write and every HMS request is refused. */
+export function classifyDryPlanRequest(url: string): GuardDecision<DryPlanBlockReason> {
+  const decision = classifyTrpcRequest(url);
+  return {
+    allowed: decision.allowed,
+    procedures: decision.procedures,
+    blocked: decision.blocked.map(({ procedure, reason }) => ({
+      procedure,
+      reason: DRY_PLAN_HMS.has(procedure) ? ('hms' as const) : reason,
+    })),
+  };
+}
+
+/** What a real run would do with the thread. Nothing is edited and no HMS request is made. */
+export type Ae1DryPlan = MailboxRecord & {
+  dryPlan: true;
+  threadId: string;
+  storedWorkflow: string | null;
+  /** Room rows on the pane. */
+  paneRows: number;
+  /** The rows as a real run would use them: each count and its source ("read", "NAVA_AE1_ROOMS" or "missing"). */
+  roomSplit: RoomSplit | null;
+  /** The values a real run would type: "type" for the treat-as change, "stay<n>.room<m>.<field>" per value. */
+  wouldFill: string[];
+  editsAllowed: boolean;
+  /** The blocker a real run stops with, or null when it would go on to rate the stays. */
+  blocker: string | null;
+  /** Requests the guard refused. The pane's own HMS party search shows here; a refused request is not a failure. */
+  blocked: string[];
+};
+
+/**
+ * Reads the thread's room rows as a real run does, and says what the run would fill and where each count comes from. The
+ * thread opens in the same mailbox the real run uses, so the rows are the ones the run would see. Nothing is typed.
+ */
+export async function readAe1Plan(config: Ae1Config, log: (line: string) => void): Promise<Ae1DryPlan> {
+  const { inputs, threadId } = config;
+  const plan: Ae1DryPlan = {
+    dryPlan: true,
+    threadId,
+    storedWorkflow: null,
+    paneRows: 0,
+    roomSplit: null,
+    wouldFill: [],
+    editsAllowed: inputs.allowEdits,
+    blocker: null,
+    blocked: [],
+    activeMailboxSwitched: false,
+    restored: false,
+  };
+  const steps = async (page: Page, captured: Captured): Promise<void> => {
+    await openThread(page, config.baseUrl, threadId);
+    const stored = await waitFor('the stored read', 15_000, async () => {
+      const get = latestOutcome(captured, 'workItems.getByMessage');
+      return get ? storedWorkView(get.data) : null;
+    }).catch((): StoredWorkView | null => null);
+    plan.storedWorkflow = stored?.status === 'ready' ? stored.workflow : null;
+
+    const pane = page.locator('[data-preview-pane]');
+    const type = pane.locator('select[aria-label="Nava reads this as"]');
+    await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
+      throw new Blocker('treat-as select ("Nava reads this as") is missing');
+    });
+    // A thread that is not Quote has no rows to read until it is switched, and a plan makes no edit: the plan stops here.
+    const typeIsQuote = (await type.inputValue()) === 'quote';
+    if (!typeIsQuote) plan.wouldFill.push('type');
+    const typeStop = planStopBeforeRows(typeIsQuote, inputs.allowEdits);
+    if (typeStop) {
+      plan.blocker = typeStop;
+      return;
+    }
+    await waitFor('the room rows', SETTLE_MS, async () =>
+      (await pane.locator('section[aria-label="Stay details"] [role="group"][aria-label^="Rooms for stay "]').count()) > 0
+        ? true
+        : null,
+    ).catch(() => undefined);
+    let countStop: string | null = null;
+    try {
+      const rows = await readRoomRows(page);
+      plan.paneRows = rows.length;
+      countStop = countsBlocker(rows, inputs);
+      plan.roomSplit = planRoomRows(rows, inputs).split;
+      plan.wouldFill.push(...filledFieldsOf(plan.roomSplit));
+      plan.blocker = blockerOfPlan(plan.roomSplit, inputs);
+    } catch (error) {
+      plan.blocker = countStop ?? (error instanceof Error ? error.message : 'the room rows cannot be filled');
+    }
+  };
+
+  const permit = newMailboxPermit();
+  const mailbox = newMailboxSwitch();
+  const { browser, context, page, captured } = await openProofPage(config, withMailboxPermit(classifyDryPlanRequest, permit));
+  try {
+    try {
+      await withActiveMailbox(browserMailboxApi(context, config.baseUrl, permit), config.transportId, mailbox, log, () =>
+        steps(page, captured),
+      );
+    } catch (error) {
+      if (!(error instanceof Blocker) && !(error instanceof MailboxSwitchError)) throw error;
+      plan.blocker = plan.blocker ?? error.message;
+    }
+    await context.close();
+  } finally {
+    plan.activeMailboxSwitched = mailbox.activeMailboxSwitched;
+    plan.restored = mailbox.restored;
+    await browser.close();
+  }
+  plan.blocked = [...new Set(captured.blocked)].slice(0, 30);
+  plan.blocker = mailboxFailures(plan)[0] ?? plan.blocker;
+  return plan;
+}
+
+/** The lines a dry plan prints before its JSON: each room row's counts and their source, then what a run would fill. */
+export function dryPlanLines(plan: Ae1DryPlan): string[] {
+  const lines = [`dry plan: ${plan.paneRows} room rows; rooms are ${plan.roomSplit?.rule ?? 'not planned'}`];
+  for (const row of plan.roomSplit?.rows ?? []) {
+    lines.push(
+      `stay ${row.stay} room ${row.room}: rooms ${row.rooms ?? 'none'} from ${row.roomsSource}; ` +
+        `room type ${row.roomType}${row.roomTypeFilled ? ' (fill)' : ''}; adults ${row.adults}${row.adultsFilled ? ' (fill)' : ''}; ` +
+        `meal plan ${row.board}${row.boardFilled ? ' (fill)' : ''}`,
+    );
+  }
+  lines.push(`would fill: ${plan.wouldFill.join(' ') || 'nothing'}`);
+  lines.push(`blocker: ${plan.blocker ?? 'none'}`);
+  if (plan.blocked.length) lines.push(`refused by the dry-plan guard: ${plan.blocked.join(', ')}`);
+  return lines;
+}
+
 async function main(): Promise<void> {
   const config = parseAe1Config(process.argv.slice(2), process.env, process.cwd());
+  if (config.dryPlan) {
+    const plan = await readAe1Plan(config, (line) => console.log(line));
+    for (const line of dryPlanLines(plan)) console.log(line);
+    console.log(JSON.stringify(plan));
+    // 0 the real run would go on to rate the stays; 2 it would stop at the blocker the plan names.
+    process.exitCode = plan.blocker ? 2 : 0;
+    return;
+  }
   const summary = await runAe1(config, (line) => console.log(line));
   writeFileSync(join(config.outDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 });
   console.log(`out: ${config.outDir}`);

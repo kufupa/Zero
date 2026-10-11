@@ -18,6 +18,7 @@ export const AMEND_FIND_COPY = {
     'HMS needs one exact booking number from the latest email. Check the email or find the booking by guest name below.',
   ambiguous: 'HMS matched more than one booking for that number. Check HMS directly.',
   arrivalDiffers: 'HMS shows this booking on another arrival date from the email. Check the dates in HMS directly.',
+  bookedMissing: 'Booked dates not in mail. Nava does not use the requested dates for this lookup.',
   busy: 'HMS is busy with another quote or lookup. Try again in a minute.',
   readFailed: 'Nava could not read the HMS result. Try again in a minute.',
   lookupFailed: "Nava couldn't look this up. Search HMS yourself.",
