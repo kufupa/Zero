@@ -115,4 +115,28 @@ describe('maskMailText', () => {
       'card [card ••••1111] CVV: [code masked] [email] [phone]',
     );
   });
+
+  it('keeps every pair of dates, which reads as a Luhn-valid digit run without the date split', () => {
+    const dates = Array.from({ length: 30 }, (_, day) => `2027-11-${String(day + 1).padStart(2, '0')}`);
+    for (const first of dates) {
+      for (const second of dates) {
+        for (const separator of [' ', '-']) {
+          const text = `${first}${separator}${second}`;
+          expect(maskMailText(text)).toBe(text);
+        }
+      }
+    }
+    expect(maskMailText('Arrival 2027-11-01 Departure 2027-11-03')).toBe(
+      'Arrival 2027-11-01 Departure 2027-11-03',
+    );
+  });
+
+  it('masks a phone beside a date as a phone, and still masks a spaced or dashed card beside a date', () => {
+    expect(maskMailText('0825551234 2027-11-13')).toBe('[phone] 2027-11-13');
+    expect(maskMailText('Call 0825551234 (2027-11-13)')).toBe('Call [phone] (2027-11-13)');
+    expect(maskMailText('4111 1111 1111 1111 2027-11-13')).toBe('[card ••••1111] 2027-11-13');
+    expect(maskMailText('4111-1111-1111-1111')).toBe('[card ••••1111]');
+    expect(maskMailText('card 5500 0000 0000 0004 exp 12/28')).toBe('card [card ••••0004] exp 12/28');
+    expect(maskMailText('2027-11-13 5500-0000-0000-0004')).toBe('2027-11-13 [card ••••0004]');
+  });
 });

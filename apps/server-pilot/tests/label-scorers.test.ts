@@ -1,7 +1,5 @@
 import {
-  baselineCorrect,
   candidateCorrect,
-  contactValueHash,
   evaluateLabelGates,
   fieldClassOf,
   finalLabels,
@@ -79,7 +77,6 @@ function label(overrides: Partial<LabelRow>): LabelRow {
     ai_source: 'extractor-v3',
     ai_value: '2027-10-26',
     human_value: '2027-10-27',
-    value_hash: null,
     ...overrides,
   };
 }
@@ -162,46 +159,6 @@ describe('per-field scorers', () => {
     });
     expect(candidateCorrect(removed, payload())).toBe(false);
     expect(candidateCorrect(removed, payload({ stays: [] }))).toBe(true);
-  });
-
-  it('compares an address by hash of its raw value, so a changed address is still a mismatch', () => {
-    const kept = label({
-      label_kind: 'confirmation',
-      field_id: 'contact.email',
-      ai_value: '[email]',
-      human_value: '[email]',
-      value_hash: contactValueHash('contact.email', 'Jane@Hotel.co.za', 'Jane@Hotel.co.za', 'salt-1'),
-    });
-    expect(candidateCorrect(kept, payload({ email: 'jane@hotel.co.za' }))).toBe(true);
-    expect(candidateCorrect(kept, payload({ email: 'jane@other.co.za' }))).toBe(false);
-    expect(candidateCorrect(kept, payload({ email: null }))).toBe(false);
-
-    const corrected = label({
-      field_id: 'contact.email',
-      ai_value: '[email]',
-      human_value: '[email]',
-      value_hash: contactValueHash('contact.email', 'jane@hotel.co.za', 'jen@hotel.co.za', 'salt-1'),
-    });
-    expect(baselineCorrect(corrected)).toBe(false);
-    expect(candidateCorrect(corrected, payload({ email: 'jen@hotel.co.za' }))).toBe(true);
-    expect(candidateCorrect(corrected, payload({ email: 'jane@hotel.co.za' }))).toBe(false);
-  });
-
-  it('compares a phone by its digits, so spacing and a leading + do not count as a change', () => {
-    const phone = label({
-      label_kind: 'correction',
-      field_id: 'contact.phone',
-      ai_value: '[phone]',
-      human_value: '[phone]',
-      value_hash: contactValueHash('contact.phone', '082 555 1234', '+27 82 555 1234', 'salt-2'),
-    });
-    expect(candidateCorrect(phone, payload({ phone: '+27825551234' }))).toBe(true);
-    expect(candidateCorrect(phone, payload({ phone: '082 555 1234' }))).toBe(false);
-  });
-
-  it('a label without hashes never matches a contact value', () => {
-    const bare = label({ field_id: 'contact.email', ai_value: '[email]', human_value: '[email]' });
-    expect(candidateCorrect(bare, payload({ email: 'jane@hotel.co.za' }))).toBe(false);
   });
 
   it('a scorer step returns 1 for a right value and 0 for a wrong one, with no judge', async () => {
@@ -314,6 +271,32 @@ describe('scoreLabelCases', () => {
     expect(superseded.stays).toMatchObject({ n: 1, correct: 0, pct: 0 });
   });
 
+  it('reports address and phone labels as unscored, outside the gates, and scores the rest of the case', async () => {
+    const contact = caseOf('w-contact', 'dev', [
+      label({ field_id: 'contact.email', ai_value: '[email]', human_value: '[email]' }),
+      label({ label_kind: 'confirmation', field_id: 'contact.phone', ai_value: '[phone]', human_value: '[phone]' }),
+      label({ field_id: ARRIVAL, ai_value: '2027-10-26', human_value: '2027-10-27' }),
+    ]);
+
+    const summary = await scoreLabelCases(
+      [contact],
+      new Map([['w-contact', answered(payload({ arrival: '2027-10-27', email: 'x@y.co.za' }))]]),
+    );
+
+    expect(summary.unscoredMasked).toEqual({ 'contact.email': 1, 'contact.phone': 1 });
+    expect(summary.byField['contact.email']).toBeUndefined();
+    expect(summary.byField['contact.phone']).toBeUndefined();
+    expect(summary.confirmations).toMatchObject({ n: 0, pct: null });
+    expect(summary.bySplit.dev).toMatchObject({ n: 1, correct: 1 });
+    const gates = evaluateLabelGates(summary);
+    expect(gates.pass).toBe(true);
+    expect(gates.checks.find((check) => check.name === 'field contact.phone')).toEqual({
+      name: 'field contact.phone',
+      status: 'skipped',
+      detail: '1 labels not scored (masked)',
+    });
+  });
+
   it('counts a case with no extraction as wrong, so an incomplete run cannot pass', async () => {
     const summary = await scoreLabelCases(
       cases,
@@ -332,6 +315,7 @@ describe('evaluateLabelGates', () => {
     return {
       cases: 40,
       unanswered: 0,
+      unscoredMasked: {},
       byField: {
         'stay.arrival': { n: 12, baselinePct: 60, candidatePct: 60, dropPoints: 0 },
         'row.count': { n: 10, baselinePct: 90, candidatePct: 88, dropPoints: 2 },

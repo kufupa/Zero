@@ -20,8 +20,8 @@
  * bucket 0-59 dev, 60-79 holdout, 80-99 test. The golden set is read from .private/reservationist-backtest/golden-set.jsonl
  * when that file exists; --golden-set names another file, and then it must exist. A golden case whose message is not in
  * this database adds a warning, and its thread moves on to the next rule. Stored eval_label rows that disagree on one
- * work item fail the export. --time-split: an item whose latest label event is within 30 days is test; older items split
- * dev/holdout 3:1 by the same hash. split_source says which rule applied.
+ * work item fail the export. --time-split: an item whose latest label event is within 30 days of the newest label event
+ * in the export is test; older items split dev/holdout 3:1 by the same hash. split_source says which rule applied.
  *
  * Writes only the JSONL file (apps/server-pilot/.private/ by default, gitignored) and, with --write-labels, eval_label.
  */
@@ -33,7 +33,7 @@ import {
   workEvent,
   workItem,
 } from '../src/db/schema/work.js';
-import { contactValueHash, EVAL_SCHEMA_VERSION, type LabelCase, type Split } from '../src/ai/label-scorers.js';
+import { EVAL_SCHEMA_VERSION, type LabelCase, type Split } from '../src/ai/label-scorers.js';
 import { maskMailText, maskMailValue as maskValue } from '../src/ai/card-mask.js';
 import { readGoldenSet, senderDomainOf, type GoldenRow } from '../src/ai/reservationist-backtest.js';
 import { contactFieldOf, parseFieldPath } from '../src/ai/work-items.js';
@@ -42,7 +42,7 @@ import { createDb, type DB } from '../src/db/client.js';
 import { dirname, join, resolve } from 'node:path';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { asc, inArray } from 'drizzle-orm';
-import { createHash, createHmac } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -154,15 +154,6 @@ export function domainSha256(address: string | null): string | null {
   const domain = senderDomainOf(address);
   return domain === 'unknown' ? null : createHash('sha256').update(domain).digest('hex');
 }
-
-/**
- * The salt for one label's contact hashes: an HMAC of its source event id under a fixed key. An unchanged label gets the
- * same salt on every export, so a re-export is identical, and two labels never share one. The key sits in this file, so
- * the salt is not secret: a guessed phone or address can still be checked against its hash.
- */
-const CONTACT_SALT_KEY = 'work-event-labels/contact-salt';
-export const contactSalt = (sourceEventId: string): string =>
-  createHmac('sha256', CONTACT_SALT_KEY).update(sourceEventId).digest('hex');
 
 /** Stable bucket 0-99 for a work item. */
 export function splitBucket(workItemId: string): number {
@@ -298,7 +289,8 @@ export async function exportLabels(
           extractionId: workItem.extractionId,
         })
         .from(workItem)
-        .where(inArray(workItem.id, itemIds));
+        .where(inArray(workItem.id, itemIds))
+        .orderBy(asc(workItem.id));
       const transportIds = [...new Set(items.map((item) => item.transportId))];
       const messageIds = [
         ...new Set(items.flatMap((item) => (item.sourceMessageId ? [item.sourceMessageId] : []))),
@@ -338,9 +330,11 @@ export async function exportLabels(
       const versionOf = new Map(extractions.map((row) => [row.id, row.version]));
       const storedSplit = storedSplitOf(stored);
       const latestAt = new Map<string, Date>();
+      let newestAt = labels[0]!.at;
       for (const label of labels) {
         const prior = latestAt.get(label.workItemId);
         if (!prior || label.at > prior) latestAt.set(label.workItemId, label.at);
+        if (label.at > newestAt) newestAt = label.at;
       }
 
       const labelsOf = new Map<string, Label[]>();
@@ -365,7 +359,8 @@ export async function exportLabels(
           splitFor(item.id, {
             timeSplit: options.timeSplit,
             latestAt: latestAt.get(item.id),
-            now: options.now,
+            // The newest label, not the clock, so re-exporting the same labels keeps the same time split.
+            now: options.now ?? newestAt,
           });
         const splitSource: SplitSource = pinned
           ? 'stored'
@@ -410,13 +405,6 @@ export async function exportLabels(
             ai_source: label.aiSource,
             ai_value: maskValue(label.aiValue),
             human_value: maskValue(label.humanValue),
-            // Hashed from the raw values, before masking, so a changed address still mismatches in the scorer.
-            value_hash: contactValueHash(
-              label.fieldPath,
-              label.aiValue,
-              label.humanValue,
-              contactSalt(label.sourceEventId),
-            ),
           })),
         });
       }

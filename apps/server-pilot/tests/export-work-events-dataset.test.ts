@@ -357,6 +357,11 @@ describe('work-event label export', () => {
       });
       expect(cases.find((row) => row.work_item_id === old)?.split).not.toBe('test');
       expect(later.some((row) => row.split === 'test')).toBe(false);
+
+      // Without --now the newest label is the clock, so the same labels give the same split on any day.
+      const { cases: anchored } = await exportLabels(db, { timeSplit: true });
+      expect(anchored.find((row) => row.work_item_id === recent)?.split).toBe('test');
+      expect(anchored.find((row) => row.work_item_id === old)?.split).not.toBe('test');
     });
   });
 
@@ -447,7 +452,7 @@ function goldenCase(
   } as GoldenRow;
 }
 
-describe('golden-set pinning and contact hashes', () => {
+describe('golden-set pinning and contact masking', () => {
   it('keeps a golden holdout thread in holdout and a golden dev thread in dev, and the rest on the hash split', async () => {
     await withIngestionDb(async ({ db }) => {
       const edit: Edit = {
@@ -636,7 +641,7 @@ describe('golden-set pinning and contact hashes', () => {
     });
   });
 
-  it('records the transport and a salted hash of each address and phone, taken before masking, and no raw value', async () => {
+  it('records the transport and masks each address and phone, with no raw value, hash or salt', async () => {
     await withIngestionDb(async ({ db }) => {
       const item = await seedItem(db, 'thread-contact');
       await addEvents(db, item, [
@@ -648,21 +653,15 @@ describe('golden-set pinning and contact hashes', () => {
       const [row] = cases;
       expect(row!.transport_id).toBe(TRANSPORT_ID);
       const email = row!.labels.find((label) => label.field_id === 'contact.email')!;
-      expect(email.human_value).toBe('[email]');
-      expect(email.value_hash).toEqual({
-        salt: expect.any(String),
-        ai: expect.any(String),
-        human: expect.any(String),
-      });
-      expect(email.value_hash!.ai).not.toBe(email.value_hash!.human);
+      expect(email).toMatchObject({ ai_value: '[email]', human_value: '[email]' });
       const phone = row!.labels.find((label) => label.field_id === 'contact.phone')!;
-      expect(phone.value_hash!.salt).not.toBe(email.value_hash!.salt);
-      expect(JSON.stringify(cases)).not.toMatch(/jane@hotel|jen@hotel|555 1234/i);
+      expect(phone).toMatchObject({ ai_value: '[phone]', human_value: '[phone]' });
+      expect(JSON.stringify(cases)).not.toMatch(/jane@hotel|jen@hotel|555 1234|value_hash|salt/i);
       expect(parseLabelCases(cases.map((c) => JSON.stringify(c)).join('\n'))).toHaveLength(1);
     });
   });
 
-  it('re-exporting unchanged labels writes the same file, and each label gets its own salt', async () => {
+  it('re-exporting unchanged labels writes the same file', async () => {
     await withIngestionDb(async ({ db, url }) => {
       const item = await seedItem(db, 'thread-stable-salt');
       await addEvents(db, item, [
@@ -688,11 +687,7 @@ describe('golden-set pinning and contact hashes', () => {
         expect(await main(['--out', join(dir, 'second.jsonl')], { DATABASE_URL: url })).toBe(0);
         const first = readFileSync(join(dir, 'first.jsonl'), 'utf8');
         expect(readFileSync(join(dir, 'second.jsonl'), 'utf8')).toBe(first);
-
-        const [row] = parseLabelCases(first);
-        const salts = row!.labels.map((label) => label.value_hash!.salt);
-        expect(salts).toHaveLength(2);
-        expect(new Set(salts).size).toBe(2);
+        expect(parseLabelCases(first)[0]!.labels).toHaveLength(2);
       } finally {
         log.mockRestore();
         rmSync(dir, { recursive: true, force: true });
