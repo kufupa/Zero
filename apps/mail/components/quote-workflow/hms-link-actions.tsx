@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 
 /**
  * The HMS handoff for one confirmation number: Copy link and Copy confirmation, with Open HMS as the plain link. Copy
@@ -80,6 +81,7 @@ export function HmsLinkActions({ confirmation }: { confirmation: string }) {
   const copy = async (target: CopyTarget, text: string) => {
     const copied = await copyText(text);
     setFeedback({ target, copied });
+    if (copied && target === 'number') trackPaneAction({ type: 'copy.confirmation' });
     if (copied) {
       toast.success(
         target === 'link'

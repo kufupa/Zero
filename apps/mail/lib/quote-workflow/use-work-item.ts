@@ -117,6 +117,25 @@ export function stayRowId(stayId: string): string {
   return `${stayId}_row`;
 }
 
+const CONTACT_PATHS = ['name', 'company', 'endClient', 'email', 'phone'].map((field) => `contact.${field}`);
+
+/**
+ * The extraction field paths the pane shows for these groups and the contact block. A group with no stored ref (a row
+ * she added) has no path. Only names are sent: the server reads each AI value and skips any field she edited.
+ */
+export function shownFieldPaths(refs: Refs, groups: StayGroupRequirement[]): string[] {
+  const paths: string[] = [];
+  for (const group of groups) {
+    const ref = refOf(refs, group);
+    if (!ref) continue;
+    const stay = `stays[${ref.stayId}]`;
+    paths.push(...datesAt(stay, group).map((event) => event.path));
+    const rowId = ref.rowId ?? stayRowId(ref.stayId);
+    if (STABLE_ID.test(rowId)) paths.push(...rowFieldsAt(`${stay}.rows[${rowId}]`, group).map((event) => event.path));
+  }
+  return [...paths, ...CONTACT_PATHS];
+}
+
 function sameValue(a: FieldEvent['value'] | undefined, b: FieldEvent['value']): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
@@ -199,6 +218,9 @@ export function useStoredWork(args: {
   const inFlight = useRef(new Map<string, Promise<void>>());
   // Sends that failed twice. Kept across mail changes until a retry or a newer edit to the same field.
   const failed = useRef(new Map<string, FieldSend>());
+  // Every save slot she edited on this screen. A save still pending, failed or retrying has not reached the server yet,
+  // so its field is never sent as an accept.
+  const edited = useRef(new Set<string>());
   const [saveFailed, setSaveFailed] = useState(false);
   // The work item whose translation is being asked for again, so "Translating…" shows for that mail only.
   const [translating, setTranslating] = useState<string | null>(null);
@@ -284,6 +306,7 @@ export function useStoredWork(args: {
   const schedule = useCallback(
     (path: string, workItemId: string, transportId: string | null, value: RecordFieldEventInput['value']) => {
       const key = saveKey(workItemId, path);
+      edited.current.add(key);
       const existing = pending.current.get(key);
       if (existing) clearTimeout(existing.timer);
       // A newer value for the field replaces one that failed to save.
@@ -395,6 +418,35 @@ export function useStoredWork(args: {
   );
 
   /**
+   * Called when she proceeds with the read (Get rates). The fields shown for these groups and the contact block go to the
+   * server as accepts (v5 B2). A field she edited here is never sent, even while its save is pending, failed or being
+   * retried, since the server has not seen that edit yet. The server skips any edit it has, so a repeat call adds nothing.
+   * It goes out after the saves in flight settle, so an edit she just made lands first. The list is checked again at that
+   * point, so an edit made while those saves were out is never accepted. A failed call is dropped: a missing accept only
+   * loses a label.
+   */
+  const acceptUnedited = useCallback(
+    (groups: StayGroupRequirement[]) => {
+      const accept = workItemsFromTrpc(trpcRef.current).acceptFields;
+      if (!accept || !readyWorkItemId || !readyRefs) return;
+      flushAll();
+      const workItemId = readyWorkItemId;
+      const shown = shownFieldPaths(readyRefs, groups);
+      const pinned = inMailbox(readyTransportId);
+      void Promise.allSettled(inFlight.current.values())
+        .then(() => {
+          // Every field she edited on this screen, including one still pending, failed or retrying, is left out.
+          const fieldPaths = shown.filter((path) => !edited.current.has(saveKey(workItemId, path)));
+          if (!fieldPaths.length) return;
+          const input = { workItemId, fieldPaths };
+          return pinned ? accept.mutate(input, pinned) : accept.mutate(input);
+        })
+        .catch(() => undefined);
+    },
+    [readyRefs, readyWorkItemId, readyTransportId, flushAll],
+  );
+
+  /**
    * Asks for the stored translation again. The answer replaces the stored translation on the pane, if the same mail is
    * still on screen. A call that fails leaves the translation as it was.
    */
@@ -418,11 +470,14 @@ export function useStoredWork(args: {
   return {
     pane,
     key,
+    /** The mailbox the shown read was looked up in, which owns its work item. Null while no read is shown. */
+    transportId: readyWorkItemId ? readyTransportId : null,
     /** How many times the person asked to read this mail again. A live read with a treat-as re-runs on it. */
     retryCount: retried,
     retry,
     recordGroups,
     recordContact,
+    acceptUnedited,
     retryTranslation,
     translationBusy: translating !== null && translating === readyWorkItemId,
     saveFailed,

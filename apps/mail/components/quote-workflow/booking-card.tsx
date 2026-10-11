@@ -9,6 +9,7 @@ import type {
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
 import { HmsLinkActions } from './hms-link-actions';
+import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import {
   commitOutcome,
   PANE_BOOKER_EMAIL_MAX,
@@ -160,7 +161,10 @@ function CopyButton({ label, roomIndex, value }: { label: string; roomIndex: num
         disabled={!value}
         aria-label={`${copied ? 'Copied' : 'Copy'} ${label} for room ${roomIndex}`}
         onClick={() => {
-          void writeClipboard(value).then((ok) => setStatus(ok ? 'copied' : 'failed'));
+          void writeClipboard(value).then((ok) => {
+            setStatus(ok ? 'copied' : 'failed');
+            if (ok) trackPaneAction({ type: 'copy.hms_line', kind: 'booking' });
+          });
         }}
         className="h-6 shrink-0 rounded-xs border border-[#cbd5e1] bg-white px-2 text-[11px] font-semibold text-[#0066cc] disabled:text-[#94a3b8]"
       >

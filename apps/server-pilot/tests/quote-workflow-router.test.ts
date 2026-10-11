@@ -5,9 +5,26 @@ import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
 import { readQuoteAttachments } from '../src/ai/quote-workflow-synced-selection.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
+import { getDb } from '../src/db/client.js';
+import { recordStaffNote } from '../src/ai/work-events.js';
+import { workItemIdForMail } from '../src/ai/work-items.js';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// The staff note is kept by a separate write. The route does not wait for it, so a test can hold that write open.
+vi.mock('../src/db/client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/db/client.js')>();
+  return { ...actual, getDb: vi.fn(actual.getDb) };
+});
+vi.mock('../src/ai/work-items.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ai/work-items.js')>();
+  return { ...actual, workItemIdForMail: vi.fn(actual.workItemIdForMail) };
+});
+vi.mock('../src/ai/work-events.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ai/work-events.js')>();
+  return { ...actual, recordStaffNote: vi.fn(actual.recordStaffNote) };
+});
 
 const enqueueHmsRead = vi.fn();
 
@@ -1192,6 +1209,43 @@ describe('quoteWorkflow.analyseSelection file cache', () => {
         arrivalDate: '2027-11-12',
         departureDate: '2027-11-14',
       });
+    }
+  });
+
+  it('answers without waiting for the staff note to be kept, and logs a note that fails to keep', async () => {
+    cacheLoaders.llmEnabled = () => false;
+    cacheLoaders.loadSyncedSelection = async () => ({
+      subject: 'Quote request',
+      bodyText: 'Please quote 2 adults 2027-11-12 to 2027-11-14.',
+      preceding: [],
+      attachments: [],
+    });
+    const request = {
+      internetMessageId: '<note-keep@x>',
+      storeId: 'store-1',
+      entryId: 'entry-1',
+      folderEntryId: 'folder-1',
+      staffNote: 'Arrival is now 2027-11-13',
+    };
+    // The writes are mocked, so the stub database is never queried.
+    vi.mocked(getDb).mockReturnValue({} as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      vi.mocked(workItemIdForMail).mockResolvedValueOnce('wi-note');
+      vi.mocked(recordStaffNote).mockImplementationOnce(() => new Promise(() => undefined));
+      expect(await mailboxCaller().quoteWorkflow.analyseSelection({ ...request, selectionEpoch: 31 })).toMatchObject({
+        status: 'ready',
+      });
+
+      vi.mocked(workItemIdForMail).mockResolvedValueOnce('wi-note');
+      vi.mocked(recordStaffNote).mockRejectedValueOnce(new Error('db down'));
+      expect(await mailboxCaller().quoteWorkflow.analyseSelection({ ...request, selectionEpoch: 32 })).toMatchObject({
+        status: 'ready',
+      });
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith('staff_note_not_kept', 'db down'));
+    } finally {
+      warn.mockRestore();
+      vi.mocked(getDb).mockRestore();
     }
   });
 

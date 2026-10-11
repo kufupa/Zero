@@ -356,6 +356,84 @@ describe('useStoredWork', () => {
     }
   });
 
+  it('never accepts a field she edited, while its first save is failing and waiting for the retry', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      mutate.mockRejectedValueOnce(new Error('offline'));
+      const acceptFields = vi.fn(async (_input: unknown, _opts?: unknown) => ({ accepted: 1 }));
+      const routes = { workItems: { ...trpc.workItems, acceptFields: { mutate: acceptFields } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(result.current.pane.state).toBe('ready');
+
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS);
+      });
+      expect(mutate).toHaveBeenCalledTimes(1);
+
+      act(() => result.current.acceptUnedited([G1, G2, G3]));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(acceptFields).toHaveBeenCalledTimes(1);
+      const { fieldPaths } = acceptFields.mock.calls[0]![0] as { fieldPaths: string[] };
+      expect(fieldPaths).not.toContain('stays[st-1].rows[rw-1].count');
+      expect(fieldPaths).toContain('stays[st-1].rows[rw-1].adults');
+      expect(fieldPaths).toContain('stays[st-1].rows[rw-2].count');
+      expect(fieldPaths).toContain('stays[st-2].requested.arrival');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never accepts a field she edits while the accept waits for a save in flight', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      // The first save stays in flight until the test lets it finish.
+      let finishFirstSave: () => void = () => undefined;
+      mutate.mockImplementationOnce(
+        () =>
+          new Promise<{ aiValue: null; value: null }>((resolve) => {
+            finishFirstSave = () => resolve({ aiValue: null, value: null });
+          }),
+      );
+      const acceptFields = vi.fn(async (_input: unknown, _opts?: unknown) => ({ accepted: 1 }));
+      const routes = { workItems: { ...trpc.workItems, acceptFields: { mutate: acceptFields } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(result.current.pane.state).toBe('ready');
+
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS);
+      });
+      expect(mutate).toHaveBeenCalledTimes(1);
+
+      // The accept waits for the save in flight. She edits the second row while it waits.
+      act(() => result.current.acceptUnedited([G1, G2, G3]));
+      act(() => result.current.recordGroups([G2], [{ ...G2, quantity: 3 }]));
+      await act(async () => {
+        finishFirstSave();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(acceptFields).toHaveBeenCalledTimes(1);
+      const { fieldPaths } = acceptFields.mock.calls[0]![0] as { fieldPaths: string[] };
+      expect(fieldPaths).not.toContain('stays[st-1].rows[rw-1].count');
+      expect(fieldPaths).not.toContain('stays[st-1].rows[rw-2].count');
+      expect(fieldPaths).toContain('stays[st-1].rows[rw-1].adults');
+      expect(fieldPaths).toContain('stays[st-2].requested.arrival');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('sends one field\'s edits in order, so a slow older save never lands after a newer one', async () => {
     const { trpc, mutate } = fakeTrpc(() => READY);
     const done: Array<() => void> = [];

@@ -4,6 +4,7 @@ import { getDb } from '../../db/client.js';
 import { WORK_ITEM_STATUSES } from '../../db/schema/work.js';
 import { retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
 import {
+  acceptUneditedFields,
   dismissWorkItem,
   listWorkItems,
   openStoredWork,
@@ -11,6 +12,12 @@ import {
   storedTranslation,
   storedWorkFor,
 } from '../../ai/work-items.js';
+import {
+  PANE_ACTION_BATCH_MAX,
+  PANE_ACTION_KINDS,
+  PANE_ACTION_TYPES,
+  recordPaneActions,
+} from '../../ai/work-events.js';
 import {
   dismissFollowUpDraft,
   followUpForMessage,
@@ -21,6 +28,17 @@ import { mailboxProcedure, router } from '../trpc.js';
 
 const internetMessageId = z.string().min(1).max(998);
 const followUpDraftId = z.string().min(1).max(200);
+
+// Pane action telemetry (B1): small enums and numbers only, and the type list is the allowlist. Field and approval
+// events never reach this route.
+const paneActionEvent = z
+  .object({
+    type: z.enum(PANE_ACTION_TYPES),
+    ms: z.number().int().min(0).max(86_400_000).optional(),
+    surface: z.enum(['outlook', 'web']).optional(),
+    kind: z.enum(PANE_ACTION_KINDS).optional(),
+  })
+  .strict();
 
 // Field edits and accept/reject only. approve and review have their own procedures (U25, U18), so they are not here.
 const fieldEventInput = z
@@ -99,6 +117,49 @@ export const workItemsRouter = router({
     }
     return { aiValue: result.aiValue, value: result.value };
   }),
+  /** One batch of pane actions from the Nava pane (B1), fire-and-forget. Refused when the item is in another transport. */
+  recordActions: mailboxProcedure
+    .input(
+      z
+        .object({
+          workItemId: z.string().uuid(),
+          events: z.array(paneActionEvent).min(1).max(PANE_ACTION_BATCH_MAX),
+        })
+        .strict(),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const result = await recordPaneActions(getDb(), {
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+        userId: ctx.sessionUser.id,
+        events: input.events,
+      });
+      if (result === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+      return { recorded: input.events.length };
+    }),
+  /**
+   * The fields the pane showed when a person proceeded with the read (B2). The server skips any field she edited and any
+   * with no AI value, so a repeat call adds nothing. Accepted fields log the AI value.
+   */
+  acceptFields: mailboxProcedure
+    .input(
+      z
+        .object({
+          workItemId: z.string().uuid(),
+          fieldPaths: z.array(z.string().min(1).max(200)).min(1).max(200),
+        })
+        .strict(),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const result = await acceptUneditedFields(getDb(), {
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+        userId: ctx.sessionUser.id,
+        fieldPaths: input.fieldPaths,
+      });
+      if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+      return { accepted: result.accepted };
+    }),
   /** Translates the read again (U16 Retry). Returns the translation the pane shows, or why it could not run. */
   retryTranslation: mailboxProcedure
     .input(z.object({ workItemId: z.string().uuid() }).strict())

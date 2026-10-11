@@ -1,6 +1,8 @@
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { workItemsFromTrpc, type NeedsYouRow } from '@/lib/quote-workflow/backend-bind';
+import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import { Notice, SecondaryButton } from '../pane-ui';
 import { Button } from '@/components/ui/button';
 
@@ -109,8 +111,13 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
         rows: prev.rows.filter((row) => row.id !== workItemId),
         notice: null,
       }));
+      // The dismiss goes out under the active mailbox, so its event belongs to that mailbox's copy of the item.
+      const owner = { workItemId, transportId: getMailCacheScope().activeTransportId };
       mutate({ workItemId })
-        .then(() => load())
+        .then(() => {
+          trackPaneAction({ type: 'item.dismissed' }, owner);
+          return load();
+        })
         .catch(() => {
           dismissed.current.delete(workItemId);
           if (mounted.current) {

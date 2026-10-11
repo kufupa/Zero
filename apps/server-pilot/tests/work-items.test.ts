@@ -1,5 +1,7 @@
 import { eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomUUID } from 'node:crypto';
+import postgres from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 import type { AttachmentRead } from '../src/ai/extraction/extract.js';
 import { EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
@@ -18,9 +20,12 @@ import {
   storedTranslation,
   storedWorkFor,
   validFieldValue,
+  workItemIdForMail,
 } from '../src/ai/work-items.js';
+import { maskStaffNote, recordStaffNote } from '../src/ai/work-events.js';
 import { HMS_JOB_PROMPT_VERSION, NOT_APPLICABLE_MODEL_ID } from '../src/ai/run-ledger.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
+import * as schema from '../src/db/schema/index.js';
 import { aiWorkflowRun, mailboxTransport, mailDraft, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { user } from '../src/db/schema/auth.js';
@@ -1472,5 +1477,205 @@ describe('follow-up route', () => {
       await expect(
         route.dismissFollowUp({ draftId: 'quote-followup:out-fu1' }),
       ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    }));
+});
+
+describe('pane telemetry and staff notes (v5 B1, B2)', () => {
+  it('writes an allowed batch as the session user, with only small enum and number values', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'tm1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'tm1');
+      const before = (await eventsFor(db, work.workItemId)).length;
+
+      expect(
+        await centurionCaller().workItems.recordActions({
+          workItemId: work.workItemId,
+          events: [
+            { type: 'pane.opened', surface: 'outlook' },
+            { type: 'hms.lookup.finished', ms: 4200 },
+            { type: 'copy.hms_line', kind: 'comment' },
+          ],
+        }),
+      ).toEqual({ recorded: 3 });
+
+      const logged = await eventsFor(db, work.workItemId);
+      expect(logged).toHaveLength(before + 3);
+      const actions = logged.filter((event) => ['pane.opened', 'hms.lookup.finished', 'copy.hms_line'].includes(event.type));
+      expect(actions.map((event) => event.type).sort()).toEqual(['copy.hms_line', 'hms.lookup.finished', 'pane.opened']);
+      expect(actions.every((event) => event.actorKind === 'user' && event.actorUserId === USER)).toBe(true);
+      expect(actions.find((event) => event.type === 'hms.lookup.finished')!.value).toEqual({ ms: 4200 });
+      expect(actions.find((event) => event.type === 'copy.hms_line')!.value).toEqual({ kind: 'comment' });
+      expect(actions.find((event) => event.type === 'pane.opened')!.value).toEqual({ surface: 'outlook' });
+    }));
+
+  it('refuses approval, field and unknown types, extra payload keys, and a batch over the cap', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'tm2');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'tm2');
+      const before = (await eventsFor(db, work.workItemId)).length;
+      const route = centurionCaller().workItems;
+
+      for (const type of ['approval.granted', 'approval.consumed', 'field.edit', 'field.accept', 'note.staff', 'nope']) {
+        await expect(
+          route.recordActions({ workItemId: work.workItemId, events: [{ type: type as never }] }),
+          type,
+        ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      }
+      await expect(
+        route.recordActions({ workItemId: work.workItemId, events: [{ type: 'pane.opened', text: 'Dear Sir' } as never] }),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+      const fiftyOne = Array.from({ length: 51 }, () => ({ type: 'pane.opened' as const }));
+      await expect(route.recordActions({ workItemId: work.workItemId, events: fiftyOne })).rejects.toMatchObject({
+        code: 'BAD_REQUEST',
+      });
+      expect(await eventsFor(db, work.workItemId)).toHaveLength(before);
+    }));
+
+  it('refuses a batch for an item in another transport, the same as a missing one', () =>
+    withDb(async (db) => {
+      await addOtherTransport(db);
+      const messageId = await seedMail(db, 'tm3');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'tm3');
+      const before = (await eventsFor(db, work.workItemId)).length;
+
+      await expect(
+        centurionCaller(OTHER).workItems.recordActions({ workItemId: work.workItemId, events: [{ type: 'pane.opened' }] }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      expect(await eventsFor(db, work.workItemId)).toHaveLength(before);
+    }));
+
+  it('masks emails, phone numbers, card numbers and security codes in a staff note, and caps its length', () => {
+    expect(
+      maskStaffNote('Mail jane.doe@example.com or call +27 82 555 1234 for the 4111 1111 1111 1111 card, CVV 123'),
+    ).toBe('Mail [email] or call [phone] for the [card ••••1111] card, CVV [code masked]');
+    // Dates and small counts are not phone numbers.
+    expect(maskStaffNote('Arrive 2027-11-13 for 3 rooms, 12-14 Nov')).toBe('Arrive 2027-11-13 for 3 rooms, 12-14 Nov');
+    expect(maskStaffNote('x'.repeat(2500))).toHaveLength(2000);
+  });
+
+  it('masks a phone number written next to a date, and keeps the date when the number has no spaces', () => {
+    expect(maskStaffNote('Call 0825551234 (2027-11-13)')).toBe('Call [phone] (2027-11-13)');
+    // A spaced number joined to a bracketed date is masked whole, so none of its digits stay.
+    expect(maskStaffNote('Call 082 555 1234 (2027-11-13)')).toBe('Call [phone])');
+    expect(maskStaffNote('Call 082 (555) 1234 on 13/11/2027')).toBe('Call [phone] on 13/11/2027');
+  });
+
+  it('keeps a masked staff note on the item once per text, and finds the item for the mail', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'tn1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'tn1');
+      expect(
+        await workItemIdForMail(db, { transportId: CENTURION, internetMessageId: '<tn1@example.com>' }),
+      ).toBe(work.workItemId);
+
+      const note = 'Call jane@example.com on +27 82 555 1234. Card 4111 1111 1111 1111';
+      await recordStaffNote(db, { workItemId: work.workItemId, userId: USER, note });
+      await recordStaffNote(db, { workItemId: work.workItemId, userId: USER, note });
+      const notes = (await eventsFor(db, work.workItemId)).filter((event) => event.type === 'note.staff');
+      expect(notes).toHaveLength(1);
+      expect(notes[0]!.value).toEqual({ text: 'Call [email] on [phone]. Card [card ••••1111]' });
+      expect(notes[0]!.actorUserId).toBe(USER);
+    }));
+
+  it('keeps one copy of a note when the same note is recorded by calls that overlap', () =>
+    withIngestionDb(async ({ db, url }) => {
+      const messageId = await seedMail(db, 'tn2');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'tn2');
+
+      // Four connections, so the calls really overlap in the database. The shared test pool holds one connection and
+      // runs them one after another, which would pass with the row lock removed.
+      const pool = postgres(url, { max: 4, onnotice: () => undefined });
+      const pooled = drizzle(pool, { schema });
+      try {
+        // Opens all four connections before the calls start, so they overlap from their first query.
+        await Promise.all([1, 2, 3, 4].map(() => pool`SELECT 1`));
+        const note = 'Hold the twin rooms for the 12th';
+        await Promise.all(
+          [1, 2, 3, 4].map(() => recordStaffNote(pooled, { workItemId: work.workItemId, userId: USER, note })),
+        );
+      } finally {
+        await pool.end();
+      }
+      const notes = (await eventsFor(db, work.workItemId)).filter((event) => event.type === 'note.staff');
+      expect(notes).toHaveLength(1);
+    }));
+
+  it('accepts unedited AI fields once, and never an edited, empty or unknown one', () =>
+    withDb(async (db) => {
+      await addOtherTransport(db);
+      const messageId = await seedMail(db, 'ta1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'ta1');
+      const arrival = `stays[${STAY_ONE}].requested.arrival`;
+      const departure = `stays[${STAY_ONE}].requested.departure`;
+      const count = `stays[${STAY_TWO}].rows[${ROW_STAY_TWO}].count`;
+      await centurionCaller().workItems.recordEvent({
+        workItemId: work.workItemId,
+        type: 'field.edit',
+        fieldPath: count,
+        value: 5,
+      });
+      const paths = [arrival, departure, count, 'contact.email', `stays[s_missing].requested.arrival`];
+
+      await expect(
+        centurionCaller(OTHER).workItems.acceptFields({ workItemId: work.workItemId, fieldPaths: paths }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      expect(await centurionCaller().workItems.acceptFields({ workItemId: work.workItemId, fieldPaths: paths })).toEqual({
+        accepted: 2,
+      });
+      expect(await centurionCaller().workItems.acceptFields({ workItemId: work.workItemId, fieldPaths: paths })).toEqual({
+        accepted: 0,
+      });
+
+      const accepts = (await eventsFor(db, work.workItemId)).filter((event) => event.type === 'field.accept');
+      expect(accepts.map((event) => event.fieldPath).sort()).toEqual([arrival, departure].sort());
+      expect(accepts.find((event) => event.fieldPath === arrival)).toMatchObject({
+        actorUserId: USER,
+        aiValue: '2027-10-26',
+        value: '2027-10-26',
+        aiSource: 'extract-v1',
+      });
+    }));
+
+  it('an accepted AI value reopens as the read, never as a staff correction', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'ta2');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'ta2');
+      const arrival = `stays[${STAY_ONE}].requested.arrival`;
+      const count = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`;
+      expect(
+        await centurionCaller().workItems.acceptFields({ workItemId: work.workItemId, fieldPaths: [arrival, count] }),
+      ).toEqual({ accepted: 2 });
+
+      const reopened = await readyWork(db, 'ta2');
+      expect(reopened.analysis.groups[0]).toMatchObject({ arrivalDate: '2027-10-26', quantity: 2 });
+      expect(reopened.analysis.groups[0]!.fields).toMatchObject({ arrivalDate: 'extracted', quantity: 'extracted' });
+      const [stored] = await db.select({ state: workItem.state }).from(workItem).where(eq(workItem.id, work.workItemId));
+      expect(stored!.state).toEqual({});
+    }));
+
+  it('an accept after an edit reopens as the read again, not as her correction', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'ta3');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'ta3');
+      const base = { transportId: CENTURION, workItemId: work.workItemId, userId: USER };
+      const arrival = `stays[${STAY_ONE}].requested.arrival`;
+      await recordFieldEvent(db, { ...base, type: 'field.edit', fieldPath: arrival, value: '2027-10-25' });
+
+      expect(await recordFieldEvent(db, { ...base, type: 'field.accept', fieldPath: arrival })).toEqual({
+        status: 'recorded',
+        aiValue: '2027-10-26',
+        value: '2027-10-26',
+      });
+      const reopened = await readyWork(db, 'ta3');
+      expect(reopened.analysis.groups[0]!.arrivalDate).toBe('2027-10-26');
+      expect(reopened.analysis.groups[0]!.fields.arrivalDate).toBe('extracted');
     }));
 });
