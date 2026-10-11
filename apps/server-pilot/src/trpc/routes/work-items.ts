@@ -15,6 +15,7 @@ import {
 import {
   PANE_ACTION_BATCH_MAX,
   PANE_ACTION_BLOCKS,
+  PANE_ACTION_FIELDS,
   PANE_ACTION_KINDS,
   PANE_ACTION_TYPES,
   recordPaneActions,
@@ -39,8 +40,17 @@ const paneActionEvent = z
     surface: z.enum(['outlook', 'web']).optional(),
     kind: z.enum(PANE_ACTION_KINDS).optional(),
     block: z.enum(PANE_ACTION_BLOCKS).optional(),
+    field: z.enum(PANE_ACTION_FIELDS).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((event, context) => {
+    if (event.type === 'copy.contact' && event.field === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['field'], message: 'Field is required for contact copy.' });
+    }
+    if (event.type !== 'copy.contact' && event.field !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['field'], message: 'Field is only for contact copy.' });
+    }
+  });
 
 // Field edits and accept/reject only. approve and review have their own procedures (U25, U18), so they are not here.
 const fieldEventInput = z

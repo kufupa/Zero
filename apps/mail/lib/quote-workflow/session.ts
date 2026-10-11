@@ -810,6 +810,45 @@ function insertAfterStay(
   return [...groups.slice(0, last + 1), ...rows, ...groups.slice(last + 1)];
 }
 
+/** A stay total is a row default only while one uncorrected room row remains. */
+function syncTotalRoomsForStay(
+  session: QuoteSession,
+  groups: StayGroupRequirement[],
+  stayId: string,
+): StayGroupRequirement[] {
+  const totalRooms = session.analysis?.requestedRoomsByStay?.[stayId];
+  if (totalRooms === undefined) return groups;
+
+  const rows = groups.filter((group) => stayIdOf(group) === stayId);
+  if (rows.length === 1) {
+    const row = rows[0]!;
+    if (
+      row.quantity != null ||
+      row.fields.quantity === 'staff_corrected' ||
+      row.fields.quantity === 'extracted'
+    ) {
+      return groups;
+    }
+    return groups.map((group) =>
+      group.id === row.id
+        ? { ...group, quantity: totalRooms, fields: { ...group.fields, quantity: 'defaulted' } }
+        : group,
+    );
+  }
+
+  const defaultedRows = new Set(
+    rows
+      .filter((row) => row.fields.quantity === 'defaulted' && row.quantity === totalRooms)
+      .map((row) => row.id),
+  );
+  if (!defaultedRows.size) return groups;
+  return groups.map((group) =>
+    defaultedRows.has(group.id)
+      ? { ...group, quantity: undefined, fields: { ...group.fields, quantity: 'missing' } }
+      : group,
+  );
+}
+
 /** A new row with no room type, rooms or adults yet. The steppers show a dash until staff enter them. */
 function blankRow(
   id: string,
@@ -1416,15 +1455,36 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         departureDate: template.departureDate,
         board: template.board,
       });
-      const groups = insertAfterStay(pinStay(session.groups, action.stayId), action.stayId, [row]);
+      const groups = syncTotalRoomsForStay(
+        session,
+        insertAfterStay(pinStay(session.groups, action.stayId), action.stayId, [row]),
+        action.stayId,
+      );
       return editStays(session, groups, new Set([stayKeyForGroup(template)]));
     }
     case 'duplicate_row': {
       const source = session.groups.find((group) => group.id === action.groupId);
       if (!source) return session;
       const stayId = stayIdOf(source);
-      const copy = copyRow(source, `r_${action.token}`, stayId);
-      const groups = insertAfterStay(pinStay(session.groups, stayId), stayId, [copy]);
+      const totalRooms = session.analysis?.requestedRoomsByStay?.[stayId];
+      const sourceRows = session.groups.filter((group) => stayIdOf(group) === stayId);
+      const copiedTotalDefault =
+        sourceRows.length === 1 &&
+        totalRooms !== undefined &&
+        source.quantity === totalRooms &&
+        source.fields.quantity === 'defaulted';
+      const copySource = copiedTotalDefault
+        ? { ...source, quantity: undefined, fields: { ...source.fields, quantity: 'missing' as const } }
+        : source;
+      const copied = copyRow(copySource, `r_${action.token}`, stayId);
+      const copy = copiedTotalDefault
+        ? { ...copied, fields: { ...copied.fields, quantity: 'missing' as const } }
+        : copied;
+      const groups = syncTotalRoomsForStay(
+        session,
+        insertAfterStay(pinStay(session.groups, stayId), stayId, [copy]),
+        stayId,
+      );
       return editStays(withDinnerCopies(session, [[source.id, copy.id]]), groups, new Set([stayKeyForGroup(source)]));
     }
     case 'remove_row': {
@@ -1433,7 +1493,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const stayId = stayIdOf(source);
       // A stay keeps at least one row. Its last row goes with the whole stay, which Undo can bring back.
       if (session.groups.filter((group) => stayIdOf(group) === stayId).length < 2) return session;
-      const groups = pinStay(session.groups, stayId).filter((group) => group.id !== action.groupId);
+      const groups = syncTotalRoomsForStay(
+        session,
+        pinStay(session.groups, stayId).filter((group) => group.id !== action.groupId),
+        stayId,
+      );
       return editStays(session, groups, new Set([stayKeyForGroup(source)]));
     }
     case 'duplicate_stay': {

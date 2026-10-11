@@ -339,7 +339,11 @@ function RoomSave({
         <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
           {`Booked in HMS – confirmation ${commit.confirmationNumber}`}
         </p>
-        <HmsLinkActions confirmation={commit.confirmationNumber} />
+        <HmsLinkActions
+          confirmation={commit.confirmationNumber}
+          guestSurname={stay?.lastName}
+          arrival={stay?.arrival}
+        />
         {commit.runId && savedShot ? (
           <PaneScreenshot
             caption="See what Nava saved in HMS"

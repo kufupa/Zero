@@ -7,7 +7,7 @@ import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-p
 import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession } from '@/lib/quote-workflow/session';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
 import { setMailCacheScope, transportForCall } from '@/lib/mail/mail-cache-scope';
-import type { StayGroupRequirement } from '@/lib/quote-workflow/types';
+import type { QuoteAnalysis, QuoteSession, StayGroupRequirement } from '@/lib/quote-workflow/types';
 import {
   fieldEventsBetween,
   STORED_LOOKUP_TIMEOUT_MS,
@@ -179,6 +179,73 @@ describe('fieldEventsBetween', () => {
   it('logs nothing for a row with no stable id, such as the blank stay while Nava reads', () => {
     const draft = row(DRAFT_GROUP_ID, 'd:unknown:unknown');
     expect(fieldEventsBetween(READY.refs, [draft], [{ ...draft, arrivalDate: '2026-12-01' }])).toEqual([]);
+  });
+
+  describe('a stay total on one row (the default count)', () => {
+    // The stored read gave the stay 6 rooms and no count for its one row, so the row's count is the total by default.
+    const TOTAL_ROW = row('g1', 'st-1', { quantity: 6, fields: { quantity: 'defaulted' } });
+    function withTotal(groups: StayGroupRequirement[]): QuoteSession {
+      const analysis = { ...ANALYSIS, requestedRoomsByStay: { 'st-1': 6 } } as unknown as QuoteAnalysis;
+      return { ...initialQuoteSession(), groups, analysis };
+    }
+
+    it('saves no count when adding a row moves the total off the row', () => {
+      const session = withTotal([TOTAL_ROW]);
+      const added = reduceQuoteSession(session, { type: 'add_row', stayId: 'st-1', token: 'ab12' });
+      expect(fieldEventsBetween(READY.refs, session.groups, added.groups)).toEqual([
+        { path: 'stays[st-1].rows[r_ab12].removed', value: null },
+        { path: 'stays[st-1].rows[r_ab12].childAges', value: [] },
+        { path: 'stays[st-1].rows[r_ab12].board', value: 'bb' },
+      ]);
+    });
+
+    it('saves no count when duplicating the row moves the total off the original', () => {
+      const session = withTotal([TOTAL_ROW]);
+      const copied = reduceQuoteSession(session, { type: 'duplicate_row', groupId: 'g1', token: 'ef56' });
+      expect(fieldEventsBetween(READY.refs, session.groups, copied.groups)).toEqual([
+        { path: 'stays[st-1].rows[r_ef56].removed', value: null },
+        { path: 'stays[st-1].rows[r_ef56].adults', value: 2 },
+        { path: 'stays[st-1].rows[r_ef56].childAges', value: [] },
+        { path: 'stays[st-1].rows[r_ef56].board', value: 'bb' },
+      ]);
+    });
+
+    it('saves no count when removing the extra row puts the total back on the row left, and removing is all that is saved', () => {
+      const session = withTotal([TOTAL_ROW]);
+      const added = reduceQuoteSession(session, { type: 'add_row', stayId: 'st-1', token: 'ab12' });
+      const removed = reduceQuoteSession(added, { type: 'remove_row', groupId: 'r_ab12' });
+      expect(removed.groups.find((group) => group.id === 'g1')).toMatchObject({
+        quantity: 6,
+        fields: { quantity: 'defaulted' },
+      });
+      expect(fieldEventsBetween(READY.refs, added.groups, removed.groups)).toEqual([
+        { path: 'stays[st-1].rows[r_ab12].removed', value: true },
+      ]);
+    });
+
+    it('saves no count when she adds a row again after the total came back, so the total moves off the row', () => {
+      const session = withTotal([TOTAL_ROW]);
+      const added = reduceQuoteSession(session, { type: 'add_row', stayId: 'st-1', token: 'ab12' });
+      const removed = reduceQuoteSession(added, { type: 'remove_row', groupId: 'r_ab12' });
+      const again = reduceQuoteSession(removed, { type: 'add_row', stayId: 'st-1', token: 'cd34' });
+      expect(fieldEventsBetween(READY.refs, removed.groups, again.groups)).toEqual([
+        { path: 'stays[st-1].rows[r_cd34].removed', value: null },
+        { path: 'stays[st-1].rows[r_cd34].childAges', value: [] },
+        { path: 'stays[st-1].rows[r_cd34].board', value: 'bb' },
+      ]);
+    });
+
+    it('saves the count she confirms at the same number, and the count she clears', () => {
+      const session = withTotal([TOTAL_ROW]);
+      const confirmed = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { quantity: 6 } });
+      expect(fieldEventsBetween(READY.refs, session.groups, confirmed.groups)).toEqual([
+        { path: 'stays[st-1].rows[rw-1].count', value: 6 },
+      ]);
+      const cleared = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { quantity: undefined } });
+      expect(fieldEventsBetween(READY.refs, session.groups, cleared.groups)).toEqual([
+        { path: 'stays[st-1].rows[rw-1].count', value: null },
+      ]);
+    });
   });
 });
 

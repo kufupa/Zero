@@ -60,6 +60,7 @@ export function StayCard({
   rows,
   index,
   stayCount,
+  requestedRoomsTotal,
   onPatch,
   onStayAction,
   evidence,
@@ -69,6 +70,8 @@ export function StayCard({
   index: number;
   /** A heading names each stay only when the request has more than one. */
   stayCount: number;
+  /** A stay-level total that must not be split across its room rows. */
+  requestedRoomsTotal?: number;
   onPatch?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onStayAction?: (action: StayEditAction) => void;
   evidence?: Array<{ field: string; quote: string; source?: 'staff_note' }>;
@@ -90,6 +93,11 @@ export function StayCard({
           <LinkButton onClick={() => onStayAction?.({ type: 'remove_stay', stayId })}>Remove stay</LinkButton>
         </div>
       </div>
+      {requestedRoomsTotal !== undefined && rows.length > 1 ? (
+        <p className="text-[11px] font-medium text-[#475569]">
+          {requestedRoomsTotal} rooms requested in total
+        </p>
+      ) : null}
       <Field label="Dates of stay" required>
         <StayDateRange
           arrival={first?.arrivalDate ?? ''}

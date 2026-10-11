@@ -34,13 +34,17 @@ export function ApproveCard({
   workItemId,
   writesEnabled,
   confirmation,
+  guestSurname,
+  arrival,
   requireStoredWrite = false,
 }: {
   client: HmsApprovalClient | null;
   workItemId: string;
   writesEnabled: boolean;
-  /** The HMS confirmation number, for the Copy link and Copy confirmation handoff. */
+  /** HMS search details copied beside the confirmation number. */
   confirmation: string | null;
+  guestSurname?: string | null;
+  arrival?: string | null;
   /**
    * True on mail that is not an amend or cancel. The card then shows only once the work item holds an HMS write (an
    * action form such as attach_document, or a write run), so other items never get write controls.
@@ -50,7 +54,7 @@ export function ApproveCard({
   if (!client) return null;
   if (!writesEnabled) {
     return (
-      <WriteFrame confirmation={confirmation}>
+      <WriteFrame confirmation={confirmation} guestSurname={guestSurname} arrival={arrival}>
         <p className={writeClasses.note}>{PANE_SAVE_LAB_GUARD_COPY}</p>
       </WriteFrame>
     );
@@ -60,6 +64,8 @@ export function ApproveCard({
       client={client}
       workItemId={workItemId}
       confirmation={confirmation}
+      guestSurname={guestSurname}
+      arrival={arrival}
       requireStoredWrite={requireStoredWrite}
     />
   );
@@ -126,11 +132,15 @@ function LiveWriteCard({
   client,
   workItemId,
   confirmation,
+  guestSurname,
+  arrival,
   requireStoredWrite,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   confirmation: string | null;
+  guestSurname?: string | null;
+  arrival?: string | null;
   requireStoredWrite: boolean;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId, requireStoredWrite);
@@ -146,7 +156,7 @@ function LiveWriteCard({
   );
   const formConfirmation = typeof view?.form.confirmation === 'string' ? view.form.confirmation : null;
   return (
-    <WriteFrame confirmation={confirmation ?? formConfirmation}>
+    <WriteFrame confirmation={confirmation ?? formConfirmation} guestSurname={guestSurname} arrival={arrival}>
       {view ? (
         <>
           {/* A failed re-read leaves these values possibly out of date: say so, and offer the read again. */}
@@ -166,9 +176,13 @@ function LiveWriteCard({
 
 function WriteFrame({
   confirmation,
+  guestSurname,
+  arrival,
   children,
 }: {
   confirmation: string | null;
+  guestSurname?: string | null;
+  arrival?: string | null;
   children: ReactNode;
 }) {
   const titleId = useId();
@@ -178,7 +192,9 @@ function WriteFrame({
         <h3 id={titleId} className="text-[13px] font-semibold text-[#1e293b]">
           {HMS_WRITE_COPY.heading}
         </h3>
-        {confirmation ? <HmsLinkActions confirmation={confirmation} /> : null}
+        {confirmation ? (
+          <HmsLinkActions confirmation={confirmation} guestSurname={guestSurname} arrival={arrival} />
+        ) : null}
       </div>
       {children}
     </section>

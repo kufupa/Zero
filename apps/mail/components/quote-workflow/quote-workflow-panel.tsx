@@ -1129,6 +1129,7 @@ export function QuoteWorkflowPanel({
               rows={stay.rows}
               index={index}
               stayCount={stays.length}
+              requestedRoomsTotal={session.analysis?.requestedRoomsByStay?.[stay.id]}
               onPatch={onPatchGroup}
               onStayAction={onStayAction}
               evidence={session.analysis?.luna?.evidence}

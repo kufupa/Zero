@@ -2465,6 +2465,51 @@ describe('stay edits: rows, stays and their rates', () => {
     expect(rowRoomCode(added!)).toBeNull();
   });
 
+  it.each(['add_row', 'duplicate_row'] as const)(
+    'moves a single-row total to stay level when %s adds another room row',
+    (actionType) => {
+      const source = quoteAnalysis.groups[0]!;
+      const analysis: QuoteAnalysis = {
+        ...quoteAnalysis,
+        requestedRoomsByStay: { g1: 6 },
+        groups: [{ ...source, stayId: 'g1', quantity: 6, fields: { ...source.fields, quantity: 'defaulted' } }],
+      };
+      const ready = reduceQuoteSession(
+        { ...initialQuoteSession(), binding: bind() },
+        { type: 'analysis_ready', analysis },
+      );
+
+      const after =
+        actionType === 'add_row'
+          ? reduceQuoteSession(ready, { type: 'add_row', stayId: stayIdOf(ready.groups[0]!), token: 'more' })
+          : reduceQuoteSession(ready, { type: 'duplicate_row', groupId: ready.groups[0]!.id, token: 'more' });
+
+      expect(after.groups.map((group) => group.quantity ?? null)).toEqual([null, null]);
+      expect(after.groups[0]?.fields.quantity).toBe('missing');
+      if (actionType === 'duplicate_row') expect(after.groups[1]?.fields.quantity).toBe('missing');
+      expect(after.analysis?.requestedRoomsByStay).toEqual({ g1: 6 });
+    },
+  );
+
+  it('restores a one-row total after the added row is removed', () => {
+    const source = quoteAnalysis.groups[0]!;
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      requestedRoomsByStay: { g1: 6 },
+      groups: [{ ...source, stayId: 'g1', quantity: 6, fields: { ...source.fields, quantity: 'defaulted' } }],
+    };
+    const ready = reduceQuoteSession(
+      { ...initialQuoteSession(), binding: bind() },
+      { type: 'analysis_ready', analysis },
+    );
+    const withExtraRow = reduceQuoteSession(ready, { type: 'add_row', stayId: 'g1', token: 'more' });
+
+    const backToOne = reduceQuoteSession(withExtraRow, { type: 'remove_row', groupId: 'r_more' });
+
+    expect(backToOne.groups).toHaveLength(1);
+    expect(backToOne.groups[0]).toMatchObject({ quantity: 6, fields: { quantity: 'defaulted' } });
+  });
+
   it('a stay keeps its last room, and add stay makes an undated stay', () => {
     const s = ratedSession([row('a1', dateA), row('b1', dateB), row('b2', dateB)]);
     expect(reduceQuoteSession(s, { type: 'remove_row', groupId: 'a1' })).toBe(s);
