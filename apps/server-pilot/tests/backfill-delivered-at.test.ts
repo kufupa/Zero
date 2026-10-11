@@ -23,21 +23,22 @@ describe('backfill-delivered-at', () => {
     expect(() => parseDeliveredAtArgs(['--unknown'])).toThrow();
   });
 
-  it('dry-runs without writes, stamps only open non-Outlook POP3 rows, merges provenance, and is idempotent', () =>
+  it('stamps POP3 rows in open-item threads, skips closed and Outlook rows, and is idempotent', () =>
     withIngestionDb(async ({ db: rawDb }) => {
       const db = rawDb;
 
       async function addRow(
         key: string,
         opts: {
-          status: 'needs_you' | 'review' | 'done';
+          threadId?: string;
+          status?: 'needs_you' | 'review' | 'done';
           kind?: 'quote' | 'spam';
           pop3Uidl?: string | null;
           rawMimeS3Key?: string | null;
           sourceProvenance?: Record<string, unknown> | null;
         },
-      ): Promise<{ messageId: string; workItemId: string }> {
-        const threadId = `thread-delivered-at-backfill-${key}`;
+      ): Promise<{ messageId: string; workItemId: string | null; threadId: string }> {
+        const threadId = opts.threadId ?? `thread-delivered-at-backfill-${key}`;
         const messageId = `msg-delivered-at-backfill-${key}`;
         const workItemId = randomUUID();
         await seedInboxThread(db, {
@@ -45,6 +46,7 @@ describe('backfill-delivered-at', () => {
           transportId: TRANSPORT,
           transportEmail: MAILBOX,
           messageId,
+          messageIdHeader: `${messageId}@example.test`,
           subject: 'Delivery backfill fixture',
         });
         await db.update(message).set({
@@ -53,30 +55,36 @@ describe('backfill-delivered-at', () => {
           rawMimeS3Key: opts.rawMimeS3Key ?? null,
           sourceProvenance: opts.sourceProvenance ?? null,
         }).where(eq(message.id, messageId));
-        await db.insert(workItem).values({
-          id: workItemId,
-          transportId: TRANSPORT,
-          threadId,
-          sourceMessageId: messageId,
-          kind: opts.kind ?? 'quote',
-          status: opts.status,
-        });
-        return { messageId, workItemId };
+        if (opts.status !== undefined) {
+          await db.insert(workItem).values({
+            id: workItemId,
+            transportId: TRANSPORT,
+            threadId,
+            sourceMessageId: messageId,
+            kind: opts.kind ?? 'quote',
+            status: opts.status,
+          });
+        }
+        return { messageId, workItemId: opts.status === undefined ? null : workItemId, threadId };
       }
 
       const primary = await addRow('primary', {
         status: 'needs_you',
         sourceProvenance: { source: 'pop3', attention: 'AMBIGUOUS_IDENTITY' },
       });
+      const sibling = await addRow('sibling', {
+        threadId: primary.threadId,
+        sourceProvenance: { source: 'pop3', position: 'sibling' },
+      });
+      const outlookSibling = await addRow('outlook-sibling', {
+        threadId: primary.threadId,
+        sourceProvenance: { canonicalContentVersion: 'fixture-v1' },
+      });
       const reviewed = await addRow('reviewed', {
         status: 'review',
         rawMimeS3Key: 'raw-mime-fixture/reviewed.eml',
       });
-      await addRow('outlook', {
-        status: 'needs_you',
-        sourceProvenance: { canonicalContentVersion: 'fixture-v1' },
-      });
-      await addRow('done', { status: 'done' });
+      const noOpenWorkItem = await addRow('no-open-work-item', { status: 'done' });
       await addRow('not-pop3', { status: 'needs_you', pop3Uidl: null });
       await addRow('already-stamped', {
         status: 'needs_you',
@@ -97,15 +105,16 @@ describe('backfill-delivered-at', () => {
       const dryRun = await runDeliveredAtBackfill({ db, apply: false, readRawMimePrefix });
       expect(dryRun).toEqual({
         apply: false,
-        candidates: 2,
-        planned: 2,
+        candidates: 3,
+        planned: 3,
         stamped: 0,
         skippedMissingRawMime: 0,
         skippedMissingReceived: 0,
-        messageIds: [primary.messageId, reviewed.messageId].sort(),
+        messageIds: [primary.messageId, sibling.messageId, reviewed.messageId].sort(),
       });
       expect(readKeys.sort()).toEqual([
         'raw-mime/ingest-nava-legacy/uidl-primary.eml',
+        'raw-mime/ingest-nava-legacy/uidl-sibling.eml',
         'raw-mime-fixture/reviewed.eml',
       ].sort());
       expect(
@@ -116,8 +125,8 @@ describe('backfill-delivered-at', () => {
 
       readKeys.length = 0;
       const applied = await runDeliveredAtBackfill({ db, apply: true, readRawMimePrefix });
-      expect(applied).toEqual({ ...dryRun, apply: true, stamped: 2 });
-      expect(readKeys).toHaveLength(2);
+      expect(applied).toEqual({ ...dryRun, apply: true, stamped: 3 });
+      expect(readKeys).toHaveLength(3);
       expect(
         await db.select({ sourceProvenance: message.sourceProvenance }).from(message)
           .where(eq(message.id, primary.messageId)),
@@ -128,9 +137,28 @@ describe('backfill-delivered-at', () => {
           deliveredAt: '2026-10-06T10:00:00.000Z',
         },
       }]);
+      expect(
+        await db.select({ sourceProvenance: message.sourceProvenance }).from(message)
+          .where(eq(message.id, sibling.messageId)),
+      ).toEqual([{
+        sourceProvenance: {
+          source: 'pop3',
+          position: 'sibling',
+          deliveredAt: '2026-10-06T10:00:00.000Z',
+        },
+      }]);
+      expect(
+        await db.select({ sourceProvenance: message.sourceProvenance }).from(message)
+          .where(eq(message.id, outlookSibling.messageId)),
+      ).toEqual([{ sourceProvenance: { canonicalContentVersion: 'fixture-v1' } }]);
+      expect(
+        await db.select({ sourceProvenance: message.sourceProvenance }).from(message)
+          .where(eq(message.id, noOpenWorkItem.messageId)),
+      ).toEqual([{ sourceProvenance: null }]);
       const auditRows = await db.select({ workItemId: workEvent.workItemId, type: workEvent.type })
         .from(workEvent);
-      expect(auditRows).toHaveLength(2);
+      expect(auditRows).toHaveLength(3);
+      expect(auditRows.filter((row) => row.workItemId === primary.workItemId)).toHaveLength(2);
       expect(auditRows).toEqual(expect.arrayContaining([
         { workItemId: primary.workItemId, type: 'source.delivered_at.backfilled' },
         { workItemId: reviewed.workItemId, type: 'source.delivered_at.backfilled' },
@@ -148,6 +176,6 @@ describe('backfill-delivered-at', () => {
         messageIds: [],
       });
       expect(readKeys).toHaveLength(0);
-      expect(await db.select().from(workEvent)).toHaveLength(2);
+      expect(await db.select().from(workEvent)).toHaveLength(3);
     }));
 });
