@@ -61,21 +61,20 @@ export function hmsJobLabel(view: HmsJobView | null, queuing: boolean): string |
   }
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-/**
- * A dated snapshot's as-of stamp in local time: HH:MM when it is from the same day as `now`, otherwise "D Mon HH:MM", so
- * an old snapshot never reads as current. Null when the stamp is not a date.
- */
-export function formatAsOfStamp(asOf: string, now: Date = new Date()): string | null {
+/** A dated snapshot age that never appears to come from the future. */
+export function formatAsOfAgo(asOf: string, now: Date = new Date()): string | null {
   const date = new Date(asOf);
   if (Number.isNaN(date.getTime())) return null;
-  const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate();
-  return sameDay ? time : `${date.getDate()} ${MONTHS[date.getMonth()]} ${time}`;
+  const seconds = Math.floor(Math.max(0, now.getTime() - date.getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`;
+  const months = Math.floor(days / 30);
+  return `${months} month${months === 1 ? '' : 's'} ago`;
 }
 
 /**
@@ -87,13 +86,40 @@ export function HmsJobStatusLine({
   queuing,
   detail,
   onRetry,
+  statusFailed = false,
+  queueFailed = false,
+  failureMessage = 'Could not check for an existing HMS lookup.',
+  queueFailureMessage = 'Could not queue the HMS lookup.',
 }: {
   view: HmsJobView | null;
   queuing: boolean;
   /** Says what is running, such as "Nava is looking up the booking in HMS…". */
   detail: string;
   onRetry: () => void;
+  statusFailed?: boolean;
+  queueFailed?: boolean;
+  failureMessage?: string;
+  queueFailureMessage?: string;
 }) {
+  if (statusFailed || queueFailed) {
+    return (
+      <div
+        role="alert"
+        data-testid="hms-job-status"
+        data-state="failed"
+        className="flex items-center justify-between gap-2 rounded-xs border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+      >
+        <span>{queueFailed ? queueFailureMessage : failureMessage}</span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-sm border border-red-300 bg-white px-2.5 py-1 text-[11.5px] font-medium text-red-700"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
   const label = hmsJobLabel(view, queuing);
   if (!label) return null;
   if (label === 'Failed') {
@@ -129,13 +155,13 @@ export function HmsJobStatusLine({
   );
 }
 
-/** "As of HH:MM" under a dated HMS snapshot. Renders nothing without a stamp. */
+/** "Looked up in HMS <time ago>" under a dated result. Renders nothing without a valid stamp. */
 export function HmsAsOf({ asOf }: { asOf: string | null }) {
-  const stamp = asOf ? formatAsOfStamp(asOf) : null;
-  if (!stamp) return null;
+  const ago = asOf ? formatAsOfAgo(asOf) : null;
+  if (!ago) return null;
   return (
     <p data-testid="hms-as-of" className="text-[10.5px] text-[#64748b]">
-      {`As of ${stamp}`}
+      {`Looked up in HMS ${ago}`}
     </p>
   );
 }

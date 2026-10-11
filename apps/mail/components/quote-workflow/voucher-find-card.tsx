@@ -5,7 +5,6 @@ import {
   amendFindClientFromTrpc,
   formatStayDate,
   hmsJobTransport,
-  isSettled,
   noSearchMatchCopy,
   searchRequestFor,
   searchRunFromJob,
@@ -14,6 +13,7 @@ import {
 } from '@/lib/quote-workflow/amend-find';
 import {
   canSearchVoucher,
+  copyForHmsText,
   VOUCHER_COPY,
   voucherConflictLines,
   voucherFindClientFromTrpc,
@@ -24,19 +24,22 @@ import { downloadAttachmentViaBlob, type AttachmentAccessInput } from '@/lib/att
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Notice, SecondaryButton, Section } from '@/components/nava-pane/pane-ui';
-import { HmsLinkActions } from './hms-link-actions';
+import { copyText, hmsLandingUrl, HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
 
 const captionClass = 'text-[11px] text-[#64748b]';
 const valueClass = 'text-[12.5px] font-semibold text-[#1e293b]';
 const infoNoteClass = 'text-[11.5px] text-[#334155]';
 
+function normalizedSurname(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'failed';
 
 /**
  * Find the booking for voucher or proof-of-payment mail. Renders nothing unless the server says this email is a voucher.
- * The HMS search is a persisted job, queued only when staff press the button, because a search takes about a minute of
- * the shared HMS session.
+ * It resumes an existing guest search first, and queues one on open only when the voucher's guest and arrival are clear.
  */
 export function VoucherFindCard({
   internetMessageId,
@@ -58,8 +61,6 @@ export function VoucherFindCard({
   const jobClient = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
   const [save, setSave] = useState<SaveStatus>('idle');
-  // A search the form refused before queueing. It shows in place of a run, for the email it was made on.
-  const [refused, setRefused] = useState<{ scope: string | null; message: string } | null>(null);
   const mounted = useRef(false);
   const [checkRound, setCheckRound] = useState(0);
   // The sync's committed count as of the last commit this card has seen.
@@ -77,13 +78,15 @@ export function VoucherFindCard({
       ? searchRequestFor({ lastName: reply.guest.lastName, arrival: reply.guest.arrival })
       : null;
   const resumeFor = voucherSearch && 'request' in voucherSearch ? voucherSearch.request : null;
+  const canSearch = resumeFor?.kind === 'search_guest' && transport !== null;
   const searchJob = useHmsJob({
     transport,
     resume:
       resumeFor?.kind === 'search_guest'
-        ? { kind: 'search_guest', lastName: resumeFor.lastName, arrival: resumeFor.arrival }
+        ? { kind: 'search_guest', lastName: resumeFor.lastName, arrival: resumeFor.arrival, departure: null }
         : null,
     scope: internetMessageId,
+    autoStartIfMissing: canSearch,
   });
 
   useEffect(() => {
@@ -149,7 +152,6 @@ export function VoucherFindCard({
   const { guest, file } = reply;
   const unreadPdfs = reply.unreadPdfs ?? 0;
   const line = voucherGuestLine(guest);
-  const canSearch = canSearchVoucher(guest) && transport !== null;
   const surnameConflict = (guest.conflicts?.lastNames.length ?? 0) > 1;
   const arrivalConflict = (guest.conflicts?.arrivals.length ?? 0) > 1;
   // Every warning shares one box, one short line each. Staff still see the search when the surname and arrival were read.
@@ -164,22 +166,15 @@ export function VoucherFindCard({
     ...conflicts,
   ].filter((text): text is string => text !== null);
 
-  const refusedNow = refused && refused.scope === internetMessageId ? refused.message : null;
-  const searchRun: HmsSearchRun | null = refusedNow
-    ? { kind: 'error', message: refusedNow }
-    : searchRunFromJob(searchJob.view, searchJob.queueFailed);
-  const searching = searchJob.queuing || (searchJob.view !== null && !isSettled(searchJob.view));
-
-  const runSearch = () => {
-    if (!canSearchVoucher(guest)) return;
-    const next = searchRequestFor({ lastName: guest.lastName, arrival: guest.arrival });
-    if ('request' in next) {
-      setRefused(null);
-      searchJob.start(next.request);
-    } else {
-      setRefused({ scope: internetMessageId, message: next.error });
-    }
-  };
+  const searchIdle = searchJob.view === null && !searchJob.queuing && !searchJob.queueFailed && !searchJob.statusFailed;
+  const searchRun: HmsSearchRun | null = searchRunFromJob(searchJob.view, searchJob.queueFailed);
+  const singleMatch =
+    searchRun?.kind === 'rows' &&
+    searchRun.rows.length === 1 &&
+    guest.lastName !== null &&
+    normalizedSurname(searchRun.rows[0]!.lastName) === normalizedSurname(guest.lastName)
+      ? searchRun.rows[0]!
+      : null;
 
   const saveFile = async () => {
     if (!file) return;
@@ -218,41 +213,46 @@ export function VoucherFindCard({
           </ul>
         </Notice>
       ) : null}
-      {canSearch ? (
-        <SecondaryButton disabled={searching} onClick={() => void runSearch()}>
-          {VOUCHER_COPY.search}
-        </SecondaryButton>
+      {/* Staff search by hand when nothing ran for this email: the queue is off, so no auto-start ran. */}
+      {canSearch && searchIdle && resumeFor ? (
+        <SecondaryButton onClick={() => searchJob.start(resumeFor)}>{VOUCHER_COPY.search}</SecondaryButton>
       ) : null}
       <HmsJobStatusLine
         view={searchJob.view}
         queuing={searchJob.queuing}
         detail={VOUCHER_COPY.searching}
         onRetry={searchJob.retry}
+        statusFailed={searchJob.statusFailed}
+        queueFailed={searchJob.queueFailed}
+        queueFailureMessage={AMEND_FIND_COPY.searchFailed}
       />
-      {searchRun ? <SearchResult run={searchRun} /> : null}
+      {searchRun && !singleMatch && !searchJob.queueFailed ? <SearchResult run={searchRun} /> : null}
       {searchJob.view?.status === 'done' ? <HmsAsOf asOf={searchJob.view.asOf} /> : null}
-      {file ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <SecondaryButton disabled={save === 'saving'} onClick={() => void saveFile()}>
-            {save === 'saving' ? VOUCHER_COPY.saving : VOUCHER_COPY.save}
-          </SecondaryButton>
-          <span data-pii className={captionClass}>
-            {file.filename}
-          </span>
-          {save === 'saved' ? (
-            <span role="status" className={infoNoteClass}>
-              {VOUCHER_COPY.saved}
+      <div data-testid="voucher-save-and-match" className="flex flex-col gap-2 sm:flex-row sm:items-start">
+        {file ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <SecondaryButton disabled={save === 'saving'} onClick={() => void saveFile()}>
+              {save === 'saving' ? VOUCHER_COPY.saving : VOUCHER_COPY.save}
+            </SecondaryButton>
+            <span data-pii className={captionClass}>
+              {file.filename}
             </span>
-          ) : null}
-          {save === 'failed' ? (
-            <Notice tone="warn" role="alert">
-              {VOUCHER_COPY.saveFailed}
-            </Notice>
-          ) : null}
-        </div>
-      ) : (
-        <p className={captionClass}>{VOUCHER_COPY.noFile}</p>
-      )}
+            {save === 'saved' ? (
+              <span role="status" className={infoNoteClass}>
+                {VOUCHER_COPY.saved}
+              </span>
+            ) : null}
+            {save === 'failed' ? (
+              <Notice tone="warn" role="alert">
+                {VOUCHER_COPY.saveFailed}
+              </Notice>
+            ) : null}
+          </div>
+        ) : (
+          <p className={captionClass}>{VOUCHER_COPY.noFile}</p>
+        )}
+        {singleMatch ? <MatchedBooking key={singleMatch.confirmation} row={singleMatch} /> : null}
+      </div>
     </Section>
   );
 }
@@ -290,5 +290,37 @@ function SearchRow({ row }: { row: GuestSearchRow }) {
       <p className={captionClass}>{`${dates} · ${row.status || 'status not shown'}`}</p>
       <HmsLinkActions confirmation={row.confirmation} />
     </div>
+  );
+}
+
+function MatchedBooking({ row }: { row: GuestSearchRow }) {
+  const guest = [row.firstName, row.lastName].filter(Boolean).join(' ') || 'Name not shown';
+  const dates = row.arrival
+    ? `${formatStayDate(row.arrival)}${row.departure ? ` – ${formatStayDate(row.departure)}` : ''}`
+    : 'Dates not shown';
+  return (
+    <div data-testid="voucher-matched-booking" className="rounded-xs flex flex-col gap-1 border border-[#b7d5ef] bg-[#f5faff] p-2">
+      <p className={captionClass}>{VOUCHER_COPY.matchedBooking}</p>
+      <p data-pii className={valueClass}>{`${guest} · ${row.confirmation}`}</p>
+      <p className={captionClass}>{`${dates} · ${row.status || 'status not shown'}`}</p>
+      <CopyForHmsButton confirmation={row.confirmation} />
+    </div>
+  );
+}
+
+function CopyForHmsButton({ confirmation }: { confirmation: string }) {
+  const [copied, setCopied] = useState<boolean | null>(null);
+  const copy = async () => {
+    setCopied(await copyText(copyForHmsText(hmsLandingUrl(), confirmation)));
+  };
+  return (
+    <>
+      <SecondaryButton onClick={() => void copy()}>{copied ? 'Copied' : 'Copy for HMS'}</SecondaryButton>
+      {copied === false ? (
+        <span role="alert" className={captionClass}>
+          Could not copy. Select the confirmation and copy it.
+        </span>
+      ) : null}
+    </>
   );
 }

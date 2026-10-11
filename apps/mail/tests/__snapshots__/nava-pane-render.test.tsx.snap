@@ -5083,11 +5083,16 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
             >
               Guest Smith · arriving 12 Nov 2026
             </p>
-            <p
-              class="text-[11px] text-[#64748b]"
+            <div
+              class="flex flex-col gap-2 sm:flex-row sm:items-start"
+              data-testid="voucher-save-and-match"
             >
-              No file to save from this email.
-            </p>
+              <p
+                class="text-[11px] text-[#64748b]"
+              >
+                No file to save from this email.
+              </p>
+            </div>
           </div>
         </section>
         <p
@@ -6831,11 +6836,16 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
             >
               arriving 12 Nov 2026
             </p>
-            <p
-              class="text-[11px] text-[#64748b]"
+            <div
+              class="flex flex-col gap-2 sm:flex-row sm:items-start"
+              data-testid="voucher-save-and-match"
             >
-              No file to save from this email.
-            </p>
+              <p
+                class="text-[11px] text-[#64748b]"
+              >
+                No file to save from this email.
+              </p>
+            </div>
           </div>
         </section>
         <p

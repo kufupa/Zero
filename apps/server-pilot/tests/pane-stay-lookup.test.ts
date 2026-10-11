@@ -452,7 +452,33 @@ describe('paneStayLookup router', () => {
       caller.paneStayLookup.queueSearchGuest({ threadId: 'thread-1', lastName: 'Mokoena', arrival: '2027-09-14' }),
     ).resolves.toEqual({ runId: null });
     await expect(
+      caller.paneStayLookup.queueSearchGuest({
+        threadId: 'thread-1',
+        lastName: 'Mokoena',
+        arrival: '2027-09-14',
+        autoStart: true,
+      }),
+    ).resolves.toEqual({ runId: null });
+    await expect(
+      caller.paneStayLookup.queueSearchGuest({
+        threadId: 'thread-1',
+        lastName: 'Mokoena',
+        arrival: '2027-09-14',
+        departure: '2027-09-15',
+        autoStart: true,
+      }),
+    ).rejects.toThrow();
+    await expect(
       caller.paneStayLookup.jobStatus({ threadId: 'thread-1', kind: 'find', confirmation: '57291630-1' }),
+    ).resolves.toBeNull();
+    await expect(
+      caller.paneStayLookup.jobStatus({
+        threadId: 'thread-1',
+        kind: 'search_guest',
+        lastName: 'Mokoena',
+        arrival: '2027-09-14',
+        departure: null,
+      }),
     ).resolves.toBeNull();
     expect(spawn).not.toHaveBeenCalled();
   });

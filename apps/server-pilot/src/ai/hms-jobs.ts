@@ -15,7 +15,7 @@ import { basename } from 'node:path';
 import { and, desc, eq, gt, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
-import { aiWorkflowRun, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
@@ -39,6 +39,9 @@ import {
   pruneExpiredPaneRuns,
   registerPaneRun,
 } from './pane-stay-save.js';
+import { normalizeEmailAddress } from './never-spam.js';
+import { extractVoucherGuest } from './voucher-find.js';
+import { isStaffSender, knownSenders } from './work-items.js';
 import {
   type AiFailureClass,
   type AiRunFence,
@@ -143,14 +146,99 @@ export function extractHmsConfirmations(text: string): string[] {
   return found;
 }
 
+/** A surname from an explicit guest label, never the extraction's sender/booker contact. */
+function explicitGuestSurname(subject: string | null, textBody: string | null): string | null {
+  return extractVoucherGuest({
+    subject: subject ?? '',
+    bodyText: (textBody ?? '').slice(0, 4_000),
+    attachmentTexts: [],
+  }).lastName;
+}
+
+function extractionConfirmations(payload: unknown): string[] {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
+  const values = (payload as { confirmationNumbers?: unknown }).confirmationNumbers;
+  if (!Array.isArray(values)) return [];
+  return values.filter((value): value is string => typeof value === 'string' && HMS_CONFIRMATION.test(value));
+}
+
+/** Reads only when every valid matching stay resolves to one arrival; ambiguous/missing dates are not auto-searched. */
+export function extractUniqueArrivalForHmsPrefetch(kind: string, payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const stays = (payload as { stays?: unknown }).stays;
+  if (!Array.isArray(stays) || stays.length === 0) return null;
+  const arrivals = new Set<string>();
+  for (const value of stays) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const stay = value as { requested?: unknown; booked?: unknown };
+    const range = kind === 'booking' ? stay.requested : stay.booked;
+    if (!range || typeof range !== 'object' || Array.isArray(range)) return null;
+    const arrival = (range as { arrival?: unknown }).arrival;
+    if (typeof arrival !== 'string' || !ISO_DAY.safeParse(arrival).success) return null;
+    const date = new Date(`${arrival}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== arrival) return null;
+    arrivals.add(arrival);
+  }
+  return arrivals.size === 1 ? [...arrivals][0]! : null;
+}
+
+/** The auto-start and prefetch paths share this key so a remount cannot queue the same guest lookup twice. */
+export function guestSearchPrefetchIdempotencyKey(
+  transportId: string,
+  threadId: string,
+  lastName: string,
+  arrival: string,
+): string {
+  const digest = createHash('sha256')
+    .update(`${lastName.replace(/\s+/g, ' ').trim().toLowerCase()}\n${arrival}`)
+    .digest('hex')
+    .slice(0, 24);
+  return `hms-job:prefetch-guest:${transportId}:${threadId}:${digest}`;
+}
+
+function prefetchConfirmations(payload: unknown, subject: string | null, textBody: string | null): string[] {
+  const text = extractHmsConfirmations(`${subject ?? ''}\n${textBody ?? ''}`);
+  return [...new Set([...extractionConfirmations(payload), ...text])].slice(0, PREFETCH_PER_MAIL_MAX);
+}
+
 async function latestWorkItemId(db: DB, transportId: string, threadId: string): Promise<string | null> {
+  const item = await latestWorkItem(db, transportId, threadId);
+  return item?.id ?? null;
+}
+
+async function latestWorkItem(
+  db: DB,
+  transportId: string,
+  threadId: string,
+): Promise<{ id: string; status: string } | null> {
   const [item] = await db
-    .select({ id: workItem.id })
+    .select({ id: workItem.id, status: workItem.status })
     .from(workItem)
     .where(and(eq(workItem.transportId, transportId), eq(workItem.threadId, threadId)))
-    .orderBy(desc(workItem.updatedAt))
+    .orderBy(desc(workItem.updatedAt), desc(workItem.createdAt), desc(workItem.id))
     .limit(1);
-  return item?.id ?? null;
+  return item ?? null;
+}
+
+/** The work item created from this inbound message; another message's resolved item must not suppress its lookup. */
+async function workItemForMessage(
+  db: DB,
+  transportId: string,
+  threadId: string,
+  messageId: string,
+): Promise<{ id: string; status: string } | null> {
+  const items = await db
+    .select({ id: workItem.id, status: workItem.status })
+    .from(workItem)
+    .where(
+      and(
+        eq(workItem.transportId, transportId),
+        eq(workItem.threadId, threadId),
+        eq(workItem.sourceMessageId, messageId),
+      ),
+    )
+    .orderBy(desc(workItem.updatedAt), desc(workItem.createdAt), desc(workItem.id));
+  return items.find((item) => item.status === 'needs_you' || item.status === 'review') ?? items[0] ?? null;
 }
 
 async function latestInboundMessageId(
@@ -244,7 +332,13 @@ export async function enqueueHmsJob(
 
 /** A pane lookup from the signed-in user. Null when the thread has no inbound mail to anchor the run to. */
 export async function queueUserHmsJob(
-  input: { transportId: string; userId: string; threadId: string; request: HmsJobRequest },
+  input: {
+    transportId: string;
+    userId: string;
+    threadId: string;
+    request: HmsJobRequest;
+    idempotencyKey?: string;
+  },
   db: DB = getDb(),
 ): Promise<AiWorkflowRun | null> {
   const triggerMessageId = await latestInboundMessageId(db, input.transportId, input.threadId);
@@ -258,18 +352,18 @@ export async function queueUserHmsJob(
       userId: input.userId,
       request: input.request,
       priority: HMS_JOB_PRIORITY_USER,
-      idempotencyKey: `hms-job:user:${randomUUID()}`,
+      idempotencyKey: input.idempotencyKey ?? `hms-job:user:${randomUUID()}`,
     },
     db,
   );
   return run;
 }
 
-// Each prefetch kind has its own hourly budget, so availability probes never use up confirmation prefetch.
+// Each prefetch kind has its own hourly budget, so reads of one kind never use another kind's cap.
 async function countRecentPrefetches(
   db: DB,
   transportId: string,
-  kind: 'find' | 'availability',
+  kind: 'find' | 'search_guest' | 'availability',
   since: Date,
 ): Promise<number> {
   const [row] = await db
@@ -287,10 +381,28 @@ async function countRecentPrefetches(
   return Number(row?.n ?? 0);
 }
 
+/** Serializes the guest-search count and insert per transport so concurrent extractions cannot overspend the cap. */
+async function enqueueGuestPrefetchWithinCap(
+  db: DB,
+  input: Parameters<typeof enqueueHmsJob>[0],
+  perHour: number,
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${'hms-prefetch:search_guest:' + input.transportId}, 0))`,
+    );
+    const scoped = tx as unknown as DB;
+    const used = await countRecentPrefetches(scoped, input.transportId, 'search_guest', new Date(Date.now() - PREFETCH_WINDOW_MS));
+    if (used >= perHour) return false;
+    const result = await enqueueHmsJob(input, scoped);
+    return result.created;
+  });
+}
+
 /**
- * Prefetch after a live inbound classifier or extraction run succeeds. Validated confirmation
- * numbers become low-priority jobs, capped per transport per hour. Backfill
- * and sent-copy triage never prefetch. Returns how many jobs were created.
+ * Called after a live inbound extraction or matching triage succeeds. It waits for both when a classifier run exists;
+ * only eligible booking-like reads queue, and each is capped per transport per hour. Backfill, sent copies, spam, and
+ * resolved source messages never prefetch. Returns jobs created.
  */
 export async function prefetchHmsConfirmations(
   run: AiWorkflowRun,
@@ -299,25 +411,98 @@ export async function prefetchHmsConfirmations(
 ): Promise<number> {
   if (!env.HMS_PREFETCH_ENABLED || !hmsJobQueueEnabled()) return 0;
   // Live admission stamps an admission snapshot; backfill and imports do not.
-  // The trigger is the classifier run, or the extraction run once the classifier is retired (the worker picks one).
-  // Sent copies (external-sent-baseline) never prefetch.
-  const liveInbound =
-    (run.runKind === 'inbound_triage' && run.idempotencyKey.startsWith('inbound-triage:')) ||
-    (run.runKind === 'inbound_extraction' && run.idempotencyKey.startsWith('inbound-extraction:'));
-  if (!liveInbound || !run.admissionSnapshotId) return 0;
-  const [mail] = await db
-    .select({ subject: message.subject, textBody: message.textBody, spamAt: mailThread.spamAt })
-    .from(message)
-    .innerJoin(mailThread, eq(mailThread.id, message.threadId))
-    .where(eq(message.id, run.triggerMessageId))
+  const isLiveExtraction = run.runKind === 'inbound_extraction' && run.idempotencyKey.startsWith('inbound-extraction:');
+  const isLiveTriage = run.runKind === 'inbound_triage' && run.idempotencyKey.startsWith('inbound-triage:');
+  if ((!isLiveExtraction && !isLiveTriage) || !run.admissionSnapshotId) {
+    return 0;
+  }
+  const [extractionRun] = await db
+    .select({ id: aiWorkflowRun.id })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.transportId, run.transportId),
+        eq(aiWorkflowRun.threadId, run.threadId),
+        eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId),
+        eq(aiWorkflowRun.admissionSnapshotId, run.admissionSnapshotId),
+        eq(aiWorkflowRun.runKind, 'inbound_extraction'),
+        eq(aiWorkflowRun.state, 'succeeded'),
+        like(aiWorkflowRun.idempotencyKey, 'inbound-extraction:%'),
+      ),
+    )
     .limit(1);
-  // Spam never spends the hourly prefetch cap.
-  if (!mail || mail.spamAt) return 0;
-  const numbers = extractHmsConfirmations(`${mail.subject ?? ''}\n${mail.textBody ?? ''}`);
-  if (numbers.length === 0) return 0;
-  const workItemId = await latestWorkItemId(db, run.transportId, run.threadId);
+  if (!extractionRun) return 0;
+  const [triageRun] = await db
+    .select({ state: aiWorkflowRun.state })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.transportId, run.transportId),
+        eq(aiWorkflowRun.threadId, run.threadId),
+        eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId),
+        eq(aiWorkflowRun.admissionSnapshotId, run.admissionSnapshotId),
+        eq(aiWorkflowRun.runKind, 'inbound_triage'),
+        like(aiWorkflowRun.idempotencyKey, 'inbound-triage:%'),
+      ),
+    )
+    .limit(1);
+  if (triageRun && triageRun.state !== 'succeeded') return 0;
+  const [source] = await db
+    .select({
+      extractionStatus: mailExtraction.status,
+      kind: mailExtraction.kind,
+      payload: mailExtraction.payload,
+      subject: message.subject,
+      textBody: message.textBody,
+      direction: message.direction,
+      historyOnly: message.historyOnly,
+      fromAddress: message.fromAddress,
+      threadHistoryOnly: mailThread.historyOnly,
+      spamAt: mailThread.spamAt,
+      mailboxEmail: mailboxTransport.email,
+    })
+    .from(mailExtraction)
+    .innerJoin(message, eq(message.id, mailExtraction.messageId))
+    .innerJoin(mailThread, eq(mailThread.id, message.threadId))
+    .innerJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
+    .where(
+      and(
+        eq(mailExtraction.messageId, run.triggerMessageId),
+        eq(message.transportId, run.transportId),
+        eq(message.threadId, run.threadId),
+      ),
+    )
+    .orderBy(desc(mailExtraction.createdAt))
+    .limit(1);
+  // Spam and imported/history copies never spend either prefetch budget.
+  if (
+    !source ||
+    source.extractionStatus !== 'succeeded' ||
+    (source.kind !== 'booking' &&
+      source.kind !== 'amendment' &&
+      source.kind !== 'cancellation' &&
+      source.kind !== 'voucher_pop') ||
+    source.spamAt ||
+    source.threadHistoryOnly ||
+    source.historyOnly ||
+    source.direction !== 'inbound'
+  ) {
+    return 0;
+  }
+  const from = normalizeEmailAddress(source.fromAddress);
+  const mailbox = normalizeEmailAddress(source.mailboxEmail);
+  if (from === mailbox) return 0;
+  if (isStaffSender(source.fromAddress, source.mailboxEmail)) {
+    const sentFrom = await knownSenders(db, run.transportId, [source.fromAddress]);
+    if (sentFrom.has(from)) return 0;
+  }
+
+  const triggerItem = await workItemForMessage(db, run.transportId, run.threadId, run.triggerMessageId);
+  if (triggerItem?.status === 'done' || triggerItem?.status === 'dismissed') return 0;
+  const workItemId = triggerItem?.id ?? null;
   let created = 0;
-  // The day is part of the key: a failed prefetch gets its next try tomorrow.
+  const numbers = prefetchConfirmations(source.payload, source.subject, source.textBody);
+  // Find keeps its existing cap; extraction confirmations are first, followed by any number in the mail text.
   const dayKey = new Date().toISOString().slice(0, 10);
   for (const confirmation of numbers) {
     const used = await countRecentPrefetches(
@@ -342,6 +527,27 @@ export async function prefetchHmsConfirmations(
       db,
     );
     if (result.created) created += 1;
+  }
+
+  if (numbers.length === 0) {
+    const lastName = explicitGuestSurname(source.subject, source.textBody);
+    const arrival = extractUniqueArrivalForHmsPrefetch(source.kind ?? '', source.payload);
+    if (!lastName || !arrival || env.HMS_GUEST_PREFETCH_PER_HOUR <= 0) return created;
+    const queued = await enqueueGuestPrefetchWithinCap(
+      db,
+      {
+        transportId: run.transportId,
+        threadId: run.threadId,
+        triggerMessageId: run.triggerMessageId,
+        workItemId,
+        userId: null,
+        request: { kind: 'search_guest', lastName, arrival },
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: guestSearchPrefetchIdempotencyKey(run.transportId, run.threadId, lastName, arrival),
+      },
+      env.HMS_GUEST_PREFETCH_PER_HOUR,
+    );
+    if (queued) created += 1;
   }
   return created;
 }
@@ -648,7 +854,8 @@ export async function readHmsJobView(
         lastName?: string;
         /** A stay's dates pick its availability snapshot; its rooms tell apart two stays on the same dates. */
         arrival?: string;
-        departure?: string;
+        /** Null explicitly matches a guest-search request with no departure constraint. */
+        departure?: string | null;
         rooms?: AvailabilityRequest['rooms'];
       },
   db: DB = getDb(),
@@ -687,9 +894,11 @@ export async function readHmsJobView(
               ...(input.arrival
                 ? [sql`${aiWorkflowRun.readRequest}->>'arrival' = ${input.arrival}`]
                 : []),
-              ...(input.departure
-                ? [sql`${aiWorkflowRun.readRequest}->>'departure' = ${input.departure}`]
-                : []),
+              ...(input.departure === undefined
+                ? []
+                : input.departure === null
+                  ? [sql`${aiWorkflowRun.readRequest}->>'departure' IS NULL`]
+                  : [sql`${aiWorkflowRun.readRequest}->>'departure' = ${input.departure}`]),
               ...(input.rooms
                 ? [sql`${aiWorkflowRun.readRequest}->'rooms' = ${JSON.stringify(input.rooms)}::jsonb`]
                 : []),

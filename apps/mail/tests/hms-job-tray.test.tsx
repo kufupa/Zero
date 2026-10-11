@@ -3,10 +3,16 @@
  */
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HmsAsOf, HmsJobStatusLine, formatAsOfStamp, hmsJobLabel } from '../components/quote-workflow/hms-queue-status';
+import {
+  HmsAsOf,
+  HmsJobStatusLine,
+  formatAsOfAgo,
+  hmsJobLabel,
+} from '../components/quote-workflow/hms-queue-status';
 import {
   HMS_JOB_POLL_MS,
   type HmsJobKind,
+  type HmsJobQueueOptions,
   type HmsJobRequest,
   type HmsJobTransport,
   type HmsJobView,
@@ -50,8 +56,8 @@ function view(overrides: Partial<HmsJobView> & Pick<HmsJobView, 'runId' | 'statu
 function fakeTransport(polls: (HmsJobView | null)[], readBack: HmsJobView | null = null) {
   let queued = 0;
   let read = 0;
-  const queue = vi.fn(async (_request: HmsJobRequest) => ({ runId: `run-${++queued}` }));
-  const status = vi.fn(async (input: { runId: string } | { kind: HmsJobKind; confirmation?: string }) => {
+  const queue = vi.fn(async (_request: HmsJobRequest, _options?: HmsJobQueueOptions) => ({ runId: `run-${++queued}` }));
+  const status = vi.fn(async (input: Parameters<HmsJobTransport['status']>[0]) => {
     if (!('runId' in input)) return readBack;
     const next = polls[Math.min(read, polls.length - 1)];
     read += 1;
@@ -67,13 +73,15 @@ function Harness({
   request,
   resume = null,
   scope = 'email-1',
+  autoStartIfMissing = false,
 }: {
   transport: HmsJobTransport | null;
   request: HmsJobRequest;
-  resume?: { kind: HmsJobKind; confirmation?: string } | null;
+  resume?: { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string } | null;
   scope?: string;
+  autoStartIfMissing?: boolean;
 }) {
-  const job = useHmsJob({ transport, resume, scope });
+  const job = useHmsJob({ transport, resume, scope, autoStartIfMissing });
   return (
     <div>
       <button type="button" onClick={() => job.start(request)}>
@@ -163,27 +171,28 @@ describe('the status line', () => {
   });
 });
 
-describe('the as-of stamp on a dated snapshot', () => {
-  it('shows As of HH:MM in local time for a snapshot from today', () => {
-    expect(formatAsOfStamp(AS_OF)).toBe('08:05');
+describe('the age on a dated HMS snapshot', () => {
+  it('shows a relative age with the HMS label', () => {
+    expect(formatAsOfAgo(AS_OF)).toBe('3 hr ago');
     render(<HmsAsOf asOf={AS_OF} />);
-    expect(screen.getByTestId('hms-as-of').textContent).toBe('As of 08:05');
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS 3 hr ago');
   });
 
-  it('adds the day for a snapshot from an earlier day, so it never reads as current', () => {
+  it('reports the elapsed hours for an older snapshot', () => {
     render(<HmsAsOf asOf={new Date(2026, 9, 8, 17, 30).toISOString()} />);
-    expect(screen.getByTestId('hms-as-of').textContent).toBe('As of 8 Oct 17:30');
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS 18 hr ago');
   });
 
-  it('switches to the day form just after midnight', () => {
-    expect(formatAsOfStamp(AS_OF, new Date(2026, 9, 9, 23, 59))).toBe('08:05');
-    expect(formatAsOfStamp(AS_OF, new Date(2026, 9, 10, 0, 1))).toBe('9 Oct 08:05');
+  it('uses minutes below an hour, days after a day, and a non-future age for clock skew', () => {
+    expect(formatAsOfAgo(AS_OF, new Date(2026, 9, 9, 8, 36))).toBe('31 min ago');
+    expect(formatAsOfAgo(AS_OF, new Date(2026, 9, 11, 8, 6))).toBe('2 days ago');
+    expect(formatAsOfAgo(new Date(Date.parse(AS_OF) + 60_000).toISOString(), new Date(AS_OF))).toBe('just now');
   });
 
-  it('shows nothing without a date, and no stamp for a value that is not a date', () => {
+  it('shows nothing without a date, and no age for a value that is not a date', () => {
     const { container } = render(<HmsAsOf asOf={null} />);
     expect(container.textContent).toBe('');
-    expect(formatAsOfStamp('not a date')).toBeNull();
+    expect(formatAsOfAgo('not a date')).toBeNull();
   });
 });
 
@@ -206,7 +215,7 @@ describe('a queued lookup, polled on the 3 s clock', () => {
 
     await advance(HMS_JOB_POLL_MS);
     expect(screen.queryByTestId('hms-job-status')).toBeNull();
-    expect(screen.getByTestId('hms-as-of').textContent).toBe('As of 08:05');
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS 3 hr ago');
 
     const reads = status.mock.calls.length;
     await advance(HMS_JOB_POLL_MS * 3);
@@ -228,7 +237,7 @@ describe('a remount reads the job back from the database', () => {
 
     await advance(HMS_JOB_POLL_MS);
     expect(status).toHaveBeenNthCalledWith(2, { runId: 'run-9' });
-    expect(screen.getByTestId('hms-as-of').textContent).toBe('As of 08:05');
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS 3 hr ago');
     expect(queue).not.toHaveBeenCalled();
   });
 });
@@ -249,7 +258,7 @@ describe('a failed lookup', () => {
     expect(queue).toHaveBeenCalledTimes(2);
     expect(queue).toHaveBeenNthCalledWith(2, SEARCH);
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByTestId('hms-as-of').textContent).toBe('As of 08:05');
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS 3 hr ago');
   });
 
   it('says so when the queue call itself fails, and shows no job', async () => {
@@ -264,6 +273,31 @@ describe('a failed lookup', () => {
     await advance(0);
     expect(screen.getByText('The lookup could not be queued.')).toBeTruthy();
     expect(screen.queryByTestId('hms-job-status')).toBeNull();
+  });
+
+  it('uses a fresh queue request when retrying an auto-started job with a terminal failure', async () => {
+    const { transport, queue } = fakeTransport([
+      view({ runId: 'run-1', request: SEARCH, status: 'failed', failureClass: 'HMS_LOCK_BUSY' }),
+      view({ runId: 'run-2', request: SEARCH, status: 'done', asOf: AS_OF, result: { kind: 'search_guest' } }),
+    ]);
+    render(
+      <Harness
+        transport={transport}
+        request={SEARCH}
+        resume={{ kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' }}
+        autoStartIfMissing
+      />,
+    );
+    await advance(0);
+    expect(queue).toHaveBeenNthCalledWith(1, SEARCH, { autoStart: true });
+    expect(screen.getByRole('alert').textContent).toContain('Failed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await advance(0);
+
+    expect(queue).toHaveBeenCalledTimes(2);
+    expect(queue).toHaveBeenNthCalledWith(2, SEARCH);
+    expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS 3 hr ago');
   });
 });
 

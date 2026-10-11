@@ -2,8 +2,9 @@ import { formatStayDate } from './amend-find';
 
 /**
  * The "Find the booking" card for voucher and proof-of-payment mail. The server reads the guest surname and arrival
- * from the email and its voucher text (quoteWorkflow.voucherFind). The card runs the existing HMS guest search on
- * staff's click and saves the voucher file. It never books, changes or invents a confirmation number.
+ * from the email and its voucher text (quoteWorkflow.voucherFind). The card resumes a matching HMS guest search or
+ * starts one on open when both values are unambiguous, and saves the voucher file. It never books, changes or invents a
+ * confirmation number.
  */
 
 /** The values a voucher gives in more than one form. Present only when two or more differ. */
@@ -62,6 +63,7 @@ export const VOUCHER_COPY = {
   conflictArrivals: 'More than one arrival date is on this voucher. Nava did not pick one:',
   waitingForSync: 'Waiting for this email to sync. Nava checks it again when the sync lands.',
   search: 'Find the booking in HMS',
+  matchedBooking: 'Matched booking',
   searching: 'Nava is searching HMS by guest name… (about 1 minute)',
   pickRow: 'Open a booking in HMS with the buttons beside it.',
   save: 'Save attachment',
@@ -96,5 +98,15 @@ export function voucherConflictLines(guest: VoucherGuest): string[] {
 export function canSearchVoucher(
   guest: VoucherGuest,
 ): guest is { lastName: string; arrival: string } {
-  return guest.lastName !== null && guest.arrival !== null;
+  return (
+    guest.lastName !== null &&
+    guest.arrival !== null &&
+    (guest.conflicts?.lastNames.length ?? 0) < 2 &&
+    (guest.conflicts?.arrivals.length ?? 0) < 2
+  );
+}
+
+/** Clipboard text for the HMS handoff: landing page first, then the confirmed booking number. */
+export function copyForHmsText(landingUrl: string | null, confirmation: string): string {
+  return [landingUrl?.trim() ?? '', confirmation.trim()].filter(Boolean).join('\n');
 }

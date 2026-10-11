@@ -183,6 +183,16 @@ describe('guest and arrival from the voucher text', () => {
     ).toEqual({ lastName: 'Smith', arrival: '2026-11-12' });
   });
 
+  it('does not read an arrival phrase after a guest label as part of the surname', () => {
+    expect(
+      extractVoucherGuest({
+        subject: 'Voucher',
+        bodyText: 'Guest: John Smith is arriving on 12 November\nArrival: 12 Nov 2026',
+        attachmentTexts: [],
+      }),
+    ).toEqual({ lastName: 'Smith', arrival: '2026-11-12' });
+  });
+
   it('an unknown field after the guest name leaves the surname null, and never takes a word from the next field', () => {
     expect(
       extractVoucherGuest({

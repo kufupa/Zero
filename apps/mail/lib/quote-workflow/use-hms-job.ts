@@ -4,6 +4,7 @@ import {
   pendingJobView,
   pollHmsJob,
   type HmsJobKind,
+  type HmsJobQueueOptions,
   type HmsJobRequest,
   type HmsJobTransport,
   type HmsJobView,
@@ -22,7 +23,9 @@ export type HmsJobState = {
   queuing: boolean;
   /** True when the queue call itself failed, so no job exists. */
   queueFailed: boolean;
-  start: (request: HmsJobRequest) => void;
+  /** True when the read-back failed, so the pane can offer a safe retry. */
+  statusFailed: boolean;
+  start: (request: HmsJobRequest, options?: HmsJobQueueOptions) => void;
   /** Queues the last request again, for a job that failed. */
   retry: () => void;
 };
@@ -33,9 +36,16 @@ function sameSurname(a: string, b: string): boolean {
 }
 
 /** True when a read-back job was queued for the resume's surname and arrival, each only when given. */
-function resumedFor(request: HmsJobRequest | null, lastName: string | null, arrival: string | null): boolean {
+function resumedFor(
+  request: HmsJobRequest | null,
+  lastName: string | null,
+  arrival: string | null,
+  departure: string | null | undefined,
+): boolean {
   if (lastName && !(request?.kind === 'search_guest' && sameSurname(request.lastName, lastName))) return false;
   if (arrival && request?.arrival !== arrival) return false;
+  if (departure !== undefined && (request?.kind !== 'search_guest' || (request.departure ?? null) !== departure))
+    return false;
   return true;
 }
 
@@ -45,22 +55,79 @@ export function useHmsJob(input: {
    * The job to read back after a remount. Null reads nothing back. A surname or arrival limits the read-back to a job
    * queued for them, so a thread with mail about two guests never shows one guest's job under the other.
    */
-  resume: { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string } | null;
+  resume: { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string; departure?: string | null } | null;
   /** Changes with the email or booking selection. The shown job is cleared and the read-back runs again. */
   scope: string | null;
+  /** Starts a search_guest request after read-back confirms that no matching job exists. */
+  autoStartIfMissing?: boolean;
 }): HmsJobState {
   const { transport, resume, scope } = input;
+  const autoStartIfMissing = input.autoStartIfMissing ?? false;
   const resumeKind = resume?.kind ?? null;
   const resumeConfirmation = resume?.confirmation ?? null;
   const resumeLastName = resume?.lastName ?? null;
   const resumeArrival = resume?.arrival ?? null;
+  const resumeHasDeparture = resume !== null && Object.hasOwn(resume, 'departure');
+  const resumeDeparture = resumeHasDeparture ? resume?.departure ?? null : undefined;
   const [runId, setRunId] = useState<string | null>(null);
   const [view, setView] = useState<HmsJobView | null>(null);
   const [queuing, setQueuing] = useState(false);
   const [queueFailed, setQueueFailed] = useState(false);
+  const [statusFailed, setStatusFailed] = useState(false);
+  const [statusRetryRound, setStatusRetryRound] = useState(0);
   // Each start and each scope change takes a new generation. An answer from an older one is dropped.
   const generation = useRef(0);
   const lastRequest = useRef<HmsJobRequest | null>(null);
+  const lastRequestOptions = useRef<HmsJobQueueOptions | undefined>(undefined);
+  const autoStartedKey = useRef<string | null>(null);
+
+  const start = useCallback(
+    (request: HmsJobRequest, options?: HmsJobQueueOptions) => {
+      if (!transport) return;
+      const mine = ++generation.current;
+      lastRequest.current = request;
+      lastRequestOptions.current = options;
+      setRunId(null);
+      setView(null);
+      setQueueFailed(false);
+      setStatusFailed(false);
+      setQueuing(true);
+      (options ? transport.queue(request, options) : transport.queue(request)).then(
+        (started) => {
+          if (generation.current !== mine) return;
+          setQueuing(false);
+          // Job queue off: the lookup ran synchronously and its answer is already settled.
+          if (started.view) setView(started.view);
+          else if (started.runId !== null) {
+            // Queued until the first status read lands, so the panel never looks idle while the job exists.
+            setView(pendingJobView(started.runId, request));
+            setRunId(started.runId);
+          }
+          // An auto-start with the queue off queues nothing: the card stays idle until staff search by hand.
+        },
+        () => {
+          if (generation.current !== mine) return;
+          setQueuing(false);
+          setQueueFailed(true);
+        },
+      );
+    },
+    [transport],
+  );
+
+  const retry = useCallback(() => {
+    if (statusFailed) {
+      setStatusRetryRound((round) => round + 1);
+      return;
+    }
+    const last = lastRequest.current;
+    if (!last) return;
+    // A persisted terminal failure can be retried as a fresh user job; keeping autoStart would reuse its failed key.
+    // POLL_LOST is not definitive, so it must retain the stable key and reattach to the possibly-running job.
+    const options =
+      view?.status === 'failed' && view.failureClass !== 'POLL_LOST' ? undefined : lastRequestOptions.current;
+    start(last, options);
+  }, [start, statusFailed, view]);
 
   // Scope change or remount: clear, then read back the latest job of this kind on the thread.
   useEffect(() => {
@@ -70,6 +137,7 @@ export function useHmsJob(input: {
     setView(null);
     setQueuing(false);
     setQueueFailed(false);
+    setStatusFailed(false);
     if (!transport || !resumeKind) return;
     let live = true;
     const query = {
@@ -77,21 +145,45 @@ export function useHmsJob(input: {
       ...(resumeConfirmation ? { confirmation: resumeConfirmation } : {}),
       ...(resumeLastName ? { lastName: resumeLastName } : {}),
       ...(resumeArrival ? { arrival: resumeArrival } : {}),
+      ...(resumeHasDeparture ? { departure: resumeDeparture } : {}),
     };
     transport.status(query).then(
       (found) => {
-        if (!live || generation.current !== mine || !found) return;
-        if (!resumedFor(found.request, resumeLastName, resumeArrival)) return;
-        lastRequest.current = found.request;
-        setView(found);
-        if (!isSettled(found)) setRunId(found.runId);
+        if (!live || generation.current !== mine) return;
+        if (found && resumedFor(found.request, resumeLastName, resumeArrival, resumeDeparture)) {
+          lastRequest.current = found.request;
+          lastRequestOptions.current = undefined;
+          setView(found);
+          if (!isSettled(found)) setRunId(found.runId);
+          return;
+        }
+        if (!autoStartIfMissing || resumeKind !== 'search_guest' || !resumeLastName || !resumeArrival) return;
+        const key = `${scope ?? ''}\u0000${resumeLastName.trim().replace(/\s+/g, ' ').toLowerCase()}\u0000${resumeArrival}`;
+        if (autoStartedKey.current === key) return;
+        autoStartedKey.current = key;
+        start({ kind: 'search_guest', lastName: resumeLastName, arrival: resumeArrival }, { autoStart: true });
       },
-      () => {},
+      () => {
+        if (!live || generation.current !== mine) return;
+        setStatusFailed(true);
+      },
     );
     return () => {
       live = false;
     };
-  }, [transport, scope, resumeKind, resumeConfirmation, resumeLastName, resumeArrival]);
+  }, [
+    transport,
+    scope,
+    resumeKind,
+    resumeConfirmation,
+    resumeLastName,
+    resumeArrival,
+    resumeHasDeparture,
+    resumeDeparture,
+    autoStartIfMissing,
+    statusRetryRound,
+    start,
+  ]);
 
   // Polls the current run id until it settles. A new run id, a new scope or an unmount ends the old loop.
   useEffect(() => {
@@ -107,41 +199,5 @@ export function useHmsJob(input: {
     };
   }, [transport, runId]);
 
-  const start = useCallback(
-    (request: HmsJobRequest) => {
-      if (!transport) return;
-      const mine = ++generation.current;
-      lastRequest.current = request;
-      setRunId(null);
-      setView(null);
-      setQueueFailed(false);
-      setQueuing(true);
-      transport.queue(request).then(
-        (started) => {
-          if (generation.current !== mine) return;
-          setQueuing(false);
-          // Job queue off: the lookup ran synchronously and its answer is already settled.
-          if (started.view) setView(started.view);
-          else {
-            // Queued until the first status read lands, so the panel never looks idle while the job exists.
-            setView(pendingJobView(started.runId, request));
-            setRunId(started.runId);
-          }
-        },
-        () => {
-          if (generation.current !== mine) return;
-          setQueuing(false);
-          setQueueFailed(true);
-        },
-      );
-    },
-    [transport],
-  );
-
-  const retry = useCallback(() => {
-    const last = lastRequest.current;
-    if (last) start(last);
-  }, [start]);
-
-  return { view, queuing, queueFailed, start, retry };
+  return { view, queuing, queueFailed, statusFailed, start, retry };
 }

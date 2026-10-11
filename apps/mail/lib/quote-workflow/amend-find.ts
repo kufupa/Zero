@@ -134,6 +134,8 @@ export type HmsJobRequest =
   | { kind: 'find'; confirmation: string; arrival?: string }
   | { kind: 'search_guest'; lastName: string; arrival: string; departure?: string };
 
+export type HmsJobQueueOptions = { autoStart?: true };
+
 export type HmsJobStatus = 'queued' | 'running' | 'retrying' | 'done' | 'failed';
 
 /**
@@ -155,27 +157,41 @@ export type HmsJobView = {
 /** runId is null when the server's job queue is off (HMS_JOB_QUEUE): the lookup then runs synchronously instead. */
 export type QueuedHmsJob = { runId: string | null };
 
-/** What queueing a request gives the pane: a job to poll, or with the queue off, the settled synchronous answer. */
-export type HmsJobStart = { runId: string; view?: undefined } | { runId: null; view: HmsJobView };
+/**
+ * What queueing a request gives the pane: a job to poll, or with the queue off, the settled synchronous answer. An
+ * auto-start with the queue off gives neither, because it never runs a live search on its own.
+ */
+export type HmsJobStart = { runId: string; view?: undefined } | { runId: null; view?: HmsJobView };
 
 /** The paneStayLookup job routes, bound off the pane's tRPC client. */
 export type HmsJobClient = {
   queueFind: (input: FindStayInput & { threadId: string }) => Promise<QueuedHmsJob>;
-  queueSearchGuest: (input: GuestSearchInput & { threadId: string }) => Promise<QueuedHmsJob>;
+  queueSearchGuest: (input: GuestSearchInput & { threadId: string; autoStart?: true }) => Promise<QueuedHmsJob>;
   /** The synchronous find and search, used while the server's job queue is off. */
   findStay?: (input: FindStayInput) => Promise<FindStayReply>;
   searchGuest?: (input: GuestSearchInput) => Promise<GuestSearchReply>;
   jobStatus: (
-    input: { runId: string } | { threadId: string; kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string },
+    input:
+      | { runId: string }
+      | {
+          threadId: string;
+          kind: HmsJobKind;
+          confirmation?: string;
+          lastName?: string;
+          arrival?: string;
+          departure?: string | null;
+        },
   ) => Promise<HmsJobView | null>;
   screenshot: (input: ScreenshotInput) => Promise<ScreenshotReply>;
 };
 
 /** The job calls for one thread: queue a request, and read a job by run id or the latest of a kind on the thread. */
 export type HmsJobTransport = {
-  queue: (request: HmsJobRequest) => Promise<HmsJobStart>;
+  queue: (request: HmsJobRequest, options?: HmsJobQueueOptions) => Promise<HmsJobStart>;
   status: (
-    input: { runId: string } | { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string },
+    input:
+      | { runId: string }
+      | { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string; departure?: string | null },
   ) => Promise<HmsJobView | null>;
 };
 
@@ -233,7 +249,7 @@ function syncView(request: HmsJobRequest, reply: FindStayReply | GuestSearchRepl
 export function hmsJobTransport(client: HmsJobClient | null, threadId: string | null): HmsJobTransport | null {
   if (!client || !threadId) return null;
   return {
-    queue: async (request) => {
+    queue: async (request, options) => {
       if (request.kind === 'find') {
         const input: FindStayInput = request.arrival
           ? { confirmation: request.confirmation, arrival: request.arrival }
@@ -246,8 +262,14 @@ export function hmsJobTransport(client: HmsJobClient | null, threadId: string | 
       const input: GuestSearchInput = request.departure
         ? { lastName: request.lastName, arrival: request.arrival, departure: request.departure }
         : { lastName: request.lastName, arrival: request.arrival };
-      const { runId } = await client.queueSearchGuest({ threadId, ...input });
+      const { runId } = await client.queueSearchGuest({
+        threadId,
+        ...input,
+        ...(options?.autoStart ? { autoStart: true } : {}),
+      });
       if (runId) return { runId };
+      // Auto-start with the queue off must not run the live search: it would repeat on every card open.
+      if (options?.autoStart) return { runId: null };
       if (!client.searchGuest) throw new Error('paneStayLookup.searchGuest unavailable');
       return { runId: null, view: syncView(request, await client.searchGuest(input)) };
     },
