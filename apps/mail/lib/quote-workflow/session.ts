@@ -167,11 +167,21 @@ export function pendingPdfStayKey(
   );
 }
 
+/** Why a run must wait while an automatic HMS company or agency search still decides the pick, or null. */
+export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyKinds'>): string | null {
+  const pending = session.pendingPartyKinds ?? [];
+  if (!pending.length) return null;
+  const names = (['company', 'agency'] as const).filter((kind) => pending.includes(kind));
+  return `Finding the ${names.join(' and ')} in HMS…`;
+}
+
 /** Plain-English reason this date option must wait, or null when it may run. */
 export function quoteRunBlockReason(
-  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader'>,
+  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'>,
   step: QuoteToolStep,
 ): string | null {
+  const lookupWait = partyLookupWaitReason(session);
+  if (lookupWait) return lookupWait;
   if (step.kind === 'quote_stay') {
     const problem = staffHeaderFieldProblem(session.staffHeader);
     if (problem) return `Fix the amounts before running this search. ${problem}`;
@@ -1220,6 +1230,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         handledSourceKey: sourceKey || session.handledSourceKey,
         handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
       };
+    }
+    case 'party_lookup_pending': {
+      const pending = session.pendingPartyKinds ?? [];
+      if (pending.includes(action.kind) === action.pending) return session;
+      const pendingPartyKinds = action.pending
+        ? [...pending, action.kind]
+        : pending.filter((kind) => kind !== action.kind);
+      return { ...session, pendingPartyKinds };
     }
     case 'patch_staff_header': {
       // Field errors alone do not change the quote, so they neither bump the input revision nor clear results.

@@ -636,6 +636,8 @@ export function ae1Failures(summary: Omit<Ae1Summary, 'ok' | 'failures'>): strin
 // Browser run
 
 export const RATES_SECTION = '[data-preview-pane] section[aria-label="Rates from HMS"]';
+/** The pane's company search gives up after 6 minutes (trpc-request-timeout.ts), so this wait always settles. */
+const PARTY_SETTLE_MS = 6 * 60_000 + 30_000;
 export const DOCUMENTS_SECTION = '[data-preview-pane] section[aria-label="Quote documents"]';
 export const RUN_STEP = /^Run Search availability /;
 
@@ -763,6 +765,12 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     const rates = page.locator(RATES_SECTION);
     await rates.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
       throw new Blocker('the Rates from HMS step is missing');
+    });
+    // The company lookup decides its pick before Get rates can run. Wait for it to settle, bounded, and name it if it never does.
+    await waitFor('the company lookup in HMS to settle', PARTY_SETTLE_MS, async () =>
+      /Finding the (company|agency)/.test(await rates.innerText()) ? null : true,
+    ).catch(async () => {
+      throw new Blocker(`the company lookup in HMS did not settle: ${await visibleText(page, RATES_SECTION)}`);
     });
     const getRates = rates.getByRole('button', { name: 'Get rates from HMS', exact: true });
     await waitFor('Get rates from HMS to be enabled', STEP_MS, async () => ((await getRates.isEnabled()) ? true : null)).catch(

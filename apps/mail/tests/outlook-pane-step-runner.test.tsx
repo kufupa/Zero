@@ -3,12 +3,14 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { toast } from 'sonner';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { findReadStayArrival } from './helpers/prepare-reviewed-quote';
 
-const { sendCommandMock, executeStaffQuoteMutateMock } = vi.hoisted(() => ({
+const { sendCommandMock, executeStaffQuoteMutateMock, panePartyFindMock } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
   executeStaffQuoteMutateMock: vi.fn(),
+  panePartyFindMock: vi.fn(),
 }));
 
 vi.mock('sonner', () => ({
@@ -72,6 +74,9 @@ vi.mock('@/hooks/use-pilot-capabilities', () => ({
 
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
+    panePartyLookup: {
+      findParty: { mutate: (...args: unknown[]) => panePartyFindMock(...args) },
+    },
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
       staffQuoteSource: {
@@ -150,6 +155,7 @@ describe('mounted pane step runner and current inputs', () => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     sendCommandMock.mockReset();
     executeStaffQuoteMutateMock.mockReset();
+    panePartyFindMock.mockReset();
     executeStaffQuoteMutateMock.mockImplementation(async (request: StaffQuoteRequest) => readyStaffQuote(request));
   });
 
@@ -213,6 +219,43 @@ describe('mounted pane step runner and current inputs', () => {
     expect(screen.queryByRole('button', { name: /Look up organisation/i })).toBeNull();
     fireEvent.click(stay);
     await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
+  });
+
+  it('holds Get rates while the company search still decides the pick, then releases it', async () => {
+    let answer!: (found: unknown) => void;
+    panePartyFindMock.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    render(<OutlookPanePage />);
+    await fillStayFacts('2026-11-12', '2026-11-14');
+    fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'Acme Travel' } });
+    expect((await screen.findAllByText('Finding the company in HMS…')).length).toBeGreaterThan(0);
+    const run = await screen.findByRole('button', { name: /^Run Search availability/i });
+    expect((run as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(panePartyFindMock).toHaveBeenCalledTimes(1));
+    answer({ outcome: 'resolved', results: [], truncated: false, best: null, searchedFor: null });
+    await waitFor(() => expect(screen.queryAllByText('Finding the company in HMS…')).toHaveLength(0));
+    const released = await screen.findByRole('button', { name: /^Run Search availability/i });
+    expect((released as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('says so when a stay changes while HMS searches, and keeps no result for the old inputs', async () => {
+    vi.mocked(toast.warning).mockClear();
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    executeStaffQuoteMutateMock.mockImplementationOnce(async (request: StaffQuoteRequest) => {
+      await held;
+      return readyStaffQuote(request);
+    });
+    render(<OutlookPanePage />);
+    await fillStayFacts('2026-11-12', '2026-11-14');
+    fireEvent.click(await screen.findByRole('button', { name: /^Run Search availability/i }));
+    await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-15' } });
+    finish();
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith('Details changed while HMS was searching — run Get rates again'),
+    );
   });
 
   it('releases a running step when executeStaffQuote rejects so retry works', async () => {

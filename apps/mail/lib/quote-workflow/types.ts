@@ -529,6 +529,8 @@ export type QuoteSession = {
   missing: string[];
   errorMessage: string | null;
   runningStepId: string | null;
+  /** Companies or agencies whose automatic HMS search has not yet decided the pick. A rates run waits for them. */
+  pendingPartyKinds?: StaffQuoteParty['kind'][];
   mailboxStatus: QuoteMailboxStatus | null;
   evidence: QuoteEvidenceProvenance | null;
   partyLookup: PartyLookupRef | null;
@@ -612,6 +614,7 @@ export type QuoteSessionAction =
   | { type: 'staff_source_ready'; source: StaffQuoteSource }
   | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[] }
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
+  | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }
   | { type: 'select_stay_key'; stayKey: string }
   | {
       type: 'staff_quote_ready';

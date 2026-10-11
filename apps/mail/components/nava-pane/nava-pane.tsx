@@ -921,6 +921,11 @@ export function NavaPane({
       onceExtras: rowsTakeOnceExtras(quoteSession, requestedQuoteKeys(stayGroups)),
     });
     void trackStaffQuoteRun(run).then((remote) => {
+      // The reducer drops a result whose selection or input moved on while HMS searched. Say so, rather than let it vanish.
+      if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision })) {
+        toast.warning('Details changed while HMS was searching — run Get rates again');
+        return;
+      }
       if (remote.status !== 'ok') {
         dispatchQuote({
           type: 'results_unavailable',
@@ -1403,6 +1408,7 @@ export function NavaPane({
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
               findParty={PANE_PARTY_FINDER}
+              onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
               partyIndex={PANE_PARTY_INDEX}
               rates={PANE_SAVED_RATES}
               onPatchGroup={(groupId, patch) => editStayRows({ type: 'patch_group', groupId, patch })}

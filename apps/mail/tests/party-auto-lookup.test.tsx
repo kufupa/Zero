@@ -173,3 +173,44 @@ describe('the finder passes the kind it was given', () => {
     expect(mutate).toHaveBeenNthCalledWith(2, { name: 'Foschini' });
   });
 });
+
+describe('automatic lookup reports whether it still decides the pick', () => {
+  it('holds the field until its search has picked the best match', async () => {
+    const onLookupPending = vi.fn();
+    const find = vi.fn(async () => reply({ best: WOOLWORTHS, results: [WOOLWORTHS] }));
+    render(
+      <PartyPicker
+        name="Woolworths"
+        kind="company"
+        parties={{}}
+        find={find}
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+        autoLookup
+        onLookupPending={onLookupPending}
+      />,
+    );
+    expect(onLookupPending).toHaveBeenLastCalledWith(true);
+    await waitFor(() => expect(onLookupPending).toHaveBeenLastCalledWith(false), { timeout: 3000 });
+    expect(find).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the field when the search finds no match', async () => {
+    const onLookupPending = vi.fn();
+    const find = vi.fn(async () => reply({}));
+    render(
+      <PartyPicker
+        name="Woolworths"
+        kind="company"
+        parties={{}}
+        find={find}
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+        autoLookup
+        onLookupPending={onLookupPending}
+      />,
+    );
+    await waitFor(() => expect(find).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    await waitFor(() => expect(onLookupPending).toHaveBeenLastCalledWith(false), { timeout: 3000 });
+  });
+});

@@ -762,6 +762,13 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(seen.latest?.staffHeader.parties?.agency).toBeUndefined();
   });
 
+  it('holds Get rates with the lookup copy while an automatic company search still decides the pick', () => {
+    const session = { ...headerSession({ company: 'Acme Travel' }), pendingPartyKinds: ['company' as const] };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect((screen.getByRole('button', { name: 'Get rates from HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getAllByText('Finding the company in HMS…').length).toBeGreaterThan(0);
+  });
+
   it('says Nava, not Luna, when the automatic HMS lookup cannot reach HMS', async () => {
     resetPartyAutoLookupForTests();
     const unavailable = async () => ({ outcome: 'external_system_unavailable' as const, results: [], truncated: false });
