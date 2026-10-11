@@ -9,6 +9,25 @@ export const AUTO_TRIAGE_NEVER_SPAM_EMAILS: ReadonlySet<string> = new Set([
   'pmbobo@eu.mail.reservecloud.com',
 ]);
 
+/**
+ * Public mail providers. Many unrelated senders share each of these domains, so a domain match means nothing on them:
+ * work items compare the exact mailbox address there (isStaffSender), and the admin domain metric buckets them together.
+ */
+export const PUBLIC_MAIL_DOMAINS: ReadonlySet<string> = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'yahoo.com',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'msn.com',
+  'aol.com',
+  'icloud.com',
+  'me.com',
+  'proton.me',
+  'protonmail.com',
+]);
+
 export function normalizeEmailAddress(raw: string): string {
   const trimmed = raw.trim();
   const angleMatch = trimmed.match(/<([^>]+)>/);

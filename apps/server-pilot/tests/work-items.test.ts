@@ -1,3 +1,4 @@
+import { drizzle } from 'drizzle-orm/postgres-js';
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomUUID } from 'node:crypto';
@@ -1949,6 +1950,130 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
       expect(await replyStatus(db, second!.id)).toBe('dismissed');
       const open = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
       expect(open.map((row) => row.id)).toEqual([first!.id]);
+    }));
+  it('a legacy done request, closed before the reply link existed, is linked to the hotel answer and reopens on a later guest mail', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'legacy-1', 'thread-legacy-1', '2027-10-01T08:00:00Z');
+      // Marked done by the rules before the reply link: done, with no link and no status event.
+      const [legacy] = await db
+        .insert(workItem)
+        .values({ transportId: CENTURION, threadId: 'thread-legacy-1', sourceMessageId: request, kind: 'quote', status: 'done' })
+        .returning({ id: workItem.id });
+      const answer = await hotelMail(db, 'legacy-1-out', 'thread-legacy-1', '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, 'thread-legacy-1')).toEqual([
+        expect.objectContaining({ repoint: expect.objectContaining({ sentMessageId: answer }) }),
+      ]);
+      expect(await db.select().from(workItem).where(eq(workItem.id, legacy!.id))).toMatchObject([
+        { status: 'done', sentMessageId: answer, sentAt: new Date('2027-10-01T09:00:00Z') },
+      ]);
+      expect(await eventsFor(db, legacy!.id)).toEqual([]);
+
+      await guestMail(db, 'legacy-2', 'thread-legacy-1', '2027-10-01T10:00:00Z');
+      expect(await refreshThread(db, 'thread-legacy-1')).toEqual([
+        expect.objectContaining({ to: 'needs_you', reason: 'new_inbound', previousSentMessageId: answer }),
+      ]);
+      expect(await replyStatus(db, legacy!.id)).toBe('needs_you');
+    }));
+
+  it('the backfill links a legacy done request to the hotel answer the rules never reached', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'legacy-bf-1', 'thread-legacy-bf-1', '2027-10-01T08:00:00Z');
+      const [legacy] = await db
+        .insert(workItem)
+        .values({ transportId: CENTURION, threadId: 'thread-legacy-bf-1', sourceMessageId: request, kind: 'quote', status: 'done' })
+        .returning({ id: workItem.id });
+      const answer = await hotelMail(db, 'legacy-bf-1-out', 'thread-legacy-bf-1', '2027-10-01T09:00:00Z');
+
+      expect(await runReplyLinkBackfill({ db, apply: true })).toMatchObject({
+        threads: 1,
+        changes: 1,
+        byReason: { repoint: 1 },
+      });
+      expect(
+        await db.select({ sentMessageId: workItem.sentMessageId }).from(workItem).where(eq(workItem.id, legacy!.id)),
+      ).toEqual([{ sentMessageId: answer }]);
+    }));
+
+  it('a done request a person closed is never reopened or linked by a later mail', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'legacy-user-1', 'thread-legacy-user-1', '2027-10-01T08:00:00Z');
+      const [closed] = await db
+        .insert(workItem)
+        .values({ transportId: CENTURION, threadId: 'thread-legacy-user-1', sourceMessageId: request, kind: 'quote', status: 'done' })
+        .returning({ id: workItem.id });
+      await db.insert(workEvent).values({
+        workItemId: closed!.id,
+        actorKind: 'user',
+        actorUserId: USER,
+        type: 'status.changed',
+        value: { from: 'needs_you', to: 'done' },
+      });
+      await hotelMail(db, 'legacy-user-1-out', 'thread-legacy-user-1', '2027-10-01T09:00:00Z');
+      await guestMail(db, 'legacy-user-2', 'thread-legacy-user-1', '2027-10-01T10:00:00Z');
+
+      expect(await refreshThread(db, 'thread-legacy-user-1')).toEqual([]);
+      expect(
+        await db
+          .select({ status: workItem.status, sentMessageId: workItem.sentMessageId })
+          .from(workItem)
+          .where(eq(workItem.id, closed!.id)),
+      ).toEqual([{ status: 'done', sentMessageId: null }]);
+    }));
+
+  it('on a public mail provider only the exact mailbox address is staff; another sender on that domain is a guest', () =>
+    withDb(async (db) => {
+      await db.update(mailboxTransport).set({ email: 'desk@gmail.com' }).where(eq(mailboxTransport.id, CENTURION));
+      const own = await guestMail(db, 'public-1', 'thread-public-1', '2027-10-01T08:00:00Z', 'desk@gmail.com');
+      await readOf(db, own, 'other');
+      expect(await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: own })).toMatchObject({
+        status: 'done',
+      });
+
+      const stranger = await guestMail(db, 'public-2', 'thread-public-2', '2027-10-01T08:00:00Z', 'pat@gmail.com');
+      await readOf(db, stranger, 'other');
+      expect(await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: stranger })).toMatchObject({
+        status: 'needs_you',
+      });
+    }));
+
+  it('a refresh that moves a reply link waits for a live admission that reopens the item, then plans on the mail it committed', () =>
+    withIngestionDb(async ({ db, url }) => {
+      const request = await guestMail(db, 'race-1', 'thread-race-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'race-1-a', 'thread-race-1', '2027-10-01T09:00:00Z');
+      await refreshThread(db, 'thread-race-1');
+      // A newer hotel answer that the link has not moved to yet, so the refresh has a change to make.
+      await hotelMail(db, 'race-1-b', 'thread-race-1', '2027-10-01T10:00:00Z');
+
+      const connection = postgres(url, { max: 1, ssl: false, onnotice: () => undefined });
+      const admission = drizzle(connection) as unknown as DB;
+      let locked!: () => void;
+      let release!: () => void;
+      const lockTaken = new Promise<void>((resolve) => (locked = resolve));
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      try {
+        // Live admission: it locks the item, lands a newer guest mail, reopens the item on it, and commits.
+        const landed = admission.transaction(async (tx) => {
+          await tx.select({ id: workItem.id }).from(workItem).where(eq(workItem.id, item!.id)).for('update');
+          locked();
+          await hold;
+          await guestMail(tx as unknown as DB, 'race-2', 'thread-race-1', '2027-10-01T11:00:00Z');
+          await refreshThreadWork(tx as unknown as DB, { transportId: CENTURION, threadId: 'thread-race-1' });
+        });
+        await lockTaken;
+        // The refresh starts while the item is locked. It must wait, then plan on the mail admission committed.
+        const refresh = refreshThread(db, 'thread-race-1');
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        release();
+        await landed;
+
+        expect(await refresh).toEqual([]);
+        expect(await replyStatus(db, item!.id)).toBe('needs_you');
+      } finally {
+        await connection.end();
+      }
     }));
 });
 

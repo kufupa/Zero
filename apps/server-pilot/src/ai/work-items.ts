@@ -10,7 +10,7 @@ import {
   questionItems,
 } from './quote-workflow-analyse-selection.js';
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
-import { normalizeEmailAddress } from './never-spam.js';
+import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 
@@ -717,15 +717,18 @@ function leftAt(m: ThreadMail): number | null {
 }
 
 /**
- * From the mailbox's own address or its domain, so the hotel's staff. The same domain rule as isExternalFromDomain.
- * ponytail: on a shared mail provider the domain matches every sender there, and aliases are not checked.
+ * From the mailbox's own address, or from its domain when that domain is the hotel's. On a public provider (gmail.com,
+ * outlook.com, ...) the domain is shared by every sender, so only the exact mailbox address counts there.
+ * ponytail: aliases are not checked.
  */
 function isStaffSender(fromAddress: string, mailboxEmail: string): boolean {
   const from = normalizeEmailAddress(fromAddress);
   const mailbox = normalizeEmailAddress(mailboxEmail);
   if (!from.includes('@') || !mailbox.includes('@')) return false;
+  if (from === mailbox) return true;
   const domainOf = (address: string) => address.slice(address.lastIndexOf('@') + 1);
-  return from === mailbox || domainOf(from) === domainOf(mailbox);
+  const domain = domainOf(mailbox);
+  return !PUBLIC_MAIL_DOMAINS.has(domain) && domainOf(from) === domain;
 }
 
 /**
@@ -735,7 +738,7 @@ function isStaffSender(fromAddress: string, mailboxEmail: string): boolean {
 export type ThreadWorkChange =
   | { workItemId: string; kind: MailKind; to: 'done'; reason: typeof HOTEL_REPLIED; sentAt: Date; sentMessageId: string }
   | { workItemId: string; kind: MailKind; to: 'done'; reason: typeof STAFF_SENT_OTHER }
-  | { workItemId: string; kind: MailKind; to: 'needs_you'; reason: typeof NEW_INBOUND; previousSentMessageId: string }
+  | { workItemId: string; kind: MailKind; to: 'needs_you'; reason: typeof NEW_INBOUND; previousSentMessageId: string | null }
   | { workItemId: string; kind: MailKind; to: 'dismissed'; reason: typeof SUPERSEDED_BY_THREAD; supersededBy: string }
   | { workItemId: string; kind: MailKind; repoint: { sentAt: Date; sentMessageId: string } };
 
@@ -744,7 +747,8 @@ export type ThreadWorkChange =
  * event from a person and no saved values. Rules, on the source mail's time (arrivedAt):
  * - Reply link (C2): a needs-you item is done (hotel_replied, sent_at and sent_message_id set) when the hotel's latest
  *   mail after it is later than the guest's latest mail after it. A done item a later guest mail reopens goes back to
- *   needs-you (new_inbound), and its reply link moves to the hotel's next answer.
+ *   needs-you (new_inbound), and its reply link moves to the hotel's next answer. A done item with no reply link (closed
+ *   before the link existed) gets the same treatment, with the hotel's latest answer as its link. A person's close stays.
  * - Same-thread collapse (C3): an older needs-you item is dismissed (superseded_by_thread) when a newer needs-you item of
  *   any kind but other is on the thread. A newer "other" mail never supersedes a request.
  * - Staff-sent other: an "other" mail from the mailbox's own address or domain gets no needs-you (done, staff_sent_other).
@@ -755,6 +759,31 @@ export async function planThreadWork(
   input: { transportId: string; threadId: string },
   opts: { lock?: boolean } = {},
 ): Promise<ThreadWorkChange[]> {
+  // The item rows are locked before the mail is read (when asked), so the mail matches the items the plan changes. A live
+  // admission that reopens an item waits on this lock, and the mail it committed is in the read below.
+  const itemQuery = db
+    .select({
+      id: workItem.id,
+      kind: workItem.kind,
+      status: workItem.status,
+      sourceMessageId: workItem.sourceMessageId,
+      sentAt: workItem.sentAt,
+      sentMessageId: workItem.sentMessageId,
+      state: workItem.state,
+      // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
+      // "id" binds to the subquery's own table and the check is always false.
+      touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and we.actor_kind = 'user')`,
+    })
+    .from(workItem)
+    .where(
+      and(
+        eq(workItem.transportId, input.transportId),
+        eq(workItem.threadId, input.threadId),
+        inArray(workItem.status, ['needs_you', 'done']),
+        ne(workItem.kind, 'spam'),
+      ),
+    );
+  const items = await (opts.lock ? itemQuery.for('update', { of: workItem }) : itemQuery);
   const [mailbox] = await db
     .select({ email: mailboxTransport.email })
     .from(mailboxTransport)
@@ -774,27 +803,6 @@ export async function planThreadWork(
     })
     .from(message)
     .where(and(eq(message.transportId, input.transportId), eq(message.threadId, input.threadId)));
-  const itemQuery = db
-    .select({
-      id: workItem.id,
-      kind: workItem.kind,
-      status: workItem.status,
-      sourceMessageId: workItem.sourceMessageId,
-      sentAt: workItem.sentAt,
-      sentMessageId: workItem.sentMessageId,
-      state: workItem.state,
-      touched: sql<boolean>`exists (select 1 from ${workEvent} where ${workEvent.workItemId} = ${workItem.id} and ${workEvent.actorKind} = 'user')`,
-    })
-    .from(workItem)
-    .where(
-      and(
-        eq(workItem.transportId, input.transportId),
-        eq(workItem.threadId, input.threadId),
-        inArray(workItem.status, ['needs_you', 'done']),
-        ne(workItem.kind, 'spam'),
-      ),
-    );
-  const items = await (opts.lock ? itemQuery.for('update', { of: workItem }) : itemQuery);
 
   const byId = new Map(mail.map((m) => [m.id, m]));
   const guest = mail.flatMap((m) => (m.direction === 'inbound' ? [{ m, at: arrivedAt(m) }] : []));
@@ -821,8 +829,9 @@ export async function planThreadWork(
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
     const answered = lastHotel !== undefined && (lastGuest === undefined || lastHotel.at > lastGuest.at);
+    const staffOther = kind === 'other' && isStaffSender(source.fromAddress, mailbox?.email ?? '');
     if (item.status === 'needs_you') {
-      if (kind === 'other' && isStaffSender(source.fromAddress, mailbox?.email ?? '')) {
+      if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
       } else if (lastHotel && answered) {
         changes.push({
@@ -836,9 +845,12 @@ export async function planThreadWork(
       } else {
         open.push({ id: item.id, kind, at, untouched: true });
       }
-    } else if (item.sentMessageId && item.sentAt) {
-      // Closed by a hotel reply: reopened by a later guest mail, or re-pointed at the hotel's latest answer.
-      if (lastGuest && lastGuest.at > item.sentAt.getTime() && !answered) {
+    } else if (!staffOther) {
+      // Closed by a hotel reply: reopened by a later guest mail, or re-pointed at the hotel's latest answer. A done row the
+      // rules closed before the reply link existed has no link, so the hotel's latest answer stands in for it (the
+      // backfill links it). Only a row a person touched is left alone, as above.
+      const linkedAt = item.sentAt ? item.sentAt.getTime() : lastHotel?.at;
+      if (lastGuest && linkedAt !== undefined && lastGuest.at > linkedAt && !answered) {
         changes.push({
           workItemId: item.id,
           kind,
@@ -873,19 +885,25 @@ export async function planThreadWork(
 
 async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Promise<void> {
   const now = new Date();
+  // A changed reply link clears the quote follow-up clock: the sweep (quote-followup) starts it again from the new link.
   if ('repoint' in change) {
     await tx
       .update(workItem)
-      .set({ sentAt: change.repoint.sentAt, sentMessageId: change.repoint.sentMessageId, updatedAt: now })
+      .set({
+        sentAt: change.repoint.sentAt,
+        sentMessageId: change.repoint.sentMessageId,
+        followUpDueAt: null,
+        updatedAt: now,
+      })
       .where(eq(workItem.id, change.workItemId));
     return;
   }
   const from = change.to === 'needs_you' ? 'done' : 'needs_you';
   const link =
     change.to === 'done' && change.reason === HOTEL_REPLIED
-      ? { sentAt: change.sentAt, sentMessageId: change.sentMessageId }
+      ? { sentAt: change.sentAt, sentMessageId: change.sentMessageId, followUpDueAt: null }
       : change.to === 'needs_you'
-        ? { sentAt: null, sentMessageId: null }
+        ? { sentAt: null, sentMessageId: null, followUpDueAt: null }
         : {};
   await tx
     .update(workItem)

@@ -11,6 +11,7 @@ import {
 import { isWithinConfirmedGap, type MailboxMeasurementConfig } from './mail-measurement-config.js';
 import { buildMailDataHealth, type MailDataHealthMessage } from './mail-data-health.js';
 import type { ShadowScorecard } from './shadow-scorecard.js';
+import { PUBLIC_MAIL_DOMAINS } from '../ai/never-spam.js';
 
 export type MetricAvailability = 'live' | 'unavailable' | 'coming_soon';
 
@@ -1634,11 +1635,7 @@ function aggregateExecutiveDashboardMetrics(
     const address = row.message.fromAddress?.trim().toLowerCase();
     if (!address || address.endsWith('@legacyhotels.co.za')) continue;
     const rawDomain = address.split('@')[1] ?? 'unknown';
-    const domain = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com'].includes(
-      rawDomain,
-    )
-      ? 'public-email'
-      : rawDomain;
+    const domain = PUBLIC_MAIL_DOMAINS.has(rawDomain) ? 'public-email' : rawDomain;
     const bucket = domainCounts.get(domain) ?? { count: 0, addresses: new Set<string>() };
     bucket.count += 1;
     bucket.addresses.add(address);

@@ -5,8 +5,28 @@ import {
   NOT_APPLICABLE_MODEL_ID,
   type AiRunFence,
 } from './run-ledger.js';
-import { mailboxTransport, mailDraft, mailDraftRevision, message } from '../db/schema/mail.js';
-import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, sql } from 'drizzle-orm';
+import {
+  aiWorkflowRun,
+  mailboxTransport,
+  mailDraft,
+  mailDraftRevision,
+  message,
+} from '../db/schema/mail.js';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  notExists,
+  or,
+  sql,
+} from 'drizzle-orm';
 import { deriveReplySubject } from './workflows/candidate-draft.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import { canonicalInternetMessageId } from './quote-workflow-analyse-selection.js';
@@ -36,8 +56,21 @@ const DEFER_MS = 5 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Africa/Johannesburg is UTC+2 all year (no daylight saving), so local wall-clock time is a fixed offset.
 const SA_OFFSET_MS = 2 * 60 * 60 * 1000;
-// Only open items get follow-ups. A done or dismissed item was closed by a person.
+// Open items get follow-ups, and so does a quote a hotel reply closed (below). A dismissed item, or a done one a person
+// touched, was closed by a person.
 const OPEN_STATUSES = ['needs_you', 'review'] as const;
+// Explicit table names throughout: drizzle leaves the columns of a select-list subquery unqualified (see touched in
+// work-items.ts), and then the subquery's own id column would be compared.
+/**
+ * A quote a hotel reply closed (C2), with its reply link, and no person has touched since. Its close is the system's
+ * status change with reason hotel_replied. The reply is the send the clock starts from, so it gets a follow-up like an
+ * open quote would.
+ */
+const CLOSED_BY_HOTEL_REPLY = sql`(${workItem}.status = 'done' and ${workItem}.sent_message_id is not null and exists (
+  select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id
+    and we.type = 'status.changed' and we.value->>'reason' = 'hotel_replied')
+  and not exists (
+  select 1 from ${workEvent} as wp where wp.work_item_id = ${workItem}.id and wp.actor_kind = 'user'))`;
 /** The sweep's drafts: written as the system author, origin manual, under the id prefix (see writeFollowUp). */
 const IS_FOLLOW_UP_DRAFT = and(
   eq(mailDraft.createdByUserId, NAVA_USER_ID),
@@ -320,6 +353,53 @@ export async function runQuoteFollowupSweep(
     if (linked) counts.linked++;
   }
 
+  // A hotel reply closes the request and keeps its reply link (C2), so the select above never sees it. Its clock starts
+  // from that link, the same way, and once per link: a run already queued for the link keeps it from starting again.
+  const closedByReply = await db
+    .select({ id: workItem.id, sentMessageId: workItem.sentMessageId, sentAt: workItem.sentAt })
+    .from(workItem)
+    .where(
+      and(
+        eq(workItem.kind, 'quote'),
+        CLOSED_BY_HOTEL_REPLY,
+        isNull(workItem.followUpDueAt),
+        gte(workItem.sentAt, since),
+        // The reminder itself, once a person sends it, is the hotel's newest mail, so C2 closes the quote on it. It is
+        // not a reply to the quote, so it starts no second clock (which would send another reminder).
+        sql`not exists (select 1 from ${mailDraft} as sf where sf.sent_message_id = ${workItem}.sent_message_id
+          and sf.created_by_user_id = ${NAVA_USER_ID} and sf.origin = 'manual'
+          and sf.id like ${`${QUOTE_FOLLOWUP_DRAFT_PREFIX}%`})`,
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(aiWorkflowRun)
+            .where(
+              and(
+                eq(aiWorkflowRun.workItemId, workItem.id),
+                eq(aiWorkflowRun.runKind, 'quote_followup'),
+                eq(aiWorkflowRun.triggerMessageId, workItem.sentMessageId),
+              ),
+            ),
+        ),
+      ),
+    )
+    .limit(SWEEP_BATCH);
+  for (const item of closedByReply) {
+    if (!item.sentMessageId || !item.sentAt) continue;
+    const [linked] = await db
+      .update(workItem)
+      .set({ followUpDueAt: addSaBusinessDays(item.sentAt, FOLLOW_UP_BUSINESS_DAYS), updatedAt: now })
+      .where(
+        and(
+          eq(workItem.id, item.id),
+          eq(workItem.sentMessageId, item.sentMessageId),
+          isNull(workItem.followUpDueAt),
+        ),
+      )
+      .returning({ id: workItem.id });
+    if (linked) counts.linked++;
+  }
+
   const linkedItems = await db
     .select({
       id: workItem.id,
@@ -333,7 +413,7 @@ export async function runQuoteFollowupSweep(
     .where(
       and(
         eq(workItem.kind, 'quote'),
-        inArray(workItem.status, OPEN_STATUSES),
+        or(inArray(workItem.status, OPEN_STATUSES), CLOSED_BY_HOTEL_REPLY),
         isNotNull(workItem.sentMessageId),
         isNotNull(workItem.followUpDueAt),
         // An item was linked only after the cutoff let it through. Only a configured cutoff moved later drops it; the
@@ -409,6 +489,7 @@ async function writeFollowUp(
       status: workItem.status,
       threadId: workItem.threadId,
       sentMessageId: workItem.sentMessageId,
+      closedByReply: sql<boolean>`${CLOSED_BY_HOTEL_REPLY}`,
     })
     .from(workItem)
     .where(eq(workItem.id, run.workItemId))
@@ -416,7 +497,8 @@ async function writeFollowUp(
     // Locked for the caller's transaction, so staff closing the item now cannot be undone by the status change below.
     .for('update');
   if (!item?.threadId) return 'no_work_item';
-  if (item.status !== 'needs_you' && item.status !== 'review') return 'closed';
+  // A hotel-reply close is reopened for the follow-up; a close by a person is never reopened.
+  if (item.status !== 'needs_you' && item.status !== 'review' && !item.closedByReply) return 'closed';
   if (item.sentMessageId !== run.triggerMessageId) return 'superseded';
   const thread = await threadMessages(db, run.transportId, item.threadId);
   const sent = thread.find((m) => m.id === run.triggerMessageId && m.direction === 'outbound');
@@ -475,7 +557,7 @@ async function writeFollowUp(
       await tx
         .update(workItem)
         .set({ status: 'needs_you', updatedAt: now })
-        .where(and(eq(workItem.id, item.id), inArray(workItem.status, OPEN_STATUSES)));
+        .where(and(eq(workItem.id, item.id), eq(workItem.status, item.status)));
       await tx.insert(workEvent).values({
         workItemId: item.id,
         actorKind: 'system',
