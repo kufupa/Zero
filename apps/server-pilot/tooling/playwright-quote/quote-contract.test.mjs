@@ -11,6 +11,7 @@ import {
   orderOptions,
   aggregateOutcome,
   profileHolds,
+  restrictedNightsOf,
   shortfallsOf,
 } from './quote-contract.mjs';
 import { profileFor } from './property-profile.mjs';
@@ -847,4 +848,27 @@ test('shortfallsOf does not count a fitting alternative as a usable option for i
     ],
   };
   assert.deepEqual(shortfallsOf([acceptsEither], 'HRCEN').map((short) => short.roomCode), ['STQN']);
+});
+
+test('restrictedNightsOf names a night only when every matching row of the room type is closed to sale on it', () => {
+  const night = (date, closed) => ({ date, inventory: 34, restricted: closed, rateAvailable: true, restrictions: { combClosed: false } });
+  const stay = [night('2027-11-17', false), night('2027-11-18', true)];
+  const row = (code, label, nightly, extra = {}) => ({
+    room: { code, label, buildingCode: null }, rate: { code: 'BAR' }, matchStatus: 'match', eligibility: 'conditional', availability: 'restricted', nightly, ...extra,
+  });
+  const named = [
+    { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2027-11-18' },
+    { roomCode: 'STWN', roomLabel: 'Standard Twin', date: '2027-11-18' },
+  ];
+  assert.deepEqual(restrictedNightsOf([row('STQN', 'Standard Queen', stay), row('STWN', 'Standard Twin', stay)]), named);
+  // Any matching row that is open or unrestricted means the group is not closed on that night: nothing is named.
+  const open = row('STQN', 'Standard Queen', [night('2027-11-17', false), night('2027-11-18', false)], { rate: { code: 'BARRO' }, availability: 'available', eligibility: 'verified' });
+  assert.deepEqual(restrictedNightsOf([row('STQN', 'Standard Queen', stay), open, row('STWN', 'Standard Twin', stay)]), []);
+  // A length-of-stay restriction closes no night, and one row of a room type that is only length-restricted keeps its night unnamed.
+  const losOnly = [night('2027-11-17', false), night('2027-11-18', false)];
+  assert.deepEqual(restrictedNightsOf([row('STQN', 'Standard Queen', losOnly)]), []);
+  assert.deepEqual(restrictedNightsOf([row('STQN', 'Standard Queen', stay), row('STQN', 'Standard Queen', losOnly, { rate: { code: 'BARRO' } })]), []);
+  // An alternative row is not a matching row, so it cannot stop a closed matching night from being named.
+  const alternative = row('SKNG', 'Standard King', losOnly, { matchStatus: 'alternative', availability: 'available', eligibility: 'verified' });
+  assert.deepEqual(restrictedNightsOf([row('STQN', 'Standard Queen', stay), alternative]), [named[0]]);
 });

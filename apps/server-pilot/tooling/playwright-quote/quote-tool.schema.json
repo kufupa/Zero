@@ -181,6 +181,11 @@
               "id": { "type": "string" },
               "request": { "type": "object" },
               "outcome": { "type": "string" },
+              "restrictedNights": {
+                "type": "array",
+                "description": "Present only when every matching row of the group is restricted: each requested room type and stay night HMS closes to sale. Restricted rows are never eligible; staff copy names these nights.",
+                "items": { "type": "object", "required": ["roomCode", "roomLabel", "date"], "properties": { "roomCode": { "type": "string" }, "roomLabel": { "type": "string" }, "date": { "type": "string", "description": "Stay night, YYYY-MM-DD." } } }
+              },
               "options": {
                 "type": "array",
                 "items": {

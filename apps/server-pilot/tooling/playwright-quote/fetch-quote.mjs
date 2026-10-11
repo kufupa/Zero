@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createAudit } from './audit.mjs';
-import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation } from './quote-contract.mjs';
+import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
 const exec = promisify(execFile);
@@ -767,6 +767,8 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
         delete option._rate;delete option._nativeRoom;delete option.observations;
       }
       // Assess all examined rows before applying output limits or hiding alternatives.
+      // Restricted rows drop out of options unless asked for; a group closed on named nights keeps those nights for staff.
+      const restrictedNights=restrictedNightsOf(parsed.options);
       const eligible=parsed.options.filter(o=>o.matchStatus==='match'&&o.eligibility==='verified'&&o.availability==='available');
       let outcome=eligible.length?'quote':parsed.options.length&&parsed.options.every(o=>o.matchStatus==='alternative')?'no_match':
         parsed.options.some(o=>o.matchStatus==='unresolved'||o.eligibility!=='verified')?'partial':
@@ -782,7 +784,8 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
         search:matchingRowsUnseen?'truncated':parsed.completeness.search,requiredFacts:requiredPartial?'partial':parsed.completeness.requiredFacts,matchingRowsUnseen};
       if(completeness.search!=='complete'||completeness.requiredFacts!=='complete')outcome='partial';
       groups.push({id:room.id,request:room,requestedOccupancy:room,outcome,options,applied:source.windows.map(w=>w.criteria),
-        resolvedContext:source.resolvedContext,sourceReused:reusedSource,productFilterMode:source.productFilterMode,completeness,issues:groupIssues});
+        resolvedContext:source.resolvedContext,sourceReused:reusedSource,productFilterMode:source.productFilterMode,completeness,issues:groupIssues,
+        ...(restrictedNights.length?{restrictedNights}:{})});
       await saveEvidence(directory,`${prefix}.json`,groups.at(-1));
       event(`${prefix}-${outcome}`);
     } catch(error) {
