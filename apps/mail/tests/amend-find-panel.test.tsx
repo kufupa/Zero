@@ -338,6 +338,51 @@ describe('AmendLookupPanel', () => {
     });
   });
 
+  it('with booked dates in mail, uses them for the find and shows no booked-dates note', async () => {
+    const findStay = vi.fn().mockResolvedValue(found());
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    expect(screen.queryByTestId('booked-dates-missing')).toBeNull();
+    pressFind();
+    await waitFor(() => expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' }));
+  });
+
+  it('with no booked dates in mail, finds by confirmation number alone and never sends the requested arrival (AE2)', async () => {
+    const findStay = vi.fn().mockResolvedValue(found({ arrival: '2026-10-31', departure: '2026-11-07' }));
+    const requestedOnly = {
+      ...AMEND,
+      arrival: null,
+      departure: null,
+      requestedArrival: '2026-10-31',
+      requestedDeparture: '2026-11-07',
+    };
+    render(<AmendLookupPanel session={sessionWith(requestedOnly)} trpc={lookupTrpc(findStay)} />);
+    expect(screen.getByText(AMEND_FIND_COPY.bookedMissing)).toBeTruthy();
+    pressFind();
+    await waitFor(() => expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION }));
+    expect(findStay.mock.calls[0]?.[0]).not.toHaveProperty('arrival');
+    await expectFoundBooking();
+    // The note stays on the result: the booking was found without booked dates.
+    expect(screen.getByText(AMEND_FIND_COPY.bookedMissing)).toBeTruthy();
+    expect(findStay).toHaveBeenCalledTimes(1);
+  });
+
+  it('with no booked dates in mail and no booking number, opens the name search with no arrival, not the requested one', () => {
+    const requestedOnly = {
+      ...AMEND,
+      confirmationNumber: null,
+      arrival: null,
+      departure: null,
+      requestedArrival: '2026-10-31',
+      requestedDeparture: '2026-11-07',
+    };
+    render(<AmendLookupPanel session={sessionWith(requestedOnly)} trpc={lookupTrpc(vi.fn())} />);
+    expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
+    expect((screen.getByLabelText('Guest surname') as HTMLInputElement).value).toBe('Mokoena');
+    expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Departure (optional)') as HTMLInputElement).value).toBe('');
+    expect(screen.getByText(AMEND_FIND_COPY.bookedMissing)).toBeTruthy();
+  });
+
   it('labels a cancellation request as one', () => {
     const findStay = vi.fn(NEVER_SETTLES);
     render(

@@ -278,8 +278,10 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
     tasks: [],
     confirmationNumber: payload.confirmationNumbers[0] ?? null,
     guestLastName: null,
-    arrival: validIsoDate(booked?.arrival ?? requested?.arrival ?? null) ?? null,
-    departure: validIsoDate(booked?.departure ?? requested?.departure ?? null) ?? null,
+    // The booking as it stands comes from the booked dates only. A missing booked date stays null: the requested
+    // stay never stands in for it, so the HMS lookup cannot match on the wrong day (AE2).
+    arrival: validIsoDate(booked?.arrival ?? null) ?? null,
+    departure: validIsoDate(booked?.departure ?? null) ?? null,
     requestedArrival: validIsoDate(requested?.arrival ?? null) ?? null,
     requestedDeparture: validIsoDate(requested?.departure ?? null) ?? null,
     requestedChange: null,
