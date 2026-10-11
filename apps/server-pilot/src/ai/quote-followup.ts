@@ -36,7 +36,15 @@ import { NAVA_USER_ID } from '../db/seed.js';
 import { alias } from 'drizzle-orm/pg-core';
 import { appendWorkEvent } from './work-events.js';
 import { randomUUID } from 'node:crypto';
-import { isStaffSender, knownSenders, messageArrivedAt, OUTLOOK_SYNCED, personTouchSql } from './work-items.js';
+import {
+  isStaffSender,
+  knownSenders,
+  messageArrivedAt,
+  MESSAGE_ARRIVED_AT,
+  MESSAGE_DELIVERED_AT,
+  OUTLOOK_SYNCED,
+  personTouchSql,
+} from './work-items.js';
 import { normalizeEmailAddress } from './never-spam.js';
 
 /**
@@ -169,6 +177,7 @@ async function threadMessages(db: DB, transportId: string, threadId: string) {
       ccAddresses: message.ccAddresses,
       sentAt: message.sentAt,
       receivedAt: message.receivedAt,
+      deliveredAt: MESSAGE_DELIVERED_AT,
       createdAt: message.createdAt,
       historyOnly: message.historyOnly,
       pop3Uidl: message.pop3Uidl,
@@ -293,9 +302,12 @@ async function discardOvertakenFollowUps(db: DB, now: Date): Promise<number> {
           after ? gt(mailDraft.id, after) : undefined,
           // Only threads with a message later than the quote. The exact client/staff check below decides.
           sql`exists (
-            select 1 from ${message} m join ${message} s on s.id = ${mailDraft.replyToMessageId}
-            where m.transport_id = ${mailDraft.transportId} and m.thread_id = ${mailDraft.threadId} and m.id <> s.id
-              and greatest(m.sent_at, m.received_at, m.created_at) > coalesce(s.sent_at, s.received_at, s.created_at)
+            select 1 from ${message} join ${message} s on s.id = ${mailDraft.replyToMessageId}
+            where ${message.transportId} = ${mailDraft.transportId}
+              and ${message.threadId} = ${mailDraft.threadId}
+              and ${message.id} <> s.id
+              and greatest(${MESSAGE_ARRIVED_AT}, ${message.sentAt}, ${message.receivedAt}, ${message.createdAt})
+                > coalesce(s.sent_at, s.received_at, s.created_at)
           )`,
         ),
       )
@@ -340,16 +352,18 @@ export async function runQuoteFollowupSweep(
   const sinceConfigured = configuredSince(env);
 
   const source = alias(message, 'source');
+  // The request's arrival as the planner counts it (MESSAGE_ARRIVED_AT), from its own row: the select and the prefilter
+  // share it, so a POP3 request is not dated by the sender's Date header.
+  const requestArrivedAt = sql`(select ${MESSAGE_ARRIVED_AT} from ${message} where ${message.id} = ${workItem.sourceMessageId})`;
   // Only items with an outbound sent after both the request and the cutoff, so items that never qualify do not fill
   // the batch on every pass.
-  const firstEligibleAt = sql`greatest(${since.toISOString()}::timestamp, coalesce(${source.receivedAt}, ${source.createdAt}))`;
+  const firstEligibleAt = sql`greatest(${since.toISOString()}::timestamp, ${requestArrivedAt})`;
   const unlinked = await db
     .select({
       id: workItem.id,
       transportId: workItem.transportId,
       threadId: workItem.threadId,
-      requestReceivedAt: source.receivedAt,
-      requestCreatedAt: source.createdAt,
+      requestArrivedAt: sql`${requestArrivedAt}`.mapWith(message.createdAt),
     })
     .from(workItem)
     .innerJoin(source, eq(source.id, workItem.sourceMessageId))
@@ -367,7 +381,7 @@ export async function runQuoteFollowupSweep(
     .limit(SWEEP_BATCH);
   for (const item of unlinked) {
     if (!item.threadId) continue;
-    const requestedAt = (item.requestReceivedAt ?? item.requestCreatedAt).getTime();
+    const requestedAt = item.requestArrivedAt.getTime();
     const firstEligible = Math.max(requestedAt, since.getTime());
     const sent = (await threadMessages(db, item.transportId, item.threadId))
       .flatMap((m) => {

@@ -2596,3 +2596,225 @@ describe('reply link backfill: hotel copies, guest reopens, person touches (C2b)
       });
     }));
 });
+
+describe('trusted POP3 delivery clock (KTD-1)', () => {
+  async function setPop3Clock(
+    db: DB,
+    id: string,
+    clock: {
+      receivedAt: string | null;
+      createdAt: string;
+      deliveredAt?: string;
+      outlookSynced?: boolean;
+    },
+  ): Promise<void> {
+    const sourceProvenance = {
+      ...(clock.outlookSynced ? { canonicalContentVersion: 'fixture-v1' } : {}),
+      ...(clock.deliveredAt ? { deliveredAt: new Date(clock.deliveredAt).toISOString() } : {}),
+    };
+    await db
+      .update(message)
+      .set({
+        pop3Uidl: `uidl-${id}`,
+        receivedAt: clock.receivedAt ? new Date(clock.receivedAt) : null,
+        createdAt: new Date(clock.createdAt),
+        sourceProvenance: Object.keys(sourceProvenance).length > 0 ? sourceProvenance : null,
+      })
+      .where(eq(message.id, `msg-${id}`));
+  }
+
+  it('persists the parsed top Received date in sourceProvenance during POP3 ingest', () =>
+    withDb(async (db) => {
+      const { parseRawMessage } = await import('../src/mail/ingest/parse-message.js');
+      const { persistInboundMessage } = await import('../src/mail/ingest/store.js');
+      const { FakeS3Storage } = await import('../src/storage/s3.js');
+      const raw = Buffer.from(
+        [
+          'Received: from first-hop.example by mailbox.example; Tue, 06 Oct 2026 10:00:00 +0000',
+          'Received: from earlier-hop.example by first-hop.example; Tue, 06 Oct 2026 08:00:00 +0000',
+          `X-Zero-Mailbox: ${MAILBOX}`,
+          'From: guest@example.test',
+          `To: ${MAILBOX}`,
+          'Date: Tue, 06 Oct 2026 07:00:00 +0000',
+          'Message-ID: delivered-at-store@example.test',
+          'Subject: delivery timestamp persistence',
+          'Content-Type: text/plain; charset=utf-8',
+          '',
+          'Please quote.',
+        ].join('\r\n'),
+      );
+      const storage = new FakeS3Storage('work-items-delivered-at-test');
+      const messageId = 'msg-delivered-at-store';
+      const parsed = await parseRawMessage(raw, { messageId, storage });
+      const stored = await persistInboundMessage(
+        parsed,
+        raw,
+        { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: 'uidl-delivered-at-store', messageId },
+        { db, storage, skipAiEnqueue: true },
+      );
+      if (stored.kind !== 'stored') throw new Error(`expected stored, got ${stored.kind}`);
+      const [row] = await db.select().from(message).where(eq(message.id, messageId));
+
+      expect(row?.sourceProvenance).toEqual({ deliveredAt: '2026-10-06T10:00:00.000Z' });
+      expect(row?.receivedAt).toEqual(new Date('2026-10-06T07:00:00.000Z'));
+    }));
+
+  it('closes a POP3 request on a valid top Received time before the reply, despite later import', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-before-reply';
+      const request = await guestMail(db, 'delivered-before-reply', threadId, '2027-10-01T09:30:00Z');
+      await setPop3Clock(db, 'delivered-before-reply', {
+        receivedAt: '2027-10-01T09:30:00Z',
+        createdAt: '2027-10-01T10:00:00Z',
+        deliveredAt: '2027-10-01T08:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const reply = await hotelMail(db, 'delivered-before-reply-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([
+        expect.objectContaining({
+          workItemId: item!.id,
+          to: 'done',
+          reason: 'hotel_replied',
+          sentMessageId: reply,
+        }),
+      ]);
+    }));
+
+  it('falls back to createdAt when POP3 has no deliveredAt, preserving the #157 guard', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-no-delivered-at';
+      const request = await guestMail(db, 'no-delivered-at', threadId, '2027-10-01T08:00:00Z');
+      await setPop3Clock(db, 'no-delivered-at', {
+        receivedAt: '2027-10-01T08:00:00Z',
+        createdAt: '2027-10-01T10:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'no-delivered-at-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
+  it('does not use the sender Date header when trusted delivery followed the reply', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-after-reply';
+      const request = await guestMail(db, 'delivered-after-reply', threadId, '2027-10-01T08:00:00Z');
+      await setPop3Clock(db, 'delivered-after-reply', {
+        receivedAt: '2027-10-01T08:00:00Z',
+        createdAt: '2027-10-01T08:58:00Z',
+        deliveredAt: '2027-10-01T09:01:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'delivered-after-reply-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
+  it('ignores a deliveredAt more than five minutes after createdAt', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-too-future';
+      const request = await guestMail(db, 'delivered-too-future', threadId, '2027-10-01T08:30:00Z');
+      await setPop3Clock(db, 'delivered-too-future', {
+        receivedAt: '2027-10-01T08:30:00Z',
+        createdAt: '2027-10-01T08:00:00Z',
+        deliveredAt: '2027-10-01T10:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'delivered-too-future-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([
+        expect.objectContaining({ workItemId: item!.id, to: 'done', reason: 'hotel_replied' }),
+      ]);
+    }));
+
+  it('ignores a deliveredAt more than thirty days before createdAt', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-too-old';
+      const request = await guestMail(db, 'delivered-too-old', threadId, '2027-08-22T08:00:00Z');
+      await setPop3Clock(db, 'delivered-too-old', {
+        receivedAt: '2027-08-22T08:00:00Z',
+        createdAt: '2027-10-01T10:00:00Z',
+        deliveredAt: '2027-08-22T08:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'delivered-too-old-out', threadId, '2027-09-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
+  it('keeps a request open when its follow-up delivery overtakes the reply', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-follow-up';
+      const request = await guestMail(db, 'delivered-follow-up-request', threadId, '2027-10-01T07:00:00Z');
+      await setPop3Clock(db, 'delivered-follow-up-request', {
+        receivedAt: '2027-10-01T07:00:00Z',
+        createdAt: '2027-10-01T07:30:00Z',
+        deliveredAt: '2027-10-01T08:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'delivered-follow-up-out', threadId, '2027-10-01T09:00:00Z');
+
+      const followUp = await guestMail(db, 'delivered-follow-up', threadId, '2027-10-01T08:30:00Z');
+      await setPop3Clock(db, 'delivered-follow-up', {
+        receivedAt: '2027-10-01T08:30:00Z',
+        createdAt: '2027-10-01T08:58:00Z',
+        deliveredAt: '2027-10-01T09:01:00Z',
+      });
+
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+      expect(followUp).toBe('msg-delivered-follow-up');
+    }));
+
+  it('keeps the Outlook-synced receivedAt rule when POP3 later matches the row', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-outlook-delivered-at';
+      const request = await guestMail(db, 'outlook-delivered-at', threadId, '2027-10-01T10:00:00Z');
+      await setPop3Clock(db, 'outlook-delivered-at', {
+        receivedAt: '2027-10-01T08:00:00Z',
+        createdAt: '2027-10-01T10:30:00Z',
+        deliveredAt: '2027-10-01T09:30:00Z',
+        outlookSynced: true,
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const reply = await hotelMail(db, 'outlook-delivered-at-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([
+        expect.objectContaining({
+          workItemId: item!.id,
+          to: 'done',
+          reason: 'hotel_replied',
+          sentMessageId: reply,
+        }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('does not close on a tie and repeats idempotently', () =>
+    withDb(async (db) => {
+      const threadId = 'thread-delivered-at-tie';
+      const request = await guestMail(db, 'delivered-at-tie', threadId, '2027-10-01T08:00:00Z');
+      await setPop3Clock(db, 'delivered-at-tie', {
+        receivedAt: '2027-10-01T08:00:00Z',
+        createdAt: '2027-10-01T10:00:00Z',
+        deliveredAt: '2027-10-01T09:00:00Z',
+      });
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'delivered-at-tie-out', threadId, '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await refreshThread(db, threadId)).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+});
