@@ -141,10 +141,20 @@ function sameValue(a: FieldEvent['value'] | undefined, b: FieldEvent['value']): 
 }
 
 /**
+ * Whether a row's count moved only because the stay total set it or took it back. The server derives that default from
+ * the total for as long as no count is saved for the row, so the move is not saved: saved, it would read as a staff count
+ * on reopen and the default would stop following the rows. A count she sets or clears on a defaulted row is hers.
+ */
+function countFromStayTotal(group: StayGroupRequirement, old: StayGroupRequirement | undefined): boolean {
+  if (group.fields.quantity === 'defaulted') return true;
+  return old?.fields.quantity === 'defaulted' && group.fields.quantity !== 'staff_corrected';
+}
+
+/**
  * The field events between the rows before and after one edit. Paths use stable ids, so removing one stay never moves
  * another stay's values. A stay's dates go to the stay path. A row or stay that appears logs `.removed: null` (it
  * exists) plus its values; one that goes logs `.removed: true`. Rows with no stable id (the blank reading stay) log
- * nothing.
+ * nothing. A count that only the stay total moved is not logged (countFromStayTotal).
  */
 export function fieldEventsBetween(
   refs: Refs,
@@ -158,10 +168,12 @@ export function fieldEventsBetween(
     const ref = refOf(refs, group);
     if (ref && !priorStay.has(ref.stayId)) priorStay.set(ref.stayId, group);
   }
-  const changed = (now: FieldEvent[], then: FieldEvent[] | null) => {
+  // `always` paths are logged even when the value is unchanged: a default she confirms as her own count.
+  const changed = (now: FieldEvent[], then: FieldEvent[] | null, always?: ReadonlySet<string>) => {
     const old = new Map(then?.map((event) => [event.path, event.value]));
     for (const event of now) {
-      if (then ? !sameValue(old.get(event.path), event.value) : event.value !== null) events.push(event);
+      const forced = always?.has(event.path) ?? false;
+      if (forced || (then ? !sameValue(old.get(event.path), event.value) : event.value !== null)) events.push(event);
     }
   };
   for (const group of after) {
@@ -178,7 +190,14 @@ export function fieldEventsBetween(
     if (!STABLE_ID.test(rowId)) continue;
     const row = `${stay}.rows[${rowId}]`;
     if (!old) events.push({ path: `${row}.removed`, value: null });
-    changed(rowFieldsAt(row, group), old ? rowFieldsAt(row, old) : null);
+    const count = `${row}.count`;
+    const fromTotal = countFromStayTotal(group, old);
+    const confirmed = old?.fields.quantity === 'defaulted' && !fromTotal;
+    changed(
+      rowFieldsAt(row, group).filter((event) => !fromTotal || event.path !== count),
+      old ? rowFieldsAt(row, old) : null,
+      confirmed ? new Set([count]) : undefined,
+    );
   }
   const kept = new Set(after.map((group) => group.id));
   const keptStays = new Set(after.flatMap((group) => refOf(refs, group)?.stayId ?? []));

@@ -2,7 +2,7 @@ import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-b
 import { Field, paneFieldClass, Section } from '../pane-ui';
 import { useEffect, useRef, useState } from 'react';
 import { copyText } from '@/components/quote-workflow/hms-link-actions';
-import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
+import { currentPaneOwner, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 
 // pii: a guest detail the preview gate masks (data-pii). The company or agency is a business name.
 const FIELDS: Array<{ field: ContactField; label: string; pii: boolean }> = [
@@ -55,9 +55,11 @@ export function ContactBlock({
   const copy = async (field: ContactField) => {
     const value = values[field] ?? '';
     if (!value.trim()) return;
+    // The owner is read before the clipboard write, so a switch of mail while it is pending does not move the copy.
+    const owner = currentPaneOwner();
     const copied = await copyText(value);
     setFeedback({ field, copied });
-    if (copied) trackPaneAction({ type: 'copy.contact', field });
+    if (copied) trackPaneAction({ type: 'copy.contact', field }, owner);
     if (resetTimer.current) clearTimeout(resetTimer.current);
     resetTimer.current = setTimeout(() => setFeedback(null), 2000);
   };

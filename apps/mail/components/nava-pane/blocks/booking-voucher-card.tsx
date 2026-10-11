@@ -37,7 +37,9 @@ export function BookingVoucherCard({
   const guestNameParts = guestName?.trim().split(/\s+/).filter(Boolean) ?? [];
   const guestSurname =
     amendment?.guestLastName ?? (guestNameParts.length > 1 ? guestNameParts.at(-1) : null);
-  const arrival = amendment?.arrival ?? lunaGroups.find((group) => group.arrival)?.arrival;
+  // On an amendment the luna groups hold the requested dates, so only the booked arrival (null when the mail does not
+  // state it) goes to HMS. The requested arrival never stands in for it.
+  const arrival = amendment ? amendment.arrival : lunaGroups.find((group) => group.arrival)?.arrival;
   return (
     <>
       <AmendLookupPanel session={session} trpc={trpcClient} />

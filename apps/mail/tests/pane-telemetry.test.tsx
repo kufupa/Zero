@@ -213,4 +213,70 @@ describe('pane telemetry wiring', () => {
     expect(recorded).not.toContain('priya@example.com');
     expect(recorded).not.toContain('64318608-1');
   });
+
+  it('records a link copy that finishes after the pane moves on on the item it started on', async () => {
+    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
+    const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ recorded: 1 }));
+    let finishWrite: () => void = () => undefined;
+    const writeText = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = () => resolve();
+        }),
+    );
+    bindPaneTelemetry({ workItems: { recordActions: { mutate } } });
+    setClipboard({ writeText });
+    setPaneTelemetryScope({ workItemId: 'wi-1', transportId: 'mailbox-a', surface: 'web' });
+
+    render(<HmsLinkActions confirmation="64318608-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    setPaneTelemetryScope({ workItemId: 'wi-2', transportId: 'mailbox-a', surface: 'web' });
+    finishWrite();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeDefined());
+    pageHide();
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledWith(
+      { workItemId: 'wi-1', events: [{ type: 'copy.link', surface: 'web' }] },
+      { context: { activeTransportId: 'mailbox-a' } },
+    );
+  });
+
+  it('records a contact copy that finishes after the pane moves on on the item it started on', async () => {
+    const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ recorded: 1 }));
+    let finishWrite: () => void = () => undefined;
+    const writeText = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = () => resolve();
+        }),
+    );
+    bindPaneTelemetry({ workItems: { recordActions: { mutate } } });
+    setClipboard({ writeText });
+    setPaneTelemetryScope({ workItemId: 'wi-1', transportId: 'mailbox-a', surface: 'web' });
+
+    render(
+      <ContactBlock
+        contact={{
+          name: 'Priya Naidoo',
+          company: 'Example Agency',
+          endClient: null,
+          email: 'priya@example.com',
+          phone: null,
+        }}
+        onEdit={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Copy email' }));
+    setPaneTelemetryScope({ workItemId: 'wi-2', transportId: 'mailbox-a', surface: 'web' });
+    finishWrite();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied email' })).toBeDefined());
+    pageHide();
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledWith(
+      { workItemId: 'wi-1', events: [{ type: 'copy.contact', field: 'email', surface: 'web' }] },
+      { context: { activeTransportId: 'mailbox-a' } },
+    );
+  });
 });

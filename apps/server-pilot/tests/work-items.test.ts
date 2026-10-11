@@ -902,6 +902,37 @@ describe('field events', () => {
     expect(formStays(extracted, {})[1]!.rows[0]!.rooms).toBe(4);
   });
 
+  it('reopens the stay total on the one row left after a removal, with no count saved for it', () => {
+    // The pane saves no count for a total that moves with the rows. These are the paths it saves for add, remove, add.
+    const extracted = payload();
+    extracted.stays[1]!.totalRooms = 6;
+    extracted.stays[1]!.rows[0]!.rooms = null;
+    const added = { [`stays[${STAY_TWO}].rows[r_user01].removed`]: null, [`stays[${STAY_TWO}].rows[r_user01].childAges`]: [] };
+    const removed = { ...added, [`stays[${STAY_TWO}].rows[r_user01].removed`]: true };
+    const addedAgain = {
+      ...removed,
+      [`stays[${STAY_TWO}].rows[r_user02].removed`]: null,
+      [`stays[${STAY_TWO}].rows[r_user02].childAges`]: [],
+    };
+    const roomsOf = (state: Record<string, unknown>) =>
+      formStays(extracted, state).find((stay) => stay.id === STAY_TWO)!.rows.map((row) => row.rooms);
+    const analysisOf = (state: Record<string, unknown>) =>
+      storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, state).analysis;
+
+    // Two rows: the total stays at stay level and neither row takes it.
+    expect(roomsOf(added)).toEqual([null, null]);
+    expect(analysisOf(added).requestedRoomsByStay).toEqual({ [STAY_TWO]: 6 });
+    // One row left: the total is that row's count again, and the read still marks it as the default.
+    expect(roomsOf(removed)).toEqual([6]);
+    expect(analysisOf(removed).groups.find((group) => group.stayId === STAY_TWO)).toMatchObject({
+      quantity: 6,
+      fields: { quantity: 'defaulted' },
+    });
+    // Added again: two rows, so the total moves back to the stay.
+    expect(roomsOf(addedAgain)).toEqual([null, null]);
+    expect(analysisOf(addedAgain).requestedRoomsByStay).toEqual({ [STAY_TWO]: 6 });
+  });
+
   it('keeps a person value through a re-extraction, and the work item stays the same', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'r1');

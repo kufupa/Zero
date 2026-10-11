@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
+import { currentPaneOwner, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 
 /**
  * The HMS handoff for one confirmation number. Copy for HMS combines the configured landing URL with the confirmation
@@ -96,10 +96,12 @@ export function HmsLinkActions({
   if (!number) return null;
 
   const copy = async (target: CopyTarget, text: string) => {
+    // The owner is read before the clipboard write, so a switch of mail while it is pending does not move the copy.
+    const owner = currentPaneOwner();
     const copied = await copyText(text);
     setFeedback({ target, copied });
-    if (copied && target === 'number') trackPaneAction({ type: 'copy.confirmation' });
-    if (copied && (target === 'link' || target === 'hms')) trackPaneAction({ type: 'copy.link' });
+    if (copied && target === 'number') trackPaneAction({ type: 'copy.confirmation' }, owner);
+    if (copied && (target === 'link' || target === 'hms')) trackPaneAction({ type: 'copy.link' }, owner);
     if (copied) {
       toast.success(
         target === 'link'
