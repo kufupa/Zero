@@ -28,7 +28,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import { deriveReplySubject } from './workflows/candidate-draft.js';
-import { workEvent, workItem } from '../db/schema/work.js';
+import { FOLLOW_UP_DRAFT_FIELD_PATH, workEvent, workItem } from '../db/schema/work.js';
 import { canonicalInternetMessageId } from './quote-workflow-analyse-selection.js';
 import { textToSafeHtml } from './draft-evidence.js';
 import { getDb, type DB } from '../db/client.js';
@@ -36,7 +36,8 @@ import { NAVA_USER_ID } from '../db/seed.js';
 import { alias } from 'drizzle-orm/pg-core';
 import { appendWorkEvent } from './work-events.js';
 import { randomUUID } from 'node:crypto';
-import { messageArrivedAt, OUTLOOK_SYNCED } from './work-items.js';
+import { isStaffSender, knownSenders, messageArrivedAt, OUTLOOK_SYNCED, personTouchSql } from './work-items.js';
+import { normalizeEmailAddress } from './never-spam.js';
 
 /**
  * Quote follow-ups (R10). When a quote request's thread gets an outbound message (with or without the quote attached),
@@ -48,8 +49,6 @@ import { messageArrivedAt, OUTLOOK_SYNCED } from './work-items.js';
 export const QUOTE_FOLLOWUP_PROMPT_VERSION = 'quote-followup/1';
 /** Every follow-up draft id starts with this. With the system author and origin manual, it marks the sweep's drafts. */
 export const QUOTE_FOLLOWUP_DRAFT_PREFIX = 'quote-followup:';
-/** work_event field path for the suggestion as a whole. Not a stay path, so the field-event route never writes it. */
-const FOLLOW_UP_FIELD_PATH = 'followUp.draft';
 const FOLLOW_UP_BUSINESS_DAYS = 3;
 const SWEEP_BATCH = 200;
 const DEFER_MS = 5 * 60 * 1000;
@@ -70,7 +69,7 @@ const CLOSED_BY_HOTEL_REPLY = sql`(${workItem}.status = 'done' and ${workItem}.s
   select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id
     and we.type = 'status.changed' and we.value->>'reason' = 'hotel_replied')
   and not exists (
-  select 1 from ${workEvent} as wp where wp.work_item_id = ${workItem}.id and wp.actor_kind = 'user'))`;
+  select 1 from ${workEvent} as wp where wp.work_item_id = ${workItem}.id and ${personTouchSql('wp')}))`;
 /** The sweep's drafts: written as the system author, origin manual, under the id prefix (see writeFollowUp). */
 const IS_FOLLOW_UP_DRAFT = and(
   eq(mailDraft.createdByUserId, NAVA_USER_ID),
@@ -162,6 +161,9 @@ async function threadMessages(db: DB, transportId: string, threadId: string) {
     .select({
       id: message.id,
       direction: message.direction,
+      fromAddress: message.fromAddress,
+      // The transport's own address: with its domain it tells the hotel's own copies from a guest's mail (isStaffSender).
+      mailboxEmail: mailboxTransport.email,
       subject: message.subject,
       toAddresses: message.toAddresses,
       ccAddresses: message.ccAddresses,
@@ -173,6 +175,7 @@ async function threadMessages(db: DB, transportId: string, threadId: string) {
       outlookSynced: OUTLOOK_SYNCED,
     })
     .from(message)
+    .innerJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
     .where(and(eq(message.transportId, transportId), eq(message.threadId, threadId)));
 }
 
@@ -200,18 +203,50 @@ function arrivedTime(m: ThreadMessage): number {
   return messageArrivedAt(m).getTime();
 }
 
-/** A client or staff reply after the quote: a follow-up on it is no longer wanted. */
-function overtaken(thread: ThreadMessage[], sentAtMs: number): boolean {
-  return clientRepliedAfter(thread, sentAtMs) || staffRepliedAfter(thread, sentAtMs);
+/** The hotel's own domain or address on the mailbox (isStaffSender). Its mail is never a guest's. */
+function ownMail(m: ThreadMessage): boolean {
+  return isStaffSender(m.fromAddress, m.mailboxEmail ?? '');
 }
 
+/** A guest's mail, by the planner's rule (work-items planThreadWork): inbound, and not the hotel's own. */
+function isGuestMail(m: ThreadMessage): boolean {
+  return m.direction === 'inbound' && !ownMail(m);
+}
+
+/**
+ * The hotel's own copy of a send: inbound from the hotel's domain at an exact address the transport has sent from. Only
+ * such a copy is the hotel's answer (the planner's rule, P1 4240335634), so a forged From on the domain is nobody's.
+ */
+function isHotelCopy(m: ThreadMessage, sentFrom: ReadonlySet<string>): boolean {
+  return m.direction === 'inbound' && ownMail(m) && sentFrom.has(normalizeEmailAddress(m.fromAddress));
+}
+
+/** The From addresses of the thread's own-domain inbound mail: the only ones whose sent-from status can matter. */
+function ownDomainAddresses(thread: ThreadMessage[]): string[] {
+  return thread.flatMap((m) => (m.direction === 'inbound' && ownMail(m) ? [m.fromAddress] : []));
+}
+
+/** A client or staff reply after the quote: a follow-up on it is no longer wanted. */
+function overtaken(thread: ThreadMessage[], sent: ThreadMessage, sentFrom: ReadonlySet<string>): boolean {
+  return clientRepliedAfter(thread, sentTime(sent)) || staffRepliedAfter(thread, sent, sentFrom);
+}
+
+/**
+ * A client's reply after the quote. The hotel's own copies are not a client's (a copy fetched after its send time used to
+ * clear the follow-up clock on every sweep, and the sweep restarted it again).
+ */
 function clientRepliedAfter(thread: ThreadMessage[], sentAtMs: number): boolean {
-  return thread.some((m) => m.direction === 'inbound' && arrivedTime(m) > sentAtMs);
+  return thread.some((m) => isGuestMail(m) && arrivedTime(m) > sentAtMs);
 }
 
 /** Staff sent something else on the thread after the quote, so a follow-up is no longer needed. */
-function staffRepliedAfter(thread: ThreadMessage[], sentAtMs: number): boolean {
-  return thread.some((m) => m.direction === 'outbound' && sentTime(m) > sentAtMs);
+function staffRepliedAfter(thread: ThreadMessage[], sent: ThreadMessage, sentFrom: ReadonlySet<string>): boolean {
+  const sentAtMs = sentTime(sent);
+  return thread.some((m) => {
+    if (m.direction === 'outbound') return sentTime(m) > sentAtMs;
+    const at = deliveredTime(m);
+    return at !== null && at > sentAtMs && isHotelCopy(m, sentFrom);
+  });
 }
 
 /**
@@ -270,7 +305,9 @@ async function discardOvertakenFollowUps(db: DB, now: Date): Promise<number> {
       if (!draft.threadId || !draft.replyToMessageId) continue;
       const thread = await threadMessages(db, draft.transportId, draft.threadId);
       const sent = thread.find((m) => m.id === draft.replyToMessageId);
-      if (!sent || !overtaken(thread, sentTime(sent))) continue;
+      if (!sent) continue;
+      const sentFrom = await knownSenders(db, draft.transportId, ownDomainAddresses(thread));
+      if (!overtaken(thread, sent, sentFrom)) continue;
       const [row] = await db
         .update(mailDraft)
         .set({ status: 'discarded', updatedAt: now })
@@ -501,11 +538,15 @@ async function writeFollowUp(
   if (item.status !== 'needs_you' && item.status !== 'review' && !item.closedByReply) return 'closed';
   if (item.sentMessageId !== run.triggerMessageId) return 'superseded';
   const thread = await threadMessages(db, run.transportId, item.threadId);
-  const sent = thread.find((m) => m.id === run.triggerMessageId && m.direction === 'outbound');
+  // The quote the follow-up is for: our send, or the hotel's own copy of its answer when the reply link is that copy.
+  const sentFrom = await knownSenders(db, run.transportId, ownDomainAddresses(thread));
+  const sent = thread.find(
+    (m) => m.id === run.triggerMessageId && (m.direction === 'outbound' || isHotelCopy(m, sentFrom)),
+  );
   if (!sent) return 'no_sent_message';
   if (deliveredTime(sent) === null) return 'not_sent';
   if (clientRepliedAfter(thread, sentTime(sent))) return 'client_replied';
-  if (staffRepliedAfter(thread, sentTime(sent))) return 'staff_replied';
+  if (staffRepliedAfter(thread, sent, sentFrom)) return 'staff_replied';
 
   const [transport] = await db
     .select({ displayName: mailboxTransport.displayName })
@@ -743,7 +784,9 @@ export async function useFollowUpDraft(
       // A reply since the quote overtakes the suggestion even before the sweep discards it.
       const thread = await threadMessages(tx as unknown as DB, draft.transportId, draft.threadId);
       const sent = thread.find((m) => m.id === draft.replyToMessageId);
-      if (!sent || overtaken(thread, sentTime(sent))) return { status: 'not_found' as const };
+      if (!sent) return { status: 'not_found' as const };
+      const sentFrom = await knownSenders(tx as unknown as DB, draft.transportId, ownDomainAddresses(thread));
+      if (overtaken(thread, sent, sentFrom)) return { status: 'not_found' as const };
       const [active] = await tx
         .select({ id: mailDraft.id })
         .from(mailDraft)
@@ -788,7 +831,7 @@ export async function useFollowUpDraft(
         workItemId,
         type: 'field.accept',
         actorUserId: input.userId,
-        fieldPath: FOLLOW_UP_FIELD_PATH,
+        fieldPath: FOLLOW_UP_DRAFT_FIELD_PATH,
         aiValue: draft.textBody,
         value: draft.textBody,
         aiSource: QUOTE_FOLLOWUP_PROMPT_VERSION,
@@ -836,7 +879,7 @@ export async function dismissFollowUpDraft(
       workItemId,
       type: 'field.reject',
       actorUserId: input.userId,
-      fieldPath: FOLLOW_UP_FIELD_PATH,
+      fieldPath: FOLLOW_UP_DRAFT_FIELD_PATH,
       aiValue: draft.textBody,
       value: null,
       aiSource: QUOTE_FOLLOWUP_PROMPT_VERSION,

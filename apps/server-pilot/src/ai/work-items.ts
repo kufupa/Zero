@@ -1,7 +1,14 @@
-import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, notExists, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
-import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
+import { sqlList } from '../db/schema/hitl.js';
+import {
+  FOLLOW_UP_DRAFT_FIELD_PATH,
+  mailExtraction,
+  TELEMETRY_EVENT_TYPES,
+  workEvent,
+  workItem,
+} from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
 import type { ExtractionRow, ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
 import {
@@ -634,7 +641,8 @@ async function restoreSupersededItem(
 /**
  * A newer read that changes the kind gets its own work item, so the item made from the older read would stay in Needs
  * you beside it. That older item is dismissed, with a system event, only while nobody has touched it: still needs_you,
- * no saved values, no event from a person, and on a read older than the latest. Anything else is left as it is.
+ * no saved values, no decision from a person (see personTouchSql), and on a read older than the latest.
+ * Anything else is left as it is.
  */
 async function dismissSupersededItems(
   db: DB,
@@ -663,7 +671,9 @@ async function dismissSupersededItems(
             tx
               .select({ one: sql`1` })
               .from(workEvent)
-              .where(and(eq(workEvent.workItemId, workItem.id), eq(workEvent.actorKind, 'user'))),
+              .where(
+                and(eq(workEvent.workItemId, workItem.id), personTouchSql('work_event')),
+              ),
           ),
         ),
       );
@@ -721,7 +731,7 @@ function leftAt(m: ThreadMail): number | null {
  * outlook.com, ...) the domain is shared by every sender, so only the exact mailbox address counts there.
  * ponytail: aliases are not checked.
  */
-function isStaffSender(fromAddress: string, mailboxEmail: string): boolean {
+export function isStaffSender(fromAddress: string, mailboxEmail: string): boolean {
   const from = normalizeEmailAddress(fromAddress);
   const mailbox = normalizeEmailAddress(mailboxEmail);
   if (!from.includes('@') || !mailbox.includes('@')) return false;
@@ -729,6 +739,42 @@ function isStaffSender(fromAddress: string, mailboxEmail: string): boolean {
   const domainOf = (address: string) => address.slice(address.lastIndexOf('@') + 1);
   const domain = domainOf(mailbox);
   return !PUBLIC_MAIL_DOMAINS.has(domain) && domainOf(from) === domain;
+}
+
+/**
+ * The given addresses that the transport has sent from: an outbound message on it has that From. The From can carry a
+ * display name ("Ops <ops@x>"), so both sides are reduced to the bare address by normalizeEmailAddress. Nothing stores an
+ * authentication result, so this is the only evidence that a same-domain mail is the hotel's own. Not limited in time, so
+ * a rerun, or a backfill, plans what the live rules plan whatever order the mail landed in.
+ */
+export async function knownSenders(db: WorkTx, transportId: string, fromAddresses: string[]): Promise<Set<string>> {
+  const wanted = [...new Set(fromAddresses.map((address) => normalizeEmailAddress(address)).filter(Boolean))];
+  if (!wanted.length) return new Set();
+  // The bare address is a substring of its lower-cased From, so this prefilter drops no match.
+  const rows = await db
+    .selectDistinct({ from: message.fromAddress })
+    .from(message)
+    .where(
+      and(
+        eq(message.transportId, transportId),
+        eq(message.direction, 'outbound'),
+        or(...wanted.map((address) => sql`strpos(lower(${message.fromAddress}), ${address}) > 0`)),
+      ),
+    );
+  const sent = new Set(rows.map((row) => normalizeEmailAddress(row.from)));
+  return new Set(wanted.filter((address) => sent.has(address)));
+}
+
+/**
+ * SQL for "a person touched this work item", over the work_event alias the caller's query uses. The planner, the
+ * dismissal sweep and the quote follow-up's close check all read it. A person's user event counts, except pane telemetry
+ * and a plain field.accept (an AI value confirmed as read). The follow-up suggestion's accept is the exception: using it
+ * from the Outlook reminder is the person's decision to send the follow-up.
+ */
+export function personTouchSql(alias: string): SQL {
+  const e = sql.raw(alias);
+  return sql`(${e}.actor_kind = 'user' and ${e}.type not in (${sqlList(TELEMETRY_EVENT_TYPES)})
+    and (${e}.type <> 'field.accept' or ${e}.field_path = ${FOLLOW_UP_DRAFT_FIELD_PATH}))`;
 }
 
 /**
@@ -744,14 +790,20 @@ export type ThreadWorkChange =
 
 /**
  * The status changes the thread's work needs, read from its mail and items. A change only touches an untouched item: no
- * event from a person and no saved values. Rules, on the source mail's time (arrivedAt):
+ * decision from a person (see personTouchSql) and no saved values. Rules, on the source mail's time
+ * (arrivedAt):
  * - Reply link (C2): a needs-you item is done (hotel_replied, sent_at and sent_message_id set) when the hotel's latest
- *   mail after it is later than the guest's latest mail after it. A done item a later guest mail reopens goes back to
- *   needs-you (new_inbound), and its reply link moves to the hotel's next answer. A done item with no reply link (closed
- *   before the link existed) gets the same treatment, with the hotel's latest answer as its link. A person's close stays.
+ *   mail after it is later than the guest's latest mail after it. The hotel's mail is an outbound one, or an inbound one
+ *   from the mailbox's own domain at an exact address the transport has sent from (a copy of its reply, counted by when it
+ *   left; a forged own-domain From is neither). A guest mail is any other inbound one, counted by when it arrived, so an
+ *   own-domain copy never reopens an item. A done item a later guest mail
+ *   reopens goes back to needs-you (new_inbound), and its reply link moves to the hotel's next answer. A done item with
+ *   no reply link (closed before the link existed) gets the same treatment, with the hotel's latest answer as its link.
+ *   A person's close stays.
  * - Same-thread collapse (C3): an older needs-you item is dismissed (superseded_by_thread) when a newer needs-you item of
  *   any kind but other is on the thread. A newer "other" mail never supersedes a request.
- * - Staff-sent other: an "other" mail from the mailbox's own address or domain gets no needs-you (done, staff_sent_other).
+ * - Staff-sent other: an "other" mail the hotel sent (an outbound one, or a copy as above) gets no needs-you (done,
+ *   staff_sent_other).
  * Makes no writes. Items of kind spam are left out.
  */
 export async function planThreadWork(
@@ -772,7 +824,7 @@ export async function planThreadWork(
       state: workItem.state,
       // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
       // "id" binds to the subquery's own table and the check is always false.
-      touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and we.actor_kind = 'user')`,
+      touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and ${personTouchSql('we')})`,
     })
     .from(workItem)
     .where(
@@ -805,13 +857,27 @@ export async function planThreadWork(
     .where(and(eq(message.transportId, input.transportId), eq(message.threadId, input.threadId)));
 
   const byId = new Map(mail.map((m) => [m.id, m]));
-  const guest = mail.flatMap((m) => (m.direction === 'inbound' ? [{ m, at: arrivedAt(m) }] : []));
+  // The hotel's own mail lands as inbound too (a sent-item copy or a CC), so it is the hotel's answer, not a guest's. But
+  // a forged From on the hotel's domain is neither: only an exact address the transport has sent from counts as the hotel.
+  const mailboxEmail = mailbox?.email ?? '';
+  const ownDomain = (m: ThreadMail) => isStaffSender(m.fromAddress, mailboxEmail);
+  const sentFrom = await knownSenders(
+    db,
+    input.transportId,
+    mail.flatMap((m) => (m.direction === 'inbound' && ownDomain(m) ? [m.fromAddress] : [])),
+  );
+  const ownSent = (m: ThreadMail) =>
+    ownDomain(m) && (m.direction === 'outbound' || sentFrom.has(normalizeEmailAddress(m.fromAddress)));
+  const guest = mail.flatMap((m) => (m.direction === 'inbound' && !ownDomain(m) ? [{ m, at: arrivedAt(m) }] : []));
   const hotel = mail.flatMap((m) => {
-    const at = m.direction === 'outbound' ? leftAt(m) : null;
+    const at = m.direction === 'outbound' || ownSent(m) ? leftAt(m) : null;
     return at === null ? [] : [{ m, at }];
   });
-  const latest = <T extends { at: number }>(rows: T[]) =>
-    rows.reduce<T | undefined>((best, row) => (!best || row.at > best.at ? row : best), undefined);
+  // A tie (a copy has the reply's sent time) goes to the outbound row, then the lower id, so a rerun never moves a link.
+  const later = <T extends { at: number; m: ThreadMail }>(a: T, b: T) =>
+    a.at !== b.at ? a.at > b.at : a.m.direction !== b.m.direction ? a.m.direction === 'outbound' : a.m.id < b.m.id;
+  const latest = <T extends { at: number; m: ThreadMail }>(rows: T[]) =>
+    rows.reduce<T | undefined>((best, row) => (!best || later(row, best) ? row : best), undefined);
   const changes: ThreadWorkChange[] = [];
   // The items that are needs-you once these changes land. Only untouched ones can be superseded.
   const open: Array<{ id: string; kind: MailKind; at: number; untouched: boolean }> = [];
@@ -829,7 +895,10 @@ export async function planThreadWork(
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
     const answered = lastHotel !== undefined && (lastGuest === undefined || lastHotel.at > lastGuest.at);
-    const staffOther = kind === 'other' && isStaffSender(source.fromAddress, mailbox?.email ?? '');
+    const staffOther = kind === 'other' && ownSent(source);
+    // A done other mail from the mailbox's domain stays as it is: #172 closed these on the domain alone, and no later mail
+    // reopens, re-links or dismisses one. Only the sent-from check above closes a needs-you one.
+    const domainOther = kind === 'other' && ownDomain(source);
     if (item.status === 'needs_you') {
       if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
@@ -845,7 +914,7 @@ export async function planThreadWork(
       } else {
         open.push({ id: item.id, kind, at, untouched: true });
       }
-    } else if (!staffOther) {
+    } else if (!domainOther) {
       // Closed by a hotel reply: reopened by a later guest mail, or re-pointed at the hotel's latest answer. A done row the
       // rules closed before the reply link existed has no link, so the hotel's latest answer stands in for it (the
       // backfill links it). Only a row a person touched is left alone, as above.

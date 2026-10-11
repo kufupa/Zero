@@ -62,6 +62,29 @@ export const WORK_EVENT_TYPES = [
   'note.staff',
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
+/**
+ * User events that are not a person's decision on the item: pane telemetry (B1) and the dismissal. A plain field.accept
+ * (an AI value confirmed as read without a correction) is not one either, but the follow-up suggestion's accept is. Every
+ * reader of "touched" goes through personTouchSql (work-items.ts), which applies both rules.
+ */
+export const TELEMETRY_EVENT_TYPES = [
+  'pane.opened',
+  'copy.hms_line',
+  'copy.confirmation',
+  'reply.inserted',
+  'reply.saved',
+  'pdf.created',
+  'excel.downloaded',
+  'hms.lookup.started',
+  'hms.lookup.finished',
+  'item.dismissed',
+] as const;
+/**
+ * work_event field path of the quote follow-up suggestion as a whole (R10). Not a stay path, so the field-event route
+ * never writes it. Its field.accept (useFollowUpDraft, from the Outlook reminder) is the person's decision to send the
+ * follow-up, so it touches the item. Its field.reject (dismissFollowUpDraft) already did.
+ */
+export const FOLLOW_UP_DRAFT_FIELD_PATH = 'followUp.draft';
 export const EVAL_LABEL_KINDS = ['correction', 'confirmation', 'run_flag', 'note'] as const;
 export const EVAL_LABEL_SPLITS = ['dev', 'holdout', 'test'] as const;
 
