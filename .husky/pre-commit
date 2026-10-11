@@ -3,6 +3,12 @@ set -e
 # oxlint 1.9 does not honor ignorePatterns in .oxlintrc.json; keep CLI ignore too.
 # Lint staged JS/TS only so submodule sources and untracked WIP cannot block the gate.
 # Full-tree lint remains `pnpm precommit` and CI.
-staged=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(cjs|cts|js|jsx|mjs|mts|ts|tsx)$' | grep -v '^external/' || true)
+changed=$(git diff --cached --name-only --diff-filter=ACMR)
+# Entity literals in server-pilot src may only shrink (pnpm check:entities, about 1 s). Runs only when that tree,
+# its baseline or its checker is staged, so other commits pay nothing.
+if echo "$changed" | grep -qE '^apps/server-pilot/(src/|scripts/(check-entity-literals\.mjs|entity-literals-baseline\.json))'; then
+  pnpm --dir apps/server-pilot check:entities
+fi
+staged=$(echo "$changed" | grep -E '\.(cjs|cts|js|jsx|mjs|mts|ts|tsx)$' | grep -v '^external/' || true)
 [ -n "$staged" ] || exit 0
 echo "$staged" | xargs pnpm dlx oxlint@1.9.0 --deny-warnings --ignore-pattern 'external/**'
