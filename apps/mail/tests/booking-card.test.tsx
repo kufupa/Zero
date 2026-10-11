@@ -1382,7 +1382,7 @@ describe('booking card HMS notes copy', () => {
       'Company: Acme Travel',
       'Special requests: Cot',
       'Discount authorised by: Thandi approved',
-      'Rate: TAXYZ R1850.00 per night',
+      'Rate: NCOR1B R1850.00 per night',
     ];
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);

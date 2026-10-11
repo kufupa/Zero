@@ -807,7 +807,7 @@ export function BookingCards({
                     specialRequests: group?.specialRequests,
                     authorisedBy: override?.note,
                     rate: {
-                      code: textValue(request.ratePlan),
+                      code: override?.rateCode ?? textValue(request.ratePlan),
                       nightlyMinor: price ? [price.amountMinor] : undefined,
                       board: BOARD_LABELS[room.board ?? ''],
                     },
