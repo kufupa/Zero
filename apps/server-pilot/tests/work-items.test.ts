@@ -2335,7 +2335,126 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
       ]);
       expect(await replyStatus(db, item!.id)).toBe('done');
     }));
+
+  it('a sent-from address stored with a display name still matches its bare copy (C2b)', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'named-1', 'thread-named-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await sentFromBefore(db, 'named-1', `Ops Team <${STAFF}>`);
+      const copy = await staffCopy(db, 'named-1-cc', 'thread-named-1', '2027-10-01T09:00:00Z', '2027-10-01T09:02:00Z');
+      expect(await refreshThread(db, 'thread-named-1')).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: copy }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('a sent-from address stored with a display name matches a copy that carries one too (C2b)', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'named-2', 'thread-named-2', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await sentFromBefore(db, 'named-2', `Ops Team <${STAFF}>`);
+      const copy = await staffCopy(
+        db,
+        'named-2-cc',
+        'thread-named-2',
+        '2027-10-01T09:00:00Z',
+        '2027-10-01T09:02:00Z',
+        `Ops Team <${STAFF}>`,
+      );
+      expect(await refreshThread(db, 'thread-named-2')).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: copy }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('an other mail from the mailbox domain, never sent from, stays closed when a guest writes (C2b)', () =>
+    withDb(async (db) => {
+      // #172 closed this item as staff_sent_other on the domain alone, so no outbound from its sender exists.
+      // The thread's first mail is a guest's, before the copy, so the thread row exists.
+      await guestMail(db, 'frozen-1-first', 'thread-frozen-1', '2027-10-01T07:00:00Z');
+      const source = await staffCopy(
+        db,
+        'frozen-1',
+        'thread-frozen-1',
+        '2027-10-01T08:00:00Z',
+        '2027-10-01T08:02:00Z',
+        FORGED,
+      );
+      await readOf(db, source, 'other');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: source });
+      await db.update(workItem).set({ status: 'done' }).where(eq(workItem.id, item!.id));
+      await sentOnThread(db, 'frozen-1-hotel', 'thread-frozen-1', '2027-10-01T09:00:00Z');
+      await guestMail(db, 'frozen-1-guest', 'thread-frozen-1', '2027-10-01T10:00:00Z');
+      expect(await refreshThread(db, 'thread-frozen-1')).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('a newer request on the thread does not dismiss such an other mail (C2b)', () =>
+    withDb(async (db) => {
+      // The thread's first mail is a guest's, before the copy, so the thread row exists.
+      await guestMail(db, 'frozen-2-first', 'thread-frozen-2', '2027-10-01T07:00:00Z');
+      const source = await staffCopy(
+        db,
+        'frozen-2',
+        'thread-frozen-2',
+        '2027-10-01T08:00:00Z',
+        '2027-10-01T08:02:00Z',
+        FORGED,
+      );
+      await readOf(db, source, 'other');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: source });
+      await db.update(workItem).set({ status: 'done' }).where(eq(workItem.id, item!.id));
+      await sentOnThread(db, 'frozen-2-hotel', 'thread-frozen-2', '2027-10-01T09:00:00Z');
+      const request = await guestMail(db, 'frozen-2-request', 'thread-frozen-2', '2027-10-01T10:00:00Z');
+      await readOf(db, request, 'quote');
+      await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      expect(await refreshThread(db, 'thread-frozen-2')).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('a hotel answer does not re-link such an other mail (C2b)', () =>
+    withDb(async (db) => {
+      // The thread's first mail is a guest's, before the copy, so the thread row exists.
+      await guestMail(db, 'frozen-3-first', 'thread-frozen-3', '2027-10-01T07:00:00Z');
+      const source = await staffCopy(
+        db,
+        'frozen-3',
+        'thread-frozen-3',
+        '2027-10-01T08:00:00Z',
+        '2027-10-01T08:02:00Z',
+        FORGED,
+      );
+      await readOf(db, source, 'other');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: source });
+      await db.update(workItem).set({ status: 'done' }).where(eq(workItem.id, item!.id));
+      await sentOnThread(db, 'frozen-3-hotel', 'thread-frozen-3', '2027-10-01T09:00:00Z');
+      expect(await refreshThread(db, 'thread-frozen-3')).toEqual([]);
+      const [row] = await db
+        .select({ sentMessageId: workItem.sentMessageId })
+        .from(workItem)
+        .where(eq(workItem.id, item!.id));
+      expect(row?.sentMessageId).toBeNull();
+    }));
 });
+
+/** A reply the transport sent from its own address on a thread: the hotel's mail to the planner. */
+async function sentOnThread(db: DB, id: string, threadId: string, sentAt: string): Promise<void> {
+  await db.insert(message).values({
+    id: `msg-${id}`,
+    transportId: CENTURION,
+    threadId,
+    direction: 'outbound',
+    fromAddress: STAFF,
+    toAddresses: [GUEST],
+    subject: 'Re: Rooms request',
+    textBody: 'Our reply.',
+    ownerHeaderValue: MAILBOX,
+    messageIdHeader: `${id}@example.com`,
+    sentAt: new Date(sentAt),
+  });
+}
 
 describe('reply link backfill (C2, C3)', () => {
   it('is a dry run unless --apply is passed', () => {

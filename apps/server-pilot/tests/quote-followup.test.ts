@@ -1394,3 +1394,37 @@ describe('a hotel copy as the reply link (C2b) neither clears nor restarts the f
     });
   });
 });
+
+describe('a follow-up used from the Outlook reminder counts as a touch on the quote (C2b)', () => {
+  it('a hotel reply after the use does not close the quote, since the use is the person touch', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const { itemId, draftId } = await suggestionFor(db, 'thread-reminder-touch');
+      const used = await useFollowUpDraft(db, { transportId: TRANSPORT, userId: STAFF, draftId, replaceActive: false });
+      expect(used.status).toBe('used');
+
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-reminder-touch' });
+      expect((await loadItem(db, itemId)).status).toBe('needs_you');
+    });
+  });
+
+  it('a plain AI-value accept is not a touch: the same hotel reply still closes the quote', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-plain-accept', REQUEST_AT);
+      await sendReply(db, { id: 'out-plain-accept', threadId: 'thread-plain-accept', sentAt: FRI_SEND });
+      await db.insert(workEvent).values({
+        workItemId: itemId,
+        actorKind: 'user',
+        actorUserId: STAFF,
+        type: 'field.accept',
+        fieldPath: 'contact.phone',
+        aiValue: '0215550100',
+        value: '0215550100',
+      });
+
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-plain-accept' });
+      expect((await loadItem(db, itemId)).status).toBe('done');
+    });
+  });
+});

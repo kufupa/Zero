@@ -63,9 +63,9 @@ export const WORK_EVENT_TYPES = [
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
 /**
- * User events that are not a person's decision on the item: pane telemetry (B1), the dismissal, and field.accept, which
- * confirms an AI value as read without a correction. Any other event a person wrote counts as touching the item (the
- * thread rules and the quote follow-up's close check both read it). Table-qualified SQL: sqlList in the readers.
+ * User events that are not a person's decision on the item: pane telemetry (B1) and the dismissal. A plain field.accept
+ * (an AI value confirmed as read without a correction) is not one either, but the follow-up suggestion's accept is. Every
+ * reader of "touched" goes through personTouchSql (work-items.ts), which applies both rules.
  */
 export const TELEMETRY_EVENT_TYPES = [
   'pane.opened',
@@ -78,8 +78,13 @@ export const TELEMETRY_EVENT_TYPES = [
   'hms.lookup.started',
   'hms.lookup.finished',
   'item.dismissed',
-  'field.accept',
 ] as const;
+/**
+ * work_event field path of the quote follow-up suggestion as a whole (R10). Not a stay path, so the field-event route
+ * never writes it. Its field.accept (useFollowUpDraft, from the Outlook reminder) is the person's decision to send the
+ * follow-up, so it touches the item. Its field.reject (dismissFollowUpDraft) already did.
+ */
+export const FOLLOW_UP_DRAFT_FIELD_PATH = 'followUp.draft';
 export const EVAL_LABEL_KINDS = ['correction', 'confirmation', 'run_flag', 'note'] as const;
 export const EVAL_LABEL_SPLITS = ['dev', 'holdout', 'test'] as const;
 

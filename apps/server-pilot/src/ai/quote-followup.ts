@@ -28,8 +28,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import { deriveReplySubject } from './workflows/candidate-draft.js';
-import { sqlList } from '../db/schema/hitl.js';
-import { TELEMETRY_EVENT_TYPES, workEvent, workItem } from '../db/schema/work.js';
+import { FOLLOW_UP_DRAFT_FIELD_PATH, workEvent, workItem } from '../db/schema/work.js';
 import { canonicalInternetMessageId } from './quote-workflow-analyse-selection.js';
 import { textToSafeHtml } from './draft-evidence.js';
 import { getDb, type DB } from '../db/client.js';
@@ -37,7 +36,7 @@ import { NAVA_USER_ID } from '../db/seed.js';
 import { alias } from 'drizzle-orm/pg-core';
 import { appendWorkEvent } from './work-events.js';
 import { randomUUID } from 'node:crypto';
-import { isStaffSender, knownSenders, messageArrivedAt, OUTLOOK_SYNCED } from './work-items.js';
+import { isStaffSender, knownSenders, messageArrivedAt, OUTLOOK_SYNCED, personTouchSql } from './work-items.js';
 import { normalizeEmailAddress } from './never-spam.js';
 
 /**
@@ -50,8 +49,6 @@ import { normalizeEmailAddress } from './never-spam.js';
 export const QUOTE_FOLLOWUP_PROMPT_VERSION = 'quote-followup/1';
 /** Every follow-up draft id starts with this. With the system author and origin manual, it marks the sweep's drafts. */
 export const QUOTE_FOLLOWUP_DRAFT_PREFIX = 'quote-followup:';
-/** work_event field path for the suggestion as a whole. Not a stay path, so the field-event route never writes it. */
-const FOLLOW_UP_FIELD_PATH = 'followUp.draft';
 const FOLLOW_UP_BUSINESS_DAYS = 3;
 const SWEEP_BATCH = 200;
 const DEFER_MS = 5 * 60 * 1000;
@@ -72,8 +69,7 @@ const CLOSED_BY_HOTEL_REPLY = sql`(${workItem}.status = 'done' and ${workItem}.s
   select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id
     and we.type = 'status.changed' and we.value->>'reason' = 'hotel_replied')
   and not exists (
-  select 1 from ${workEvent} as wp where wp.work_item_id = ${workItem}.id and wp.actor_kind = 'user'
-    and wp.type not in (${sqlList(TELEMETRY_EVENT_TYPES)})))`;
+  select 1 from ${workEvent} as wp where wp.work_item_id = ${workItem}.id and ${personTouchSql('wp')}))`;
 /** The sweep's drafts: written as the system author, origin manual, under the id prefix (see writeFollowUp). */
 const IS_FOLLOW_UP_DRAFT = and(
   eq(mailDraft.createdByUserId, NAVA_USER_ID),
@@ -835,7 +831,7 @@ export async function useFollowUpDraft(
         workItemId,
         type: 'field.accept',
         actorUserId: input.userId,
-        fieldPath: FOLLOW_UP_FIELD_PATH,
+        fieldPath: FOLLOW_UP_DRAFT_FIELD_PATH,
         aiValue: draft.textBody,
         value: draft.textBody,
         aiSource: QUOTE_FOLLOWUP_PROMPT_VERSION,
@@ -883,7 +879,7 @@ export async function dismissFollowUpDraft(
       workItemId,
       type: 'field.reject',
       actorUserId: input.userId,
-      fieldPath: FOLLOW_UP_FIELD_PATH,
+      fieldPath: FOLLOW_UP_DRAFT_FIELD_PATH,
       aiValue: draft.textBody,
       value: null,
       aiSource: QUOTE_FOLLOWUP_PROMPT_VERSION,
