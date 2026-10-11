@@ -525,6 +525,67 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
       expect(batch.items[0]).toMatchObject({ reason: 'spam', runId: null });
     }));
 
+  it('queues an item whose extraction label says spam when staff cleared the thread spam', () =>
+    withSeededTestDb(async (db) => {
+      const [item] = await seedBatchItems(db, 1);
+      // spamAt is the gate. The extraction label alone is not spam, and staff can clear spam on this thread.
+      await db.update(mailExtraction).set({ kind: 'spam' }).where(eq(mailExtraction.id, item!.extractionId));
+      const batch = await enqueueBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: [item!.workItemId],
+        },
+        db,
+      );
+      expect(batch.items[0]).toMatchObject({ status: 'queued', reason: null });
+    }));
+
+  it('queues on the message text when the only extraction failed', () =>
+    withSeededTestDb(async (db) => {
+      const [item] = await seedBatchItems(db, 1, {
+        item: () => ({ textBody: `Please look at booking ${confirmationFor(0)} for the guest.` }),
+      });
+      await db.update(mailExtraction).set({ status: 'failed', payload: null }).where(eq(mailExtraction.id, item!.extractionId));
+      const batch = await enqueueBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: [item!.workItemId],
+        },
+        db,
+      );
+      expect(batch.items[0]).toMatchObject({ status: 'queued', reason: null });
+      expect(batch.items[0]!.request).toMatchObject({ kind: 'find', confirmation: confirmationFor(0) });
+    }));
+
+  it('a newer failed extraction does not hide the older succeeded one', () =>
+    withSeededTestDb(async (db) => {
+      const [item] = await seedBatchItems(db, 1);
+      await db.insert(mailExtraction).values({
+        messageId: item!.messageId,
+        extractorVersion: `batch-test-failed-${randomUUID()}`,
+        status: 'failed',
+        kind: null,
+        payload: null,
+        createdAt: new Date(Date.now() + 60_000),
+      });
+      const batch = await enqueueBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: [item!.workItemId],
+        },
+        db,
+      );
+      // The confirmation exists only in the older succeeded payload, so the lookup must come from it.
+      expect(batch.items[0]).toMatchObject({ status: 'queued', reason: null });
+      expect(batch.items[0]!.request).toMatchObject({ kind: 'find', confirmation: confirmationFor(0) });
+    }));
+
   it('batch enqueue and cancel never take the property lock', () =>
     withSeededTestDb(async (db) => {
       const [item] = await seedBatchItems(db, 1);
@@ -867,7 +928,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
     try {
       await setup.db.insert(mailboxTransport).values({ id: transportId, email, ownerHeaderValue: email });
       const items = await seedBatchItems(setup.db, 2, { transportId });
-      await enqueueBatch(
+      const batch = await enqueueBatch(
         {
           batchId: randomUUID(),
           transportId,
@@ -876,12 +937,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
         },
         setup.db,
       );
+      // Both claimers are scoped to this transport, so only this batch's runs are candidates.
       const claims = await Promise.all([
         claimNextAiRun({
           ownerId: 'hms-ai-worker-left',
           lane: 'hms',
           runKind: 'read_tool',
           promptVersion: HMS_JOB_PROMPT_VERSION,
+          transportId,
           db: left.db,
         }),
         claimNextAiRun({
@@ -889,14 +952,140 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
           lane: 'hms',
           runKind: 'read_tool',
           promptVersion: HMS_JOB_PROMPT_VERSION,
+          transportId,
           db: right.db,
         }),
       ]);
       expect(claims.every(Boolean)).toBe(true);
-      expect(new Set(claims.map((run) => run?.id)).size).toBe(2);
+      // Together the two claims cover both batch runs exactly once.
+      expect(claims.map((run) => run!.id).sort()).toEqual(batch.items.map((item) => item.runId!).sort());
     } finally {
       await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
       await Promise.all([setup.close(), left.close(), right.close()]);
     }
   });
+
+  it('overlapping batches on one transport share one lookup for the same work item', async () => {
+    const setup = openTestDbSession();
+    const left = openTestDbSession();
+    const right = openTestDbSession();
+    const transportId = `batch-overlap-${randomUUID()}`;
+    const email = `${transportId}@example.test`;
+    try {
+      await setup.db.insert(mailboxTransport).values({ id: transportId, email, ownerHeaderValue: email });
+      const [item] = await seedBatchItems(setup.db, 1, { transportId });
+      // Different batchIds, so a per-batch lock would not serialize these; the transport lock does.
+      const [first, second] = await Promise.all([
+        enqueueBatch(
+          { batchId: randomUUID(), transportId, userId: CENTURION_USER_ID, workItemIds: [item!.workItemId] },
+          left.db,
+        ),
+        enqueueBatch(
+          { batchId: randomUUID(), transportId, userId: CENTURION_USER_ID, workItemIds: [item!.workItemId] },
+          right.db,
+        ),
+      ]);
+      expect(second.items[0]!.runId).toBe(first.items[0]!.runId);
+      const runs = await setup.db
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .where(and(eq(aiWorkflowRun.transportId, transportId), eq(aiWorkflowRun.workItemId, item!.workItemId)));
+      expect(runs).toHaveLength(1);
+    } finally {
+      await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+      await Promise.all([setup.close(), left.close(), right.close()]);
+    }
+  });
+
+  it('restart sweep waits for a row a batch transaction holds instead of skipping it', async () => {
+    const setup = openTestDbSession();
+    const holder = openTestDbSession();
+    const transportId = `batch-sweep-${randomUUID()}`;
+    const email = `${transportId}@example.test`;
+    try {
+      await setup.db.insert(mailboxTransport).values({ id: transportId, email, ownerHeaderValue: email });
+      const [item] = await seedBatchItems(setup.db, 1, { transportId });
+      const batch = await enqueueBatch(
+        { batchId: randomUUID(), transportId, userId: CENTURION_USER_ID, workItemIds: [item!.workItemId] },
+        setup.db,
+      );
+      const runId = batch.items[0]!.runId!;
+      // A dead worker's claim: stale heartbeat and an already-elapsed deadline.
+      await setup.db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'running',
+          claimOwner: 'hms-ai-worker-dead-1',
+          claimToken: randomUUID(),
+          heartbeatAt: new Date(Date.now() - 2 * 60 * 60_000),
+          deadlineAt: new Date(Date.now() - 60_000),
+          updatedAt: new Date(Date.now() - 2 * 60 * 60_000),
+        })
+        .where(eq(aiWorkflowRun.id, runId));
+
+      // A batch transaction holds the dead run's row while the sweep starts. The sweep must wait, not skip it.
+      let sweep: Promise<number> | undefined;
+      const sweptBeforeRelease = await holder.db.transaction(async (tx) => {
+        await tx.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId)).for('update');
+        sweep = requeueHmsReadsAfterRestart({ ownerId: 'hms-ai-worker-new-1' }, setup.db);
+        return Promise.race([
+          sweep.then(() => true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+        ]);
+      });
+      expect(sweptBeforeRelease).toBe(false);
+      await expect(sweep).resolves.toBe(1);
+
+      const [row] = await setup.db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId));
+      expect(row).toMatchObject({ state: 'retry_wait', claimOwner: null, deadlineAt: null, metrics: { crashCount: 1 } });
+      // The requeued run is claimable again with a fresh deadline, not failed as expired.
+      const reclaimed = await claimNextAiRun({
+        ownerId: 'hms-ai-worker-new-1',
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        transportId,
+        db: setup.db,
+      });
+      expect(reclaimed?.id).toBe(runId);
+      expect(reclaimed?.deadlineAt?.getTime()).toBeGreaterThan(Date.now());
+    } finally {
+      await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+      await Promise.all([setup.close(), holder.close()]);
+    }
+  });
+
+  it('reuses a lookup through a batchLinks entry, not only the run primary workItemId', () =>
+    withSeededTestDb(async (db) => {
+      const confirmation = confirmationFor(0);
+      const items = await seedBatchItems(db, 2, {
+        item: () => ({ payload: { confirmationNumbers: [confirmation], stays: [{ requested: { arrival: ARRIVAL } }] } }),
+      });
+      const first = await enqueueBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: items.map((item) => item.workItemId),
+        },
+        db,
+      );
+      // Both items share the first lookup: the second is a batchLinks entry on the primary run.
+      expect(first.items[1]!.runId).toBe(first.items[0]!.runId);
+
+      const later = await enqueueBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: [items[1]!.workItemId],
+        },
+        db,
+      );
+      expect(later.items[0]).toMatchObject({
+        status: 'reused',
+        runId: first.items[0]!.runId,
+        job: { status: 'queued' },
+      });
+    }));
 });

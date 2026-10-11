@@ -472,10 +472,10 @@ function batchItemIdempotencyKey(batchId: string, workItemId: string): string {
 // Lock order: this transaction lock is taken only in enqueueHmsBatch and cancelHmsBatch, and nothing inside those
 // transactions takes the property lock (paneStayPropertyLock) or the guest-prefetch lock. Property-lock holders (HMS
 // spawns, the staff quote, the read service) never enqueue batch or prefetch rows, so no path nests the two locks.
-async function acquireHmsBatchLock(db: DB, input: HmsBatchScope): Promise<void> {
-  await db.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${'hms-batch:' + input.transportId + ':' + input.batchId}, 0))`,
-  );
+// One lock per transport, not per batch: overlapping batches must see each other's runs before they reuse or insert,
+// or the same work item is read twice.
+async function acquireHmsBatchLock(db: DB, input: { transportId: string }): Promise<void> {
+  await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${'hms-batch:' + input.transportId}, 0))`);
 }
 
 function batchMembershipWhere(input: HmsBatchScope) {
@@ -490,11 +490,13 @@ function batchMembershipWhere(input: HmsBatchScope) {
   );
 }
 
+// Locking reads take rows in id order, the same order the restart sweep uses, so no two transactions wait on each other.
 async function hmsBatchRows(db: DB, input: HmsBatchScope, forUpdate = false): Promise<AiWorkflowRun[]> {
   const query = db
     .select()
     .from(aiWorkflowRun)
-    .where(batchMembershipWhere(input));
+    .where(batchMembershipWhere(input))
+    .orderBy(aiWorkflowRun.id);
   return forUpdate ? query.for('update') : query;
 }
 
@@ -593,6 +595,9 @@ async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise
       .where(inArray(mailExtraction.messageId, ids))
       .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id));
     for (const version of versions) {
+      // Only a succeeded version carries a payload. A newer failed or pending version must not hide an older
+      // succeeded one; with none, selectHmsBatchRequest falls back to the message text.
+      if (version.status !== 'succeeded') continue;
       if (!extractions.has(version.messageId)) {
         extractions.set(version.messageId, {
           status: version.status,
@@ -675,8 +680,16 @@ async function loadReusableHmsRuns(
   for (let start = 0; start < Math.max(sourceIds.length, allPrefetchKeys.length); start += HMS_BATCH_INSERT_CHUNK) {
     const ids = sourceIds.slice(start, start + HMS_BATCH_INSERT_CHUNK);
     const keys = allPrefetchKeys.slice(start, start + HMS_BATCH_INSERT_CHUNK);
+    // A run also serves every work item in its batchLinks, so a link to the item is a match, not only workItemId.
     const candidatePredicates = [
-      ...(ids.length ? [inArray(aiWorkflowRun.workItemId, ids)] : []),
+      ...(ids.length
+        ? [
+            inArray(aiWorkflowRun.workItemId, ids),
+            ...ids.map(
+              (id) => sql`${aiWorkflowRun.metrics}->'batchLinks' @> ${JSON.stringify([{ workItemId: id }])}::jsonb`,
+            ),
+          ]
+        : []),
       ...(keys.length ? [inArray(aiWorkflowRun.idempotencyKey, keys)] : []),
     ];
     if (candidatePredicates.length === 0) continue;
@@ -696,6 +709,7 @@ async function loadReusableHmsRuns(
           or(...candidatePredicates),
         ),
       )
+      .orderBy(aiWorkflowRun.id)
       .for('update');
     for (const candidate of candidates) rows.set(candidate.id, candidate);
   }
@@ -785,17 +799,17 @@ export async function enqueueHmsBatch(
     const sourceById = new Map(sources.map((source) => [source.workItemId, source]));
     const orderedSources = input.workItemIds.map((id) => sourceById.get(id)!);
     const now = new Date();
-    // Spam gets no lookup, the same gate the automatic prefetch applies (spam thread or spam extraction).
+    // Spam gets no lookup: the thread-state gate (spamAt) the automatic prefetch also applies. An extraction label
+    // alone is not spam, because staff can clear spam on a thread whose extraction still says spam.
     const selections = orderedSources.map((source): { skipped: HmsBatchSkipReason } | { request: HmsJobRequest } => {
-      if (source.spamAt || source.extraction?.kind === 'spam') return { skipped: 'spam' };
-      return source.extraction?.status === 'succeeded'
-        ? selectHmsBatchRequest({
-            kind: source.extraction.kind,
-            payload: source.extraction.payload,
-            subject: source.subject,
-            textBody: source.textBody,
-          })
-        : { skipped: 'insufficient_data' };
+      if (source.spamAt) return { skipped: 'spam' };
+      // No succeeded extraction still leaves the message text, so a confirmation in the subject or body queues.
+      return selectHmsBatchRequest({
+        kind: source.extraction?.kind ?? null,
+        payload: source.extraction?.payload ?? null,
+        subject: source.subject,
+        textBody: source.textBody,
+      });
     });
     const requested = orderedSources.flatMap((source, itemIndex) => {
       const selection = selections[itemIndex]!;
@@ -1694,7 +1708,10 @@ export async function requeueHmsReadsAfterRestart(
           lt(aiWorkflowRun.heartbeatAt, new Date(now.getTime() - HMS_CLAIM_STALE_MS)),
         ),
       )
-      .for('update', { skipLocked: true });
+      .orderBy(aiWorkflowRun.id)
+      // Plain FOR UPDATE, not SKIP LOCKED: this sweep runs once at startup, so a skipped row keeps its dead worker's
+      // deadline and can fail with RUN_DEADLINE. Waiting in id order matches the batch paths' lock order.
+      .for('update');
 
     for (const run of staleRuns) {
       const metrics = objectRecord(run.metrics);
