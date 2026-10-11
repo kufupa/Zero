@@ -1,3 +1,4 @@
+import { profileFor } from './property-profile.mjs';
 const SCHEMA_VERSION = 2;
 const MAX_GROUPS = 8;
 const MAX_NIGHTS = 30;
@@ -612,30 +613,55 @@ function hasSingletonSelection(group) {
     && Array.isArray(group?.required?.rateCodes) && group.required.rateCodes.length === 1;
 }
 
+const ROOM_PROFILE_OUT_OF_DATE = 'Room profile out of date: observed HMS room types, inventory or building codes no longer match the verified property profile.';
+
+// Every observed row: a profiled room type, no HMS building, per-night inventory within that type's capacity.
+function matchesProfile(profile, groups) {
+  if (!Array.isArray(groups)) return false;
+  return groups.every((group) => Array.isArray(group?.options) && group.options.every((row) => {
+    const code = row?.room?.code;
+    if (typeof code !== 'string' || !Object.hasOwn(profile.roomCapacity, code) || row.room.buildingCode !== null) return false;
+    return (row.nightly ?? []).every((night) => Number.isInteger(night?.inventory)
+      && night.inventory >= 0 && night.inventory <= profile.roomCapacity[code]);
+  }));
+}
+
+/** True only when propertyCode has a verified profile and the capture matches it. Any other shape means no profile pools. */
+export function profileHolds(propertyCode, groups = []) {
+  const profile = profileFor(propertyCode);
+  return profile !== null && matchesProfile(profile, groups);
+}
+
 export function composeAllocation(groups = [], propertyCode) {
   if (!Array.isArray(groups) || groups.length <= 1) {
     return { status: 'not_selected', reason: 'Single occupancy group; per-option inventory only.', pools: [] };
   }
+  const profile = profileFor(propertyCode);
+  const holds = profile !== null && matchesProfile(profile, groups);
   const selected = groups.map((group) => {
     const required = group.request?.required ?? group.required;
     const quantity = group.quantity ?? group.request?.quantity;
     const options = group.options ?? [];
     const singleton = Array.isArray(required?.roomCodes) && required.roomCodes.length === 1
       && Array.isArray(required?.rateCodes) && required.rateCodes.length === 1;
+    // An unavailable option keeps its pool, so its short night reads as insufficient rather than unidentified.
     const option = singleton
       ? options.find((row) => row.room?.code === required.roomCodes[0] && row.rate?.code === required.rateCodes[0]
-        && row.matchStatus === 'match' && row.eligibility === 'verified' && row.availability === 'available')
+        && row.matchStatus === 'match' && row.eligibility === 'verified' && ['available', 'unavailable'].includes(row.availability))
       : undefined;
     const building = option?.room?.buildingCode;
-    const poolId = typeof propertyCode === 'string' && propertyCode && option?.room?.code
-      && typeof building === 'string' && building
-      ? `${propertyCode}:${building}:${option.room.code}` : undefined;
+    // No HMS building: the room type is its own pool, but only while every observed row matches the verified profile.
+    const scope = typeof building === 'string' && building ? building : building === null && holds ? 'profile' : undefined;
+    const poolId = typeof propertyCode === 'string' && propertyCode && option?.room?.code && scope
+      ? `${propertyCode}:${scope}:${option.room.code}` : undefined;
     return {
       id: group.id,
       quantity,
       required,
       matchStatus: option?.matchStatus ?? group.matchStatus,
       poolId,
+      profilePool: scope === 'profile',
+      nullBuilding: building === null,
       nightly: option?.nightly,
     };
   });
@@ -660,7 +686,12 @@ export function composeAllocation(groups = [], propertyCode) {
     const nights = (group.nightly ?? []).map((night) => ({ date: night.date, supply: night.inventory }));
     if (nights.length) sourcePools.push({ id: group.poolId, nights });
   }
-  return evaluateAllocation(selected, sourcePools);
+  const allocation = evaluateAllocation(selected, sourcePools);
+  if (allocation.status === 'unknown' && profile !== null && !holds && selected.some((group) => group.nullBuilding)) {
+    return { ...allocation, reason: ROOM_PROFILE_OUT_OF_DATE, diagnostic: 'room_profile_mismatch' };
+  }
+  return allocation.pools.length && selected.some((group) => group.profilePool)
+    ? { ...allocation, poolBasis: 'property_profile', profileDigest: profile.digest } : allocation;
 }
 
 export function evaluateAllocation(groups = [], sourcePools = []) {
