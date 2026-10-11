@@ -82,24 +82,34 @@ export type DeliveredAtBackfillCounts = {
 
 type DeliveredAtCandidate = {
   workItemId: string;
+  transportId: string;
+  threadId: string;
   messageId: string;
   rawMimeS3Key: string | null;
   ingestMailboxId: string | null;
   pop3Uidl: string | null;
 };
 
-/** Open Needs You/review work items with a POP3 source row that has no deliveredAt key. */
+/** POP3 rows in open Needs You/review threads that have no deliveredAt key. */
 export async function selectDeliveredAtBackfillCandidates(db: DB): Promise<DeliveredAtCandidate[]> {
   return db
     .selectDistinct({
       workItemId: workItem.id,
+      transportId: message.transportId,
+      threadId: message.threadId,
       messageId: message.id,
       rawMimeS3Key: message.rawMimeS3Key,
       ingestMailboxId: message.ingestMailboxId,
       pop3Uidl: message.pop3Uidl,
     })
     .from(message)
-    .innerJoin(workItem, eq(workItem.sourceMessageId, message.id))
+    .innerJoin(
+      workItem,
+      and(
+        eq(workItem.transportId, message.transportId),
+        eq(workItem.threadId, message.threadId),
+      ),
+    )
     .where(
       and(
         eq(message.direction, 'inbound'),
@@ -117,7 +127,7 @@ export async function selectDeliveredAtBackfillCandidates(db: DB): Promise<Deliv
     );
 }
 
-/** Plans or applies one idempotent provenance stamp per eligible source message. */
+/** Plans or applies one idempotent provenance stamp per eligible POP3 message. */
 export async function runDeliveredAtBackfill(input: {
   db?: DB;
   apply: boolean;
@@ -206,7 +216,8 @@ async function stampDeliveredAt(
       .where(
         and(
           eq(workItem.id, candidate.workItemId),
-          eq(workItem.sourceMessageId, candidate.messageId),
+          eq(workItem.transportId, candidate.transportId),
+          eq(workItem.threadId, candidate.threadId),
           inArray(workItem.status, [...OPEN_STATUSES]),
           ne(workItem.kind, 'spam'),
         ),
@@ -224,6 +235,8 @@ async function stampDeliveredAt(
       .where(
         and(
           eq(message.id, candidate.messageId),
+          eq(message.transportId, candidate.transportId),
+          eq(message.threadId, candidate.threadId),
           eq(message.direction, 'inbound'),
           eq(message.pop3Uidl, candidate.pop3Uidl),
           sql`${OUTLOOK_SYNCED} is not true`,
