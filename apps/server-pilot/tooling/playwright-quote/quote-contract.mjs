@@ -745,8 +745,9 @@ export function evaluateAllocation(groups = [], sourcePools = []) {
 }
 
 /**
- * The short room-nights a capture proves: a shared pool whose combined demand is above its supply, then any row whose own
- * inventory is below its quantity. Each entry names the room type, its label, the night, the demand and the supply.
+ * The short room-nights a capture proves: a shared pool whose combined demand is above its supply, then, for each group with no
+ * matching room type that fits every night, each matching row whose own inventory is below its quantity. Each entry names the
+ * room type, its label, the night, the demand and the supply.
  */
 export function shortfallsOf(groups = [], propertyCode) {
   if (!Array.isArray(groups)) return [];
@@ -772,8 +773,13 @@ export function shortfallsOf(groups = [], propertyCode) {
   }
   for (const group of groups) {
     const quantity = group?.quantity ?? group?.request?.quantity;
-    for (const row of group?.options ?? []) {
-      if (row?.matchStatus !== 'match' || typeof row.room?.code !== 'string' || !Number.isInteger(quantity)) continue;
+    if (!Number.isInteger(quantity)) continue;
+    const rows = (group?.options ?? []).filter((row) => row?.matchStatus === 'match' && typeof row.room?.code === 'string');
+    // A matching room type with enough inventory on every night satisfies the group, so only a group with none names its short rows.
+    const satisfied = rows.some((row) => Array.isArray(row.nightly) && row.nightly.length > 0
+      && row.nightly.every((night) => Number.isInteger(night?.inventory) && night.inventory >= quantity));
+    if (satisfied) continue;
+    for (const row of rows) {
       for (const night of row.nightly ?? []) {
         if (Number.isInteger(night?.inventory) && night.inventory < quantity) {
           add(row.room.code, night.date, quantity, night.inventory);

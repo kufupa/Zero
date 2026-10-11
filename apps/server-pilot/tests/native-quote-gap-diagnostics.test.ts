@@ -333,6 +333,26 @@ describe('a short-supply capture is insufficient, and says which room type and n
     });
   });
 
+  it('names the short group, not the room type of a group that another option satisfies', async () => {
+    const acceptsEither = {
+      ...shortRequest,
+      rooms: [
+        { id: 'room-1', quantity: 2, adults: 1, children: 0, childAges: [], required: { roomCodes: ['STQN', 'SKNG'], rateCodes: ['BAR'] } },
+        { id: 'room-2', quantity: 2, adults: 1, children: 0, childAges: [], required: { roomCodes: ['SUITE'], rateCodes: ['BAR'] } },
+      ],
+    };
+    const evidence = await captureFor(acceptsEither, (rooms) => [
+      { id: 'room-1', request: rooms[0], outcome: 'quote', issues: [], completeness: { search: 'complete', requiredFacts: 'complete' }, options: [rowFor(standardQueen, 1, 'unavailable'), rowFor({ code: 'SKNG', label: 'Standard King', buildingCode: null }, 5, 'available')] },
+      { id: 'room-2', request: rooms[1], outcome: 'unavailable', issues: [], completeness: { search: 'complete', requiredFacts: 'complete' }, options: [rowFor({ code: 'SUITE', label: 'Suite', buildingCode: null }, 1, 'unavailable')] },
+    ]);
+    const error = await failureOf(evidence, acceptsEither);
+    expect((error as ReservationistTaskEvidenceUnavailable).code).toBe('native_quote_insufficient_inventory');
+    expect((error as ReservationistTaskEvidenceUnavailable).detail).toEqual({
+      shortfall: { roomCode: 'SUITE', roomLabel: 'Suite', date: '2026-11-12', demand: 2, supply: 1 },
+    });
+    expect(staffQuoteFailureMessage(error)).toBe('Only 1 Suite free on 12 Nov — quote fewer or split');
+  });
+
   it('stays fail closed when the capture is not complete, even though HMS said unavailable', async () => {
     const withIssue = await captureFor(shortRequest, oneRow, { outcome: 'unavailable', issues: [{ code: 'OPTION_LIMIT' }] });
     expect((await failureOf(withIssue, shortRequest)) as Error).toHaveProperty('message', 'native_quote_capture_scope_or_completeness_invalid');

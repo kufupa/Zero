@@ -815,3 +815,36 @@ test('shortfallsOf finds nothing when every row and every shared pool fits', () 
     roomGroup('b', 30, 'STWN', 'BAR', null, nights(69, 69)),
   ], 'HRCEN'), []);
 });
+
+test('shortfallsOf names only the short group when another group has a usable room type (Greptile example)', () => {
+  // Group A accepts STQN or SKNG and SKNG fits; group B requires SUITE and is short. No pools are selected.
+  const acceptsEither = {
+    id: 'a',
+    request: { quantity: 2, required: { roomCodes: ['STQN', 'SKNG'], rateCodes: ['BAR'] } },
+    options: [
+      { room: { code: 'STQN', label: 'Standard Queen', buildingCode: null }, rate: { code: 'BAR' }, matchStatus: 'match', eligibility: 'verified', availability: 'unavailable', nightly: nights(1, 1) },
+      { room: { code: 'SKNG', label: 'Standard King', buildingCode: null }, rate: { code: 'BAR' }, matchStatus: 'match', eligibility: 'verified', availability: 'available', nightly: nights(5, 5) },
+    ],
+  };
+  const suite = roomGroup('b', 2, 'SUITE', 'BAR', null, nights(1, 1), {
+    availability: 'unavailable',
+    room: { code: 'SUITE', label: 'Suite', buildingCode: null },
+  });
+  assert.deepEqual(composeAllocation([acceptsEither, suite], 'HRCEN').pools, []);
+  assert.deepEqual(shortfallsOf([acceptsEither, suite], 'HRCEN'), [
+    { roomCode: 'SUITE', roomLabel: 'Suite', date: '2026-09-24', demand: 2, supply: 1 },
+    { roomCode: 'SUITE', roomLabel: 'Suite', date: '2026-09-25', demand: 2, supply: 1 },
+  ]);
+});
+
+test('shortfallsOf does not count a fitting alternative as a usable option for its group', () => {
+  const acceptsEither = {
+    id: 'a',
+    request: { quantity: 2, required: { roomCodes: ['STQN', 'SKNG'], rateCodes: ['BAR'] } },
+    options: [
+      { room: { code: 'STQN', label: 'Standard Queen', buildingCode: null }, rate: { code: 'BAR' }, matchStatus: 'match', eligibility: 'verified', availability: 'unavailable', nightly: nights(1) },
+      { room: { code: 'SKNG', label: 'Standard King', buildingCode: null }, rate: { code: 'BAR' }, matchStatus: 'alternative', eligibility: 'verified', availability: 'available', nightly: nights(5) },
+    ],
+  };
+  assert.deepEqual(shortfallsOf([acceptsEither], 'HRCEN').map((short) => short.roomCode), ['STQN']);
+});
