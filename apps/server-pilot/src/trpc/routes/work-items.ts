@@ -14,6 +14,7 @@ import {
 } from '../../ai/work-items.js';
 import {
   PANE_ACTION_BATCH_MAX,
+  PANE_ACTION_BLOCKS,
   PANE_ACTION_KINDS,
   PANE_ACTION_TYPES,
   recordPaneActions,
@@ -37,6 +38,7 @@ const paneActionEvent = z
     ms: z.number().int().min(0).max(86_400_000).optional(),
     surface: z.enum(['outlook', 'web']).optional(),
     kind: z.enum(PANE_ACTION_KINDS).optional(),
+    block: z.enum(PANE_ACTION_BLOCKS).optional(),
   })
   .strict();
 

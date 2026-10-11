@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
+import { trackPaneAction } from '../lib/quote-workflow/pane-telemetry';
 import {
   bindGetPriorStaffQuoteRequote,
   bindListThreadQuoteRevisions,
@@ -50,6 +51,10 @@ import type {
 // sonner injects its stylesheet into the document on import (via hms-link-actions since U17), and every role query
 // then pays for computed styles across the whole card. No test here reads a toast.
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
+vi.mock('../lib/quote-workflow/pane-telemetry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/quote-workflow/pane-telemetry')>()),
+  trackPaneAction: vi.fn(),
+}));
 
 afterEach(() => cleanup());
 
@@ -1311,5 +1316,85 @@ describe('expired prior re-quote', () => {
       row: { workflowRunId: 'run-1', revisionRef: 'rev-1' },
     });
     expect(bound).toEqual({ status: 'ok', payload: stored });
+  });
+});
+
+describe('booking card HMS notes copy', () => {
+  const CONTACT = { name: 'Jane Smith', company: 'Acme Travel', endClient: null, email: null, phone: null };
+
+  function stubClipboard() {
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    return writeText;
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, 'clipboard');
+  });
+
+  it('gives each room its own HMS notes copy button', () => {
+    render(<BookingCards draft={draftReady()} />);
+    expect(screen.getAllByRole('button', { name: 'Copy for HMS notes' })).toHaveLength(2);
+  });
+
+  it('copies the room block, and the stored contact fills the booker and company the room leaves empty', async () => {
+    const writeText = stubClipboard();
+    vi.mocked(trackPaneAction).mockClear();
+    render(<BookingCards draft={draftReady()} groups={[{ ...g1, specialRequests: ['Cot'] }]} contact={CONTACT} />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        ['Booker: Jane Smith', 'Company: Acme Travel', 'Special requests: Cot', 'Rate: TAXYZ'].join('\n'),
+      ),
+    );
+    expect(trackPaneAction).toHaveBeenCalledWith({ type: 'copy.hms_line', block: 'notes' });
+  });
+
+  it('a Booker name and Organization typed on the room replace the stored contact in its block', async () => {
+    const writeText = stubClipboard();
+    render(<BookingCards draft={draftReady()} contact={CONTACT} />);
+
+    fireEvent.change(screen.getAllByLabelText('Booker name')[0]!, { target: { value: 'Pat Jones' } });
+    fireEvent.change(screen.getAllByLabelText('Organization')[0]!, { target: { value: 'Bidvest Bank' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(['Booker: Pat Jones', 'Company: Bidvest Bank', 'Rate: TAXYZ'].join('\n')),
+    );
+  });
+
+  it('the room block carries the chosen rate and its approval note, and the confirmation once the room is booked', async () => {
+    const writeText = stubClipboard();
+    const { client } = paneClient();
+    const rowPrice = { source: 'override' as const, rateCode: 'NCOR1B', amountMinor: 185000, note: 'Thandi approved' };
+    render(
+      <BookingCards
+        draft={draftReady()}
+        groups={[{ ...g1, specialRequests: ['Cot'], rowPrice }]}
+        paneSave={client}
+        contact={CONTACT}
+      />,
+    );
+    const quoted = [
+      'Booker: Jane Smith',
+      'Company: Acme Travel',
+      'Special requests: Cot',
+      'Discount authorised by: Thandi approved',
+      'Rate: NCOR1B R1850.00 per night',
+    ];
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(quoted.join('\n')));
+
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    await screen.findByText('Booked in HMS – confirmation 98765-1');
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith([...quoted, 'Confirmation: 98765-1'].join('\n')));
   });
 });

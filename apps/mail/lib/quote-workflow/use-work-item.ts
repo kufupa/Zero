@@ -411,10 +411,16 @@ export function useStoredWork(args: {
   /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
   const recordContact = useCallback(
     (field: ContactField, value: string | null) => {
+      // The stored read takes the edit at once, so the HMS notes agree with the Contact block before the save lands.
+      setLookup((prev) =>
+        prev && prev.key === lookupKey && prev.result.status === 'ready'
+          ? { ...prev, result: { ...prev.result, contact: { ...prev.result.contact, [field]: value } } }
+          : prev,
+      );
       if (!readyWorkItemId) return;
       schedule(`contact.${field}`, readyWorkItemId, readyTransportId, value);
     },
-    [readyWorkItemId, readyTransportId, schedule],
+    [lookupKey, readyWorkItemId, readyTransportId, schedule],
   );
 
   /**

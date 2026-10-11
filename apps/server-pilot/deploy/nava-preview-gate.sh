@@ -25,7 +25,7 @@
 # thread without the event.
 #
 # --ae1-rates drives scripts/nava-ae1-rates-proof.ts: on a multi-stay quote it fills missing room counts with the split
-# NAVA_AE1_ROOMS (default 15/15 per stay) and picks a listed room type for "Email asked for X", runs each stay's rates
+# NAVA_AE1_ROOMS (no default: a count comes from the read) and picks a listed room type for "Email asked for X", runs each stay's rates
 # search once, prepares the combined quote PDF and downloads the Excel. HMS: one rates read per stay, at most one party
 # search, no write. Writes: field.edit work events, per stay one ai_draft_generation and ai_workflow_run, the documents.
 #
@@ -214,7 +214,7 @@ if [ "$MODE" = "dry-run" ] || [ "$AE4_DRY" = "1" ]; then
     echo "edits:       NAVA_PROOF_ALLOW_EDITS=${NAVA_PROOF_ALLOW_EDITS:-0} (only missing stay fields; a stored stay is never overwritten)"
   elif [ "$MODE" = "ae1" ]; then
     echo "proof:       AE1 multi-stay rates on thread ${AE4_THREAD}, ${AE1_TIMEOUT_MS} ms per stay's rates run"
-    echo "rooms:       ${NAVA_AE1_ROOMS:-15/15} per stay where the pane has no count (NAVA_AE1_ROOMS)"
+    echo "rooms:       ${NAVA_AE1_ROOMS:-none (counts from the read)} per stay where the pane has no count (NAVA_AE1_ROOMS)"
     echo "hms:         one rates read per stay (workstation.executeStaffQuote), at most one party search; every HMS write is blocked"
     echo "edits:       NAVA_PROOF_ALLOW_EDITS=${NAVA_PROOF_ALLOW_EDITS:-0} (AE1 needs 1 to fill the missing room counts)"
   elif [ "$MODE" = "ae2" ]; then

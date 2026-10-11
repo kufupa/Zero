@@ -9,6 +9,8 @@ import type {
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
 import { HmsLinkActions } from './hms-link-actions';
+import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
+import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import {
   commitOutcome,
@@ -31,7 +33,7 @@ import { Notice, paneFieldClass, PrimaryButton, SecondaryButton, Section } from 
 const COPIED_MS = 1500;
 const COPY_FAILED_MS = 3000;
 
-const BOARD_LABELS: Record<string, string | undefined> = {
+export const BOARD_LABELS: Record<string, string | undefined> = {
   room_only: 'Room only',
   bb: 'Bed & breakfast',
   dinner_bb: 'Dinner, bed & breakfast',
@@ -509,11 +511,14 @@ export function BookingCards({
   groups = [],
   paneSave = null,
   parties,
+  contact = null,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
   /** Set only when the server pane save flag is lab or on. Without it the card stays copy-only. */
   paneSave?: PaneStayClient | null;
+  /** The stored read's contact. Its name and company fill the HMS notes where the room card has none. */
+  contact?: StoredContact | null;
   /** The company and agency picked for this quote. They fill only the fields the draft leaves empty. */
   parties?: StaffQuoteParties;
 }) {
@@ -640,6 +645,12 @@ export function BookingCards({
         const request = room.request;
         const built = paneStayInputForRoom(request, choice);
         const group = groups.find((item) => item.id === room.groupId);
+        // The quoted rate for the room's HMS notes: the row's price choice, its approval note for an override, and the
+        // confirmation once Book in HMS has booked the room.
+        const price = group?.rowPrice;
+        const override = price?.source === 'override' ? price : null;
+        const commit = saves[key]?.commit;
+        const bookedCommit = commit?.status === 'booked' ? commit : null;
         const arrival = textValue(request.arrival);
         const departure = textValue(request.departure);
         const childCount = Array.isArray(request.childAges) ? request.childAges.length : 0;
@@ -784,6 +795,25 @@ export function BookingCards({
               disabled={locked}
               maxLength={PANE_BOOKER_EMAIL_MAX}
               onChange={(value) => setChoice({ bookerEmail: value })}
+            />
+            <CopyHmsNotesButton
+              block={hmsNotesBlock({
+                booker: choice.bookerName || contact?.name,
+                company: choice.organization || contact?.company,
+                confirmations: bookedCommit ? [bookedCommit.confirmationNumber] : [],
+                rooms: [
+                  {
+                    label: `Room ${roomIndex}`,
+                    specialRequests: group?.specialRequests,
+                    authorisedBy: override?.note,
+                    rate: {
+                      code: override?.rateCode ?? textValue(request.ratePlan),
+                      nightlyMinor: price ? [price.amountMinor] : undefined,
+                      board: BOARD_LABELS[room.board ?? ''],
+                    },
+                  },
+                ],
+              })}
             />
             {room.schemaErrors.map((error) => (
               <p key={error} className="text-[11px] text-amber-800">

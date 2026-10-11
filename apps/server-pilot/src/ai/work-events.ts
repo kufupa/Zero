@@ -21,6 +21,7 @@ export const PANE_ACTION_TYPES = [
 ] as const;
 export type PaneActionType = (typeof PANE_ACTION_TYPES)[number];
 export const PANE_ACTION_KINDS = ['selected', 'all', 'saved', 'option', 'combined', 'comment', 'booking'] as const;
+export const PANE_ACTION_BLOCKS = ['notes'] as const;
 export const PANE_ACTION_BATCH_MAX = 50;
 
 export type PaneActionEvent = {
@@ -28,6 +29,7 @@ export type PaneActionEvent = {
   ms?: number;
   surface?: 'outlook' | 'web';
   kind?: (typeof PANE_ACTION_KINDS)[number];
+  block?: (typeof PANE_ACTION_BLOCKS)[number];
 };
 
 /**

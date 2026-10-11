@@ -1511,6 +1511,23 @@ describe('pane telemetry and staff notes (v5 B1, B2)', () => {
       expect(actions.find((event) => event.type === 'pane.opened')!.value).toEqual({ surface: 'outlook' });
     }));
 
+  it('stores the HMS notes copy with its block name, and refuses a block name it does not know', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'tm4');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'tm4');
+      const route = centurionCaller().workItems;
+
+      expect(
+        await route.recordActions({ workItemId: work.workItemId, events: [{ type: 'copy.hms_line', block: 'notes' }] }),
+      ).toEqual({ recorded: 1 });
+      const copied = (await eventsFor(db, work.workItemId)).filter((event) => event.type === 'copy.hms_line');
+      expect(copied.map((event) => event.value)).toEqual([{ block: 'notes' }]);
+      await expect(
+        route.recordActions({ workItemId: work.workItemId, events: [{ type: 'copy.hms_line', block: 'bank' } as never] }),
+      ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    }));
+
   it('refuses approval, field and unknown types, extra payload keys, and a batch over the cap', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'tm2');

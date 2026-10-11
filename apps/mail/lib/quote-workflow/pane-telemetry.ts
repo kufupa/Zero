@@ -24,9 +24,12 @@ export const PANE_ACTION_TYPES = [
 export type PaneActionType = (typeof PANE_ACTION_TYPES)[number];
 export const PANE_ACTION_KINDS = ['selected', 'all', 'saved', 'option', 'combined', 'comment', 'booking'] as const;
 export type PaneActionKind = (typeof PANE_ACTION_KINDS)[number];
+/** Which block a copy_hms_line copied. `notes` is the HMS notes block (rate-controls). */
+export const PANE_ACTION_BLOCKS = ['notes'] as const;
+export type PaneActionBlock = (typeof PANE_ACTION_BLOCKS)[number];
 export type PaneSurface = 'outlook' | 'web';
 
-export type PaneAction = { type: PaneActionType; ms?: number; kind?: PaneActionKind };
+export type PaneAction = { type: PaneActionType; ms?: number; kind?: PaneActionKind; block?: PaneActionBlock };
 export type PaneActionEvent = PaneAction & { surface?: PaneSurface };
 export type PaneActionBatch = { workItemId: string; events: PaneActionEvent[] };
 /** A work item and the mailbox it lives in. A null transport means the mailbox active when the batch is sent. */
