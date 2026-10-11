@@ -1,50 +1,51 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { eq } from 'drizzle-orm';
-import { describe, expect, it, vi } from 'vitest';
-import type { GoldenRow } from '../src/ai/reservationist-backtest.js';
-import type { DB } from '../src/db/client.js';
-import { workEvent, workItem, type WorkEventType } from '../src/db/schema/work.js';
 import {
-  exportWorkEvents,
-  hashSplit,
+  exportLabels,
+  labelOf,
   main,
-  type EvalRow,
+  splitFor,
+  writeEvalLabels,
+  type LabelEvent,
 } from '../scripts/export-work-events-dataset.js';
-import { withIngestionDb } from './helpers/ingestion-db.js';
+import { evalLabel, workEvent, workItem, type WorkEventType } from '../src/db/schema/work.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
+import type { LabelCase } from '../src/ai/label-scorers.js';
+import { withIngestionDb } from './helpers/ingestion-db.js';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { describe, expect, it, vi } from 'vitest';
+import type { DB } from '../src/db/client.js';
+import { eq } from 'drizzle-orm';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const TRANSPORT_ID = 'transport-centurion';
 const TRANSPORT_EMAIL = 'centurion@legacyhotels.co.za';
 const STAY_A = 's_aaaa1111';
-const STAY_B = 's_bbbb2222';
 const ROW_A = 'r_aaaa1111';
-const ROW_B = 'r_bbbb2222';
 const T0 = Date.parse('2026-10-10T09:00:00Z');
 
 type Edit = {
   type: WorkEventType;
-  fieldPath: string;
+  fieldPath?: string | null;
   aiValue?: unknown;
   value?: unknown;
   /** Seconds after T0, so event order is explicit in every test. */
   at: number;
 };
 
-/** A thread with one inbound message and a quote work item on it. */
-async function seedItem(db: DB, threadId: string, messageIds: string[] = [`msg-${threadId}`]) {
-  for (const messageId of messageIds) {
-    await seedInboxThread(db, {
-      threadId,
-      transportId: TRANSPORT_ID,
-      transportEmail: TRANSPORT_EMAIL,
-      messageId,
-    });
-  }
+/** A thread with an inbound mail and a quote work item on it. */
+async function seedItem(db: DB, threadId: string, textBody = 'Please book two rooms.') {
+  const messageId = `msg-${threadId}`;
+  await seedInboxThread(db, {
+    threadId,
+    transportId: TRANSPORT_ID,
+    transportEmail: TRANSPORT_EMAIL,
+    messageId,
+    fromAddress: 'guest@example.com',
+    textBody,
+  });
   const [item] = await db
     .insert(workItem)
-    .values({ transportId: TRANSPORT_ID, threadId, sourceMessageId: messageIds[0], kind: 'quote' })
+    .values({ transportId: TRANSPORT_ID, threadId, sourceMessageId: messageId, kind: 'quote' })
     .returning({ id: workItem.id });
   return item!.id;
 }
@@ -56,244 +57,359 @@ async function addEvents(db: DB, workItemId: string, edits: Edit[]) {
       actorKind: 'user',
       actorUserId: 'user-ropperman',
       type: edit.type,
-      fieldPath: edit.fieldPath,
+      fieldPath: edit.fieldPath ?? null,
       aiValue: edit.aiValue ?? null,
       value: edit.value ?? null,
+      aiSource: 'extractor-v3',
       at: new Date(T0 + edit.at * 1000),
     })),
   );
 }
 
-function goldenCase(id: string, split: 'dev' | 'holdout', triggerId: string, contextIds: string[] = []): GoldenRow {
-  const email = (messageId: string) => ({
-    id: messageId,
-    direction: 'inbound',
-    eventAt: null,
-    from: 'guest@example.com',
-    subject: 'Booking enquiry',
-    text: 'Please book two rooms.',
-  });
+function event(overrides: Partial<LabelEvent>): LabelEvent {
   return {
-    id,
-    split,
-    type: 'create',
-    trigger: email(triggerId),
-    context: contextIds.map(email),
-    expected: {},
-    recordedReads: [],
-  } as GoldenRow;
+    id: 'e-1',
+    workItemId: 'w-1',
+    type: 'field.edit',
+    fieldPath: `stays[${STAY_A}].requested.arrival`,
+    aiValue: '2027-10-26',
+    value: '2027-10-27',
+    aiSource: 'extractor-v3',
+    at: new Date(T0),
+    ...overrides,
+  };
 }
 
-function byField(rows: readonly EvalRow[], fieldId: string): EvalRow {
-  const row = rows.find((item) => item.field_id === fieldId);
-  if (!row) throw new Error(`no row for ${fieldId}`);
-  return row;
-}
+describe('labelOf', () => {
+  it('maps edits and rejects to corrections, accepts to confirmations, and flags and notes to their own kinds', () => {
+    expect(labelOf(event({}))).toMatchObject({
+      labelKind: 'correction',
+      humanValue: '2027-10-27',
+      aiValue: '2027-10-26',
+    });
+    expect(
+      labelOf(event({ type: 'field.reject', fieldPath: 'contact.name', value: null })),
+    ).toMatchObject({
+      labelKind: 'correction',
+      humanValue: null,
+    });
+    expect(labelOf(event({ type: 'field.accept', value: '2027-10-26' }))).toMatchObject({
+      labelKind: 'confirmation',
+    });
+    expect(
+      labelOf(
+        event({
+          type: 'review.flag',
+          fieldPath: null,
+          aiValue: null,
+          value: { note: 'dates wrong' },
+        }),
+      ),
+    ).toMatchObject({
+      labelKind: 'run_flag',
+      fieldPath: 'review.flag',
+    });
+    expect(
+      labelOf(
+        event({ type: 'note.staff', fieldPath: null, aiValue: null, value: 'Ask about parking' }),
+      ),
+    ).toMatchObject({
+      labelKind: 'note',
+      fieldPath: 'note.staff',
+    });
+  });
 
-describe('work-event eval export', () => {
-  it('exports one row per edited field with the first AI value and the final human value', async () => {
+  it('gives no label to draft decisions, rate choices or non-extraction fields', () => {
+    expect(labelOf(event({ type: 'field.edit', fieldPath: 'followUp.draft' }))).toBeNull();
+    expect(labelOf(event({ type: 'field.accept', fieldPath: 'followUp.draft' }))).toBeNull();
+    expect(labelOf(event({ type: 'field.edit', fieldPath: null }))).toBeNull();
+    expect(
+      labelOf(event({ type: 'rate.one_off', fieldPath: 'quote.rows[g_room1].rate' })),
+    ).toBeNull();
+  });
+});
+
+describe('splitFor', () => {
+  it('is stable and about 60/20/20 over work item ids', () => {
+    const ids = Array.from(
+      { length: 2000 },
+      (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    );
+    const first = ids.map((id) => splitFor(id));
+    expect(ids.map((id) => splitFor(id))).toEqual(first);
+    const count = (split: string) => first.filter((value) => value === split).length / ids.length;
+    expect(count('dev')).toBeCloseTo(0.6, 1);
+    expect(count('holdout')).toBeCloseTo(0.2, 1);
+    expect(count('test')).toBeCloseTo(0.2, 1);
+  });
+
+  it('with the time split, an item whose latest label is within 30 days is test and older items never are', () => {
+    const now = new Date('2026-10-11T00:00:00Z');
+    const recent = new Date('2026-09-25T00:00:00Z');
+    const old = new Date('2026-08-01T00:00:00Z');
+    expect(splitFor('any-item', { timeSplit: true, latestAt: recent, now })).toBe('test');
+    expect(['dev', 'holdout']).toContain(
+      splitFor('any-item', { timeSplit: true, latestAt: old, now }),
+    );
+  });
+});
+
+describe('work-event label export', () => {
+  it('derives one label per label event and skips drafts, rates and reads of non-extraction fields', async () => {
     await withIngestionDb(async ({ db }) => {
-      const item = await seedItem(db, 'thread-edits');
+      const item = await seedItem(db, 'thread-labels');
       const count = `stays[${STAY_A}].rows[${ROW_A}].count`;
       const arrival = `stays[${STAY_A}].requested.arrival`;
-      const departure = `stays[${STAY_A}].requested.departure`;
       await addEvents(db, item, [
         { type: 'field.edit', fieldPath: count, aiValue: 2, value: 3, at: 1 },
-        { type: 'field.edit', fieldPath: count, aiValue: 3, value: 4, at: 2 },
-        { type: 'field.edit', fieldPath: arrival, aiValue: '2027-10-26', value: '2027-10-27', at: 3 },
-        // Accepted without an edit: the AI value stands, so the field is not a label.
-        { type: 'field.accept', fieldPath: departure, aiValue: '2027-10-28', value: '2027-10-28', at: 4 },
+        {
+          type: 'field.accept',
+          fieldPath: arrival,
+          aiValue: '2027-10-26',
+          value: '2027-10-26',
+          at: 2,
+        },
+        {
+          type: 'field.edit',
+          fieldPath: 'followUp.draft',
+          aiValue: 'Draft one',
+          value: 'Draft two',
+          at: 3,
+        },
+        {
+          type: 'rate.one_off',
+          fieldPath: 'quote.rows[g_room1].rate',
+          aiValue: { rateCode: 'RACK' },
+          value: { amountMinor: 1 },
+          at: 4,
+        },
+        { type: 'field.reject', fieldPath: 'contact.name', aiValue: 'J Smith', value: null, at: 5 },
+        {
+          type: 'review.flag',
+          aiValue: null,
+          value: { runId: 'run-1', note: 'Wrong count' },
+          at: 6,
+        },
+        { type: 'note.staff', aiValue: null, value: 'Guest prefers a high floor', at: 7 },
       ]);
 
-      const { rows } = await exportWorkEvents(db);
+      const { cases, records } = await exportLabels(db);
 
-      expect(rows.map((row) => row.field_id).sort()).toEqual([arrival, count].sort());
-      expect(byField(rows, count)).toMatchObject({
-        schema_version: 'work-event-eval/v1',
+      expect(records.map((record) => [record.labelKind, record.fieldPath]).sort()).toEqual(
+        [
+          ['confirmation', arrival],
+          ['correction', count],
+          ['correction', 'contact.name'],
+          ['note', 'note.staff'],
+          ['run_flag', 'review.flag'],
+        ].sort(),
+      );
+      expect(records.every((record) => record.extractorVersion === 'extractor-v3')).toBe(true);
+      expect(cases).toHaveLength(1);
+      expect(cases[0]).toMatchObject({
         work_item_id: item,
-        ai_value: 2,
-        human_value: 4,
-        label_status: 'candidate',
-      });
-      expect(byField(rows, count).event_ids).toHaveLength(2);
-      expect(byField(rows, arrival)).toMatchObject({ ai_value: '2027-10-26', human_value: '2027-10-27' });
-      expect(byField(rows, arrival).event_ids).toHaveLength(1);
-    });
-  });
-
-  it('takes the final field value from saved state when concurrent edits logged out of order', async () => {
-    await withIngestionDb(async ({ db }) => {
-      const item = await seedItem(db, 'thread-race');
-      const count = `stays[${STAY_A}].rows[${ROW_A}].count`;
-      // The edit to 5 started first but took the row lock second, so state holds 5 while its event time is earlier.
-      await addEvents(db, item, [
-        { type: 'field.edit', fieldPath: count, aiValue: 2, value: 5, at: 1 },
-        { type: 'field.edit', fieldPath: count, aiValue: 2, value: 4, at: 2 },
-      ]);
-      await db.update(workItem).set({ state: { [count]: 5 } }).where(eq(workItem.id, item));
-
-      const { rows } = await exportWorkEvents(db);
-
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ field_id: count, ai_value: 2, human_value: 5 });
-    });
-  });
-
-  it('exports extraction fields only: rate choices and follow-up draft decisions are not labels', async () => {
-    await withIngestionDb(async ({ db }) => {
-      const item = await seedItem(db, 'thread-rate');
-      const rate = 'quote.rows[g_room1].rate';
-      const hms = { rateCode: 'RACK', nightlyMinor: [250000, 250000] };
-      const name = 'contact.name';
-      await addEvents(db, item, [
-        // A later quote at the HMS price writes no rate event, so the last custom price is not her final choice.
-        { type: 'rate.one_off', fieldPath: rate, aiValue: hms, value: { source: 'one_off', amountMinor: 230000 }, at: 1 },
-        // Rejecting one follow-up draft and accepting another reuse one path for two different replies.
-        { type: 'field.reject', fieldPath: 'followUp.draft', aiValue: 'Draft one', value: null, at: 2 },
-        { type: 'field.accept', fieldPath: 'followUp.draft', aiValue: 'Draft two', value: 'Draft two', at: 3 },
-        { type: 'field.edit', fieldPath: name, aiValue: 'J Smith', value: 'Jane Smith', at: 4 },
-      ]);
-      await db.update(workItem).set({ state: { [name]: 'Jane Smith' } }).where(eq(workItem.id, item));
-
-      const { rows } = await exportWorkEvents(db);
-
-      expect(rows.map((row) => row.field_id)).toEqual([name]);
-      expect(rows[0]).toMatchObject({ ai_value: 'J Smith', human_value: 'Jane Smith' });
-    });
-  });
-
-  it('pairs by stable id after a stay is deleted', async () => {
-    await withIngestionDb(async ({ db }) => {
-      const item = await seedItem(db, 'thread-delete');
-      const removedA = `stays[${STAY_A}].removed`;
-      const arrivalB = `stays[${STAY_B}].requested.arrival`;
-      const countB = `stays[${STAY_B}].rows[${ROW_B}].count`;
-      // Stay A comes first in the extraction. Its deletion must not shift stay B's AI values onto A's pairs.
-      await addEvents(db, item, [
-        { type: 'field.edit', fieldPath: removedA, aiValue: false, value: true, at: 1 },
-        { type: 'field.edit', fieldPath: arrivalB, aiValue: '2027-11-17', value: '2027-11-18', at: 2 },
-        { type: 'field.edit', fieldPath: countB, aiValue: 4, value: 5, at: 3 },
-      ]);
-
-      const { rows } = await exportWorkEvents(db);
-
-      expect(rows).toHaveLength(3);
-      expect(byField(rows, removedA)).toMatchObject({ ai_value: false, human_value: true });
-      expect(byField(rows, arrivalB)).toMatchObject({ ai_value: '2027-11-17', human_value: '2027-11-18' });
-      expect(byField(rows, countB)).toMatchObject({ ai_value: 4, human_value: 5 });
-    });
-  });
-
-  it('keeps a golden holdout thread in holdout and a golden dev thread in dev', async () => {
-    await withIngestionDb(async ({ db }) => {
-      const edit: Edit = { type: 'field.edit', fieldPath: `stays[${STAY_A}].requested.arrival`, aiValue: '2027-10-26', value: '2027-10-27', at: 1 };
-      const holdout = await seedItem(db, 'thread-holdout');
-      const dev = await seedItem(db, 'thread-dev');
-      const free = await seedItem(db, 'thread-free');
-      for (const item of [holdout, dev, free]) await addEvents(db, item, [edit]);
-      const golden = [
-        goldenCase('case-holdout', 'holdout', 'msg-thread-holdout'),
-        goldenCase('case-dev', 'dev', 'msg-thread-dev'),
-      ];
-
-      const { rows, golden: stats } = await exportWorkEvents(db, { golden });
-
-      expect(stats).toEqual({ matched: 2, total: 2 });
-      expect((await exportWorkEvents(db, { golden })).warnings).toEqual([]);
-      expect(rows.find((row) => row.work_item_id === holdout)).toMatchObject({ split: 'holdout', split_source: 'golden' });
-      expect(rows.find((row) => row.work_item_id === dev)).toMatchObject({ split: 'dev', split_source: 'golden' });
-      expect(rows.find((row) => row.work_item_id === free)).toMatchObject({
-        split: hashSplit('thread-free'),
+        kind: 'quote',
+        extractor_version: null,
         split_source: 'hash',
       });
-
-      const holdoutOnly = await exportWorkEvents(db, { golden, split: 'holdout' });
-      expect(holdoutOnly.rows.map((row) => row.work_item_id)).toContain(holdout);
-      expect(holdoutOnly.rows.every((row) => row.split === 'holdout')).toBe(true);
+      expect(cases[0]!.labels).toHaveLength(5);
     });
   });
 
-  it('a thread with both dev and holdout golden cases is holdout', async () => {
+  it('masks card numbers, addresses and phone numbers in the case text, the labels and the eval_label rows', async () => {
     await withIngestionDb(async ({ db }) => {
-      const item = await seedItem(db, 'thread-mixed', ['msg-mixed-1', 'msg-mixed-2']);
-      await addEvents(db, item, [
-        { type: 'field.edit', fieldPath: `stays[${STAY_A}].rows[${ROW_A}].count`, aiValue: 2, value: 3, at: 1 },
-      ]);
-      const golden = [
-        goldenCase('case-dev', 'dev', 'msg-mixed-1'),
-        goldenCase('case-holdout', 'holdout', 'msg-mixed-2', ['msg-mixed-1']),
-      ];
-
-      const { rows } = await exportWorkEvents(db, { golden });
-
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ split: 'holdout', split_source: 'golden' });
-    });
-  });
-
-  it('masks card numbers and security codes in both values', async () => {
-    await withIngestionDb(async ({ db }) => {
-      const item = await seedItem(db, 'thread-card');
+      const item = await seedItem(
+        db,
+        'thread-mask',
+        'Card 4111111111111111 for the room. Ring Jane on 082 555 1234 or jane.smith@example.com. Two rooms on 2027-10-26.',
+      );
       await addEvents(db, item, [
         {
           type: 'field.edit',
-          fieldPath: 'contact.phone',
-          aiValue: 'card 4111111111111111 on file',
-          value: 'CVV: 123',
+          fieldPath: 'contact.email',
+          aiValue: 'jane@hotel.co.za',
+          value: 'jane.smith@example.com',
           at: 1,
+        },
+        {
+          type: 'field.edit',
+          fieldPath: 'contact.phone',
+          aiValue: 'x',
+          value: '082 555 1234',
+          at: 2,
         },
       ]);
 
-      const { rows } = await exportWorkEvents(db);
+      const { cases, records } = await exportLabels(db);
+      await writeEvalLabels(db, records);
+      const exported = JSON.stringify({ cases, rows: await db.select().from(evalLabel) });
 
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({
-        ai_value: 'card [card ••••1111] on file',
-        human_value: 'CVV: [code masked]',
-      });
-      expect(JSON.stringify(rows)).not.toContain('4111111111111111');
+      const row = cases[0] as LabelCase;
+      expect(row.text).toContain('[card ••••1111]');
+      expect(row.text).toContain('[phone]');
+      expect(row.text).toContain('[email]');
+      expect(row.from).toBe('[email]@example.com');
+      expect(row.labels.find((label) => label.field_id === 'contact.email')?.human_value).toBe(
+        '[email]',
+      );
+      expect(exported).not.toContain('4111111111111111');
+      expect(exported).not.toContain('jane.smith@example.com');
+      expect(exported).not.toContain('082 555 1234');
     });
   });
 
-  it('main writes candidate JSONL to --out and refuses bad arguments', async () => {
+  it('a work item keeps a stored eval_label split; one without a stored label takes its hash split', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const stored = await seedItem(db, 'thread-stored');
+      const fresh = await seedItem(db, 'thread-fresh');
+      const edit: Edit = {
+        type: 'field.edit',
+        fieldPath: `stays[${STAY_A}].requested.departure`,
+        aiValue: '2027-10-28',
+        value: '2027-10-29',
+        at: 1,
+      };
+      await addEvents(db, stored, [edit]);
+      await addEvents(db, fresh, [edit]);
+      // The stored item's holdout label was written earlier, so the rule does not move it.
+      await db.insert(evalLabel).values({
+        workItemId: stored,
+        fieldPath: `stays[${STAY_A}].requested.departure`,
+        labelKind: 'correction',
+        split: 'holdout',
+      });
+
+      const { cases, records } = await exportLabels(db);
+
+      expect(cases.find((row) => row.work_item_id === stored)).toMatchObject({
+        split: 'holdout',
+        split_source: 'stored',
+      });
+      expect(cases.find((row) => row.work_item_id === fresh)).toMatchObject({
+        split: splitFor(fresh),
+        split_source: 'hash',
+      });
+      expect(records.find((row) => row.workItemId === stored)?.split).toBe('holdout');
+    });
+  });
+
+  it('--write-labels inserts each source event once: a re-run adds no rows', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const item = await seedItem(db, 'thread-idempotent');
+      await addEvents(db, item, [
+        {
+          type: 'field.edit',
+          fieldPath: `stays[${STAY_A}].requested.arrival`,
+          aiValue: '2027-10-26',
+          value: '2027-10-27',
+          at: 1,
+        },
+        { type: 'note.staff', aiValue: null, value: 'Late arrival', at: 2 },
+      ]);
+
+      const first = await writeEvalLabels(db, (await exportLabels(db)).records);
+      const second = await writeEvalLabels(db, (await exportLabels(db)).records);
+
+      expect(first).toBe(2);
+      expect(second).toBe(0);
+      const rows = await db.select().from(evalLabel).where(eq(evalLabel.workItemId, item));
+      expect(rows.map((row) => row.labelKind).sort()).toEqual(['correction', 'note']);
+    });
+  });
+
+  it('the time split marks a recently labelled item as test and an old one as dev or holdout', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const recent = await seedItem(db, 'thread-recent');
+      const old = await seedItem(db, 'thread-old');
+      const field = `stays[${STAY_A}].requested.arrival`;
+      await addEvents(db, recent, [
+        { type: 'field.edit', fieldPath: field, aiValue: '2027-10-26', value: '2027-10-27', at: 1 },
+      ]);
+      // Sixty days before T0: outside the 30-day test window when the export runs five days after T0.
+      await addEvents(db, old, [
+        {
+          type: 'field.edit',
+          fieldPath: field,
+          aiValue: '2027-10-26',
+          value: '2027-10-27',
+          at: -60 * 86_400,
+        },
+      ]);
+
+      const { cases } = await exportLabels(db, {
+        timeSplit: true,
+        now: new Date(T0 + 5 * 86_400_000),
+      });
+      const { cases: later } = await exportLabels(db, {
+        timeSplit: true,
+        now: new Date(T0 + 90 * 86_400_000),
+      });
+
+      expect(cases.find((row) => row.work_item_id === recent)).toMatchObject({
+        split: 'test',
+        split_source: 'time',
+      });
+      expect(cases.find((row) => row.work_item_id === old)?.split).not.toBe('test');
+      expect(later.some((row) => row.split === 'test')).toBe(false);
+    });
+  });
+
+  it('main refuses bad arguments, writes the dataset to --out, and inserts labels only with --write-labels', async () => {
     expect(await main(['--split', 'train'], { DATABASE_URL: 'postgres://unused' })).toBe(2);
     expect(await main(['--out', join(tmpdir(), 'unused.jsonl')], {})).toBe(2);
 
     await withIngestionDb(async ({ db, url }) => {
       const item = await seedItem(db, 'thread-cli');
       await addEvents(db, item, [
-        { type: 'field.edit', fieldPath: `stays[${STAY_A}].requested.arrival`, aiValue: '2027-10-26', value: '2027-10-27', at: 1 },
+        {
+          type: 'field.edit',
+          fieldPath: `stays[${STAY_A}].requested.arrival`,
+          aiValue: '2027-10-26',
+          value: '2027-10-27',
+          at: 1,
+        },
       ]);
       const dir = mkdtempSync(join(tmpdir(), 'work-events-export-'));
+      const out = join(dir, 'nested', 'out.jsonl');
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
       try {
-        const golden = join(dir, 'golden.jsonl');
-        // A golden case whose message is not in this database cannot pin its thread's split: the summary warns.
-        writeFileSync(golden, `${JSON.stringify(goldenCase('case-elsewhere', 'holdout', 'msg-not-here'))}\n`);
-        const out = join(dir, 'nested', 'out.jsonl');
-        const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-        const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
-        try {
-          expect(await main(['--out', out, '--golden-set', golden], { DATABASE_URL: url })).toBe(0);
-          const summary = JSON.parse(String(log.mock.calls.at(-1)?.[0])) as { golden: unknown; warnings: string[] };
-          expect(summary.golden).toEqual({ matched: 0, total: 1 });
-          expect(summary.warnings).toEqual([expect.stringContaining('1 of 1 golden cases have no message')]);
-          expect(warn).toHaveBeenCalledWith(expect.stringContaining('warning: 1 of 1 golden cases'));
-        } finally {
-          log.mockRestore();
-          warn.mockRestore();
-        }
+        expect(await main(['--out', out], { DATABASE_URL: url })).toBe(0);
+        expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+          cases: 1,
+          labels: 1,
+          evalLabelInserted: null,
+        });
+        expect(await db.select().from(evalLabel)).toHaveLength(0);
 
-        const lines = readFileSync(out, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as EvalRow);
+        expect(await main(['--out', out, '--write-labels'], { DATABASE_URL: url })).toBe(0);
+        expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+          evalLabelInserted: 1,
+        });
+        expect(await main(['--out', out, '--write-labels'], { DATABASE_URL: url })).toBe(0);
+        expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+          evalLabelInserted: 0,
+        });
+        expect(await db.select().from(evalLabel)).toHaveLength(1);
+
+        const lines = readFileSync(out, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line) as LabelCase);
         expect(lines).toHaveLength(1);
         expect(lines[0]).toMatchObject({
-          schema_version: 'work-event-eval/v1',
-          label_status: 'candidate',
-          split_source: 'hash',
-          ai_value: '2027-10-26',
-          human_value: '2027-10-27',
+          schema_version: 'work-event-label/v2',
+          kind: 'quote',
+          labels: [
+            {
+              label_kind: 'correction',
+              ai_value: '2027-10-26',
+              human_value: '2027-10-27',
+              ai_source: 'extractor-v3',
+            },
+          ],
         });
-        expect(['dev', 'holdout']).toContain(lines[0]!.split);
       } finally {
+        log.mockRestore();
         rmSync(dir, { recursive: true, force: true });
       }
     });
