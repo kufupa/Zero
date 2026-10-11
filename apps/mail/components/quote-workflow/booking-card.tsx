@@ -9,6 +9,8 @@ import type {
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
 import { HmsLinkActions } from './hms-link-actions';
+import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
+import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import {
   commitOutcome,
@@ -31,7 +33,7 @@ import { Notice, paneFieldClass, PrimaryButton, SecondaryButton, Section } from 
 const COPIED_MS = 1500;
 const COPY_FAILED_MS = 3000;
 
-const BOARD_LABELS: Record<string, string | undefined> = {
+export const BOARD_LABELS: Record<string, string | undefined> = {
   room_only: 'Room only',
   bb: 'Bed & breakfast',
   dinner_bb: 'Dinner, bed & breakfast',
@@ -509,11 +511,14 @@ export function BookingCards({
   groups = [],
   paneSave = null,
   parties,
+  contact = null,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
   /** Set only when the server pane save flag is lab or on. Without it the card stays copy-only. */
   paneSave?: PaneStayClient | null;
+  /** The stored read's contact. Its name and company fill the HMS notes where the room card has none. */
+  contact?: StoredContact | null;
   /** The company and agency picked for this quote. They fill only the fields the draft leaves empty. */
   parties?: StaffQuoteParties;
 }) {
@@ -784,6 +789,19 @@ export function BookingCards({
               disabled={locked}
               maxLength={PANE_BOOKER_EMAIL_MAX}
               onChange={(value) => setChoice({ bookerEmail: value })}
+            />
+            <CopyHmsNotesButton
+              block={hmsNotesBlock({
+                booker: choice.bookerName || contact?.name,
+                company: choice.organization || contact?.company,
+                rooms: [
+                  {
+                    label: `Room ${roomIndex}`,
+                    specialRequests: group?.specialRequests,
+                    rate: { code: textValue(request.ratePlan), board: BOARD_LABELS[room.board ?? ''] },
+                  },
+                ],
+              })}
             />
             {room.schemaErrors.map((error) => (
               <p key={error} className="text-[11px] text-amber-800">

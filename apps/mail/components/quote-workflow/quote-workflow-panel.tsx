@@ -47,7 +47,8 @@ import {
   paneFieldClass,
   paneTextareaClass,
 } from '@/components/nava-pane/pane-ui';
-import { BookingCards } from './booking-card';
+import { BOARD_LABELS, BookingCards } from './booking-card';
+import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { PartyPicker } from './party-picker';
 import { DocumentReview } from './document-review';
@@ -58,7 +59,15 @@ import { NotSupportedList } from './not-supported-list';
 import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
 import { RateCards } from './rate-cards';
-import { RowRateControls, savedPrice, useSavedRates, type SavedRate, type SavedRatesClient } from './rate-controls';
+import {
+  CopyHmsNotesButton,
+  hmsNotesBlock,
+  RowRateControls,
+  savedPrice,
+  useSavedRates,
+  type SavedRate,
+  type SavedRatesClient,
+} from './rate-controls';
 import { StayCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
 import { WorkflowBadge, type QuoteIntent } from './workflow-badge';
@@ -816,6 +825,41 @@ function sameValue(current: unknown, wanted: unknown): boolean {
   return JSON.stringify(current) === JSON.stringify(wanted);
 }
 
+/**
+ * The HMS notes block for the quote: one room per row across its stays. The rate, the discount's approval and the amount
+ * come from each row's last run and its price choice; the booker and company come from the stored read.
+ */
+function quoteNotesBlock(
+  session: QuoteSession,
+  rowLabels: ReadonlyMap<string, string>,
+  contact: StoredContact | null | undefined,
+): string {
+  const confirmation = session.analysis?.amendment?.confirmationNumber;
+  return hmsNotesBlock({
+    booker: contact?.name,
+    company: contact?.company,
+    confirmations: confirmation ? [confirmation] : [],
+    rooms: session.groups.map((group) => {
+      const rowRate = session.staffQuotes[stayKeyForGroup(group)]?.rowRates?.find((item) => item.groupId === group.id);
+      const override = group.rowPrice?.source === 'override' ? group.rowPrice : null;
+      const saved = group.rowPrice?.source === 'saved' ? group.rowPrice : null;
+      const code = rowRate?.rateCode ?? override?.rateCode ?? group.rateCode;
+      const option = (session.rateOptions ?? []).find((item) => item.groupId === group.id && item.rateCode === code);
+      return {
+        label: rowLabels.get(group.id) ?? 'Room',
+        specialRequests: group.specialRequests,
+        authorisedBy: override?.note,
+        rate: {
+          code,
+          label: rowRate?.customRateName ?? saved?.name ?? option?.rateLabel,
+          amountMinor: rowRate?.nightlyMinor[0] ?? group.rowPrice?.amountMinor,
+          board: BOARD_LABELS[group.board],
+        },
+      };
+    }),
+  });
+}
+
 export function QuoteWorkflowPanel({
   session,
   onPatchGroup,
@@ -845,10 +889,13 @@ export function QuoteWorkflowPanel({
   partySuggestions,
   partyIndex,
   rates,
+  contact,
 }: {
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
   paneSave?: PaneStayClient | null;
+  /** The stored read's contact (booker and company) for the HMS notes. Null while the mail has no stored read. */
+  contact?: StoredContact | null;
   partySuggestions?: PartySuggestion[];
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
@@ -1172,6 +1219,7 @@ export function QuoteWorkflowPanel({
               </Fragment>
             );
           })}
+          <CopyHmsNotesButton block={quoteNotesBlock(session, rowLabels, contact)} />
           {session.offers.length ? (
             <div className="flex flex-col gap-2">
               <h3 className="text-[11.5px] font-semibold text-[#475569]">Results</h3>
@@ -1218,6 +1266,7 @@ export function QuoteWorkflowPanel({
               draft={session.bookingDrafts[key]!}
               groups={session.groups}
               paneSave={paneSave}
+              contact={contact}
               parties={session.staffHeader.parties}
             />
           </Fragment>

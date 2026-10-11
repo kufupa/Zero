@@ -196,6 +196,66 @@ export function priceSummary(price: RowPriceChoice | undefined, rowRate: StaffRo
   return `${price.rateCode} override, ${draftMoney(price.amountMinor)} a night${hmsNote}`;
 }
 
+/** One room for the HMS notes. Each field is optional: a field with no value adds no line. */
+export type HmsNotesRoom = {
+  /** The room's name in the pane, e.g. "Room 1" or "Stay 2 · Room 1". It heads the room's lines when there are several rooms. */
+  label: string;
+  specialRequests?: string[];
+  /** Who approved the discount and why, as staff typed it on the row's override. */
+  authorisedBy?: string | null;
+  rate?: { code?: string | null; label?: string | null; amountMinor?: number | null; board?: string | null };
+};
+
+export type HmsNotesInput = {
+  booker?: string | null;
+  company?: string | null;
+  confirmations?: string[];
+  rooms: HmsNotesRoom[];
+};
+
+function noteText(value: string | null | undefined): string {
+  return value?.trim() ?? '';
+}
+
+/** The rate for the HMS notes, e.g. "NCOR1B R1850.00 per night, Bed & breakfast". The amount is written as the HMS comment writes it. */
+function hmsRateLine(rate: HmsNotesRoom['rate']): string {
+  const names = [noteText(rate?.code), noteText(rate?.label)].filter(
+    (name, index, all) => name !== '' && all.indexOf(name) === index,
+  );
+  const amount = rate?.amountMinor;
+  const price = amount == null ? '' : `R${(amount / 100).toFixed(2)} per night`;
+  return [[...names, price].filter(Boolean).join(' '), noteText(rate?.board)].filter(Boolean).join(', ');
+}
+
+/**
+ * The one block staff paste into the HMS reservation comments. The booker, company and confirmation numbers come once.
+ * Each room gives its special requests, its discount approval and its rate. With several rooms, each room's lines sit
+ * under its label. A line with no value is left out, so an empty input gives ''.
+ */
+export function hmsNotesBlock(input: HmsNotesInput): string {
+  const lines: string[] = [];
+  const booker = noteText(input.booker);
+  const company = noteText(input.company);
+  if (booker) lines.push(`Booker: ${booker}`);
+  if (company) lines.push(`Company: ${company}`);
+  const several = input.rooms.length > 1;
+  for (const room of input.rooms) {
+    const own: string[] = [];
+    const requests = (room.specialRequests ?? []).map(noteText).filter(Boolean);
+    if (requests.length) own.push(`Special requests: ${requests.join('; ')}`);
+    const authorised = noteText(room.authorisedBy);
+    if (authorised) own.push(`Discount authorised by: ${authorised}`);
+    const rate = hmsRateLine(room.rate);
+    if (rate) own.push(`Rate: ${rate}`);
+    if (!own.length) continue;
+    if (several) lines.push(room.label, ...own.map((line) => `  ${line}`));
+    else lines.push(...own);
+  }
+  const confirmations = (input.confirmations ?? []).map(noteText).filter(Boolean);
+  if (confirmations.length) lines.push(`Confirmation: ${confirmations.join(', ')}`);
+  return lines.join('\n');
+}
+
 const CHIP_TONES = {
   hms: 'bg-[#f1f5f9] text-[#475569]',
   saved: 'bg-[#eaf4ee] text-[#1a4332]',
@@ -219,6 +279,22 @@ const outlineButtonClass =
 function saveError(err: unknown, fallback: string): string {
   const code = typeof err === 'object' && err !== null ? (err as { data?: { code?: unknown } }).data?.code : undefined;
   return code === 'CONFLICT' ? CONFLICT_COPY : fallback;
+}
+
+/** Copies the HMS notes block (hmsNotesBlock) for staff to paste into HMS. Renders nothing for an empty block. */
+export function CopyHmsNotesButton({ block }: { block: string }) {
+  if (!block) return null;
+  const copy = async () => {
+    if (await copyText(block)) {
+      trackPaneAction({ type: 'copy.hms_line', block: 'notes' });
+      toast.success('HMS notes copied. Paste them into the HMS comments.');
+    } else toast.error("Couldn't copy. Select the notes text and copy it.");
+  };
+  return (
+    <button type="button" className={outlineButtonClass} onClick={() => void copy()}>
+      Copy for HMS notes
+    </button>
+  );
 }
 
 /**

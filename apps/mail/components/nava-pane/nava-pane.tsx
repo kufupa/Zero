@@ -1401,6 +1401,7 @@ export function NavaPane({
             <QuoteWorkflowPanel
               session={quoteSession}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
+              contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
               findParty={PANE_PARTY_FINDER}
               partyIndex={PANE_PARTY_INDEX}
               rates={PANE_SAVED_RATES}

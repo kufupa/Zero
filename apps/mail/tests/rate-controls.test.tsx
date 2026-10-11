@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import {
+  hmsNotesBlock,
   readOneOff,
   readOverride,
   readSavedRateDraft,
@@ -15,6 +16,7 @@ import {
   type SavedRate,
   type SavedRatesClient,
 } from '../components/quote-workflow/rate-controls';
+import { trackPaneAction } from '../lib/quote-workflow/pane-telemetry';
 import { draftMoney } from '../lib/quote-workflow/multi-option-draft';
 import { buildExpiredPriorRequoteBindArgs } from '../lib/quote-workflow/booking-draft-bind';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
@@ -35,6 +37,10 @@ import {
 } from '../lib/quote-workflow/types';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
+vi.mock('../lib/quote-workflow/pane-telemetry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/quote-workflow/pane-telemetry')>()),
+  trackPaneAction: vi.fn(),
+}));
 
 afterEach(() => cleanup());
 beforeEach(() => {
@@ -107,9 +113,21 @@ function stepOf(session: QuoteSession): string {
 
 /** The quote after HMS priced it. A row price is set before the run, as the pane sets it, and the run carries it. */
 async function pricedSession(
-  options: { rowPrice?: RowPriceChoice; rowRates?: StaffRowRate[]; rateOptions?: RateOption[] } = {},
+  options: {
+    rowPrice?: RowPriceChoice;
+    rowRates?: StaffRowRate[];
+    rateOptions?: RateOption[];
+    specialRequests?: string[];
+  } = {},
 ): Promise<QuoteSession> {
   let session = readySession();
+  if (options.specialRequests) {
+    session = reduceQuoteSession(session, {
+      type: 'patch_group',
+      groupId: 'g1',
+      patch: { specialRequests: options.specialRequests },
+    });
+  }
   if (options.rowPrice) {
     session = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch: { rowPrice: options.rowPrice } });
   }
@@ -597,5 +615,103 @@ describe('row price rules', () => {
     expect(bound).not.toBeNull();
     expect(savedRatesFromTrpc({})).toBeNull();
     expect(savedRatesFromTrpc(undefined)).toBeNull();
+  });
+});
+
+describe('HMS notes block', () => {
+  const CONTACT = { name: 'Jane Smith', company: 'Acme Travel', endClient: null, email: null, phone: null };
+
+  it('writes every field once: booker and company, each room, then the confirmation number', () => {
+    const block = hmsNotesBlock({
+      booker: 'Jane Smith',
+      company: 'Acme Travel',
+      confirmations: ['57291630-1'],
+      rooms: [
+        {
+          label: 'Room 1',
+          specialRequests: ['Late check-in', 'Cot'],
+          authorisedBy: NOTE,
+          rate: { code: 'NCOR1B', label: 'Corporate rate', amountMinor: 185000, board: 'Bed & breakfast' },
+        },
+      ],
+    });
+    expect(block).toBe(
+      [
+        'Booker: Jane Smith',
+        'Company: Acme Travel',
+        'Special requests: Late check-in; Cot',
+        `Discount authorised by: ${NOTE}`,
+        'Rate: NCOR1B Corporate rate R1850.00 per night, Bed & breakfast',
+        'Confirmation: 57291630-1',
+      ].join('\n'),
+    );
+  });
+
+  it('omits every line with no value, and says nothing for an empty read', () => {
+    expect(
+      hmsNotesBlock({
+        booker: '  ',
+        company: null,
+        confirmations: [],
+        rooms: [{ label: 'Room 1', specialRequests: ['', ' '], rate: { code: 'BAR', label: 'BAR', board: null } }],
+      }),
+    ).toBe('Rate: BAR');
+    expect(hmsNotesBlock({ rooms: [{ label: 'Room 1' }] })).toBe('');
+    expect(hmsNotesBlock({ booker: 'Jane Smith', rooms: [] })).toBe('Booker: Jane Smith');
+  });
+
+  it('heads each room of a multi-stay quote with its label, indents its lines, and skips a room with none', () => {
+    const block = hmsNotesBlock({
+      booker: 'Jane Smith',
+      rooms: [
+        { label: 'Stay 1 · Room 1', specialRequests: ['Cot'], rate: { code: 'NCOR1B', amountMinor: 185000, board: 'Room only' } },
+        { label: 'Stay 2 · Room 1', rate: { amountMinor: 210000 } },
+        { label: 'Stay 2 · Room 2' },
+      ],
+    });
+    expect(block).toBe(
+      [
+        'Booker: Jane Smith',
+        'Stay 1 · Room 1',
+        '  Special requests: Cot',
+        '  Rate: NCOR1B R1850.00 per night, Room only',
+        'Stay 2 · Room 1',
+        '  Rate: R2100.00 per night',
+      ].join('\n'),
+    );
+  });
+
+  it('copies the block from a quote item, with the stored read booker and company, and logs copy.hms_line', async () => {
+    const session = await pricedSession({
+      specialRequests: ['Late check-in'],
+      rowPrice: { source: 'override', rateCode: 'NCOR1B', amountMinor: 185000, note: NOTE },
+      rowRates: [
+        {
+          groupId: 'g1',
+          source: 'override',
+          hmsNightlyMinor: [215000],
+          nightlyMinor: [185000],
+          rateCode: 'NCOR1B',
+          note: NOTE,
+          hmsComment: `Rate override NCOR1B R1850.00 per night: ${NOTE}`,
+        },
+      ],
+    });
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    render(<QuoteWorkflowPanel session={session} contact={CONTACT} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS notes' }));
+
+    const expected = [
+      'Booker: Jane Smith',
+      'Company: Acme Travel',
+      'Special requests: Late check-in',
+      `Discount authorised by: ${NOTE}`,
+      'Rate: NCOR1B R1850.00 per night, Bed & breakfast',
+    ].join('\n');
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expected));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('HMS notes copied. Paste them into the HMS comments.'));
+    expect(trackPaneAction).toHaveBeenCalledWith({ type: 'copy.hms_line', block: 'notes' });
   });
 });
