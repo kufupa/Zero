@@ -10,6 +10,7 @@ import {
   hmsJobLabel,
 } from '../components/quote-workflow/hms-queue-status';
 import {
+  HMS_JOB_MAX_MISSES,
   HMS_JOB_POLL_MS,
   type HmsJobKind,
   type HmsJobQueueOptions,
@@ -330,6 +331,30 @@ describe('a job that stops answering', () => {
     const reads = status.mock.calls.length;
     await advance(HMS_JOB_POLL_MS * 5);
     expect(status.mock.calls.length).toBe(reads);
+  });
+});
+
+describe('a resumed job whose polling was lost', () => {
+  it('Retry polls the same run again and queues nothing', async () => {
+    const running = view({ runId: 'run-9', request: FIND, status: 'running' });
+    const done = view({ runId: 'run-9', request: FIND, status: 'done', asOf: AS_OF, result: { kind: 'find' } });
+    // One readable poll, then unreadable polls until polling gives up, then the run finishes on HMS.
+    const polls: (HmsJobView | null)[] = [running, ...Array<HmsJobView | null>(HMS_JOB_MAX_MISSES).fill(null), done];
+    const { transport, queue, status } = fakeTransport(polls, running);
+    render(<Harness transport={transport} request={FIND} resume={{ kind: 'find', confirmation: CONFIRMATION }} />);
+    await advance(0);
+    expect(screen.getByText('Running')).toBeTruthy();
+
+    await advance(HMS_JOB_POLL_MS * (HMS_JOB_MAX_MISSES + 1));
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    });
+    await advance(0);
+    expect(status).toHaveBeenLastCalledWith({ runId: 'run-9' });
+    expect(screen.getByTestId('hms-as-of')).toBeTruthy();
+    expect(queue).not.toHaveBeenCalled();
   });
 });
 

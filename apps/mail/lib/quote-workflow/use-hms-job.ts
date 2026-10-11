@@ -81,6 +81,8 @@ export function useHmsJob(input: {
   const [statusFailed, setStatusFailed] = useState(false);
   const [readBackSettled, setReadBackSettled] = useState(false);
   const [statusRetryRound, setStatusRetryRound] = useState(0);
+  // Bumped by Retry after lost polling, so the poll loop starts again on the same run.
+  const [pollRound, setPollRound] = useState(0);
   // Each start and each scope change takes a new generation. An answer from an older one is dropped.
   const generation = useRef(0);
   const lastRequest = useRef<HmsJobRequest | null>(null);
@@ -126,14 +128,19 @@ export function useHmsJob(input: {
       setStatusRetryRound((round) => round + 1);
       return;
     }
+    // Lost polling is not a failed job: the run may still be running. Retry polls it again and never queues a second one.
+    if (view?.status === 'failed' && view.failureClass === 'POLL_LOST' && runId !== null) {
+      setPollRound((round) => round + 1);
+      return;
+    }
     const last = lastRequest.current;
     if (!last) return;
     // A persisted terminal failure can be retried as a fresh user job; keeping autoStart would reuse its failed key.
-    // POLL_LOST is not definitive, so it must retain the stable key and reattach to the possibly-running job.
+    // POLL_LOST with no known run keeps the stable key, so the server can reattach to a job that may be running.
     const options =
       view?.status === 'failed' && view.failureClass !== 'POLL_LOST' ? undefined : lastRequestOptions.current;
     start(last, options);
-  }, [start, statusFailed, view]);
+  }, [runId, start, statusFailed, view]);
 
   // Scope change or remount: clear, then read back the latest job of this kind on the thread.
   useEffect(() => {
@@ -206,7 +213,7 @@ export function useHmsJob(input: {
     return () => {
       live = false;
     };
-  }, [transport, runId]);
+  }, [transport, runId, pollRound]);
 
   return { view, queuing, queueFailed, statusFailed, readBackSettled, start, retry };
 }
