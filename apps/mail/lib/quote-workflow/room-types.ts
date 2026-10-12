@@ -62,17 +62,22 @@ export function matchRoomType(raw: string | undefined): RoomTypeMatch {
     return { suggestions: [] };
   }
 
+  // Bed words ("single", "double") only rank. They never narrow a name to one code: "single twin" fits Standard and
+  // Deluxe Twin, so it stays a suggestion. An exact code needs the name words alone to fit one type.
+  const aliasWords = words.filter((word) => Object.hasOwn(ROOM_WORD_ALIASES, word));
+  const nameOnly = words.filter((word) => !Object.hasOwn(ROOM_WORD_ALIASES, word));
   const candidates = ROOM_TYPE_CODES.filter((candidate) => {
+    if (!nameOnly.length) return aliasWords.some((word) => ROOM_WORD_ALIASES[word]!.includes(candidate));
     const nameWords = ROOM_TYPE_NAMES[candidate].toLowerCase().split(' ');
-    return words.every((word) => {
-      const aliases = ROOM_WORD_ALIASES[word];
-      if (aliases) return aliases.includes(candidate);
-      return nameWords.includes(word);
-    });
+    return nameOnly.every((word) => nameWords.includes(word));
   });
 
   if (candidates.length === 1) return { code: candidates[0]!, suggestions: [] };
-  return { suggestions: candidates.slice(0, MAX_ROOM_TYPE_SUGGESTIONS) };
+  const rank = (candidate: RoomTypeCode) => {
+    const fits = aliasWords.length > 0 && aliasWords.every((word) => ROOM_WORD_ALIASES[word]!.includes(candidate));
+    return fits ? ROOM_WORD_ALIASES[aliasWords[0]!]!.indexOf(candidate) : 100 + ROOM_TYPE_CODES.indexOf(candidate);
+  };
+  return { suggestions: [...candidates].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_ROOM_TYPE_SUGGESTIONS) };
 }
 
 /** The exact native code for a raw code or an unambiguous room name, or null when unknown/ambiguous. */

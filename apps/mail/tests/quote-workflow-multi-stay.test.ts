@@ -2,9 +2,12 @@ import {
   canCreatePdf,
   groupsForQuoteStep,
   initialQuoteSession,
+  pdfBlocker,
   ratedStayCount,
   reduceQuoteSession,
+  stayIdOf,
 } from '../lib/quote-workflow/session';
+import { staffStayExtrasFor } from '../lib/quote-workflow/types';
 import type {
   BookingDraftReady,
   LunaAnalysisWire,
@@ -664,5 +667,38 @@ describe('re-quoting an expired stay after staff edits', () => {
       staffEdited: true,
     });
     expect(groups).toBe(sessionGroups);
+  });
+});
+
+describe('per-stay extras follow their stay', () => {
+  const LATER = { key: '2027-12-05:2027-12-07', arrival: '2027-12-05', departure: '2027-12-07' };
+
+  it("a date edit keeps the stay's saved extras", () => {
+    let session = reduceQuoteSession(stayedSession(), {
+      type: 'patch_staff_stay_extras',
+      stayKey: DEC.key,
+      extras: { shuttleEnabled: true, shuttleMinor: 45000 },
+    });
+    session = reduceQuoteSession(session, {
+      type: 'patch_group',
+      groupId: 'stay-b',
+      patch: { arrivalDate: LATER.arrival, departureDate: LATER.departure },
+    });
+    const extras = staffStayExtrasFor(session.staffHeader, LATER.key);
+    expect(extras.shuttleEnabled).toBe(true);
+    expect(extras.shuttleMinor).toBe(45000);
+    expect(session.staffHeader.stayExtrasByKey?.[DEC.key]).toBeUndefined();
+  });
+
+  it("a removed stay's bad amount no longer blocks documents", () => {
+    let session = reduceQuoteSession(stayedSession(), {
+      type: 'patch_staff_stay_extras',
+      stayKey: DEC.key,
+      extras: { fieldErrors: { shuttleAmount: 'Not a number' } },
+    });
+    expect(pdfBlocker(session)?.kind).toBe('amounts');
+    const stayB = session.groups.find((group) => group.id === 'stay-b')!;
+    session = reduceQuoteSession(session, { type: 'remove_stay', stayId: stayIdOf(stayB) });
+    expect(pdfBlocker(session)?.kind).not.toBe('amounts');
   });
 });

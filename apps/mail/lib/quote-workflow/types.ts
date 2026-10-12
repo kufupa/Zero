@@ -406,10 +406,14 @@ export function staffStayExtrasFor(header: StaffQuoteHeader, stayKey: string): S
   };
 }
 
-/** The first unreadable or over-cap amount, as "Label: message", or null when every field reads cleanly. */
+/**
+ * The first unreadable or over-cap amount, as "Label: message", or null when every field reads cleanly. With
+ * currentStayKeys, only those stays count: a removed stay keeps its saved extras for undo, but not its errors.
+ */
 export function staffHeaderFieldProblem(
   header: Pick<StaffQuoteHeader, 'fieldErrors' | 'stayExtrasByKey'> | null | undefined,
   stayKey?: string,
+  currentStayKeys?: ReadonlySet<string>,
 ): string | null {
   const findProblem = (errors: Partial<Record<StaffExtraField, string>> | undefined) => {
     for (const field of Object.keys(STAFF_EXTRA_FIELD_LABELS) as StaffExtraField[]) {
@@ -421,7 +425,8 @@ export function staffHeaderFieldProblem(
   const globalProblem = findProblem(header?.fieldErrors);
   if (globalProblem) return globalProblem;
   if (stayKey) return findProblem(header?.stayExtrasByKey?.[stayKey]?.fieldErrors);
-  for (const extras of Object.values(header?.stayExtrasByKey ?? {})) {
+  for (const [key, extras] of Object.entries(header?.stayExtrasByKey ?? {})) {
+    if (currentStayKeys && !currentStayKeys.has(key)) continue;
     const problem = findProblem(extras.fieldErrors);
     if (problem) return problem;
   }

@@ -536,7 +536,7 @@ export type PdfBlocker =
 
 export function pdfBlocker(session: QuoteSession): PdfBlocker | null {
   // An unreadable amount means the saved one is not what staff see: no PDF, Excel or reply until it is fixed.
-  const problem = staffHeaderFieldProblem(session.staffHeader);
+  const problem = staffHeaderFieldProblem(session.staffHeader, undefined, new Set(session.groups.map(stayKeyForGroup)));
   if (problem) return { kind: 'amounts', problem };
   if (!staffSourceReady(session)) return { kind: 'source_not_ready', unsynced: session.mailboxStatus === 'unsynced' };
   if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') {
@@ -936,6 +936,23 @@ function replaceStayRows(current: StayGroupRequirement[], next: StayGroupRequire
   const rows = stayId ? next.map((group) => ({ ...group, stayId })) : next;
   const rest = current.filter((group) => !keys.has(stayKeyForGroup(group)));
   return [...rest.slice(0, at), ...rows, ...rest.slice(at)];
+}
+
+/**
+ * Per-stay extras are saved under the stay's dates. When a date edit leaves no row on the old dates, the saved extras
+ * move to the new dates, unless a stay there already has its own.
+ */
+function carryStayExtras(
+  header: StaffQuoteHeader,
+  groups: StayGroupRequirement[],
+  from: string,
+  to: string,
+): StaffQuoteHeader {
+  const saved = header.stayExtrasByKey;
+  if (from === to || !saved?.[from] || saved[to]) return header;
+  if (groups.some((group) => stayKeyForGroup(group) === from)) return header;
+  const { [from]: extras, ...rest } = saved;
+  return { ...header, stayExtrasByKey: { ...rest, [to]: extras } };
 }
 
 function editStays(
@@ -1493,9 +1510,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         group.id === action.groupId ? applyGroupPatch(group, action.patch) : group,
       );
       const patched = groups.find((group) => group.id === action.groupId)!;
+      // A date edit moves the stay: its saved extras follow it to the new dates.
+      const staffHeader = carryStayExtras(session.staffHeader, groups, stayKeyForGroup(target), stayKeyForGroup(patched));
       // A rate pick or a row price keeps its own cards on screen while the re-run is pending. Other edits clear them.
       return editStays(
-        session,
+        staffHeader === session.staffHeader ? session : { ...session, staffHeader },
         groups,
         new Set([stayKeyForGroup(target), stayKeyForGroup(patched)]),
         'rateCode' in action.patch || 'rowPrice' in action.patch ? action.groupId : undefined,

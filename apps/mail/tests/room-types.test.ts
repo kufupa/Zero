@@ -17,6 +17,8 @@ describe('room type name matching', () => {
     ['king', { suggestions: ['SKNG', 'EXKNG', 'DLXKNG'] }],
     ['Executive King', { code: 'EXKNG', suggestions: [] }],
     ['garbage', { suggestions: [] }],
+    ['single twin', { suggestions: ['STWN', 'DLXTWN'] }],
+    ['double queen', { suggestions: ['STQN', 'DLXQN'] }],
   ] as const)('matches %s without guessing an ambiguous code', (raw, expected) => {
     expect(matchRoomType, 'room type matcher is exported').toBeTypeOf('function');
     if (!matchRoomType) return;
