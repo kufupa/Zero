@@ -3,8 +3,13 @@
  */
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HmsQueueStatusLine, formatQueueElapsed } from '../components/quote-workflow/hms-queue-status';
+import {
+  HmsJobStatusLine,
+  HmsQueueStatusLine,
+  formatQueueElapsed,
+} from '../components/quote-workflow/hms-queue-status';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
+import type { HmsJobView } from '../lib/quote-workflow/amend-find';
 import { initialQuoteSession } from '../lib/quote-workflow/session';
 import type { QueueStatus, QuoteSession } from '../lib/quote-workflow/types';
 import { HMS_QUEUE_POLL_MS, useHmsQueueStatus } from '../lib/quote-workflow/use-hms-queue-status';
@@ -113,6 +118,34 @@ describe('useHmsQueueStatus polling', () => {
 });
 
 describe('HmsQueueStatusLine messages', () => {
+  it('renders a compact active line for row-level HMS checks', () => {
+    const view: HmsJobView = {
+      runId: 'run-fixture-1',
+      request: null,
+      prefetch: false,
+      status: 'running',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: null,
+      result: null,
+    };
+    render(
+      <HmsJobStatusLine
+        view={view}
+        queuing={false}
+        detail="Checking HMS… about 2 min"
+        onRetry={() => {}}
+        compact
+      />,
+    );
+
+    const line = screen.getByTestId('hms-job-status');
+    expect(line.textContent).toBe('Checking HMS… about 2 min');
+    expect(line.className).toContain('rounded-full');
+    expect(line.getAttribute('aria-label')).toBe('Running. Checking HMS… about 2 min');
+  });
+
   it('shows Starting the HMS run while the first read is idle, then the live message', async () => {
     const fetchStatus = vi.fn<() => Promise<QueueStatus | null>>()
       .mockResolvedValueOnce(IDLE)

@@ -1304,10 +1304,10 @@ describe('work item route', () => {
 
 describe('needs-you list', () => {
   /** A quote read for a new mail, received at `receivedAt`, with its work item. Returns the work item id. */
-  async function openItem(db: DB, id: string, receivedAt: string): Promise<string> {
+  async function openItem(db: DB, id: string, receivedAt: string, kind: MailKind = 'quote'): Promise<string> {
     const messageId = await seedMail(db, id);
     await db.update(message).set({ receivedAt: new Date(receivedAt) }).where(eq(message.id, messageId));
-    await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+    await insertRead(db, messageId, { version: 'extract-v1', kind, payload: payload() });
     const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
     if (!item) throw new Error(`no work item for ${id}`);
     return item.id;
@@ -1519,6 +1519,203 @@ describe('needs-you list', () => {
         chip: 'queued',
         sender: 'sender@example.com',
         subject: 'Rooms request',
+      });
+    }));
+
+  it('prefers direct HMS reads, then active batch links, then legacy unlinked thread reads', () =>
+    withDb(async (db) => {
+      const primary = await openItem(db, 'hms-link-primary', '2026-10-01T09:00:00Z', 'booking');
+      const linked = await openItem(db, 'hms-link-target', '2026-10-02T09:00:00Z', 'booking');
+      const cancelled = await openItem(db, 'hms-link-cancelled', '2026-10-03T09:00:00Z', 'booking');
+      const donor = await openItem(db, 'hms-link-donor', '2026-10-04T09:00:00Z', 'booking');
+      const now = new Date();
+      const addRead = async (input: {
+        workItemId: string | null;
+        threadId: string;
+        createdAt: Date;
+        metrics?: Record<string, unknown>;
+      }) => {
+        const id = randomUUID();
+        await db.insert(aiWorkflowRun).values({
+          ...input,
+          id,
+          transportId: CENTURION,
+          triggerMessageId: 'msg-hms-link-primary',
+          runKind: 'read_tool',
+          executorLane: 'hms',
+          idempotencyKey: `test-run:${id}`,
+          modelId: NOT_APPLICABLE_MODEL_ID,
+          promptVersion: HMS_JOB_PROMPT_VERSION,
+          state: 'succeeded',
+          readResult: { kind: 'find', outcome: 'found', asOf: now.toISOString() },
+          readResultExpiresAt: new Date(now.getTime() + 60_000),
+          finishedAt: now,
+          updatedAt: now,
+        });
+        return id;
+      };
+      const directId = await addRead({
+        workItemId: primary,
+        threadId: 'thread-hms-link-primary',
+        createdAt: new Date(now.getTime() - 60_000),
+        metrics: { batchLinks: [{ workItemId: linked, status: 'reused' }] },
+      });
+      // An explicit link can serve a different thread, but cannot outrank a direct read.
+      await addRead({
+        workItemId: donor,
+        threadId: 'thread-hms-link-donor',
+        createdAt: now,
+        metrics: { batchLinks: [{ workItemId: primary, status: 'reused' }] },
+      });
+      const legacyId = await addRead({
+        workItemId: null,
+        threadId: 'thread-hms-link-target',
+        createdAt: new Date(now.getTime() + 1_000),
+      });
+      const cancelledLegacyId = await addRead({
+        workItemId: null,
+        threadId: 'thread-hms-link-cancelled',
+        createdAt: now,
+      });
+      await addRead({
+        workItemId: primary,
+        threadId: 'thread-hms-link-primary',
+        createdAt: new Date(now.getTime() - 120_000),
+        metrics: { batchLinks: [{ workItemId: cancelled, status: 'cancelled' }] },
+      });
+      const rows = await openList(db);
+      expect(rows.find((row) => row.id === primary)?.hms?.runId).toBe(directId);
+      expect(rows.find((row) => row.id === linked)?.hms?.runId).toBe(directId);
+      expect(rows.find((row) => row.id === cancelled)?.hms?.runId).toBe(cancelledLegacyId);
+      expect(rows.find((row) => row.id === linked)?.hms?.runId).not.toBe(legacyId);
+    }));
+
+  it('derives legacy null-expiry HMS staleness from finishedAt plus one hour', () =>
+    withDb(async (db) => {
+      const now = Date.now();
+      for (const [suffix, ageMs, status] of [
+        ['fresh', 30 * 60_000, 'done'],
+        ['expired', 2 * 60 * 60_000, 'stale'],
+      ] as const) {
+        const itemId = await openItem(db, `hms-legacy-${suffix}`, '2026-10-01T09:00:00Z', 'booking');
+        const finishedAt = new Date(now - ageMs);
+        await db.insert(aiWorkflowRun).values({
+          id: randomUUID(),
+          transportId: CENTURION,
+          threadId: `thread-hms-legacy-${suffix}`,
+          triggerMessageId: `msg-hms-legacy-${suffix}`,
+          workItemId: itemId,
+          runKind: 'read_tool',
+          executorLane: 'hms',
+          idempotencyKey: `test-run:${randomUUID()}`,
+          modelId: NOT_APPLICABLE_MODEL_ID,
+          promptVersion: HMS_JOB_PROMPT_VERSION,
+          state: 'succeeded',
+          readResult: { kind: 'find', outcome: 'not_found' },
+          readResultExpiresAt: null,
+          finishedAt,
+          createdAt: finishedAt,
+          updatedAt: finishedAt,
+        });
+        expect((await openList(db)).find((row) => row.id === itemId)?.hms).toMatchObject({
+          status,
+          summary: 'not found',
+          asOf: finishedAt.toISOString(),
+        });
+      }
+    }));
+
+  it('returns the latest read-only HMS snapshot, falls back only to an unlinked thread run, and marks expired results stale', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'hms-status-direct');
+      await insertRead(db, messageId, {
+        version: 'extract-v1',
+        kind: 'booking',
+        payload: payload(),
+      });
+      const direct = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+      if (!direct) throw new Error('no booking work item');
+      const [directRow] = await db
+        .select({ threadId: workItem.threadId })
+        .from(workItem)
+        .where(eq(workItem.id, direct.id));
+
+      const fallbackId = await openItem(db, 'hms-status-fallback', '2026-10-09T09:00:00Z', 'booking');
+      const fallback = await db
+        .select({ threadId: workItem.threadId, sourceMessageId: workItem.sourceMessageId })
+        .from(workItem)
+        .where(eq(workItem.id, fallbackId));
+      const none = await openItem(db, 'hms-status-none', '2026-10-10T09:00:00Z', 'booking');
+      const now = new Date();
+      const runId = randomUUID();
+
+      await db.insert(aiWorkflowRun).values({
+        id: runId,
+        transportId: CENTURION,
+        threadId: directRow!.threadId,
+        triggerMessageId: messageId,
+        workItemId: direct.id,
+        runKind: 'read_tool',
+        idempotencyKey: `test-run:${randomUUID()}`,
+        modelId: NOT_APPLICABLE_MODEL_ID,
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        readRequest: { kind: 'find', confirmation: '7654321-1' },
+        readResult: { kind: 'find', outcome: 'found', asOf: now.toISOString() },
+        readResultExpiresAt: new Date(now.getTime() - 1_000),
+        state: 'succeeded',
+        executorLane: 'hms',
+        finishedAt: now,
+        createdAt: new Date(now.getTime() - 60_000),
+        updatedAt: now,
+      });
+      // A newer HMS write must never masquerade as a read result in the row.
+      await db.insert(aiWorkflowRun).values({
+        id: randomUUID(),
+        transportId: CENTURION,
+        threadId: directRow!.threadId,
+        triggerMessageId: messageId,
+        workItemId: direct.id,
+        runKind: 'hms_write',
+        idempotencyKey: `test-run:${randomUUID()}`,
+        modelId: NOT_APPLICABLE_MODEL_ID,
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        readResult: { outcome: 'not_found', asOf: now.toISOString() },
+        state: 'succeeded',
+        executorLane: 'hms',
+        finishedAt: now,
+        createdAt: new Date(now.getTime() + 1_000),
+        updatedAt: now,
+      });
+      await db.insert(aiWorkflowRun).values({
+        id: randomUUID(),
+        transportId: CENTURION,
+        threadId: fallback[0]!.threadId,
+        triggerMessageId: fallback[0]!.sourceMessageId!,
+        workItemId: null,
+        runKind: 'read_tool',
+        idempotencyKey: `test-run:${randomUUID()}`,
+        modelId: NOT_APPLICABLE_MODEL_ID,
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        readResult: { kind: 'find', outcome: 'not_found', asOf: now.toISOString() },
+        readResultExpiresAt: new Date(now.getTime() + 60_000),
+        state: 'succeeded',
+        executorLane: 'hms',
+        finishedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const rows = await openList(db);
+      expect(rows.find((row) => row.id === direct.id)).toMatchObject({
+        hms: { status: 'stale', runId, summary: 'found', asOf: now.toISOString() },
+        hmsDisabledReason: 'insufficient_data',
+      });
+      expect(rows.find((row) => row.id === fallbackId)).toMatchObject({
+        hms: { status: 'done', summary: 'not found', asOf: now.toISOString() },
+      });
+      expect(rows.find((row) => row.id === none)).toMatchObject({
+        hms: null,
+        hmsDisabledReason: 'insufficient_data',
       });
     }));
 });

@@ -34,13 +34,25 @@ import {
   searchGuest,
 } from './pane-stay-lookup.js';
 import {
+  explicitGuestSurname,
+  extractHmsConfirmations,
+  extractUniqueArrivalForHmsPrefetch,
+  prefetchConfirmations,
+  selectHmsBatchRequest,
+} from './hms-batch-request.js';
+export {
+  extractHmsConfirmations,
+  extractUniqueArrivalForHmsPrefetch,
+  selectHmsBatchRequest,
+} from './hms-batch-request.js';
+import {
   PANE_RUN_ID_PATTERN,
   paneStayPropertyLock,
   pruneExpiredPaneRuns,
   registerPaneRun,
 } from './pane-stay-save.js';
 import { normalizeEmailAddress } from './never-spam.js';
-import { extractVoucherGuest } from './voucher-find.js';
+import { HMS_READ_RESULT_FRESH_MS } from './hms-read-freshness.js';
 import { isStaffSender, knownSenders } from './work-items.js';
 import {
   type AiFailureClass,
@@ -84,13 +96,8 @@ export const HMS_JOB_PRIORITY_PREFETCH = 0;
 const JOB_MAX_ATTEMPTS = 3;
 const JOB_RETRY_MS = 30_000;
 const JOB_YIELD_MS = 30_000;
-const PREFETCH_PER_MAIL_MAX = 3;
 const PREFETCH_WINDOW_MS = 60 * 60_000;
 const ISO_DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-
-// Same shape amend-find.ts accepts for an HMS confirmation number. Prefetch takes only numbers in this shape.
-const HMS_CONFIRMATION = /^\d{6,10}-\d{1,2}$/;
-const CONFIRMATION_IN_TEXT = /(?<![\d-])\d{6,10}-\d{1,2}(?![\d-])/g;
 
 export const hmsJobRequestSchema = z.discriminatedUnion('kind', [
   z
@@ -177,53 +184,6 @@ type Mark = {
   expectedStates: AiWorkflowRunState[];
 };
 
-/** Confirmation numbers in mail text, validated and de-duplicated. Only the first few per mail. */
-export function extractHmsConfirmations(text: string): string[] {
-  const found: string[] = [];
-  for (const match of text.matchAll(CONFIRMATION_IN_TEXT)) {
-    const value = match[0];
-    if (HMS_CONFIRMATION.test(value) && !found.includes(value)) found.push(value);
-    if (found.length === PREFETCH_PER_MAIL_MAX) break;
-  }
-  return found;
-}
-
-/** A surname from an explicit guest label, never the extraction's sender/booker contact. */
-function explicitGuestSurname(subject: string | null, textBody: string | null): string | null {
-  return extractVoucherGuest({
-    subject: subject ?? '',
-    bodyText: (textBody ?? '').slice(0, 4_000),
-    attachmentTexts: [],
-  }).lastName;
-}
-
-function extractionConfirmations(payload: unknown): string[] {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
-  const values = (payload as { confirmationNumbers?: unknown }).confirmationNumbers;
-  if (!Array.isArray(values)) return [];
-  return values.filter((value): value is string => typeof value === 'string' && HMS_CONFIRMATION.test(value));
-}
-
-/** Reads only when every valid matching stay resolves to one arrival; ambiguous/missing dates are not auto-searched. */
-export function extractUniqueArrivalForHmsPrefetch(kind: string, payload: unknown): string | null {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
-  const stays = (payload as { stays?: unknown }).stays;
-  if (!Array.isArray(stays) || stays.length === 0) return null;
-  const arrivals = new Set<string>();
-  for (const value of stays) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    const stay = value as { requested?: unknown; booked?: unknown };
-    const range = kind === 'booking' ? stay.requested : stay.booked;
-    if (!range || typeof range !== 'object' || Array.isArray(range)) return null;
-    const arrival = (range as { arrival?: unknown }).arrival;
-    if (typeof arrival !== 'string' || !ISO_DAY.safeParse(arrival).success) return null;
-    const date = new Date(`${arrival}T00:00:00.000Z`);
-    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== arrival) return null;
-    arrivals.add(arrival);
-  }
-  return arrivals.size === 1 ? [...arrivals][0]! : null;
-}
-
 /** The auto-start and prefetch paths share this key so a remount cannot queue the same guest lookup twice. */
 export function guestSearchPrefetchIdempotencyKey(
   transportId: string,
@@ -236,27 +196,6 @@ export function guestSearchPrefetchIdempotencyKey(
     .digest('hex')
     .slice(0, 24);
   return `hms-job:prefetch-guest:${transportId}:${threadId}:${digest}`;
-}
-
-function prefetchConfirmations(payload: unknown, subject: string | null, textBody: string | null): string[] {
-  const text = extractHmsConfirmations(`${subject ?? ''}\n${textBody ?? ''}`);
-  return [...new Set([...extractionConfirmations(payload), ...text])].slice(0, PREFETCH_PER_MAIL_MAX);
-}
-
-export function selectHmsBatchRequest(input: {
-  kind: string | null;
-  payload: unknown;
-  subject: string | null;
-  textBody: string | null;
-}): { request: HmsJobRequest } | { skipped: 'insufficient_data' } {
-  const confirmation = prefetchConfirmations(input.payload, input.subject, input.textBody)[0];
-  if (confirmation) return { request: { kind: 'find', confirmation } };
-
-  const lastName = explicitGuestSurname(input.subject, input.textBody);
-  const arrival = extractUniqueArrivalForHmsPrefetch(input.kind ?? '', input.payload);
-  const search = hmsJobRequestSchema.safeParse({ kind: 'search_guest', lastName, arrival });
-  if (search.success) return { request: search.data };
-  return { skipped: 'insufficient_data' };
 }
 
 async function latestWorkItemId(db: DB, transportId: string, threadId: string): Promise<string | null> {
@@ -429,7 +368,6 @@ export async function queueUserHmsJob(
 }
 
 const HMS_BATCH_INSERT_CHUNK = 500;
-const HMS_BATCH_RESULT_FRESH_MS = 60 * 60_000;
 
 type HmsBatchEnqueueInput = {
   batchId: string;
@@ -656,9 +594,10 @@ function isReusableHmsRun(run: AiWorkflowRun, request: HmsJobRequest, now: Date)
     run.state === 'succeeded' &&
     run.readResult !== null &&
     run.readResult !== undefined &&
+    (run.readResultExpiresAt === null || run.readResultExpiresAt.getTime() > now.getTime()) &&
     run.finishedAt !== null &&
     run.finishedAt.getTime() <= now.getTime() &&
-    now.getTime() - run.finishedAt.getTime() < HMS_BATCH_RESULT_FRESH_MS
+    now.getTime() - run.finishedAt.getTime() < HMS_READ_RESULT_FRESH_MS
   );
 }
 
@@ -705,7 +644,7 @@ async function loadReusableHmsRuns(
           eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
           or(
             inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
-            and(eq(aiWorkflowRun.state, 'succeeded'), gte(aiWorkflowRun.finishedAt, new Date(now.getTime() - HMS_BATCH_RESULT_FRESH_MS))),
+            and(eq(aiWorkflowRun.state, 'succeeded'), gte(aiWorkflowRun.finishedAt, new Date(now.getTime() - HMS_READ_RESULT_FRESH_MS))),
           ),
           or(...candidatePredicates),
         ),
@@ -1338,10 +1277,12 @@ export async function executeHmsJob(input: {
   }
 
   // Found, not found, ambiguous, or a completed guest search. Stored as a dated snapshot.
+  const completedAt = new Date();
   const marked = await markAiRunSucceeded(
     {
       ...mark,
-      readResult: { ...result, kind: request.kind, asOf: new Date().toISOString() },
+      readResult: { ...result, kind: request.kind, asOf: completedAt.toISOString() },
+      readResultExpiresAt: new Date(completedAt.getTime() + HMS_READ_RESULT_FRESH_MS),
       metrics: { hmsJob: true, kind: request.kind, outcome, screenshotDir: screenshotDir.value },
     },
     db,

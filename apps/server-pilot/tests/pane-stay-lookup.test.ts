@@ -18,6 +18,7 @@ import {
 } from '../src/ai/pane-stay-lookup.js';
 import { type PaneStayLock, paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
+import { runNeedsYouItemInputSchema } from '../src/trpc/routes/pane-stay-lookup.js';
 import { appRouter } from '../src/trpc/router.js';
 
 vi.mock('../src/db/client.js', async (importOriginal) => ({
@@ -440,6 +441,17 @@ describe('save path wiring', () => {
 });
 
 describe('paneStayLookup router', () => {
+  it('accepts one Needs You item and refuses a requested write kind', () => {
+    const workItemId = '00000000-0000-4000-8000-000000000001';
+    expect(runNeedsYouItemInputSchema.safeParse({ workItemId }).success).toBe(true);
+    expect(
+      runNeedsYouItemInputSchema.safeParse({ workItemId, runKind: 'hms_write' }).success,
+    ).toBe(false);
+    expect(
+      runNeedsYouItemInputSchema.safeParse({ workItemIds: [workItemId] }).success,
+    ).toBe(false);
+  });
+
   it('with HMS_JOB_QUEUE unset, the queue routes queue nothing and jobStatus reads nothing', async () => {
     vi.stubEnv('HMS_JOB_QUEUE', '');
     const spawn = vi.fn(async () => lookupResult());

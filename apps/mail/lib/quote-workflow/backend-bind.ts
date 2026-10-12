@@ -9,6 +9,7 @@ import type {
   QuoteWorkflowFallbackReason,
   LunaAnalysisWire,
 } from './types';
+import type { HmsJobRequest, HmsJobStatus, HmsJobView } from './amend-find';
 
 /**
  * Published staff-quote contract (handoff 2026-10-06). Adapter types live in this tree;
@@ -213,6 +214,22 @@ export type RecordFieldEventInput = {
 /** The outcome of a translation retry. Only `done` carries a translation; the rest say why it did not run. */
 export type TranslationRetryResult = { status: string; translation?: StoredTranslation };
 
+export type NeedsYouHmsStatus =
+  | 'queued'
+  | 'running'
+  | 'retrying'
+  | 'done'
+  | 'failed'
+  | 'stale'
+  | 'insufficient_data';
+
+export type NeedsYouHms = {
+  status: NeedsYouHmsStatus;
+  asOf: string | null;
+  runId: string | null;
+  summary: string | null;
+};
+
 /** One open item on the Needs-you list. The chip is derived from the item's latest run (KTD14). */
 export type NeedsYouRow = {
   id: string;
@@ -223,7 +240,37 @@ export type NeedsYouRow = {
   sender: string | null;
   subject: string | null;
   receivedAt: Date | null;
+  hms: NeedsYouHms | null;
+  hmsDisabledReason: 'insufficient_data' | null;
 };
+
+export type NeedsYouRunItemStatus = HmsJobStatus | 'skipped' | 'reused' | 'cancelled';
+
+export type NeedsYouBatchResult = {
+  batchId: string;
+  status: 'queued' | 'running' | 'partial' | 'done' | 'failed' | 'cancelled';
+  summary: {
+    total: number;
+    queued: number;
+    running: number;
+    retrying: number;
+    done: number;
+    failed: number;
+    cancelled: number;
+    skipped: number;
+    reused: number;
+  };
+  items: Array<{
+    itemIndex: number;
+    workItemId: string;
+    status: NeedsYouRunItemStatus;
+    reason: 'insufficient_data' | 'spam' | null;
+    runId: string | null;
+    request: HmsJobRequest | null;
+    job: HmsJobView | null;
+  }>;
+} | null;
+export type RunNeedsYouItemResult = NeedsYouBatchResult;
 
 type WorkItemsClient = {
   getByMessage?: {
@@ -246,10 +293,29 @@ type WorkItemsClient = {
   dismiss?: { mutate: (input: { workItemId: string }) => Promise<unknown> };
 };
 
+type PaneStayLookupClient = {
+  jobStatus?: {
+    query: (input: { runId: string }) => Promise<HmsJobView | null>;
+  };
+  runNeedsYouItem?: {
+    mutate: (input: { workItemId: string }) => Promise<RunNeedsYouItemResult>;
+  };
+  batchStatus?: {
+    query: (input: { batchId: string }) => Promise<NeedsYouBatchResult>;
+  };
+};
+
 export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {
   if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return {};
   const workItems = (trpc as { workItems?: WorkItemsClient }).workItems;
   return workItems ?? {};
+}
+
+/** The one-item Needs-you HMS action, bound from the same pane client used by both hosts. */
+export function paneStayLookupFromTrpc(trpc: unknown): PaneStayLookupClient {
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return {};
+  const paneStayLookup = (trpc as { paneStayLookup?: PaneStayLookupClient }).paneStayLookup;
+  return paneStayLookup ?? {};
 }
 
 /**

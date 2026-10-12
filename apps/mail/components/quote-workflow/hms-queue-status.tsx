@@ -45,7 +45,9 @@ export function HmsQueueStatusLine({
  * The label for a pane lookup job: Queued (position N), Running, Retrying, or Failed. A request still being queued reads
  * as Running. Null when there is no job in flight, or the job is done.
  */
-export function hmsJobLabel(view: HmsJobView | null, queuing: boolean): string | null {
+type HmsJobStatusView = Pick<HmsJobView, 'status' | 'position'>;
+
+export function hmsJobLabel(view: HmsJobStatusView | null, queuing: boolean): string | null {
   if (queuing) return 'Running';
   if (!view) return null;
   switch (view.status) {
@@ -87,16 +89,19 @@ export function HmsJobStatusLine({
   queuing,
   detail,
   onRetry,
+  compact = false,
   statusFailed = false,
   queueFailed = false,
   failureMessage = 'Could not check for an existing HMS lookup.',
   queueFailureMessage = 'Could not queue the HMS lookup.',
 }: {
-  view: HmsJobView | null;
+  view: HmsJobStatusView | null;
   queuing: boolean;
   /** Says what is running, such as "Nava is looking up the booking in HMS…". */
   detail: string;
   onRetry: () => void;
+  /** Small inline form for list rows that already have their own retry action. */
+  compact?: boolean;
   statusFailed?: boolean;
   queueFailed?: boolean;
   failureMessage?: string;
@@ -147,10 +152,18 @@ export function HmsJobStatusLine({
       role="status"
       data-testid="hms-job-status"
       data-state={view?.status ?? 'running'}
-      className="flex items-center gap-2 rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]"
+      aria-label={compact ? `${label}. ${detail}` : undefined}
+      className={
+        compact
+          ? 'inline-flex items-center gap-1 rounded-full border border-[#dbeafe] bg-[#eff6ff] px-2 py-0.5 text-[10.5px] text-[#1d4ed8]'
+          : 'flex items-center gap-2 rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]'
+      }
     >
-      <Loader2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin text-[#0066cc]" />
-      <span className="font-semibold text-[#1e293b]">{label}</span>
+      <Loader2
+        aria-hidden="true"
+        className={`shrink-0 animate-spin text-[#0066cc] ${compact ? 'h-3 w-3' : 'h-3.5 w-3.5'}`}
+      />
+      {!compact ? <span className="font-semibold text-[#1e293b]">{label}</span> : null}
       <span>{detail}</span>
     </p>
   );

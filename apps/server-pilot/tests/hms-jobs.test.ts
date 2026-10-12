@@ -281,7 +281,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     vi.stubEnv('S3_BUCKET', 'u23-synthetic-bucket');
   });
 
-  it('AE5: a queued find completes and its status and result come back from the database after remount', () =>
+  it('AE5: a queued find persists a one-hour result TTL and comes back from the database after remount', () =>
     withSeededTestDb(async (db) => {
       paneStayLookupLoaders.lock = lockWith(true);
       paneStayLookupLoaders.spawn = vi.fn(async () => FOUND);
@@ -305,6 +305,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(remounted).toMatchObject({ runId: queued!.id, status: 'done', position: null });
       expect(remounted?.result).toMatchObject({ outcome: 'found', screenshots: ['stay.png'] });
       expect(remounted?.asOf).toEqual(expect.any(String));
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, queued!.id));
+      expect(stored?.readResultExpiresAt).toBeInstanceOf(Date);
+      expect(stored!.readResultExpiresAt!.getTime() - new Date(remounted!.asOf!).getTime()).toBe(60 * 60_000);
+      expect(stored!.readResultExpiresAt!.getTime() - stored!.finishedAt!.getTime()).toBeGreaterThan(59 * 60_000);
+      expect(stored!.readResultExpiresAt!.getTime() - stored!.finishedAt!.getTime()).toBeLessThanOrEqual(60 * 60_000);
     }));
 
   it('a remount on a thread with two guests reads back the search for the asked surname, whatever its case', () =>

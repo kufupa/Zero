@@ -20,6 +20,8 @@ import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-wor
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
+import { HMS_NEEDS_YOU_KINDS, selectHmsBatchRequest } from './hms-batch-request.js';
+import { HMS_READ_RESULT_FRESH_MS } from './hms-read-freshness.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1493,6 +1495,73 @@ export const NEEDS_YOU_KINDS = [
 export const NEEDS_YOU_CHIPS = ['needs_you', 'review', 'queued', 'in_hms'] as const;
 export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
 
+export type NeedsYouHmsStatus = 'queued' | 'running' | 'retrying' | 'done' | 'failed' | 'stale' | 'insufficient_data';
+export type NeedsYouHmsView = {
+  status: NeedsYouHmsStatus;
+  asOf: string | null;
+  runId: string;
+  summary: 'found' | 'not found' | null;
+};
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function jsonDate(value: unknown): Date | null {
+  if (value instanceof Date) return value;
+  if (typeof value !== 'string') return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function hmsReadSummary(readResult: Record<string, unknown>): NeedsYouHmsView['summary'] {
+  if (['found', 'ambiguous', 'ambiguous_capped'].includes(String(readResult.outcome))) return 'found';
+  if (readResult.outcome === 'not_found') return 'not found';
+  if (readResult.outcome === 'ok') {
+    return Array.isArray(readResult.rows) && readResult.rows.length > 0 ? 'found' : 'not found';
+  }
+  return null;
+}
+
+function needsYouHmsView(value: Record<string, unknown> | null, now: Date): NeedsYouHmsView | null {
+  if (!value || typeof value.runId !== 'string') return null;
+  const readResult = objectRecord(value.readResult);
+  const metrics = objectRecord(value.metrics);
+  const asOf = typeof readResult.asOf === 'string'
+    ? readResult.asOf
+    : jsonDate(value.finishedAt)?.toISOString() ?? null;
+  const summary = hmsReadSummary(readResult);
+
+  if (metrics.batchItemStatus === 'skipped' && metrics.batchItemReason === 'insufficient_data') {
+    return { status: 'insufficient_data', asOf: null, runId: value.runId, summary: null };
+  }
+  switch (value.state) {
+    case 'queued':
+      return { status: 'queued', asOf: null, runId: value.runId, summary: null };
+    case 'claimed':
+    case 'running':
+      return { status: 'running', asOf: null, runId: value.runId, summary: null };
+    case 'retry_wait':
+      return { status: 'retrying', asOf: null, runId: value.runId, summary: null };
+    case 'succeeded': {
+      const finishedAt = jsonDate(value.finishedAt);
+      const expiresAt = jsonDate(value.readResultExpiresAt)
+        ?? (finishedAt ? new Date(finishedAt.getTime() + HMS_READ_RESULT_FRESH_MS) : null);
+      if (expiresAt && expiresAt.getTime() <= now.getTime()) {
+        return { status: 'stale', asOf, runId: value.runId, summary };
+      }
+      return { status: 'done', asOf, runId: value.runId, summary };
+    }
+    case 'dead_letter':
+    case 'superseded':
+      return { status: 'failed', asOf: null, runId: value.runId, summary: null };
+    default:
+      return null;
+  }
+}
+
 /**
  * Work items in this transport with the given statuses, the Needs-you list. Stored origin `person` means human-written;
  * `system_notice` means automated and is excluded. A missing extraction or origin counts as human-written. Only quote,
@@ -1510,6 +1579,42 @@ export async function listWorkItems(
   // Coalesce keeps missing origin human-written.
   const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
   const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.workItemId} = ${workItem.id} and ${aiWorkflowRun.executorLane} = 'hms' order by ${aiWorkflowRun.createdAt} desc limit 1)`;
+  const activeHmsBatchLink = sql`exists (
+    select 1
+    from jsonb_array_elements(
+      case when jsonb_typeof(${aiWorkflowRun.metrics}->'batchLinks') = 'array'
+        then ${aiWorkflowRun.metrics}->'batchLinks' else '[]'::jsonb end
+    ) as batch_link(value)
+    where batch_link.value->>'workItemId' = ${workItem.id}::text
+      and batch_link.value->>'status' is distinct from 'cancelled'
+  )`;
+  const latestHmsRead = sql<Record<string, unknown> | null>`(
+    select jsonb_build_object(
+      'runId', ${aiWorkflowRun.id},
+      'state', ${aiWorkflowRun.state},
+      'readResult', ${aiWorkflowRun.readResult},
+      'readResultExpiresAt', ${aiWorkflowRun.readResultExpiresAt},
+      'finishedAt', ${aiWorkflowRun.finishedAt},
+      'metrics', ${aiWorkflowRun.metrics}
+    )
+    from ${aiWorkflowRun}
+    where ${aiWorkflowRun.runKind} = 'read_tool'
+      and ${aiWorkflowRun.executorLane} = 'hms'
+      and ${aiWorkflowRun.transportId} = ${workItem.transportId}
+      and (
+        ${aiWorkflowRun.workItemId} = ${workItem.id}
+        or ${activeHmsBatchLink}
+        or (
+          ${aiWorkflowRun.workItemId} is null
+          and ${aiWorkflowRun.threadId} = ${workItem.threadId}
+        )
+      )
+    order by case when ${aiWorkflowRun.workItemId} = ${workItem.id} then 0
+      when ${activeHmsBatchLink} then 1 else 2 end,
+      ${aiWorkflowRun.createdAt} desc,
+      ${aiWorkflowRun.id} desc
+    limit 1
+  )`.as('latest_hms_read');
   const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
     .mapWith(Number)
     .as('chip_rank');
@@ -1523,8 +1628,11 @@ export async function listWorkItems(
       updatedAt: workItem.updatedAt,
       sender: message.fromAddress,
       subject: message.subject,
+      hmsTextBody: message.textBody,
       receivedAt: message.receivedAt,
+      hmsPayload: mailExtraction.payload,
       chipRank,
+      latestHmsRead,
     })
     .from(workItem)
     .innerJoin(mailThread, eq(mailThread.id, workItem.threadId))
@@ -1546,8 +1654,18 @@ export async function listWorkItems(
       asc(workItem.id),
     )
     .limit(input.limit);
-  return rows.map(({ chipRank: rank, ...row }) => ({
-    ...row,
-    chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
-  }));
+  const now = new Date();
+  return rows.map(({ chipRank: rank, latestHmsRead: readRun, hmsPayload, hmsTextBody, ...row }) => {
+    // Only booking, amendment, cancellation and voucher rows get an HMS status; quote rows keep none.
+    const hmsKind = (HMS_NEEDS_YOU_KINDS as readonly string[]).includes(row.kind);
+    const hmsSelection = hmsKind
+      ? selectHmsBatchRequest({ kind: row.kind, payload: hmsPayload, subject: row.subject, textBody: hmsTextBody })
+      : null;
+    return {
+      ...row,
+      chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
+      hms: hmsKind ? needsYouHmsView(readRun, now) : null,
+      hmsDisabledReason: hmsSelection && 'skipped' in hmsSelection ? hmsSelection.skipped : null,
+    };
+  });
 }

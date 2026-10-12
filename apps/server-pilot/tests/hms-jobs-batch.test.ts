@@ -34,6 +34,13 @@ import type { DB } from '../src/db/client.js';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
+// The route reads through getDb(), but withSeededTestDb seeds inside a rolled-back transaction. These tests point getDb at that transaction.
+const routeDb = vi.hoisted(() => ({ db: null as DB | null }));
+vi.mock('../src/db/client.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/db/client.js')>();
+  return { ...actual, getDb: () => routeDb.db ?? actual.getDb() };
+});
+
 const reachable = await probeTestDb();
 const LANE_OWNER = 'hms-ai-worker-batch-test';
 const ARRIVAL = '2026-10-12';
@@ -284,7 +291,10 @@ beforeEach(() => {
   vi.stubEnv('HMS_LANE_PAUSED', '');
 });
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  routeDb.db = null;
+});
 
 describe('HMS batch request selection (pure)', () => {
   it('prefers confirmation lookup, then explicit surname plus arrival, else skips', () => {
@@ -318,6 +328,9 @@ describe('HMS batch request selection (pure)', () => {
     const batchCaller = caller();
     const input = { batchId, workItemIds: [randomUUID()] };
     await expect(batchCaller.paneStayLookup.queueBatch(input)).resolves.toBeNull();
+    await expect(
+      batchCaller.paneStayLookup.runNeedsYouItem({ workItemId: randomUUID() }),
+    ).resolves.toBeNull();
     await expect(batchCaller.paneStayLookup.batchStatus({ batchId })).resolves.toBeNull();
     await expect(batchCaller.paneStayLookup.cancelBatch({ batchId })).resolves.toBeNull();
   });
@@ -489,6 +502,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
           .set({
             state: 'succeeded',
             readResult: { kind: 'find', outcome: 'found', asOf: finishedAt.toISOString() },
+            readResultExpiresAt: new Date(Date.now() + 60_000),
             finishedAt: new Date(Date.now() - (index === 0 ? 59 : 61) * 60_000),
             updatedAt: finishedAt,
           })
@@ -505,6 +519,151 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('HMS batch queue (lane DB)', {
       );
       expect(batch.items.map((item) => item.status)).toEqual(['reused', 'queued']);
       expect(batch.items[0]?.job?.result).toMatchObject({ outcome: 'found' });
+    }));
+
+  it('does not reuse a result whose read_result_expires_at has passed', () =>
+    withSeededTestDb(async (db) => {
+      const [item] = await seedBatchItems(db, 1);
+      const { run: existing } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId: item!.threadId,
+          triggerMessageId: item!.messageId,
+          workItemId: item!.workItemId,
+          userId: CENTURION_USER_ID,
+          request: { kind: 'find', confirmation: item!.confirmation },
+          priority: HMS_JOB_PRIORITY_USER,
+          idempotencyKey: `hms-job:test-expired:${randomUUID()}`,
+        },
+        db,
+      );
+      const expiredAt = new Date(Date.now() - 1_000);
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: { kind: 'find', outcome: 'found' },
+          readResultExpiresAt: expiredAt,
+          finishedAt: new Date(Date.now() - 60_000),
+        })
+        .where(eq(aiWorkflowRun.id, existing.id));
+
+      const batch = await enqueueBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: [item!.workItemId],
+        },
+        db,
+      );
+      expect(batch.items[0]).toMatchObject({ status: 'queued' });
+      expect(batch.items[0]?.runId).not.toBe(existing.id);
+    }));
+
+  it('does not reuse an hms_write run as a read-only Needs You lookup', () =>
+    withSeededTestDb(async (db) => {
+      const [item] = await seedBatchItems(db, 1);
+      const { run: write } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId: item!.threadId,
+          triggerMessageId: item!.messageId,
+          workItemId: item!.workItemId,
+          userId: CENTURION_USER_ID,
+          request: { kind: 'find', confirmation: item!.confirmation },
+          priority: HMS_JOB_PRIORITY_USER,
+          idempotencyKey: `hms-job:test-write-kind:${randomUUID()}`,
+        },
+        db,
+      );
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          runKind: 'hms_write',
+          state: 'succeeded',
+          readResult: { kind: 'find', outcome: 'found' },
+          readResultExpiresAt: new Date(Date.now() + 60_000),
+          finishedAt: new Date(),
+        })
+        .where(eq(aiWorkflowRun.id, write.id));
+
+      const batch = await enqueueBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: [item!.workItemId],
+        },
+        db,
+      );
+      expect(batch.items[0]).toMatchObject({ status: 'queued' });
+      expect(batch.items[0]?.runId).not.toBe(write.id);
+      const runs = await db
+        .select({ runKind: aiWorkflowRun.runKind })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.workItemId, item!.workItemId));
+      expect(runs.map((run) => run.runKind)).toEqual(expect.arrayContaining(['hms_write', 'read_tool']));
+    }));
+
+  it('queues a read for exactly one eligible Needs You item', () =>
+    withSeededTestDb(async (db) => {
+      routeDb.db = db;
+      const items = await seedBatchItems(db, 2);
+      const response = await caller().paneStayLookup.runNeedsYouItem({ workItemId: items[0]!.workItemId });
+      expect(response?.items).toHaveLength(1);
+      expect(response?.items[0]).toMatchObject({ workItemId: items[0]!.workItemId, status: 'queued' });
+      const runs = await db
+        .select({ workItemId: aiWorkflowRun.workItemId, runKind: aiWorkflowRun.runKind, readRequest: aiWorkflowRun.readRequest })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.transportId, TRANSPORT_ID));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({
+        workItemId: items[0]!.workItemId,
+        runKind: 'read_tool',
+        readRequest: { kind: 'find', confirmation: items[0]!.confirmation },
+      });
+    }));
+
+  it('runs exactly one eligible Needs You item and returns insufficient_data without an HMS read when input is missing', () =>
+    withSeededTestDb(async (db) => {
+      routeDb.db = db;
+      const [item] = await seedBatchItems(db, 1, {
+        item: () => ({ kind: 'booking', payload: {}, subject: 'Update booking', textBody: 'Please amend this stay.' }),
+      });
+      const response = await caller().paneStayLookup.runNeedsYouItem({ workItemId: item!.workItemId });
+      expect(response?.items).toHaveLength(1);
+      expect(response?.items[0]).toMatchObject({
+        workItemId: item!.workItemId,
+        status: 'skipped',
+        reason: 'insufficient_data',
+        runId: null,
+      });
+      const runs = await db
+        .select({ runKind: aiWorkflowRun.runKind, state: aiWorkflowRun.state, metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.workItemId, item!.workItemId));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ runKind: 'read_tool', state: 'succeeded' });
+      expect(runs[0]?.metrics).toMatchObject({ batchItemReason: 'insufficient_data', batchItemStatus: 'skipped' });
+    }));
+
+  it('refuses a Needs You HMS run for an automated notice, and queues nothing', () =>
+    withSeededTestDb(async (db) => {
+      routeDb.db = db;
+      const [item] = await seedBatchItems(db, 1, {
+        item: () => ({
+          payload: { origin: 'system_notice', confirmationNumbers: ['0000001-1'], stays: [{ requested: { arrival: ARRIVAL } }] },
+        }),
+      });
+      await expect(caller().paneStayLookup.runNeedsYouItem({ workItemId: item!.workItemId })).rejects.toMatchObject({
+        code: 'NOT_FOUND',
+      });
+      const runs = await db
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.workItemId, item!.workItemId));
+      expect(runs).toHaveLength(0);
     }));
 
   it('marks insufficient items skipped while queueing items with usable extraction data', () =>

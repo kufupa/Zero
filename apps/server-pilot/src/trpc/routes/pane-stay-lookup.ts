@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { TRPCError } from '@trpc/server';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import {
   findStay,
   GUEST_SURNAME_PATTERN,
@@ -30,6 +32,10 @@ import {
   toolInputDigest,
 } from '../../ai/hitl-tool-run.js';
 import { availabilityRequestSchema } from '../../ai/hms-availability.js';
+import { HMS_NEEDS_YOU_KINDS } from '../../ai/hms-batch-request.js';
+import { getDb } from '../../db/client.js';
+import { mailExtraction, workItem } from '../../db/schema/work.js';
+import { mailThread } from '../../db/schema/mail.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
@@ -76,6 +82,7 @@ const hmsBatchQueueInput = z
     message: 'workItemIds must be unique',
     path: ['workItemIds'],
   });
+export const runNeedsYouItemInputSchema = z.object({ workItemId: z.string().uuid() }).strict();
 // Poll by run id, or resume the latest job of one kind on a thread after a remount.
 const jobStatusInput = z.union([
   z.object({ runId: z.string().uuid() }).strict(),
@@ -196,6 +203,42 @@ export const paneStayLookupRouter = router({
         transportId: ctx.activeTransportId,
         userId: ctx.sessionUser.id,
         workItemIds: input.workItemIds,
+      });
+    } catch (error) {
+      if (error instanceof HmsBatchInputError) {
+        throw new TRPCError({ code: error.trpcCode, message: error.message });
+      }
+      throw error;
+    }
+  }),
+  // One Needs You row only; no client-selected run kind can turn this read-only button into a write.
+  runNeedsYouItem: mailboxProcedure.input(runNeedsYouItemInputSchema).mutation(async ({ input, ctx }) => {
+    if (!hmsJobQueueEnabled()) return null;
+    // The same Needs You rule as listWorkItems: automated notices, spam and trash are not eligible.
+    const [item] = await getDb()
+      .select({ id: workItem.id })
+      .from(workItem)
+      .innerJoin(mailThread, eq(mailThread.id, workItem.threadId))
+      .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
+      .where(
+        and(
+          eq(workItem.id, input.workItemId),
+          eq(workItem.transportId, ctx.activeTransportId),
+          inArray(workItem.kind, [...HMS_NEEDS_YOU_KINDS]),
+          inArray(workItem.status, ['needs_you', 'review']),
+          ne(sql`coalesce(${mailExtraction.payload}->>'origin', 'person')`, 'system_notice'),
+          isNull(mailThread.spamAt),
+          isNull(mailThread.trashedAt),
+        ),
+      )
+      .limit(1);
+    if (!item) throw new TRPCError({ code: 'NOT_FOUND', message: 'work item is unavailable for HMS lookup' });
+    try {
+      return await enqueueHmsBatch({
+        batchId: randomUUID(),
+        transportId: ctx.activeTransportId,
+        userId: ctx.sessionUser.id,
+        workItemIds: [item.id],
       });
     } catch (error) {
       if (error instanceof HmsBatchInputError) {

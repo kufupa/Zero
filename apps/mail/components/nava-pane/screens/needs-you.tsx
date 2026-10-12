@@ -1,5 +1,18 @@
+import {
+  paneStayLookupFromTrpc,
+  workItemsFromTrpc,
+  type NeedsYouHms,
+  type NeedsYouHmsStatus,
+  type NeedsYouRow,
+  type RunNeedsYouItemResult,
+} from '@/lib/quote-workflow/backend-bind';
+import {
+  HMS_JOB_MAX_MISSES,
+  HMS_JOB_POLL_MS,
+  type HmsJobView,
+} from '@/lib/quote-workflow/amend-find';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
-import { workItemsFromTrpc, type NeedsYouRow } from '@/lib/quote-workflow/backend-bind';
+import { HmsJobStatusLine } from '@/components/quote-workflow/hms-queue-status';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getMailCacheScope } from '@/lib/mail/mail-cache-scope';
@@ -51,6 +64,8 @@ export type NeedsYou = {
   notice: string | null;
   reload: () => void;
   dismiss: (workItemId: string) => void;
+  runHms: (workItemId: string) => Promise<RunNeedsYouItemResult>;
+  getHmsJobStatus: (runId: string) => Promise<HmsJobView | null>;
 };
 
 /**
@@ -132,12 +147,24 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
     [load],
   );
 
+  const runHms = useCallback((workItemId: string): Promise<RunNeedsYouItemResult> => {
+    const mutate = paneStayLookupFromTrpc(trpcRef.current).runNeedsYouItem?.mutate;
+    return mutate ? mutate({ workItemId }) : Promise.resolve(null);
+  }, []);
+
+  const getHmsJobStatus = useCallback((runId: string): Promise<HmsJobView | null> => {
+    const query = paneStayLookupFromTrpc(trpcRef.current).jobStatus?.query;
+    return query ? query({ runId }) : Promise.resolve(null);
+  }, []);
+
   return {
     status: view.status,
     rows: view.rows,
     notice: view.notice,
     reload: () => void load(),
     dismiss,
+    runHms,
+    getHmsJobStatus,
   };
 }
 
@@ -147,19 +174,213 @@ function whenOf(value: Date | string | null): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+const HMS_RUN_KINDS = new Set(['booking', 'amendment', 'cancellation', 'voucher_pop']);
+
+function isActiveHmsStatus(
+  status: NeedsYouHmsStatus | null | undefined,
+): status is 'queued' | 'running' | 'retrying' {
+  return status === 'queued' || status === 'running' || status === 'retrying';
+}
+
+function resultSummary(result: Record<string, unknown> | null | undefined): string | null {
+  if (typeof result?.summary === 'string') return result.summary;
+  if (result?.outcome === 'found' || result?.outcome === 'ambiguous') return 'found';
+  if (result?.outcome === 'not_found') return 'not found';
+  if (result?.outcome === 'ok') {
+    return Array.isArray(result.rows) && result.rows.length > 0 ? 'found' : 'not found';
+  }
+  if (typeof result?.found === 'boolean') return result.found ? 'found' : 'not found';
+  return null;
+}
+
+function needsYouHmsFromResult(
+  result: RunNeedsYouItemResult,
+  workItemId: string,
+): { hms: NeedsYouHms; disabledReason: NeedsYouRow['hmsDisabledReason'] } | null {
+  const item = result?.items.find((candidate) => candidate.workItemId === workItemId);
+  if (!result || !item) return null;
+
+  const status: NeedsYouHmsStatus =
+    item.status === 'skipped'
+      ? item.reason === 'insufficient_data'
+        ? 'insufficient_data'
+        : 'failed'
+      : item.status === 'cancelled'
+        ? 'failed'
+        : item.status === 'reused'
+          ? (item.job?.status ?? 'done')
+          : (item.job?.status ?? item.status);
+  const summary = resultSummary(item.job?.result);
+  const disabledReason =
+    item.reason === 'insufficient_data' || status === 'insufficient_data'
+      ? 'insufficient_data'
+      : null;
+
+  return {
+    hms: {
+      status,
+      asOf: item.job?.asOf ?? null,
+      runId: item.runId ?? item.job?.runId ?? null,
+      summary,
+    },
+    disabledReason,
+  };
+}
+
+function doneHmsLabel(summary: string | null): string {
+  const normalized = (summary ?? '').trim().toLowerCase().replace(/[_-]+/g, ' ');
+  if (/\b(not found|no match|no matching|no booking|no stay|no record|none)\b/.test(normalized)) {
+    return 'In HMS: not found';
+  }
+  if (/\bfound\b/.test(normalized)) return 'In HMS: found';
+  return 'In HMS: checked';
+}
+
 function NeedsYouRowView({
   row,
   onOpenThread,
   onDismiss,
+  onRunHms,
+  onGetHmsJobStatus,
 }: {
   row: NeedsYouRow;
   onOpenThread?: (threadId: string) => void;
   onDismiss: (workItemId: string) => void;
+  onRunHms: (workItemId: string) => Promise<RunNeedsYouItemResult>;
+  onGetHmsJobStatus: (runId: string) => Promise<HmsJobView | null>;
 }) {
   const subject = row.subject?.trim() || '(no subject)';
   const sender = row.sender?.trim() || 'Unknown sender';
   const when = whenOf(row.receivedAt);
   const threadId = row.threadId;
+  const [hms, setHms] = useState(row.hms);
+  const [hmsDisabledReason, setHmsDisabledReason] = useState(row.hmsDisabledReason);
+  const [requestActive, setRequestActive] = useState(false);
+  const [runFailed, setRunFailed] = useState(false);
+  const [runUnavailable, setRunUnavailable] = useState(false);
+  const localHms = useRef<NeedsYouHms | null>(null);
+  const queuing = useRef(false);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    if (queuing.current) return;
+    const local = localHms.current;
+    if (local) {
+      const incoming = row.hms;
+      // A list read may have started before our enqueue or before its latest status read.
+      if (incoming?.runId !== local.runId) {
+        if (
+          isActiveHmsStatus(local.status) ||
+          !incoming?.asOf ||
+          !local.asOf ||
+          incoming.asOf <= local.asOf
+        )
+          return;
+      } else if (
+        (!isActiveHmsStatus(local.status) && isActiveHmsStatus(incoming?.status)) ||
+        (local.asOf && (!incoming?.asOf || incoming.asOf < local.asOf))
+      )
+        return;
+      localHms.current = incoming;
+    }
+    setHms(row.hms);
+    setHmsDisabledReason(row.hmsDisabledReason);
+  }, [row.hms, row.hmsDisabledReason]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const pollingRunId = isActiveHmsStatus(hms?.status) ? hms.runId : null;
+  useEffect(() => {
+    if (!pollingRunId) return;
+    let active = true;
+    let timeout: number | undefined;
+    let misses = 0;
+    const schedule = () => {
+      timeout = window.setTimeout(() => void poll(), HMS_JOB_POLL_MS);
+    };
+    const poll = async () => {
+      let job: HmsJobView | null;
+      try {
+        job = await onGetHmsJobStatus(pollingRunId);
+      } catch {
+        job = null;
+      }
+      if (!active || !mounted.current) return;
+      if (!job || job.runId !== pollingRunId) {
+        misses += 1;
+        if (misses < HMS_JOB_MAX_MISSES) schedule();
+        else
+          setHms((previous) => {
+            const failed: NeedsYouHms = {
+              status: 'failed',
+              asOf: previous?.asOf ?? null,
+              runId: pollingRunId,
+              summary: null,
+            };
+            localHms.current = failed;
+            return failed;
+          });
+        return;
+      }
+      misses = 0;
+      const snapshot: NeedsYouHms = {
+        status: job.status,
+        asOf: job.asOf,
+        runId: job.runId,
+        summary: resultSummary(job.result),
+      };
+      localHms.current = snapshot;
+      setHms(snapshot);
+      setHmsDisabledReason(null);
+      if (isActiveHmsStatus(snapshot.status)) schedule();
+    };
+    schedule();
+    return () => {
+      active = false;
+      if (timeout !== undefined) window.clearTimeout(timeout);
+    };
+  }, [pollingRunId, onGetHmsJobStatus]);
+
+  const activeView = isActiveHmsStatus(hms?.status) ? { status: hms.status, position: null } : null;
+  const hmsBusy = requestActive || activeView !== null;
+  const eligibleForHms = HMS_RUN_KINDS.has(row.kind);
+  const runDisabled =
+    hmsBusy ||
+    runUnavailable ||
+    hmsDisabledReason === 'insufficient_data';
+
+  const runHms = async () => {
+    if (runDisabled || queuing.current) return;
+    queuing.current = true;
+    setRequestActive(true);
+    setRunFailed(false);
+    try {
+      const result = await onRunHms(row.id);
+      if (!mounted.current) return;
+      if (!result) {
+        setRunUnavailable(true);
+        return;
+      }
+      const snapshot = needsYouHmsFromResult(result, row.id);
+      if (!snapshot) throw new Error('The HMS run returned no item.');
+      if (mounted.current) {
+        localHms.current = snapshot.hms;
+        setHms(snapshot.hms);
+        setHmsDisabledReason(snapshot.disabledReason);
+      }
+    } catch {
+      if (mounted.current) setRunFailed(true);
+    } finally {
+      queuing.current = false;
+      if (mounted.current) setRequestActive(false);
+    }
+  };
+
   return (
     <li className="flex flex-col gap-1.5 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5">
       <div className="flex items-center justify-between gap-2">
@@ -187,7 +408,69 @@ function NeedsYouRowView({
           </>
         ) : null}
       </p>
+      {runUnavailable ? (
+        <p role="status" data-hms-status="unavailable" className="text-[10.5px] text-[#64748b]">
+          HMS checks are unavailable in this session.
+        </p>
+      ) : requestActive || activeView ? (
+        <HmsJobStatusLine
+          view={activeView}
+          queuing={requestActive}
+          detail="Checking HMS… about 2 min"
+          onRetry={runHms}
+          compact
+        />
+      ) : hmsDisabledReason === 'insufficient_data' ? (
+        <p
+          role="status"
+          data-hms-status="insufficient_data"
+          className="w-fit rounded-full bg-[#fef3c7] px-2 py-0.5 text-[10.5px] text-[#92400e]"
+        >
+          Not enough details to check HMS.
+        </p>
+      ) : hms?.status === 'done' ? (
+        <p
+          role="status"
+          data-hms-status="done"
+          className="w-fit rounded-full bg-[#eff6ff] px-2 py-0.5 text-[10.5px] text-[#1d4ed8]"
+        >
+          {doneHmsLabel(hms.summary)}
+        </p>
+      ) : hms?.status === 'stale' ? (
+        <p
+          role="status"
+          data-hms-status="stale"
+          className="w-fit rounded-full bg-[#f1f5f9] px-2 py-0.5 text-[10.5px] text-[#475569]"
+        >
+          HMS result is stale.
+        </p>
+      ) : hms?.status === 'failed' ? (
+        <p
+          role="status"
+          data-hms-status="failed"
+          className="w-fit rounded-full bg-[#fef2f2] px-2 py-0.5 text-[10.5px] text-[#b91c1c]"
+        >
+          HMS check failed.
+        </p>
+      ) : null}
+      {runFailed ? (
+        <p role="alert" className="text-[10.5px] text-[#b91c1c]">
+          Couldn&apos;t queue an HMS check. Try again.
+        </p>
+      ) : null}
       <div className="flex items-center gap-3">
+        {eligibleForHms ? (
+          <button
+            type="button"
+            aria-label={`Run HMS ${subject}`}
+            aria-busy={hmsBusy}
+            disabled={runDisabled}
+            onClick={() => void runHms()}
+            className="rounded-[3px] border border-[#cbd5e1] bg-white px-2 py-1 text-[11.5px] font-semibold text-[#334155] hover:bg-[#f8fafc] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Run HMS
+          </button>
+        ) : null}
         {onOpenThread && threadId ? (
           <SecondaryButton onClick={() => onOpenThread(threadId)}>
             Open
@@ -227,7 +510,7 @@ export function NeedsYouScreen({
   /** Opens a row's thread in webmail. Only webmail passes it. */
   onOpenThread?: (threadId: string) => void;
 }) {
-  const { status, rows, notice, reload, dismiss } = list;
+  const { status, rows, notice, reload, dismiss, runHms, getHmsJobStatus } = list;
   const open = status === 'ready' ? countLabel(rows) : null;
   return (
     <section
@@ -289,6 +572,8 @@ export function NeedsYouScreen({
                 row={row}
                 onOpenThread={onOpenThread}
                 onDismiss={dismiss}
+                onRunHms={runHms}
+                onGetHmsJobStatus={getHmsJobStatus}
               />
             ))}
           </ul>
@@ -324,11 +609,7 @@ export function NeedsYouEntry({
       </button>
     );
   }
-  return (
-    <SecondaryButton onClick={onOpen}>
-      {label}
-    </SecondaryButton>
-  );
+  return <SecondaryButton onClick={onOpen}>{label}</SecondaryButton>;
 }
 
 /** The list on its own. It loads each time it mounts, so opening it shows the current list. */
