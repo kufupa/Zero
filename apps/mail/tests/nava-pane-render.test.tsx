@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { observable } from '@trpc/server/observable';
 import { countMutationsLink } from '../lib/workstation/mutations-in-flight';
 import { reloadPane } from '../lib/workstation/pane-release-watch';
@@ -337,26 +337,6 @@ describe('NavaPane', () => {
       await vi.advanceTimersByTimeAsync(ms);
     });
 
-  /** The Tell Nava note opens from its link once the selected email's analysis lands. */
-  async function tellNavaBox(): Promise<HTMLTextAreaElement> {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const box = screen.queryByLabelText("Tell Nava what's wrong");
-      if (box) return box as HTMLTextAreaElement;
-      const link = screen.queryByRole('button', { name: 'Something wrong? Tell Nava' });
-      if (link) fireEvent.click(link);
-      await flush(0);
-    }
-    throw new Error('the Tell Nava box did not appear');
-  }
-
-  /** Opens the Tell Nava note from its link, unless it is already open. */
-  async function openTellNava(): Promise<HTMLTextAreaElement> {
-    if (!screen.queryByLabelText("Tell Nava what's wrong")) {
-      fireEvent.click(await screen.findByRole('button', { name: 'Something wrong? Tell Nava' }));
-    }
-    return (await screen.findByLabelText("Tell Nava what's wrong")) as HTMLTextAreaElement;
-  }
-
   /** Production build, the served index carries LOADED_BUILD, and the server reports NEWER_BUILD. */
   function servePendingBuild() {
     vi.stubEnv('PROD', true);
@@ -389,33 +369,15 @@ describe('NavaPane', () => {
     vi.useFakeTimers();
     servePendingBuild();
     render(<NavaPane bridge={fakeBridge} />);
-    const note = await tellNavaBox();
+    await flush(0);
+    const arrival = screen.getByLabelText('Arrival');
 
     await flush(10 * 60_000);
-    fireEvent.input(note, { target: { value: 'x' } });
-    fireEvent.input(note, { target: { value: '' } });
+    fireEvent.keyDown(arrival, { key: '1' });
     await flush(10 * 60_000);
     expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
 
     await flush(6 * 60_000);
-    expect(vi.mocked(reloadPane)).toHaveBeenCalled();
-  });
-
-  it('an unsent Tell Nava note holds the idle reload until it is cleared or sent', async () => {
-    vi.useFakeTimers();
-    servePendingBuild();
-    render(<NavaPane bridge={fakeBridge} />);
-    const note = await tellNavaBox();
-    fireEvent.input(note, { target: { value: 'Three nights from 12 Nov' } });
-
-    await flush(20 * 60_000);
-    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
-
-    // Clearing the note is input, so the idle clock starts again from here.
-    fireEvent.input(note, { target: { value: '' } });
-    await flush(14 * 60_000);
-    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
-    await flush(60_000);
     expect(vi.mocked(reloadPane)).toHaveBeenCalled();
   });
 
@@ -466,36 +428,6 @@ describe('NavaPane', () => {
     pendingMutation.unsubscribe();
     await flush(60_000);
     expect(vi.mocked(reloadPane)).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps an unsent Tell Nava note through a trip off the tool screen', async () => {
-    render(<NavaPane bridge={fakeBridge} />);
-    const note = await openTellNava();
-    fireEvent.input(note, { target: { value: 'Three nights from 12 Nov' } });
-
-    fireEvent.keyDown(openPaneMenuItem('Check connection'), { key: 'Enter' });
-    fireEvent.click(await screen.findByRole('button', { name: /4\. Quote Tool/i }));
-    expect(((await openTellNava()) as HTMLTextAreaElement).value).toBe(
-      'Three nights from 12 Nov',
-    );
-  });
-
-  it('a bridge that drops and restores the selected email neither reloads nor clears the Tell Nava note', async () => {
-    vi.useFakeTimers();
-    servePendingBuild();
-    const noEmailBridge = { ...fakeBridge, activeEmail: null } as unknown as PaneBridge;
-    const { rerender } = render(<NavaPane bridge={fakeBridge} />);
-    const note = await tellNavaBox();
-    fireEvent.input(note, { target: { value: 'Three nights from 12 Nov' } });
-
-    rerender(<NavaPane bridge={noEmailBridge} />);
-    await flush(0);
-    expect(screen.queryByText('Loading the latest Nava pane…')).toBeNull();
-    rerender(<NavaPane bridge={fakeBridge} />);
-    await flush(0);
-
-    expect(vi.mocked(reloadPane)).not.toHaveBeenCalled();
-    expect(((await tellNavaBox()) as HTMLTextAreaElement).value).toBe('Three nights from 12 Nov');
   });
 
   it('shows the Find the booking card for a voucher email, with the guest the voucher names', async () => {
@@ -559,7 +491,7 @@ describe('NavaPane', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
     expect(await screen.findByRole('region', { name: 'Find the booking' })).toBeDefined();
-    await openTellNava();
+    expect(screen.queryByText(/Tell Nava/i)).toBeNull();
     expect(staffVisibleText()).not.toMatch(/luna/i);
   });
 });
@@ -602,6 +534,7 @@ describe('NavaPane screen states', () => {
     expect(screen.getByRole('button', { name: 'Confirm Account & Connect' })).toBeDefined();
     expect(screen.getByRole('button', { name: '4. Quote Tool' })).toBeDefined();
     expect(screen.queryByRole('main')).toBeNull();
+    expect(container.querySelector('header')?.querySelector('button[aria-label^="Needs you"]')).toBeNull();
     expect(container).toMatchSnapshot();
   });
 
@@ -615,6 +548,30 @@ describe('NavaPane screen states', () => {
     expect(screen.getByRole('button', { name: 'Insert draft in Outlook' })).toBeDefined();
     await settle();
     expect(container).toMatchSnapshot();
+  });
+
+  it.each([320, 380])('keeps the compact Needs you link between the title and connection status at %ipx', async (width) => {
+    const { container } = render(
+      <div style={{ width: `${width}px`, maxWidth: `${width}px` }}>
+        <NavaPane bridge={fakeBridge} />
+      </div>,
+    );
+    const header = container.querySelector('header');
+    expect(header).not.toBeNull();
+    const title = header!.querySelector('h1');
+    const needsYou = within(header as HTMLElement).getByRole('button', { name: /Needs you/ });
+    const centurion = within(header as HTMLElement).getByText('Centurion');
+    const elements = [...header!.querySelectorAll('h1, button, span')];
+    expect(elements.indexOf(title!)).toBeLessThan(elements.indexOf(needsYou));
+    expect(elements.indexOf(needsYou)).toBeLessThan(elements.indexOf(centurion));
+    expect(title!.className).toMatch(/truncate|whitespace-nowrap/);
+    expect(needsYou.className).toMatch(/truncate|whitespace-nowrap/);
+    expect(title!.parentElement?.className).toMatch(/min-w-0/);
+    expect(header!.children[0]?.className).toMatch(/shrink-0/);
+    expect(header!.children[1]?.className).toMatch(/min-w-0/);
+    expect(header!.children[1]?.className).toMatch(/\bshrink\b/);
+    expect(header!.textContent).toContain('Nava Reservationist');
+    expect(container.firstElementChild?.getAttribute('style')).toContain(`width: ${width}px`);
   });
 
   it('booking: an amendment email shows the change card with the guest request and the confirmation number', async () => {
@@ -670,6 +627,71 @@ describe('NavaPane screen states', () => {
     },
   };
 
+  // The stored API shape produced for this human-written extraction carries the extracted booking and guest details
+  // into analysis.amendment; the pane must use that stored result rather than re-reading it live.
+  const STORED_AMENDMENT_EXTRACTION = {
+    kind: 'amendment',
+    payload: {
+      origin: 'person',
+      contact: { name: 'Lerato Mokoena', email: 'lerato@example.invalid', phone: null },
+      confirmationNumbers: ['57291630-1'],
+      stays: [
+        {
+          requested: { arrival: '2026-10-31', departure: '2026-11-07' },
+          booked: { arrival: '2026-11-01', departure: '2026-11-06' },
+        },
+      ],
+    },
+  };
+  const STORED_AMENDMENT_KIND =
+    STORED_AMENDMENT_EXTRACTION.kind === 'amendment' ? ('amend' as const) : ('cancel' as const);
+  const STORED_AMENDMENT = {
+    status: 'ready',
+    workItemId: 'wi-amendment',
+    workItemStatus: 'needs_you',
+    extractionId: 'ex-amendment',
+    refs: {},
+    contact: {
+      name: STORED_AMENDMENT_EXTRACTION.payload.contact.name,
+      email: STORED_AMENDMENT_EXTRACTION.payload.contact.email,
+      phone: null,
+      company: null,
+      endClient: null,
+    },
+    language: 'en',
+    translation: null,
+    analysis: {
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      source: 'luna',
+      aiUnavailable: false,
+      luna: {
+        workflow: STORED_AMENDMENT_KIND,
+        flags: ['amendment_or_cancel'],
+        groups: [],
+        confirmationNumber: STORED_AMENDMENT_EXTRACTION.payload.confirmationNumbers[0],
+        guestLastName: null,
+        arrival: '2026-11-01',
+        departure: '2026-11-06',
+        requestedArrival: '2026-10-31',
+        requestedDeparture: '2026-11-07',
+        requestedChange: null,
+      },
+      amendment: {
+        kind: STORED_AMENDMENT_KIND,
+        confirmationNumber: STORED_AMENDMENT_EXTRACTION.payload.confirmationNumbers[0],
+        guestLastName: null,
+        arrival: STORED_AMENDMENT_EXTRACTION.payload.stays[0]!.booked.arrival,
+        departure: STORED_AMENDMENT_EXTRACTION.payload.stays[0]!.booked.departure,
+        requestedArrival: STORED_AMENDMENT_EXTRACTION.payload.stays[0]!.requested.arrival,
+        requestedDeparture: STORED_AMENDMENT_EXTRACTION.payload.stays[0]!.requested.departure,
+        requestedChange: null,
+      },
+    },
+  };
+
   /**
    * The stored read fills the first stay. Since U16 added the contact block and translation, the full pane render can
    * pass the 1 s default on a loaded box, and a miss here shifts the useId values in every later snapshot.
@@ -685,6 +707,22 @@ describe('NavaPane screen states', () => {
     await storedReadLands();
     await settle();
     expect(bridgeMockState.analyseCalls).toBe(0);
+  });
+
+  it('stored: a human-written amendment extraction renders Find booking without a live read or ApproveCard', async () => {
+    bridgeMockState.storedWork = STORED_AMENDMENT;
+    render(<NavaPane bridge={fakeBridge} />);
+
+    const panel = await screen.findByRole('region', { name: 'Change to an existing booking' });
+    expect(panel.textContent).toContain('57291630-1');
+    expect(panel.textContent).toContain('Find this booking in HMS');
+    expect(panel.textContent).toContain('31 Oct 2026');
+    expect(panel.textContent).toContain('7 Nov 2026');
+    expect(screen.getByDisplayValue('Lerato Mokoena')).toBeDefined();
+    await settle();
+    expect(bridgeMockState.analyseCalls).toBe(0);
+    expect(screen.queryByText(/Saving to HMS from this pane is off for now/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /approve|re.?read/i })).toBeNull();
   });
 
   it('stored: a change that cannot be saved shows a quiet retry, and the retry sends it again', async () => {
@@ -760,6 +798,7 @@ describe('NavaPane screen states', () => {
     const { container } = render(<NavaPane bridge={fakeBridge} />);
     fireEvent.click(screen.getByRole('button', { name: 'Confirm Account & Connect' }));
     expect(await screen.findByText(/API server pinged at/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
     await settle();
     expect(container).toMatchSnapshot();
   });
@@ -771,6 +810,7 @@ describe('NavaPane screen states', () => {
     await screen.findByText(/API server pinged at/);
     fireEvent.click(screen.getByRole('button', { name: 'Next: 60-Second Feature Tour' }));
     expect(screen.getByRole('heading', { name: '1. Automatic Email Sync' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
     await settle();
     expect(container).toMatchSnapshot();
   });
@@ -815,13 +855,9 @@ describe('NavaPane screen states', () => {
   });
 
   // These render the pane after the snapshots above, so the useId values in those snapshots do not shift.
-  it('retry read runs the read again after a failed re-read with her note', async () => {
-    render(<NavaPane bridge={fakeBridge} />);
-    await waitFor(() => expect(bridgeMockState.analyseCalls).toBe(1));
+  it('retry read runs the read again after a failed live read', async () => {
     bridgeMockState.analyseFails = true;
-    fireEvent.click(await screen.findByRole('button', { name: 'Something wrong? Tell Nava' }));
-    fireEvent.input(await screen.findByLabelText("Tell Nava what's wrong"), { target: { value: 'Two rooms, not one' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Re-read with my note' }));
+    render(<NavaPane bridge={fakeBridge} />);
     const retry = await screen.findByRole('button', { name: 'Retry reading this email' }, { timeout: 3000 });
     const calls = bridgeMockState.analyseCalls;
     bridgeMockState.analyseFails = false;

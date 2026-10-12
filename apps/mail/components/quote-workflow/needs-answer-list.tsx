@@ -10,7 +10,7 @@ export function NeedsAnswerList({
     <div aria-label="Needs your answer" className="flex flex-col gap-1.5">
       <Notice tone="warn">
         <p className="font-semibold">Needs your answer</p>
-        <p>Type the answer into the fields above, or use Tell Nava at the top.</p>
+        <p>Add this information to the fields above.</p>
         {missing.map((item) => (
           <p key={`${item.field}:${item.question}`} className="mt-1">
             {item.question}

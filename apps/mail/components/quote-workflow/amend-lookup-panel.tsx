@@ -2,10 +2,8 @@ import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import {
   AMEND_CANCEL_COPY,
   amendCancelClientFromTrpc,
-  amendCapabilitiesFromTrpc,
   cancelConfirmLine,
   cancelFeeSentence,
-  cancelManualSteps,
   cancelSwitchedOffNote,
   isoDayOf,
   viewAfterCommit,
@@ -95,24 +93,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const search = useHmsJob({ transport, resume: { kind: 'search_guest' }, scope: key });
   // A search the form refused before queueing. It shows in place of a run, for the scope it was made in.
   const [refusedSearch, setRefusedSearch] = useState<{ scope: string; message: string } | null>(null);
-  const [paneSave, setPaneSave] = useState(false);
   // Cancel views are kept per booking on an email (see cancelScope), so a reply for one booking never shows on another.
   const [cancelViews, setCancelViews] = useState<Record<string, CancelView>>({});
-
-  // Cancelling stays off until the server says the pane save flag is on.
-  useEffect(() => {
-    const readCapabilities = amendCapabilitiesFromTrpc(trpc);
-    if (!readCapabilities) return;
-    let live = true;
-    readCapabilities()
-      .then((reply) => {
-        if (live) setPaneSave(reply.paneSave === true);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [trpc]);
 
   if (!amendment) return null;
 
@@ -157,10 +139,11 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   // The HMS arrival is the stay the cancel must match; the email's date is only a fallback.
   const cancelArrival = isoDayOf(stayText(stay?.arrival)) ?? isoDayOf(amendment.arrival);
   const cancelInput = foundNumber && cancelArrival ? { confirmation: foundNumber, arrival: cancelArrival } : null;
-  const canPreviewCancel = Boolean(paneSave && cancelClient && cancelInput && key);
+  // ponytail: writes off (U-3); re-enable with HMS writes. The server cancel path stays untouched.
+  const canPreviewCancel = false;
 
   const previewCancel = async () => {
-    if (!cancelScope || !cancelClient || !cancelInput) return;
+    if (!canPreviewCancel || !cancelScope || !cancelClient || !cancelInput) return;
     const scope = cancelScope;
     setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'previewing' } }));
     try {
@@ -174,7 +157,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   // The commit must carry the digest of the preview it follows. Without one there is nothing to commit.
   const commitCancel = async (ready: Extract<CancelView, { kind: 'ready' }>) => {
     const previewDigest = ready.run.previewDigest;
-    if (!cancelScope || !cancelClient || !cancelInput || !ready.reason || !previewDigest) return;
+    if (!canPreviewCancel || !cancelScope || !cancelClient || !cancelInput || !ready.reason || !previewDigest) return;
     const scope = cancelScope;
     setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'committing', run: ready.run, reason: ready.reason } }));
     try {
@@ -348,7 +331,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
         <CancelSection
           view={cancelView}
           canPreview={canPreviewCancel}
-          offNote={paneSave ? cancelManualSteps(foundNumber) : cancelSwitchedOffNote(foundNumber)}
+          offNote={cancelSwitchedOffNote(foundNumber)}
           confirmation={foundNumber}
           guestName={stayGuest(stay) ?? amendment.guestLastName ?? 'this guest'}
           client={cancelClient}
@@ -648,9 +631,15 @@ function CancelSection({
         <p data-pii className={warnNoteClass}>
           {cancelConfirmLine({ confirmation, guest: guestName, penaltyText: run.penaltyText })}
         </p>
-        <button type="button" className={buttonClass} disabled={!reason || committing} onClick={onCommit}>
+        <button
+          type="button"
+          className={buttonClass}
+          disabled={!canPreview || !reason || committing}
+          onClick={onCommit}
+        >
           {AMEND_CANCEL_COPY.commit}
         </button>
+        {!canPreview ? <p className={infoNoteClass}>Coming soon</p> : null}
         {committing ? <p className={infoNoteClass}>{AMEND_CANCEL_COPY.committing}</p> : null}
         {current.kind === 'ready' && current.note ? <p className={warnNoteClass}>{current.note}</p> : null}
       </div>
@@ -661,11 +650,17 @@ function CancelSection({
   return (
     <div aria-live="polite" className="flex flex-col gap-2">
       <p className={headingClass}>Cancel in HMS</p>
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={!canPreview || previewing}
+        onClick={onPreview}
+      >
+        {AMEND_CANCEL_COPY.preview}
+      </button>
+      {!canPreview ? <p className={infoNoteClass}>Coming soon</p> : null}
       {canPreview ? (
         <>
-          <button type="button" className={buttonClass} disabled={previewing} onClick={onPreview}>
-            {AMEND_CANCEL_COPY.preview}
-          </button>
           <p className={captionClass}>{AMEND_CANCEL_COPY.previewHint}</p>
         </>
       ) : (

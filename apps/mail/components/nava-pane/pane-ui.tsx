@@ -127,6 +127,7 @@ export function PrimaryButton({
   loadingText,
   type = 'button',
   icon,
+  className = '',
   tone = 'blue',
 }: {
   children: ReactNode;
@@ -137,6 +138,7 @@ export function PrimaryButton({
   loadingText?: string;
   type?: 'button' | 'submit';
   icon?: ReactNode;
+  className?: string;
   /** Blue for the step's action; green for the reply that creates the draft. */
   tone?: 'blue' | 'green';
 }) {
@@ -155,7 +157,7 @@ export function PrimaryButton({
           type={type}
           onClick={onClick}
           disabled={disabled}
-          className={`flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] ${
+          className={`flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b] ${className} ${
             tone === 'green' ? 'bg-[#1a4332] hover:bg-[#143528]' : 'bg-[#0066cc] hover:bg-[#0052a3]'
           }`}
         >
@@ -175,6 +177,7 @@ export function SecondaryButton({
   children,
   onClick,
   disabled = false,
+  disabledReason,
   type = 'button',
   icon,
   className = '',
@@ -182,11 +185,12 @@ export function SecondaryButton({
   children: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
+  disabledReason?: string | null;
   type?: 'button' | 'submit';
   icon?: ReactNode;
   className?: string;
 }) {
-  return (
+  const button = (
     <button
       type={type}
       onClick={onClick}
@@ -196,6 +200,13 @@ export function SecondaryButton({
       {icon}
       {children}
     </button>
+  );
+  if (!disabled || !disabledReason) return button;
+  return (
+    <div className="flex flex-col gap-1">
+      {button}
+      <p className="text-center text-[11px] text-[#64748b]">{disabledReason}</p>
+    </div>
   );
 }
 

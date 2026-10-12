@@ -517,7 +517,7 @@ describe('BookingVoucherCard write card', () => {
       return { ...initialQuoteSession(), analysis: analysis as unknown as QuoteAnalysis };
     }
 
-    /** Renders the card on the amendment and returns what Copy for HMS wrote to the clipboard. */
+    /** Renders the amendment Find panel and returns what its Copy for HMS handoff wrote to the clipboard. */
     async function copiedForHms(session: QuoteSession): Promise<string> {
       vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
       const writeText = vi.fn(async (_text: string) => undefined);
@@ -533,9 +533,10 @@ describe('BookingVoucherCard write card', () => {
           writesEnabled
         />,
       );
-      // The amend lookup panel has its own Copy for HMS, so the click goes to the write card's.
-      const card = (await screen.findByRole('heading', { name: 'Booking in HMS' })).closest('section');
-      fireEvent.click(within(card!).getByRole('button', { name: 'Copy for HMS' }));
+      const panel = await screen.findByRole('region', { name: 'Change to an existing booking' });
+      expect(screen.queryByRole('heading', { name: 'Booking in HMS' })).toBeNull();
+      expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+      fireEvent.click(within(panel).getByRole('button', { name: 'Copy for HMS' }));
       await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
       return String(writeText.mock.calls[0]?.[0]);
     }
@@ -555,15 +556,21 @@ describe('BookingVoucherCard write card', () => {
 });
 
 describe('ApproveCard gated off', () => {
-  it('renders no write controls in prod and keeps the Copy confirmation handoff', async () => {
-    const client = fakeClient(viewWith({ run: runWith('dead_letter', { failureClass: 'AUTH' }) }));
+  it('shows disabled approval and reread controls and keeps the Copy confirmation handoff', async () => {
+    const client = fakeClient(viewWith({ snapshot: null, run: runWith('dead_letter', { failureClass: 'AUTH' }) }));
     renderCard(client, { writesEnabled: false });
-    expect(screen.getByText(/Saving is only switched on for test bookings right now/)).toBeTruthy();
+    expect(screen.getByText(/Saving to HMS from this pane is off for now/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
-    expect(
-      screen.queryByRole('button', { name: /approve|review|flag|checked|re-read/i }),
-    ).toBeNull();
-    expect(client.writeState).not.toHaveBeenCalled();
+    const approve = (await screen.findByRole('button', { name: /approve/i })) as HTMLButtonElement;
+    const reread = (await screen.findByRole('button', { name: /re.?read/i })) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    expect(reread.disabled).toBe(true);
+    expect(screen.getAllByText('Coming soon').length).toBeGreaterThanOrEqual(2);
+    fireEvent.click(approve);
+    fireEvent.click(reread);
+    expect(client.approve).not.toHaveBeenCalled();
+    expect(client.reread).not.toHaveBeenCalled();
+    expect(client.writeState).toHaveBeenCalledTimes(1);
   });
 
   it('renders nothing when the hmsApproval routes are not on the client', () => {

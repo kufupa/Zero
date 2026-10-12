@@ -73,6 +73,8 @@ import { StayCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
 import { WorkflowBadge, type QuoteIntent } from './workflow-badge';
 
+const TELL_NAVA_ENABLED = false;
+
 function analysingCopy(session: QuoteSession): string {
   return session.staffNote ? 'Nava is re-reading with your note…' : 'Nava is reading the email…';
 }
@@ -938,7 +940,7 @@ export function QuoteWorkflowPanel({
   onSelectStayKey?: (stayKey: string) => void;
   onTreatAs?: (treatAs: 'quote' | 'create_booking') => void;
   onStaffNote?: (note: string) => void;
-  /** Unfinished Tell Nava text, owned by the pane so it survives a trip off the tool screen. */
+  /** A retained staff correction, owned by the pane so it survives a trip off the tool screen. */
   staffNoteDraft?: string;
   onStaffNoteDraftChange?: (value: string) => void;
   /** HMS queue progress for the staff quote run in flight. */
@@ -989,7 +991,9 @@ export function QuoteWorkflowPanel({
         {amendment ? null : (
           <Notice tone="info">Not a quote or booking. Change the type above if Nava got it wrong.</Notice>
         )}
-        <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
+        {TELL_NAVA_ENABLED ? (
+          <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
+        ) : null}
         <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} unreadFiles={unreadFiles.length > 0} />
         {unreadFiles.map((item) => (
           <Notice key={item.id} tone="warn">
@@ -1114,7 +1118,9 @@ export function QuoteWorkflowPanel({
   return (
     <div className="flex flex-col gap-3">
       <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
-      <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
+      {TELL_NAVA_ENABLED ? (
+        <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
+      ) : null}
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}
       <PaneStatusLine session={session} />
       {session.analysis?.alternatives.length ? (

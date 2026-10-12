@@ -94,7 +94,7 @@ import { toast } from 'sonner';
 import { WelcomeScreen } from './screens/welcome';
 import { DiagnosticsScreen } from './screens/diagnostics';
 import { TourScreen } from './screens/tour';
-import { NeedsYouEntry, NeedsYouView } from './screens/needs-you';
+import { NeedsYouEntry, NeedsYouScreen, useNeedsYou } from './screens/needs-you';
 import { SelectedEmailBlock } from './blocks/selected-email';
 import { ContactBlock } from './blocks/contact-block';
 import { TranslationBox } from './blocks/translation-box';
@@ -611,8 +611,8 @@ export function NavaPane({
   });
   // Preview starts on the quoting tool; the welcome, connection and tour screens never show there.
   const shownScreen: PaneScreen = preview && currentScreen !== 'needs-you' ? 'tool' : currentScreen;
-  // Bumped when the list closes, so the entry remounts and its count takes in any dismiss made on the list.
-  const [needsYouVisit, setNeedsYouVisit] = useState(0);
+  // One list for the header entry and the screen, so a dismiss on the screen moves the entry count at once.
+  const needsYou = useNeedsYou(trpcClient);
   const [tourSlideIndex, setTourSlideIndex] = useState(0);
   const [pingState, setPingState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
@@ -644,8 +644,8 @@ export function NavaPane({
     }
   };
 
-  // Unfinished Tell Nava text lives here, so it survives a trip off the tool screen (the ⋯ menu's
-  // Check connection). The sent text is kept, so a note that was already re-read does not block reloads.
+  // Retained staff-note text survives a trip off the tool screen (the ⋯ menu's Check connection).
+  // The sent text is kept, so a note that was already re-read does not block reloads.
   const [staffNoteDraft, setStaffNoteDraft] = useState('');
   const [staffNoteSent, setStaffNoteSent] = useState('');
   const unsentStaffNote = staffNoteDraft.trim() !== '' && staffNoteDraft.trim() !== staffNoteSent.trim();
@@ -1212,16 +1212,25 @@ export function NavaPane({
       {/* Fills the Outlook pane height, so the body below scrolls with a visible bar; never narrower than 320px. */}
       <div className="shadow-xs relative flex h-full w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
         {/* Outlook 2016 Header */}
-        <header className="flex h-11 shrink-0 items-center justify-between border-b border-[#e2e8f0] bg-white px-3.5">
-          <div className="flex items-center gap-2">
+        <header className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[#e2e8f0] bg-white px-3.5">
+          {/* The title and the Needs you count keep their width; the connection status gives way first at 320-380 px. */}
+          <div className="flex min-w-0 shrink-0 items-center gap-2">
             <span className="flex h-5 w-5 items-center justify-center rounded-[3px] bg-[#1a4332] text-[11px] font-extrabold text-white">
               N
             </span>
-            <div>
-              <h1 className="text-[13px] font-bold text-[#1e293b]">Nava Reservationist</h1>
-            </div>
+            <h1 className="min-w-0 truncate whitespace-nowrap text-[13px] font-bold text-[#1e293b]">Nava Reservationist</h1>
+            {shownScreen === 'tool' || shownScreen === 'needs-you' ? (
+              <NeedsYouEntry
+                list={needsYou}
+                compact
+                onOpen={() => {
+                  needsYou.reload();
+                  setCurrentScreen('needs-you');
+                }}
+              />
+            ) : null}
           </div>
-          <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-[#475569]">
+          <div className="flex min-w-0 shrink items-center gap-1.5 text-[11.5px] font-medium text-[#475569] [&_button]:whitespace-nowrap">
             <span
               className={`h-2 w-2 rounded-full ${
                 isConnected ? 'animate-pulse bg-emerald-600' : 'bg-rose-500'
@@ -1364,11 +1373,11 @@ export function NavaPane({
         )}
         {/* SCREEN 5: NEEDS YOU (U24). Reached from the entry on the quoting tool, on both surfaces. */}
         {shownScreen === 'needs-you' && (
-          <NeedsYouView
-            trpc={trpcClient}
+          <NeedsYouScreen
+            list={needsYou}
             host={preview ? 'web' : 'outlook'}
             onBack={() => {
-              setNeedsYouVisit((visit) => visit + 1);
+              needsYou.reload();
               setCurrentScreen('tool');
             }}
             onOpenThread={onOpenThread}
@@ -1381,15 +1390,6 @@ export function NavaPane({
             style={shownScreen === 'tool' ? undefined : { display: 'none' }}
             className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5"
           >
-            {/* The open count from the Needs-you list. Shows "Needs you" alone until the list has loaded. */}
-            <div className="flex justify-end">
-              <NeedsYouEntry
-                key={needsYouVisit}
-                trpc={trpcClient}
-                onOpen={() => setCurrentScreen('needs-you')}
-              />
-            </div>
-
             {/* Contact is the first selected-message context. Extraction values win; only an external sender can fill its early fallback. */}
             {activeEmail ? (
               <ContactBlock

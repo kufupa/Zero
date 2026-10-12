@@ -9,6 +9,9 @@ export const PANE_SAVE_LAB_GUARD_COPY =
 
 export const PANE_CHILDREN_COPY = 'Bookings with children: enter in HMS for now';
 
+// Shown on the write card while the pane save flag is off. Not the lab guard above, which is the server refusal copy.
+export const PANE_SAVE_OFF_COPY = 'Saving to HMS from this pane is off for now. Book this one by hand in HMS.';
+
 // HMS field limits. They mirror the server caps (pane-stay-save.ts) so an over-long value shows here, not as a refusal.
 export const PANE_RESERVATION_NOTE_MAX = 2000;
 export const PANE_PARTY_NAME_MAX = 100;
