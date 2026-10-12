@@ -953,7 +953,7 @@ async function evidenceForRun(db: DB, workItemId: string, runId: string) {
     .orderBy(workEvent.at, workEvent.id);
 }
 
-/** The review decision for one run, or null while it is unreviewed. */
+/** The latest review decision for one run (by at, then id), or null while it is unreviewed. */
 async function reviewForRun(db: DB, workItemId: string, runId: string) {
   const [row] = await db
     .select({ type: workEvent.type })
@@ -965,6 +965,7 @@ async function reviewForRun(db: DB, workItemId: string, runId: string) {
         sql`${workEvent.value}->>'runId' = ${runId}`,
       ),
     )
+    .orderBy(desc(workEvent.at), desc(workEvent.id))
     .limit(1);
   return row ? (row.type === 'review.ok' ? 'ok' : 'flag') : null;
 }

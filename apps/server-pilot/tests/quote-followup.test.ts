@@ -1450,7 +1450,7 @@ describe('a hotel copy as the reply link (C2b) neither clears nor restarts the f
 });
 
 describe('a follow-up used from the Outlook reminder counts as a touch on the quote (C2b)', () => {
-  it('a hotel reply after the use does not close the quote, since the use is the person touch', async () => {
+  it('a hotel reply sent before the follow-up is used still closes the quote', async () => {
     await withIngestionDb(async ({ db }) => {
       await seedNavaUser(db);
       const { itemId, draftId } = await suggestionFor(db, 'thread-reminder-touch');
@@ -1458,7 +1458,7 @@ describe('a follow-up used from the Outlook reminder counts as a touch on the qu
       expect(used.status).toBe('used');
 
       await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-reminder-touch' });
-      expect((await loadItem(db, itemId)).status).toBe('needs_you');
+      expect((await loadItem(db, itemId)).status).toBe('done');
     });
   });
 

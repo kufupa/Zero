@@ -852,17 +852,18 @@ export type ThreadWorkChange =
   | { workItemId: string; kind: MailKind; repoint: { sentAt: Date; sentMessageId: string } };
 
 /**
- * The status changes the thread's work needs, read from its mail and items. A change only touches an untouched item: no
- * decision from a person (see personTouchSql) and no saved values. Rules, on the source mail's time
- * (arrivedAt):
+ * The status changes the thread's work needs, read from its mail and items. A hotel answer can close a needs-you item even
+ * after a person touched it, unless the latest hms_write still needs review.ok. A later guest mail reopens a done one a
+ * hotel answer closed, touched or not. Other automatic changes only touch an untouched item (no decision from a person,
+ * see personTouchSql, and no saved values). Rules, on the source mail's time (arrivedAt):
  * - Reply link (C2): a needs-you item is done (hotel_replied, sent_at and sent_message_id set) when the hotel's latest
  *   mail after it is later than the guest's latest mail after it. The hotel's mail is an outbound one, or an inbound one
  *   from the mailbox's own domain at an exact address the transport has sent from (a copy of its reply, counted by when it
  *   left; a forged own-domain From is neither). A guest mail is any other inbound one, counted by when it arrived, so an
- *   own-domain copy never reopens an item. A done item a later guest mail
- *   reopens goes back to needs-you (new_inbound), and its reply link moves to the hotel's next answer. A done item with
- *   no reply link (closed before the link existed) gets the same treatment, with the hotel's latest answer as its link.
- *   A person's close stays.
+ *   own-domain copy never reopens an item. A done item a later guest mail reopens goes back to needs-you (new_inbound). For
+ *   an untouched one its reply link moves to the hotel's next answer. A done item with no reply link (closed before the
+ *   link existed) gets the same treatment, with the hotel's latest answer as its link, if no person touched it. A person's
+ *   close, with no link, stays.
  * - Same-thread collapse (C3): an older needs-you item is dismissed (superseded_by_thread) when a newer needs-you item of
  *   any kind but other is on the thread. A newer "other" mail never supersedes a request.
  * - Staff-sent other: an "other" mail the hotel sent (an outbound one, or a copy as above) gets no needs-you (done,
@@ -874,6 +875,26 @@ export async function planThreadWork(
   input: { transportId: string; threadId: string },
   opts: { lock?: boolean } = {},
 ): Promise<ThreadWorkChange[]> {
+  // Match hms-approval's latestWriteRun and reviewForRun: the newest hms_write (created_at, then id) needs a review whose
+  // newest review.ok or review.flag (at, then id) is review.ok. Explicit table names, as with `touched` below.
+  const latestHmsWriteId = sql`(
+    select latest_hms_run.id
+    from ${aiWorkflowRun} as latest_hms_run
+    where latest_hms_run.work_item_id = ${workItem}.id
+      and latest_hms_run.run_kind = 'hms_write'
+    order by latest_hms_run.created_at desc, latest_hms_run.id desc
+    limit 1
+  )`;
+  const latestHmsReview = sql<string | null>`(
+    select latest_review.type
+    from ${workEvent} as latest_review
+    where latest_review.work_item_id = ${workItem}.id
+      and latest_review.type in ('review.ok', 'review.flag')
+      and latest_review.value->>'runId' = ${latestHmsWriteId}
+    order by latest_review.at desc, latest_review.id desc
+    limit 1
+  )`;
+  const hmsOpen = sql<boolean>`(${latestHmsWriteId} is not null and coalesce(${latestHmsReview}, '') <> 'review.ok')`;
   // The item rows are locked before the mail is read (when asked), so the mail matches the items the plan changes. A live
   // admission that reopens an item waits on this lock, and the mail it committed is in the read below.
   const itemQuery = db
@@ -885,6 +906,7 @@ export async function planThreadWork(
       sentAt: workItem.sentAt,
       sentMessageId: workItem.sentMessageId,
       state: workItem.state,
+      hmsOpen,
       // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
       // "id" binds to the subquery's own table and the check is always false.
       touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and ${personTouchSql('we')})`,
@@ -951,37 +973,55 @@ export async function planThreadWork(
     const kind = item.kind as MailKind;
     const at = arrivedAt(source);
     const untouched = !item.touched && Object.keys(item.state ?? {}).length === 0;
-    if (!untouched) {
-      if (item.status === 'needs_you') open.push({ id: item.id, kind, at, untouched: false });
-      continue;
-    }
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
     const answered = lastHotel !== undefined && (lastGuest === undefined || lastHotel.at > lastGuest.at);
-    const staffOther = kind === 'other' && ownSent(source);
-    // A done other mail from the mailbox's domain stays as it is: #172 closed these on the domain alone, and no later mail
-    // reopens, re-links or dismisses one. Only the sent-from check above closes a needs-you one.
+    const replyChange: ThreadWorkChange | undefined =
+      lastHotel && answered && !item.hmsOpen
+        ? {
+            workItemId: item.id,
+            kind,
+            to: 'done' as const,
+            reason: HOTEL_REPLIED,
+            sentAt: new Date(lastHotel.at),
+            sentMessageId: lastHotel.m.id,
+          }
+        : undefined;
+    // A done `other` mail from this domain stays as it is (#172); only an exact sent-from match closes a needs-you `other`.
     const domainOther = kind === 'other' && ownDomain(source);
-    if (item.status === 'needs_you') {
-      if (staffOther) {
-        changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
-      } else if (lastHotel && answered) {
+    if (!untouched) {
+      if (item.status === 'needs_you' && replyChange) {
+        changes.push(replyChange);
+      } else if (item.status === 'needs_you') {
+        open.push({ id: item.id, kind, at, untouched: false });
+      } else if (item.sentAt && !domainOther && lastGuest && lastGuest.at > item.sentAt.getTime() && !answered) {
+        // A hotel reply closed it, then a person touched it: a later guest mail still reopens it. A person's close has no
+        // reply link, so it stays.
         changes.push({
           workItemId: item.id,
           kind,
-          to: 'done',
-          reason: HOTEL_REPLIED,
-          sentAt: new Date(lastHotel.at),
-          sentMessageId: lastHotel.m.id,
+          to: 'needs_you',
+          reason: NEW_INBOUND,
+          previousSentMessageId: item.sentMessageId,
         });
+        open.push({ id: item.id, kind, at, untouched: false });
+      }
+      continue;
+    }
+    const staffOther = kind === 'other' && ownSent(source);
+    if (item.status === 'needs_you') {
+      if (staffOther) {
+        changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
+      } else if (replyChange) {
+        changes.push(replyChange);
       } else {
         open.push({ id: item.id, kind, at, untouched: true });
       }
     } else if (!domainOther) {
       // Closed by a hotel reply: reopened by a later guest mail, or re-pointed at the hotel's latest answer. A done row the
       // rules closed before the reply link existed has no link, so the hotel's latest answer stands in for it (the
-      // backfill links it). Only a row a person touched is left alone, as above.
+      // backfill links it). Touched rows are handled above, so this branch sees untouched rows only.
       const linkedAt = item.sentAt ? item.sentAt.getTime() : lastHotel?.at;
       if (lastGuest && linkedAt !== undefined && lastGuest.at > linkedAt && !answered) {
         changes.push({
@@ -1082,8 +1122,9 @@ async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Prom
 
 /**
  * Applies planThreadWork for one thread: the reply link (C2), the same-thread collapse (C3) and the staff-sent other rule.
- * The plan is read again under the item row locks, the same lock a field save or a dismissal takes, so nothing a person
- * touched after the first read is changed. Takes the lock only when there is something to change. Returns the changes made.
+ * A hotel reply only closes an item after its latest hms_write has review.ok. The plan is read again under the item row
+ * locks, the same lock a field save or a dismissal takes, so nothing a person touched after the first read is changed.
+ * Takes the lock only when there is something to change. Returns the changes made.
  */
 export async function refreshThreadWork(
   db: DB,
@@ -1429,14 +1470,25 @@ export async function dismissWorkItem(
   });
 }
 
+/** Mail kinds allowed in the Needs-you list. */
+export const NEEDS_YOU_KINDS = [
+  'quote',
+  'booking',
+  'amendment',
+  'cancellation',
+  'voucher_pop',
+] as const;
+
 /** The chips on a Needs-you row (KTD14), in list order: the list sorts by this index, then by age. */
 export const NEEDS_YOU_CHIPS = ['needs_you', 'review', 'queued', 'in_hms'] as const;
 export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
 
 /**
- * Work items in this transport with the given statuses, the Needs-you list. Spam, trashed and deleted threads are left
- * out. Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run
- * never moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
+ * Work items in this transport with the given statuses, the Needs-you list. Stored origin `person` means human-written;
+ * `system_notice` means automated and is excluded. A missing extraction or origin counts as human-written. Only quote,
+ * booking, amendment, cancellation and voucher_pop items are included. Spam, trashed and deleted threads are left out.
+ * Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run never
+ * moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
  * NEEDS_YOU_CHIPS order, then the oldest mail first.
  */
 export async function listWorkItems(
@@ -1444,6 +1496,9 @@ export async function listWorkItems(
   input: { transportId: string; statuses: readonly string[]; limit: number },
 ) {
   if (input.statuses.length === 0) return [];
+  // Stored origin `person` means human-written; `system_notice` means automated and is excluded.
+  // Coalesce keeps missing origin human-written.
+  const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
   const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.workItemId} = ${workItem.id} and ${aiWorkflowRun.executorLane} = 'hms' order by ${aiWorkflowRun.createdAt} desc limit 1)`;
   const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
     .mapWith(Number)
@@ -1464,11 +1519,13 @@ export async function listWorkItems(
     .from(workItem)
     .innerJoin(mailThread, eq(mailThread.id, workItem.threadId))
     .leftJoin(message, eq(message.id, workItem.sourceMessageId))
+    .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
     .where(
       and(
         eq(workItem.transportId, input.transportId),
         inArray(workItem.status, [...input.statuses]),
-        ne(workItem.kind, 'spam'),
+        inArray(workItem.kind, [...NEEDS_YOU_KINDS]),
+        ne(origin, 'system_notice'),
         isNull(mailThread.spamAt),
         isNull(mailThread.trashedAt),
       ),
