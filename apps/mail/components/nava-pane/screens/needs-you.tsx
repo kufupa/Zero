@@ -298,18 +298,18 @@ export function NeedsYouScreen({
   );
 }
 
-/** The pane's "Needs you (N)" entry. It holds its own list, so a load re-renders this button and not the pane around it. */
+/** The pane's "Needs you (N)" entry. It shows the same list the screen uses, so a dismiss on the screen moves this count. */
 export function NeedsYouEntry({
-  trpc,
+  list,
   onOpen,
   compact = false,
 }: {
-  trpc: unknown;
+  /** The pane's list, shared with the screen (see useNeedsYou). */
+  list: NeedsYou;
   onOpen: () => void;
   /** Header link for the Outlook pane. */
   compact?: boolean;
 }) {
-  const list = useNeedsYou(trpc);
   const label = list.status === 'ready' ? `Needs you (${countLabel(list.rows)})` : 'Needs you';
   if (compact) {
     return (
