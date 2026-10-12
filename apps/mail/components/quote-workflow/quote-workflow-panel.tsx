@@ -1123,6 +1123,13 @@ export function QuoteWorkflowPanel({
         : 'all';
   const changeRatePlan = (value: string) => {
     setRatePlanState({ selectionEpoch, analysis: session.analysis, value });
+    // The search's sales strategy still lives in the header (the old Rate type select's two options): a government plan
+    // asks HMS for Government pricing, any other plan asks for BAR. "All rates" leaves the strategy as it is.
+    if (value === 'all') return;
+    const government =
+      value === 'government' || ratePlans.some((plan) => plan.code === value && plan.category === 'government');
+    const salesStrategy = government ? 'Government' : 'BAR';
+    if (salesStrategy !== header.salesStrategy) onPatchStaffHeader?.({ salesStrategy });
   };
   const stays = groupStays(formGroups);
   // Row names for the price boxes: "Room 1", or "Stay 1 · Room 1" when the quote has more than one stay.

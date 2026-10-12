@@ -47,7 +47,7 @@ export type StayGroupRequirement = {
   roomTypeCode?: RoomTypeCode;
   /** Never collapsed to one guess when the extracted wording matches multiple native types. */
   roomTypeSuggestions?: RoomTypeCode[];
-  /** Explicit native room-type codes. Labels never belong here. */
+  /** Explicit native room-type codes. A name is accepted only when it resolves to exactly one code. */
   roomCodes?: string[];
   adults?: number;
   childrenAges: number[];

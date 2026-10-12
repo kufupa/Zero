@@ -825,6 +825,29 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(screen.getByRole('button', { name: /NCOR1B: Corporate Negotiated/ })).toBeDefined();
   });
 
+  it('a government plan asks HMS for Government pricing; a public plan goes back to BAR', () => {
+    const onPatchStaffHeader = vi.fn();
+    const base = sessionFromFixture('public-single');
+    const rateCatalogue: RatePlanCatalogueEntry[] = [
+      { code: 'BAR', name: 'Best Available Rate', board: 'bed_breakfast' },
+      { code: 'NGOVB', name: 'NGOVB', board: 'unknown', government: true },
+    ];
+    const first = render(
+      <QuoteWorkflowPanel session={base} rateCatalogue={rateCatalogue} onPatchStaffHeader={onPatchStaffHeader} />,
+    );
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'NGOVB' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
+    first.unmount();
+
+    const governmentSession = { ...base, staffHeader: { ...base.staffHeader, salesStrategy: 'Government' } } as never;
+    render(
+      <QuoteWorkflowPanel session={governmentSession} rateCatalogue={rateCatalogue} onPatchStaffHeader={onPatchStaffHeader} />,
+    );
+    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government');
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'BAR' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
+  });
+
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.
   it('looks each named field up in HMS by itself, once, with its own kind; no finder, no lookup', async () => {
     resetPartyAutoLookupForTests();

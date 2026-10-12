@@ -15,8 +15,8 @@ export type CenturionRatePlan = {
 
 /**
  * Static UI catalogue only; this is not availability or entitlement data.
- * BAR, BARRO, and NCOR1B labels are confirmed in the local side-pane demo; NCOR2B's label matches a checked-in native
- * description; DBB's label/board follow the lane plan. Other unverified labels use the code, not a guessed name.
+ * BAR, BARRO, NCOR1B and BWKPB labels come from the local side-pane demo (a mock, not an HMS read); NCOR2B's label matches a
+ * checked-in native description; DBB's label/board follow the lane plan. Other unverified labels use the code, not a guessed name.
  * Confirmed boards are BAR (bed & breakfast), BARRO (room only), and DBB (dinner & bed & breakfast); every other
  * board stays `unknown` when the cited evidence does not establish it. NGOVB's government grouping is inferred from its
  * native code token, not a confirmed label or board. The live quote's own label and negotiated flag remain authoritative.
