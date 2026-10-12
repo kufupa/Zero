@@ -2136,6 +2136,15 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                     All rates
                   </option>
                   <optgroup
+                    label="Public"
+                  >
+                    <option
+                      value="public"
+                    >
+                      All public rates (BAR)
+                    </option>
+                  </optgroup>
+                  <optgroup
                     label="Government"
                   >
                     <option
@@ -2451,11 +2460,15 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 <div
                   class="flex flex-col gap-0.5"
                 >
-                  <h4
-                    class="text-[13px] font-bold text-[#1e293b]"
+                  <div
+                    class="flex flex-wrap items-center gap-2"
                   >
-                    Availability for this date range
-                  </h4>
+                    <h4
+                      class="text-[13px] font-bold text-[#1e293b]"
+                    >
+                      Availability for this date range
+                    </h4>
+                  </div>
                   <p
                     class="text-[12.5px] text-[#64748b]"
                   >
@@ -4172,6 +4185,15 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                     All rates
                   </option>
                   <optgroup
+                    label="Public"
+                  >
+                    <option
+                      value="public"
+                    >
+                      All public rates (BAR)
+                    </option>
+                  </optgroup>
+                  <optgroup
                     label="Government"
                   >
                     <option
@@ -4487,11 +4509,15 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 <div
                   class="flex flex-col gap-0.5"
                 >
-                  <h4
-                    class="text-[13px] font-bold text-[#1e293b]"
+                  <div
+                    class="flex flex-wrap items-center gap-2"
                   >
-                    Availability for this date range
-                  </h4>
+                    <h4
+                      class="text-[13px] font-bold text-[#1e293b]"
+                    >
+                      Availability for this date range
+                    </h4>
+                  </div>
                   <p
                     class="text-[12.5px] text-[#64748b]"
                   >
@@ -6441,6 +6467,15 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                     All rates
                   </option>
                   <optgroup
+                    label="Public"
+                  >
+                    <option
+                      value="public"
+                    >
+                      All public rates (BAR)
+                    </option>
+                  </optgroup>
+                  <optgroup
                     label="Government"
                   >
                     <option
@@ -6756,11 +6791,15 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 <div
                   class="flex flex-col gap-0.5"
                 >
-                  <h4
-                    class="text-[13px] font-bold text-[#1e293b]"
+                  <div
+                    class="flex flex-wrap items-center gap-2"
                   >
-                    Availability for this date range
-                  </h4>
+                    <h4
+                      class="text-[13px] font-bold text-[#1e293b]"
+                    >
+                      Availability for this date range
+                    </h4>
+                  </div>
                   <p
                     class="text-[12.5px] text-[#64748b]"
                   >
@@ -8377,6 +8416,15 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                     All rates
                   </option>
                   <optgroup
+                    label="Public"
+                  >
+                    <option
+                      value="public"
+                    >
+                      All public rates (BAR)
+                    </option>
+                  </optgroup>
+                  <optgroup
                     label="Government"
                   >
                     <option
@@ -8692,11 +8740,15 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 <div
                   class="flex flex-col gap-0.5"
                 >
-                  <h4
-                    class="text-[13px] font-bold text-[#1e293b]"
+                  <div
+                    class="flex flex-wrap items-center gap-2"
                   >
-                    Availability for this date range
-                  </h4>
+                    <h4
+                      class="text-[13px] font-bold text-[#1e293b]"
+                    >
+                      Availability for this date range
+                    </h4>
+                  </div>
                   <p
                     class="text-[12.5px] text-[#64748b]"
                   >

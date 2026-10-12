@@ -356,6 +356,17 @@ describe('Needs-you entry on the pane', () => {
     expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
   });
 
+  it('a dismiss on the list moves the entry count at once, with the list still open', async () => {
+    render(<NavaPane bridge={fakeBridge} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
+    listQuery.mockResolvedValue([TWO_OPEN[1]!]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
+    expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Needs you (1)' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Back to quotes' })).toBeDefined();
+  });
+
   it('the webmail pane opens a row thread through the webmail callback', async () => {
     const onOpenThread = vi.fn();
     render(<NavaPane bridge={fakeBridge} preview onOpenThread={onOpenThread} />);

@@ -94,7 +94,7 @@ import { toast } from 'sonner';
 import { WelcomeScreen } from './screens/welcome';
 import { DiagnosticsScreen } from './screens/diagnostics';
 import { TourScreen } from './screens/tour';
-import { NeedsYouEntry, NeedsYouView } from './screens/needs-you';
+import { NeedsYouEntry, NeedsYouScreen, useNeedsYou } from './screens/needs-you';
 import { SelectedEmailBlock } from './blocks/selected-email';
 import { ContactBlock } from './blocks/contact-block';
 import { TranslationBox } from './blocks/translation-box';
@@ -638,8 +638,8 @@ export function NavaPane({
   });
   // Preview starts on the quoting tool; the welcome, connection and tour screens never show there.
   const shownScreen: PaneScreen = preview && currentScreen !== 'needs-you' ? 'tool' : currentScreen;
-  // Bumped when the list closes, so the entry remounts and its count takes in any dismiss made on the list.
-  const [needsYouVisit, setNeedsYouVisit] = useState(0);
+  // One list for the header entry and the screen, so a dismiss on the screen moves the entry count at once.
+  const needsYou = useNeedsYou(trpcClient);
   const [tourSlideIndex, setTourSlideIndex] = useState(0);
   const [pingState, setPingState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
@@ -1248,10 +1248,12 @@ export function NavaPane({
             <h1 className="min-w-0 truncate whitespace-nowrap text-[13px] font-bold text-[#1e293b]">Nava Reservationist</h1>
             {shownScreen === 'tool' || shownScreen === 'needs-you' ? (
               <NeedsYouEntry
-                key={needsYouVisit}
-                trpc={trpcClient}
+                list={needsYou}
                 compact
-                onOpen={() => setCurrentScreen('needs-you')}
+                onOpen={() => {
+                  needsYou.reload();
+                  setCurrentScreen('needs-you');
+                }}
               />
             ) : null}
           </div>
@@ -1398,11 +1400,11 @@ export function NavaPane({
         )}
         {/* SCREEN 5: NEEDS YOU (U24). Reached from the entry on the quoting tool, on both surfaces. */}
         {shownScreen === 'needs-you' && (
-          <NeedsYouView
-            trpc={trpcClient}
+          <NeedsYouScreen
+            list={needsYou}
             host={preview ? 'web' : 'outlook'}
             onBack={() => {
-              setNeedsYouVisit((visit) => visit + 1);
+              needsYou.reload();
               setCurrentScreen('tool');
             }}
             onOpenThread={onOpenThread}
