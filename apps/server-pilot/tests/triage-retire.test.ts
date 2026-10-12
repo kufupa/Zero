@@ -820,7 +820,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       expect(await spamAtOf(db, quote.messageId)).toBeNull();
     }));
 
-  it('retired un-spam: any non-spam read lifts the mark (other included); a spam read keeps it; a blocked sender goes to spam', () =>
+  it('retired un-spam: other preserves the mark, quote lifts it, spam keeps it, and a blocked sender goes to spam', () =>
     withIngestionDb(async ({ db }) => {
       retire();
       const lifted = await persistOutlookHistory(db, history('u5-unspam-quote'));
@@ -845,7 +845,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
       expect((await readWith(db, kept.messageId, SPAM_TEXT, SPAM_OUTPUT)).state.state).toBe('succeeded');
       expect((await readWith(db, locked.messageId, AE1_TEXT, AE1_OUTPUT)).state.state).toBe('succeeded');
       expect(await spamAtOf(db, lifted.messageId)).toBeNull();
-      expect(await spamAtOf(db, other.messageId)).toBeNull();
+      expect(await spamAtOf(db, other.messageId)).not.toBeNull();
       expect(await spamAtOf(db, kept.messageId)).not.toBeNull();
       expect(await spamAtOf(db, locked.messageId)).not.toBeNull();
 
@@ -860,7 +860,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U5 retire inbound triage', ()
         kind: 'block',
       });
       await admit(db, blocked.messageId);
-      await readWith(db, blocked.messageId, AE1_TEXT, AE1_OUTPUT);
+      await readWith(db, blocked.messageId, AE1_TEXT, { ...AE1_OUTPUT, kind: 'other' });
       expect(await spamAtOf(db, blocked.messageId)).not.toBeNull();
     }));
 });

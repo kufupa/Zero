@@ -345,10 +345,10 @@ export async function runInboundExtraction(
 }
 
 /**
- * Spam for the thread, from the read of its latest-arrived inbound only: a blocked sender goes to spam, a spam read the guards allow
- * goes to spam, and any other read lifts the mark (like the classifier: 'other' covers events, venue hire and
- * invoices). An older mail's read (the backfill runs newest first) never moves a thread a newer mail decided. A
- * person's lock keeps the thread as it is.
+ * Spam for the thread comes from the read of its latest-arrived inbound only: a blocked sender sets the mark, and a spam
+ * read that passes the guards sets it too. Any other read lifts the mark, except an `other` read: a later mail the model
+ * calls other does not clear a spam mark. An older mail's read (the backfill runs newest first) never moves a thread a
+ * newer mail decided. A person's lock keeps the thread as it is.
  */
 async function writeSpamDecision(
   db: DB,
@@ -377,6 +377,7 @@ async function writeSpamDecision(
     blocked ||
     (kind === 'spam' &&
       (await spamWriteAllowed(db, run.transportId, trigger.threadId, trigger.fromAddress)));
+  if (!markSpam && kind === 'other') return;
   const now = new Date();
   await db
     .update(mailThread)

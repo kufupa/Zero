@@ -5,7 +5,7 @@ import postgres from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 import type { AttachmentRead } from '../src/ai/extraction/extract.js';
 import { EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
-import type { MailExtractionPayload } from '../src/ai/extraction/schema.js';
+import type { MailExtractionPayload, MailKind } from '../src/ai/extraction/schema.js';
 import {
   aiValueAt,
   correctionsCarryTo,
@@ -123,7 +123,7 @@ async function insertRead(
   read: {
     version: string;
     status?: 'succeeded' | 'failed';
-    kind?: 'quote' | 'amendment' | 'cancellation' | 'other' | 'spam';
+    kind?: MailKind;
     payload?: MailExtractionPayload | null;
     attachments?: AttachmentRead[] | null;
     usage?: Record<string, unknown> | null;
@@ -633,7 +633,8 @@ describe('work item upsert', () => {
       const [keptDone] = await db.select().from(workItem).where(eq(workItem.id, done!.id));
       expect(keptDone!.status).toBe('done');
       const open = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
-      expect(open.map((row) => row.id)).toContain(edited!.id);
+      // The edited `other` item keeps its status, but stays outside the Needs-you scope.
+      expect(open.map((row) => row.id)).not.toContain(edited!.id);
     }));
 
   it('never moves the work item back to an older read a slow caller still holds', () =>
@@ -1335,6 +1336,55 @@ describe('needs-you list', () => {
       expect(rows[0]!.receivedAt?.toISOString()).toBe('2026-10-05T09:00:00.000Z');
     }));
 
+  it('lists five human-written kinds, excludes automated/other, and includes missing origins', () =>
+    withDb(async (db) => {
+      const addItem = async (id: string, kind: MailKind, origin?: 'person' | 'system_notice') => {
+        const messageId = await seedMail(db, id);
+        const readPayload = origin === undefined ? payload() : { ...payload(), origin };
+        await insertRead(db, messageId, { version: 'extract-v1', kind, payload: readPayload });
+        const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
+        if (!item) throw new Error(`no work item for ${id}`);
+        return item.id;
+      };
+
+      const humanQuote = await addItem('allow-human-quote', 'quote', 'person');
+      const humanBooking = await addItem('allow-human-booking', 'booking', 'person');
+      const humanAmendment = await addItem('allow-human-amendment', 'amendment', 'person');
+      const humanCancellation = await addItem('allow-human-cancellation', 'cancellation', 'person');
+      const humanVoucherPop = await addItem('allow-human-voucher-pop', 'voucher_pop', 'person');
+      const missingOriginQuote = await addItem('allow-missing-origin-quote', 'quote');
+      const missingOriginBooking = await addItem('allow-missing-origin-booking', 'booking');
+      const unlinkedMessage = await seedMail(db, 'allow-null-extraction-booking');
+      const [unlinkedBooking] = await db
+        .insert(workItem)
+        .values({
+          transportId: CENTURION,
+          threadId: 'thread-allow-null-extraction-booking',
+          sourceMessageId: unlinkedMessage,
+          kind: 'booking',
+        })
+        .returning({ id: workItem.id });
+
+      await addItem('omit-automated-quote', 'quote', 'system_notice');
+      await addItem('omit-automated-voucher-pop', 'voucher_pop', 'system_notice');
+      await addItem('omit-other', 'other', 'person');
+
+      const rows = await openList(db);
+      expect(rows).toHaveLength(8);
+      expect(rows.map((row) => row.id)).toEqual(
+        expect.arrayContaining([
+          humanQuote,
+          humanBooking,
+          humanAmendment,
+          humanCancellation,
+          humanVoucherPop,
+          missingOriginQuote,
+          missingOriginBooking,
+          unlinkedBooking!.id,
+        ]),
+      );
+    }));
+
   it('leaves out spam, trashed and deleted threads, spam reads, and done or dismissed items', () =>
     withDb(async (db) => {
       const kept = await openItem(db, 'k1', '2026-10-05T09:00:00Z');
@@ -1976,7 +2026,47 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
       expect(await replyStatus(db, first!.id)).toBe('needs_you');
     }));
 
-  it('a staff-sent other mail gets no needs-you; a guest other mail still does', () =>
+  it('an automated booking does not supersede an untouched human-written request', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'auto-1', 'thread-auto-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const first = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const notice = await guestMail(db, 'auto-2', 'thread-auto-1', '2027-10-01T09:00:00Z');
+      await insertRead(db, notice, {
+        version: 'extract-v1',
+        kind: 'booking',
+        payload: { ...payload(), origin: 'system_notice' },
+      });
+      const second = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: notice });
+
+      expect(await replyStatus(db, first!.id)).toBe('needs_you');
+      expect(await replyStatus(db, second!.id)).toBe('needs_you');
+      const listed = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(listed.map((item) => item.id)).toContain(first!.id);
+      expect(listed.map((item) => item.id)).not.toContain(second!.id);
+    }));
+
+  it('a human-written booking supersedes an untouched human-written request', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'human-1', 'thread-human-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const first = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const booking = await guestMail(db, 'human-2', 'thread-human-1', '2027-10-01T09:00:00Z');
+      await insertRead(db, booking, {
+        version: 'extract-v1',
+        kind: 'booking',
+        payload: { ...payload(), origin: 'person' },
+      });
+      const second = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: booking });
+
+      expect(await replyStatus(db, first!.id)).toBe('dismissed');
+      expect(await replyStatus(db, second!.id)).toBe('needs_you');
+      const listed = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(listed.map((item) => item.id)).toContain(second!.id);
+      expect(listed.map((item) => item.id)).not.toContain(first!.id);
+    }));
+
+  it('a staff-sent other is done; guest other keeps needs-you status but is not listed', () =>
     withDb(async (db) => {
       await sentFromBefore(db, 'staff', STAFF);
       const staff = await guestMail(db, 'staff-1', 'thread-staff-1', '2027-10-01T08:00:00Z', STAFF);
@@ -1992,9 +2082,10 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
 
       const guest = await guestMail(db, 'staff-2', 'thread-staff-2', '2027-10-01T08:00:00Z');
       await readOf(db, guest, 'other');
-      expect(await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: guest })).toMatchObject({
-        status: 'needs_you',
-      });
+      const guestItem = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: guest });
+      expect(guestItem).toMatchObject({ status: 'needs_you' });
+      const listed = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(listed.map((item) => item.id)).not.toContain(guestItem!.id);
     }));
 
   it('a hotel reply after the request closes it, with its sent time and message', () =>
@@ -2278,6 +2369,102 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
       expect(await replyStatus(db, item!.id)).toBe('done');
     }));
 
+  it('holds HMS-touched work until the latest write has review.ok, then closes on the hotel reply', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'hms-gate-1', 'thread-hms-gate-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const reply = await hotelMail(db, 'hms-gate-1-out', 'thread-hms-gate-1', '2027-10-01T09:00:00Z');
+      const createdAt = new Date('2027-10-01T08:30:00Z');
+      const olderRunId = 'hms-gate-run-a';
+      const latestRunId = 'hms-gate-run-z';
+
+      await db.insert(aiWorkflowRun).values(
+        [olderRunId, latestRunId].map((id) => ({
+          id,
+          transportId: CENTURION,
+          threadId: 'thread-hms-gate-1',
+          triggerMessageId: request,
+          runKind: 'hms_write' as const,
+          idempotencyKey: `test-run:${id}`,
+          modelId: NOT_APPLICABLE_MODEL_ID,
+          promptVersion: HMS_JOB_PROMPT_VERSION,
+          state: 'succeeded' as const,
+          executorLane: 'hms' as const,
+          workItemId: item!.id,
+          createdAt,
+          updatedAt: createdAt,
+        })),
+      );
+      // An older review cannot clear the hold for the latest write (same created_at, higher id).
+      await db.insert(workEvent).values({
+        workItemId: item!.id,
+        actorKind: 'user',
+        actorUserId: USER,
+        type: 'review.ok',
+        value: { runId: olderRunId },
+      });
+
+      expect(await refreshThread(db, 'thread-hms-gate-1')).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+
+      await db.insert(workEvent).values({
+        workItemId: item!.id,
+        actorKind: 'user',
+        actorUserId: USER,
+        type: 'review.ok',
+        value: { runId: latestRunId },
+      });
+      expect(await refreshThread(db, 'thread-hms-gate-1')).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: reply }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
+  it('an ok review then a flag on the latest write keeps the hold; a later ok closes it', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'hms-gate-2', 'thread-hms-gate-2', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'hms-gate-2-out', 'thread-hms-gate-2', '2027-10-01T09:00:00Z');
+      const createdAt = new Date('2027-10-01T08:30:00Z');
+      await db.insert(aiWorkflowRun).values({
+        id: 'hms-gate-run-f',
+        transportId: CENTURION,
+        threadId: 'thread-hms-gate-2',
+        triggerMessageId: request,
+        runKind: 'hms_write',
+        idempotencyKey: 'test-run:hms-gate-run-f',
+        modelId: NOT_APPLICABLE_MODEL_ID,
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        state: 'succeeded',
+        executorLane: 'hms',
+        workItemId: item!.id,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      const review = (type: 'review.ok' | 'review.flag', at: string) =>
+        db.insert(workEvent).values({
+          workItemId: item!.id,
+          at: new Date(at),
+          actorKind: 'user',
+          actorUserId: USER,
+          type,
+          value: { runId: 'hms-gate-run-f' },
+        });
+      await review('review.ok', '2027-10-01T08:40:00Z');
+      await review('review.flag', '2027-10-01T08:50:00Z');
+
+      expect(await refreshThread(db, 'thread-hms-gate-2')).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+
+      await review('review.ok', '2027-10-01T09:05:00Z');
+      expect(await refreshThread(db, 'thread-hms-gate-2')).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied' }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+    }));
+
   it('a copy of the hotel reply from its own address is a hotel reply by itself, with its sent time', () =>
     withDb(async (db) => {
       await sentFromBefore(db, 'own-1', STAFF);
@@ -2385,7 +2572,7 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
       expect(await replyStatus(db, item!.id)).toBe('done');
     }));
 
-  it('an item with a field edit from a person is not closed by a hotel reply', () =>
+  it('a field-edited needs-you item is closed by a hotel reply', () =>
     withDb(async (db) => {
       const request = await guestMail(db, 'tel-2', 'thread-tel-2', '2027-10-01T08:00:00Z');
       await readOf(db, request, 'quote');
@@ -2398,10 +2585,102 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
         type: 'field.edit',
         value: { path: 'contact.phone' },
       });
-      await hotelMail(db, 'tel-2-out', 'thread-tel-2', '2027-10-01T09:00:00Z');
+      const reply = await hotelMail(db, 'tel-2-out', 'thread-tel-2', '2027-10-01T09:00:00Z');
 
-      expect(await refreshThread(db, 'thread-tel-2')).toEqual([]);
+      expect(await refreshThread(db, 'thread-tel-2')).toEqual([
+        expect.objectContaining({
+          to: 'done',
+          reason: 'hotel_replied',
+          sentAt: expect.any(Date),
+          sentMessageId: reply,
+        }),
+      ]);
+      const [closed] = await db.select().from(workItem).where(eq(workItem.id, item!.id));
+      const [sent] = await db.select({ sentAt: message.sentAt }).from(message).where(eq(message.id, reply));
+      expect(closed).toMatchObject({ status: 'done', sentMessageId: reply });
+      expect(closed!.sentAt).toEqual(sent!.sentAt);
+      const listed = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(listed.map((row) => row.id)).not.toContain(item!.id);
+    }));
+
+  it('a later guest mail reopens a field-edited item that a hotel reply closed', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'tel-6', 'thread-tel-6', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await db.insert(workEvent).values({
+        workItemId: item!.id,
+        actorKind: 'user',
+        actorUserId: USER,
+        type: 'field.edit',
+        value: { path: 'contact.phone' },
+      });
+      const reply = await hotelMail(db, 'tel-6-out', 'thread-tel-6', '2027-10-01T09:00:00Z');
+      await refreshThread(db, 'thread-tel-6');
+      await guestMail(db, 'tel-6-guest', 'thread-tel-6', '2027-10-01T10:00:00Z');
+
+      expect(await refreshThread(db, 'thread-tel-6')).toEqual([
+        expect.objectContaining({ to: 'needs_you', reason: 'new_inbound', previousSentMessageId: reply }),
+      ]);
       expect(await replyStatus(db, item!.id)).toBe('needs_you');
+      const listed = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(listed.map((row) => row.id)).toContain(item!.id);
+    }));
+
+  it('a field-edited needs-you item stays open when there is no hotel reply', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'tel-4', 'thread-tel-4', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await db.insert(workEvent).values({
+        workItemId: item!.id,
+        actorKind: 'user',
+        actorUserId: USER,
+        type: 'field.edit',
+        value: { path: 'contact.phone' },
+      });
+
+      expect(await refreshThread(db, 'thread-tel-4')).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+      expect(await eventsFor(db, item!.id)).toHaveLength(1);
+    }));
+
+  it('a later guest mail keeps a field-edited needs-you item open despite an earlier hotel reply', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'tel-5', 'thread-tel-5', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await db.insert(workEvent).values({
+        workItemId: item!.id,
+        actorKind: 'user',
+        actorUserId: USER,
+        type: 'field.edit',
+        value: { path: 'contact.phone' },
+      });
+      await hotelMail(db, 'tel-5-out', 'thread-tel-5', '2027-10-01T09:00:00Z');
+      await guestMail(db, 'tel-5-guest', 'thread-tel-5', '2027-10-01T10:00:00Z');
+
+      expect(await refreshThread(db, 'thread-tel-5')).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
+  it('a hotel reply does not close a touched review item', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'tel-3', 'thread-tel-3', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await db.update(workItem).set({ status: 'review' }).where(eq(workItem.id, item!.id));
+      await db.insert(workEvent).values({
+        workItemId: item!.id,
+        actorKind: 'user',
+        actorUserId: USER,
+        type: 'field.edit',
+        value: { path: 'contact.phone' },
+      });
+      await hotelMail(db, 'tel-3-out', 'thread-tel-3', '2027-10-01T09:00:00Z');
+
+      expect(await refreshThread(db, 'thread-tel-3')).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('review');
     }));
 
   it('a forged mail from the hotel domain is neither a hotel reply nor a staff-sent other', () =>
@@ -2605,7 +2884,7 @@ describe('reply link backfill (C2, C3)', () => {
 });
 
 describe('reply link backfill: hotel copies, guest reopens, person touches (C2b)', () => {
-  it('the dry run counts each seeded thread outcome; a person-touched item is left alone; a second apply plans nothing', () =>
+  it('the dry run counts each seeded thread outcome, including an answer to a person-touched item; a second apply plans nothing', () =>
     withDb(async (db) => {
       await sentFromBefore(db, 'bf', STAFF);
       // The hotel's copy alone answers the request.
@@ -2636,7 +2915,7 @@ describe('reply link backfill: hotel copies, guest reopens, person touches (C2b)
       await staffCopy(db, 'bf-reopen-cc', 'thread-bf-reopen', '2027-10-01T09:00:00Z', '2027-10-01T09:04:00Z');
       await guestMail(db, 'bf-reopen-guest', 'thread-bf-reopen', '2027-10-01T10:00:00Z');
 
-      // A person edited the request, so the copy does not close it.
+      // A person edited the request, but the hotel's later answer still closes it.
       const touched = await guestMail(db, 'bf-touched', 'thread-bf-touched', '2027-10-01T08:00:00Z');
       await readOf(db, touched, 'quote');
       const touchedItem = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: touched });
@@ -2654,12 +2933,13 @@ describe('reply link backfill: hotel copies, guest reopens, person touches (C2b)
 
       const counted = {
         threads: 4,
-        changes: 3,
-        byKind: { quote: 3 },
-        byReason: { hotel_replied: 2, new_inbound: 1 },
+        changes: 4,
+        byKind: { quote: 4 },
+        byReason: { hotel_replied: 3, new_inbound: 1 },
       };
       expect(await runReplyLinkBackfill({ db, apply: false })).toEqual({ apply: false, ...counted });
       expect(await replyStatus(db, copyItem!.id)).toBe('needs_you');
+      expect(await replyStatus(db, touchedItem!.id)).toBe('needs_you');
 
       expect(await runReplyLinkBackfill({ db, apply: true })).toEqual({ apply: true, ...counted });
       expect(
@@ -2680,8 +2960,19 @@ describe('reply link backfill: hotel copies, guest reopens, person touches (C2b)
           .from(workItem)
           .where(eq(workItem.id, reopenItem!.id)),
       ).toEqual([{ status: 'needs_you', sentMessageId: null }]);
-      expect(await replyStatus(db, touchedItem!.id)).toBe('needs_you');
-      expect(await eventsFor(db, touchedItem!.id)).toHaveLength(1);
+      expect(
+        await db
+          .select({ status: workItem.status, sentAt: workItem.sentAt, sentMessageId: workItem.sentMessageId })
+          .from(workItem)
+          .where(eq(workItem.id, touchedItem!.id)),
+      ).toEqual([
+        {
+          status: 'done',
+          sentAt: new Date('2027-10-01T09:00:00Z'),
+          sentMessageId: 'msg-bf-touched-cc',
+        },
+      ]);
+      expect(await eventsFor(db, touchedItem!.id)).toHaveLength(2);
 
       // A second apply still lists the four threads, with nothing left to change.
       expect(await runReplyLinkBackfill({ db, apply: true })).toEqual({
