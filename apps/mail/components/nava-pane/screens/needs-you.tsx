@@ -299,11 +299,34 @@ export function NeedsYouScreen({
 }
 
 /** The pane's "Needs you (N)" entry. It holds its own list, so a load re-renders this button and not the pane around it. */
-export function NeedsYouEntry({ trpc, onOpen }: { trpc: unknown; onOpen: () => void }) {
+export function NeedsYouEntry({
+  trpc,
+  onOpen,
+  compact = false,
+}: {
+  trpc: unknown;
+  onOpen: () => void;
+  /** Header link for the Outlook pane. */
+  compact?: boolean;
+}) {
   const list = useNeedsYou(trpc);
+  const label = list.status === 'ready' ? `Needs you (${countLabel(list.rows)})` : 'Needs you';
+  if (compact) {
+    return (
+      <button
+        type="button"
+        aria-label={label}
+        title={label}
+        onClick={onOpen}
+        className="max-w-[96px] shrink-0 truncate whitespace-nowrap text-[11.5px] font-semibold text-[#0066cc] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+      >
+        {label}
+      </button>
+    );
+  }
   return (
     <SecondaryButton onClick={onOpen}>
-      {list.status === 'ready' ? `Needs you (${countLabel(list.rows)})` : 'Needs you'}
+      {label}
     </SecondaryButton>
   );
 }

@@ -271,8 +271,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.getByText('2 adults from desk')).toBeDefined();
   });
 
-  it('submits Tell Nava notes through onStaffNote', () => {
-    const onStaffNote = vi.fn();
+  it('does not render the disabled Tell Nava correction note', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',
       groups: [g1],
@@ -280,13 +279,9 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       alternatives: [],
       luna: lunaWire({ workflow: 'quote' }),
     });
-    render(<QuoteWorkflowPanel session={session} onStaffNote={onStaffNote} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Something wrong? Tell Nava' }));
-    fireEvent.change(screen.getByLabelText("Tell Nava what's wrong"), {
-      target: { value: '4 twins at R1800' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Re-read with my note' }));
-    expect(onStaffNote).toHaveBeenCalledWith('4 twins at R1800');
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.queryByText(/Tell Nava/i)).toBeNull();
+    expect(screen.queryByLabelText(/what's wrong/i)).toBeNull();
   });
 
   it('renders evidence quotes as literal text, never HTML', () => {
@@ -590,7 +585,7 @@ describe('Outlook pane Nava analysis bind', () => {
     await waitFor(() => expect(screen.getByLabelText('Arrival')).toBeDefined());
   }, 15_000);
 
-  it('re-runs analyseSelection with a staff note from Tell Nava', async () => {
+  it('keeps Tell Nava correction controls absent from the Outlook pane', async () => {
     analyseMutate.mockResolvedValue({
       status: 'ready',
       intent: 'quote',
@@ -602,18 +597,8 @@ describe('Outlook pane Nava analysis bind', () => {
     });
     const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
     render(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Something wrong? Tell Nava' })).toBeDefined());
-    fireEvent.click(screen.getByRole('button', { name: 'Something wrong? Tell Nava' }));
-    fireEvent.change(screen.getByLabelText("Tell Nava what's wrong"), {
-      target: { value: '4 twins at R1800' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Re-read with my note' }));
-    await waitFor(() => {
-      expect(
-        analyseMutate.mock.calls.some(
-          (call) => (call[0] as { staffNote?: string })?.staffNote === '4 twins at R1800',
-        ),
-      ).toBe(true);
-    });
+    await waitFor(() => expect(screen.getByLabelText('Nava reads this as')).toBeDefined());
+    expect(screen.queryByText(/Tell Nava/i)).toBeNull();
+    expect(screen.queryByLabelText(/what's wrong/i)).toBeNull();
   }, 15_000);
 });

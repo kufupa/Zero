@@ -9,6 +9,7 @@ import {
 } from '@/lib/quote-workflow/hms-write';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
 import type { QuoteRunScreenshotResult } from '@/lib/quote-workflow/types';
+import { SecondaryButton } from '@/components/nava-pane/pane-ui';
 import { useId, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -48,11 +49,14 @@ export function ReviewCard({
   workItemId,
   run,
   onChanged,
+  writesEnabled = true,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   run: Run;
   onChanged: () => void;
+  /** Review writes stay visibly disabled until pane writes are enabled. */
+  writesEnabled?: boolean;
 }) {
   const noteId = useId();
   const [note, setNote] = useState('');
@@ -91,6 +95,7 @@ export function ReviewCard({
   };
 
   const decide = (decision: 'ok' | 'flag') => {
+    if (!writesEnabled) return;
     const text = note.trim();
     if (decision === 'flag' && text.length < HMS_NOTE_MIN) {
       setError(HMS_WRITE_COPY.flagNoteNeeded);
@@ -143,25 +148,26 @@ export function ReviewCard({
             onChange={(event) => setNote(event.target.value)}
             maxLength={HMS_NOTE_MAX}
             rows={2}
+            disabled={!writesEnabled}
             className={writeClasses.textarea}
           />
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
+            <SecondaryButton
               className={writeClasses.primary}
-              disabled={busy}
+              disabled={busy || !writesEnabled}
+              disabledReason={writesEnabled ? null : 'Coming soon'}
               onClick={() => decide('ok')}
             >
               {HMS_WRITE_COPY.reviewOk}
-            </button>
-            <button
-              type="button"
+            </SecondaryButton>
+            <SecondaryButton
               className={writeClasses.danger}
-              disabled={busy}
+              disabled={busy || !writesEnabled}
+              disabledReason={writesEnabled ? null : 'Coming soon'}
               onClick={() => decide('flag')}
             >
               {HMS_WRITE_COPY.flag}
-            </button>
+            </SecondaryButton>
           </div>
         </div>
       ) : null}

@@ -326,7 +326,10 @@ describe('Needs-you entry on the pane', () => {
   it('the Outlook pane opens the list from its entry, and Back returns to the quoting tool', async () => {
     render(<NavaPane bridge={fakeBridge} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
+    const entry = await screen.findByRole('button', { name: 'Needs you (2)' });
+    expect(entry.className).toMatch(/max-w-\[96px\].*truncate.*whitespace-nowrap/);
+    expect(entry.closest('header')).not.toBeNull();
+    fireEvent.click(entry);
     expect(await screen.findByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
     expect(
       screen.getByText('Find each email in your Outlook inbox by its sender and subject.'),

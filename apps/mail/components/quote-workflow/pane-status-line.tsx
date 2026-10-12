@@ -17,7 +17,7 @@ export function paneStatusLine(session: QuoteSession): string | null {
     return 'This email has not finished syncing, so this result may be out of date. Wait for sync, then select the email again.';
   }
   if (session.phase === 'failed') {
-    return session.errorMessage ?? 'Nava could not read this email. Select it again, or use Tell Nava to explain what is wrong.';
+    return session.errorMessage ?? 'Nava could not read this email. Select it again, or enter the booking details by hand.';
   }
   if (session.errorMessage) return session.errorMessage;
   if (session.mailboxStatus === 'unavailable') {
