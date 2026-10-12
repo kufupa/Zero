@@ -295,10 +295,11 @@ describe('booking cards', () => {
       ),
     ).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
+    // Q-P's review step adds a disabled "Book in HMS" placeholder of its own (document-review.tsx), so the panel has three.
     const bookButtons = screen.getAllByRole('button', { name: 'Book in HMS' }) as HTMLButtonElement[];
-    expect(bookButtons).toHaveLength(2);
+    expect(bookButtons).toHaveLength(3);
     expect(bookButtons.every((button) => button.disabled)).toBe(true);
-    expect(screen.getAllByText('Coming soon')).toHaveLength(2);
+    expect(screen.getAllByText('Coming soon')).toHaveLength(3);
     bookButtons.forEach((button) => fireEvent.click(button));
     expect(screen.queryByRole('button', { name: /save draft/i })).toBeNull();
   });

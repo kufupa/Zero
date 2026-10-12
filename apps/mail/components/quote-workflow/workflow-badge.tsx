@@ -57,7 +57,7 @@ export function WorkflowBadge({
       {!amendment ? (
         <div className="flex items-center gap-2">
           <span className="text-[11.5px] font-semibold text-[#475569]">Nava reads this as</span>
-          <div className="w-40">
+          <div className="w-40 min-w-[10rem] shrink-0">
             <select
               aria-label="Nava reads this as"
               className={paneFieldClass}

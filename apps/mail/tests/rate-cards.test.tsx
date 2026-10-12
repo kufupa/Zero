@@ -173,7 +173,10 @@ function PinnedPanel({
 }
 
 function rateCards(): HTMLButtonElement[] {
-  return within(screen.getByRole('group', { name: GROUP_LABEL })).getAllByRole('button') as HTMLButtonElement[];
+  const group = screen.getByRole('group', { name: GROUP_LABEL });
+  return (within(group).getAllByRole('button') as HTMLButtonElement[]).filter((button) =>
+    button.hasAttribute('aria-pressed'),
+  );
 }
 
 /** draftMoney uses a non-breaking space; the text matcher folds it to a plain space, so the expected text does too. */
@@ -192,13 +195,65 @@ describe('rate cards in the quote panel', () => {
     expect(screen.getByText(/Counted in the total/)).toBeDefined();
   });
 
-  it('shows the price per night and the total, and "from" on an unselected summary price', async () => {
+  it('keeps the nightly price on one line and marks summary pricing as "from"', async () => {
     render(<QuoteWorkflowPanel session={await quotedSession([NCOR, BAR, BARRO])} />);
     const cards = rateCards();
-    expect(within(cards[0]!).getByText(`${rand(215000)} a night`)).toBeDefined();
-    expect(within(cards[0]!).getByText(`Total ${rand(860000)}`)).toBeDefined();
-    expect(within(cards[2]!).getByText(`from ${rand(243000)} a night`)).toBeDefined();
-    expect(within(cards[2]!).getByText(`Total from ${rand(972000)}`)).toBeDefined();
+    expect(within(cards[0]!).getByText(`${rand(215000)} avg / room / night`)).toBeDefined();
+    expect(within(cards[2]!).getByText(`from ${rand(243000)} avg / room / night`)).toBeDefined();
+    expect(within(cards[2]!).queryByText(/Total/)).toBeNull();
+  });
+
+  it('uses two compact card rows so the title can wrap without squeezing the price at narrow widths', async () => {
+    render(<QuoteWorkflowPanel session={await quotedSession([NCOR, BAR])} />);
+    const card = rateCards()[0]!;
+    const title = within(card).getByText('NCOR: Corporate negotiated');
+    const price = within(card).getByText(`${rand(215000)} avg / room / night`);
+    expect(title.className).toMatch(/line-clamp-2/);
+    expect(price.className).toMatch(/whitespace-nowrap/);
+    expect(within(card).getByText('Bed & breakfast · Standard Twin')).toBeDefined();
+    expect(within(card).getByText('Selected')).toBeDefined();
+  });
+
+  it('keeps a restricted rate price struck through and gives its reason', async () => {
+    render(<QuoteWorkflowPanel session={await quotedSession([{ ...NCOR, contract: true, onlyContract: true }])} />);
+    const card = rateCards()[0]!;
+    const price = within(card).getByText(`${rand(215000)} avg / room / night`);
+    expect(price.className).toMatch(/line-through/);
+    expect(within(card).getByText('Restricted — find a company or agency in HMS first')).toBeDefined();
+  });
+
+  it('shows Set a specific price on the selected rate and saves its Authorised by note', async () => {
+    const onPatchGroup = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={await quotedSession([NCOR])}
+        onPatchGroup={onPatchGroup}
+      />,
+    );
+    expect(rateCards()).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discount / override' }));
+    fireEvent.change(screen.getByLabelText('HMS rate code'), { target: { value: 'NCOR1B' } });
+    fireEvent.change(screen.getByLabelText('Override rate per night (R)'), { target: { value: '1,250.50' } });
+    fireEvent.change(screen.getByLabelText(/Authorised by \/ why/), {
+      target: { value: 'A. Patel approved the seasonal rate' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save override' }));
+    expect(onPatchGroup).toHaveBeenCalledWith('g1', {
+      rowPrice: {
+        source: 'override',
+        rateCode: 'NCOR1B',
+        amountMinor: 125_050,
+        note: 'A. Patel approved the seasonal rate',
+      },
+    });
+  });
+
+  it('strikes through a contract-only rate when no HMS party is picked and gives the reason', async () => {
+    render(<QuoteWorkflowPanel session={await quotedSession([{ ...NCOR, contract: true, onlyContract: true }])} />);
+    const restricted = screen.getByText(/Restricted — find a company or agency in HMS first/);
+    expect(restricted).toBeDefined();
+    expect(rateCards()[0]?.disabled).toBe(true);
   });
 
   it('shows the contract badge only on contract rows, named after the picked party', async () => {
@@ -207,7 +262,7 @@ describe('rate cards in the quote panel', () => {
     render(<QuoteWorkflowPanel session={await quotedSession([contractNcor, BAR, BARRO], header)} />);
     const cards = rateCards();
     expect(within(cards[0]!).getByText('Provincial Treasury contract')).toBeDefined();
-    expect(within(cards[0]!).getByText('only contract rate')).toBeDefined();
+    expect(within(cards[0]!).getByText('Selected')).toBeDefined();
     expect(within(cards[1]!).queryByText(/contract/)).toBeNull();
     expect(within(cards[2]!).queryByText(/contract/)).toBeNull();
   });
@@ -229,10 +284,26 @@ describe('rate cards in the quote panel', () => {
     expect(within(cards[1]!).queryByText(/Not what they asked/)).toBeNull();
   });
 
-  it('shows no choice UI for a single option', async () => {
+  it('shows a single returned rate card and its specific-price control', async () => {
     render(<QuoteWorkflowPanel session={await quotedSession([NCOR])} />);
-    expect(screen.queryByRole('group', { name: GROUP_LABEL })).toBeNull();
+    expect(screen.getByRole('group', { name: GROUP_LABEL })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Set a specific price' })).toBeDefined();
     expect(screen.getByText(/Counted in the total/)).toBeDefined();
+  });
+
+  it('keeps every rate code visible while the stay meal plan only highlights matching cards', async () => {
+    render(<QuoteWorkflowPanel session={await quotedSession([NCOR, BAR, BARRO])} />);
+    const mealPlan = screen.getByLabelText('Meal plan') as HTMLSelectElement;
+    expect(mealPlan.value).toBe('bb');
+    expect(rateCards()).toHaveLength(3);
+    expect(screen.getAllByText('Meal plan match')).toHaveLength(2);
+
+    fireEvent.change(mealPlan, { target: { value: 'room_only' } });
+
+    expect((screen.getByLabelText('Meal plan') as HTMLSelectElement).value).toBe('room_only');
+    expect(rateCards()).toHaveLength(3);
+    expect(screen.getAllByText('Meal plan match')).toHaveLength(1);
+    expect(within(rateCards()[2]!).getByText('Meal plan match')).toBeDefined();
   });
 
   it('does not crash when the server sends no rate options', async () => {
@@ -243,6 +314,23 @@ describe('rate cards in the quote panel', () => {
     render(<QuoteWorkflowPanel session={legacy as QuoteSession} />);
     expect(screen.queryByRole('group', { name: GROUP_LABEL })).toBeNull();
     expect(screen.getByText(/Counted in the total/)).toBeDefined();
+  });
+
+  it('keeps unknown HMS rate codes visible under All rates and uses the code when no label is supplied', async () => {
+    const unknown = rate({ id: 'o-unseen', rateCode: 'UNSEEN9', rateLabel: '' });
+    render(
+      <QuoteWorkflowPanel
+        session={await quotedSession([BAR, unknown])}
+        rateCatalogue={[{ code: 'BAR', name: 'Best Available Rate', board: 'bed_breakfast' }] as never}
+      />,
+    );
+
+    const select = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    expect(select.value).toBe('all');
+    expect([...select.options].map((option) => option.value)).toContain('UNSEEN9');
+    const cards = rateCards();
+    expect(cards.map((card) => card.textContent?.split(':')[0])).toEqual(['BAR', 'UNSEEN9']);
+    expect(cards[1]?.textContent).toContain('UNSEEN9: UNSEEN9');
   });
 
   it('tapping another option pins it and re-runs that date option with its board, room and rate', async () => {

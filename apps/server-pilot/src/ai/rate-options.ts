@@ -48,9 +48,10 @@ export function sellable(source:QuoteSourceRecord,quantity:number,option:NativeO
 }
 
 /**
- * Up to five priced options per room group, from the same summary read the quote priced. Order: the requested board and room
- * first, contract before public, then cheapest. The cheapest is kept per (board, contract, matches), so a cheaper room that
- * was not requested can never push out the option that was quoted. `selected` is the option the narrowed full read priced.
+ * Every distinct sellable rate code per room group, from the same summary read the quote priced. Order: the requested
+ * board and room first, contract before public, then cheapest. The cheapest is kept per (code, board, contract, matches),
+ * so a cheaper room that was not requested can never push out the option that was quoted. `selected` is the option the
+ * narrowed full read priced.
  */
 export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {groupId:string;optionId:string}[]):RateOption[]{
  const nights=occupiedDates(source.request.arrivalDate,source.request.departureDate).length;
@@ -63,11 +64,11 @@ export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {gro
    if(!sellable(source,request.quantity,option))continue;
    const perRoomMinor=option.nightly.reduce((sum,n)=>sum+exactMinor(n.price.amount),0),totalMinor=perRoomMinor*request.quantity;
    if(!(totalMinor>0))continue;
-   const contract=option.rateScope==='contextual',board=staffBoard[boards[norm(option.board??'')]],key=`${board}|${contract}|${matches}`,held=cheapest.get(key);
+   const contract=option.rateScope==='contextual',board=staffBoard[boards[norm(option.board??'')]],key=`${option.rate.code.toUpperCase()}|${board}|${contract}|${matches}`,held=cheapest.get(key);
    if(!held||totalMinor<held.totalMinor||(totalMinor===held.totalMinor&&option.id<held.option.id))cheapest.set(key,{option,matches,contract,board,perRoomMinor,totalMinor});
   }
-  const ranked=[...cheapest.values()].sort((a,b)=>Number(b.matches)-Number(a.matches)||Number(b.contract)-Number(a.contract)||a.totalMinor-b.totalMinor||a.option.id.localeCompare(b.option.id)).slice(0,5);
-  // onlyContract is counted on the options kept, so a card that was cut never changes what staff see.
+  const ranked=[...cheapest.values()].sort((a,b)=>Number(b.matches)-Number(a.matches)||Number(b.contract)-Number(a.contract)||a.totalMinor-b.totalMinor||a.option.id.localeCompare(b.option.id));
+  // onlyContract is counted across every distinct rate code staff can see.
   const contracts=ranked.filter(r=>r.contract).length;
   return ranked.map(r=>{const isSelected=selected.some(s=>s.groupId===request.id&&s.optionId===r.option.id);return{
    id:`${request.id}:${r.option.id}`,groupId:request.id,board:r.board,boardLabel:r.option.board??'',rateCode:r.option.rate.code,rateLabel:r.option.rate.label,

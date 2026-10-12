@@ -94,8 +94,8 @@ describe('a long pane at the Outlook pane width', () => {
       expect(layout.overflow).toBeGreaterThan(0);
       // No card is squeezed below its content.
       for (const card of layout.cards) expect(card.height, card.title ?? '').toBeGreaterThanOrEqual(card.content);
-      // Every contact input is shown inside the card.
-      expect(layout.inputs).toHaveLength(5);
+      // Every contact input is shown inside the card. Company and End client are one read-only "Named in email" line now, so Name, Email and Phone are the inputs.
+      expect(layout.inputs).toHaveLength(3);
       for (const input of layout.inputs) {
         expect(input.height).toBeGreaterThan(20);
         expect(input.bottom).toBeLessThanOrEqual(layout.contactBottom);

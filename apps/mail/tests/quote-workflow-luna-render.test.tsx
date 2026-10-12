@@ -309,7 +309,8 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       luna: lunaWire({ workflow: 'quote' }),
     });
     render(<QuoteWorkflowPanel session={session} onPatchGroup={onPatchGroup} />);
-    fireEvent.change(screen.getByLabelText(/Adults/i), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
     expect(onPatchGroup).toHaveBeenCalledWith('g1', expect.objectContaining({ adults: 3 }));
   });
 
@@ -507,7 +508,7 @@ describe('Outlook pane Nava analysis bind', () => {
         groups: [
           {
             id: 'g1',
-            organisation: 'Fresh',
+            adults: 3,
             childrenAges: [],
             board: 'unknown',
             quantity: 1,
@@ -525,7 +526,7 @@ describe('Outlook pane Nava analysis bind', () => {
     await waitFor(() => expect(analyseMutate).toHaveBeenCalled());
     paneState.entryId = '002';
     view.rerender(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getAllByDisplayValue('Fresh').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByText('3 adults per room')).toBeDefined());
     await act(async () => {
       resolveFirst({
         status: 'ready',
@@ -533,7 +534,7 @@ describe('Outlook pane Nava analysis bind', () => {
         groups: [
           {
             id: 'g1',
-            organisation: 'Stale',
+            adults: 1,
             childrenAges: [],
             board: 'unknown',
             quantity: 1,
@@ -546,8 +547,8 @@ describe('Outlook pane Nava analysis bind', () => {
         sourceRevision: 1,
       });
     });
-    expect(screen.getAllByDisplayValue('Fresh').length).toBeGreaterThan(0);
-    expect(screen.queryByDisplayValue('Stale')).toBeNull();
+    expect(screen.getByText('3 adults per room')).toBeDefined();
+    expect(screen.queryByText('1 adult per room')).toBeNull();
   }, 15_000);
 
   it('re-runs analyseSelection with treatAs quote from the Outlook pane', async () => {

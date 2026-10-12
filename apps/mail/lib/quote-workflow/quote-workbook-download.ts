@@ -27,7 +27,7 @@ export type WorkbookRequest =
  * one authority: the same selected stay, the same run, and the same approved header.
  */
 export function workbookRequestFor(session: QuoteSession): WorkbookRequest {
-  if (dinnerAllowanceStillRequired(session.staffHeader)) {
+  if (dinnerAllowanceStillRequired(session)) {
     return unavailable('Enter the dinner allowance per person per night before downloading the Excel.');
   }
   if (isMultiStay(session)) return combinedDocumentRequest(session);

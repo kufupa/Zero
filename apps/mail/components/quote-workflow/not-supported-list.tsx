@@ -12,7 +12,7 @@ const FLAG_COPY: Record<LunaAnalysisWire['flags'][number], string> = {
   discount_or_negotiation: 'Discount asked for: your decision is needed.',
   // Multi-stay (U20): one rate run per stay, then one combined proposal. Never one PDF per option.
   multi_date: 'Several stays: get rates for each one. Prepare quote puts every stay in one proposal.',
-  extras: 'Extras asked for (shuttle or dinner): set them under Extras in Stay details before you make the PDF.',
+  extras: 'Extras were requested. Check each stay\'s amounts below its subtotal before making the PDF.',
   mixed_request: 'Several requests in one email: check each one.',
   attachment_unread: 'An attachment could not be read. Open it in Outlook and check it.',
 };

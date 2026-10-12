@@ -33,8 +33,8 @@ function NoCaption() {
 
 const CALENDAR_CLASSES = {
   head_cell: 'w-8 pb-1 text-center text-[10px] font-bold text-[#64748b]',
-  cell: 'relative h-8 w-8 p-0 text-center text-[12px]',
-  day: 'h-8 w-8 rounded-[2px] p-0 text-[12px] font-normal hover:bg-[#e2e8f0] aria-selected:opacity-100',
+  cell: 'relative h-8 w-8 p-0 text-center text-[13px]',
+  day: 'h-8 w-8 rounded-[2px] p-0 text-[13px] font-normal hover:bg-[#e2e8f0] aria-selected:opacity-100',
   day_selected: 'bg-[#1a4332] font-bold text-white hover:bg-[#1a4332] hover:text-white focus:bg-[#1a4332] focus:text-white',
   day_range_middle: 'aria-selected:bg-[#eaf4ee] aria-selected:text-[#1a4332]',
   day_today: 'font-bold text-[#0066cc]',
@@ -76,7 +76,7 @@ function DateTile({
         active ? 'border-[#1a4332] bg-[#eaf4ee]' : 'border-transparent'
       }`}
     >
-      <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]">
+      <span className="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.3px] text-[#64748b]">
         {caption}
         <ProvenanceFlag value={provenance} />
       </span>
@@ -88,8 +88,8 @@ function DateTile({
 }
 
 /**
- * The arrival and departure of one stay. Two tiles show the dates; "Change dates" opens a calendar on the arrival
- * month, quick pills set the length, and the native date inputs stay available under "or type dates".
+ * The arrival and departure of one stay. Two tiles show the dates, quick nights stay visible, and "Change dates"
+ * opens a calendar on the arrival month. Native date inputs remain available under "or type dates".
  */
 export function StayDateRange({
   arrival,
@@ -168,14 +168,35 @@ export function StayDateRange({
           onClick={() => openAt('departure')}
         />
       </div>
-      <div className="flex items-center justify-between border-t border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-1.5 text-[11.5px] text-[#475569]">
+      <div className="flex items-center justify-between border-t border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-1.5 text-[12.5px] text-[#475569]">
         <span className="flex items-center gap-1.5">
           <Moon aria-hidden="true" className="h-3 w-3" />
           {nightsText}
         </span>
         <LinkButton ariaExpanded={open} onClick={() => setOpen((value) => !value)}>
-          Change dates {open ? '▴' : '▾'}
+          <span className="flex items-center gap-1.5">
+            <span>Change dates</span>
+            <span aria-hidden="true">{open ? '▴' : '▾'}</span>
+          </span>
         </LinkButton>
+      </div>
+      <div className="grid grid-cols-4 gap-1 border-t border-[#e2e8f0] bg-white px-2.5 py-2">
+        {QUICK_NIGHTS.map((n) => (
+          <button
+            key={n}
+            type="button"
+            disabled={!arrivalDate}
+            aria-pressed={nights === n}
+            onClick={() => stayFor(n)}
+            className={`rounded-[2px] border py-1 text-[12.5px] transition-colors disabled:cursor-not-allowed disabled:text-[#cbd5e1] ${
+              nights === n
+                ? 'border-[#1a4332] bg-[#eaf4ee] font-bold text-[#1a4332]'
+                : 'border-[#e2e8f0] bg-[#f8fafc] text-[#475569] hover:bg-[#e2e8f0]'
+            }`}
+          >
+            {`${n} ${n === 1 ? 'night' : 'nights'}`}
+          </button>
+        ))}
       </div>
       <div hidden={!open} className="space-y-2 border-t border-[#e2e8f0] bg-white p-2.5">
         {open ? (
@@ -184,7 +205,7 @@ export function StayDateRange({
               <button type="button" aria-label="Previous month" className={NAV_BUTTON} onClick={() => setMonth((m) => subMonths(m, 1))}>
                 <ChevronLeft aria-hidden="true" className="h-3.5 w-3.5" />
               </button>
-              <span className="text-[12px] font-bold text-[#1e293b]">{format(month, 'MMMM yyyy')}</span>
+              <span className="text-[13px] font-bold text-[#1e293b]">{format(month, 'MMMM yyyy')}</span>
               <button type="button" aria-label="Next month" className={NAV_BUTTON} onClick={() => setMonth((m) => addMonths(m, 1))}>
                 <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
               </button>
@@ -201,27 +222,9 @@ export function StayDateRange({
               components={{ Caption: NoCaption }}
               classNames={CALENDAR_CLASSES}
             />
-            <div className="grid grid-cols-4 gap-1 border-t border-[#e2e8f0] pt-2">
-              {QUICK_NIGHTS.map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  disabled={!arrivalDate}
-                  aria-pressed={nights === n}
-                  onClick={() => stayFor(n)}
-                  className={`rounded-[2px] border py-1 text-[10.5px] transition-colors disabled:cursor-not-allowed disabled:text-[#cbd5e1] ${
-                    nights === n
-                      ? 'border-[#1a4332] bg-[#eaf4ee] font-bold text-[#1a4332]'
-                      : 'border-[#e2e8f0] bg-[#f8fafc] text-[#475569] hover:bg-[#e2e8f0]'
-                  }`}
-                >
-                  {n} {n === 1 ? 'night' : 'nights'}
-                </button>
-              ))}
-            </div>
           </>
         ) : null}
-        <p className="text-[11px] text-[#64748b]">or type dates</p>
+        <p className="text-[12.5px] text-[#64748b]">or type dates</p>
         <div className="grid grid-cols-2 gap-2">
           <Field label="Arrival" htmlFor={`${id}-arrival`}>
             <input

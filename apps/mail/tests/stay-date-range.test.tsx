@@ -31,8 +31,9 @@ describe('StayDateRange', () => {
     renderRange();
     expect(screen.getByRole('button', { name: /check-in/i }).textContent).toContain('Thu 15 Oct 2026');
     expect(screen.getByRole('button', { name: /check-out/i }).textContent).toContain('Sat 17 Oct 2026');
-    // The quick pills say "2 nights" too, so match the footer only.
     expect(screen.getByText('2 nights', { selector: 'span' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '1 night' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '7 nights' })).toBeTruthy();
   });
 
   it('uses the singular for one night and flags a departure before arrival', () => {
@@ -88,9 +89,8 @@ describe('StayDateRange', () => {
     expect(onChange).toHaveBeenLastCalledWith({ arrivalDate: '2026-10-16', departureDate: '' });
   });
 
-  it('sets the departure from a quick night pill', () => {
+  it('sets the departure from a quick night pill without first opening the calendar', () => {
     const { onChange } = renderRange();
-    openCalendar();
     fireEvent.click(screen.getByRole('button', { name: '3 nights' }));
     expect(onChange).toHaveBeenLastCalledWith({ departureDate: '2026-10-18' });
   });

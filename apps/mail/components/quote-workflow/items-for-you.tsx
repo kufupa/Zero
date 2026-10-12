@@ -1,5 +1,4 @@
 import type { QuoteReviewItem } from '@/lib/quote-workflow/types';
-import { Notice } from '@/components/nava-pane/pane-ui';
 
 export function ItemsForYou({
   openItems,
@@ -22,13 +21,11 @@ export function ItemsForYou({
   if (!openItems.length && !handledItems.length) return null;
   return (
     <section className="flex flex-col gap-1.5" aria-label="Check before sending">
-      <Notice tone="warn">
-        <p className="font-semibold">Check before sending</p>
-        <p>
-          Nava found these. Clear each one before you send the reply. Show in email finds the line in the email.
-          Edit reply opens the reply box. Mark as done hides the item here only.
+      <div className="rounded-[3px] border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-1.5 text-[13px] text-[#475569]">
+        <p className="font-semibold">
+          {`Check before sending · ${openItems.length ? `${openItems.length} to review` : 'no open checks'}`}
         </p>
-      </Notice>
+      </div>
       {openItems.map((item) => (
         <div key={item.id} className="flex flex-col gap-1 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5">
           <p className="text-[12px] font-semibold text-[#1e293b]">{item.text}</p>
@@ -37,7 +34,7 @@ export function ItemsForYou({
             {item.sourceLabel}
             {item.filename ? ` · ${item.filename}` : ''}
           </p>
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]">
+          <p className="text-[13px] font-semibold text-[#475569]">
             {item.blocking
               ? 'Blocks the quote — fix the stay details first'
               : item.kind === 'document_failure'

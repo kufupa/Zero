@@ -17,10 +17,11 @@ import type {
   StaffQuoteParty,
   StaffQuoteSource,
   StaffRowRate,
+  StaffStayExtras,
   StayGroupRequirement,
 } from './types';
-import { staffHeaderFieldProblem } from './types';
-import { ROOM_TYPE_CODES } from './room-types';
+import { staffHeaderFieldProblem, staffStayExtrasFor } from './types';
+import { knownRoomCode, ROOM_TYPE_CODES, rowRoomTypeCode } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
@@ -178,6 +179,43 @@ function rejectionReason(error: unknown): string {
     : 'The request did not finish. Refresh the pane and try again.';
 }
 
+function shortRefusalReason(raw: string): string {
+  const firstLine = raw.split(/\r?\n/, 1)[0]!;
+  const cleaned = [...firstLine]
+    .map((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f) ? ' ' : character;
+    })
+    .join('')
+    .replace(/(?:^|[\s/])[A-Z0-9_-]*TRACE(?:[-_ ]?(?:ID))?[-_: ]*[A-Z0-9._-]+/gi, ' ')
+    .replace(/\b(?:request|correlation)[-_ ]?(?:id)?\s*[:=]?\s*[A-Z0-9._-]{8,}\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/[\s/:]+$/g, '')
+    .trim();
+  return cleaned.slice(0, 100) || 'Search was refused.';
+}
+
+/** A rejected quote request is shown in plain language; the complete error is kept for the closed Details disclosure. */
+function searchFailure(error: unknown): { reason: string; detail?: string; noMatchingRate?: boolean } {
+  const detail = rejectionReason(error);
+  if (detail.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX)) {
+    return {
+      reason: 'HMS refused the search: No rate matches this meal plan under the selected rate plan.',
+      detail,
+      noMatchingRate: true,
+    };
+  }
+  const refusal = /^HMS refused the search:\s*(.*)$/i.exec(detail);
+  if (refusal) return { reason: `HMS refused the search: ${shortRefusalReason(refusal[1] ?? '')}`, detail };
+  if (/^(?:only\s+\d+\b|hms has only\s+\d+\b)/i.test(detail)) {
+    return { reason: `HMS refused the search: ${shortRefusalReason(detail)}`, detail };
+  }
+  if (/\b(?:timed?\s*out|timeout|deadline exceeded|ETIMEDOUT)\b/i.test(detail)) {
+    return { reason: "HMS didn't answer in time.", detail };
+  }
+  return { reason: "HMS didn't answer in time.", detail };
+}
+
 export const EXPIRED_STAFF_QUOTE_COPY = 'This quote has expired. Run the quote again.';
 
 /** workstation.qualifiedQuoteProposalPdf messages for a quote run that is unrecorded or expired. */
@@ -194,8 +232,7 @@ export function qualifiedPdfFailureReason(error: unknown): string {
 }
 
 function knownNativeCode(raw: string): string | null {
-  const code = raw.trim().toUpperCase();
-  return KNOWN_NATIVE_ROOM_CODES.has(code) ? code : null;
+  return knownRoomCode(raw);
 }
 
 export function resolveNativeRoomCodes(input: {
@@ -249,9 +286,11 @@ export function staffQuoteGroupsFromStay(
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
+    // The same room the row shows (rowRoomTypeCode): a staff pick wins over the projected roomTypeCode.
+    const rowCode = rowRoomTypeCode(group);
     const rooms = resolveNativeRoomCodes({
       roomPreference: group.roomPreference,
-      roomCodes: group.roomCodes,
+      roomCodes: group.roomCodes?.length ? group.roomCodes : rowCode ? [rowCode] : undefined,
     });
     if (rooms.status === 'unresolved') {
       return {
@@ -506,7 +545,7 @@ export async function bindStaffActions(args: {
 const NATIVE_NO_MATCHING_RATE_PREFIX = 'HMS has no rate for this meal plan under ';
 
 export type BoundExecuteStaffQuote =
-  | { status: 'unavailable'; reason: string; noMatchingRate?: boolean }
+  | { status: 'unavailable'; reason: string; detail?: string; noMatchingRate?: boolean }
   | { status: 'ok'; offer: QuoteOffer; staffQuote: StaffQuoteAllocation; extrasReviewItems: string[] };
 
 export function allocationFromStaffQuote(
@@ -619,6 +658,27 @@ export function approvedExecuteHeader(
   };
 }
 
+/** Project the independently editable extras for one date range onto the existing HMS header wire shape. */
+export function staffHeaderForStay(header: StaffQuoteHeader, stayKey: string): StaffQuoteHeader {
+  const extras: StaffStayExtras = staffStayExtrasFor(header, stayKey);
+  const scoped: StaffQuoteHeader = {
+    ...header,
+    fieldErrors: { ...header.fieldErrors, ...extras.fieldErrors },
+    shuttleRequested: extras.shuttleEnabled,
+    shuttleMinor: extras.shuttleEnabled ? extras.shuttleMinor : undefined,
+    shuttleTrips: extras.shuttleEnabled ? extras.shuttleTrips : undefined,
+    lunchAllowanceMinor: extras.lunchEnabled ? extras.lunchAllowanceMinor : undefined,
+    lunchAllowanceLabel: extras.lunchEnabled ? extras.lunchAllowanceLabel : undefined,
+    dinnerAllowanceRequired: extras.dinnerAllowanceRequired,
+    dinnerAllowanceMinor: extras.dinnerEnabled ? extras.dinnerAllowanceMinor : undefined,
+    dinnerAllowanceGroupIds: extras.dinnerEnabled ? extras.dinnerAllowanceGroupIds : undefined,
+    dinnerAllowanceLabel: extras.dinnerEnabled ? extras.dinnerAllowanceLabel : undefined,
+    other: extras.otherEnabled ? extras.other : undefined,
+  };
+  delete scoped.stayExtrasByKey;
+  return scoped;
+}
+
 /** Whole positive amounts or counts only. Anything else is left off the request, never sent as zero. */
 function positiveWhole(value: number | undefined): number | undefined {
   return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : undefined;
@@ -641,24 +701,11 @@ function otherChargeFor(
   return { label: trimmedOrUndefined(other.label) ?? '', amountMinor, unit: other.unit };
 }
 
-/**
- * Whether the header has a charge made once per quote, not per guest or night: the shuttle, or an "other" charge per trip
- * or as one item. A combined quote of several stays charges these once, on the first stay only.
- */
-export function hasOncePerQuoteExtras(header: StaffQuoteHeader): boolean {
+/** Whether this stay has a single-charge extra: the shuttle, or an "other" charge per trip or as one item. */
+export function hasPerStaySingleChargeExtras(header: StaffQuoteHeader): boolean {
   const other = otherChargeFor(header.other);
   const flatOther = other?.unit === 'per_trip' || other?.unit === 'item';
   return Boolean(header.shuttleRequested) || flatOther;
-}
-
-/** The header without its once-per-quote charges, for every stay of a combined quote but the first. */
-export function withoutOncePerQuoteExtras(header: StaffQuoteHeader): StaffQuoteHeader {
-  const next = { ...header };
-  delete next.shuttleRequested;
-  delete next.shuttleMinor;
-  delete next.shuttleTrips;
-  if (next.other?.unit === 'per_trip' || next.other?.unit === 'item') delete next.other;
-  return next;
 }
 
 /**
@@ -686,11 +733,16 @@ export async function bindExecuteStaffQuote(args: {
   inputRevision: number;
   groups: StayGroupRequirement[];
   header: StaffQuoteHeader;
-  /** False for every stay of a combined quote but the first, so the once-per-quote charges are made once. */
-  onceExtras?: boolean;
+  /** Prefer an explicit stay key when the request is built from a reconstructed stay. */
+  stayKey?: string;
 }): Promise<BoundExecuteStaffQuote> {
+  const prepared = staffQuoteGroupsFromStay(args.groups);
+  if ('error' in prepared) return { status: 'unavailable', reason: prepared.error };
+  const first = prepared.ok[0];
+  const stayKey = args.stayKey ?? `${first?.arrivalDate ?? 'unknown'}:${first?.departureDate ?? 'unknown'}`;
+  const sent = staffHeaderForStay(args.header, stayKey);
   // A typed amount that cannot be read is never priced from the older saved amount.
-  const fieldProblem = staffHeaderFieldProblem(args.header);
+  const fieldProblem = staffHeaderFieldProblem(sent);
   if (fieldProblem) {
     return { status: 'unavailable', reason: `Fix the amounts before running this search. ${fieldProblem}` };
   }
@@ -701,10 +753,7 @@ export async function bindExecuteStaffQuote(args: {
         'Quoting is not connected to this pane yet. Refresh the pane and try again.',
     };
   }
-  const prepared = staffQuoteGroupsFromStay(args.groups);
-  if ('error' in prepared) return { status: 'unavailable', reason: prepared.error };
   try {
-    const sent = args.onceExtras === false ? withoutOncePerQuoteExtras(args.header) : args.header;
     const header = approvedExecuteHeader(
       sent,
       prepared.ok.map((group) => group.id),
@@ -717,7 +766,7 @@ export async function bindExecuteStaffQuote(args: {
       inputRevision: args.inputRevision,
       groups: prepared.ok,
       ...header,
-      ...(pickedParties(args.header.parties) ? { parties: pickedParties(args.header.parties) } : {}),
+      ...(pickedParties(sent.parties) ? { parties: pickedParties(sent.parties) } : {}),
       ...(rowPrices.length ? { rowPrices } : {}),
     });
     if (!result || typeof result !== 'object') {
@@ -767,7 +816,7 @@ export async function bindExecuteStaffQuote(args: {
         clientEmail: header.clientEmail,
         clientTelephone: header.clientTelephone,
       },
-      onceExtras: hasOncePerQuoteExtras(sent),
+      onceExtras: hasPerStaySingleChargeExtras(sent),
       runId: typeof result.runId === 'string' && result.runId.trim() ? result.runId : null,
       screenshots: Array.isArray(result.screenshots)
         ? result.screenshots.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
@@ -784,12 +833,7 @@ export async function bindExecuteStaffQuote(args: {
         : [],
     };
   } catch (error) {
-    const reason = rejectionReason(error);
-    return {
-      status: 'unavailable',
-      reason,
-      noMatchingRate: reason.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX),
-    };
+    return { status: 'unavailable', ...searchFailure(error) };
   }
 }
 

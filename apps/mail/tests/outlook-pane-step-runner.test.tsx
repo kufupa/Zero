@@ -117,7 +117,7 @@ vi.mock('../providers/query-provider', () => ({
             {
               id: 'g1',
               childrenAges: [],
-              board: 'unknown' as const,
+              board: 'bb' as const,
               quantity: 1,
               specialRequests: [],
               fields: { arrivalDate: 'missing' as const, departureDate: 'missing' as const, adults: 'missing' as const },
@@ -167,8 +167,11 @@ async function fillStayFacts(arrival: string, departure: string) {
   fireEvent.change(await findReadStayArrival(), { target: { value: arrival } });
   fireEvent.change(screen.getByLabelText('Departure'), { target: { value: departure } });
   fireEvent.change(screen.getByLabelText('Meal plan'), { target: { value: 'bb' } });
-  fireEvent.change(screen.getByLabelText('Rooms'), { target: { value: '1' } });
-  fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '1' } });
+  // Rooms has a visible stepper and a hidden number input with the same label. The input is the one to change.
+  fireEvent.change(screen.getByLabelText('Rooms', { selector: 'input' }), { target: { value: '1' } });
+  // Adults per room sits behind an edit button as a stepper. The read leaves it unset, so + sets it to 1.
+  fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+  fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
 }
 
 describe('mounted pane step runner and current inputs', () => {
@@ -247,7 +250,7 @@ describe('mounted pane step runner and current inputs', () => {
     panePartyFindMock.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
-    fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'Acme Travel' } });
+    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Acme Travel' } });
     expect((await screen.findAllByText('Finding the company in HMS…')).length).toBeGreaterThan(0);
     const run = await screen.findByRole('button', { name: /^Run Search availability/i });
     expect((run as HTMLButtonElement).disabled).toBe(true);
@@ -275,7 +278,7 @@ describe('mounted pane step runner and current inputs', () => {
     fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-15' } });
     finish();
     await waitFor(() =>
-      expect(toast.warning).toHaveBeenCalledWith('Details changed while HMS was searching — run Get rates again'),
+      expect(toast.warning).toHaveBeenCalledWith('Details changed while HMS was searching — search availability again.'),
     );
     // The dropped result is not kept: no room result from the old inputs reaches the pane.
     expect(screen.queryAllByText(ROOM_LABEL)).toHaveLength(0);
@@ -358,7 +361,7 @@ describe('Re-quote after an expired prior quote', () => {
     panePartyFindMock.mockImplementationOnce(() => new Promise(() => {}));
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
-    fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'Acme Travel' } });
+    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Acme Travel' } });
     expect((await screen.findAllByText('Finding the company in HMS…')).length).toBeGreaterThan(0);
     const requote = await waitFor(() => requoteAction());
     requote();
@@ -380,7 +383,7 @@ describe('Re-quote after an expired prior quote', () => {
     const requote = await waitFor(() => requoteAction());
     requote();
     await waitFor(() => expect(getPriorQueryMock).toHaveBeenCalledTimes(1));
-    fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'Acme Travel' } });
+    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Acme Travel' } });
     await waitFor(() => expect(panePartyFindMock).toHaveBeenCalledTimes(1), { timeout: 3000 });
     loaded();
     await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('Finding the company in HMS…'));
@@ -404,7 +407,7 @@ describe('Re-quote after an expired prior quote', () => {
     fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-15' } });
     finish();
     await waitFor(() =>
-      expect(toast.warning).toHaveBeenCalledWith('Details changed while HMS was searching — run Get rates again'),
+      expect(toast.warning).toHaveBeenCalledWith('Details changed while HMS was searching — search availability again.'),
     );
     expect(screen.queryAllByText(ROOM_LABEL)).toHaveLength(0);
   });
@@ -415,6 +418,6 @@ describe('Re-quote after an expired prior quote', () => {
     const requote = await waitFor(() => requoteAction());
     requote();
     expect((await screen.findAllByText(ROOM_LABEL)).length).toBeGreaterThan(0);
-    expect(toast.warning).not.toHaveBeenCalledWith('Details changed while HMS was searching — run Get rates again');
+    expect(toast.warning).not.toHaveBeenCalledWith('Details changed while HMS was searching — search availability again.');
   });
 });

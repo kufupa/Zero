@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 
 /**
  * The pane's design language, taken from the side-pane design spec
- * (docs/superpowers/specs/2026-09-23-centurion-outlook-side-pane-demo.html): white section cards with an uppercase
+ * (docs/superpowers/specs/2026-09-23-centurion-outlook-side-pane-demo.html): white section cards with a sentence-case
  * header bar, 32px fields with a red star when required, one full-width blue primary action, and steppers. Every pane
  * section builds on these so the whole pane reads the same way.
  */
@@ -24,11 +24,11 @@ export const PANE_COLORS = {
 
 /** A 32px text input or select, as in the design spec. */
 export const paneFieldClass =
-  'h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]';
+  'h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]';
 
 /** A multi-line input in the same style. */
 export const paneTextareaClass =
-  'min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]';
+  'min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]';
 
 export function Section({
   title,
@@ -51,7 +51,7 @@ export function Section({
   return (
     <section id={id} aria-label={title} className="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]">
       <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]">
-        <h3 className="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]">
+        <h3 className="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]">
           {step !== undefined ? (
             <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white">
               {step}
@@ -62,7 +62,7 @@ export function Section({
         </h3>
         {action}
       </div>
-      <div className="flex flex-col gap-3 p-3">{children}</div>
+      <div className="flex flex-col gap-3.5 p-3">{children}</div>
     </section>
   );
 }
@@ -70,7 +70,7 @@ export function Section({
 /** "from email": marks a value Nava read from the email, so staff know to check it. */
 export function FromEmailTag() {
   return (
-    <span className="rounded-[2px] bg-[#eff6ff] px-1 py-px text-[10px] font-semibold text-[#0066cc]">from email</span>
+    <span className="whitespace-nowrap rounded-[2px] bg-[#eff6ff] px-1 py-px text-[11px] font-semibold text-[#0066cc]">from email</span>
   );
 }
 
@@ -94,7 +94,7 @@ export function Field({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-center justify-between text-[11.5px] font-semibold text-[#475569]">
+      <div className="flex items-center justify-between text-[13px] font-semibold text-[#475569]">
         <label htmlFor={htmlFor} className="flex items-center gap-1.5">
           <span>
             {label}
@@ -109,7 +109,7 @@ export function Field({
         {aside ? <span className="font-normal text-[#64748b]">{aside}</span> : null}
       </div>
       {children}
-      {hint ? <p className="text-[11px] text-[#64748b]">{hint}</p> : null}
+      {hint ? <p className="text-[13px] text-[#64748b]">{hint}</p> : null}
     </div>
   );
 }
@@ -166,7 +166,13 @@ export function PrimaryButton({
         </button>
       )}
       {disabled && !loading && disabledReason ? (
-        <p className="text-center text-[11px] text-[#64748b]">{disabledReason}</p>
+        <p className="flex items-center justify-center gap-1.5 text-[13px] text-[#334155]">
+          <svg aria-hidden="true" className="h-3.5 w-3.5 shrink-0" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" />
+            <path d="M8 7v4M8 4.75h.01" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+          </svg>
+          <span>{disabledReason}</span>
+        </p>
       ) : null}
     </div>
   );
@@ -195,7 +201,7 @@ export function SecondaryButton({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[12px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] ${className}`}
+      className={`flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] ${className}`}
     >
       {icon}
       {children}
@@ -225,7 +231,7 @@ export function LinkButton({
       type="button"
       onClick={onClick}
       aria-expanded={ariaExpanded}
-      className="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+      className="rounded-[3px] text-[13px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
     >
       {children}
     </button>
@@ -262,7 +268,7 @@ export function Stepper({
       >
         −
       </button>
-      <span aria-live="polite" className="w-8 bg-white text-center text-[12px] font-bold text-[#1e293b]">
+      <span aria-live="polite" className="w-8 bg-white text-center text-[13px] font-bold text-[#1e293b]">
         {value ?? '–'}
       </span>
       <button
@@ -296,7 +302,7 @@ export function Notice({
   role?: 'status' | 'alert';
 }) {
   return (
-    <div role={role} className={`rounded-[3px] border px-2.5 py-1.5 text-[11.5px] ${NOTICE_TONES[tone]}`}>
+    <div role={role} className={`rounded-[3px] border px-2.5 py-1.5 text-[13px] ${NOTICE_TONES[tone]}`}>
       {children}
     </div>
   );
@@ -314,7 +320,7 @@ export function Disclosure({
 }) {
   return (
     <details open={defaultOpen} className="group overflow-hidden rounded-[3px] border border-[#e2e8f0]">
-      <summary className="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[11.5px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[13px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden">
         {summary}
         <span aria-hidden className="transition-transform group-open:rotate-180">
           ▾

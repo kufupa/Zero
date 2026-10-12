@@ -33,6 +33,7 @@ export const PARTY_AUTO_LOOKUP_DEBOUNCE_MS = 600;
 
 /** An automatic search needs at least this many characters. */
 const AUTO_LOOKUP_MIN_CHARS = 3;
+const MANUAL_LOOKUP_MIN_CHARS = 2;
 
 /** The most HMS rows shown as chips under a field. The server already sends at most this many. */
 const CHIP_LIMIT = 5;
@@ -73,10 +74,10 @@ function searchKey(text: string): string {
     .trim();
 }
 
-/** The memo entry for a key. A forced start replaces it, which is what Search again does. */
-function startAutoSearch(key: string, start: () => Promise<PartyFindReply>, force: boolean): AutoEntry {
+/** The memo entry for a key. */
+function startAutoSearch(key: string, start: () => Promise<PartyFindReply>): AutoEntry {
   const known = autoMemo.get(key);
-  if (known && !force) return known;
+  if (known) return known;
   const entry: AutoEntry = { reply: null, promise: Promise.resolve(FAILED_REPLY) };
   entry.promise = new Promise<PartyFindReply>((resolve) => resolve(start())).then(
     (reply) => {
@@ -132,7 +133,7 @@ function ResultChips({
           <button
             key={`${row.kind}:${row.nativeId}`}
             type="button"
-            className="rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
+            className="rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
             onClick={() => onPick(row)}
           >
             {`${row.name} (#${row.nativeId})`}
@@ -149,10 +150,10 @@ function ResultChips({
  * shows its kind.
  *
  * With autoLookup, Nava searches HMS for the field's name by itself, once the typing rests, and picks the best match. The
- * other matches show as chips. With no match, or with a failure, the field says so and offers Search again. Without
- * autoLookup, the field keeps one Find in HMS button. The HMS list the sweep wrote is searched as staff type, and its
- * matches are a candidate only. Suggestions from the email are offered for staff to confirm. A suggestion carries
- * no HMS id, so it can only be searched.
+ * other matches show as chips. With no match, or with a failure, the field says so; the one Find in HMS button lets staff
+ * retry and see the candidates. Without autoLookup, that button is the only HMS search. The HMS list the sweep wrote is
+ * searched as staff type, and its matches are a candidate only. Suggestions from the email are offered for staff to
+ * confirm. A suggestion carries no HMS id, so it can only be searched.
  */
 export function PartyPicker({
   name,
@@ -233,7 +234,7 @@ export function PartyPicker({
     const searchKind = kind;
     let live = true;
     const timer = setTimeout(() => {
-      const entry = startAutoSearch(autoKey, () => find(query, searchKind), false);
+      const entry = startAutoSearch(autoKey, () => find(query, searchKind));
       // A search for this name may have finished while the field showed another name: render its reply now.
       if (entry.reply) rerender();
       else void entry.promise.then(() => live && rerender());
@@ -260,14 +261,6 @@ export function PartyPicker({
     onLookupPending?.(lookupPending);
   });
   useEffect(() => () => onLookupPending?.(false), []);
-
-  const searchAgain = () => {
-    if (!autoMemoKey || !kind) return;
-    autoPicked.current = null;
-    const entry = startAutoSearch(autoMemoKey, () => find(query, kind), true);
-    rerender();
-    void entry.promise.then(() => rerender());
-  };
 
   const run = async () => {
     const token = ++latest.current;
@@ -315,17 +308,17 @@ export function PartyPicker({
     if (autoMemoKey) autoPicked.current = { key: autoMemoKey, party: null };
     onPick({ kind: row.kind, nativeId: row.nativeId, name: row.name });
   };
-  const showAutoStatus = Boolean(autoMemoKey) && !pickedHere;
-  const showManualButton = !autoLookup || !kind;
+  const showAutoStatus = Boolean(autoMemoKey) && !pickedHere && shown.status === 'idle';
+  const showManualButton = true;
 
   return (
     <div
       role={kind ? 'group' : undefined}
       aria-label={kind ? `${partyKindLabel(kind)} lookup in HMS` : undefined}
-      className="flex flex-col gap-1 text-[11px] text-[#64748b]"
+      className="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
     >
       {picked.map((party) => (
-        <div key={party.kind} className="flex flex-wrap items-center gap-2 text-[11.5px] font-semibold text-[#166534]">
+        <div key={party.kind} className="flex flex-wrap items-center gap-2 text-[12.5px] font-semibold text-[#166534]">
           <span>{`✓ ${party.name} (#${party.nativeId})${pickedByNava(party) ? ' — picked by Nava' : ''}`}</span>
           <LinkButton onClick={() => onClear(party.kind)}>Change</LinkButton>
         </div>
@@ -341,7 +334,7 @@ export function PartyPicker({
               <span>{`${suggestion.name} (${partyKindLabel(suggestion.kind)}), not confirmed in HMS`}</span>
               <button
                 type="button"
-                className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#1e293b] disabled:opacity-50"
+                className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#1e293b] disabled:opacity-50"
                 disabled={!onSearchName}
                 onClick={() => onSearchName?.(suggestion.name, suggestion.kind)}
               >
@@ -361,12 +354,9 @@ export function PartyPicker({
                 {noCandidateNote(autoReply, kind)}
               </Notice>
             )}
-            <div>
-              <LinkButton onClick={searchAgain}>Search again</LinkButton>
-            </div>
           </div>
         ) : (
-          <p role="status" className="flex items-center gap-2 text-[11.5px] text-[#0066cc]">
+          <p role="status" className="flex items-center gap-2 text-[12.5px] text-[#0066cc]">
             <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-2 border-[#0066cc] border-t-transparent" />
             {`Searching HMS for "${query}"… about 20 seconds`}
           </p>
@@ -380,7 +370,7 @@ export function PartyPicker({
               <li key={`${candidate.kind}:${candidate.nativeId}`} className="flex items-center gap-2">
                 <button
                   type="button"
-                  className="text-left text-[11.5px] font-semibold text-[#0066cc] underline"
+                  className="text-left text-[12.5px] font-semibold text-[#0066cc] underline"
                   onClick={() => {
                     onPick({ kind: candidate.kind, nativeId: candidate.nativeId, name: candidate.name });
                     setIndex(IDLE_INDEX);
@@ -396,7 +386,10 @@ export function PartyPicker({
       ) : null}
       {showManualButton ? (
         <div className="flex flex-wrap items-center gap-2">
-          <SecondaryButton disabled={!query || shown.status === 'busy'} onClick={() => void run()}>
+          <SecondaryButton
+            disabled={query.length < MANUAL_LOOKUP_MIN_CHARS || shown.status === 'busy' || lookupPending}
+            onClick={() => void run()}
+          >
             Find in HMS
           </SecondaryButton>
           <span>{PARTY_PICKER_HINT}</span>

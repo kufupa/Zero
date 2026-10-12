@@ -59,21 +59,28 @@ function fakeTrpc(lookup: StoredWork) {
 }
 
 describe('ContactBlock', () => {
-  it('shows the name, company, end client, email and phone from the read, each editable', () => {
+  it('shows booker details as editable fields and agency/client as one read-only line', () => {
     render(<ContactBlock contact={PRIYA} onEdit={vi.fn()} />);
     expect(screen.getByRole('region', { name: 'Contact' })).toBeDefined();
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Priya Naidoo');
-    expect((screen.getByLabelText('Company / agency') as HTMLInputElement).value).toBe(
-      'New Frontiers Tours',
-    );
-    expect((screen.getByLabelText('End client') as HTMLInputElement).value).toBe(
-      'Tailormade Africa',
-    );
+    expect(document.getElementById('quote-contact-named-email')?.textContent).toBe('Named in email: New Frontiers Tours · Tailormade Africa');
     expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('priya@example.com');
     expect((screen.getByLabelText('Phone') as HTMLInputElement).value).toBe('+27 11 000 0000');
-    for (const label of ['Name', 'Company / agency', 'End client', 'Email', 'Phone']) {
+    for (const label of ['Name', 'Email', 'Phone']) {
       expect((screen.getByLabelText(label) as HTMLInputElement).readOnly).toBe(false);
     }
+    expect(screen.queryByLabelText('Company / agency')).toBeNull();
+    expect(screen.queryByLabelText('End client')).toBeNull();
+  });
+
+  it('copies the named-in-email line without making it editable', async () => {
+    const writeText = vi.fn(async () => {});
+    const onEdit = vi.fn();
+    setClipboard({ writeText });
+    render(<ContactBlock contact={PRIYA} onEdit={onEdit} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy named in email' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('New Frontiers Tours · Tailormade Africa'));
+    expect(onEdit).not.toHaveBeenCalled();
   });
 
   it('copies a populated contact value with one click', async () => {
@@ -108,36 +115,20 @@ describe('ContactBlock', () => {
   it('is blank while the mail is still being read, and the fields are still editable', () => {
     render(<ContactBlock contact={null} onEdit={vi.fn()} />);
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
-    expect((screen.getByLabelText('Company / agency') as HTMLInputElement).value).toBe('');
+    expect(document.getElementById('quote-contact-named-email')?.textContent).toBe('Named in email: —');
+    expect(screen.queryByLabelText('Company / agency')).toBeNull();
   });
 });
 
 describe('contact edits through the stored work', () => {
-  it('logs an edit to the company as one contact.company event, after the quiet period', async () => {
+  it('does not offer a duplicate editable company field in the contact block', async () => {
     const { trpc, mutate } = fakeTrpc(READY);
     render(<Harness trpc={trpc} />);
-    // The stored read lands and the block remounts with its values, so wait for them before typing.
-    await waitFor(() =>
-      expect((screen.getByLabelText('Company / agency') as HTMLInputElement).value).toBe(
-        'New Frontiers Tours',
-      ),
-    );
-    const company = screen.getByLabelText('Company / agency');
-    fireEvent.change(company, { target: { value: 'Tailormade Africa Tours' } });
-    fireEvent.change(company, { target: { value: 'Tailormade Africa Tours Ltd' } });
-    expect(mutate).not.toHaveBeenCalled();
-    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1), {
-      timeout: WORK_EVENT_DEBOUNCE_MS + 2000,
+    await waitFor(() => {
+      expect(document.getElementById('quote-contact-named-email')?.textContent).toBe('Named in email: New Frontiers Tours · Tailormade Africa');
     });
-    expect(mutate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workItemId: 'wi-1',
-        type: 'field.edit',
-        fieldPath: 'contact.company',
-        value: 'Tailormade Africa Tours Ltd',
-        msSinceOpen: expect.any(Number),
-      }),
-    );
+    expect(screen.queryByLabelText('Company / agency')).toBeNull();
+    expect(mutate).not.toHaveBeenCalled();
   }, 10_000);
 
   it('keeps what she typed while the mail is read live, and logs nothing without a stored read', async () => {
@@ -157,7 +148,7 @@ describe('contact and selected email mark guest details for the preview gate (H6
   it('marks the guest contact fields, and leaves the company or agency unmarked', () => {
     const { container } = render(<ContactBlock contact={PRIYA} onEdit={vi.fn()} />);
     expect(unmaskedPii(container, ['Priya', 'Tailormade', 'priya@example.com', '+27 11 000 0000'])).toEqual([]);
-    expect(container.querySelector('#quote-contact-company')?.hasAttribute('data-pii')).toBe(false);
+    expect(container.querySelector('#quote-contact-named-email')?.hasAttribute('data-pii')).toBe(true);
   });
 
   it('marks the selected email subject and sender', () => {

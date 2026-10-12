@@ -28,7 +28,7 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteSessionAction } from '@/lib/quote-workflow/types';
+import type { QuoteSessionAction, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
@@ -82,7 +82,6 @@ import {
   quoteRunBlockReason,
   reduceQuoteSession,
   removedStayFor,
-  rowsTakeOnceExtras,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -176,6 +175,7 @@ export function NavaPane({
     activateMailboxSync,
   } = bridge;
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
+  const [rateCatalogue, setRateCatalogue] = useState<RatePlanCatalogueEntry[]>([]);
   // Preview/Book in HMS show only when the server flag is on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
   // Staff's edit of the combined reply. It is used only while the completed options are the same ones.
@@ -215,6 +215,32 @@ export function NavaPane({
     : null;
   const { data: session, isLoading } = useSession();
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
+  useEffect(() => {
+    let alive = true;
+    if (!session?.user?.id) {
+      setRateCatalogue([]);
+      return () => {
+        alive = false;
+      };
+    }
+    const query = quoteWorkflowFromTrpc(trpcClient).rateCatalogue?.query;
+    if (!query) {
+      setRateCatalogue([]);
+      return () => {
+        alive = false;
+      };
+    }
+    void query()
+      .then((entries) => {
+        if (alive) setRateCatalogue(entries);
+      })
+      .catch(() => {
+        if (alive) setRateCatalogue([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [session?.user?.id]);
   const sync = useOutlookSync({userId:session?.user?.id??null,sessionId:session?.session?.id??null,transportId:activeConnection?.id??null,mailbox:activeConnection?.email??'',deviceId:workstationInfo?.deviceId??null,capabilityVersion:capabilities?.mailboxSync,readRoots:capabilities?.readRoots??[],authorized:Boolean(isConnected&&!requiresRelogin&&!authorizationUnavailable),activateNative:activateMailboxSync});
   const currentScope =
     !requiresRelogin && session?.user?.id && activeConnection?.id
@@ -831,12 +857,11 @@ export function NavaPane({
         inputRevision,
         groups,
         header,
-        onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(groups)),
       });
       return trackStaffQuoteRun(run).then((remote) => {
         // The reducer drops this result when the selection, inputs or stay rows moved on while HMS searched. Say so.
         if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
-          toast.warning('Details changed while HMS was searching — run Get rates again');
+          toast.warning('Details changed while HMS was searching — search availability again.');
           return;
         }
         if (remote.status !== 'ok') {
@@ -905,7 +930,8 @@ export function NavaPane({
 
   const runQuoteStep = (stepId: string) => {
     const step = quoteSession.steps.find((item) => item.id === stepId);
-    if (!step || !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId)) return;
+    const maySearchAgain = step?.kind === 'quote_stay' && step.status === 'succeeded' && !quoteSession.runningStepId;
+    if (!step || (!maySearchAgain && !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId))) return;
     const waiting = quoteRunBlockReason(quoteSession, step);
     if (waiting) {
       toast.warning(waiting);
@@ -965,13 +991,12 @@ export function NavaPane({
       inputRevision,
       groups: stayGroups,
       header: quoteSession.staffHeader,
-      // A combined quote charges the shuttle and flat "other" charges once, on its first stay.
-      onceExtras: rowsTakeOnceExtras(quoteSession, requestedQuoteKeys(stayGroups)),
+      stayKey: step.shareKey,
     });
     void trackStaffQuoteRun(run).then((remote) => {
       // The reducer drops a result whose selection or input moved on while HMS searched. Say so, rather than let it vanish.
       if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision })) {
-        toast.warning('Details changed while HMS was searching — run Get rates again');
+        toast.warning('Details changed while HMS was searching — search availability again.');
         return;
       }
       if (remote.status !== 'ok') {
@@ -979,6 +1004,7 @@ export function NavaPane({
           type: 'results_unavailable',
           stepId: step.id,
           reason: remote.reason,
+          detail: remote.detail,
           selectionEpoch,
           inputRevision,
         });
@@ -1062,7 +1088,7 @@ export function NavaPane({
     const session = quoteSessionRef.current;
     // The PDF is recorded on the item it was made for, even if staff open another mail while it builds.
     const owner = currentPaneOwner();
-    if (dinnerAllowanceStillRequired(session.staffHeader)) {
+    if (dinnerAllowanceStillRequired(session)) {
       toast.warning('Enter the dinner allowance per person per night before preparing the PDF.');
       return;
     }
@@ -1445,7 +1471,7 @@ export function NavaPane({
             ) : null}
 
             {activeEmail && !quoteSession.staffQuote && quoteOrBookingEmail ? (
-              <p className="px-1 text-[11px] text-[#64748b]">
+              <p className="px-1 text-[13px] text-[#64748b]">
                 Nava filled these in from the email. Check them before getting rates.
               </p>
             ) : null}
@@ -1453,6 +1479,7 @@ export function NavaPane({
             {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
             <QuoteWorkflowPanel
               session={quoteSession}
+              rateCatalogue={rateCatalogue}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
               findParty={PANE_PARTY_FINDER}
@@ -1487,6 +1514,9 @@ export function NavaPane({
               onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
               onPatchStaffHeader={(header) => dispatchQuote({ type: 'patch_staff_header', header })}
+              onPatchStayExtras={(stayKey, extras) =>
+                dispatchQuote({ type: 'patch_staff_stay_extras', stayKey, extras })
+              }
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
               onTreatAs={(treatAs) => dispatchQuote({ type: 'treat_as', treatAs })}
               onStaffNote={(staffNote) => {

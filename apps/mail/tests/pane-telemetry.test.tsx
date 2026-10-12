@@ -191,6 +191,9 @@ describe('pane telemetry wiring', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy email' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied email' })).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Copy named in email' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied named in email' })).toBeDefined());
+    expect(writeText).toHaveBeenCalledWith('Example Agency');
     fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeDefined());
     fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS' }));
@@ -203,6 +206,7 @@ describe('pane telemetry wiring', () => {
         workItemId: WORK_ITEM,
         events: [
           { type: 'copy.contact', field: 'email', surface: 'web' },
+          { type: 'copy.contact', field: 'company', surface: 'web' },
           { type: 'copy.link', surface: 'web' },
           { type: 'copy.link', surface: 'web' },
         ],
@@ -211,6 +215,7 @@ describe('pane telemetry wiring', () => {
     );
     const recorded = JSON.stringify(mutate.mock.calls);
     expect(recorded).not.toContain('priya@example.com');
+    expect(recorded).not.toContain('Example Agency');
     expect(recorded).not.toContain('64318608-1');
   });
 

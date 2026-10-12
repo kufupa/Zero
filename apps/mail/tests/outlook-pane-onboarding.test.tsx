@@ -264,8 +264,12 @@ describe('OutlookPane Onboarding Flow', () => {
     expect(screen.getByText(/Nava Reservationist/i)).toBeDefined();
     expect(screen.queryByText(/September 2026/i)).toBeNull();
     expect(screen.queryByText(/^Change Dates$/)).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();
-    expect(await screen.findByRole('button', { name: /^Get rates from HMS$/i })).toBeDefined();
+    // The stay's Search availability button is shown from the start, disabled until its dates and rooms are read.
+    // Exactly one: the calendar's search button is gone, so no second copy can appear.
+    const searchButtons = screen.getAllByRole('button', { name: /^Search availability$/i });
+    expect(searchButtons).toHaveLength(1);
+    expect((searchButtons[0] as HTMLButtonElement).disabled).toBe(true);
+    expect(await screen.findByRole('button', { name: /^Search availability$/i })).toBeDefined();
   });
 
   it('shows an empty state instead of sample data when no email is selected', () => {

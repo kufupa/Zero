@@ -17,6 +17,7 @@ import {
   questionItems,
 } from './quote-workflow-analyse-selection.js';
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
+import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
@@ -354,7 +355,15 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
     analysis: {
       intent: mapped.intent,
       // Each group names its stay, so the pane groups rows by the read's stays and logs edits to the stay's id.
-      groups: mapped.groups.map((group, index) => ({ ...group, stayId: order[index]?.stayId })),
+      groups: mapped.groups.map((group, index) => {
+        const roomType = matchRoomType(group.roomPreference);
+        return {
+          ...group,
+          ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
+          roomTypeSuggestions: roomType.suggestions,
+          stayId: order[index]?.stayId,
+        };
+      }),
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
       reviewItems: [...failures, ...questionItems(mapped.missing)],

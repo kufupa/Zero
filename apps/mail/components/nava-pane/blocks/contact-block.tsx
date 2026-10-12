@@ -4,11 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import { copyText } from '@/components/quote-workflow/hms-link-actions';
 import { currentPaneOwner, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 
-// pii: a guest detail the preview gate masks (data-pii). The company or agency is a business name.
+// pii: guest details the preview gate masks (data-pii). The email-named line can include an end client.
 const FIELDS: Array<{ field: ContactField; label: string; pii: boolean }> = [
   { field: 'name', label: 'Name', pii: true },
-  { field: 'company', label: 'Company / agency', pii: false },
-  { field: 'endClient', label: 'End client', pii: true },
   { field: 'email', label: 'Email', pii: true },
   { field: 'phone', label: 'Phone', pii: true },
 ];
@@ -22,9 +20,8 @@ const NO_CONTACT: StoredContact = {
 };
 
 /**
- * Contact block (U16, R4): the core details from the email, at the top of the pane. Each field is editable, and each
- * change goes to onEdit as it is typed (the pane debounces it into one event). During extraction, the caller may provide
- * a verified external sender fallback for name and email. Copies record only the field name, never the copied value.
+ * Contact block (U16, R4): booker contact details are editable; the email-named agency/client is a read-only note so
+ * the same party has one editable home under Booked by. Copies record only the field name, never the copied value.
  */
 export function ContactBlock({
   contact,
@@ -44,6 +41,7 @@ export function ContactBlock({
   }));
   const [feedback, setFeedback] = useState<{ field: ContactField; copied: boolean } | null>(null);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const namedInEmail = [values.company, values.endClient].map((value) => value?.trim()).filter(Boolean).join(' · ');
 
   useEffect(
     () => () => {
@@ -52,8 +50,7 @@ export function ContactBlock({
     [],
   );
 
-  const copy = async (field: ContactField) => {
-    const value = values[field] ?? '';
+  const copyValue = async (field: ContactField, value: string) => {
     if (!value.trim()) return;
     // The owner is read before the clipboard write, so a switch of mail while it is pending does not move the copy.
     const owner = currentPaneOwner();
@@ -63,6 +60,7 @@ export function ContactBlock({
     if (resetTimer.current) clearTimeout(resetTimer.current);
     resetTimer.current = setTimeout(() => setFeedback(null), 2000);
   };
+  const copy = (field: ContactField) => copyValue(field, values[field] ?? '');
   return (
     <Section title="Contact" id="quote-contact">
       <div className="grid grid-cols-2 gap-x-2.5 gap-y-2">
@@ -98,6 +96,21 @@ export function ContactBlock({
             ) : null}
           </Field>
         ))}
+        <div className="col-span-2 flex min-w-0 items-start justify-between gap-2 border-t border-[#e2e8f0] pt-2">
+          <p id="quote-contact-named-email" data-pii className="min-w-0 text-[13px] text-[#475569]">
+            <span className="font-semibold">Named in email:</span>
+            {` ${namedInEmail || '—'}`}
+          </p>
+          <button
+            type="button"
+            className="h-7 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+            aria-label={feedback?.field === 'company' && feedback.copied ? 'Copied named in email' : 'Copy named in email'}
+            disabled={!namedInEmail}
+            onClick={() => void copyValue('company', namedInEmail)}
+          >
+            {feedback?.field === 'company' && feedback.copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
       </div>
     </Section>
   );

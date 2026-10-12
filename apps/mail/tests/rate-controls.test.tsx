@@ -94,6 +94,28 @@ function rand(minor: number): string {
 /** The approval note. Staff see it in the row's price box and never in the client documents. */
 const NOTE = 'Thandi approved, group contract';
 const SUMMER: SavedRate = { id: '6f1e2d3c-4b5a-4968-8a7b-9c0d1e2f3a4b', name: 'Standard summer', amountMinor: 185000 };
+const SELECTED_RATE: RateOption = {
+  id: 'o-ncor',
+  groupId: 'g1',
+  rateCode: 'NCOR',
+  rateLabel: 'Corporate negotiated',
+  roomCode: 'STWN',
+  roomLabel: 'Standard Twin',
+  board: 'bb',
+  boardLabel: 'Bed & breakfast',
+  contract: false,
+  onlyContract: false,
+  matchesRequest: true,
+  perNightMinor: 215000,
+  totalMinor: 430000,
+  currency: 'ZAR',
+  priced: 'full',
+  selected: true,
+};
+
+function withSelectedRate(session: QuoteSession): QuoteSession {
+  return session.rateOptions?.length ? session : { ...session, rateOptions: [SELECTED_RATE] };
+}
 
 /** A quote with one room row and its stay step, ready to price, as the pane has it after analysis. */
 function readySession(): QuoteSession {
@@ -169,7 +191,7 @@ function PinnedPanel({
   runs: string[];
   seen: { session: QuoteSession | null };
 }) {
-  const [session, setSession] = useState(initial);
+  const [session, setSession] = useState(withSelectedRate(initial));
   seen.session = session;
   return (
     <QuoteWorkflowPanel
@@ -216,7 +238,7 @@ describe('row price controls in the quote panel', () => {
     const seen = { session: null as QuoteSession | null };
     const step = stepOf(readySession());
     render(<PinnedPanel initial={readySession()} runs={runs} seen={seen} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
     fireEvent.click(screen.getByRole('button', { name: 'Discount / override' }));
     const save = () => screen.getByRole('button', { name: 'Save override' }) as HTMLButtonElement;
 
@@ -229,7 +251,7 @@ describe('row price controls in the quote panel', () => {
     expect(save().disabled).toBe(true);
     expect(screen.getByText('Say who approved it and why.')).toBeDefined();
 
-    fireEvent.change(screen.getByLabelText(/Approved by \/ why/), { target: { value: NOTE } });
+    fireEvent.change(screen.getByLabelText(/Authorised by \/ why/), { target: { value: NOTE } });
     expect(save().disabled).toBe(false);
     fireEvent.click(save());
 
@@ -247,9 +269,9 @@ describe('row price controls in the quote panel', () => {
     const rates = fakeRates([SUMMER]);
     const runs: string[] = [];
     const seen = { session: null as QuoteSession | null };
-    const session = readySession();
+    const session = withSelectedRate(readySession());
     render(<PinnedPanel initial={session} rates={rates} runs={runs} seen={seen} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
     const picker = screen.getByLabelText('Saved rate for Room 1') as HTMLSelectElement;
     await waitFor(() => expect(within(picker).getByRole('option', { name: /Standard summer/ })).toBeDefined());
 
@@ -270,7 +292,7 @@ describe('row price controls in the quote panel', () => {
       patch: { rowPrice: savedPrice(SUMMER) },
     });
     render(<PinnedPanel initial={session} rates={rates} runs={runs} seen={seen} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
     fireEvent.click(screen.getByRole('button', { name: 'Manage saved rates' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Standard summer' }));
 
@@ -282,14 +304,26 @@ describe('row price controls in the quote panel', () => {
     await waitFor(() => expect(within(after).queryByRole('option', { name: /Standard summer/ })).toBeNull());
   });
 
+  it('a saved price stays changeable when no rate card is shown, so an archived rate can be replaced or removed', () => {
+    const session = reduceQuoteSession(readySession(), {
+      type: 'patch_group',
+      groupId: 'g1',
+      patch: { rowPrice: savedPrice(SUMMER) },
+    });
+    // No rate card at all. PinnedPanel would add a selected one, so the panel renders directly here.
+    render(<QuoteWorkflowPanel session={{ ...session, rateOptions: [] }} rates={fakeRates([])} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
+    expect(screen.getByRole('button', { name: 'Manage saved rates' })).toBeDefined();
+  });
+
   it('a mailbox switch reloads the saved rates, and the old mailbox\'s list never comes back', async () => {
     const WINTER: SavedRate = { id: '7a1e2d3c-4b5a-4968-8a7b-9c0d1e2f3a4b', name: 'Other mailbox winter', amountMinor: 99000 };
     let mailbox = 't1';
     const rates = fakeRates([SUMMER]);
     vi.mocked(rates.list).mockImplementation(async () => (mailbox === 't1' ? [SUMMER] : [WINTER]));
-    const session = readySession();
+    const session = withSelectedRate(readySession());
     const { rerender } = render(<QuoteWorkflowPanel session={session} rates={rates} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
     await waitFor(() =>
       expect(within(screen.getByLabelText('Saved rate for Room 1')).getByRole('option', { name: /Standard summer/ })).toBeDefined(),
     );
@@ -306,7 +340,7 @@ describe('row price controls in the quote panel', () => {
   it('a duplicate saved rate name is refused with a clear message', async () => {
     const rates = fakeRates([SUMMER]);
     render(<PinnedPanel initial={readySession()} rates={rates} runs={[]} seen={{ session: null }} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
     fireEvent.click(screen.getByRole('button', { name: 'Manage saved rates' }));
     fireEvent.change(screen.getByLabelText('New saved rate name'), { target: { value: 'Standard summer' } });
     fireEvent.change(screen.getByLabelText('New saved rate per night (R)'), { target: { value: '1900' } });
@@ -321,7 +355,7 @@ describe('row price controls in the quote panel', () => {
     const seen = { session: null as QuoteSession | null };
     const session = readySession();
     render(<PinnedPanel initial={session} runs={runs} seen={seen} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
     fireEvent.click(screen.getByRole('button', { name: 'Type a rate' }));
     fireEvent.change(screen.getByLabelText('Rate per night (R)'), { target: { value: '1,200' } });
     fireEvent.click(screen.getByRole('button', { name: 'Use this rate' }));
@@ -350,7 +384,7 @@ describe('row price controls in the quote panel', () => {
     });
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-    render(<QuoteWorkflowPanel session={session} />);
+    render(<QuoteWorkflowPanel session={withSelectedRate(session)} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS comments' }));
 
@@ -373,10 +407,10 @@ describe('row price controls in the quote panel', () => {
         },
       ],
     });
-    render(<QuoteWorkflowPanel session={session} />);
+    render(<QuoteWorkflowPanel session={withSelectedRate(session)} />);
 
     // Staff see the note in the row's price box.
-    expect(screen.getByText(new RegExp(`Approved by / why: ${NOTE}`))).toBeDefined();
+    expect(screen.getByText(new RegExp(`Authorised by: ${NOTE}`))).toBeDefined();
     // The documents are what the client gets: the reply preview, PDF and Excel.
     const documents = screen.getByRole('region', { name: 'Quote documents' });
     expect(within(documents).queryByText(new RegExp(NOTE))).toBeNull();
@@ -386,7 +420,7 @@ describe('row price controls in the quote panel', () => {
 
   it('the price controls are real buttons with aria-expanded, and focus moves into a form that opens', () => {
     render(<PinnedPanel initial={readySession()} runs={[]} seen={{ session: null }} />);
-    const toggle = screen.getByRole('button', { name: 'Change price' });
+    const toggle = screen.getByRole('button', { name: 'Set a specific price' });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
@@ -451,7 +485,9 @@ describe('row price changes that race or replace each other', () => {
       rateOptions: [option('o-ncor', 'NCOR', true), option('o-bar', 'BAR', false)],
     });
     render(<PinnedPanel initial={session} runs={runs} seen={seen} />);
-    const cards = within(screen.getByRole('group', { name: 'Room rates from HMS' })).getAllByRole('button');
+    const cards = within(screen.getByRole('group', { name: 'Room rates from HMS' }))
+      .getAllByRole('button')
+      .filter((button) => button.hasAttribute('aria-pressed'));
     fireEvent.click(cards[1]!);
 
     expect(seen.session!.groups[0]!.rateCode).toBe('BAR');
@@ -479,7 +515,7 @@ describe('row price changes that race or replace each other', () => {
       patch: { rowPrice: savedPrice(SUMMER) },
     });
     render(<PinnedPanel initial={session} rates={rates} runs={runs} seen={seen} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
     fireEvent.click(screen.getByRole('button', { name: 'Manage saved rates' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Standard summer' }));
     fireEvent.change(screen.getByLabelText('Saved rate per night (R)'), { target: { value: '1,900' } });

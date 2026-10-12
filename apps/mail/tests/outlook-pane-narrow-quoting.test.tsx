@@ -112,17 +112,19 @@ describe('mounted Outlook pane quoting path at 380px', () => {
     expect(screen.queryByText(/^Change Dates$/)).toBeNull();
     expect(screen.queryByText(/NCOR1B/i)).toBeNull();
     expect(screen.queryByText(/R2,150\.00/)).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();
-    expect(await screen.findByRole('button', { name: /^Get rates from HMS$/i })).toBeDefined();
+    // The HMS search button is now "Search availability" (the old Get rates button). Exactly one, no second search UI.
+    expect(screen.getAllByRole('button', { name: /^Search availability$/i })).toHaveLength(1);
+    expect(await screen.findByRole('button', { name: /^Search availability$/i })).toBeDefined();
 
     // Get rates waits for a room type on every row; the email gave none.
     fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'STQN' } });
-    fireEvent.click(screen.getByRole('button', { name: /^Get rates from HMS$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
+    // The rebuilt stay gate checks dates before the search runs, so Search stays off and shows this reason.
     await waitFor(() => {
-      expect(screen.getAllByText(/not available here|no room options|not owned by this quoting UI|not ready yet|not connected to this pane/i).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/not available here|no room options|not owned by this quoting UI|not ready yet|not connected to this pane|Add arrival and departure dates first/i).length).toBeGreaterThan(0);
     });
     expect(screen.queryByText(/Allocation/)).toBeNull();
-    expect(screen.getByRole('button', { name: /Insert Draft in Outlook/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /Draft quotation into email reply/i })).toBeDefined();
     expect(screen.queryByText(/September 2026/i)).toBeNull();
     expect(screen.queryByText(/NCOR1B/i)).toBeNull();
 

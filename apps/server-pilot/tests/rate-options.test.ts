@@ -89,7 +89,7 @@ describe('rate cards from one summary read', () => {
     expect(cards[0]).toMatchObject({ roomCode: 'STQN', matchesRequest: false, contract: false, selected: false, priced: 'summary' });
   });
 
-  it('(e) returns at most five options, and never a restricted, unavailable, held, unresolved or unverified row', () => {
+  it('keeps every distinct available rate code, and never a restricted, unavailable, held, unresolved or unverified row', () => {
     const selected = row({ id: 'SKNG:BARRO', rate: 'BARRO', amount: '500.00' });
     const kept = [
       row({ id: 'STQN:BCO1B', room: 'STQN', rate: 'BCO1B', scope: 'contextual', match: 'alternative', amount: '520.00' }),
@@ -106,10 +106,25 @@ describe('rate cards from one summary read', () => {
       row({ id: 'SKNG:BCO6B', rate: 'BCO6B', board: 'Bed & Breakfast R', scope: 'contextual', match: 'alternative', eligibility: 'conditional', amount: '30.00' }),
     ];
     const cards = buildRateOptions(source([selected, ...kept, ...excluded], ROOM_ONLY), [{ groupId: 'single', optionId: 'SKNG:BARRO' }]);
-    expect(cards.map((card) => card.rateCode)).toEqual(['BARRO', 'BCO1B', 'BCO2B', 'BCO5B', 'BBP']);
+    expect(cards.map((card) => card.rateCode)).toEqual(['BARRO', 'BCO1B', 'BCO2B', 'BCO5B', 'BBP', 'DBBP']);
     expect(cards.find((card) => card.rateCode === 'BARRO')).toMatchObject({ selected: true, priced: 'full', matchesRequest: true });
     expect(cards.filter((card) => card.priced === 'full')).toHaveLength(1);
     expect(cards.every((card) => card.onlyContract === false)).toBe(true);
+  });
+
+  it('keeps all distinct HMS codes beyond the old five-card ceiling', () => {
+    const codes = ['BARRO', 'BCO1B', 'BCO2B', 'BCO5B', 'BBP', 'DBBP', 'GNC3B'];
+    const options = codes.map((rateCode, index) =>
+      row({
+        id: `room-rate-${index}`,
+        room: index === 0 ? 'SKNG' : 'STQN',
+        rate: rateCode,
+        scope: index % 2 === 0 ? 'public' : 'contextual',
+        match: index === 0 ? 'match' : 'alternative',
+      }),
+    );
+    const cards = buildRateOptions(source(options, ROOM_ONLY), []);
+    expect(cards.map((card) => card.rateCode).sort()).toEqual([...codes].sort());
   });
 
   it('sorts requested first, then contract before public, then cheapest, and prices per room and per night', () => {

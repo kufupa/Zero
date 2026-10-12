@@ -20,11 +20,11 @@ export function pdfBlockReason(session: QuoteSession): string | null {
         ? 'Waiting for this email to finish syncing.'
         : 'Nava is still loading this email. If this does not clear, select the email again.';
     case 'no_rates':
-      return 'Get rates first.';
+      return 'Search availability first.';
     case 'sample_rates':
       return 'These are sample rates, so no PDF can be made. Open a live email to continue.';
     case 'rates_stale':
-      return 'The rates are out of date. The details changed after they were found. Get rates again.';
+      return 'The rates are out of date. The details changed after they were found. Search availability again.';
     case 'stays_unrated':
       return `${blocker.rated} of ${blocker.total} stays rated`;
     case 'mixed_stays':
@@ -69,12 +69,12 @@ export function DocumentReview({
         ? 'Excel is not available here.'
         : null;
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3.5">
       <PrimaryButton disabled={!pdfReady} disabledReason={pdfReason} onClick={onPreparePdf}>
         {isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF'}
       </PrimaryButton>
       {session.pdf ? (
-        <p className="text-[11.5px] text-[#1e293b]">
+        <p className="text-[12.5px] text-[#1e293b]">
           {isMultiStay(session)
             ? `Prepared quote ${session.pdf.fileName} for all stays. The Outlook draft will attach this exact file.`
             : `Prepared PDF ${session.pdf.fileName}. The Outlook draft will attach this exact file.`}
@@ -84,22 +84,25 @@ export function DocumentReview({
         <SecondaryButton className="w-full" disabled={excelDisabled} onClick={onDownloadWorkbook}>
           Download Excel
         </SecondaryButton>
-        {excelDisabled && excelReason ? <p className="text-center text-[11px] text-[#64748b]">{excelReason}</p> : null}
+        {excelDisabled && excelReason ? <p className="text-center text-[12.5px] text-[#64748b]">{excelReason}</p> : null}
       </div>
+      <SecondaryButton className="w-full" disabled disabledReason="Coming soon">
+        Book in HMS
+      </SecondaryButton>
       {/* A combined reply is built from every stay's quote, so the one-stay reply box would be ignored. */}
       {isMultiStay(session) ? null : (
         <Field label="Reply to the client (you can edit it)" htmlFor="quote-reviewed-reply">
           <textarea
             id="quote-reviewed-reply"
             aria-label="Reviewed reply"
-            className="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[12.5px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+            className="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
             value={session.reviewedReplyHtml}
             onChange={(event) => onReplyChange?.(event.target.value)}
           />
         </Field>
       )}
       {nativeReady ? (
-        <p className="text-[11.5px] text-emerald-800">Reply and PDF are ready. Next, create the Outlook draft. It is not sent.</p>
+        <p className="text-[12.5px] text-emerald-800">Reply and PDF are ready. Next, create the Outlook draft. It is not sent.</p>
       ) : null}
     </div>
   );
