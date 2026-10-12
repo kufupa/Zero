@@ -1,6 +1,6 @@
 import type { DB } from '../db/client.js';
 import { randomBytes } from 'node:crypto';
-import { enrollDevice, issueChallenge, verifyDeviceRequest, wrappingKey } from '../outlook-security/device.js';
+import { acceptDeviceStoreRoot, enrollDevice, issueChallenge, verifyDeviceRequest, wrappingKey } from '../outlook-security/device.js';
 import { authorizeNative, NativeBatchConsentRequiredError, registerNavigation, type NativeScopeInput } from '../outlook-security/authorization.js';
 
 async function readBoundedJsonBody(request: Request, maxBytes: number): Promise<Buffer | null> {
@@ -34,7 +34,7 @@ export function createOutlookNativeHandler(db: DB, key: string) {
     if (request.method !== 'POST') return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
     if (!['/api/outlook/native/enroll', '/api/outlook/native/challenge', '/api/outlook/native/bootstrap',
-      '/api/outlook/native/register-navigation', '/api/outlook/native/authorize'].includes(path)) return new Response(null, { status: 404 });
+      '/api/outlook/native/register-navigation', '/api/outlook/native/authorize', '/api/outlook/native/store-root'].includes(path)) return new Response(null, { status: 404 });
     if (new URL(request.url).search) return new Response(null, { status: 400 });
     // Signed batch EntryIDs are larger than enrollment; still cap streaming uploads.
     const maxBytes = path.endsWith('/authorize') ? 32_768 : 4096;
@@ -56,7 +56,7 @@ export function createOutlookNativeHandler(db: DB, key: string) {
     if (path.endsWith('/bootstrap')) return Response.json({ protocol: 'nava-outlook-v4', status: 'ready',
       paneChallenge: randomBytes(32).toString('base64url'), expiresInSeconds: 60 },
     { headers: { 'cache-control': 'no-store' } });
-    if (path.endsWith('/authorize') || path.endsWith('/register-navigation')) {
+    if (path.endsWith('/authorize') || path.endsWith('/register-navigation') || path.endsWith('/store-root')) {
       const verified = await verifyDeviceRequest(db, {
         deviceId: request.headers.get('x-nava-device-id') ?? '', nonce: request.headers.get('x-nava-nonce') ?? '',
         timestamp: request.headers.get('x-nava-timestamp') ?? '', signature: request.headers.get('x-nava-signature') ?? '',
@@ -66,6 +66,13 @@ export function createOutlookNativeHandler(db: DB, key: string) {
       if (path.endsWith('/register-navigation')) {
         const ok = await registerNavigation(db, verified.deviceId, values.paneChallenge as string);
         return Response.json({ registered: ok }, { status: ok ? 200 : 403, headers: { 'cache-control': 'no-store' } });
+      }
+      if (path.endsWith('/store-root')) {
+        const storeId = typeof values.storeId === 'string' ? values.storeId : '';
+        const rootEntryId = typeof values.rootEntryId === 'string' ? values.rootEntryId : '';
+        const decision = await acceptDeviceStoreRoot(db, verified, { storeId, rootEntryId });
+        console.info('outlook_store_root', { ...decision, deviceId: verified.deviceId, storeId, rootEntryId });
+        return Response.json(decision, { status: decision.accepted ? 200 : 403, headers: { 'cache-control': 'no-store' } });
       }
       const valid = typeof values.ticket === 'string' && typeof values.action === 'string'
         && typeof values.storeId === 'string' && typeof values.transportId === 'string'

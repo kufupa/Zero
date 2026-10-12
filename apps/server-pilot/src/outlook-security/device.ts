@@ -220,6 +220,21 @@ export async function revokeReadRoot(db: DB, input: ReadRootApprovalInput): Prom
     .where(and(readRootWhere(input), isNull(outlookDeviceReadRoot.revokedAt))).returning({ root: outlookDeviceReadRoot.rootEntryId });
   return rows.length === 1;
 }
+/** Signed device reports its store root. Accepted only when the device's single active staff/mailbox grant exists and the store matches enrollment. */
+export async function acceptDeviceStoreRoot(db: DB, device: VerifiedDevice, input: { storeId: string; rootEntryId: string }): Promise<{ accepted: boolean; reason: string }> {
+  if (input.storeId !== device.storeId) return { accepted: false, reason: 'store_mismatch' };
+  const grants = await db.select({ userId: outlookDeviceGrant.userId, transportId: outlookDeviceGrant.transportId })
+    .from(outlookDeviceGrant).innerJoin(mailboxTransport, eq(mailboxTransport.id, outlookDeviceGrant.transportId))
+    .where(and(eq(outlookDeviceGrant.deviceId, device.deviceId), eq(mailboxTransport.isActive, true)));
+  if (grants.length !== 1) return { accepted: false, reason: 'grant_not_single' };
+  try {
+    await approveReadRoot(db, { ...grants[0], deviceId: device.deviceId, storeId: input.storeId, rootEntryId: input.rootEntryId, policyVersion: 1 });
+  } catch (error) {
+    return { accepted: false, reason: error instanceof Error ? error.message : 'approve_failed' };
+  }
+  return { accepted: true, reason: 'accepted' };
+}
+
 /** Caller must also validate live staff session. Native must check actual COM ancestry before every read. */
 export async function getApprovedReadRoots(db: DB, deviceId: string, userId: string, transportId: string,
   storeId: string, holdThroughGrant = false): Promise<ReadRootPolicyV1[]> {

@@ -49,6 +49,12 @@ app.post('/api/outlook/native/sync/:operation', (c) =>
     process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
   )(c.req.raw),
 );
+app.post('/api/outlook/native/store-root', (c) =>
+  createOutlookNativeHandler(
+    getDb(),
+    process.env.NAVA_OUTLOOK_DEVICE_WRAPPING_KEY ?? '',
+  )(c.req.raw),
+);
 app.post('/api/outlook/native/enroll', (c) =>
   createOutlookNativeHandler(
     // Lazily load DB but fail closed when the separate wrapping key is missing.
