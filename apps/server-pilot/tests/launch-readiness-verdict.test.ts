@@ -1,7 +1,7 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
@@ -70,6 +70,7 @@ function baselineRemote() {
       workflowDeadLetterCount: 0,
       workflowDeadLetterRecentCount: 0,
       workflowDeadLetterWindowStart: null,
+      workflowLastGoodDeployRejected: false,
       outboundNonterminalCount: 0,
       counts: {},
     },
@@ -197,7 +198,7 @@ describe('last-good deploy marker read in ops-deploy', () => {
     const run = runMarkerRead(markerInvocation({ commit: 'a'.repeat(40), at: '2026-10-09T12:34:56Z' }), 0);
 
     expect(run.status).toBe(0);
-    expect(run.stdout).toContain('ops-deploy: readiness window starts at 2026-10-09T12:34:56Z');
+    expect(run.stdout).toContain('ops-deploy: last-good marker 2026-10-09T12:34:56Z passed to readiness');
     expect(run.stdout).toMatch(/^AT=2026-10-09T12:34:56Z$/m);
   });
 
@@ -214,65 +215,204 @@ describe('last-good deploy marker read in ops-deploy', () => {
   });
 });
 
+// Runs the shipped ops-deploy.sh from a scratch directory with stub helpers, so the marker read and write run for real.
+// The SSM stub executes only the marker payloads (with /home/ubuntu rewritten into the scratch tree) and logs every
+// other payload by kind. Readiness, VPN and CAS failures are switched on with FAIL_* variables.
+describe('ops-deploy last-good marker write (stubbed deploy flow)', () => {
+  const ssmStub = String.raw`#!/usr/bin/env bash
+set -euo pipefail
+payload="$1"
+case "$payload" in
+  *'base64 -w0'*) kind=marker-read ;;
+  *'mv -f "$tmp" "$marker_path"'*) kind=marker-write ;;
+  *vpn-health-assert*) kind=vpn ;;
+  *source-registry-cas.sh*) kind=cas ;;
+  *) kind=other ;;
+esac
+printf '%s\n' "$kind" >>"$SCRATCH/calls.log"
+case "$kind" in
+  marker-read|marker-write)
+    out="$(printf '%s\n' "$payload" | sed "s#/home/ubuntu#$SCRATCH/home#g" | bash)"
+    if [ "$kind" = marker-read ]; then
+      "$NODE_BIN" -e 'process.stdout.write(JSON.stringify({ Stdout: process.argv[1] }))' "$out"
+    fi
+    ;;
+  vpn) sleep "$VPN_DELAY"; exit "$FAIL_VPN" ;;
+  cas) exit "$FAIL_CAS" ;;
+esac
+`;
+  const readinessStub = String.raw`#!/usr/bin/env bash
+set -euo pipefail
+date -u +%Y-%m-%dT%H:%M:%SZ >"$SCRATCH/readiness-started-at"
+printf '%s\n' readiness >>"$SCRATCH/calls.log"
+exit "$FAIL_READINESS"
+`;
+  function runOpsDeploy(options: { args?: string[]; env?: Record<string, string> } = {}) {
+    const scratch = mkdtempSync(join(tmpdir(), 'l3-ops-deploy-'));
+    try {
+      const deployDir = join(scratch, 'deploy');
+      mkdirSync(deployDir);
+      copyFileSync(
+        fileURLToPath(new URL('../deploy/ops-deploy.sh', import.meta.url)),
+        join(deployDir, 'ops-deploy.sh'),
+      );
+      writeFileSync(join(deployDir, 'ssm-run-command.sh'), ssmStub, { mode: 0o755 });
+      writeFileSync(join(deployDir, 'launch-readiness.sh'), readinessStub, { mode: 0o755 });
+      writeFileSync(join(deployDir, 'sync-ec2-git-bundle.sh'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+      // `git -C /home/ubuntu/repos/zero rev-parse HEAD` resolves against this scratch repo, so the commit is real.
+      const repo = join(scratch, 'home', 'repos', 'zero');
+      mkdirSync(repo, { recursive: true });
+      execFileSync('git', ['init', '-q', repo]);
+      execFileSync('git', [
+        '-C', repo, '-c', 'user.name=test', '-c', 'user.email=test@example.test',
+        'commit', '-q', '--allow-empty', '-m', 'test',
+      ]);
+      const head = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+      const run = spawnSync('bash', [join(deployDir, 'ops-deploy.sh'), ...(options.args ?? [])], {
+        cwd: deployDir,
+        encoding: 'utf8',
+        timeout: 60_000,
+        env: {
+          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          SCRATCH: scratch,
+          NODE_BIN: process.execPath,
+          FAIL_READINESS: '0',
+          FAIL_VPN: '0',
+          FAIL_CAS: '0',
+          VPN_DELAY: '0',
+          ...options.env,
+        },
+      });
+      const callsPath = join(scratch, 'calls.log');
+      const markerPath = join(scratch, 'home', '.nava-deploy', 'last-good.json');
+      const readinessPath = join(scratch, 'readiness-started-at');
+      return {
+        status: run.status,
+        stdout: run.stdout,
+        stderr: run.stderr,
+        head,
+        calls: existsSync(callsPath) ? readFileSync(callsPath, 'utf8').trim().split('\n') : [],
+        marker: existsSync(markerPath)
+          ? (JSON.parse(readFileSync(markerPath, 'utf8')) as { commit: string; at: string })
+          : null,
+        readinessStartedAt: existsSync(readinessPath) ? readFileSync(readinessPath, 'utf8').trim() : null,
+      };
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }
+
+  it('stamps the marker with the boundary captured before readiness, not the later write time', () => {
+    const run = runOpsDeploy({ env: { VPN_DELAY: '2' } });
+
+    expect(run.status).toBe(0);
+    expect(run.readinessStartedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    expect(run.marker).toEqual({ commit: run.head, at: expect.any(String) });
+    // The write happens about two seconds after readiness starts, so a stamp taken at write time fails this check.
+    expect(run.marker!.at <= run.readinessStartedAt!).toBe(true);
+    expect(run.calls.at(-1)).toBe('marker-write');
+  });
+
+  it('writes no marker when readiness fails', () => {
+    const run = runOpsDeploy({ env: { FAIL_READINESS: '1' } });
+
+    expect(run.status).not.toBe(0);
+    expect(run.calls).not.toContain('marker-write');
+    expect(run.marker).toBeNull();
+  });
+
+  it('writes no marker when the VPN assert fails', () => {
+    const run = runOpsDeploy({ env: { FAIL_VPN: '1' } });
+
+    expect(run.status).not.toBe(0);
+    expect(run.calls).not.toContain('marker-write');
+    expect(run.marker).toBeNull();
+  });
+
+  it('writes no marker when the source and registry CAS fails', () => {
+    const run = runOpsDeploy({
+      env: {
+        FAIL_CAS: '1',
+        HMS_REGISTRY_CANDIDATE: 'candidate',
+        HMS_SOURCE_REGISTRY_CURRENT: 'current',
+        HMS_SOURCE_REGISTRY_CANDIDATE: 'source-candidate',
+      },
+    });
+
+    expect(run.status).not.toBe(0);
+    expect(run.calls).not.toContain('marker-write');
+    expect(run.marker).toBeNull();
+  });
+
+  it('runs no readiness and writes no marker in quiesced mode', () => {
+    const run = runOpsDeploy({ args: ['--quiesced'] });
+
+    expect(run.status).toBe(0);
+    expect(run.calls).not.toContain('readiness');
+    expect(run.calls).not.toContain('marker-write');
+    expect(run.marker).toBeNull();
+  });
+});
+
 // Needs the disposable lane DB (CONFIRM_DISPOSABLE_TEST_DB=1, TEST_DATABASE_URL on localhost). Runs the shipped
 // dead-letter window SQL, so a regression to coalesce() or a wider window fails here.
 const testDbUrl = process.env.TEST_DATABASE_URL ?? '';
-if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && /127\.0\.0\.1|localhost/.test(testDbUrl)) {
-  describe('dead-letter window SQL (disposable DB)', () => {
-    const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000);
-    function expectWindowAt24Hours(start: Date) {
-      expect(Math.abs(start.getTime() - hoursAgo(24).getTime())).toBeLessThan(60_000);
+// Without the disposable lane DB these tests report as skipped instead of disappearing from discovery.
+const dbConfigured = process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && /127\.0\.0\.1|localhost/.test(testDbUrl);
+describe.skipIf(!dbConfigured)('dead-letter window SQL (disposable DB)', () => {
+  const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000);
+  function expectWindowAt24Hours(start: Date) {
+    expect(Math.abs(start.getTime() - hoursAgo(24).getTime())).toBeLessThan(60_000);
+  }
+  async function runWindow(markerAt: string | null, deadLetterAt: Date) {
+    const db = postgres(testDbUrl, { max: 1 });
+    try {
+      // TEMP table: visible only to this session, so the disposable DB keeps no state from the test.
+      await db.unsafe(
+        'CREATE TEMP TABLE ai_workflow_run (state text NOT NULL, finished_at timestamptz, updated_at timestamptz NOT NULL)',
+      );
+      await db.unsafe('INSERT INTO ai_workflow_run (state, finished_at, updated_at) VALUES ($1, $2, $2)', [
+        'dead_letter',
+        deadLetterAt,
+      ]);
+      const [row] = await db.unsafe(deadLetterWindowSql, [markerAt]);
+      return row;
+    } finally {
+      await db.end({ timeout: 2 });
     }
-    async function runWindow(markerAt: string | null, deadLetterAt: Date) {
-      const db = postgres(testDbUrl, { max: 1 });
-      try {
-        // TEMP table: visible only to this session, so the disposable DB keeps no state from the test.
-        await db.unsafe(
-          'CREATE TEMP TABLE ai_workflow_run (state text NOT NULL, finished_at timestamptz, updated_at timestamptz NOT NULL)',
-        );
-        await db.unsafe('INSERT INTO ai_workflow_run (state, finished_at, updated_at) VALUES ($1, $2, $2)', [
-          'dead_letter',
-          deadLetterAt,
-        ]);
-        const [row] = await db.unsafe(deadLetterWindowSql, [markerAt]);
-        return row;
-      } finally {
-        await db.end({ timeout: 2 });
-      }
-    }
+  }
 
-    it('does not count a dead letter older than 24 h when the marker is 3 days old', async () => {
-      const row = await runWindow(hoursAgo(72).toISOString(), hoursAgo(48));
+  it('does not count a dead letter older than 24 h when the marker is 3 days old', async () => {
+    const row = await runWindow(hoursAgo(72).toISOString(), hoursAgo(48));
 
-      expect(row.dead_letter).toBe(1);
-      expect(row.dead_letter_recent).toBe(0);
-      expectWindowAt24Hours(row.dead_letter_window_start);
-    });
-
-    it('counts a dead letter newer than the marker when the marker is 3 days old', async () => {
-      const row = await runWindow(hoursAgo(72).toISOString(), hoursAgo(1));
-
-      expect(row.dead_letter_recent).toBe(1);
-    });
-
-    it('uses the marker as the window start when the deploy is under 24 h old', async () => {
-      const markerAt = hoursAgo(2).toISOString();
-      const beforeMarker = await runWindow(markerAt, hoursAgo(3));
-      const afterMarker = await runWindow(markerAt, hoursAgo(1));
-
-      expect(beforeMarker.dead_letter_window_start.toISOString()).toBe(markerAt);
-      expect(beforeMarker.dead_letter_recent).toBe(0);
-      expect(afterMarker.dead_letter_recent).toBe(1);
-    });
-
-    it('uses now() - 24 h when no marker is set', async () => {
-      const row = await runWindow(null, hoursAgo(48));
-
-      expect(row.dead_letter_recent).toBe(0);
-      expectWindowAt24Hours(row.dead_letter_window_start);
-    });
+    expect(row.dead_letter).toBe(1);
+    expect(row.dead_letter_recent).toBe(0);
+    expectWindowAt24Hours(row.dead_letter_window_start);
   });
-}
+
+  it('counts a dead letter newer than the marker when the marker is 3 days old', async () => {
+    const row = await runWindow(hoursAgo(72).toISOString(), hoursAgo(1));
+
+    expect(row.dead_letter_recent).toBe(1);
+  });
+
+  it('uses the marker as the window start when the deploy is under 24 h old', async () => {
+    const markerAt = hoursAgo(2).toISOString();
+    const beforeMarker = await runWindow(markerAt, hoursAgo(3));
+    const afterMarker = await runWindow(markerAt, hoursAgo(1));
+
+    expect(beforeMarker.dead_letter_window_start.toISOString()).toBe(markerAt);
+    expect(beforeMarker.dead_letter_recent).toBe(0);
+    expect(afterMarker.dead_letter_recent).toBe(1);
+  });
+
+  it('uses now() - 24 h when no marker is set', async () => {
+    const row = await runWindow(null, hoursAgo(48));
+
+    expect(row.dead_letter_recent).toBe(0);
+    expectWindowAt24Hours(row.dead_letter_window_start);
+  });
+});
 
 describe('launch-readiness verdict', () => {
   it('passes when dead letters predate the last-good deploy marker', () => {
@@ -333,6 +473,18 @@ describe('launch-readiness verdict', () => {
         workflowDeadLetterWindowStart: fallbackWindowStart,
       },
     });
+  });
+
+  it('reports the effective window start and notes a marker that strict validation rejects', () => {
+    const run = runVerdict((remote) => {
+      remote.db.workflowDeadLetterWindowStart = '2026-10-11T01:00:00.000Z';
+      remote.db.workflowLastGoodDeployRejected = true;
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain('deadLetterWindowStart=2026-10-11T01:00:00.000Z');
+    expect(run.stderr.match(/last-good deploy marker rejected/g)).toHaveLength(1);
+    expect(run.report).toMatchObject({ observations: { workflowLastGoodDeployRejected: true } });
   });
 
   it('writes the last-good marker only after readiness, VPN, and later deploy work succeed', () => {

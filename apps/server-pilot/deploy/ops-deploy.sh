@@ -114,11 +114,14 @@ NODE
   )"
   if [ -n "$LAST_GOOD_DEPLOY_AT" ]; then
     export LAST_GOOD_DEPLOY_AT
-    echo "ops-deploy: readiness window starts at $LAST_GOOD_DEPLOY_AT"
+    echo "ops-deploy: last-good marker $LAST_GOOD_DEPLOY_AT passed to readiness; launch-readiness validates it and prints the effective window start"
   else
     unset LAST_GOOD_DEPLOY_AT
     echo "ops-deploy: last-good marker unavailable (missing, unreadable, or invalid); using 24-hour readiness window"
   fi
+  # Boundary for the marker written after every gate passes. Taken before readiness queries the database, so a dead
+  # letter that lands after that query is still inside the next window. Whole seconds, rounded down: that only widens it.
+  READINESS_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"
 fi
 
@@ -152,8 +155,11 @@ fi
 if [ "$QUIESCED" != "1" ]; then
   echo "== ops-deploy: record last-good deploy marker =="
   # The SSM helper runs payloads as ubuntu, so the directory, temp file, and marker are ubuntu-owned.
+  # The marker records the boundary taken before readiness (READINESS_STARTED_AT), not this write time. A dead letter
+  # that lands between readiness and this write is then inside the next deploy's window.
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
-    'set -euo pipefail
+    "readiness_started_at='${READINESS_STARTED_AT:?}'"'
+     set -euo pipefail
      marker_dir=/home/ubuntu/.nava-deploy
      marker_path="$marker_dir/last-good.json"
      mkdir -p "$marker_dir"
@@ -164,7 +170,11 @@ if [ "$QUIESCED" != "1" ]; then
      case "$commit" in
        ""|*[!0-9a-f]*) echo "ops-deploy: deployed commit SHA is invalid" >&2; exit 1 ;;
      esac
-     at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+     case "$readiness_started_at" in
+       ????-??-??T??:??:??Z) ;;
+       *) echo "ops-deploy: readiness boundary is invalid" >&2; exit 1 ;;
+     esac
+     at="$readiness_started_at"
      printf "{\"commit\":\"%s\",\"at\":\"%s\"}\n" "$commit" "$at" >"$tmp"
      mv -f "$tmp" "$marker_path"
      tmp=""

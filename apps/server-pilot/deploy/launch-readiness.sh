@@ -405,6 +405,7 @@ const empty = {
   workflowDeadLetterCount: 0,
   workflowDeadLetterRecentCount: 0,
   workflowDeadLetterWindowStart: null,
+  workflowLastGoodDeployRejected: false,
   outboundNonterminalCount: 0,
   latestInboundAt: null,
   counts: { threads: 0, messages: 0, inboundMessages: 0 },
@@ -500,6 +501,8 @@ try {
     workflowDeadLetterWindowStart: workflow?.dead_letter_window_start
       ? new Date(workflow.dead_letter_window_start).toISOString()
       : null,
+    // Set when the marker was present but failed strict validation, so the window fell back to now() - 24 h.
+    workflowLastGoodDeployRejected: Boolean(rawLastGoodDeployAt) && lastGoodDeployAt === null,
     outboundNonterminalCount: Number(outbound?.nonterminal ?? 0),
     latestInboundAt: mail?.latest_inbound_at
       ? new Date(mail.latest_inbound_at).toISOString()
@@ -518,7 +521,7 @@ try {
 NODE
 )"
 if [ -z "$DB_SUMMARY" ]; then
-  DB_SUMMARY='{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowCategoryMissingCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"workflowDeadLetterWindowStart":null,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}}'
+  DB_SUMMARY='{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowCategoryMissingCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"workflowDeadLetterWindowStart":null,"workflowLastGoodDeployRejected":false,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}}'
 fi
 
 node - "$PM2_SUMMARY" "$DB_SUMMARY" <<'NODE'
@@ -594,7 +597,7 @@ NODE
 )" || REMOTE_JSON=""
 
 if [ "$SSM_EXIT" -ne 0 ] || [ -z "$REMOTE_JSON" ]; then
-  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"firewall":{"statusRead":false,"rulesRead":false,"active":false,"defaultDeny":false,"tunnel443":false,"broad443Absent":false,"listenerSafe":false},"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowCategoryMissingCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"workflowDeadLetterWindowStart":null,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
+  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"firewall":{"statusRead":false,"rulesRead":false,"active":false,"defaultDeny":false,"tunnel443":false,"broad443Absent":false,"listenerSafe":false},"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowCategoryMissingCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"workflowDeadLetterWindowStart":null,"workflowLastGoodDeployRejected":false,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
 fi
 
 RDS_JSON="$(
@@ -2178,6 +2181,7 @@ const report = {
     workflowDeadLetterCount: Number(db.workflowDeadLetterCount ?? 0),
     workflowDeadLetterRecentCount: Number(db.workflowDeadLetterRecentCount ?? 0),
     workflowDeadLetterWindowStart: db.workflowDeadLetterWindowStart ?? null,
+    workflowLastGoodDeployRejected: db.workflowLastGoodDeployRejected === true,
     outboundNonterminalCount: db.outboundNonterminalCount ?? null,
     counts: db.counts ?? {},
     pm2Restarts: {
@@ -2214,8 +2218,15 @@ const failures = report.failures.length ? report.failures.join(",") : "none";
 console.error(
   `launch-readiness ${report.status}; criticalFailures=${failures}; ` +
     `monitoringMode=${report.monitoringMode}; multiAZ=${report.observations.multiAZ}; ` +
-    `s3Versioning=${report.observations.s3.versioning}`,
+    `s3Versioning=${report.observations.s3.versioning}; ` +
+    `deadLetterWindowStart=${report.observations.workflowDeadLetterWindowStart ?? "none"}`,
 );
+if (report.observations.workflowLastGoodDeployRejected) {
+  console.error(
+    "launch-readiness: last-good deploy marker rejected (not a UTC ISO timestamp); " +
+      "the dead-letter window uses the 24-hour fallback.",
+  );
+}
 if (report.warnings.length) {
   console.error(
     `WARNING launch-readiness: ${report.warnings.join(",")} not met ` +
