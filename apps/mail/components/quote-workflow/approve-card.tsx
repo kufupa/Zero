@@ -15,9 +15,10 @@ import {
   type WriteStatus,
 } from '@/lib/quote-workflow/hms-write';
 import { useCallback, useEffect, useId, useState, type FormEvent, type ReactNode } from 'react';
-import { PANE_SAVE_LAB_GUARD_COPY } from '@/lib/quote-workflow/pane-stay-bind';
+import { PANE_SAVE_OFF_COPY } from '@/lib/quote-workflow/pane-stay-bind';
 import { ReviewCard, writeClasses } from './review-card';
 import { HmsLinkActions } from './hms-link-actions';
+import { PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 import { toast } from 'sonner';
 
 const panelClass =
@@ -26,8 +27,8 @@ const divider = 'flex flex-col gap-2 border-t border-[#e2e8f0] pt-3';
 
 /**
  * The approve and review card for the HMS write on this mail's stored work item (U18). It shows each value as before →
- * after, the write's state in words, and only the actions that state allows. With writesEnabled off (the pane save flag)
- * it shows the handoff alone. The server refuses a write in every case the card hides.
+ * after, the write's state in words, and only the actions that state allows. With writesEnabled off, those actions
+ * remain visible but disabled. The server independently refuses writes while off.
  */
 export function ApproveCard({
   client,
@@ -52,13 +53,6 @@ export function ApproveCard({
   requireStoredWrite?: boolean;
 }) {
   if (!client) return null;
-  if (!writesEnabled) {
-    return (
-      <WriteFrame confirmation={confirmation} guestSurname={guestSurname} arrival={arrival}>
-        <p className={writeClasses.note}>{PANE_SAVE_LAB_GUARD_COPY}</p>
-      </WriteFrame>
-    );
-  }
   return (
     <LiveWriteCard
       client={client}
@@ -67,6 +61,7 @@ export function ApproveCard({
       guestSurname={guestSurname}
       arrival={arrival}
       requireStoredWrite={requireStoredWrite}
+      writesEnabled={writesEnabled}
     />
   );
 }
@@ -135,6 +130,7 @@ function LiveWriteCard({
   guestSurname,
   arrival,
   requireStoredWrite,
+  writesEnabled,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -142,6 +138,7 @@ function LiveWriteCard({
   guestSurname?: string | null;
   arrival?: string | null;
   requireStoredWrite: boolean;
+  writesEnabled: boolean;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId, requireStoredWrite);
   // Hidden only once a read shows no stored write. A failed first read shows Try again: it may hide a pending write.
@@ -157,11 +154,18 @@ function LiveWriteCard({
   const formConfirmation = typeof view?.form.confirmation === 'string' ? view.form.confirmation : null;
   return (
     <WriteFrame confirmation={confirmation ?? formConfirmation} guestSurname={guestSurname} arrival={arrival}>
+      {!writesEnabled ? <p className={writeClasses.note}>{PANE_SAVE_OFF_COPY}</p> : null}
       {view ? (
         <>
           {/* A failed re-read leaves these values possibly out of date: say so, and offer the read again. */}
           {failed ? loadFailed : null}
-          <WriteBody client={client} workItemId={workItemId} view={view} onChanged={refresh} />
+          <WriteBody
+            client={client}
+            workItemId={workItemId}
+            view={view}
+            onChanged={refresh}
+            writesEnabled={writesEnabled}
+          />
         </>
       ) : failed ? (
         loadFailed
@@ -206,11 +210,13 @@ function WriteBody({
   workItemId,
   view,
   onChanged,
+  writesEnabled,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   view: HmsWriteView;
   onChanged: () => void;
+  writesEnabled: boolean;
 }) {
   const status = writeStatusOf(view);
   const rows = writeRowsOf(view);
@@ -228,13 +234,25 @@ function WriteBody({
           status={status}
           canApprove={rows.length > 0}
           onChanged={onChanged}
+          writesEnabled={writesEnabled}
         />
       ) : null}
       {status.phase === 'needs_check' ? (
-        <NeedsCheckSection client={client} workItemId={workItemId} onChanged={onChanged} />
+        <NeedsCheckSection
+          client={client}
+          workItemId={workItemId}
+          onChanged={onChanged}
+          writesEnabled={writesEnabled}
+        />
       ) : null}
       {status.review && view.run ? (
-        <ReviewCard client={client} workItemId={workItemId} run={view.run} onChanged={onChanged} />
+        <ReviewCard
+          client={client}
+          workItemId={workItemId}
+          run={view.run}
+          onChanged={onChanged}
+          writesEnabled={writesEnabled}
+        />
       ) : null}
     </>
   );
@@ -267,6 +285,7 @@ function ApproveSection({
   status,
   canApprove,
   onChanged,
+  writesEnabled,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -275,6 +294,7 @@ function ApproveSection({
   status: WriteStatus;
   canApprove: boolean;
   onChanged: () => void;
+  writesEnabled: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -282,6 +302,7 @@ function ApproveSection({
   const again = status.changed || status.reviewed === 'flag' || status.phase === 'stopped';
 
   const approve = () => {
+    if (!writesEnabled) return;
     setBusy(true);
     setError(null);
     client
@@ -300,6 +321,7 @@ function ApproveSection({
 
   // A fresh HMS read stored as the snapshot (KTD11). The server reads the booking the form names.
   const reread = () => {
+    if (!writesEnabled) return;
     setBusy(true);
     setError(null);
     client
@@ -322,18 +344,23 @@ function ApproveSection({
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
         {status.reread ? (
-          <button type="button" className={writeClasses.secondary} disabled={busy} onClick={reread}>
+          <SecondaryButton
+            className={writeClasses.secondary}
+            disabled={busy || !writesEnabled}
+            disabledReason={writesEnabled ? null : 'Coming soon'}
+            onClick={reread}
+          >
             {HMS_WRITE_COPY.reread}
-          </button>
+          </SecondaryButton>
         ) : null}
-        <button
-          type="button"
+        <PrimaryButton
           className={writeClasses.primary}
-          disabled={busy || blocked}
+          disabled={busy || blocked || !writesEnabled}
+          disabledReason={writesEnabled ? null : 'Coming soon'}
           onClick={approve}
         >
           {again ? HMS_WRITE_COPY.approveAgain : HMS_WRITE_COPY.approve}
-        </button>
+        </PrimaryButton>
       </div>
       {error ? (
         <p role="alert" className={writeClasses.alert}>
@@ -348,10 +375,12 @@ function NeedsCheckSection({
   client,
   workItemId,
   onChanged,
+  writesEnabled,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
   onChanged: () => void;
+  writesEnabled: boolean;
 }) {
   const fieldId = useId();
   const [note, setNote] = useState('');
@@ -360,6 +389,7 @@ function NeedsCheckSection({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!writesEnabled) return;
     const text = note.trim();
     if (text.length < HMS_NOTE_MIN) {
       setError(HMS_WRITE_COPY.noteNeeded);
@@ -391,12 +421,18 @@ function NeedsCheckSection({
         maxLength={HMS_NOTE_MAX}
         rows={2}
         aria-required="true"
+        disabled={!writesEnabled}
         className={writeClasses.textarea}
       />
       <div>
-        <button type="submit" className={writeClasses.primary} disabled={busy}>
+        <PrimaryButton
+          type="submit"
+          className={writeClasses.primary}
+          disabled={busy || !writesEnabled}
+          disabledReason={writesEnabled ? null : 'Coming soon'}
+        >
           {HMS_WRITE_COPY.checkButton}
-        </button>
+        </PrimaryButton>
       </div>
       {error ? (
         <p role="alert" className={writeClasses.alert}>

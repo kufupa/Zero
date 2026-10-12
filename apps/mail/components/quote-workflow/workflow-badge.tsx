@@ -52,38 +52,36 @@ export function WorkflowBadge({
   const options = (['quote', 'create_booking', 'other'] as const).filter(
     (value) => value !== 'other' || current === 'other',
   );
-  // An amendment is not a quote or a booking. While it reads as Other, the picker names it instead, so Other never shows.
-  const pickerNamesAmendment = Boolean(amendment) && current === 'other';
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="flex items-center gap-2">
-        <span className="text-[11.5px] font-semibold text-[#475569]">Nava reads this as</span>
-        <div className="w-40">
-          <select
-            aria-label="Nava reads this as"
-            className={paneFieldClass}
-            value={current ?? ''}
-            title={pickerNamesAmendment ? amendment?.hint : undefined}
-            data-amendment-kind={pickerNamesAmendment ? amendmentKind : undefined}
-            onChange={(event) => {
-              const next = event.target.value;
-              if (next === 'quote' || next === 'create_booking') onIntentChange?.(next);
-            }}
-          >
-            {current === null ? (
-              <option value="" disabled>
-                Choose a type
-              </option>
-            ) : null}
-            {options.map((value) => (
-              <option key={value} value={value}>
-                {value === 'other' && amendment ? amendment.label : INTENT_LABEL[value]}
-              </option>
-            ))}
-          </select>
+      {!amendment ? (
+        <div className="flex items-center gap-2">
+          <span className="text-[11.5px] font-semibold text-[#475569]">Nava reads this as</span>
+          <div className="w-40">
+            <select
+              aria-label="Nava reads this as"
+              className={paneFieldClass}
+              value={current ?? ''}
+              onChange={(event) => {
+                const next = event.target.value;
+                if (next === 'quote' || next === 'create_booking') onIntentChange?.(next);
+              }}
+            >
+              {current === null ? (
+                <option value="" disabled>
+                  Choose a type
+                </option>
+              ) : null}
+              {options.map((value) => (
+                <option key={value} value={value}>
+                  {INTENT_LABEL[value]}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
-      </div>
-      {amendment && !pickerNamesAmendment ? (
+      ) : null}
+      {amendment ? (
         <span className={amendment.className} title={amendment.hint} data-amendment-kind={amendmentKind}>
           {amendment.label}
         </span>

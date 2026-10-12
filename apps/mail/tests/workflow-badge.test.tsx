@@ -98,6 +98,7 @@ describe('WorkflowBadge', () => {
     expect(chip.getAttribute('title')).toBe(CHANGE_HINT);
     expect(chip.getAttribute('data-amendment-kind')).toBe('amend');
     expect(screen.queryByText('Other')).toBeNull();
+    expect(screen.queryByLabelText('Nava reads this as')).toBeNull();
   });
 
   it('shows Cancellation with hover text for a cancel', () => {
@@ -106,6 +107,7 @@ describe('WorkflowBadge', () => {
     expect(chip.getAttribute('title')).toBe(CANCEL_HINT);
     expect(chip.getAttribute('data-amendment-kind')).toBe('cancel');
     expect(screen.queryByText('Other')).toBeNull();
+    expect(screen.queryByLabelText('Nava reads this as')).toBeNull();
   });
 
   it('shows the amendment chip even when Nava gave no workflow', () => {
@@ -168,20 +170,17 @@ describe('WorkflowBadge', () => {
     expect(screen.queryByText('Cancellation')).toBeNull();
   });
 
-  it('reads an amendment as Amendment, not Other, and does not repeat it in a chip (AE2)', () => {
+  it('shows an amendment chip without a treat-as picker (AE2)', () => {
     render(<WorkflowBadge analysis={analysis('other')} amendmentKind="amend" intent="other" />);
-    const picker = screen.getByLabelText('Nava reads this as') as HTMLSelectElement;
-    expect(picker.options[picker.selectedIndex]?.text).toBe('Amendment');
-    expect(picker.title).toBe(CHANGE_HINT);
+    const chip = screen.getByText('Amendment');
+    expect(chip.getAttribute('title')).toBe(CHANGE_HINT);
     expect(screen.queryByText('Other')).toBeNull();
-    expect(screen.queryByText('Amendment', { selector: 'span' })).toBeNull();
+    expect(screen.queryByLabelText('Nava reads this as')).toBeNull();
   });
 
-  it('names a cancellation Cancellation in the picker while it reads as Other', () => {
+  it('shows a cancellation chip without a treat-as picker', () => {
     render(<WorkflowBadge analysis={analysis('other')} amendmentKind="cancel" intent="other" />);
-    const picker = screen.getByLabelText('Nava reads this as') as HTMLSelectElement;
-    expect(picker.options[picker.selectedIndex]?.text).toBe('Cancellation');
-    expect(picker.title).toBe(CANCEL_HINT);
-    expect(screen.queryByText('Cancellation', { selector: 'span' })).toBeNull();
+    expect(screen.getByText('Cancellation').getAttribute('title')).toBe(CANCEL_HINT);
+    expect(screen.queryByLabelText('Nava reads this as')).toBeNull();
   });
 });

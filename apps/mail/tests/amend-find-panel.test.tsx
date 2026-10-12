@@ -471,8 +471,8 @@ describe('AmendLookupPanel', () => {
     const shot = vi.fn().mockResolvedValue({ status: 'ok', dataUrl: SHOT_PNG });
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay, shot)} />);
     pressFind();
+    await waitFor(() => expect(shot).toHaveBeenCalledWith({ runId: RUN_ID, name: 'record.png' }));
     fireEvent.click(await screen.findByRole('button', { name: 'See the booking in HMS' }));
-    expect(shot).toHaveBeenCalledWith({ runId: RUN_ID, name: 'record.png' });
     const dialog = screen.getByRole('dialog', { name: 'See the booking in HMS' });
     expect(within(dialog).getByRole('img').getAttribute('src')).toBe(SHOT_PNG);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
@@ -974,34 +974,72 @@ describe('AmendLookupPanel marks guest details for the preview gate (H6b)', () =
     expect(unmaskedPii(refused.container, ['9999SH999999', 'Mokoena'])).toEqual([]);
   });
 
-  it('marks the cancel lines that name the booking and the guest', async () => {
+  it('marks the cancel lines and keeps the preview visibly disabled', async () => {
     renderCancel({});
     await screen.findByText(/^Cancelling from here is switched off/);
     expect(unmaskedPii(document.body, [CONFIRMATION, 'Mokoena', 'Thabo'])).toEqual([]);
     cleanup();
 
     capabilities.paneSave = true;
-    renderCancel({ preview: vi.fn().mockResolvedValue(PREVIEW_OK) });
-    fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
-    fireEvent.change(await screen.findByLabelText('Cancellation reason'), { target: { value: 'Duplicate Booking' } });
-    await screen.findByText(/^Nava will cancel/);
+    const preview = vi.fn();
+    const commit = vi.fn();
+    renderCancel({ preview, commit });
+    const previewButton = (await screen.findByRole('button', { name: 'Preview cancellation' })) as HTMLButtonElement;
+    expect(previewButton.disabled).toBe(true);
+    expect(screen.getByText('Coming soon')).toBeTruthy();
+    fireEvent.click(previewButton);
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
     expect(unmaskedPii(document.body, [CONFIRMATION, 'Mokoena', 'Thabo'])).toEqual([]);
   });
 });
 
-describe('AmendLookupPanel cancel from the pane', () => {
-  it('says cancelling is switched off and gives the HMS steps when the pane save flag is off', async () => {
+// Cancellation is disabled with "Coming soon" while writes are off (U-3). These cases assert that state.
+describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
+  it('says cancelling is switched off, shows Coming soon and sends no preview when the pane save flag is off', async () => {
     const { preview } = renderCancel({});
-    await waitFor(() =>
-      expect(
-        screen.getByText(
-          'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
-        ),
-      ).toBeTruthy(),
-    );
-    expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
+    const previewButton = (await screen.findByRole('button', { name: 'Preview cancellation' })) as HTMLButtonElement;
+    expect(previewButton.disabled).toBe(true);
+    expect(screen.getByText('Coming soon')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
+      ),
+    ).toBeTruthy();
+    fireEvent.click(previewButton);
     expect(preview).not.toHaveBeenCalled();
   });
+
+  it('keeps the look-up footer and a disabled preview on cancel mail even when the pane save flag is on', async () => {
+    capabilities.paneSave = true;
+    const preview = vi.fn();
+    renderCancel({ preview });
+    const previewButton = (await screen.findByRole('button', { name: 'Preview cancellation' })) as HTMLButtonElement;
+    expect(previewButton.disabled).toBe(true);
+    expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
+    expect(screen.queryByText(/Nava can preview the cancellation/)).toBeNull();
+    fireEvent.click(previewButton);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('keeps the look-up footer on cancel mail when the pane save flag is off', async () => {
+    renderCancel({});
+    await screen.findByText(
+      'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
+    );
+    expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
+  });
+
+  it('keeps the look-up footer on amend mail even when the pane save flag is on', () => {
+    capabilities.paneSave = true;
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(vi.fn(NEVER_SETTLES))} />);
+    expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
+    expect(screen.queryByText(/Nava can preview the cancellation/)).toBeNull();
+  });
+});
+
+// ponytail: writes off (U-3); re-enable with HMS writes
+describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
 
   it('previews the cancel, shows the HMS fee, then cancels with the chosen reason and the preview digest', async () => {
     capabilities.paneSave = true;
@@ -1177,32 +1215,6 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(screen.getByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
   });
 
-  it('says Luna can preview, not only look up, when cancel mail can be previewed', async () => {
-    capabilities.paneSave = true;
-    renderCancel({});
-    await screen.findByRole('button', { name: 'Preview cancellation' });
-    expect(
-      screen.getByText(
-        'Nava can preview the cancellation for you. Nothing is cancelled until you press Cancel booking in HMS.',
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeNull();
-  });
-
-  it('keeps the look-up footer on cancel mail when the pane save flag is off', async () => {
-    renderCancel({});
-    await screen.findByText(
-      'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
-    );
-    expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
-  });
-
-  it('keeps the look-up footer on amend mail even when the pane save flag is on', () => {
-    capabilities.paneSave = true;
-    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(vi.fn(NEVER_SETTLES))} />);
-    expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
-    expect(screen.queryByText(/Nava can preview the cancellation/)).toBeNull();
-  });
 });
 
 describe('amend find helpers', () => {

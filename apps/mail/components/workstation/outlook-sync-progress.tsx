@@ -37,13 +37,13 @@ export function OutlookSyncProgress({
     paused = Boolean(status?.userPaused),
     disabled = busy || !status || status.state === 'sign-in-required' || error === 'access-removed';
   return (
-    <div className="relative max-w-[180px] text-[11px]">
+    <div className="relative min-w-0 max-w-[180px] text-[11px]">
       <button
         type="button"
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen(!open)}
-        className="max-w-full rounded border border-slate-200 px-2 py-1 text-left focus-visible:outline-2 focus-visible:outline-emerald-700"
+        className="block min-w-0 max-w-full truncate rounded border border-slate-200 px-2 py-1 text-left focus-visible:outline-2 focus-visible:outline-emerald-700"
       >
         <span aria-live="polite">{label}</span>
       </button>

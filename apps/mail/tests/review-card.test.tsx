@@ -99,6 +99,30 @@ describe('ReviewCard screenshots', () => {
 });
 
 describe('ReviewCard decision', () => {
+  it('shows disabled review controls with a reason while writes are off, and sends nothing', () => {
+    const client = fakeClient();
+    render(
+      <ReviewCard
+        client={client}
+        workItemId={WORK_ITEM}
+        run={runWith()}
+        onChanged={vi.fn()}
+        writesEnabled={false}
+      />,
+    );
+
+    const reviewOk = screen.getByRole('button', { name: 'Review OK' }) as HTMLButtonElement;
+    const flag = screen.getByRole('button', { name: 'Flag' }) as HTMLButtonElement;
+    expect(reviewOk.disabled).toBe(true);
+    expect(flag.disabled).toBe(true);
+    expect(screen.getAllByText('Coming soon')).toHaveLength(2);
+
+    fireEvent.click(reviewOk);
+    fireEvent.click(flag);
+    expect(client.review).not.toHaveBeenCalled();
+    expect(client.reread).not.toHaveBeenCalled();
+  });
+
   it('Review OK sends the decision with no note', async () => {
     const client = fakeClient();
     const onChanged = renderReview(client);

@@ -301,9 +301,12 @@ describe('shared WebPanePanel', () => {
 });
 
 describe('Needs-you link in the webmail list header', () => {
-  it('the list header offers Needs you beside the refresh control', () => {
+  it('keeps the mail-list Needs you control separate from the pane header entry', async () => {
+    mocks.threadId = 'thread-42';
     render(<MailLayout />);
-    expect(screen.getByRole('button', { name: 'Needs you' })).toBeDefined();
+    const entry = screen.getByRole('button', { name: 'Needs you' });
+    expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    expect(entry.closest('[data-preview-pane]')).toBeNull();
   });
 });
 

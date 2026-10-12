@@ -98,12 +98,14 @@ afterEach(() => {
 });
 
 describe('follow-up card', () => {
-  it('renders nothing when the thread has no follow-up', async () => {
+  it('hides the card when the server holds no follow-up', async () => {
     findQuery.mockResolvedValue(null);
     const { container } = renderCard(bridgeWith().bridge);
     await settle();
     expect(findQuery).toHaveBeenCalledWith({ internetMessageId: '<q1@example.com>' });
     expect(container.innerHTML).toBe('');
+    expect(screen.queryByRole('button', { name: USE })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
   });
 
   it('renders nothing when the server route is missing', async () => {

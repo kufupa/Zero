@@ -287,7 +287,7 @@ describe('booking cards', () => {
     expect(screen.getByText(/Company rate not applied/)).toBeDefined();
   });
 
-  it('shows copy-only with no save buttons while pane save is off', () => {
+  it('shows copy guidance and disabled Book in HMS controls while pane save is off', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     expect(
       screen.getByText(
@@ -295,7 +295,11 @@ describe('booking cards', () => {
       ),
     ).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
+    const bookButtons = screen.getAllByRole('button', { name: 'Book in HMS' }) as HTMLButtonElement[];
+    expect(bookButtons).toHaveLength(2);
+    expect(bookButtons.every((button) => button.disabled)).toBe(true);
+    expect(screen.getAllByText('Coming soon')).toHaveLength(2);
+    bookButtons.forEach((button) => fireEvent.click(button));
     expect(screen.queryByRole('button', { name: /save draft/i })).toBeNull();
   });
 
@@ -563,9 +567,14 @@ describe('booking card marks guest details for the preview gate (H6b)', () => {
 });
 
 describe('booking card pane save', () => {
-  it('keeps Preview in HMS out of the card while the server flag is off', () => {
+  it('keeps Preview out and shows a disabled Book in HMS control while the server flag is off', () => {
     render(<BookingCards draft={draftReady()} />);
     expect(screen.queryAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(0);
+    const books = screen.getAllByRole('button', { name: 'Book in HMS' }) as HTMLButtonElement[];
+    expect(books).toHaveLength(2);
+    expect(books.every((button) => button.disabled)).toBe(true);
+    expect(screen.getAllByText('Coming soon')).toHaveLength(2);
+    books.forEach((button) => fireEvent.click(button));
   });
 
   it('asks for the missing choices before Preview in HMS can run', () => {
@@ -789,10 +798,16 @@ describe('booking card save modes and the note fields', () => {
   });
 
   it('shows copy buttons only, including the new fields, when the server mode is off', () => {
-    const { client } = paneClient({ mode: () => 'off' });
+    const { client, preview, commit } = paneClient({ mode: () => 'off' });
     render(<BookingCards draft={draftReady()} paneSave={client} />);
     expect(screen.queryAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(0);
-    expect(screen.queryAllByRole('button', { name: /^Book/ })).toHaveLength(0);
+    const books = screen.queryAllByRole('button', { name: /^Book/ }) as HTMLButtonElement[];
+    expect(books).toHaveLength(2);
+    expect(books.every((button) => button.disabled)).toBe(true);
+    expect(screen.getAllByText('Coming soon')).toHaveLength(2);
+    books.forEach((button) => fireEvent.click(button));
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
     expect(screen.getAllByRole('button', { name: 'Copy Reservation note for room 1' })).toHaveLength(1);
     expect(screen.getAllByRole('button', { name: 'Copy Booking agency for room 2' })).toHaveLength(1);
   });
