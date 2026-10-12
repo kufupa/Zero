@@ -2026,6 +2026,46 @@ describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C
       expect(await replyStatus(db, first!.id)).toBe('needs_you');
     }));
 
+  it('an automated booking does not supersede an untouched human-written request', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'auto-1', 'thread-auto-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const first = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const notice = await guestMail(db, 'auto-2', 'thread-auto-1', '2027-10-01T09:00:00Z');
+      await insertRead(db, notice, {
+        version: 'extract-v1',
+        kind: 'booking',
+        payload: { ...payload(), origin: 'system_notice' },
+      });
+      const second = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: notice });
+
+      expect(await replyStatus(db, first!.id)).toBe('needs_you');
+      expect(await replyStatus(db, second!.id)).toBe('needs_you');
+      const listed = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(listed.map((item) => item.id)).toContain(first!.id);
+      expect(listed.map((item) => item.id)).not.toContain(second!.id);
+    }));
+
+  it('a human-written booking supersedes an untouched human-written request', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'human-1', 'thread-human-1', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const first = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      const booking = await guestMail(db, 'human-2', 'thread-human-1', '2027-10-01T09:00:00Z');
+      await insertRead(db, booking, {
+        version: 'extract-v1',
+        kind: 'booking',
+        payload: { ...payload(), origin: 'person' },
+      });
+      const second = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: booking });
+
+      expect(await replyStatus(db, first!.id)).toBe('dismissed');
+      expect(await replyStatus(db, second!.id)).toBe('needs_you');
+      const listed = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
+      expect(listed.map((item) => item.id)).toContain(second!.id);
+      expect(listed.map((item) => item.id)).not.toContain(first!.id);
+    }));
+
   it('a staff-sent other is done; guest other keeps needs-you status but is not listed', () =>
     withDb(async (db) => {
       await sentFromBefore(db, 'staff', STAFF);

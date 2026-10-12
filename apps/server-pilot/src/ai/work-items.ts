@@ -865,7 +865,9 @@ export type ThreadWorkChange =
  *   link existed) gets the same treatment, with the hotel's latest answer as its link, if no person touched it. A person's
  *   close, with no link, stays.
  * - Same-thread collapse (C3): an older needs-you item is dismissed (superseded_by_thread) when a newer needs-you item of
- *   any kind but other is on the thread. A newer "other" mail never supersedes a request.
+ *   any kind but other is on the thread and is human-written. An automated one never supersedes a request: listWorkItems
+ *   hides it from Needs You, so the older request would show in neither list. A newer "other" mail never supersedes
+ *   a request.
  * - Staff-sent other: an "other" mail the hotel sent (an outbound one, or a copy as above) gets no needs-you (done,
  *   staff_sent_other).
  * Makes no writes. Items of kind spam are left out.
@@ -895,6 +897,9 @@ export async function planThreadWork(
     limit 1
   )`;
   const hmsOpen = sql<boolean>`(${latestHmsWriteId} is not null and coalesce(${latestHmsReview}, '') <> 'review.ok')`;
+  // Stored origin 'person' means human-written, 'system_notice' means automated. A missing extraction or origin counts
+  // as human-written, as listWorkItems reads it.
+  const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
   // The item rows are locked before the mail is read (when asked), so the mail matches the items the plan changes. A live
   // admission that reopens an item waits on this lock, and the mail it committed is in the read below.
   const itemQuery = db
@@ -910,8 +915,10 @@ export async function planThreadWork(
       // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
       // "id" binds to the subquery's own table and the check is always false.
       touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and ${personTouchSql('we')})`,
+      origin,
     })
     .from(workItem)
+    .leftJoin(mailExtraction, eq(mailExtraction.id, workItem.extractionId))
     .where(
       and(
         eq(workItem.transportId, input.transportId),
@@ -966,13 +973,14 @@ export async function planThreadWork(
     rows.reduce<T | undefined>((best, row) => (!best || later(row, best) ? row : best), undefined);
   const changes: ThreadWorkChange[] = [];
   // The items that are needs-you once these changes land. Only untouched ones can be superseded.
-  const open: Array<{ id: string; kind: MailKind; at: number; untouched: boolean }> = [];
+  const open: Array<{ id: string; kind: MailKind; at: number; untouched: boolean; humanWritten: boolean }> = [];
   for (const item of items) {
     const source = item.sourceMessageId ? byId.get(item.sourceMessageId) : undefined;
     if (!source) continue;
     const kind = item.kind as MailKind;
     const at = arrivedAt(source);
     const untouched = !item.touched && Object.keys(item.state ?? {}).length === 0;
+    const humanWritten = item.origin !== 'system_notice';
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
@@ -994,7 +1002,7 @@ export async function planThreadWork(
       if (item.status === 'needs_you' && replyChange) {
         changes.push(replyChange);
       } else if (item.status === 'needs_you') {
-        open.push({ id: item.id, kind, at, untouched: false });
+        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
       } else if (item.sentAt && !domainOther && lastGuest && lastGuest.at > item.sentAt.getTime() && !answered) {
         // A hotel reply closed it, then a person touched it: a later guest mail still reopens it. A person's close has no
         // reply link, so it stays.
@@ -1005,7 +1013,7 @@ export async function planThreadWork(
           reason: NEW_INBOUND,
           previousSentMessageId: item.sentMessageId,
         });
-        open.push({ id: item.id, kind, at, untouched: false });
+        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
       }
       continue;
     }
@@ -1016,7 +1024,7 @@ export async function planThreadWork(
       } else if (replyChange) {
         changes.push(replyChange);
       } else {
-        open.push({ id: item.id, kind, at, untouched: true });
+        open.push({ id: item.id, kind, at, untouched: true, humanWritten });
       }
     } else if (!domainOther) {
       // Closed by a hotel reply: reopened by a later guest mail, or re-pointed at the hotel's latest answer. A done row the
@@ -1031,7 +1039,7 @@ export async function planThreadWork(
           reason: NEW_INBOUND,
           previousSentMessageId: item.sentMessageId,
         });
-        open.push({ id: item.id, kind, at, untouched: true });
+        open.push({ id: item.id, kind, at, untouched: true, humanWritten });
       } else if (lastHotel && answered && lastHotel.m.id !== item.sentMessageId) {
         changes.push({
           workItemId: item.id,
@@ -1042,7 +1050,9 @@ export async function planThreadWork(
     }
   }
   for (const older of open.filter((x) => x.untouched)) {
-    const newer = open.find((x) => x.id !== older.id && x.at > older.at && x.kind !== 'other');
+    // Only a human-written item supersedes a request: an automated one is hidden from Needs You, so it would leave the
+    // older request in neither list.
+    const newer = open.find((x) => x.id !== older.id && x.at > older.at && x.kind !== 'other' && x.humanWritten);
     if (newer) {
       changes.push({
         workItemId: older.id,
