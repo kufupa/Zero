@@ -114,7 +114,7 @@ describe('production pane never synthesizes quote evidence', () => {
     // Get rates waits for a room type on every row; the email gave none. The read lands first.
     await findReadStayArrival();
     fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'STQN' } });
-    fireEvent.click(await screen.findByRole('button', { name: /^Get rates from HMS$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => {
       expect(screen.getAllByText(/not available here|not owned by this quoting UI|integration unavailable|not ready yet|not connected to this pane/i).length).toBeGreaterThan(0);
     });

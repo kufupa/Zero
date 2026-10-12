@@ -118,7 +118,7 @@ vi.mock('../providers/query-provider', () => ({
             {
               id: 'g1',
               childrenAges: [],
-              board: 'unknown' as const,
+              board: 'bb' as const,
               quantity: 1,
               specialRequests: [],
               fields: { arrivalDate: 'missing' as const, departureDate: 'missing' as const, adults: 'missing' as const },
@@ -170,7 +170,7 @@ async function waitForAllocation(label: string) {
 async function startPendingPdf() {
   render(<OutlookPanePage />);
   await fillStayFactsMatchingAuthorisedOffer();
-  fireEvent.click(await screen.findByRole('button', { name: /^Get rates from HMS$/i }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Search availability$/i }));
   // A successful run selects its allocation already; clicking again would deselect it.
   const allocation = await waitForAllocation('Standard King');
   if (allocation.getAttribute('aria-pressed') !== 'true') fireEvent.click(allocation);
@@ -182,7 +182,7 @@ async function startPendingPdf() {
 
 async function assertNoNativeDraft() {
   expect(screen.queryByText(/Prepared PDF/i)).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+  fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
   const commands = sendCommandMock.mock.calls.map((call) => call[0]);
   expect(commands).not.toContain('CREATE_REPLY_DRAFT');
   expect(commands).not.toContain('ADD_ATTACHMENT_TO_DRAFT');
@@ -213,7 +213,10 @@ describe('deferred quote PDF / unavailable cannot mutate a newer session', () =>
     const pending = deferred<typeof AUTHORISED_QUOTE_PDF>();
     quotePdfMutateMock.mockReturnValue(pending.promise);
     await startPendingPdf();
-    fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '4' } });
+    // Adults per room is a stepper that the fill left at 1. Three + presses make 4.
+    for (let press = 0; press < 3; press += 1) {
+      fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
+    }
     await act(async () => {
       pending.resolve(AUTHORISED_QUOTE_PDF);
       await pending.promise;
@@ -225,7 +228,7 @@ describe('deferred quote PDF / unavailable cannot mutate a newer session', () =>
     const pending = deferred<typeof AUTHORISED_QUOTE_PDF>();
     quotePdfMutateMock.mockReturnValue(pending.promise);
     await startPendingPdf();
-    fireEvent.change(screen.getByLabelText('Rate type'), { target: { value: 'Government' } });
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'government' } });
     await act(async () => {
       pending.resolve(AUTHORISED_QUOTE_PDF);
       await pending.promise;
@@ -238,8 +241,11 @@ describe('deferred quote PDF / unavailable cannot mutate a newer session', () =>
     executeStaffQuoteMutateMock.mockReturnValue(pending.promise);
     render(<OutlookPanePage />);
     await fillStayFactsMatchingAuthorisedOffer();
-    fireEvent.click(await screen.findByRole('button', { name: /^Get rates from HMS$/i }));
-    fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '4' } });
+    fireEvent.click(await screen.findByRole('button', { name: /^Search availability$/i }));
+    // Adults per room is a stepper that the fill left at 1. Three + presses make 4.
+    for (let press = 0; press < 3; press += 1) {
+      fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
+    }
     await act(async () => {
       pending.resolve({ status: 'pending' });
       await pending.promise;

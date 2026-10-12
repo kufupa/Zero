@@ -265,7 +265,7 @@ describe('OutlookPane Onboarding Flow', () => {
     expect(screen.queryByText(/September 2026/i)).toBeNull();
     expect(screen.queryByText(/^Change Dates$/)).toBeNull();
     expect(screen.queryByRole('button', { name: /^Search Availability$/i })).toBeNull();
-    expect(await screen.findByRole('button', { name: /^Get rates from HMS$/i })).toBeDefined();
+    expect(await screen.findByRole('button', { name: /^Search availability$/i })).toBeDefined();
   });
 
   it('shows an empty state instead of sample data when no email is selected', () => {
