@@ -176,9 +176,9 @@ const readRootWhere = (input: ReadRootApprovalInput) => and(eq(outlookDeviceRead
   eq(outlookDeviceReadRoot.storeId, input.storeId), eq(outlookDeviceReadRoot.rootEntryId, input.rootEntryId));
 
 /** Restricted operator only. Approval cannot create a device/mailbox/staff grant. */
-export async function approveReadRoot(db: DB, input: ReadRootApprovalInput): Promise<void> {
+export async function approveReadRoot(db: DB, input: ReadRootApprovalInput, options: { unchangedIsNoop?: boolean } = {}): Promise<boolean> {
   if (!validReadRoot(input)) throw new Error('Invalid read root approval');
-  await db.transaction(async tx => {
+  return db.transaction(async tx => {
     // Serialize operator approvals per enrolled device so concurrent adds cannot exceed the finite DTO bound.
     await tx.select({ id: outlookDevice.deviceId }).from(outlookDevice).where(eq(outlookDevice.deviceId, input.deviceId)).for('update');
     if (!await isDeviceAuthorized(tx as DB, input.deviceId, input.userId, input.transportId, input.storeId, true))
@@ -206,11 +206,14 @@ export async function approveReadRoot(db: DB, input: ReadRootApprovalInput): Pro
     );
     if (activeForStore.length >= 1 && !sameBinding)
       throw new Error('Read root policy allows at most one active root per device store');
+    // An identical active root is already authority. Re-reporting it must not bump the generation under live sync sessions.
+    if (sameBinding && options.unchangedIsNoop) return false;
     await tx.insert(outlookDeviceReadRoot).values(input).onConflictDoUpdate({
       target: [outlookDeviceReadRoot.deviceId, outlookDeviceReadRoot.userId, outlookDeviceReadRoot.transportId,
         outlookDeviceReadRoot.storeId, outlookDeviceReadRoot.rootEntryId],
       set: { policyVersion: 1, policyGeneration: sql`${outlookDeviceReadRoot.policyGeneration} + 1`, revokedAt: null, approvedAt: new Date() },
     });
+    return true;
   });
 }
 export async function revokeReadRoot(db: DB, input: ReadRootApprovalInput): Promise<boolean> {
@@ -220,19 +223,29 @@ export async function revokeReadRoot(db: DB, input: ReadRootApprovalInput): Prom
     .where(and(readRootWhere(input), isNull(outlookDeviceReadRoot.revokedAt))).returning({ root: outlookDeviceReadRoot.rootEntryId });
   return rows.length === 1;
 }
-/** Signed device reports its store root. Accepted only when the device's single active staff/mailbox grant exists and the store matches enrollment. */
+/** Stable denial codes. Any other failure is reported as approve_failed and its database text stays server-side. */
+const READ_ROOT_DENIALS: Record<string, string> = {
+  'Invalid read root approval': 'invalid_root',
+  'Read root requires an active exact device, staff and mailbox grant': 'binding_denied',
+  'Read root policy allows at most one active root per device store': 'root_conflict',
+};
+
+/** Signed device reports its store root. Accepted only when the device's single active staff/mailbox grant exists and the store matches enrollment. An identical active root is a no-op, so a repeat report after an Outlook restart leaves live sync sessions alone. */
 export async function acceptDeviceStoreRoot(db: DB, device: VerifiedDevice, input: { storeId: string; rootEntryId: string }): Promise<{ accepted: boolean; reason: string }> {
   if (input.storeId !== device.storeId) return { accepted: false, reason: 'store_mismatch' };
+  if ([...input.rootEntryId].some((ch) => ch.charCodeAt(0) < 32)) return { accepted: false, reason: 'invalid_root' };
   const grants = await db.select({ userId: outlookDeviceGrant.userId, transportId: outlookDeviceGrant.transportId })
     .from(outlookDeviceGrant).innerJoin(mailboxTransport, eq(mailboxTransport.id, outlookDeviceGrant.transportId))
     .where(and(eq(outlookDeviceGrant.deviceId, device.deviceId), eq(mailboxTransport.isActive, true)));
   if (grants.length !== 1) return { accepted: false, reason: 'grant_not_single' };
   try {
-    await approveReadRoot(db, { ...grants[0], deviceId: device.deviceId, storeId: input.storeId, rootEntryId: input.rootEntryId, policyVersion: 1 });
+    const changed = await approveReadRoot(db, { ...grants[0], deviceId: device.deviceId, storeId: input.storeId, rootEntryId: input.rootEntryId, policyVersion: 1 }, { unchangedIsNoop: true });
+    return { accepted: true, reason: changed ? 'accepted' : 'unchanged' };
   } catch (error) {
-    return { accepted: false, reason: error instanceof Error ? error.message : 'approve_failed' };
+    const message = error instanceof Error ? error.message : '';
+    if (!READ_ROOT_DENIALS[message]) console.error('outlook_store_root_failed', error instanceof Error ? error.name : 'unknown');
+    return { accepted: false, reason: READ_ROOT_DENIALS[message] ?? 'approve_failed' };
   }
-  return { accepted: true, reason: 'accepted' };
 }
 
 /** Caller must also validate live staff session. Native must check actual COM ancestry before every read. */
