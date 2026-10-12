@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
 import { PartyPicker, resetPartyAutoLookupForTests } from '../components/quote-workflow/party-picker';
@@ -92,15 +92,20 @@ describe('automatic HMS lookup for a company or agency field', () => {
     expect(screen.queryByText(/picked by Nava/)).toBeNull();
   });
 
-  it('a name with no match says so, and Find in HMS runs a new search', async () => {
+  it('a name with no match says so, and staff can confirm a new Find in HMS result', async () => {
     const find = vi
       .fn<PartyFinder>()
       .mockResolvedValueOnce(reply({ outcome: 'no_match', searchedFor: 'Woolworths' }))
       .mockResolvedValueOnce(reply({ outcome: 'resolved', results: [WOOLWORTHS], best: WOOLWORTHS, searchedFor: 'Woolworths' }));
     render(<Harness find={find} />);
     expect(await screen.findByText('Not found in HMS — quote uses public rates', undefined, { timeout: 3000 })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Search again' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    expect(await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, { timeout: 3000 })).toBeTruthy();
+    const result = await screen.findByRole('list', { name: 'Companies and agencies found in HMS' });
+    expect(screen.queryByText(/Not found in HMS/)).toBeNull();
+    fireEvent.click(within(result).getByRole('button', { name: 'Woolworths Holdings' }));
+    expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
+    expect(screen.queryByText(/picked by Nava/)).toBeNull();
     expect(find).toHaveBeenCalledTimes(2);
   });
 
@@ -122,6 +127,37 @@ describe('automatic HMS lookup for a company or agency field', () => {
     expect(await screen.findByRole('button', { name: 'Woolworths Holdings' }, { timeout: 3000 })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
     expect(find).toHaveBeenCalledWith('Woolworths', 'company');
+  });
+
+  it('keeps Find in HMS visible for an empty Company field, disabled until a name is entered', () => {
+    const find = vi.fn(async () => reply({ outcome: 'no_match' }));
+    render(<Harness find={find} name="" kind="company" />);
+    const button = screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(find).not.toHaveBeenCalled();
+  });
+
+  it('enables manual Find in HMS from two characters, not one', async () => {
+    const find = vi.fn<PartyFinder>().mockResolvedValue(reply({ outcome: 'no_match' }));
+    const { rerender } = render(<Harness find={find} name="A" autoLookup={false} />);
+    expect((screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+
+    rerender(<Harness find={find} name="Ab" autoLookup={false} />);
+    const button = screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    await waitFor(() => expect(find).toHaveBeenCalledWith('Ab', 'company'));
+  });
+
+  it('shows manual HMS matches under the party field so staff can confirm one', async () => {
+    const find = vi.fn(async () =>
+      reply({ outcome: 'ambiguous', results: [WOOLWORTHS, WOOLWORTHS_FOODS], searchedFor: 'Woolworths' }),
+    );
+    render(<Harness find={find} autoLookup={false} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    expect(await screen.findByRole('list', { name: 'Companies and agencies found in HMS' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Woolworths Foods' })).toBeTruthy();
   });
 
   it('runs no search when the field already holds its pick', async () => {

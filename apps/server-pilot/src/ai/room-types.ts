@@ -23,11 +23,13 @@ const IGNORED_ROOM_WORDS = new Set(['room', 'bedroom', 'bed', 'type']);
 const MATCHABLE_ROOM_WORDS = new Set(
   Object.values(ROOM_TYPE_NAMES).flatMap((name) => name.toLowerCase().split(' ')),
 );
-const ROOM_WORD_ALIASES: Record<string, readonly string[]> = {
-  double: ['queen', 'king'],
-  // Occupancy does not identify a native room type; keep all options ambiguous for staff to choose.
-  single: ['twin', 'queen', 'king', 'suite'],
+const ROOM_WORD_ALIASES: Record<string, readonly RoomTypeCode[]> = {
+  // Rank common room suggestions first. "Single" stays ambiguous, but does not suggest unrelated deluxe/suite types.
+  double: ['STQN', 'SKNG', 'EXKNG'],
+  single: ['STWN', 'SKNG'],
 };
+
+const MAX_ROOM_TYPE_SUGGESTIONS = 3;
 
 function singularRoomWord(word: string): string {
   if (word.length > 4 && word.endsWith('ies')) return `${word.slice(0, -3)}y`;
@@ -66,11 +68,11 @@ export function matchRoomType(raw: string | undefined): RoomTypeMatch {
     const nameWords = ROOM_TYPE_NAMES[candidate].toLowerCase().split(' ');
     return words.every((word) => {
       const aliases = ROOM_WORD_ALIASES[word];
-      if (aliases) return aliases.some((alias) => nameWords.includes(alias));
+      if (aliases) return aliases.includes(candidate);
       return nameWords.includes(word);
     });
   });
 
   if (candidates.length === 1) return { code: candidates[0]!, suggestions: [] };
-  return { suggestions: candidates };
+  return { suggestions: candidates.slice(0, MAX_ROOM_TYPE_SUGGESTIONS) };
 }

@@ -19,7 +19,7 @@ import {
 } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
-import { emptyStaffQuoteHeader } from '@/lib/quote-workflow/types';
+import { emptyStaffQuoteHeader, staffStayExtrasFor } from '@/lib/quote-workflow/types';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type {
   QueueStatus,
@@ -35,6 +35,7 @@ import type {
   StaffQuoteHeader,
   StaffExtraField,
   StaffQuoteOtherUnit,
+  StaffStayExtras,
   StayEditAction,
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
@@ -145,11 +146,13 @@ function formatZarMinor(minor: number | undefined): string {
 function ZarMinorInput({
   ariaLabel,
   minor,
+  disabled = false,
   onMinorChange,
   onErrorChange,
 }: {
   ariaLabel: string;
   minor: number | undefined;
+  disabled?: boolean;
   onMinorChange: (minor: number | undefined) => void;
   /** Reports unreadable or over-cap text to the quote gate; null once the text reads cleanly. */
   onErrorChange?: (message: string | null) => void;
@@ -181,6 +184,7 @@ function ZarMinorInput({
     <>
       <input
         aria-label={ariaLabel}
+        disabled={disabled}
         aria-invalid={error ? true : undefined}
         className={paneFieldClass}
         inputMode="decimal"
@@ -198,7 +202,7 @@ function ZarMinorInput({
           apply(event.target.value);
         }}
       />
-      {error ? <span className="mt-0.5 block text-[12.5px] font-normal text-[#b45309]">{error}</span> : null}
+      {error ? <span className="mt-0.5 block text-[13px] font-normal text-[#b45309]">{error}</span> : null}
     </>
   );
 }
@@ -264,7 +268,7 @@ function CountInput({
           apply(event.target.value);
         }}
       />
-      {error ? <span className="mt-0.5 block text-[12.5px] font-normal text-[#b45309]">{error}</span> : null}
+      {error ? <span className="mt-0.5 block text-[13px] font-normal text-[#b45309]">{error}</span> : null}
     </>
   );
 }
@@ -283,22 +287,6 @@ function pickClearedBy(kind: 'company' | 'agency', header: StaffQuoteHeader, tex
   const picked = header.parties?.[kind];
   if (!picked || text === picked.name) return {};
   return { parties: { ...header.parties, [kind]: undefined } };
-}
-
-/** Reports one field's unreadable text through the header, so the quote gate sees it. No revision bump. */
-function fieldErrorReporter(
-  header: StaffQuoteHeader,
-  onPatch: ((header: Partial<StaffQuoteHeader>) => void) | undefined,
-  field: StaffExtraField,
-) {
-  return (message: string | null) => {
-    const current = header.fieldErrors ?? {};
-    if ((current[field] ?? null) === message) return;
-    const next: Partial<Record<StaffExtraField, string>> = { ...current };
-    if (message) next[field] = message;
-    else delete next[field];
-    onPatch?.({ fieldErrors: next });
-  };
 }
 
 type RatePlanCategory = 'public' | 'contract' | 'government' | 'other';
@@ -354,6 +342,9 @@ function filteredRateOptions(
     const governmentCodes = new Set(
       choices.filter((choice) => choice.category === 'government').map((choice) => choice.code),
     );
+    // No government category is known (the catalogue query failed, or HMS-only codes): the search already
+    // priced under Government, so show what HMS returned instead of hiding every rate.
+    if (selectedPlan === 'government' && governmentCodes.size === 0) return options;
     const wantGovernment = selectedPlan === 'government';
     return options.filter(
       (option) => governmentCodes.has(option.rateCode.trim().toUpperCase()) === wantGovernment,
@@ -367,6 +358,7 @@ function filteredRateOptions(
 function StaffPartyFields({
   header,
   onPatch,
+  onFieldEdit,
   findParty,
   partySuggestions,
   partyIndex,
@@ -374,6 +366,7 @@ function StaffPartyFields({
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
+  onFieldEdit?: (kind: 'company' | 'agency') => void;
   /** Find in HMS. Null or absent keeps the company and agency as plain text, as before. */
   findParty?: PartyFinder | null;
   /** Suggestions from the email, for staff to confirm. The pane computes them; nothing is picked by itself. */
@@ -396,31 +389,34 @@ function StaffPartyFields({
         suggestions={partySuggestions}
         indexSearch={partyIndex}
         onLookupPending={(pending) => onPartyLookupPending?.(kind, pending)}
-        onPick={(party) =>
-          onPatch?.({
+        onPick={(party) => {
+          onFieldEdit?.(kind);
+          return onPatch?.({
             parties:
               party.kind === 'company'
                 ? { ...header.parties, company: party }
                 : { ...header.parties, agency: party },
             ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
-          })
-        }
-        onClear={(cleared) =>
-          onPatch?.({
+          });
+        }}
+        onClear={(cleared) => {
+          onFieldEdit?.(cleared);
+          return onPatch?.({
             parties:
               cleared === 'company'
                 ? { ...header.parties, company: undefined }
                 : { ...header.parties, agency: undefined },
-          })
-        }
-        onSearchName={(searched, searchKind) =>
-          onPatch?.(searchKind === 'company' ? { company: searched } : { agency: searched })
-        }
+          });
+        }}
+        onSearchName={(searched, searchKind) => {
+          onFieldEdit?.(searchKind);
+          return onPatch?.(searchKind === 'company' ? { company: searched } : { agency: searched });
+        }}
       />
     ) : null;
   return (
     <div className="flex flex-col gap-2.5">
-      <p className="text-[12.5px] text-[#64748b]">
+      <p className="text-[13px] text-[#64748b]">
         Company is the end client; Agency is the travel agent. Each HMS result must be confirmed before its contract rate is used.
       </p>
       <Field label="Agency (travel agent)" htmlFor="quote-agency">
@@ -429,9 +425,10 @@ function StaffPartyFields({
           aria-label="Agency (travel agent)"
           className={paneFieldClass}
           value={header.agency}
-          onChange={(event) =>
-            onPatch?.({ agency: event.target.value, ...pickClearedBy('agency', header, event.target.value) })
-          }
+          onChange={(event) => {
+            onFieldEdit?.('agency');
+            onPatch?.({ agency: event.target.value, ...pickClearedBy('agency', header, event.target.value) });
+          }}
         />
         {partyPicker('agency')}
         {header.parties?.agency ? (
@@ -444,31 +441,17 @@ function StaffPartyFields({
           aria-label="Company (end client)"
           className={paneFieldClass}
           value={header.company}
-          onChange={(event) =>
-            onPatch?.({ company: event.target.value, ...pickClearedBy('company', header, event.target.value) })
-          }
+          onChange={(event) => {
+            onFieldEdit?.('company');
+            onPatch?.({ company: event.target.value, ...pickClearedBy('company', header, event.target.value) });
+          }}
         />
         {partyPicker('company')}
         {header.parties?.company ? (
           <span className="w-fit rounded-[2px] bg-[#eff6ff] px-1.5 py-0.5 text-[10.5px] font-semibold text-[#0066cc]">HMS company contract selected</span>
         ) : null}
       </Field>
-    </div>
-  );
-}
-
-/** Contact, allowances and notes. Folded in the pane's Extras disclosure. */
-function StaffExtraFields({
-  header,
-  onPatch,
-}: {
-  header: StaffQuoteHeader;
-  onPatch?: (header: Partial<StaffQuoteHeader>) => void;
-}) {
-  // An amount with no label is not dropped: the label is required and the quote raises a review item for it.
-  const otherNeedsLabel = Boolean(header.other?.amountMinor) && !header.other?.label?.trim();
-  return (
-    <>
+      {/* The client block on the quote and the HMS booking. Typed by staff; nothing fills these from the email. */}
       <Field label="Attention" htmlFor="quote-attention">
         <input
           id="quote-attention"
@@ -496,205 +479,216 @@ function StaffExtraFields({
           onChange={(event) => onPatch?.({ clientTelephone: event.target.value })}
         />
       </Field>
-      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-[12.5px] font-semibold text-[#475569]">
-          Dinner allowance (R per person per night)
-          <ZarMinorInput
-            ariaLabel="Dinner allowance (R per person per night)"
-            minor={header.dinnerAllowanceMinor}
-            onMinorChange={(dinnerAllowanceMinor) => onPatch?.({ dinnerAllowanceMinor })}
-            onErrorChange={fieldErrorReporter(header, onPatch, 'dinnerAllowance')}
+    </div>
+  );
+}
+
+/** Reports one stay extra's unreadable value without treating validation as a quote edit. */
+function stayFieldErrorReporter(
+  extras: StaffStayExtras,
+  onPatch: ((stayKey: string, extras: Partial<StaffStayExtras>) => void) | undefined,
+  stayKey: string,
+  field: StaffExtraField,
+) {
+  return (message: string | null) => {
+    const current = extras.fieldErrors ?? {};
+    if ((current[field] ?? null) === message) return;
+    const next: Partial<Record<StaffExtraField, string>> = { ...current };
+    if (message) next[field] = message;
+    else delete next[field];
+    onPatch?.(stayKey, { fieldErrors: next });
+  };
+}
+
+function StayExtrasFields({
+  header,
+  stayKey,
+  stayNumber,
+  onPatch,
+}: {
+  header: StaffQuoteHeader;
+  stayKey: string;
+  stayNumber: number;
+  onPatch?: (stayKey: string, extras: Partial<StaffStayExtras>) => void;
+}) {
+  const extras = staffStayExtrasFor(header, stayKey);
+  const patch = (values: Partial<StaffStayExtras>) => onPatch?.(stayKey, values);
+  const clearedErrors = (...fields: StaffExtraField[]) => withoutFieldErrors(extras.fieldErrors, fields);
+  const otherNeedsLabel = Boolean(extras.otherEnabled && extras.other?.amountMinor) && !extras.other?.label?.trim();
+  const chargeLine = (
+    label: 'Shuttle' | 'Lunch allowance' | 'Dinner allowance' | 'Other',
+    enabled: boolean,
+    onEnabled: (checked: boolean) => void,
+    amountLabel: string,
+    amount: number | undefined,
+    onAmountChange: (minor: number | undefined) => void,
+    errorField: StaffExtraField,
+    required = false,
+  ) => (
+    <div className="grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-x-2 gap-y-1.5 border-t border-[#e2e8f0] pt-2 first:border-t-0 first:pt-0">
+      <label className="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-[#475569]">
+        <input
+          type="checkbox"
+          aria-label={label}
+          checked={enabled}
+          disabled={required}
+          onChange={(event) => onEnabled(event.target.checked)}
+        />
+        <span>{label}</span>
+      </label>
+      <ZarMinorInput
+        ariaLabel={amountLabel}
+        minor={amount}
+        disabled={!enabled}
+        onMinorChange={onAmountChange}
+        onErrorChange={stayFieldErrorReporter(extras, onPatch, stayKey, errorField)}
+      />
+      {label === 'Shuttle' && enabled ? (
+        <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
+          <span>Trips</span>
+          <CountInput
+            ariaLabel="Shuttle trips"
+            value={extras.shuttleTrips}
+            max={50}
+            placeholder="1"
+            onValueChange={(shuttleTrips) => patch({ shuttleTrips })}
+            onErrorChange={stayFieldErrorReporter(extras, onPatch, stayKey, 'shuttleTrips')}
           />
         </label>
-        <label className="flex flex-col gap-1 text-[12.5px] text-[#64748b]">
-          Dinner label, optional (e.g. food only)
-          <input
-            aria-label="Dinner label"
-            className={paneFieldClass}
-            maxLength={120}
-            value={header.dinnerAllowanceLabel ?? ''}
-            onChange={(event) => onPatch?.({ dinnerAllowanceLabel: event.target.value })}
-          />
-        </label>
-      </div>
-      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-[12.5px] font-semibold text-[#475569]">
-          Lunch allowance (R per person per night)
-          <ZarMinorInput
-            ariaLabel="Lunch allowance (R per person per night)"
-            minor={header.lunchAllowanceMinor}
-            onMinorChange={(lunchAllowanceMinor) => onPatch?.({ lunchAllowanceMinor })}
-            onErrorChange={fieldErrorReporter(header, onPatch, 'lunchAllowance')}
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-[12.5px] text-[#64748b]">
-          Lunch label, optional (e.g. with 1 soft drink)
+      ) : null}
+      {label === 'Lunch allowance' && enabled ? (
+        <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
+          <span>Note (optional)</span>
           <input
             aria-label="Lunch label"
             className={paneFieldClass}
             maxLength={120}
-            value={header.lunchAllowanceLabel ?? ''}
-            onChange={(event) => onPatch?.({ lunchAllowanceLabel: event.target.value })}
+            value={extras.lunchAllowanceLabel ?? ''}
+            onChange={(event) => patch({ lunchAllowanceLabel: event.target.value })}
           />
         </label>
-      </div>
-      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-[12.5px] font-semibold text-[#475569]">
-          Office transfer (R per person per day)
-          <ZarMinorInput
-            ariaLabel="Office transfer (R per person per day)"
-            minor={header.officeTransferMinor}
-            onMinorChange={(officeTransferMinor) => onPatch?.({ officeTransferMinor })}
-            onErrorChange={fieldErrorReporter(header, onPatch, 'officeTransfer')}
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-[12.5px] text-[#64748b]">
-          Office transfer days, optional (blank = nights of stay)
-          <CountInput
-            ariaLabel="Office transfer days"
-            value={header.officeTransferDays}
-            max={31}
-            placeholder="nights of stay"
-            onValueChange={(officeTransferDays) => onPatch?.({ officeTransferDays })}
-            onErrorChange={fieldErrorReporter(header, onPatch, 'officeTransferDays')}
-          />
-        </label>
-      </div>
-      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex items-center gap-2 text-[12.5px] font-semibold text-[#475569]">
+      ) : null}
+      {label === 'Dinner allowance' && enabled ? (
+        <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
+          <span>Note (optional)</span>
           <input
-            type="checkbox"
-            aria-label="Shuttle requested"
-            checked={Boolean(header.shuttleRequested)}
-            onChange={(event) =>
-              onPatch?.({
-                shuttleRequested: event.target.checked,
-                ...(event.target.checked
-                  ? {}
-                  : { fieldErrors: withoutFieldErrors(header.fieldErrors, ['shuttleAmount', 'shuttleTrips']) }),
-              })
-            }
+            aria-label="Dinner label"
+            className={paneFieldClass}
+            maxLength={120}
+            value={extras.dinnerAllowanceLabel ?? ''}
+            onChange={(event) => patch({ dinnerAllowanceLabel: event.target.value })}
           />
-          Shuttle requested
         </label>
-        {header.shuttleRequested ? (
-          <div role="group" aria-label="Shuttle: trips × R per trip" className="flex flex-col gap-1.5">
-            <span className="text-[12.5px] font-semibold text-[#475569]">Shuttle: trips × R per trip</span>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
-                Trips
-                <CountInput
-                  ariaLabel="Shuttle trips"
-                  value={header.shuttleTrips}
-                  max={50}
-                  placeholder="1"
-                  onValueChange={(shuttleTrips) => onPatch?.({ shuttleTrips })}
-                  onErrorChange={fieldErrorReporter(header, onPatch, 'shuttleTrips')}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
-                R per trip
-                <ZarMinorInput
-                  ariaLabel="Shuttle amount"
-                  minor={header.shuttleMinor}
-                  onMinorChange={(shuttleMinor) => onPatch?.({ shuttleMinor })}
-                  onErrorChange={fieldErrorReporter(header, onPatch, 'shuttleAmount')}
-                />
-              </label>
-            </div>
-            {header.shuttleMinor ? null : (
-            <p className="text-[12.5px] text-[#b45309]">
-                No price yet. The shuttle stays a review item until you enter R per trip.
-              </p>
-            )}
-          </div>
-        ) : null}
-      </div>
-      <div role="group" aria-label="Other: label, amount, unit" className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <span className="text-[12.5px] font-semibold text-[#475569]">Other: label, amount, unit</span>
-        <div className="grid grid-cols-2 gap-2">
-          <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
-            Label
+      ) : null}
+      {label === 'Other' ? (
+        <>
+          <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
+            <span>Label</span>
             <input
               aria-label="Other label"
               aria-invalid={otherNeedsLabel || undefined}
               className={paneFieldClass}
+              disabled={!enabled}
               maxLength={120}
               placeholder="e.g. Parking"
-              required={otherNeedsLabel}
-              value={header.other?.label ?? ''}
+              value={extras.other?.label ?? ''}
               onChange={(event) =>
-                onPatch?.({ other: { unit: header.other?.unit ?? 'item', ...header.other, label: event.target.value } })
+                patch({ other: { unit: extras.other?.unit ?? 'item', ...extras.other, label: event.target.value } })
               }
             />
           </label>
-          <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
-            Amount (R)
-            <ZarMinorInput
-              ariaLabel="Other amount"
-              minor={header.other?.amountMinor}
-              onMinorChange={(amountMinor) =>
-                onPatch?.({ other: { label: header.other?.label ?? '', unit: header.other?.unit ?? 'item', amountMinor } })
+          <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
+            <span>Unit</span>
+            <select
+              aria-label="Other unit"
+              className={paneFieldClass}
+              disabled={!enabled}
+              value={extras.other?.unit ?? 'item'}
+              onChange={(event) =>
+                patch({
+                  other: {
+                    label: extras.other?.label ?? '',
+                    amountMinor: extras.other?.amountMinor,
+                    unit: event.target.value as StaffQuoteOtherUnit,
+                  },
+                })
               }
-              onErrorChange={fieldErrorReporter(header, onPatch, 'otherAmount')}
-            />
+            >
+              <option value="per_person_night">R per person per night</option>
+              <option value="per_person">R per person</option>
+              <option value="per_trip">R per trip</option>
+              <option value="item">R once (item)</option>
+            </select>
           </label>
-        </div>
-        {otherNeedsLabel ? <p className="text-[12.5px] text-[#b45309]">Add a label for this amount</p> : null}
-        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
-          Unit
-          <select
-            aria-label="Other unit"
-            className={paneFieldClass}
-            value={header.other?.unit ?? 'item'}
-            onChange={(event) =>
-              onPatch?.({
-                other: {
-                  label: header.other?.label ?? '',
-                  amountMinor: header.other?.amountMinor,
-                  unit: event.target.value as StaffQuoteOtherUnit,
-                },
-              })
-            }
-          >
-            <option value="per_person_night">R per person per night</option>
-            <option value="per_person">R per person</option>
-            <option value="per_trip">R per trip</option>
-            <option value="item">R once (item)</option>
-          </select>
-        </label>
-      </div>
-      <label className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 text-[12.5px] font-semibold text-[#475569]">
-        Notes for the quote
-        <textarea
-          aria-label="Notes for the quote"
-          className={`${paneTextareaClass} min-h-[3.5rem] font-normal`}
-          maxLength={1000}
-          value={header.notes ?? ''}
-          onChange={(event) => onPatch?.({ notes: event.target.value })}
-        />
-        <span className="text-[12.5px] font-normal text-[#64748b]">
-          Unpriced. Printed on the PDF and added to the reply as a note.
-        </span>
-      </label>
-    </>
+          {otherNeedsLabel ? <p className="col-span-2 text-[13px] text-[#b45309]">Add a label for this amount.</p> : null}
+        </>
+      ) : null}
+      {label === 'Dinner allowance' && required ? (
+        <p className="col-span-2 text-[13px] text-[#475569]">Enter the dinner allowance for this stay.</p>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <section role="group" aria-label={`Extras for Stay ${stayNumber}`} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
+      <h5 className="text-[13px] font-semibold text-[#475569]">Extras</h5>
+      {chargeLine(
+        'Shuttle',
+        extras.shuttleEnabled,
+        (shuttleEnabled) =>
+          patch({ shuttleEnabled, ...(!shuttleEnabled ? { fieldErrors: clearedErrors('shuttleAmount', 'shuttleTrips') } : {}) }),
+        'Shuttle amount',
+        extras.shuttleMinor,
+        (shuttleMinor) => patch({ shuttleMinor }),
+        'shuttleAmount',
+      )}
+      {chargeLine(
+        'Lunch allowance',
+        extras.lunchEnabled,
+        (lunchEnabled) => patch({ lunchEnabled, ...(!lunchEnabled ? { fieldErrors: clearedErrors('lunchAllowance') } : {}) }),
+        'Lunch allowance amount',
+        extras.lunchAllowanceMinor,
+        (lunchAllowanceMinor) => patch({ lunchAllowanceMinor }),
+        'lunchAllowance',
+      )}
+      {chargeLine(
+        'Dinner allowance',
+        extras.dinnerEnabled,
+        (dinnerEnabled) => patch({ dinnerEnabled, ...(!dinnerEnabled ? { fieldErrors: clearedErrors('dinnerAllowance') } : {}) }),
+        'Dinner allowance amount',
+        extras.dinnerAllowanceMinor,
+        (dinnerAllowanceMinor) => patch({ dinnerAllowanceMinor }),
+        'dinnerAllowance',
+        Boolean(extras.dinnerAllowanceRequired),
+      )}
+      {chargeLine(
+        'Other',
+        extras.otherEnabled,
+        (otherEnabled) => patch({ otherEnabled, ...(!otherEnabled ? { fieldErrors: clearedErrors('otherAmount') } : {}) }),
+        'Other amount',
+        extras.other?.amountMinor,
+        (amountMinor) => patch({ other: { label: extras.other?.label ?? '', unit: extras.other?.unit ?? 'item', amountMinor } }),
+        'otherAmount',
+      )}
+    </section>
   );
 }
 
 function AdvancedFields({
-  header,
-  onPatch,
   ratePlans,
   ratePlan,
   onRatePlanChange,
   notesBlock,
+  notes,
+  onNotesChange,
 }: {
-  header: StaffQuoteHeader;
-  onPatch?: (header: Partial<StaffQuoteHeader>) => void;
   ratePlans: RatePlanChoice[];
   ratePlan: string;
   onRatePlanChange: (value: string) => void;
   notesBlock: string;
+  /** The staff note for HMS, stored on the quote header so it survives the pane and goes to the booking. */
+  notes: string;
+  onNotesChange: (value: string) => void;
 }) {
   return (
     <Disclosure summary={<span>Advanced</span>}>
@@ -725,31 +719,28 @@ function AdvancedFields({
             );
           })}
         </select>
-        <span className="mt-0.5 block text-[12.5px] font-normal text-[#64748b]">
+        <span className="mt-0.5 block text-[13px] font-normal text-[#64748b]">
           All rates shows every code HMS returned. Choosing a plan filters the cards below.
         </span>
       </Field>
-      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <span className="text-[12.5px] font-semibold text-[#475569]">Notes for HMS</span>
-        <p className="text-[12.5px] text-[#64748b]">Copy the room, rate and authorisation details after checking the HMS results.</p>
-        <CopyHmsNotesButton block={notesBlock} />
-      </div>
-      <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
-        <div>
-          <h4 className="text-[13px] font-semibold text-[#475569]">Extras</h4>
-          <p className="text-[12.5px] text-[#64748b]">
-            Set once. Allowances apply to relevant stays; shuttle and one-off items are included once.
-          </p>
-        </div>
-        <StaffExtraFields header={header} onPatch={onPatch} />
-      </div>
+      <Field label="Notes for HMS" htmlFor="quote-hms-notes">
+        <textarea
+          id="quote-hms-notes"
+          aria-label="Notes for HMS"
+          className={paneTextareaClass}
+          placeholder="Add a staff note for the HMS handoff"
+          value={notes}
+          onChange={(event) => onNotesChange(event.target.value)}
+        />
+      </Field>
+      <CopyHmsNotesButton block={notesBlock} />
     </Disclosure>
   );
 }
 
 function StatusNote({ children }: { children: React.ReactNode }) {
   return (
-    <p aria-live="polite" className="rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-[12.5px] text-[#475569]">
+    <p aria-live="polite" className="rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-[13px] text-[#475569]">
       {children}
     </p>
   );
@@ -796,15 +787,15 @@ function OfferCard({
       <span className="text-[13px] font-bold text-[#1e293b]">
         {offer.roomLabel} · {offer.rateCode} · {offer.board}
       </span>
-      <span className="text-[12.5px] text-[#64748b]">
+      <span className="text-[13px] text-[#64748b]">
         {offer.kind === 'alternative' ? 'Alternative — not counted in the total' : 'Counted in the total'}
       </span>
       <span className="text-[13.5px] font-extrabold text-[#1e293b]">{money(offer.stayTotalMinor)}</span>
       <span className="text-[10px] text-[#64748b]">Checked in HMS {offer.observedAt}</span>
       {varying ? (
         <details>
-          <summary className="text-[12.5px] text-[#0066cc]">Nightly breakdown</summary>
-          <ul className="text-[12.5px] text-[#475569]">
+          <summary className="text-[13px] text-[#0066cc]">Nightly breakdown</summary>
+          <ul className="text-[13px] text-[#475569]">
             {offer.nightly.map((night) => (
               <li key={night.date}>
                 {night.date}: {money(night.amountMinor)}
@@ -814,11 +805,11 @@ function OfferCard({
         </details>
       ) : null}
       {offer.restrictions.map((restriction) => (
-        <p key={restriction} className="text-[12.5px] text-amber-800">
+        <p key={restriction} className="text-[13px] text-amber-800">
           {restriction}
         </p>
       ))}
-      {showShot ? <p className="text-[12.5px] text-[#64748b]">{shot}</p> : null}
+      {showShot ? <p className="text-[13px] text-[#64748b]">{shot}</p> : null}
     </button>
   );
 }
@@ -851,12 +842,11 @@ function stayRatesBlockReason(
   if (rows.some((group) => !group.arrivalDate || !group.departureDate)) {
     return 'Add arrival and departure dates first.';
   }
-  if (rows.some((group) => !rowRoomCode(group))) return 'Choose a room type for each row.';
+  const missingRoomIndex = rows.findIndex((group) => !rowRoomCode(group));
+  if (missingRoomIndex >= 0) return `Room ${missingRoomIndex + 1} needs a room type.`;
   if (rows.some((group) => !group.quantity)) return 'Add the number of rooms first.';
   if (!step) return 'The HMS search is not ready yet.';
-  if (step.status === 'succeeded') {
-    return 'Already up to date.';
-  }
+  if (step.status === 'succeeded') return null;
   if (session.runningStepId && session.runningStepId !== step.id) return 'Another HMS search is running.';
   const stepWait = quoteRunBlockReason(session, step);
   if (stepWait) return stepWait;
@@ -872,10 +862,7 @@ function sameValue(current: unknown, wanted: unknown): boolean {
   return JSON.stringify(current) === JSON.stringify(wanted);
 }
 
-/**
- * The HMS notes block for the quote: one room per row across its stays. The rate, the discount's approval and the amount
- * come from each row's last run and its price choice; the booker and company come from the stored read.
- */
+/** The generated room/rate summary remains available to copy alongside the editable handoff note. */
 function quoteNotesBlock(
   session: QuoteSession,
   rowLabels: ReadonlyMap<string, string>,
@@ -948,6 +935,7 @@ export function QuoteWorkflowPanel({
   onViewSource,
   onEditReply,
   onPatchStaffHeader,
+  onPatchStayExtras,
   findParty,
   onPartyLookupPending,
   onSelectStayKey,
@@ -994,6 +982,7 @@ export function QuoteWorkflowPanel({
   onViewSource?: (item: QuoteReviewItem) => void;
   onEditReply?: () => void;
   onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>) => void;
+  onPatchStayExtras?: (stayKey: string, extras: Partial<StaffStayExtras>) => void;
   /** HMS company and agency search for the quote header's Find in HMS picker. Null or absent: no picker. */
   findParty?: PartyFinder | null;
   /** Tells the pane whether a company or agency search still decides its pick. A rates run waits for it. */
@@ -1017,6 +1006,20 @@ export function QuoteWorkflowPanel({
     value: string;
   } | null>(null);
   const [mealPlanFilters, setMealPlanFilters] = useState<Record<string, QuoteBoard | 'all'>>({});
+  const selectionEpoch = session.binding?.selectionEpoch ?? 0;
+  const editedPartyFields = useRef({ selectionEpoch, company: false, agency: false });
+  if (editedPartyFields.current.selectionEpoch !== selectionEpoch) {
+    editedPartyFields.current = { selectionEpoch, company: false, agency: false };
+  }
+  const markPartyFieldEdited = (kind: 'company' | 'agency') => {
+    editedPartyFields.current[kind] = true;
+  };
+  const contactAgency = contact?.company?.trim() ?? '';
+  const contactCompany = contact?.endClient?.trim() ?? '';
+  const contactPrefillKey = contact
+    ? JSON.stringify([selectionEpoch, session.binding?.entryId ?? '', contactAgency, contactCompany])
+    : null;
+  const appliedContactPrefill = useRef<string | null>(null);
   useEffect(() => {
     if (!pinRun) return;
     const landed = pinRun.changes.every(({ groupId, check }) => {
@@ -1030,6 +1033,43 @@ export function QuoteWorkflowPanel({
     setPinRun(null);
     onRunStep?.(pinRun.stepId);
   }, [pinRun, session.groups, onRunStep]);
+  useEffect(() => {
+    if (!contactPrefillKey || !onPatchStaffHeader || appliedContactPrefill.current === contactPrefillKey) return;
+    appliedContactPrefill.current = contactPrefillKey;
+    const party = session.analysis?.luna?.party;
+    const partyName = party?.name?.trim();
+    const agency = session.staffHeader.agency.trim();
+    const company = session.staffHeader.company.trim();
+    const usesLunaAgency = party?.kind === 'agency' && agency === partyName;
+    const usesLunaCompany =
+      (party?.kind === 'organization' || party?.kind === 'government') && company === partyName;
+    const patch: Partial<StaffQuoteHeader> = {};
+    if (
+      contactAgency &&
+      !editedPartyFields.current.agency &&
+      !session.staffHeader.parties?.agency &&
+      (!agency || usesLunaAgency)
+    ) {
+      patch.agency = contactAgency;
+    }
+    if (
+      contactCompany &&
+      !editedPartyFields.current.company &&
+      !session.staffHeader.parties?.company &&
+      (!company || usesLunaCompany)
+    ) {
+      patch.company = contactCompany;
+    }
+    if (Object.keys(patch).length) onPatchStaffHeader(patch);
+  }, [
+    contactAgency,
+    contactCompany,
+    contactPrefillKey,
+    onPatchStaffHeader,
+    session.analysis?.luna?.party,
+    session.staffHeader.agency,
+    session.staffHeader.company,
+  ]);
   // The session and pin as of the last render. A saved-rate edit lands after an await, so it reads these, not the ones it began with.
   const latest = useRef({ session, pinRun });
   latest.current = { session, pinRun };
@@ -1095,7 +1135,6 @@ export function QuoteWorkflowPanel({
       : session.groups;
 
   const header = session.staffHeader ?? emptyStaffQuoteHeader();
-  const selectionEpoch = session.binding?.selectionEpoch ?? 0;
   const ratePlans = ratePlanChoices(rateCatalogue ?? [], session.rateOptions ?? []);
   const ratePlan =
     ratePlanState?.selectionEpoch === selectionEpoch && ratePlanState.analysis === session.analysis
@@ -1207,7 +1246,7 @@ export function QuoteWorkflowPanel({
     const subject = many ? `${affected.length} rows that used this saved rate` : 'A row that used this saved rate';
     const verb = many ? 'are' : 'is';
     const outcome = next ? `${verb} now priced at the new amount` : `${verb} back on the HMS rate`;
-    toast.warning(`${subject} ${outcome}.${rerun ? '' : ' Get rates from HMS to update the totals.'}`);
+    toast.warning(`${subject} ${outcome}.${rerun ? '' : ' Search availability to update the totals.'}`);
   };
 
   return (
@@ -1240,17 +1279,6 @@ export function QuoteWorkflowPanel({
               evidence={session.analysis?.luna?.evidence}
             />
           ))}
-          <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} unreadFiles={hasUnreadFiles} />
-          <NeedsAnswerList missing={session.analysis?.luna?.missing} />
-          <ItemsForYou
-            openItems={openItems}
-            handledItems={handledItems}
-            onViewSource={onViewSource}
-            onEditReply={onEditReply}
-            onHandle={onHandleReviewItem}
-            onUndo={onUndoReviewItem}
-            onRetry={onRetryRead}
-          />
         </Section>
       ) : null}
       {showWorkspace ? (
@@ -1258,6 +1286,7 @@ export function QuoteWorkflowPanel({
           <StaffPartyFields
             header={header}
             onPatch={onPatchStaffHeader}
+            onFieldEdit={markPartyFieldEdited}
             findParty={findParty}
             partySuggestions={partySuggestions}
             partyIndex={partyIndex}
@@ -1267,29 +1296,38 @@ export function QuoteWorkflowPanel({
       ) : null}
       {showWorkspace ? (
         <AdvancedFields
-          header={header}
-          onPatch={onPatchStaffHeader}
+          key={selectionEpoch}
           ratePlans={ratePlans}
           ratePlan={ratePlan}
           onRatePlanChange={changeRatePlan}
           notesBlock={quoteNotesBlock(session, rowLabels, contact)}
+          notes={header.notes ?? ''}
+          onNotesChange={(value) => onPatchStaffHeader?.({ notes: value })}
         />
       ) : null}
       {showWorkspace && (showRates || session.offers.length) ? (
         <Section step={2} title="Search availability & room rates">
           {showRates ? (
             <>
-              {stays.map((stay) => {
+              {stays.map((stay, stayIndex) => {
                 const first = stay.rows[0];
                 if (!first) return null;
                 const stayKey = stayKeyForGroup(first);
                 const step = stepFor(first);
                 const reason = stayRatesBlockReason(session, stay.rows, step);
                 const actionReason = reason ?? (!onRunStep && !onRunNext ? 'Search is not available in this view.' : null);
+                const retryActionReason = reason ?? (!onRunStep ? 'Search is not available in this view.' : null);
                 const loadingThisStay =
                   (step !== undefined && session.runningStepId === step.id) ||
                   Boolean(hmsQueue?.pending && step !== undefined && !session.runningStepId);
                 const stayTotal = stayDisplayTotal(session, stayKey);
+                // Each stay's Details lists only its own HMS search. The steps are session-wide, so the full list would repeat under every card.
+                const stayRunSteps = session.steps.filter((item) => item.shareKey === stayKey);
+                // Stays with the same dates share one HMS search and one total, so it is shown once, on the first of them.
+                const sameDateStays = stays.flatMap((item, index) =>
+                  item.rows[0] && stayKeyForGroup(item.rows[0]) === stayKey ? [index + 1] : [],
+                );
+                const countedInStay = sameDateStays.length > 1 && sameDateStays[0] !== stayIndex + 1 ? sameDateStays[0] : null;
                 // This stay's own HMS result. The selected stay's result is also session.staffQuote.
                 const selectedQuote = session.selectedStayKey === stayKey ? session.staffQuote : null;
                 const stayFound = Boolean(session.staffQuotes[stayKey] ?? selectedQuote);
@@ -1304,27 +1342,50 @@ export function QuoteWorkflowPanel({
                           </span>
                         ) : null}
                       </div>
-                      <p className="text-[12.5px] text-[#64748b]">Separate HMS booking · one availability search for these dates.</p>
+                      <p className="text-[13px] text-[#64748b]">Separate HMS booking · one availability search for these dates.</p>
                     </div>
-                    <PrimaryButton
-                      onClick={() => {
-                        onSelectStayKey?.(stayKey);
-                        if (step && onRunStep) onRunStep(step.id);
-                        else onRunNext?.();
-                      }}
-                      disabled={actionReason !== null}
-                      disabledReason={actionReason}
-                      loading={loadingThisStay}
-                      loadingText="Checking HMS… about 2 min"
-                    >
-                      {step?.status === 'failed' ? 'Retry Search availability' : 'Search availability'}
-                    </PrimaryButton>
-                    {session.steps.length ? (
-                      <details className="text-[12.5px] text-[#64748b]">
+                    {step?.status === 'succeeded' ? (
+                      <>
+                        <SecondaryButton
+                          className="w-full"
+                          disabled={running}
+                          disabledReason={running ? 'A search is running.' : null}
+                          onClick={() => {
+                            onSelectStayKey?.(stayKey);
+                            if (step && onRunStep) onRunStep(step.id);
+                            else toast.warning(retryActionReason ?? 'Search is not available in this view.');
+                          }}
+                        >
+                          Search again
+                        </SecondaryButton>
+                        {retryActionReason ? <p className="text-[13px] text-[#334155]">{retryActionReason}</p> : null}
+                      </>
+                    ) : (
+                      <>
+                        <PrimaryButton
+                          onClick={() => {
+                            onSelectStayKey?.(stayKey);
+                            if (step && onRunStep) onRunStep(step.id);
+                            else onRunNext?.();
+                          }}
+                          disabled={actionReason !== null}
+                          disabledReason={actionReason}
+                          loading={loadingThisStay}
+                          loadingText="Checking HMS… about 2 min"
+                        >
+                          {step?.status === 'failed' ? 'Retry search' : 'Search availability'}
+                        </PrimaryButton>
+                        {step?.status === 'failed' && step.retryGuidance ? (
+                          <p className="text-[13px] text-[#334155]">{step.retryGuidance}</p>
+                        ) : null}
+                      </>
+                    )}
+                    {stayRunSteps.length ? (
+                      <details className="text-[13px] text-[#64748b]">
                         <summary className="w-fit cursor-pointer font-semibold text-[#0066cc]">Details</summary>
                         <div className="mt-2 rounded-[3px] border border-[#e2e8f0] bg-[#f8fafc] p-2">
                           <ToolStepList
-                            steps={session.steps}
+                            steps={stayRunSteps}
                             runningStepId={session.runningStepId}
                             onRunStep={onRunStep}
                             blockReason={(item) => quoteRunBlockReason(session, item)}
@@ -1341,9 +1402,32 @@ export function QuoteWorkflowPanel({
                       const priceRunning =
                         pinRun?.changes.some((change) => change.groupId === group.id) === true ||
                         (rowStep !== undefined && session.runningStepId === rowStep.id);
+                      const pendingCode = rateGroup?.pendingRateCode ?? null;
+                      const cardHostsControls =
+                        rateGroup?.options.some((option) => (pendingCode !== null ? option.rateCode === pendingCode : option.selected)) === true;
+                      // With no card selected (none returned, or the saved rate left the list), the controls sit under the
+                      // section, so a saved price can still be changed or removed.
+                      const rowControlsHostedBelow =
+                        !cardHostsControls && (Boolean(rateGroup?.options.length) || group.rowPrice !== undefined || rowRate !== undefined);
+                      const rowControls = (
+                        <div className="border-t border-[#dce8df] bg-white p-2.5">
+                          <RowRateControls
+                            group={group}
+                            label={rowLabels.get(group.id) ?? 'Room'}
+                            toggleLabel="Set a specific price"
+                            rowRate={rowRate}
+                            saved={saved}
+                            pending={priceRunning}
+                            busy={running || pinRun !== null}
+                            blockReason={rowStep ? quoteRunBlockReason(session, rowStep) : 'Search availability first.'}
+                            onSetPrice={(rowPrice) => setRowPrices([{ group, rowPrice }])}
+                            onSavedRateChanged={followSavedRate}
+                          />
+                        </div>
+                      );
                       return (
                         <div key={group.id} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
-                          <h5 className="text-[12.5px] font-semibold text-[#475569]">{`Room ${roomIndex + 1} rates`}</h5>
+                          <h5 className="text-[13px] font-semibold text-[#475569]">{`Room ${roomIndex + 1} rates`}</h5>
                           {rateGroup?.options.length ? (
                             <RateCards
                               options={rateGroup.options}
@@ -1351,34 +1435,34 @@ export function QuoteWorkflowPanel({
                               disabled={running || pinRun !== null || rateGroup.blockReason !== null}
                               pendingRateCode={rateGroup.pendingRateCode}
                               preferredBoard={mealPlanForStay(stay.id, stay.rows)}
-                              selectedControls={
-                                <div className="border-t border-[#dce8df] bg-white p-2.5">
-                                  <RowRateControls
-                                    group={group}
-                                    label={rowLabels.get(group.id) ?? 'Room'}
-                                    toggleLabel="Set a specific price"
-                                    rowRate={rowRate}
-                                    saved={saved}
-                                    pending={priceRunning}
-                                    busy={running || pinRun !== null}
-                                    blockReason={rowStep ? quoteRunBlockReason(session, rowStep) : 'Search availability first.'}
-                                    onSetPrice={(rowPrice) => setRowPrices([{ group, rowPrice }])}
-                                    onSavedRateChanged={followSavedRate}
-                                  />
-                                </div>
-                              }
+                              selectedControls={cardHostsControls ? rowControls : undefined}
                               onPick={pickRate}
                             />
                           ) : session.rateOptions?.some((option) => option.groupId === group.id) ? (
-                            <p className="text-[12.5px] text-[#64748b]">No rates match this filter. Choose All rates to show every HMS code.</p>
+                            <p className="text-[13px] text-[#64748b]">No rates match this filter. Choose All rates to show every HMS code.</p>
                           ) : null}
+                          {rowControlsHostedBelow ? rowControls : null}
                         </div>
                       );
                     })}
-                    <div className="flex items-center justify-between gap-2 border-t border-[#e2e8f0] pt-2 text-[13px]">
+                    <div className="stay-subtotal flex items-center justify-between gap-2 border-t border-[#e2e8f0] pt-2 text-[13px]">
                       <span className="font-semibold text-[#475569]">Stay subtotal</span>
-                      <span className="font-bold text-[#1e293b]">{stayTotal === null ? 'Search availability to calculate' : money(stayTotal)}</span>
+                      <span className="font-bold text-[#1e293b]">
+                        {countedInStay !== null
+                          ? `Counted in Stay ${countedInStay}`
+                          : stayTotal === null
+                            ? 'Search availability to calculate'
+                            : sameDateStays.length > 1
+                              ? `${money(stayTotal)} for Stays ${sameDateStays.join(', ')}`
+                              : money(stayTotal)}
+                      </span>
                     </div>
+                    <StayExtrasFields
+                      header={header}
+                      stayKey={stayKey}
+                      stayNumber={stayIndex + 1}
+                      onPatch={onPatchStayExtras}
+                    />
                   </article>
                 );
               })}
@@ -1389,12 +1473,12 @@ export function QuoteWorkflowPanel({
             <SecondaryButton className="w-full" onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
               + Add another date range
             </SecondaryButton>
-            <p className="text-center text-[12.5px] text-[#64748b]">Each date range creates a separate HMS booking.</p>
+            <p className="text-center text-[13px] text-[#64748b]">Each date range creates a separate HMS booking.</p>
           </div>
           {session.offers.length ? (
             <div className="flex flex-col gap-2">
               <h3 className="text-[13px] font-semibold text-[#475569]">HMS results and evidence</h3>
-              <p className="text-[12.5px] text-[#64748b]">
+              <p className="text-[13px] text-[#64748b]">
                 Selected rates total {money(allocationTotal(session.offers.filter((o) => session.selectedOfferIds.includes(o.id))))}.
                 Alternatives are not added to this total.
                 {new Set(session.offers.filter((o) => o.kind === 'allocation').map((o) => o.quoteRequestKey)).size > 1
@@ -1434,24 +1518,44 @@ export function QuoteWorkflowPanel({
                 </span>
               </div>
               {quotationTotal.total === null ? (
-                <p className="text-[12.5px] text-[#64748b]">
+                <p className="text-[13px] text-[#64748b]">
                   {quotationTotal.stays
                     ? `${quotationTotal.rated} of ${quotationTotal.stays} stays rated. Search each date range for the complete total.`
                     : 'Add a date range and search availability to see the total.'}
                 </p>
               ) : (
-                <p className="text-[12.5px] text-[#64748b]">Extras are shown as their own lines in the quotation PDF.</p>
+                <p className="text-[13px] text-[#64748b]">Extras are shown as their own lines in the quotation PDF.</p>
               )}
             </div>
           ) : null}
         </Section>
+      ) : null}
+      {showWorkspace ? (
+        <>
+          <NotSupportedList
+            flags={session.analysis?.luna?.flags}
+            tasks={session.analysis?.luna?.tasks}
+            amendment={amendment}
+            unreadFiles={hasUnreadFiles}
+          />
+          <NeedsAnswerList missing={session.analysis?.luna?.missing} />
+          <ItemsForYou
+            openItems={openItems}
+            handledItems={handledItems}
+            onViewSource={onViewSource}
+            onEditReply={onEditReply}
+            onHandle={onHandleReviewItem}
+            onUndo={onUndoReviewItem}
+            onRetry={onRetryRead}
+          />
+        </>
       ) : null}
       {showWorkspace && !showRates && !session.offers.length ? (
         <div className="flex flex-col gap-1">
           <SecondaryButton className="w-full" onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
             + Add another date range
           </SecondaryButton>
-          <p className="text-center text-[12.5px] text-[#64748b]">Each date range creates a separate HMS booking.</p>
+          <p className="text-center text-[13px] text-[#64748b]">Each date range creates a separate HMS booking.</p>
         </div>
       ) : null}
       {requestedQuoteKeys(session.groups)
@@ -1459,7 +1563,7 @@ export function QuoteWorkflowPanel({
         .map((key) => (
           <Fragment key={key}>
             {isMultiStay(session) ? (
-              <p className="text-[12.5px] font-semibold text-[#475569]">Booking for {key.replace(':', ' → ')}</p>
+              <p className="text-[13px] font-semibold text-[#475569]">Booking for {key.replace(':', ' → ')}</p>
             ) : null}
             <BookingCards
               draft={session.bookingDrafts[key]!}

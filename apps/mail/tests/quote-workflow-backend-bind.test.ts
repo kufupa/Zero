@@ -477,6 +477,47 @@ describe('staff quote execute/PDF header bind', () => {
     });
   });
 
+  it('keeps a thrown search error staff-readable and returns the raw diagnostic separately', async () => {
+    const raw = "Cannot read properties of undefined (reading 'internetMessageId')";
+    const mutate = vi.fn(async () => {
+      throw new Error(raw);
+    });
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: government,
+    });
+    expect(result).toMatchObject({
+      status: 'unavailable',
+      reason: "HMS didn't answer in time.",
+      detail: raw,
+    });
+    expect(result.status === 'unavailable' && result.reason).not.toContain('internetMessageId');
+  });
+
+  it('labels a native refusal without exposing the complete exception inline', async () => {
+    const raw = 'HMS refused the search: invalid rate plan GOV/INTERNAL-TRACE-123';
+    const mutate = vi.fn(async () => {
+      throw new Error(raw);
+    });
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: government,
+    });
+    expect(result.status).toBe('unavailable');
+    if (result.status !== 'unavailable') return;
+    expect(result.reason).toMatch(/^HMS refused the search: /);
+    expect(result.reason).not.toContain('INTERNAL-TRACE-123');
+    expect(result.detail).toBe(raw);
+  });
+
   it('sends each new extra and the note as its own field, and leaves out empty ones', () => {
     expect(
       approvedExecuteHeader({
@@ -848,7 +889,12 @@ describe('staff quote no-matching-rate flag', () => {
       groups: [stay],
       header,
     });
-    expect(noMatch).toMatchObject({ status: 'unavailable', noMatchingRate: true });
+    expect(noMatch).toMatchObject({
+      status: 'unavailable',
+      reason: 'HMS refused the search: No rate matches this meal plan under the selected rate plan.',
+      detail: 'HMS has no rate for this meal plan under BAR. For dinner, quote Bed & Breakfast and add a dinner allowance (button below), or use the Government rate if the guest is entitled.',
+      noMatchingRate: true,
+    });
 
     const otherFailure = await bindExecuteStaffQuote({
       mutate: vi.fn(async () => {
@@ -864,7 +910,7 @@ describe('staff quote no-matching-rate flag', () => {
     expect(otherFailure).not.toHaveProperty('noMatchingRate', true);
   });
 
-  it('shows the server short-supply message as the reason, not as a no-rate case', async () => {
+  it('shows a staff-readable short-supply refusal, keeping raw detail separate', async () => {
     const short = await bindExecuteStaffQuote({
       mutate: vi.fn(async () => {
         throw new Error('Only 34 Standard Queen free on 26 Oct — quote fewer or split');
@@ -875,11 +921,12 @@ describe('staff quote no-matching-rate flag', () => {
       groups: [stay],
       header,
     });
-    expect(short).toEqual({
+    expect(short).toMatchObject({
       status: 'unavailable',
-      reason: 'Only 34 Standard Queen free on 26 Oct — quote fewer or split',
-      noMatchingRate: false,
+      reason: 'HMS refused the search: Only 34 Standard Queen free on 26 Oct — quote fewer or split',
+      detail: 'Only 34 Standard Queen free on 26 Oct — quote fewer or split',
     });
+    expect(short).not.toHaveProperty('noMatchingRate', true);
   });
 });
 

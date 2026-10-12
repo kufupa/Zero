@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StayCard } from '../components/quote-workflow/requirement-card';
 import type { StayGroupRequirement } from '../lib/quote-workflow/types';
@@ -113,14 +113,35 @@ describe('StayCard rooms', () => {
     expect(screen.getAllByText('Check-in')).toHaveLength(1);
   });
 
-  it('preselects the exact room type projection and never guesses an ambiguous room label', () => {
+  it('preselects exact room types and shows only a compact ranked suggestion line for an ambiguous email term', () => {
     const { unmount } = renderStay([stay({ roomPreference: 'standard queen', roomTypeCode: 'STQN' })]);
     expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('STQN');
     unmount();
 
-    renderStay([stay({ roomPreference: 'double room', roomTypeSuggestions: ['STQN', 'SKNG'] })]);
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('double room');
-    expect(screen.getByText(/Email said .double room. → Standard Queen \(STQN\) or Standard King \(SKNG\)\?/)).toBeTruthy();
+    renderStay([stay({ roomPreference: 'Single', roomTypeSuggestions: ['STWN', 'SKNG', 'EXKNG', 'SUITE'] })]);
+    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('Single');
+    expect(screen.getByText(/Email said 'Single' →/)).toBeTruthy();
+    const suggestions = screen.getByRole('group', { name: 'Room type suggestions' });
+    const optionButtons = within(suggestions).getAllByRole('button').filter((button) => button.getAttribute('aria-label') !== 'Choose other room type');
+    expect(optionButtons.map((button) => button.textContent)).toEqual(['Standard Twin', 'Standard King', 'Executive King']);
+    expect(within(suggestions).getByRole('button', { name: 'Choose other room type' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Suite' })).toBeNull();
+  });
+
+  it('makes other… focus the full room-type select without changing the row', () => {
+    const { onPatch } = renderStay([stay({ roomPreference: 'Single', roomTypeSuggestions: ['STWN', 'SKNG'] })]);
+    const select = screen.getByLabelText('Room type');
+    fireEvent.click(screen.getByRole('button', { name: 'Choose other room type' }));
+    expect(document.activeElement).toBe(select);
+    expect(onPatch).not.toHaveBeenCalled();
+  });
+
+  it('marks an unset room type as invalid and shortens its placeholder option', () => {
+    renderStay([stay({ roomPreference: '', roomTypeCode: undefined })]);
+    const select = screen.getByLabelText('Room type') as HTMLSelectElement;
+    expect(select.getAttribute('aria-invalid')).toBe('true');
+    expect(select.className).toMatch(/border-\[#c01823\]/);
+    expect([...select.options].some((option) => option.textContent === 'Choose room type')).toBe(true);
   });
 
   it('a rate-card room pick is the row room, so the select shows it over the projected room type', () => {
@@ -145,6 +166,29 @@ describe('StayCard rooms', () => {
     );
     expect(screen.getByText('1 room · 2 guests total')).toBeTruthy();
     expect(screen.getByText(/Email requested 4 rooms in total/)).toBeTruthy();
+  });
+
+  it('uses a requested-room split header until room quantities are assigned', () => {
+    renderStay(
+      [stay({ quantity: undefined }), stay({ id: 'g2', quantity: undefined })],
+      { requestedRoomsTotal: 30 },
+    );
+    expect(screen.getByText('30 rooms requested · split not set')).toBeTruthy();
+    expect(screen.queryByText(/0 guests total/)).toBeNull();
+  });
+
+  it('hides children and special requests behind a per-row toggle, opening it for email values', () => {
+    const { unmount } = renderStay([stay()]);
+    expect(screen.queryByLabelText('Children ages')).toBeNull();
+    expect(screen.queryByLabelText('Special requests')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '+ Children / requests' }));
+    expect(screen.getByLabelText('Children ages')).toBeTruthy();
+    expect(screen.getByLabelText('Special requests')).toBeTruthy();
+    unmount();
+
+    renderStay([stay({ childrenAges: [4], specialRequests: ['cot'] })]);
+    expect(screen.getByLabelText('Children ages')).toBeTruthy();
+    expect(screen.getByLabelText('Special requests')).toBeTruthy();
   });
 
   it('removes the per-row company or agency field', () => {

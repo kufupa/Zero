@@ -1,5 +1,5 @@
 import { format, isValid, parseISO } from 'date-fns';
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 import {
   Field,
@@ -43,7 +43,7 @@ function FieldEvidence({ quotes }: { quotes: Array<{ quote: string; source?: 'st
         {fromStaff ? 'Your note' : 'Email'}
       </span>
       {quotes.map((item) => (
-        <p key={item.quote} className="font-normal text-[12.5px] text-[#64748b]">
+        <p key={item.quote} className="font-normal text-[13px] text-[#64748b]">
           {item.quote}
         </p>
       ))}
@@ -106,6 +106,7 @@ export function StayCard({
   const stayNumber = index + 1;
   const first = rows[0];
   const totals = stayTotals(rows);
+  const splitNotSet = requestedRoomsTotal !== undefined && rows.some((row) => row.quantity == null);
   const selectedMealPlan = mealPlan ?? inferredMealPlan(rows);
   // The dates are one fact for the whole stay, so a change goes to every room in it.
   const onDates = (patch: StayDatePatch) => rows.forEach((row) => onPatch?.(row.id, patch));
@@ -124,10 +125,12 @@ export function StayCard({
             <LinkButton onClick={() => onStayAction?.({ type: 'remove_stay', stayId })}>Remove stay</LinkButton>
           </div>
         </div>
-        <p className="text-[12.5px] text-[#475569]">Separate HMS booking. Each date range is searched and booked independently.</p>
+        <p className="text-[13px] text-[#475569]">Separate HMS booking. Each date range is searched and booked independently.</p>
         <p className="text-[13px] font-semibold text-[#1e293b]">
-          {`${totals.rooms} ${totals.rooms === 1 ? 'room' : 'rooms'} · ${totals.guests} ${totals.guests === 1 ? 'guest' : 'guests'} total`}
-          {requestedRoomsTotal !== undefined && requestedRoomsTotal !== totals.rooms ? (
+          {splitNotSet
+            ? `${requestedRoomsTotal} rooms requested · split not set`
+            : `${totals.rooms} ${totals.rooms === 1 ? 'room' : 'rooms'} · ${totals.guests} ${totals.guests === 1 ? 'guest' : 'guests'} total`}
+          {!splitNotSet && requestedRoomsTotal !== undefined && requestedRoomsTotal !== totals.rooms ? (
             <span className="ml-1 font-normal text-[#64748b]">{`· Email requested ${requestedRoomsTotal} rooms in total`}</span>
           ) : null}
         </p>
@@ -218,8 +221,16 @@ export function RequirementCard({
   const where = `stay ${stayNumber}, room ${roomNumber}`;
   const selectedCode = rowRoomTypeCode(group);
   const unknownValue = group.roomPreference && !selectedCode ? group.roomPreference : null;
-  const suggestions = group.roomTypeSuggestions ?? [];
+  const suggestions = (group.roomTypeSuggestions ?? []).slice(0, 3);
+  const roomSelect = useRef<HTMLSelectElement>(null);
   const [editingAdults, setEditingAdults] = useState(false);
+  const hasOptionalDetails = group.childrenAges.length > 0 || group.specialRequests.length > 0;
+  const [showOptionalDetails, setShowOptionalDetails] = useState(hasOptionalDetails);
+  const hadOptionalDetails = useRef(hasOptionalDetails);
+  useEffect(() => {
+    if (!hadOptionalDetails.current && hasOptionalDetails) setShowOptionalDetails(true);
+    hadOptionalDetails.current = hasOptionalDetails;
+  }, [hasOptionalDetails]);
 
   function chooseRoomType(value: string) {
     const code: RoomTypeCode | null = knownRoomCode(value);
@@ -240,7 +251,7 @@ export function RequirementCard({
   return (
     <div role="row" aria-label={`Room ${roomNumber}`} className="flex flex-col gap-2.5 bg-white p-2.5">
       <div role="rowheader" className="flex flex-wrap items-center justify-between gap-2">
-      <span className="text-[13px] font-bold text-[#334155]">{`Room ${roomNumber}`}</span>
+        <span className="text-[13px] font-bold text-[#334155]">{`Room ${roomNumber}`}</span>
         <div className="flex items-center gap-3">
           <LinkButton onClick={() => onStayAction?.({ type: 'duplicate_row', groupId: group.id, token: newQuoteToken() })}>
             Duplicate room
@@ -254,13 +265,15 @@ export function RequirementCard({
         <Field label="Room type" required htmlFor={`${id}-room`} aside={<ProvenanceFlag value={group.fields.roomPreference} />}>
           <select
             id={`${id}-room`}
+            ref={roomSelect}
             aria-label="Room type"
-            className={paneFieldClass}
+            aria-invalid={!selectedCode || undefined}
+            className={`${paneFieldClass} ${selectedCode ? '' : 'border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]'}`}
             value={selectedCode ?? unknownValue ?? ''}
             onChange={(event) => chooseRoomType(event.target.value)}
           >
-            <option value="">Choose a room type</option>
-            {unknownValue ? <option value={unknownValue}>{`Email asked for ${unknownValue} — choose a room type`}</option> : null}
+            <option value="">Choose room type</option>
+            {unknownValue ? <option value={unknownValue}>Email request</option> : null}
             {ROOM_TYPE_CODES.map((code) => (
               <option key={code} value={code}>
                 {roomTypeLabel(code)}
@@ -268,22 +281,27 @@ export function RequirementCard({
             ))}
           </select>
           {unknownValue && suggestions.length ? (
-            <div className="flex flex-col gap-1 rounded-[3px] border border-[#bfdbfe] bg-[#eff6ff] p-2">
-              <p className="text-[12.5px] font-medium text-[#1e3a8a]">
-                {`Email said “${unknownValue}” → ${suggestions.map(roomTypeLabel).join(' or ')}?`}
-              </p>
-              <div className="flex flex-wrap gap-1.5">
+            <div role="group" aria-label="Room type suggestions" className="flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-[#1e3a8a]">
+              <span className="mr-0.5">{`Email said '${unknownValue}' →`}</span>
                 {suggestions.map((code) => (
                   <button
                     key={code}
                     type="button"
-                    className="rounded-[3px] border border-[#0066cc] bg-white px-2 py-1 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
+                    className="rounded-full border border-[#93c5fd] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
                     onClick={() => chooseRoomType(code)}
                   >
-                    {roomTypeLabel(code)}
+                    {roomTypeLabel(code).replace(/\s+\([A-Z]+\)$/, '')}
                   </button>
                 ))}
-              </div>
+              <span aria-hidden="true">·</span>
+              <button
+                type="button"
+                aria-label="Choose other room type"
+                className="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline"
+                onClick={() => roomSelect.current?.focus()}
+              >
+                other…
+              </button>
             </div>
           ) : null}
           <FieldEvidence quotes={quotesFor('roomPreference', evidence)} />
@@ -339,7 +357,7 @@ export function RequirementCard({
             <button
               type="button"
               aria-label={`Edit adults per room for ${where}`}
-              className="self-start text-left text-[12.5px] font-semibold text-[#0066cc] hover:underline"
+              className="self-start text-left text-[13px] font-semibold text-[#0066cc] hover:underline"
               onClick={() => setEditingAdults(true)}
             >
               Tap to edit
@@ -349,28 +367,40 @@ export function RequirementCard({
         </div>
       </div>
 
-      <div role="cell" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <Field label="Children ages" htmlFor={`${id}-children`} hint="Separate ages with commas.">
-          <input
-            id={`${id}-children`}
-            aria-label="Children ages"
-            className={paneFieldClass}
-            value={group.childrenAges.join(', ')}
-            onChange={(event) => onPatch?.(group.id, { childrenAges: parseChildrenAges(event.target.value) })}
-          />
-          <FieldEvidence quotes={quotesFor('childrenAges', evidence)} />
-        </Field>
-        <Field label="Special requests" htmlFor={`${id}-requests`}>
-          <textarea
-            id={`${id}-requests`}
-            aria-label="Special requests"
-            className={`${paneTextareaClass} min-h-[2.75rem]`}
-            value={group.specialRequests.join('\n')}
-            onChange={(event) =>
-              onPatch?.(group.id, { specialRequests: event.target.value.split('\n').filter(Boolean) })
-            }
-          />
-        </Field>
+      <div role="cell" className="flex flex-col gap-1">
+        <button
+          type="button"
+          aria-expanded={showOptionalDetails}
+          className="self-start rounded-[3px] text-[13px] font-semibold text-[#0066cc] hover:underline"
+          onClick={() => setShowOptionalDetails((open) => !open)}
+        >
+          {showOptionalDetails ? '− Children / requests' : '+ Children / requests'}
+        </button>
+        {showOptionalDetails ? (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <Field label="Children ages" htmlFor={`${id}-children`} hint="Separate ages with commas.">
+              <input
+                id={`${id}-children`}
+                aria-label="Children ages"
+                className={paneFieldClass}
+                value={group.childrenAges.join(', ')}
+                onChange={(event) => onPatch?.(group.id, { childrenAges: parseChildrenAges(event.target.value) })}
+              />
+              <FieldEvidence quotes={quotesFor('childrenAges', evidence)} />
+            </Field>
+            <Field label="Special requests" htmlFor={`${id}-requests`}>
+              <textarea
+                id={`${id}-requests`}
+                aria-label="Special requests"
+                className={`${paneTextareaClass} min-h-[2.75rem]`}
+                value={group.specialRequests.join('\n')}
+                onChange={(event) =>
+                  onPatch?.(group.id, { specialRequests: event.target.value.split('\n').filter(Boolean) })
+                }
+              />
+            </Field>
+          </div>
+        ) : null}
       </div>
     </div>
   );

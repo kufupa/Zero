@@ -304,6 +304,18 @@ describe('row price controls in the quote panel', () => {
     await waitFor(() => expect(within(after).queryByRole('option', { name: /Standard summer/ })).toBeNull());
   });
 
+  it('a saved price stays changeable when no rate card is shown, so an archived rate can be replaced or removed', () => {
+    const session = reduceQuoteSession(readySession(), {
+      type: 'patch_group',
+      groupId: 'g1',
+      patch: { rowPrice: savedPrice(SUMMER) },
+    });
+    // No rate card at all. PinnedPanel would add a selected one, so the panel renders directly here.
+    render(<QuoteWorkflowPanel session={{ ...session, rateOptions: [] }} rates={fakeRates([])} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
+    expect(screen.getByRole('button', { name: 'Manage saved rates' })).toBeDefined();
+  });
+
   it('a mailbox switch reloads the saved rates, and the old mailbox\'s list never comes back', async () => {
     const WINTER: SavedRate = { id: '7a1e2d3c-4b5a-4968-8a7b-9c0d1e2f3a4b', name: 'Other mailbox winter', amountMinor: 99000 };
     let mailbox = 't1';

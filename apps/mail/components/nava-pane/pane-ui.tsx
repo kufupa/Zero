@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 
 /**
  * The pane's design language, taken from the side-pane design spec
- * (docs/superpowers/specs/2026-09-23-centurion-outlook-side-pane-demo.html): white section cards with an uppercase
+ * (docs/superpowers/specs/2026-09-23-centurion-outlook-side-pane-demo.html): white section cards with a sentence-case
  * header bar, 32px fields with a red star when required, one full-width blue primary action, and steppers. Every pane
  * section builds on these so the whole pane reads the same way.
  */
@@ -51,7 +51,7 @@ export function Section({
   return (
     <section id={id} aria-label={title} className="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]">
       <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]">
-        <h3 className="flex items-center gap-1.5 text-[12px] font-bold uppercase tracking-[0.4px] text-[#475569]">
+        <h3 className="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]">
           {step !== undefined ? (
             <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white">
               {step}
@@ -70,7 +70,7 @@ export function Section({
 /** "from email": marks a value Nava read from the email, so staff know to check it. */
 export function FromEmailTag() {
   return (
-    <span className="rounded-[2px] bg-[#eff6ff] px-1 py-px text-[10px] font-semibold text-[#0066cc]">from email</span>
+    <span className="whitespace-nowrap rounded-[2px] bg-[#eff6ff] px-1 py-px text-[11px] font-semibold text-[#0066cc]">from email</span>
   );
 }
 
@@ -109,7 +109,7 @@ export function Field({
         {aside ? <span className="font-normal text-[#64748b]">{aside}</span> : null}
       </div>
       {children}
-      {hint ? <p className="text-[12.5px] text-[#64748b]">{hint}</p> : null}
+      {hint ? <p className="text-[13px] text-[#64748b]">{hint}</p> : null}
     </div>
   );
 }
@@ -166,7 +166,13 @@ export function PrimaryButton({
         </button>
       )}
       {disabled && !loading && disabledReason ? (
-        <p className="text-center text-[12.5px] text-[#64748b]">{disabledReason}</p>
+        <p className="flex items-center justify-center gap-1.5 text-[13px] text-[#334155]">
+          <svg aria-hidden="true" className="h-3.5 w-3.5 shrink-0" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" />
+            <path d="M8 7v4M8 4.75h.01" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+          </svg>
+          <span>{disabledReason}</span>
+        </p>
       ) : null}
     </div>
   );
@@ -296,7 +302,7 @@ export function Notice({
   role?: 'status' | 'alert';
 }) {
   return (
-    <div role={role} className={`rounded-[3px] border px-2.5 py-1.5 text-[12.5px] ${NOTICE_TONES[tone]}`}>
+    <div role={role} className={`rounded-[3px] border px-2.5 py-1.5 text-[13px] ${NOTICE_TONES[tone]}`}>
       {children}
     </div>
   );

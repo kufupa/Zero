@@ -81,18 +81,21 @@ describe('quote workflow scenario matrix', () => {
     const session = sessionFromFixture('ro-vs-bb');
     session.selectedOfferIds = ['bb-1'];
     render(<QuoteWorkflowPanel session={session} />);
+    const subtotal = screen.getByText('Stay subtotal').parentElement?.textContent ?? '';
     const body = document.body.textContent ?? '';
-    expect(body).toMatch(/Selected total/);
-    expect(body).toMatch(/140/);
-    expect(body).not.toMatch(/Selected total[^\n]*4[\s\u00a0,]?040/);
+    expect(subtotal.replace(/\s/g, '')).toContain('R2140,00');
+    expect(body.replace(/\s/g, '')).not.toContain('R4040,00');
     expect(body).toMatch(/Alternative — not counted in the total/);
   });
 
-  it('says how many date options are rated before the one quote can be prepared', () => {
+  it('shows separate stay subtotals and the combined selected total across date options', () => {
     const session = sessionFromFixture('staggered-dates');
     session.selectedOfferIds = session.offers.map((offer) => offer.id);
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getAllByText('0 of 2 stays rated').length).toBeGreaterThan(0);
+    const subtotals = screen.getAllByText('Stay subtotal').map((label) => label.parentElement?.textContent ?? '');
+    expect(subtotals).toHaveLength(2);
+    expect(subtotals.every((subtotal) => subtotal.replace(/\s/g, '').includes('R2720,00'))).toBe(true);
+    expect(screen.getByLabelText('Quotation total').textContent?.replace(/\s/g, '')).toContain('R5440,00');
     expect(screen.queryByText(/do not prove that all stays are available together/i)).toBeNull();
   });
 

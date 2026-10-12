@@ -59,7 +59,7 @@ export function RateCards({
               onClick={() => {
                 if (!selected && !restricted) onPick(option);
               }}
-              className={`flex w-full items-center justify-between gap-2 p-2.5 text-left transition-colors disabled:cursor-not-allowed ${
+              className={`grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-1 p-2.5 text-left transition-colors disabled:cursor-not-allowed ${
                 selected
                   ? 'bg-[#eaf4ee]'
                   : mealPlanMatch
@@ -67,45 +67,31 @@ export function RateCards({
                     : 'bg-white hover:bg-[#f8fafc]'
               } disabled:opacity-70`}
             >
-              <span className="flex min-w-0 flex-col gap-1">
-                <span className={`flex flex-wrap items-center gap-1.5 text-[13px] font-bold text-[#1e293b] ${restricted ? 'line-through text-[#64748b]' : ''}`}>
-                  {`${option.rateCode}: ${rateLabel}`}
-                  {selected ? (
-                    <span className="rounded-[2px] bg-[#1a4332] px-1 py-px text-[10px] font-semibold text-white">Selected</span>
-                  ) : null}
-                  {mealPlanMatch && preferredBoard !== 'all' ? <RateTag>Meal plan match</RateTag> : null}
-                </span>
-                <span className="text-[12.5px] text-[#64748b]">{`${option.roomLabel} · ${option.boardLabel}`}</span>
-                {option.contract ? (
-                  <span className="flex flex-wrap gap-1">
-                    <RateTag>{partyName ? `${partyName} contract` : 'Contract'}</RateTag>
-                    {option.onlyContract ? <RateTag>only contract rate</RateTag> : null}
-                  </span>
-                ) : null}
+              <span className="line-clamp-2 min-w-0 break-words text-[13px] font-bold leading-4 text-[#1e293b]">
+                {`${option.rateCode}: ${rateLabel}`}
+              </span>
+              <span className={`whitespace-nowrap text-right text-[12.5px] font-extrabold text-[#1e293b] ${restricted ? 'line-through' : ''}`}>
+                {`${from}${draftMoney(option.perNightMinor)} avg / room / night`}
+              </span>
+              <span className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-[#64748b]">
+                <span>{`${option.boardLabel} · ${option.roomLabel}`}</span>
+                {selected ? <RateTag tone="selected">Selected</RateTag> : null}
+                {option.contract ? <RateTag>{partyName ? `${partyName} contract` : 'Contract'}</RateTag> : null}
+                {mealPlanMatch && preferredBoard !== 'all' ? <RateTag>Meal plan match</RateTag> : null}
                 {option.matchesRequest ? null : (
-                  <span className="w-fit rounded-[2px] bg-[#fef2f2] px-1 py-px text-[10.5px] font-semibold text-[#c01823]">
-                    {`Not what they asked: ${option.boardLabel}`}
-                  </span>
+                  <RateTag tone="warning">{`Not what they asked: ${option.boardLabel}`}</RateTag>
                 )}
-                {restricted ? (
-                  <span className="text-[12.5px] font-semibold text-amber-800">Restricted — find a company or agency in HMS first</span>
-                ) : null}
-                {option.hint === 'event_rate' ? <span className="text-[12.5px] text-[#475569]">{CRICKET_RATE_HINT}</span> : null}
-                {loading && selected ? (
-                  <span role="status" className="flex items-center gap-1.5 text-[12.5px] font-semibold text-[#0066cc]">
-                    <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-2 border-[#0066cc] border-t-transparent" />
-                    Getting rates from HMS…
-                  </span>
-                ) : null}
+                {restricted ? <span className="font-semibold text-amber-800">Restricted — find a company or agency in HMS first</span> : null}
               </span>
-              <span className="flex shrink-0 flex-col items-end gap-px text-right">
-                <span className={`text-[13px] font-extrabold text-[#1e293b] ${restricted ? 'line-through' : ''}`}>
-                  {`${from}${draftMoney(option.perNightMinor)} avg / room / night`}
+              {option.hint === 'event_rate' ? (
+                <span className="col-span-2 text-[12.5px] text-[#475569]">{CRICKET_RATE_HINT}</span>
+              ) : null}
+              {loading && selected ? (
+                <span role="status" className="col-span-2 flex items-center gap-1.5 text-[12.5px] font-semibold text-[#0066cc]">
+                  <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-2 border-[#0066cc] border-t-transparent" />
+                  Getting rates from HMS…
                 </span>
-                <span className={`text-[12.5px] text-[#475569] ${restricted ? 'line-through' : ''}`}>
-                  {`Total ${from}${draftMoney(option.totalMinor)}`}
-                </span>
-              </span>
+              ) : null}
             </button>
             {selected ? selectedControls : null}
           </div>
@@ -115,6 +101,11 @@ export function RateCards({
   );
 }
 
-function RateTag({ children }: { children: ReactNode }) {
-  return <span className="rounded-[2px] bg-[#eff6ff] px-1 py-px text-[10px] font-semibold text-[#0066cc]">{children}</span>;
+function RateTag({ children, tone = 'default' }: { children: ReactNode; tone?: 'default' | 'selected' | 'warning' }) {
+  const classes = tone === 'selected'
+    ? 'bg-[#1a4332] text-white'
+    : tone === 'warning'
+      ? 'bg-[#fef2f2] text-[#c01823]'
+      : 'bg-[#eff6ff] text-[#0066cc]';
+  return <span className={`rounded-[2px] px-1 py-px text-[10px] font-semibold ${classes}`}>{children}</span>;
 }

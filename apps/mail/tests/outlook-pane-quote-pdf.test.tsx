@@ -662,6 +662,7 @@ describe('Outlook pane quote proposal PDF', () => {
         sendCommandMock.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT'),
       ).toHaveLength(2),
     );
+    const pdfCallsBeforeExpiry = quotePdfMutateMock.mock.calls.length;
     sessionState.requiresRelogin = true;
     pane.rerender(<OutlookPanePage />);
     await act(async () => rejectMutation(new Error('Bridge unavailable')));
@@ -672,12 +673,17 @@ describe('Outlook pane quote proposal PDF', () => {
     pane.rerender(<OutlookPanePage />);
     expect(screen.queryByText(/Attached: Quote-authorised\.pdf/)).toBeNull();
     expect(screen.queryByRole('status')).toBeNull();
+    // Expiry made no PDF call. The relogin reset cleared the prepared quote, so prepare it again before the draft clicks.
+    expect(quotePdfMutateMock.mock.calls.length).toBe(pdfCallsBeforeExpiry);
+    await prepareReviewedQuote();
+    const pdfCallsAfterReprepare = quotePdfMutateMock.mock.calls.length;
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
-    expect(quotePdfMutateMock).not.toHaveBeenCalled();
+    // The draft clicks after the re-prepare add no PDF call (counted from the mark taken after the re-prepare).
+    expect(quotePdfMutateMock.mock.calls.length).toBe(pdfCallsAfterReprepare);
     confirmSpy.mockReturnValue(true);
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
-    expect(quotePdfMutateMock).not.toHaveBeenCalled();
+    expect(quotePdfMutateMock.mock.calls.length).toBe(pdfCallsAfterReprepare);
   }, 15_000);
 });

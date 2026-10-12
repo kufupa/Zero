@@ -82,7 +82,6 @@ import {
   quoteRunBlockReason,
   reduceQuoteSession,
   removedStayFor,
-  rowsTakeOnceExtras,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -858,12 +857,11 @@ export function NavaPane({
         inputRevision,
         groups,
         header,
-        onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(groups)),
       });
       return trackStaffQuoteRun(run).then((remote) => {
         // The reducer drops this result when the selection, inputs or stay rows moved on while HMS searched. Say so.
         if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
-          toast.warning('Details changed while HMS was searching — run Get rates again');
+          toast.warning('Details changed while HMS was searching — search availability again.');
           return;
         }
         if (remote.status !== 'ok') {
@@ -932,7 +930,8 @@ export function NavaPane({
 
   const runQuoteStep = (stepId: string) => {
     const step = quoteSession.steps.find((item) => item.id === stepId);
-    if (!step || !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId)) return;
+    const maySearchAgain = step?.kind === 'quote_stay' && step.status === 'succeeded' && !quoteSession.runningStepId;
+    if (!step || (!maySearchAgain && !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId))) return;
     const waiting = quoteRunBlockReason(quoteSession, step);
     if (waiting) {
       toast.warning(waiting);
@@ -992,13 +991,12 @@ export function NavaPane({
       inputRevision,
       groups: stayGroups,
       header: quoteSession.staffHeader,
-      // A combined quote charges the shuttle and flat "other" charges once, on its first stay.
-      onceExtras: rowsTakeOnceExtras(quoteSession, requestedQuoteKeys(stayGroups)),
+      stayKey: step.shareKey,
     });
     void trackStaffQuoteRun(run).then((remote) => {
       // The reducer drops a result whose selection or input moved on while HMS searched. Say so, rather than let it vanish.
       if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision })) {
-        toast.warning('Details changed while HMS was searching — run Get rates again');
+        toast.warning('Details changed while HMS was searching — search availability again.');
         return;
       }
       if (remote.status !== 'ok') {
@@ -1006,6 +1004,7 @@ export function NavaPane({
           type: 'results_unavailable',
           stepId: step.id,
           reason: remote.reason,
+          detail: remote.detail,
           selectionEpoch,
           inputRevision,
         });
@@ -1089,7 +1088,7 @@ export function NavaPane({
     const session = quoteSessionRef.current;
     // The PDF is recorded on the item it was made for, even if staff open another mail while it builds.
     const owner = currentPaneOwner();
-    if (dinnerAllowanceStillRequired(session.staffHeader)) {
+    if (dinnerAllowanceStillRequired(session)) {
       toast.warning('Enter the dinner allowance per person per night before preparing the PDF.');
       return;
     }
@@ -1472,7 +1471,7 @@ export function NavaPane({
             ) : null}
 
             {activeEmail && !quoteSession.staffQuote && quoteOrBookingEmail ? (
-              <p className="px-1 text-[11px] text-[#64748b]">
+              <p className="px-1 text-[13px] text-[#64748b]">
                 Nava filled these in from the email. Check them before getting rates.
               </p>
             ) : null}
@@ -1515,6 +1514,9 @@ export function NavaPane({
               onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
               onPatchStaffHeader={(header) => dispatchQuote({ type: 'patch_staff_header', header })}
+              onPatchStayExtras={(stayKey, extras) =>
+                dispatchQuote({ type: 'patch_staff_stay_extras', stayKey, extras })
+              }
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
               onTreatAs={(treatAs) => dispatchQuote({ type: 'treat_as', treatAs })}
               onStaffNote={(staffNote) => {

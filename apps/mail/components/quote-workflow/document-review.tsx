@@ -20,11 +20,11 @@ export function pdfBlockReason(session: QuoteSession): string | null {
         ? 'Waiting for this email to finish syncing.'
         : 'Nava is still loading this email. If this does not clear, select the email again.';
     case 'no_rates':
-      return 'Get rates first.';
+      return 'Search availability first.';
     case 'sample_rates':
       return 'These are sample rates, so no PDF can be made. Open a live email to continue.';
     case 'rates_stale':
-      return 'The rates are out of date. The details changed after they were found. Get rates again.';
+      return 'The rates are out of date. The details changed after they were found. Search availability again.';
     case 'stays_unrated':
       return `${blocker.rated} of ${blocker.total} stays rated`;
     case 'mixed_stays':

@@ -888,7 +888,7 @@ describe('NavaPane screen states', () => {
     expect((screen.getAllByLabelText(/Departure/i)[0] as HTMLInputElement).value).toBe('2026-11-05');
   });
 
-  it('stored: shows a multi-row room total on the stay without assigning it to either row', async () => {
+  it('stored: shows a multi-row room total on the stay as an unset split', async () => {
     const group = STORED_READY.analysis.groups[0]!;
     bridgeMockState.storedWork = {
       ...STORED_READY,
@@ -908,7 +908,8 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
 
-    expect(await screen.findByText(/Email requested 30 rooms in total/)).toBeDefined();
+    expect(await screen.findByText(/30 rooms requested · split not set/)).toBeDefined();
+    expect(screen.queryByText(/Email requested 30 rooms in total/)).toBeNull();
   });
 
   it('stored: moves a single-row total to the stay when a second room row is added', async () => {
@@ -929,7 +930,7 @@ describe('NavaPane screen states', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '+ Add room type' }));
 
-    await waitFor(() => expect(screen.getByText(/Email requested 6 rooms in total/)).toBeDefined());
+    await waitFor(() => expect(screen.getByText(/6 rooms requested · split not set/)).toBeDefined());
     const roomCounts = screen.getAllByRole('group', { name: /Rooms for/ });
     expect(roomCounts).toHaveLength(2);
     expect(roomCounts.every((group) => group.textContent?.includes('–'))).toBe(true);

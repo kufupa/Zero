@@ -278,7 +278,7 @@ describe('mounted pane step runner and current inputs', () => {
     fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-15' } });
     finish();
     await waitFor(() =>
-      expect(toast.warning).toHaveBeenCalledWith('Details changed while HMS was searching — run Get rates again'),
+      expect(toast.warning).toHaveBeenCalledWith('Details changed while HMS was searching — search availability again.'),
     );
     // The dropped result is not kept: no room result from the old inputs reaches the pane.
     expect(screen.queryAllByText(ROOM_LABEL)).toHaveLength(0);
@@ -407,7 +407,7 @@ describe('Re-quote after an expired prior quote', () => {
     fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-15' } });
     finish();
     await waitFor(() =>
-      expect(toast.warning).toHaveBeenCalledWith('Details changed while HMS was searching — run Get rates again'),
+      expect(toast.warning).toHaveBeenCalledWith('Details changed while HMS was searching — search availability again.'),
     );
     expect(screen.queryAllByText(ROOM_LABEL)).toHaveLength(0);
   });
@@ -418,6 +418,6 @@ describe('Re-quote after an expired prior quote', () => {
     const requote = await waitFor(() => requoteAction());
     requote();
     expect((await screen.findAllByText(ROOM_LABEL)).length).toBeGreaterThan(0);
-    expect(toast.warning).not.toHaveBeenCalledWith('Details changed while HMS was searching — run Get rates again');
+    expect(toast.warning).not.toHaveBeenCalledWith('Details changed while HMS was searching — search availability again.');
   });
 });

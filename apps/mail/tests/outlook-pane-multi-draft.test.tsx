@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { toast } from 'sonner';
@@ -204,18 +204,19 @@ vi.mock('../providers/query-provider', () => {
   };
 });
 
-const COMBINED_REPLY = 'Create one reply with all date options (A, B)';
+// A quote email's reply button reads "Draft quotation into email reply" (reply-body.tsx, quotationDraft). Multi-stay
+// it still drafts the one combined reply, so this is the button under test.
+const COMBINED_REPLY = 'Draft quotation into email reply';
 
-/** Runs one date option's staff search and waits for its rate. */
+/**
+ * Runs one date option's staff search from its own stay card and waits for that card to show its rate
+ * (the Available badge). The date options are stay cards now, not a separate picker.
+ */
 async function runOption(arrival: string): Promise<void> {
-  fireEvent.click(
-    await screen.findByRole('button', { name: new RegExp(`^Run Search availability ${arrival}`) }),
-  );
-  await waitFor(() =>
-    expect(
-      screen.getByRole('button', { name: new RegExp(`^Select date scope ${arrival}`) }).textContent,
-    ).toMatch(/Quoted R/),
-  );
+  const run = await screen.findByRole('button', { name: new RegExp(`^Run Search availability ${arrival}`) });
+  const stayCard = run.closest('article') as HTMLElement;
+  fireEvent.click(run);
+  await waitFor(() => expect(within(stayCard).getByText('Available')).toBeDefined());
 }
 
 /** With every stay rated, one Prepare quote click makes the combined PDF for all of them. */

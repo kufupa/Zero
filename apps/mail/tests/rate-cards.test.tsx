@@ -195,13 +195,31 @@ describe('rate cards in the quote panel', () => {
     expect(screen.getByText(/Counted in the total/)).toBeDefined();
   });
 
-  it('shows the price per night and the total, and "from" on an unselected summary price', async () => {
+  it('keeps the nightly price on one line and marks summary pricing as "from"', async () => {
     render(<QuoteWorkflowPanel session={await quotedSession([NCOR, BAR, BARRO])} />);
     const cards = rateCards();
     expect(within(cards[0]!).getByText(`${rand(215000)} avg / room / night`)).toBeDefined();
-    expect(within(cards[0]!).getByText(`Total ${rand(860000)}`)).toBeDefined();
     expect(within(cards[2]!).getByText(`from ${rand(243000)} avg / room / night`)).toBeDefined();
-    expect(within(cards[2]!).getByText(`Total from ${rand(972000)}`)).toBeDefined();
+    expect(within(cards[2]!).queryByText(/Total/)).toBeNull();
+  });
+
+  it('uses two compact card rows so the title can wrap without squeezing the price at narrow widths', async () => {
+    render(<QuoteWorkflowPanel session={await quotedSession([NCOR, BAR])} />);
+    const card = rateCards()[0]!;
+    const title = within(card).getByText('NCOR: Corporate negotiated');
+    const price = within(card).getByText(`${rand(215000)} avg / room / night`);
+    expect(title.className).toMatch(/line-clamp-2/);
+    expect(price.className).toMatch(/whitespace-nowrap/);
+    expect(within(card).getByText('Bed & breakfast · Standard Twin')).toBeDefined();
+    expect(within(card).getByText('Selected')).toBeDefined();
+  });
+
+  it('keeps a restricted rate price struck through and gives its reason', async () => {
+    render(<QuoteWorkflowPanel session={await quotedSession([{ ...NCOR, contract: true, onlyContract: true }])} />);
+    const card = rateCards()[0]!;
+    const price = within(card).getByText(`${rand(215000)} avg / room / night`);
+    expect(price.className).toMatch(/line-through/);
+    expect(within(card).getByText('Restricted — find a company or agency in HMS first')).toBeDefined();
   });
 
   it('shows Set a specific price on the selected rate and saves its Authorised by note', async () => {
@@ -235,7 +253,6 @@ describe('rate cards in the quote panel', () => {
     render(<QuoteWorkflowPanel session={await quotedSession([{ ...NCOR, contract: true, onlyContract: true }])} />);
     const restricted = screen.getByText(/Restricted — find a company or agency in HMS first/);
     expect(restricted).toBeDefined();
-    expect(within(restricted.parentElement as HTMLElement).getByText(/Corporate negotiated/).className).toMatch(/line-through/);
     expect(rateCards()[0]?.disabled).toBe(true);
   });
 
@@ -245,7 +262,7 @@ describe('rate cards in the quote panel', () => {
     render(<QuoteWorkflowPanel session={await quotedSession([contractNcor, BAR, BARRO], header)} />);
     const cards = rateCards();
     expect(within(cards[0]!).getByText('Provincial Treasury contract')).toBeDefined();
-    expect(within(cards[0]!).getByText('only contract rate')).toBeDefined();
+    expect(within(cards[0]!).getByText('Selected')).toBeDefined();
     expect(within(cards[1]!).queryByText(/contract/)).toBeNull();
     expect(within(cards[2]!).queryByText(/contract/)).toBeNull();
   });

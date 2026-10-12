@@ -12,12 +12,18 @@ import type {
   QuoteToolStep,
   RemovedStay,
   StaffQuoteAllocation,
+  StaffStayExtras,
   StayGroupRequirement,
   StaffQuoteHeader,
 } from './types';
-import { emptyStaffQuoteHeader, staffHeaderFieldProblem, type StaffExtraField } from './types';
+import {
+  emptyStaffQuoteHeader,
+  staffHeaderFieldProblem,
+  staffStayExtrasFor,
+  type StaffExtraField,
+} from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
-import { approvedExecuteHeader, hasOncePerQuoteExtras } from './staff-quote-bind';
+import { approvedExecuteHeader, hasPerStaySingleChargeExtras, staffHeaderForStay } from './staff-quote-bind';
 import { rowRoomTypeCode, type RoomTypeCode } from './room-types';
 
 /**
@@ -182,8 +188,8 @@ export function quoteRunBlockReason(
 ): string | null {
   const lookupWait = partyLookupWaitReason(session);
   if (lookupWait) return lookupWait;
-  if (step.kind === 'quote_stay') {
-    const problem = staffHeaderFieldProblem(session.staffHeader);
+  if (step.kind === 'quote_stay' && step.shareKey) {
+    const problem = staffHeaderFieldProblem(staffHeaderForStay(session.staffHeader, step.shareKey));
     if (problem) return `Fix the amounts before running this search. ${problem}`;
   }
   if (step.kind !== 'quote_stay' || !step.shareKey) return null;
@@ -413,7 +419,7 @@ export function currentStayRun(session: QuoteSession, key: string): StaffQuoteAl
   if (!offer || offer.kind !== 'allocation' || offer.nightly.length) return null;
   let header: ReturnType<typeof approvedExecuteHeader>;
   try {
-    header = approvedExecuteHeader(session.staffHeader);
+    header = approvedExecuteHeader(staffHeaderForStay(session.staffHeader, key));
   } catch {
     return null;
   }
@@ -430,27 +436,17 @@ export function currentStayRun(session: QuoteSession, key: string): StaffQuoteAl
     quote.approvedHeader.agency === header.agency &&
     offer.stayTotalMinor === quote.totalMinor;
   if (!current) return null;
-  // A combined quote charges the once-per-quote extras once, on the first stay. A run that has them on another stay, or
-  // a first stay's run without them, would put the wrong amount in the total.
-  if (isMultiStay(session) && Boolean(quote.onceExtras) !== runCarriesOnceExtras(session, key)) return null;
+  // Each stay owns its one-time extras; a stale run must not add or lose that stay's charge.
+  if (Boolean(quote.onceExtras) !== runCarriesSingleChargeExtras(session, key)) return null;
   return quote;
 }
 
-/**
- * Whether the run of this stay carries the once-per-quote extras (the shuttle, a per-trip or one-item "other" charge):
- * one stay always does, and a combined quote charges them on its first stay only.
- */
-export function runCarriesOnceExtras(
+/** Whether this stay's run carries a single-charge extra (shuttle, per-trip or one-item "other"). */
+export function runCarriesSingleChargeExtras(
   session: Pick<QuoteSession, 'groups' | 'staffHeader'>,
   stayKey: string,
 ): boolean {
-  return hasOncePerQuoteExtras(session.staffHeader) && rowsTakeOnceExtras(session, [stayKey]);
-}
-
-/** False only for a run of a combined quote's stays other than the first: it leaves the once-per-quote extras out. */
-export function rowsTakeOnceExtras(session: Pick<QuoteSession, 'groups'>, stayKeys: readonly string[]): boolean {
-  const keys = requestedQuoteKeys(session.groups);
-  return keys.length <= 1 || stayKeys.includes(keys[0]!);
+  return hasPerStaySingleChargeExtras(staffHeaderForStay(session.staffHeader, stayKey));
 }
 
 /** Every date option's current staff run in option order, or null while any stay is unrated or its run is stale. */
@@ -628,7 +624,9 @@ function clearDownstream(session: QuoteSession): QuoteSession {
     bookingDrafts: {},
     // Results are gone, so every date option is runnable again.
     steps: session.steps.map((step) =>
-      step.kind === 'quote_stay' ? { ...step, status: 'ready' as const, retryGuidance: undefined } : step,
+      step.kind === 'quote_stay'
+        ? { ...step, status: 'ready' as const, retryGuidance: undefined, errorDetail: undefined }
+        : step,
     ),
   };
 }
@@ -877,15 +875,32 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
   return copy;
 }
 
-/**
- * A copy of a row on the dinner allowance is on it too. After the B&B fallback the dinner charge lives in the header's
- * dinnerAllowanceGroupIds, by row id, so a copy left out of it would be quoted without dinner.
- */
+/** A copied room stays on its stay's dinner allowance after a B&B fallback. */
 function withDinnerCopies(session: QuoteSession, copies: ReadonlyArray<readonly [string, string]>): QuoteSession {
-  const ids = session.staffHeader.dinnerAllowanceGroupIds;
-  const added = ids?.length ? copies.filter(([source]) => ids.includes(source)).map(([, copy]) => copy) : [];
-  if (!ids || !added.length) return session;
-  return { ...session, staffHeader: { ...session.staffHeader, dinnerAllowanceGroupIds: [...ids, ...added] } };
+  const header = session.staffHeader;
+  const stayExtrasByKey = { ...header.stayExtrasByKey };
+  const globalIds = header.dinnerAllowanceGroupIds;
+  const addedGlobal = globalIds?.length
+    ? copies.filter(([source]) => globalIds.includes(source)).map(([, copy]) => copy)
+    : [];
+  for (const [key, extras] of Object.entries(header.stayExtrasByKey ?? {})) {
+    const ids = extras.dinnerAllowanceGroupIds;
+    if (!ids?.length) continue;
+    const added = copies.filter(([source]) => ids.includes(source)).map(([, copy]) => copy);
+    if (added.length) stayExtrasByKey[key] = { ...extras, dinnerAllowanceGroupIds: [...ids, ...added] };
+  }
+  const hadLocalChanges = Object.entries(stayExtrasByKey).some(
+    ([key, extras]) => extras !== header.stayExtrasByKey?.[key],
+  );
+  if (!addedGlobal.length && !hadLocalChanges) return session;
+  return {
+    ...session,
+    staffHeader: {
+      ...header,
+      ...(addedGlobal.length && globalIds ? { dinnerAllowanceGroupIds: [...globalIds, ...addedGlobal] } : {}),
+      stayExtrasByKey,
+    },
+  };
 }
 
 /** Steps for the groups. An option the edit did not touch keeps its step, so a running or failed option stays as it was. */
@@ -931,13 +946,12 @@ function editStays(
 ): QuoteSession {
   const running = session.steps.find((step) => step.id === session.runningStepId);
   const keys = requestedQuoteKeys(groups);
-  // The once-per-quote charges (shuttle, flat other) go on the first stay. When an edit moves which stay that is, or
-  // leaves one stay, a kept run that has them where they no longer belong (or lacks them) is stale too.
+  // If a stay's one-time extras changed, a preserved run with a different extras selection is stale too.
   const misplaced = Object.entries(session.staffQuotes)
     .filter(
       ([key, run]) =>
         keys.includes(key) &&
-        Boolean(run.onceExtras) !== runCarriesOnceExtras({ groups, staffHeader: session.staffHeader }, key),
+        Boolean(run.onceExtras) !== runCarriesSingleChargeExtras({ groups, staffHeader: session.staffHeader }, key),
     )
     .map(([key]) => key);
   const affected: ReadonlySet<string> = misplaced.length ? new Set([...touched, ...misplaced]) : touched;
@@ -1036,8 +1050,21 @@ function keptFieldErrors(
 
 /** A B&B fallback for dinner needs a staff-entered per-person allowance before any PDF; never price it here. */
 export function dinnerAllowanceStillRequired(
-  header: Pick<StaffQuoteHeader, 'dinnerAllowanceRequired' | 'dinnerAllowanceMinor'>,
+  value:
+    | Pick<StaffQuoteHeader, 'dinnerAllowanceRequired' | 'dinnerAllowanceMinor' | 'stayExtrasByKey'>
+    | Pick<QuoteSession, 'staffHeader' | 'groups'>,
 ): boolean {
+  const header = 'staffHeader' in value ? value.staffHeader : value;
+  const extras =
+    'staffHeader' in value
+      ? requestedQuoteKeys(value.groups).map((key) => staffStayExtrasFor(value.staffHeader, key))
+      : Object.values(header.stayExtrasByKey ?? {});
+  const required = extras.filter((item) => item.dinnerAllowanceRequired);
+  if (required.length) {
+    return required.some(
+      (item) => !item.dinnerEnabled || !(item.dinnerAllowanceMinor && item.dinnerAllowanceMinor > 0),
+    );
+  }
   return Boolean(header.dinnerAllowanceRequired) && !(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0);
 }
 
@@ -1142,7 +1169,10 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
         };
       }
-      if (hasStaffStayEdits(session) && !session.staffNote) {
+      // A header patch made while Nava reads (contact prefill, party auto-lookup) moves inputRevision
+      // but leaves no stays to keep, so it must not turn a first read into a re-read that drops it.
+      const keepsStays = session.groups.length > 0 || session.stayRevision > 1;
+      if (keepsStays && hasStaffStayEdits(session) && !session.staffNote) {
         const extras = session.reviewItems.filter(
           (item) => item.kind === 'document_failure' || item.kind === 'analysis_failure',
         );
@@ -1294,6 +1324,21 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         inputRevision: session.inputRevision + 1,
       });
     }
+    case 'patch_staff_stay_extras': {
+      const header = session.staffHeader;
+      const stayExtrasByKey = { ...header.stayExtrasByKey };
+      const previous = stayExtrasByKey[action.stayKey] ?? staffStayExtrasFor(header, action.stayKey);
+      const { fieldErrors, ...values } = action.extras;
+      const extras: StaffStayExtras = {
+        ...previous,
+        ...values,
+        ...(fieldErrors !== undefined ? { fieldErrors: keptFieldErrors(fieldErrors) } : {}),
+      };
+      stayExtrasByKey[action.stayKey] = extras;
+      const staffHeader = { ...header, stayExtrasByKey };
+      if (Object.keys(values).length === 0) return { ...session, staffHeader };
+      return editStays({ ...session, staffHeader }, session.groups, new Set([action.stayKey]));
+    }
     case 'select_stay_key': {
       if (!session.groups.some((group) => stayKeyForGroup(group) === action.stayKey)) return session;
       if (session.selectedStayKey === action.stayKey) return session;
@@ -1363,7 +1408,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         stayRevision: action.groups?.length ? session.stayRevision + 1 : session.stayRevision,
         reviewItems: reviewItemsFromExtrasNotes(session, action.extrasReviewItems ?? []),
         steps: session.steps.map((step) =>
-          step.shareKey === stayKey ? { ...step, status: 'succeeded' as const, retryGuidance: undefined } : step,
+          step.shareKey === stayKey
+            ? { ...step, status: 'succeeded' as const, retryGuidance: undefined, errorDetail: undefined }
+            : step,
         ),
         // Only this stay's booking draft is stale. The other stays' drafts still match their own runs.
         bookingDrafts: stayCount > 1 ? keepKeys(session.bookingDrafts, new Set([stayKey]), false) : {},
@@ -1410,18 +1457,29 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         (next, groupId) => reduceQuoteSession(next, { type: 'patch_group', groupId, patch: { board: 'bb' } }),
         session,
       );
-      // The allowance is for the groups that fell back, so the header keeps their ids for the quote run to scope it.
-      const dinnerAllowanceGroupIds = [
-        ...new Set([...(patched.staffHeader.dinnerAllowanceGroupIds ?? []), ...action.groupIds]),
-      ];
-      // The allowance is a header fact that every date option's PDF uses, so this clears every result, as a header edit does.
-      return clearDownstream({
-        ...patched,
-        inputRevision: session.inputRevision + 1,
-        phase: 'requirements',
-        steps: planQuoteSteps(patched.groups),
-        staffHeader: { ...patched.staffHeader, dinnerAllowanceRequired: true, dinnerAllowanceGroupIds },
-      });
+      // Keep fallback allowances scoped to the stay(s) containing these groups, then clear those stay results.
+      const stayExtrasByKey = { ...patched.staffHeader.stayExtrasByKey };
+      for (const key of new Set(action.groupIds.map((id) => {
+        const group = patched.groups.find((item) => item.id === id);
+        return group ? stayKeyForGroup(group) : null;
+      }).filter((key): key is string => key !== null))) {
+        const ids = patched.groups.filter((group) => stayKeyForGroup(group) === key && action.groupIds.includes(group.id)).map((group) => group.id);
+        const current = stayExtrasByKey[key] ?? staffStayExtrasFor(patched.staffHeader, key);
+        stayExtrasByKey[key] = {
+          ...current,
+          dinnerEnabled: true,
+          dinnerAllowanceRequired: true,
+          dinnerAllowanceGroupIds: [...new Set([...(current.dinnerAllowanceGroupIds ?? []), ...ids])],
+        };
+      }
+      return editStays(
+        { ...patched, staffHeader: { ...patched.staffHeader, stayExtrasByKey } },
+        patched.groups,
+        new Set(action.groupIds.flatMap((id) => {
+          const group = patched.groups.find((item) => item.id === id);
+          return group ? [stayKeyForGroup(group)] : [];
+        })),
+      );
     }
     case 'patch_group': {
       // The first edit to the blank stay makes it a real group. Her edit then wins over a read that lands later.
@@ -1529,12 +1587,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (restored.inputRevision !== removal.inputRevision) return restored;
       const sharedNow = session.groups.filter((group) => keys.has(stayKeyForGroup(group)));
       if (JSON.stringify(sharedNow) !== JSON.stringify(removal.sharedRows ?? [])) return restored;
-      // A run priced the once-per-quote extras for where its stay stood then. If the stays left now put them elsewhere
-      // (say it is now the only stay), the run's total is wrong, so its rates and PDF stay gone.
+      // A restored stay's run is reusable only when its per-stay extras still match what the run included.
       const placed = { groups, staffHeader: restored.staffHeader };
       if (
         Object.entries(removal.staffQuotes).some(
-          ([key, run]) => Boolean(run.onceExtras) !== runCarriesOnceExtras(placed, key),
+          ([key, run]) => Boolean(run.onceExtras) !== runCarriesSingleChargeExtras(placed, key),
         )
       ) {
         return restored;
@@ -1644,7 +1701,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         errorMessage: action.reason,
         steps: session.steps.map((step) =>
           step.id === action.stepId
-            ? { ...step, status: 'failed' as const, retryGuidance: action.reason }
+            ? { ...step, status: 'failed' as const, retryGuidance: action.reason, errorDetail: action.detail }
             : step,
         ),
       };

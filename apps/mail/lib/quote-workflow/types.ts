@@ -271,7 +271,7 @@ export type StaffQuoteAllocation = {
     clientEmail: string;
     clientTelephone: string;
   };
-  /** True when this run carried the once-per-quote extras (the shuttle, a per-trip or one-item "other" charge). */
+  /** True when this stay's run carried a single-charge extra (shuttle, per-trip or one-item "other"). */
   onceExtras?: boolean;
   /** HMS evidence run for the audit view; null when the run left no screenshots. */
   runId?: string | null;
@@ -324,6 +324,8 @@ export type StaffQuoteHeader = {
   other?: StaffQuoteOtherCharge;
   /** Unpriced note for the reply and the PDF. */
   notes?: string;
+  /** Independent extras for each quoted stay, keyed by arrivalDate:departureDate. */
+  stayExtrasByKey?: Record<string, StaffStayExtras>;
   /**
    * Unreadable or over-cap text in an amount or count field. While any entry is here, the quote cannot run,
    * no PDF, Excel or reply can be made, and the saved amount is never used silently.
@@ -331,6 +333,25 @@ export type StaffQuoteHeader = {
   fieldErrors?: Partial<Record<StaffExtraField, string>>;
   /** Absent means public rates, as before. Contract rates come only from HMS-flagged rows of a picked party. */
   parties?: StaffQuoteParties;
+};
+
+/** Per-stay PDF extras. Checkbox flags preserve entered amounts when an item is temporarily disabled. */
+export type StaffStayExtras = {
+  shuttleEnabled: boolean;
+  shuttleMinor?: number;
+  shuttleTrips?: number;
+  lunchEnabled: boolean;
+  lunchAllowanceMinor?: number;
+  lunchAllowanceLabel?: string;
+  dinnerEnabled: boolean;
+  /** B&B fallback requires a staff-entered dinner allowance for this stay before documents can be made. */
+  dinnerAllowanceRequired?: boolean;
+  dinnerAllowanceMinor?: number;
+  dinnerAllowanceGroupIds?: string[];
+  dinnerAllowanceLabel?: string;
+  otherEnabled: boolean;
+  other?: StaffQuoteOtherCharge;
+  fieldErrors?: Partial<Record<StaffExtraField, string>>;
 };
 
 /** Amount and count fields whose typed text the pane reads. */
@@ -353,13 +374,56 @@ const STAFF_EXTRA_FIELD_LABELS: Record<StaffExtraField, string> = {
   otherAmount: 'Other amount',
 };
 
+/** Default each stay's checkboxes and values from email-derived or legacy quote-wide extras. */
+export function defaultStaffStayExtras(header: StaffQuoteHeader): StaffStayExtras {
+  return {
+    shuttleEnabled: Boolean(header.shuttleRequested),
+    shuttleMinor: header.shuttleMinor,
+    shuttleTrips: header.shuttleTrips,
+    lunchEnabled: header.lunchAllowanceMinor !== undefined,
+    lunchAllowanceMinor: header.lunchAllowanceMinor,
+    lunchAllowanceLabel: header.lunchAllowanceLabel,
+    dinnerEnabled: header.dinnerAllowanceMinor !== undefined || header.dinnerAllowanceRequired === true,
+    dinnerAllowanceRequired: header.dinnerAllowanceRequired,
+    dinnerAllowanceMinor: header.dinnerAllowanceMinor,
+    dinnerAllowanceGroupIds: header.dinnerAllowanceGroupIds,
+    dinnerAllowanceLabel: header.dinnerAllowanceLabel,
+    otherEnabled: Boolean(header.other?.amountMinor),
+    other: header.other ?? { label: '', unit: 'item' },
+    fieldErrors: header.fieldErrors,
+  };
+}
+
+/** The saved stay values, falling back to legacy/email-derived header values until a stay is edited. */
+export function staffStayExtrasFor(header: StaffQuoteHeader, stayKey: string): StaffStayExtras {
+  const fallback = defaultStaffStayExtras(header);
+  const saved = header.stayExtrasByKey?.[stayKey];
+  if (!saved) return fallback;
+  return {
+    ...fallback,
+    ...saved,
+    fieldErrors: { ...fallback.fieldErrors, ...saved.fieldErrors },
+  };
+}
+
 /** The first unreadable or over-cap amount, as "Label: message", or null when every field reads cleanly. */
 export function staffHeaderFieldProblem(
-  header: { fieldErrors?: Partial<Record<StaffExtraField, string>> } | null | undefined,
+  header: Pick<StaffQuoteHeader, 'fieldErrors' | 'stayExtrasByKey'> | null | undefined,
+  stayKey?: string,
 ): string | null {
-  for (const field of Object.keys(STAFF_EXTRA_FIELD_LABELS) as StaffExtraField[]) {
-    const message = header?.fieldErrors?.[field];
-    if (message) return `${STAFF_EXTRA_FIELD_LABELS[field]}: ${message}`;
+  const findProblem = (errors: Partial<Record<StaffExtraField, string>> | undefined) => {
+    for (const field of Object.keys(STAFF_EXTRA_FIELD_LABELS) as StaffExtraField[]) {
+      const message = errors?.[field];
+      if (message) return `${STAFF_EXTRA_FIELD_LABELS[field]}: ${message}`;
+    }
+    return null;
+  };
+  const globalProblem = findProblem(header?.fieldErrors);
+  if (globalProblem) return globalProblem;
+  if (stayKey) return findProblem(header?.stayExtrasByKey?.[stayKey]?.fieldErrors);
+  for (const extras of Object.values(header?.stayExtrasByKey ?? {})) {
+    const problem = findProblem(extras.fieldErrors);
+    if (problem) return problem;
   }
   return null;
 }
@@ -494,6 +558,8 @@ export type QuoteToolStep = {
   status: QuoteToolStepStatus;
   resultSummary?: string;
   retryGuidance?: string;
+  /** Raw diagnostic text, rendered only inside the closed Details disclosure. */
+  errorDetail?: string;
   shareKey?: string;
 };
 
@@ -634,6 +700,7 @@ export type QuoteSessionAction =
   | { type: 'staff_source_ready'; source: StaffQuoteSource }
   | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[] }
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
+  | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }
   | { type: 'select_stay_key'; stayKey: string }
   | {
@@ -669,6 +736,7 @@ export type QuoteSessionAction =
       type: 'results_unavailable';
       stepId: string;
       reason: string;
+      detail?: string;
       selectionEpoch: number;
       inputRevision: number;
     }

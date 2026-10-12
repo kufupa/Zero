@@ -27,7 +27,7 @@ import {
   stayTotals,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
-import { staffHeaderFieldProblem } from '../lib/quote-workflow/types';
+import { staffHeaderFieldProblem, staffStayExtrasFor } from '../lib/quote-workflow/types';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
 import type {
   LunaAnalysisWire,
@@ -2228,19 +2228,27 @@ describe('staff dinner B&B fallback', () => {
       ],
     }) as unknown as ReturnType<typeof initialQuoteSession>;
 
-  it('moves dinner groups to B&B and requires a staff-entered allowance without inventing a price', () => {
+  it('moves dinner groups to B&B and requires a per-stay allowance without inventing a price', () => {
     const before = dinnerSession();
     const after = reduceQuoteSession(before, {
       type: 'staff_dinner_bb_fallback',
       groupIds: ['g1'],
     });
+    const stayKey = '2026-11-12:2026-11-14';
+    const extras = after.staffHeader.stayExtrasByKey?.[stayKey];
     expect(after.groups[0]?.board).toBe('bb');
-    expect(after.staffHeader.dinnerAllowanceRequired).toBe(true);
-    expect(after.staffHeader.dinnerAllowanceMinor).toBeUndefined();
-    expect(after.inputRevision).toBe(before.inputRevision + 1);
+    expect(extras).toMatchObject({ dinnerEnabled: true, dinnerAllowanceRequired: true, dinnerAllowanceGroupIds: ['g1'] });
+    expect(extras?.dinnerAllowanceMinor).toBeUndefined();
+    expect(after.inputRevision).toBe(before.inputRevision);
     expect(dinnerAllowanceStillRequired(after.staffHeader)).toBe(true);
     expect(
-      dinnerAllowanceStillRequired({ ...after.staffHeader, dinnerAllowanceMinor: 45_000 }),
+      dinnerAllowanceStillRequired({
+        ...after.staffHeader,
+        stayExtrasByKey: {
+          ...after.staffHeader.stayExtrasByKey,
+          [stayKey]: { ...staffStayExtrasFor(after.staffHeader, stayKey), dinnerAllowanceMinor: 45_000 },
+        },
+      }),
     ).toBe(false);
     expect(reduceQuoteSession(before, { type: 'staff_dinner_bb_fallback', groupIds: [] })).toBe(
       before,
@@ -2273,7 +2281,7 @@ describe('staff dinner B&B fallback', () => {
       type: 'staff_dinner_bb_fallback',
       groupIds: ['g1'],
     });
-    expect(after.staffHeader.dinnerAllowanceGroupIds).toEqual(['g1']);
+    expect(after.staffHeader.stayExtrasByKey?.['2026-11-12:2026-11-14']?.dinnerAllowanceGroupIds).toEqual(['g1']);
   });
 });
 
@@ -2301,6 +2309,30 @@ describe('type chosen by staff after stay edits', () => {
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
     expect(s.analysis).toBe(first);
     expect(s.groups[0]?.adults).toBe(3);
+  });
+});
+
+describe('a header patched while Nava reads', () => {
+  // The panel copies the agency and company from the contact while the read is in flight. That changes the header,
+  // not the stays, so the read that lands next must still lay out its stays.
+  const oneStayTwoRows: QuoteAnalysis = {
+    intent: 'quote',
+    groups: [
+      { ...quoteAnalysis.groups[0]!, id: 'r1', stayId: 'stay-1', roomPreference: 'single', quantity: 1 },
+      { ...quoteAnalysis.groups[0]!, id: 'r2', stayId: 'stay-1', roomPreference: 'double', quantity: 1 },
+    ],
+    secondaryAsks: [],
+    alternatives: [],
+  };
+
+  it('keeps the stays and the read when the header is patched before the read lands', () => {
+    let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
+    s = reduceQuoteSession(s, { type: 'patch_staff_header', header: { agency: 'Agency A' } });
+    s = reduceQuoteSession(s, { type: 'analysis_started' });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: oneStayTwoRows });
+    expect(s.groups.map((group) => group.id)).toEqual(['r1', 'r2']);
+    expect(groupStays(s.groups).map((stay) => stay.rows.length)).toEqual([2]);
+    expect(s.analysis).toEqual(oneStayTwoRows);
   });
 });
 
@@ -2668,44 +2700,58 @@ describe('stay edits: rows, stays and their rates', () => {
     expect(other.staffHeader.dinnerAllowanceGroupIds).toEqual(['a1']);
   });
 
-  it('removing the stay that carried the shuttle drops the other stay\'s run that left it out', () => {
+  it('removing one stay does not move its extras onto the other stay', () => {
     const base = ratedSession([row('a1', dateA), row('b1', dateB)]);
     const s: QuoteSession = {
       ...base,
-      staffHeader: { ...base.staffHeader, shuttleRequested: true, shuttleMinor: 45_000, shuttleTrips: 1 },
+      staffHeader: {
+        ...base.staffHeader,
+        stayExtrasByKey: {
+          [keyA]: { shuttleEnabled: true, shuttleMinor: 45_000, shuttleTrips: 1, lunchEnabled: false, dinnerEnabled: false, otherEnabled: false },
+          [keyB]: { shuttleEnabled: false, lunchEnabled: false, dinnerEnabled: false, otherEnabled: false },
+        },
+      },
       staffQuotes: {
         [keyA]: { ...base.staffQuotes[keyA]!, onceExtras: true },
         [keyB]: { ...base.staffQuotes[keyB]!, onceExtras: false },
       },
     };
-    // With both stays, each run is where the shuttle belongs, so an edit elsewhere keeps them.
     const kept = reduceQuoteSession(s, { type: 'add_row', stayId: stayIdOf(s.groups[1]!), token: 'n' });
     expect(Object.keys(kept.staffQuotes)).toEqual([keyA]);
     const gone = reduceQuoteSession(s, { type: 'remove_stay', stayId: stayIdOf(s.groups[0]!) });
     expect(gone.groups.map((group) => group.id)).toEqual(['b1']);
-    expect(gone.staffQuotes).toEqual({});
-    expect(gone.offers).toEqual([]);
-    expect(gone.steps.find((step) => step.shareKey === keyB)?.status).toBe('ready');
+    expect(gone.staffQuotes[keyB]).toBe(s.staffQuotes[keyB]);
+    expect(gone.staffHeader.stayExtrasByKey?.[keyB]?.shuttleEnabled).toBe(false);
+    expect(gone.offers.map((offer) => offer.id)).toContain('ob');
+    expect(gone.steps.find((step) => step.shareKey === keyB)?.status).toBe('succeeded');
   });
 
-  it('undo does not bring back a run without the shuttle once its stay is the only one left', () => {
+  it('undo restores a stay without changing either stay\'s extras selection', () => {
     const base = ratedSession([row('a1', dateA), row('b1', dateB)]);
     const s: QuoteSession = {
       ...base,
-      staffHeader: { ...base.staffHeader, shuttleRequested: true, shuttleMinor: 45_000, shuttleTrips: 1 },
+      staffHeader: {
+        ...base.staffHeader,
+        stayExtrasByKey: {
+          [keyA]: { shuttleEnabled: true, shuttleMinor: 45_000, shuttleTrips: 1, lunchEnabled: false, dinnerEnabled: false, otherEnabled: false },
+          [keyB]: { shuttleEnabled: false, lunchEnabled: false, dinnerEnabled: false, otherEnabled: false },
+        },
+      },
       staffQuotes: {
         [keyA]: { ...base.staffQuotes[keyA]!, onceExtras: true },
         [keyB]: { ...base.staffQuotes[keyB]!, onceExtras: false },
       },
     };
-    const stayB = stayIdOf(s.groups[1]!);
-    const removal = removedStayFor(s, stayB)!;
-    const withoutB = reduceQuoteSession(s, { type: 'remove_stay', stayId: stayB });
-    const empty = reduceQuoteSession(withoutB, { type: 'remove_stay', stayId: stayIdOf(s.groups[0]!) });
-    const back = reduceQuoteSession(empty, { type: 'restore_stay', removal });
-    expect(back.groups.map((group) => group.id)).toEqual(['b1']);
-    expect(back.staffQuotes[keyB]).toBeUndefined();
-    expect(back.stayPdfs[keyB]).toBeUndefined();
+    const stayA = stayIdOf(s.groups[0]!);
+    const removal = removedStayFor(s, stayA)!;
+    const withoutA = reduceQuoteSession(s, { type: 'remove_stay', stayId: stayA });
+    expect(withoutA.staffQuotes[keyB]).toBe(s.staffQuotes[keyB]);
+    const back = reduceQuoteSession(withoutA, { type: 'restore_stay', removal });
+    expect(back.groups.map((group) => group.id)).toEqual(['a1', 'b1']);
+    expect(back.staffQuotes[keyA]).toBe(s.staffQuotes[keyA]);
+    expect(back.staffQuotes[keyB]).toBe(s.staffQuotes[keyB]);
+    expect(back.staffHeader.stayExtrasByKey?.[keyA]?.shuttleEnabled).toBe(true);
+    expect(back.staffHeader.stayExtrasByKey?.[keyB]?.shuttleEnabled).toBe(false);
   });
 
   it('keeps a booking draft that lands after another stay was edited', () => {
@@ -2815,12 +2861,12 @@ describe('why the PDF cannot be made: the reason names the check that failed', (
   });
 
   it('keeps "Get rates first." only for an email with no rates at all', () => {
-    expectBlocked(withStaffSource(analysisReady()), 'no_rates', 'Get rates first.');
+    expectBlocked(withStaffSource(analysisReady()), 'no_rates', 'Search availability first.');
   });
 
   it('says the rates are out of date when the run is there but its evidence is gone or for older inputs', () => {
     const rated = ratedSingleStay();
-    const stale = 'The rates are out of date. The details changed after they were found. Get rates again.';
+    const stale = 'The rates are out of date. The details changed after they were found. Search availability again.';
     // The live proof: the run happened, then the evidence was dropped. Staff must not be told to get rates first.
     expectBlocked({ ...rated, evidence: null }, 'rates_stale', stale);
     expectBlocked({ ...rated, inputRevision: rated.inputRevision + 1 }, 'rates_stale', stale);

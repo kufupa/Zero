@@ -4,8 +4,6 @@ import {
   initialQuoteSession,
   ratedStayCount,
   reduceQuoteSession,
-  requestedQuoteKeys,
-  rowsTakeOnceExtras,
 } from '../lib/quote-workflow/session';
 import type {
   BookingDraftReady,
@@ -13,6 +11,7 @@ import type {
   QuoteOffer,
   QuoteSession,
   StaffQuoteAllocation,
+  StaffStayExtras,
   StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 import {
@@ -87,6 +86,7 @@ function staffRun(
   revisionRef: string,
   quoteRequestKey: string,
   totalMinor: number,
+  onceExtras = false,
 ): StaffQuoteAllocation {
   return {
     workflowRunId: `run-${revisionRef}`,
@@ -109,19 +109,20 @@ function staffRun(
       clientEmail: '',
       clientTelephone: '',
     },
+    onceExtras,
   };
 }
 
 /** One stay's staff run, recorded the way the pane does when it finishes a search. */
 function quoteStay(
   session: QuoteSession,
-  option: { revisionRef: string; key: string; totalMinor: number },
+  option: { revisionRef: string; key: string; totalMinor: number; onceExtras?: boolean },
   groups?: StayGroupRequirement[],
 ): QuoteSession {
   return reduceQuoteSession(session, {
     type: 'staff_quote_ready',
     offer: allocation(option.revisionRef, option.key, option.totalMinor),
-    staffQuote: staffRun(session, option.revisionRef, option.key, option.totalMinor),
+    staffQuote: staffRun(session, option.revisionRef, option.key, option.totalMinor, option.onceExtras),
     selectionEpoch: 1,
     inputRevision: session.inputRevision,
     ...(groups ? { groups } : {}),
@@ -409,9 +410,12 @@ describe('booking drafts when one stay is edited', () => {
   });
 });
 
-describe('once-per-quote extras on a combined quote', () => {
-  const SHUTTLE = { shuttleRequested: true, shuttleMinor: 50000, shuttleTrips: 1 };
+describe('per-stay extras on a combined quote', () => {
   const ROOMS: Record<string, number> = { [NOV.key]: 272000, [DEC.key]: 136000 };
+
+  function withStayExtras(session: QuoteSession, stayKey: string, extras: Partial<StaffStayExtras>) {
+    return reduceQuoteSession(session, { type: 'patch_staff_stay_extras', stayKey, extras });
+  }
 
   /** A server stand-in that prices each stay's rooms plus the shuttle and any flat "other" charge it is sent. */
   function pricedMutate(sent: ExecuteStaffQuoteInput[]) {
@@ -442,7 +446,7 @@ describe('once-per-quote extras on a combined quote', () => {
     };
   }
 
-  /** Runs one stay the way the pane does: that stay's rows, the session header, and the first-stay rule. */
+  /** Runs one stay the way the pane does: that stay's rows and extras. */
   async function runStay(
     session: QuoteSession,
     key: string,
@@ -460,7 +464,7 @@ describe('once-per-quote extras on a combined quote', () => {
       inputRevision: session.inputRevision,
       groups,
       header: session.staffHeader,
-      onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(groups)),
+      stayKey: key,
     });
     if (run.status !== 'ok') throw new Error(run.reason);
     return reduceQuoteSession(session, {
@@ -473,50 +477,53 @@ describe('once-per-quote extras on a combined quote', () => {
     });
   }
 
-  function withHeader(
-    header: Parameters<typeof reduceQuoteSession>[1] & { type: 'patch_staff_header' },
-  ) {
-    return reduceQuoteSession(stayedSession(), header);
-  }
-
-  it('two stays and a R500 shuttle: the combined total has the shuttle once, on the first stay', async () => {
+  it('charges a shuttle separately for every stay where it is enabled', async () => {
     const sent: ExecuteStaffQuoteInput[] = [];
-    let session = withHeader({ type: 'patch_staff_header', header: SHUTTLE });
-    // The second stay runs first: it still leaves the shuttle to the first stay.
+    let session = stayedSession();
+    for (const key of [NOV.key, DEC.key]) {
+      session = withStayExtras(session, key, { shuttleEnabled: true, shuttleMinor: 50_000, shuttleTrips: 1 });
+    }
+    // Each date range carries its own extra, even when the later stay runs first.
     session = await runStay(session, DEC.key, sent);
     session = await runStay(session, NOV.key, sent);
     expect(
       sent.map((input) => [input.groups[0]!.arrivalDate, input.shuttleRequested ?? false]),
     ).toEqual([
-      [DEC.arrival, false],
+      [DEC.arrival, true],
       [NOV.arrival, true],
     ]);
+    expect(sent.map((input) => input.shuttleMinor)).toEqual([50_000, 50_000]);
     const request = combinedDocumentRequest(session);
     if (request.status !== 'ok') throw new Error(request.reason);
-    expect(request.expectedTotalMinor).toBe(272000 + 136000 + 50000);
-    // The first stay's run is the primary one, so its extras fact goes with it.
+    expect(request.expectedTotalMinor).toBe(272_000 + 136_000 + 2 * 50_000);
     expect(request.input.factRefs).toEqual(['extras']);
-    expect(request.input.additionalStays?.[0]?.factRefs).toEqual([]);
+    expect(request.input.additionalStays?.[0]?.factRefs).toEqual(['extras']);
   });
 
-  it('a one-item "other" charge is made once, and a per-person one stays on every stay', async () => {
+  it('charges a one-item "other" amount per selected stay and sends per-person amounts to each stay', async () => {
     const sent: ExecuteStaffQuoteInput[] = [];
-    let session = withHeader({
-      type: 'patch_staff_header',
-      header: { other: { label: 'Conference pack', amountMinor: 20000, unit: 'item' } },
-    });
+    let session = stayedSession();
+    for (const key of [NOV.key, DEC.key]) {
+      session = withStayExtras(session, key, {
+        otherEnabled: true,
+        other: { label: 'Conference pack', amountMinor: 20_000, unit: 'item' },
+      });
+    }
     session = await runStay(session, NOV.key, sent);
     session = await runStay(session, DEC.key, sent);
-    expect(sent.map((input) => input.other?.amountMinor ?? null)).toEqual([20000, null]);
+    expect(sent.map((input) => input.other?.amountMinor ?? null)).toEqual([20_000, 20_000]);
     const request = combinedDocumentRequest(session);
     if (request.status !== 'ok') throw new Error(request.reason);
-    expect(request.expectedTotalMinor).toBe(272000 + 136000 + 20000);
+    expect(request.expectedTotalMinor).toBe(272_000 + 136_000 + 40_000);
 
     const perPerson: ExecuteStaffQuoteInput[] = [];
-    let each = withHeader({
-      type: 'patch_staff_header',
-      header: { other: { label: 'Gala dinner', amountMinor: 30000, unit: 'per_person' } },
-    });
+    let each = stayedSession();
+    for (const key of [NOV.key, DEC.key]) {
+      each = withStayExtras(each, key, {
+        otherEnabled: true,
+        other: { label: 'Gala dinner', amountMinor: 30_000, unit: 'per_person' },
+      });
+    }
     each = await runStay(each, NOV.key, perPerson);
     each = await runStay(each, DEC.key, perPerson);
     expect(perPerson.map((input) => input.other?.unit ?? null)).toEqual([
@@ -525,20 +532,16 @@ describe('once-per-quote extras on a combined quote', () => {
     ]);
   });
 
-  it('a second stay run that carries the shuttle is not current, so the total never counts it twice', () => {
-    const session = withHeader({ type: 'patch_staff_header', header: SHUTTLE });
-    const first = quoteStay(session, { revisionRef: 'rev-a', key: NOV.key, totalMinor: 322000 });
-    const carried = { ...staffRun(first, 'rev-b', DEC.key, 186000), onceExtras: true };
-    const both = reduceQuoteSession(first, {
-      type: 'staff_quote_ready',
-      offer: allocation('rev-b', DEC.key, 186000),
-      staffQuote: carried,
-      selectionEpoch: 1,
-      inputRevision: first.inputRevision,
-    });
-    // Stay 1's run here has no shuttle flag either, so neither stay is current until each runs again.
-    expect(ratedStayCount(both)).toEqual({ rated: 0, total: 2 });
-    expect(combinedDocumentRequest(both).status).toBe('unavailable');
+  it('keeps each stay current only while its own single-charge extras remain unchanged', () => {
+    let session = stayedSession();
+    session = withStayExtras(session, NOV.key, { shuttleEnabled: true, shuttleMinor: 50_000, shuttleTrips: 1 });
+    session = withStayExtras(session, DEC.key, { shuttleEnabled: false });
+    session = quoteStay(session, { revisionRef: 'rev-a', key: NOV.key, totalMinor: 322_000, onceExtras: true });
+    session = quoteStay(session, { revisionRef: 'rev-b', key: DEC.key, totalMinor: 136_000 });
+    expect(ratedStayCount(session)).toEqual({ rated: 2, total: 2 });
+    const changed = withStayExtras(session, NOV.key, { shuttleMinor: 60_000 });
+    expect(ratedStayCount(changed)).toEqual({ rated: 1, total: 2 });
+    expect(changed.staffQuotes[DEC.key]).toBe(session.staffQuotes[DEC.key]);
   });
 
   it('one stay still sends the shuttle as before', async () => {
@@ -559,7 +562,7 @@ describe('once-per-quote extras on a combined quote', () => {
       type: 'staff_source_ready',
       source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: SOURCE_HASH },
     });
-    session = reduceQuoteSession(session, { type: 'patch_staff_header', header: SHUTTLE });
+    session = withStayExtras(session, NOV.key, { shuttleEnabled: true, shuttleMinor: 50_000, shuttleTrips: 1 });
     const sent: ExecuteStaffQuoteInput[] = [];
     session = await runStay(session, NOV.key, sent);
     expect(sent[0]).toMatchObject({ shuttleRequested: true, shuttleMinor: 50000, shuttleTrips: 1 });

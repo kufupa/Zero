@@ -7,7 +7,6 @@ import {
   ratedStayCount,
   reduceQuoteSession,
   requestedQuoteKeys,
-  rowsTakeOnceExtras,
 } from '../lib/quote-workflow/session';
 import { bindExecuteStaffQuote, type ExecuteStaffQuoteResult } from '../lib/quote-workflow/staff-quote-bind';
 import type { QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '../lib/quote-workflow/types';
@@ -116,7 +115,7 @@ async function runStay(
     inputRevision,
     groups: stayGroups,
     header: session.staffHeader,
-    onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(stayGroups)),
+    stayKey: stay.key,
   });
   if (remote.status !== 'ok') {
     return { session: reduceQuoteSession(next, { type: 'results_unavailable', stepId: step.id, reason: remote.reason, selectionEpoch, inputRevision }), status: remote.reason };
@@ -162,7 +161,7 @@ describe('AE1 multi-stay: a succeeded stay run counts as rated', () => {
       inputRevision,
       groups,
       header: session.staffHeader,
-      onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(groups)),
+      stayKey: A.key,
     });
     expect(remote.status).toBe('ok');
     if (remote.status !== 'ok') return;

@@ -4,7 +4,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
-import { findReadStayArrival } from './helpers/prepare-reviewed-quote';
+import { fillStayFactsMatchingAuthorisedOffer } from './helpers/prepare-reviewed-quote';
 
 const sendCommandMock = vi.fn();
 
@@ -111,8 +111,9 @@ describe('production pane never synthesizes quote evidence', () => {
 
   it('keeps integration unavailable and does not emit fixture offers, PDF, or native calls', async () => {
     render(<OutlookPanePage />);
-    // Get rates waits for a room type on every row; the email gave none. The read lands first.
-    await findReadStayArrival();
+    // Get rates waits for a room type on every row; the email gave none. The read lands first. The search also
+    // needs the dates, meal plan, rooms and adults (the stay's block reasons), so the stay facts are filled first.
+    await fillStayFactsMatchingAuthorisedOffer();
     fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'STQN' } });
     fireEvent.click(await screen.findByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => {
@@ -123,7 +124,8 @@ describe('production pane never synthesizes quote evidence', () => {
     expect(screen.queryByText(/Quote-fixture-not-live-hms/)).toBeNull();
     const pdfButton = screen.queryByRole('button', { name: /^Prepare PDF$/i });
     if (pdfButton) expect(pdfButton).toHaveProperty('disabled', true);
-    fireEvent.click(screen.getByRole('button', { name: /Insert Draft in Outlook/i }));
+    // A quote email's reply button is labelled "Draft quotation into email reply" (reply-body.tsx); it stays disabled here.
+    fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply|Insert draft in Outlook/i }));
     expect(sendCommandMock.mock.calls.map((call) => call[0])).not.toContain('CREATE_REPLY_DRAFT');
     expect(sendCommandMock.mock.calls.map((call) => call[0])).not.toContain('ADD_ATTACHMENT_TO_DRAFT');
   });

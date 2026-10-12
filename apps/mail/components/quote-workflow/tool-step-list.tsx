@@ -13,7 +13,7 @@ const STEP_STATUS_LABEL: Record<QuoteToolStepStatus, string> = {
 
 /**
  * Each HMS search with its own Run button, for staff who want one search at a time. The main action,
- * Get rates from HMS, sits in the pane.
+ * Search availability, sits in the pane.
  */
 export function ToolStepList({
   steps,
@@ -49,7 +49,9 @@ export function ToolStepList({
               <span className="text-[12px] font-semibold text-[#1e293b]">{step.title}</span>
               <span className="text-[10px] font-bold uppercase text-[#64748b]">{STEP_STATUS_LABEL[step.status] ?? step.status}</span>
             </div>
-            {step.retryGuidance ? <p className="text-[11px] text-amber-800">{step.retryGuidance}</p> : null}
+            {step.errorDetail ? (
+              <pre className="overflow-x-auto whitespace-pre-wrap break-words text-[11px] text-[#64748b]">{step.errorDetail}</pre>
+            ) : null}
             {wait ? <p className="text-[11px] text-amber-800">{wait}</p> : null}
             <p className="text-[11px] text-[#64748b]">{formatQuoteStepInputs(step.inputs)}</p>
             <SecondaryButton

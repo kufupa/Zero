@@ -33,6 +33,7 @@ export const PARTY_AUTO_LOOKUP_DEBOUNCE_MS = 600;
 
 /** An automatic search needs at least this many characters. */
 const AUTO_LOOKUP_MIN_CHARS = 3;
+const MANUAL_LOOKUP_MIN_CHARS = 2;
 
 /** The most HMS rows shown as chips under a field. The server already sends at most this many. */
 const CHIP_LIMIT = 5;
@@ -73,10 +74,10 @@ function searchKey(text: string): string {
     .trim();
 }
 
-/** The memo entry for a key. A forced start replaces it, which is what Search again does. */
-function startAutoSearch(key: string, start: () => Promise<PartyFindReply>, force: boolean): AutoEntry {
+/** The memo entry for a key. */
+function startAutoSearch(key: string, start: () => Promise<PartyFindReply>): AutoEntry {
   const known = autoMemo.get(key);
-  if (known && !force) return known;
+  if (known) return known;
   const entry: AutoEntry = { reply: null, promise: Promise.resolve(FAILED_REPLY) };
   entry.promise = new Promise<PartyFindReply>((resolve) => resolve(start())).then(
     (reply) => {
@@ -149,10 +150,10 @@ function ResultChips({
  * shows its kind.
  *
  * With autoLookup, Nava searches HMS for the field's name by itself, once the typing rests, and picks the best match. The
- * other matches show as chips. With no match, or with a failure, the field says so and offers Search again. Without
- * autoLookup, the field keeps one Find in HMS button. The HMS list the sweep wrote is searched as staff type, and its
- * matches are a candidate only. Suggestions from the email are offered for staff to confirm. A suggestion carries
- * no HMS id, so it can only be searched.
+ * other matches show as chips. With no match, or with a failure, the field says so; the one Find in HMS button lets staff
+ * retry and see the candidates. Without autoLookup, that button is the only HMS search. The HMS list the sweep wrote is
+ * searched as staff type, and its matches are a candidate only. Suggestions from the email are offered for staff to
+ * confirm. A suggestion carries no HMS id, so it can only be searched.
  */
 export function PartyPicker({
   name,
@@ -233,7 +234,7 @@ export function PartyPicker({
     const searchKind = kind;
     let live = true;
     const timer = setTimeout(() => {
-      const entry = startAutoSearch(autoKey, () => find(query, searchKind), false);
+      const entry = startAutoSearch(autoKey, () => find(query, searchKind));
       // A search for this name may have finished while the field showed another name: render its reply now.
       if (entry.reply) rerender();
       else void entry.promise.then(() => live && rerender());
@@ -260,14 +261,6 @@ export function PartyPicker({
     onLookupPending?.(lookupPending);
   });
   useEffect(() => () => onLookupPending?.(false), []);
-
-  const searchAgain = () => {
-    if (!autoMemoKey || !kind) return;
-    autoPicked.current = null;
-    const entry = startAutoSearch(autoMemoKey, () => find(query, kind), true);
-    rerender();
-    void entry.promise.then(() => rerender());
-  };
 
   const run = async () => {
     const token = ++latest.current;
@@ -315,8 +308,8 @@ export function PartyPicker({
     if (autoMemoKey) autoPicked.current = { key: autoMemoKey, party: null };
     onPick({ kind: row.kind, nativeId: row.nativeId, name: row.name });
   };
-  const showAutoStatus = Boolean(autoMemoKey) && !pickedHere;
-  const showManualButton = !autoLookup || !kind;
+  const showAutoStatus = Boolean(autoMemoKey) && !pickedHere && shown.status === 'idle';
+  const showManualButton = true;
 
   return (
     <div
@@ -361,9 +354,6 @@ export function PartyPicker({
                 {noCandidateNote(autoReply, kind)}
               </Notice>
             )}
-            <div>
-              <LinkButton onClick={searchAgain}>Find in HMS</LinkButton>
-            </div>
           </div>
         ) : (
           <p role="status" className="flex items-center gap-2 text-[12.5px] text-[#0066cc]">
@@ -396,7 +386,10 @@ export function PartyPicker({
       ) : null}
       {showManualButton ? (
         <div className="flex flex-wrap items-center gap-2">
-          <SecondaryButton disabled={!query || shown.status === 'busy'} onClick={() => void run()}>
+          <SecondaryButton
+            disabled={query.length < MANUAL_LOOKUP_MIN_CHARS || shown.status === 'busy' || lookupPending}
+            onClick={() => void run()}
+          >
             Find in HMS
           </SecondaryButton>
           <span>{PARTY_PICKER_HINT}</span>
