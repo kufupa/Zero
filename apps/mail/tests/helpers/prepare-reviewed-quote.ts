@@ -18,22 +18,26 @@ export async function findReadStayArrival(): Promise<HTMLElement> {
 export async function fillStayFactsMatchingAuthorisedOffer(): Promise<void> {
   fireEvent.change(await findReadStayArrival(), { target: { value: '2026-11-12' } });
   fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-14' } });
+  // The Meal plan select only filters the rate cards now. The stay's board comes from the read.
   fireEvent.change(screen.getByLabelText('Meal plan'), { target: { value: 'bb' } });
-  fireEvent.change(screen.getByLabelText('Rooms'), { target: { value: '1' } });
-  fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '1' } });
+  // Rooms has a visible stepper and a hidden number input with the same label. The input is the one to change.
+  fireEvent.change(screen.getByLabelText('Rooms', { selector: 'input' }), { target: { value: '1' } });
+  // Adults per room sits behind an edit button as a stepper. The read leaves it unset, so + sets it to 1.
+  fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+  fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
   fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'SKNG' } });
 }
 
 /** Drive an authorised HITL path. Production unavailable path must not reach here. */
 export async function prepareReviewedQuote(): Promise<void> {
   await fillStayFactsMatchingAuthorisedOffer();
-  fireEvent.click(screen.getByRole('button', { name: /^Get rates from HMS$/i }));
+  fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
   const allocation = await waitFor(() => {
     const match = screen.getAllByRole('button').find((element) => {
       const text = element.textContent ?? '';
       return text.includes('Counted in the total') && !text.includes('Alternative');
     });
-    if (!match) throw new Error('expected an authorised allocation offer after Get rates from HMS');
+    if (!match) throw new Error('expected an authorised allocation offer after Search availability');
     return match;
   });
   if (allocation.getAttribute('aria-pressed') !== 'true') fireEvent.click(allocation);

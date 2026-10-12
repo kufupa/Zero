@@ -56,6 +56,7 @@ export function ReplyBody({
   const noReplySender = quoteSession.analysis?.noReplySender === true;
   // A multi-stay quote is one combined PDF, so its one reply covers every date option. A single stay keeps its own reply.
   const allOptionsDraft = isMultiStay(quoteSession);
+  const quotationDraft = quoteSession.treatAs === 'quote' || quoteSession.analysis?.intent === 'quote';
   const dateOptionLetters = requestedQuoteKeys(quoteSession.groups).map((_, index) => optionLetter(index));
   const allOptionsLabel = `Create one reply with all date options (${dateOptionLetters.join(', ')})`;
 
@@ -123,12 +124,18 @@ export function ReplyBody({
           {saving
             ? isDraftPending
               ? 'Saving the reply…'
-              : 'Save reply'
+              : quotationDraft
+                ? 'Draft quotation into email reply'
+                : 'Save reply'
             : isDraftPending
               ? 'Creating the draft in Outlook…'
               : allOptionsDraft
-                ? allOptionsLabel
-                : 'Insert draft in Outlook'}
+                ? quotationDraft
+                  ? 'Draft quotation into email reply'
+                  : allOptionsLabel
+                : quotationDraft
+                  ? 'Draft quotation into email reply'
+                  : 'Insert draft in Outlook'}
         </PrimaryButton>
       ) : (
         <SecondaryButton

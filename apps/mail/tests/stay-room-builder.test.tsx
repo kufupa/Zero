@@ -39,14 +39,14 @@ function renderPanel(session: QuoteSession) {
 }
 
 function getRatesButton(): HTMLButtonElement {
-  return screen.getByRole('button', { name: 'Get rates from HMS' }) as HTMLButtonElement;
+  return screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
 }
 
 describe('stay and room builder', () => {
   it('renders two stays, each with its own dates and rooms', () => {
     renderPanel(requestSession([row('a1', dateA), row('b1', dateB)]));
-    expect(screen.getByRole('heading', { name: 'Stay 1' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Stay 2' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /^Stay 1 of 2\b/ })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /^Stay 2 of 2\b/ })).toBeTruthy();
     expect(screen.getAllByText('Check-in')).toHaveLength(2);
     expect(screen.getAllByText('Check-out')).toHaveLength(2);
   });
@@ -58,7 +58,7 @@ describe('stay and room builder', () => {
         row('s', dateA, { quantity: 10, adults: 1, roomPreference: 'STQN' }),
       ]),
     );
-    expect(screen.getByText('30 rooms · 50 guests')).toBeTruthy();
+    expect(screen.getByText('30 rooms · 50 guests total')).toBeTruthy();
   });
 
   it('names each room type with its HMS code, e.g. Standard Queen (STQN)', () => {
@@ -69,14 +69,17 @@ describe('stay and room builder', () => {
 
   it('shows the unknown room code the email asked for, and blocks Get rates until a room type is chosen', () => {
     renderPanel(requestSession([row('a1', dateA, { roomPreference: 'PENTHOUSE' })]));
-    expect(screen.getByText('Email asked for PENTHOUSE — pick a room type')).toBeTruthy();
+    expect(screen.getByText('Email asked for PENTHOUSE — choose a room type')).toBeTruthy();
     expect(getRatesButton().disabled).toBe(true);
     expect(screen.getByText('Choose a room type for each row.')).toBeTruthy();
   });
 
   it('keeps Get rates off while any row of any stay has no room type', () => {
     renderPanel(requestSession([row('a1', dateA), row('b1', dateB, { roomPreference: undefined })]));
-    expect(getRatesButton().disabled).toBe(true);
+    // Each date range has its own search button; the second stay's row has no room type, so its search stays off.
+    const searches = screen.getAllByRole('button', { name: 'Search availability' }) as HTMLButtonElement[];
+    expect(searches).toHaveLength(2);
+    expect(searches[1]!.disabled).toBe(true);
     expect(screen.getByText('Choose a room type for each row.')).toBeTruthy();
   });
 
@@ -90,7 +93,7 @@ describe('stay and room builder', () => {
     });
     fireEvent.click(screen.getAllByRole('button', { name: 'Remove stay' })[1]!);
     expect(onStayAction).toHaveBeenLastCalledWith({ type: 'remove_stay', stayId: 'd:2026-12-01:2026-12-03' });
-    fireEvent.click(screen.getByRole('button', { name: 'Add stay' }));
+    fireEvent.click(screen.getByRole('button', { name: '+ Add another date range' }));
     expect(onStayAction).toHaveBeenLastCalledWith({ type: 'add_stay', token: expect.any(String) });
   });
 

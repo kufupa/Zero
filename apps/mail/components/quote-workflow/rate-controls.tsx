@@ -309,9 +309,9 @@ function chipFor(price: RowPriceChoice | undefined): { tone: keyof typeof CHIP_T
 }
 
 const linkClass =
-  'rounded-[3px] text-left text-[11.5px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8] disabled:no-underline';
+  'rounded-[3px] text-left text-[13px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8] disabled:no-underline';
 const outlineButtonClass =
-  'flex h-7 items-center rounded-[3px] border border-[#0066cc] bg-white px-2.5 text-[11.5px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8]';
+  'flex h-7 items-center rounded-[3px] border border-[#0066cc] bg-white px-2.5 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8]';
 
 /** A name clash comes back from the server as CONFLICT. Anything else keeps the fallback copy. */
 function saveError(err: unknown, fallback: string): string {
@@ -363,6 +363,7 @@ export function CopyHmsNotesButton({ block }: { block: string }) {
 export function RowRateControls({
   group,
   label,
+  toggleLabel = 'Change price',
   rowRate,
   saved,
   pending,
@@ -374,6 +375,8 @@ export function RowRateControls({
   group: StayGroupRequirement;
   /** Names the row for staff, e.g. "Room 1" or "Stay 2 · Room 1". */
   label: string;
+  /** Rate cards surface the price control directly on the selected card. */
+  toggleLabel?: string;
   /** This row's charged rate from the last run. */
   rowRate?: StaffRowRate;
   saved: SavedRatesState;
@@ -419,7 +422,7 @@ export function RowRateControls({
       className="flex flex-col gap-2 rounded-[3px] border border-[#cbd5e1] bg-white p-2.5"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="flex flex-wrap items-center gap-1.5 text-[12px] font-bold text-[#1e293b]">
+        <span className="flex flex-wrap items-center gap-1.5 text-[13px] font-bold text-[#1e293b]">
           {label}
           <span className={`rounded-[2px] px-1 py-px text-[10px] font-semibold ${CHIP_TONES[chip.tone]}`}>
             {chip.text}
@@ -432,21 +435,21 @@ export function RowRateControls({
           aria-controls={`${id}-controls`}
           onClick={() => setOpen((current) => !current)}
         >
-          {open ? 'Hide price options' : 'Change price'}
+          {open ? 'Hide price options' : toggleLabel}
         </button>
       </div>
-      <p className="text-[11.5px] text-[#475569]">{priceSummary(price, rowRate)}</p>
+      <p className="text-[12.5px] text-[#475569]">{priceSummary(price, rowRate)}</p>
       {price?.source === 'override' ? (
-        <p className="text-[11px] text-[#64748b]">{`Approved by / why: ${price.note}`}</p>
+        <p className="text-[12.5px] text-[#64748b]">{`Authorised by: ${price.note}`}</p>
       ) : null}
       {pending ? (
-        <p role="status" className="text-[11px] font-semibold text-[#0066cc]">
+        <p role="status" className="text-[12.5px] font-semibold text-[#0066cc]">
           Updating the total from HMS…
         </p>
       ) : null}
       {rowRate?.hmsComment ? (
         <div className="flex flex-col gap-1">
-          <p className="text-[11px] text-[#475569]">{`HMS comment: ${rowRate.hmsComment}`}</p>
+          <p className="text-[12.5px] text-[#475569]">{`HMS comment: ${rowRate.hmsComment}`}</p>
           <div>
             <button type="button" className={outlineButtonClass} onClick={() => void copyComment()}>
               Copy for HMS comments
@@ -456,7 +459,7 @@ export function RowRateControls({
       ) : null}
       {open ? (
         <div id={`${id}-controls`} className="flex flex-col gap-3 border-t border-[#e2e8f0] pt-2">
-          {blockReason ? <p className="text-[11px] text-[#64748b]">{blockReason}</p> : null}
+          {blockReason ? <p className="text-[12.5px] text-[#64748b]">{blockReason}</p> : null}
           {saved.status !== 'unavailable' ? (
             <SavedRatePicker
               label={label}
@@ -887,7 +890,7 @@ function OverrideForm({
           onChange={(event) => setDraft({ ...draft, rate: event.target.value })}
         />
       </Field>
-      <Field label="Approved by / why" htmlFor={`${id}-note`} required>
+      <Field label="Authorised by / why" htmlFor={`${id}-note`} required>
         <input
           id={`${id}-note`}
           maxLength={NOTE_MAX}

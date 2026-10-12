@@ -545,7 +545,7 @@ describe('NavaPane screen states', () => {
     expect(
       await screen.findByText('Nava filled these in from the email. Check them before getting rates.'),
     ).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Insert draft in Outlook' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Draft quotation into email reply' })).toBeDefined();
     await settle();
     expect(container).toMatchSnapshot();
   });
@@ -730,7 +730,8 @@ describe('NavaPane screen states', () => {
     bridgeMockState.recordEvent.mockRejectedValue(new Error('offline'));
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
-    fireEvent.change(screen.getAllByLabelText(/Adults/i)[0]!, { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
     expect(await screen.findByText(/Couldn.t save change/, {}, { timeout: 6000 })).toBeDefined();
     expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(2);
     bridgeMockState.recordEvent.mockResolvedValue({ aiValue: 2, value: 3 });
@@ -745,7 +746,7 @@ describe('NavaPane screen states', () => {
     bridgeMockState.storedWork = STORED_READY;
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
-    fireEvent.click(screen.getByRole('button', { name: 'Add stay' }));
+    fireEvent.click(screen.getByRole('button', { name: '+ Add another date range' }));
     await waitFor(() =>
       expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(
         expect.objectContaining({ workItemId: 'wi-1', fieldPath: expect.stringMatching(/^stays\[s_\w+\]\.removed$/), value: null }),
@@ -841,7 +842,7 @@ describe('NavaPane screen states', () => {
       ),
     ).toBeDefined();
     await settle();
-    expect(screen.queryByRole('button', { name: 'Insert draft in Outlook' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Draft quotation into email reply' })).toBeNull();
   });
 
   it('preview: the webmail reply saves to the thread, not that the add-in is too old', async () => {
@@ -850,7 +851,7 @@ describe('NavaPane screen states', () => {
     expect(
       await screen.findByText('Wait for this email to sync, then select it again'),
     ).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Save reply' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Draft quotation into email reply' })).toBeDefined();
     expect(screen.queryByText(/add-in is too old/)).toBeNull();
   });
 
@@ -907,7 +908,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
 
-    expect(await screen.findByText('30 rooms requested in total')).toBeDefined();
+    expect(await screen.findByText(/Email requested 30 rooms in total/)).toBeDefined();
   });
 
   it('stored: moves a single-row total to the stay when a second room row is added', async () => {
@@ -923,12 +924,12 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
 
-    expect(screen.queryByText('6 rooms requested in total')).toBeNull();
+    expect(screen.queryByText(/Email requested 6 rooms in total/)).toBeNull();
     expect(screen.getByRole('group', { name: 'Rooms for stay 1, room 1' }).textContent).toContain('6');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add room' }));
+    fireEvent.click(screen.getByRole('button', { name: '+ Add room type' }));
 
-    await waitFor(() => expect(screen.getByText('6 rooms requested in total')).toBeDefined());
+    await waitFor(() => expect(screen.getByText(/Email requested 6 rooms in total/)).toBeDefined());
     const roomCounts = screen.getAllByRole('group', { name: /Rooms for/ });
     expect(roomCounts).toHaveLength(2);
     expect(roomCounts.every((group) => group.textContent?.includes('–'))).toBe(true);

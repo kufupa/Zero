@@ -59,6 +59,23 @@ function sessionFromFixture(id: Parameters<typeof loadQuoteFixture>[0]): QuoteSe
   return session;
 }
 
+function openAdvanced() {
+  fireEvent.click(screen.getByText('Advanced'));
+}
+
+function EditableStayPanel({ initial }: { initial: QuoteSession }) {
+  const [session, setSession] = useState(initial);
+  return (
+    <QuoteWorkflowPanel
+      session={session}
+      onStayAction={(action) => setSession((current) => reduceQuoteSession(current, action))}
+      onPatchGroup={(groupId, patch) =>
+        setSession((current) => reduceQuoteSession(current, { type: 'patch_group', groupId, patch }))
+      }
+    />
+  );
+}
+
 describe('QuoteWorkflowPanel', () => {
   it('shows analysing, unsynced, missing-source, failed, unsupported, and non-quote states', () => {
     const start = initialQuoteSession();
@@ -95,7 +112,7 @@ describe('QuoteWorkflowPanel', () => {
       />,
     );
     expect(screen.getByText(/not a quote or booking/i)).toBeDefined();
-    expect(screen.queryByRole('button', { name: /Get rates from HMS/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Search availability/i })).toBeNull();
   });
 
   it('renders one stay card for groups on the same dates, with a row per room and month and year dates', () => {
@@ -107,8 +124,71 @@ describe('QuoteWorkflowPanel', () => {
     expect(arrivals).toHaveLength(1);
     expect(screen.getAllByRole('group', { name: /^Rooms for stay 1, room \d$/ })).toHaveLength(2);
     expect((arrivals[0] as HTMLInputElement).value).toBe('2026-10-16');
-    fireEvent.change(screen.getAllByLabelText(/Adults/i)[0]!, { target: { value: '3' } });
-    expect(onPatchGroup).toHaveBeenCalledWith('g-double', expect.objectContaining({ adults: 3 }));
+    expect(screen.getByRole('heading', { name: /Stay 1 of 1/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 2' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 2' }));
+    expect(onPatchGroup).toHaveBeenCalledWith('g-single', expect.objectContaining({ adults: 2 }));
+  });
+
+  it('adds another independent date range after extracted same-date rooms remain together', () => {
+    render(<EditableStayPanel initial={sessionFromFixture('mixed-same-dates')} />);
+    expect(screen.getAllByRole('heading', { name: /Stay 1 of 1/ })).toHaveLength(1);
+    expect(screen.getAllByRole('group', { name: /^Rooms for stay 1, room \d$/ })).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: /Add another date range/ }));
+    expect(screen.getByRole('heading', { name: /Stay 1 of 2/ })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /Stay 2 of 2/ })).toBeTruthy();
+
+    const arrivals = screen.getAllByLabelText('Arrival') as HTMLInputElement[];
+    fireEvent.click(screen.getAllByRole('button', { name: /Change dates/ })[1]!);
+    fireEvent.change(arrivals[1]!, { target: { value: '2026-12-20' } });
+    const afterEdit = screen.getAllByLabelText('Arrival') as HTMLInputElement[];
+    expect(afterEdit[0]?.value).toBe('2026-10-16');
+    expect(afterEdit[1]?.value).toBe('2026-12-20');
+    expect(screen.getAllByText(/Each date range is searched and booked independently/)).toHaveLength(2);
+  });
+
+  it('keeps duplicated room edits independent', () => {
+    const initial = sessionFromFixture('mixed-same-dates');
+    const originalCode = initial.groups[0]?.roomTypeCode ?? initial.groups[0]?.roomPreference;
+    render(<EditableStayPanel initial={initial} />);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Duplicate room' })[0]!);
+    const roomsBeforeEdit = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
+    expect(roomsBeforeEdit).toHaveLength(3);
+    fireEvent.change(roomsBeforeEdit[0]!, { target: { value: 'LUXKNG' } });
+    const roomsAfterEdit = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
+    expect(roomsAfterEdit[0]?.value).toBe('LUXKNG');
+    expect(roomsAfterEdit[1]?.value).toBe('single');
+    expect(roomsAfterEdit[2]?.value).toBe(originalCode);
+  });
+
+  it('has one Booked by block with agency and company, not a per-room organisation field', () => {
+    render(<QuoteWorkflowPanel session={sessionFromFixture('agency-contract')} />);
+    expect(screen.getAllByRole('heading', { name: 'Booked by' })).toHaveLength(1);
+    expect(screen.getByLabelText('Agency (travel agent)')).toBeTruthy();
+    expect(screen.getByLabelText('Company (end client)')).toBeTruthy();
+    expect(screen.queryByLabelText('Company or agency')).toBeNull();
+  });
+
+  it('keeps Book in HMS disabled with a Coming soon reason in the quote flow', () => {
+    const session = { ...sessionFromFixture('mixed-same-dates'), reviewedReplyHtml: 'Reply draft' };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect((screen.getByRole('button', { name: 'Book in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('Coming soon')).toBeTruthy();
+  });
+
+  it('adds room types and explains why Search availability is disabled until all rows are matchable', () => {
+    const onStayAction = vi.fn();
+    const base = sessionFromFixture('failed-run');
+    const session = {
+      ...base,
+      groups: base.groups.map((group) => ({ ...group, roomPreference: '', roomTypeCode: undefined })),
+    };
+    render(<QuoteWorkflowPanel session={session} onStayAction={onStayAction} />);
+    fireEvent.click(screen.getByRole('button', { name: /Add room type/ }));
+    expect(onStayAction).toHaveBeenCalledWith(expect.objectContaining({ type: 'add_row', stayId: expect.any(String) }));
+    const search = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
+    expect(search.disabled).toBe(true);
+    expect(screen.getByText('Choose a room type for each row.')).toBeTruthy();
   });
 
   it('labels missing fields and extracted provenance', () => {
@@ -117,7 +197,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getAllByText('from email').length).toBeGreaterThan(0);
   });
 
-  it('runs next only when not already running, and shows retry guidance on failure', () => {
+  it('retries the failed stay search directly and keeps the detailed HMS steps behind Details', () => {
     const onRunNext = vi.fn();
     const onRunStep = vi.fn();
     let session = sessionFromFixture('failed-run');
@@ -128,6 +208,7 @@ describe('QuoteWorkflowPanel', () => {
       kind: 'quote_stay',
       title: 'Search availability for 12–14 Nov',
       inputs: { quoteRequestKey: '2026-11-12:2026-11-14', groupIds: ['g1'] },
+      shareKey: '2026-11-12:2026-11-14',
       dependsOn: [],
       status: 'failed',
       retryGuidance: sessionFromFixture('failed-run').errorMessage ??
@@ -136,10 +217,33 @@ describe('QuoteWorkflowPanel', () => {
     render(<QuoteWorkflowPanel session={session} onRunNext={onRunNext} onRunStep={onRunStep} />);
     expect(screen.getByText(/do not assume inventory is held/i)).toBeDefined();
     expect(screen.getByText(/Dates 2026-11-12 → 2026-11-14/i)).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: /Get rates from HMS/i }));
-    expect(onRunNext).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole('button', { name: /Run Search availability for 12–14 Nov/i }));
+    expect(screen.getByText('Details')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Search availability' }));
+    expect(onRunNext).not.toHaveBeenCalled();
     expect(onRunStep).toHaveBeenCalledWith('quote-1');
+    fireEvent.click(screen.getByText('Details'));
+    expect(screen.getByRole('button', { name: /Run Search availability for 12–14 Nov/i })).toBeTruthy();
+  });
+
+  it('shows the two-minute checking state on the stay that is running', () => {
+    const base = sessionFromFixture('failed-run');
+    const running = {
+      ...base,
+      groups: base.groups.map((group) => ({ ...group, roomPreference: 'SKNG' })),
+      steps: [{
+        id: 'quote-1',
+        kind: 'quote_stay' as const,
+        title: 'Search availability for 12–14 Nov',
+        inputs: { quoteRequestKey: '2026-11-12:2026-11-14', groupIds: ['g1'] },
+        shareKey: '2026-11-12:2026-11-14',
+        dependsOn: [],
+        status: 'running' as const,
+      }],
+      runningStepId: 'quote-1',
+      phase: 'tools' as const,
+    };
+    render(<QuoteWorkflowPanel session={running} />);
+    expect(screen.getByRole('status').textContent).toContain('Checking HMS… about 2 min');
   });
 
   it('does not sum alternatives and shows honest missing screenshots', () => {
@@ -173,7 +277,7 @@ describe('QuoteWorkflowPanel', () => {
       />,
     );
     expect(screen.queryByRole('button', { name: /Run Look up organisation/i })).toBeNull();
-    const stay = screen.getByRole('button', { name: /Run Search availability/i });
+    const stay = screen.getByRole('button', { name: 'Search availability' });
     expect((stay as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(stay);
     expect(onRunStep).toHaveBeenCalled();
@@ -202,7 +306,8 @@ describe('QuoteWorkflowPanel', () => {
     render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
     expect(screen.getByRole('button', { name: /^Prepare quote$/i })).toHaveProperty('disabled', true);
     expect(screen.getAllByText('0 of 2 stays rated').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Every date option goes into one quote/)).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'Quotation total (all stays)' })).toBeDefined();
+    expect(screen.getByText(/Every date range is quoted separately, then included in one quotation/)).toBeDefined();
     expect(screen.queryByText(/Combined PDF is blocked/i)).toBeNull();
   });
 
@@ -348,6 +453,7 @@ describe('QuoteWorkflowPanel', () => {
         onPatchStaffHeader={onPatchStaffHeader}
       />,
     );
+    openAdvanced();
     const input = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: '125.' } });
@@ -362,6 +468,7 @@ describe('QuoteWorkflowPanel', () => {
         onPatchStaffHeader={onPatchStaffHeader}
       />,
     );
+    openAdvanced();
     expect(screen.getByLabelText('Dinner allowance (R per person per night)')).toBeDefined();
     expect(screen.getByLabelText('Lunch allowance (R per person per night)')).toBeDefined();
     expect(screen.getByLabelText('Office transfer (R per person per day)')).toBeDefined();
@@ -385,6 +492,7 @@ describe('QuoteWorkflowPanel', () => {
         onPatchStaffHeader={onPatchStaffHeader}
       />,
     );
+    openAdvanced();
     expect(screen.getByRole('group', { name: 'Shuttle: trips × R per trip' })).toBeDefined();
     expect(screen.getByText(/No price yet/)).toBeDefined();
     fireEvent.change(screen.getByLabelText('Shuttle trips'), { target: { value: '2' } });
@@ -398,6 +506,7 @@ describe('QuoteWorkflowPanel', () => {
       staffHeader: { ...base.staffHeader, other },
     });
     render(<QuoteWorkflowPanel session={withOther({ label: '', amountMinor: 30_000, unit: 'item' })} />);
+    openAdvanced();
     expect(screen.getByText('Add a label for this amount')).toBeDefined();
     expect((screen.getByLabelText('Other label') as HTMLInputElement).required).toBe(true);
     cleanup();
@@ -417,6 +526,7 @@ describe('QuoteWorkflowPanel', () => {
         onPatchStaffHeader={onPatchStaffHeader}
       />,
     );
+    openAdvanced();
     const input = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'abc' } });
@@ -435,6 +545,7 @@ describe('QuoteWorkflowPanel', () => {
         onPatchStaffHeader={onPatchStaffHeader}
       />,
     );
+    openAdvanced();
     const input = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'R 1,250.50' } });
@@ -457,6 +568,7 @@ describe('QuoteWorkflowPanel', () => {
         onPatchStaffHeader={onPatchStaffHeader}
       />,
     );
+    openAdvanced();
     const trips = screen.getByLabelText('Shuttle trips') as HTMLInputElement;
     fireEvent.change(trips, { target: { value: '60' } });
     expect(screen.getByText('Up to 50 allowed')).toBeDefined();
@@ -471,14 +583,15 @@ describe('QuoteWorkflowPanel', () => {
     const base = staggeredDatesSession();
     const initial = { ...base, staffHeader: { ...base.staffHeader, dinnerAllowanceMinor: 45_000 } };
     render(<RunGate initial={initial} seen={seen} />);
-    const runButtons = () => screen.getAllByRole('button', { name: /^Run Search availability/i }) as HTMLButtonElement[];
+    openAdvanced();
+    const runButtons = () => screen.getAllByRole('button', { name: 'Search availability' }) as HTMLButtonElement[];
     expect(runButtons().every((button) => !button.disabled)).toBe(true);
     const dinner = screen.getByLabelText('Dinner allowance (R per person per night)') as HTMLInputElement;
     // R450 is saved; the typed text is unreadable. The quote must not run on the saved R450 silently.
     fireEvent.focus(dinner);
     fireEvent.change(dinner, { target: { value: '450,50x' } });
     expect(runButtons().every((button) => button.disabled)).toBe(true);
-    expect((screen.getByRole('button', { name: 'Get rates from HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getAllByRole('button', { name: 'Search availability' })[0] as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getAllByText(/Fix the amounts before running this search\. Dinner allowance:/).length).toBeGreaterThan(0);
     expect(seen.latest?.staffHeader.dinnerAllowanceMinor).toBe(45_000);
     // Clearing the field drops the charge and unblocks the Run.
@@ -527,27 +640,28 @@ describe('QuoteWorkflowPanel', () => {
     const onRunStep = vi.fn();
     const session = staggeredDatesSession();
     render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} onRunNext={vi.fn()} />);
-    const runs = screen.getAllByRole('button', { name: /^Run Search availability/i }) as HTMLButtonElement[];
+    const runs = screen.getAllByRole('button', { name: 'Search availability' }) as HTMLButtonElement[];
     expect(runs).toHaveLength(2);
     expect(runs.every((button) => !button.disabled)).toBe(true);
     fireEvent.click(runs[1]!);
     expect(onRunStep).toHaveBeenCalledWith(session.steps[1]!.id);
   });
 
-  it('lists date options with totals and quotes every option together', () => {
+  it('lists each date range as its own stay and totals the quote across stays', () => {
     const onRunStep = vi.fn();
     const quoted = staggeredDatesWithOptionA();
     render(<QuoteWorkflowPanel session={quoted} onRunStep={onRunStep} onRunNext={vi.fn()} />);
-    expect(screen.getByRole('heading', { name: 'Date options' })).toBeDefined();
-    expect(
-      screen.getByText(
-        'This email asks for more than one set of dates. Run each option; Nava keeps every result and quotes them together.',
-      ),
-    ).toBeDefined();
+    expect(screen.getByRole('heading', { name: /Stay 1 of 2/ })).toBeDefined();
+    expect(screen.getByRole('heading', { name: /Stay 2 of 2/ })).toBeDefined();
+    expect(screen.getByRole('article', { name: 'Stay 1 details' }).textContent).toMatch(/Separate HMS booking/);
+    expect(screen.getByRole('article', { name: 'Stay 2 details' }).textContent).toMatch(/Separate HMS booking/);
     expect(screen.getAllByText('1 of 2 stays rated').length).toBeGreaterThan(0);
-    const optionA = screen.getByRole('button', { name: 'Select date scope 2026-11-02 to 2026-11-04' });
-    expect(optionA.textContent).toMatch(/Quoted R\d/);
-    const runB = screen.getByRole('button', { name: /^Run Search availability 2026-11-10/i }) as HTMLButtonElement;
+    const firstSubtotal = screen.getAllByText('Stay subtotal')[0]!;
+    const addRange = screen.getByRole('button', { name: '+ Add another date range' });
+    const allStaysTotal = screen.getByRole('heading', { name: 'Quotation total (all stays)' });
+    expect(firstSubtotal.compareDocumentPosition(addRange) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(addRange.compareDocumentPosition(allStaysTotal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const runB = screen.getAllByRole('button', { name: 'Search availability' })[1] as HTMLButtonElement;
     expect(runB.disabled).toBe(false);
     fireEvent.click(runB);
     expect(onRunStep).toHaveBeenCalledWith(quoted.steps[1]!.id);
@@ -721,6 +835,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const { unmount } = render(
       <QuoteWorkflowPanel session={session} rateCatalogue={rateCatalogue as never} />,
     );
+    openAdvanced();
     const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
     const values = [...planSelect.options].map((option) => option.value);
     expect(planSelect.value).toBe('all');
@@ -754,6 +869,7 @@ describe('the Find in HMS picker in the quote header', () => {
     });
     expect(governmentSession.staffHeader.salesStrategy).toBe('Government');
     render(<QuoteWorkflowPanel session={governmentSession} rateCatalogue={rateCatalogue as never} />);
+    openAdvanced();
     expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government');
     expect(screen.getByRole('option', { name: 'All government rates' })).toBeDefined();
   });
@@ -817,6 +933,7 @@ describe('the Find in HMS picker in the quote header', () => {
     }
 
     render(<FilterHarness />);
+    openAdvanced();
     expect(screen.getByRole('button', { name: /BAR: Best Available Rate/ })).toBeDefined();
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'NCOR1B' } });
 
@@ -835,6 +952,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const first = render(
       <QuoteWorkflowPanel session={base} rateCatalogue={rateCatalogue} onPatchStaffHeader={onPatchStaffHeader} />,
     );
+    openAdvanced();
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'NGOVB' } });
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
     first.unmount();
@@ -843,19 +961,27 @@ describe('the Find in HMS picker in the quote header', () => {
     render(
       <QuoteWorkflowPanel session={governmentSession} rateCatalogue={rateCatalogue} onPatchStaffHeader={onPatchStaffHeader} />,
     );
+    openAdvanced();
     expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government');
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'BAR' } });
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
   });
 
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.
-  it('looks each named field up in HMS by itself, once, with its own kind; no finder, no lookup', async () => {
+  it('runs one HMS lookup per party and gives each party one retry control', async () => {
     resetPartyAutoLookupForTests();
     const find = vi.fn(noMatch);
     const { unmount } = render(
       <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel', agency: 'Travel Hub' })} findParty={find} />,
     );
     await waitFor(() => expect(find).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    expect(screen.getAllByRole('heading', { name: 'Booked by' })).toHaveLength(1);
+    expect(
+      screen.getByLabelText('Agency (travel agent)').compareDocumentPosition(screen.getByLabelText('Company (end client)')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getAllByRole('group', { name: /lookup in HMS$/i })).toHaveLength(2);
+    expect(await screen.findAllByRole('button', { name: 'Find in HMS' })).toHaveLength(2);
     expect(find).toHaveBeenCalledWith('Acme Travel', 'company');
     expect(find).toHaveBeenCalledWith('Travel Hub', 'agency');
     unmount();
@@ -872,9 +998,9 @@ describe('the Find in HMS picker in the quote header', () => {
         findParty={noMatch}
       />,
     );
-    fireEvent.change(screen.getByLabelText('Agency'), { target: { value: 'Hub' } });
+    fireEvent.change(screen.getByLabelText('Agency (travel agent)'), { target: { value: 'Hub' } });
     expect(seen.latest?.staffHeader.parties?.company).toEqual(ACME);
-    fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'Acme Travel Ltd' } });
+    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Acme Travel Ltd' } });
     expect(seen.latest?.staffHeader.parties?.company).toBeUndefined();
     unmount();
 
@@ -889,17 +1015,17 @@ describe('the Find in HMS picker in the quote header', () => {
         findParty={noMatch}
       />,
     );
-    fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'Acme Travel Ltd' } });
+    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Acme Travel Ltd' } });
     expect(seen.latest?.staffHeader.parties?.company).toBeUndefined();
     expect(seen.latest?.staffHeader.parties?.agency).toEqual(TRAVEL_HUB);
-    fireEvent.change(screen.getByLabelText('Agency'), { target: { value: 'Travel Hub Ltd' } });
+    fireEvent.change(screen.getByLabelText('Agency (travel agent)'), { target: { value: 'Travel Hub Ltd' } });
     expect(seen.latest?.staffHeader.parties?.agency).toBeUndefined();
   });
 
-  it('holds Get rates with the lookup copy while an automatic company search still decides the pick', () => {
+  it('holds Search availability with the lookup copy while an automatic company search still decides the pick', () => {
     const session = { ...headerSession({ company: 'Acme Travel' }), pendingPartyKinds: ['company' as const] };
     render(<QuoteWorkflowPanel session={session} />);
-    expect((screen.getByRole('button', { name: 'Get rates from HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getAllByText('Finding the company in HMS…').length).toBeGreaterThan(0);
   });
 

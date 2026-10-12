@@ -455,7 +455,7 @@ describe('staff quote execute/PDF header bind', () => {
   });
 
   it('sends staff-confirmed dinner and shuttle extras on executeStaffQuote', async () => {
-    const mutate = vi.fn(async () => readyResult);
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
     const result = await bindExecuteStaffQuote({
       mutate,
       source,
@@ -635,6 +635,52 @@ describe('staff quote execute/PDF header bind', () => {
         expect.objectContaining({ id: 'g2', roomCodes: ['STWN'], quantity: 10 }),
       ],
     });
+  });
+
+  it('uses the Q-S room type match when an empty room-code list was projected', async () => {
+    const sent: unknown[] = [];
+    const mutate = vi.fn(async (input: unknown) => {
+      sent.push(input);
+      return readyResult;
+    });
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{
+        ...stay,
+        roomPreference: 'Standard Queen',
+        roomTypeCode: 'STQN',
+        roomCodes: [],
+      }],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(result.status).toBe('ok');
+    expect(sent[0]).toMatchObject({ groups: [{ roomCodes: ['STQN'] }] });
+  });
+
+  it('sends the room a rate-card pick chose, not the projected room type', async () => {
+    const sent: unknown[] = [];
+    const mutate = vi.fn(async (input: unknown) => {
+      sent.push(input);
+      return readyResult;
+    });
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{
+        ...stay,
+        roomPreference: 'Standard Queen',
+        roomTypeCode: 'STQN',
+        roomCodes: ['SKNG'],
+      }],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(result.status).toBe('ok');
+    expect(sent[0]).toMatchObject({ groups: [{ roomCodes: ['SKNG'] }] });
   });
 
   it('rejects a zero total and requires PDF hash to match actual bytes', async () => {

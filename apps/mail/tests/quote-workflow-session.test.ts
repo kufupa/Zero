@@ -2892,3 +2892,24 @@ describe('why the PDF cannot be made: the reason names the check that failed', (
     expectBlocked({ ...s, selectedStayKey: STAY_B }, 'no_stay', 'Pick the stay to quote first.');
   });
 });
+
+describe('rowRoomCode: staff picks beat the projected room type', () => {
+  const row = (over: Record<string, unknown>) =>
+    ({ roomTypeCode: 'STQN', roomPreference: 'Standard Queen', ...over }) as Parameters<typeof rowRoomCode>[0];
+
+  it('uses the projected room type while staff have not picked another', () => {
+    expect(rowRoomCode(row({}))).toBe('STQN');
+  });
+
+  it('a rate-card pick (roomCodes) wins over the projected room type', () => {
+    expect(rowRoomCode(row({ roomCodes: ['SKNG'] }))).toBe('SKNG');
+  });
+
+  it('a select choice (roomPreference) wins over a stale projected room type', () => {
+    expect(rowRoomCode(row({ roomPreference: 'SKNG' }))).toBe('SKNG');
+  });
+
+  it('a cleared select leaves the row with no room type', () => {
+    expect(rowRoomCode(row({ roomPreference: '', roomTypeCode: undefined }))).toBeNull();
+  });
+});

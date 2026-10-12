@@ -18,7 +18,7 @@ import type {
 import { emptyStaffQuoteHeader, staffHeaderFieldProblem, type StaffExtraField } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
 import { approvedExecuteHeader, hasOncePerQuoteExtras } from './staff-quote-bind';
-import { knownRoomCode, type RoomTypeCode } from './room-types';
+import { rowRoomTypeCode, type RoomTypeCode } from './room-types';
 
 /**
  * The amendment Luna reported on this email, or null. It lives on the analysis, so it survives every reducer
@@ -89,17 +89,17 @@ export function groupStays(groups: StayGroupRequirement[]): Array<{ id: string; 
   return [...byId].map(([id, rows]) => ({ id, rows }));
 }
 
-/** The known native room code a row asks for. The server quotes roomPreference, so only that counts. Empty or unknown is no room type yet. */
+/** The room a row quotes: staff picks first, the server's projected roomTypeCode last. See rowRoomTypeCode. */
 export function rowRoomCode(group: StayGroupRequirement): RoomTypeCode | null {
-  return knownRoomCode(group.roomPreference);
+  return rowRoomTypeCode(group);
 }
 
-/** Rooms, and guests as rooms times adults per room, over the rows given. */
+/** Rooms and guests over the rows given; children in a row are counted once per room. */
 export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; guests: number } {
   return groups.reduce(
     (sum, group) => ({
       rooms: sum.rooms + (group.quantity ?? 0),
-      guests: sum.guests + (group.quantity ?? 0) * (group.adults ?? 0),
+      guests: sum.guests + (group.quantity ?? 0) * ((group.adults ?? 0) + group.childrenAges.length),
     }),
     { rooms: 0, guests: 0 },
   );

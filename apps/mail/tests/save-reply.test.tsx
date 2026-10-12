@@ -285,4 +285,25 @@ describe('Save reply button on the webmail panel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save reply' }));
     expect(onSaveReply).toHaveBeenCalledWith('selected');
   });
+
+  it('labels a webmail quote action Draft quotation into email reply and saves it', () => {
+    const onSaveReply = vi.fn();
+    const quotationSession = { ...quoteSession, treatAs: 'quote' } as QuoteSession;
+    render(
+      <ReplyBody
+        activeEmail={activeEmail}
+        supportsAction={() => false}
+        quoteSession={quotationSession}
+        combinedEdit={null}
+        onCombinedEditChange={vi.fn()}
+        quoteOrBookingEmail
+        isDraftPending={false}
+        statusMessage={null}
+        onDraft={vi.fn()}
+        onSaveReply={onSaveReply}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Draft quotation into email reply' }));
+    expect(onSaveReply).toHaveBeenCalledWith('selected');
+  });
 });

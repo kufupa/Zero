@@ -57,7 +57,8 @@ export function ToolStepList({
               disabled={!enabled}
               onClick={() => onRunStep?.(step.id)}
             >
-              Run {step.title}
+              <span>Run</span>
+              <span>{step.title}</span>
             </SecondaryButton>
             {enabled || wait ? null : <p className="text-[11px] text-[#64748b]">{idleReason(step)}</p>}
           </div>

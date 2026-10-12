@@ -4,20 +4,18 @@ import {
   allocationTotal,
   amendmentOf,
   canCreatePdf,
+  canRunQuoteStep,
+  currentStayRun,
   draftStayGroup,
   groupStays,
   isMultiStay,
   newQuoteToken,
-  optionLetter,
-  pickNextRunnableStep,
   partyLookupWaitReason,
   quoteRunBlockReason,
-  ratedStayCount,
   requestedQuoteKeys,
   rowRoomCode,
   stayKeyForGroup,
   staffSourceReady,
-  stayTotals,
 } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
@@ -29,6 +27,7 @@ import type {
   QuoteReviewItem,
   QuoteSession,
   QuoteToolStep,
+  QuoteBoard,
   RatePlanBoard,
   RatePlanCatalogueEntry,
   RateOption,
@@ -199,7 +198,7 @@ function ZarMinorInput({
           apply(event.target.value);
         }}
       />
-      {error ? <span className="mt-0.5 block text-[11px] font-normal text-[#b45309]">{error}</span> : null}
+      {error ? <span className="mt-0.5 block text-[12.5px] font-normal text-[#b45309]">{error}</span> : null}
     </>
   );
 }
@@ -265,7 +264,7 @@ function CountInput({
           apply(event.target.value);
         }}
       />
-      {error ? <span className="mt-0.5 block text-[11px] font-normal text-[#b45309]">{error}</span> : null}
+      {error ? <span className="mt-0.5 block text-[12.5px] font-normal text-[#b45309]">{error}</span> : null}
     </>
   );
 }
@@ -368,9 +367,6 @@ function StaffPartyFields({
   partySuggestions,
   partyIndex,
   onPartyLookupPending,
-  ratePlans,
-  ratePlan,
-  onRatePlanChange,
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
@@ -382,9 +378,6 @@ function StaffPartyFields({
   partyIndex?: PartyIndexSearcher | null;
   /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
-  ratePlans: RatePlanChoice[];
-  ratePlan: string;
-  onRatePlanChange: (value: string) => void;
 }) {
   // Each field's picker searches that field's own text and holds only that kind: its results, its pick and its suggestions.
   // HOOK(#84, not on main): the HMS typeahead's onSearchName lands on the onSearchName prop below.
@@ -422,53 +415,14 @@ function StaffPartyFields({
       />
     ) : null;
   return (
-    <>
-      <p className="text-[11px] text-[#64748b]">These exact values go on the PDF. Leave Agency blank if there is none.</p>
-      <Field label="Rate plan" htmlFor="quote-rate-plan">
-        <select
-          id="quote-rate-plan"
-          aria-label="Rate plan"
-          className={paneFieldClass}
-          value={ratePlan}
-          onChange={(event) => onRatePlanChange(event.target.value)}
-        >
-          <option value="all">All rates</option>
-          {(['public', 'contract', 'government', 'other'] as const).map((category) => {
-            const plans = ratePlans.filter((entry) => entry.category === category);
-            if (!plans.length && category !== 'government') return null;
-            const label = category === 'other' ? 'Other HMS rates' : `${category[0]!.toUpperCase()}${category.slice(1)}`;
-            return (
-              <optgroup key={category} label={label}>
-                {category === 'government' ? <option value="government">All government rates</option> : null}
-                {plans.map((plan) => (
-                  <option key={plan.code} value={plan.code}>
-                    {plan.name === plan.code ? plan.code : `${plan.code}: ${plan.name}`}
-                  </option>
-                ))}
-              </optgroup>
-            );
-          })}
-        </select>
-        <span className="mt-0.5 block text-[11px] font-normal text-[#64748b]">
-          All rates shows every code HMS returned; choosing a plan filters the results.
-        </span>
-      </Field>
-      <Field label="Company" htmlFor="quote-company">
-        <input
-          id="quote-company"
-          aria-label="Company"
-          className={paneFieldClass}
-          value={header.company}
-          onChange={(event) =>
-            onPatch?.({ company: event.target.value, ...pickClearedBy('company', header, event.target.value) })
-          }
-        />
-        {partyPicker('company')}
-      </Field>
-      <Field label="Agency" htmlFor="quote-agency">
+    <div className="flex flex-col gap-2.5">
+      <p className="text-[12.5px] text-[#64748b]">
+        Company is the end client; Agency is the travel agent. Each HMS result must be confirmed before its contract rate is used.
+      </p>
+      <Field label="Agency (travel agent)" htmlFor="quote-agency">
         <input
           id="quote-agency"
-          aria-label="Agency"
+          aria-label="Agency (travel agent)"
           className={paneFieldClass}
           value={header.agency}
           onChange={(event) =>
@@ -476,8 +430,26 @@ function StaffPartyFields({
           }
         />
         {partyPicker('agency')}
+        {header.parties?.agency ? (
+          <span className="w-fit rounded-[2px] bg-[#eff6ff] px-1.5 py-0.5 text-[10.5px] font-semibold text-[#0066cc]">HMS agency contract selected</span>
+        ) : null}
       </Field>
-    </>
+      <Field label="Company (end client)" htmlFor="quote-company">
+        <input
+          id="quote-company"
+          aria-label="Company (end client)"
+          className={paneFieldClass}
+          value={header.company}
+          onChange={(event) =>
+            onPatch?.({ company: event.target.value, ...pickClearedBy('company', header, event.target.value) })
+          }
+        />
+        {partyPicker('company')}
+        {header.parties?.company ? (
+          <span className="w-fit rounded-[2px] bg-[#eff6ff] px-1.5 py-0.5 text-[10.5px] font-semibold text-[#0066cc]">HMS company contract selected</span>
+        ) : null}
+      </Field>
+    </div>
   );
 }
 
@@ -521,7 +493,7 @@ function StaffExtraFields({
         />
       </Field>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+        <label className="flex flex-col gap-1 text-[12.5px] font-semibold text-[#475569]">
           Dinner allowance (R per person per night)
           <ZarMinorInput
             ariaLabel="Dinner allowance (R per person per night)"
@@ -530,7 +502,7 @@ function StaffExtraFields({
             onErrorChange={fieldErrorReporter(header, onPatch, 'dinnerAllowance')}
           />
         </label>
-        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+        <label className="flex flex-col gap-1 text-[12.5px] text-[#64748b]">
           Dinner label, optional (e.g. food only)
           <input
             aria-label="Dinner label"
@@ -542,7 +514,7 @@ function StaffExtraFields({
         </label>
       </div>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+        <label className="flex flex-col gap-1 text-[12.5px] font-semibold text-[#475569]">
           Lunch allowance (R per person per night)
           <ZarMinorInput
             ariaLabel="Lunch allowance (R per person per night)"
@@ -551,7 +523,7 @@ function StaffExtraFields({
             onErrorChange={fieldErrorReporter(header, onPatch, 'lunchAllowance')}
           />
         </label>
-        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+        <label className="flex flex-col gap-1 text-[12.5px] text-[#64748b]">
           Lunch label, optional (e.g. with 1 soft drink)
           <input
             aria-label="Lunch label"
@@ -563,7 +535,7 @@ function StaffExtraFields({
         </label>
       </div>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex flex-col gap-1 text-[11.5px] font-semibold text-[#475569]">
+        <label className="flex flex-col gap-1 text-[12.5px] font-semibold text-[#475569]">
           Office transfer (R per person per day)
           <ZarMinorInput
             ariaLabel="Office transfer (R per person per day)"
@@ -572,7 +544,7 @@ function StaffExtraFields({
             onErrorChange={fieldErrorReporter(header, onPatch, 'officeTransfer')}
           />
         </label>
-        <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
+        <label className="flex flex-col gap-1 text-[12.5px] text-[#64748b]">
           Office transfer days, optional (blank = nights of stay)
           <CountInput
             ariaLabel="Office transfer days"
@@ -585,7 +557,7 @@ function StaffExtraFields({
         </label>
       </div>
       <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <label className="flex items-center gap-2 text-[11.5px] font-semibold text-[#475569]">
+        <label className="flex items-center gap-2 text-[12.5px] font-semibold text-[#475569]">
           <input
             type="checkbox"
             aria-label="Shuttle requested"
@@ -603,7 +575,7 @@ function StaffExtraFields({
         </label>
         {header.shuttleRequested ? (
           <div role="group" aria-label="Shuttle: trips × R per trip" className="flex flex-col gap-1.5">
-            <span className="text-[11.5px] font-semibold text-[#475569]">Shuttle: trips × R per trip</span>
+            <span className="text-[12.5px] font-semibold text-[#475569]">Shuttle: trips × R per trip</span>
             <div className="grid grid-cols-2 gap-2">
               <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
                 Trips
@@ -627,7 +599,7 @@ function StaffExtraFields({
               </label>
             </div>
             {header.shuttleMinor ? null : (
-              <p className="text-[11px] text-[#b45309]">
+            <p className="text-[12.5px] text-[#b45309]">
                 No price yet. The shuttle stays a review item until you enter R per trip.
               </p>
             )}
@@ -635,7 +607,7 @@ function StaffExtraFields({
         ) : null}
       </div>
       <div role="group" aria-label="Other: label, amount, unit" className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
-        <span className="text-[11.5px] font-semibold text-[#475569]">Other: label, amount, unit</span>
+        <span className="text-[12.5px] font-semibold text-[#475569]">Other: label, amount, unit</span>
         <div className="grid grid-cols-2 gap-2">
           <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
             Label
@@ -664,7 +636,7 @@ function StaffExtraFields({
             />
           </label>
         </div>
-        {otherNeedsLabel ? <p className="text-[11px] text-[#b45309]">Add a label for this amount</p> : null}
+        {otherNeedsLabel ? <p className="text-[12.5px] text-[#b45309]">Add a label for this amount</p> : null}
         <label className="flex flex-col gap-1 text-[11px] text-[#64748b]">
           Unit
           <select
@@ -688,7 +660,7 @@ function StaffExtraFields({
           </select>
         </label>
       </div>
-      <label className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 text-[11.5px] font-semibold text-[#475569]">
+      <label className="flex flex-col gap-1 border-t border-[#e2e8f0] pt-2 text-[12.5px] font-semibold text-[#475569]">
         Notes for the quote
         <textarea
           aria-label="Notes for the quote"
@@ -697,7 +669,7 @@ function StaffExtraFields({
           value={header.notes ?? ''}
           onChange={(event) => onPatch?.({ notes: event.target.value })}
         />
-        <span className="text-[11px] font-normal text-[#64748b]">
+        <span className="text-[12.5px] font-normal text-[#64748b]">
           Unpriced. Printed on the PDF and added to the reply as a note.
         </span>
       </label>
@@ -705,77 +677,73 @@ function StaffExtraFields({
   );
 }
 
-/** Whether any extra is already set, so the Extras disclosure opens and staff see what Nava read. */
-function hasExtras(header: StaffQuoteHeader): boolean {
-  return Boolean(
-    header.dinnerAllowanceMinor ||
-      header.lunchAllowanceMinor ||
-      header.officeTransferMinor ||
-      header.shuttleRequested ||
-      header.other?.amountMinor,
-  );
-}
-
-/** Date options: one row per date option with its dates and rate. Every option goes into one combined quote, so there is no PDF per option. Sits at the top of the rates step. */
-function StayScopePicker({
-  session,
-  onSelect,
+function AdvancedFields({
+  header,
+  onPatch,
+  ratePlans,
+  ratePlan,
+  onRatePlanChange,
+  notesBlock,
 }: {
-  session: QuoteSession;
-  onSelect?: (stayKey: string) => void;
+  header: StaffQuoteHeader;
+  onPatch?: (header: Partial<StaffQuoteHeader>) => void;
+  ratePlans: RatePlanChoice[];
+  ratePlan: string;
+  onRatePlanChange: (value: string) => void;
+  notesBlock: string;
 }) {
-  const stayKeys = requestedQuoteKeys(session.groups);
-  if (stayKeys.length <= 1) return null;
-  const { rated, total } = ratedStayCount(session);
   return (
-    <div className="flex flex-col gap-2">
-      <h3 className="text-[11.5px] font-semibold text-[#475569]">Date options</h3>
-      <p className="text-[11px] text-[#64748b]">
-        This email asks for more than one set of dates. Run each option; Nava keeps every result and quotes them together.
-      </p>
-      <p className="text-[11px] font-semibold text-[#475569]">{`${rated} of ${total} stays rated`}</p>
-      {stayKeys.map((key, index) => {
-        const letter = optionLetter(index);
-        const selected = session.selectedStayKey === key;
-        const quote = session.staffQuotes[key];
-        const step = session.steps.find((item) => item.shareKey === key);
-        const status = quote
-          ? `Quoted ${money(quote.totalMinor)}`
-          : step?.status === 'failed'
-            ? 'Search failed. Run this option again.'
-            : step?.status === 'running'
-              ? 'Running now.'
-              : 'Not run yet.';
-        return (
-          <div
-            key={key}
-            className={`flex flex-col gap-1 rounded-xs border p-3 ${
-              selected ? 'border-[#1a4332] bg-[#eaf4ee]' : 'border-[#cbd5e1] bg-white'
-            }`}
-          >
-            <button
-              type="button"
-              aria-pressed={selected}
-              aria-label={`Select date scope ${key.replace(':', ' to ')}`}
-              className="flex flex-col gap-0.5 text-left text-[12px] font-semibold text-[#1e293b]"
-              onClick={() => onSelect?.(key)}
-            >
-              <span>
-                Option {letter} · {key.replace(':', ' → ')}
-                {selected ? ' · selected' : ''}
-              </span>
-              <span className="text-[11px] font-normal text-[#475569]">{status}</span>
-            </button>
-          </div>
-        );
-      })}
-    </div>
+    <Disclosure summary={<span>Advanced</span>}>
+      <Field label="Rate plan" htmlFor="quote-rate-plan">
+        <select
+          id="quote-rate-plan"
+          aria-label="Rate plan"
+          className={paneFieldClass}
+          value={ratePlan}
+          onChange={(event) => onRatePlanChange(event.target.value)}
+        >
+          <option value="all">All rates</option>
+          {(['public', 'contract', 'government', 'other'] as const).map((category) => {
+            const plans = ratePlans.filter((entry) => entry.category === category);
+            if (!plans.length && category !== 'government') return null;
+            const label = category === 'other' ? 'Other HMS rates' : `${category[0]!.toUpperCase()}${category.slice(1)}`;
+            return (
+              <optgroup key={category} label={label}>
+                {category === 'government' ? <option value="government">All government rates</option> : null}
+                {plans.map((plan) => (
+                  <option key={plan.code} value={plan.code}>
+                    {plan.name === plan.code ? plan.code : `${plan.code}: ${plan.name}`}
+                  </option>
+                ))}
+              </optgroup>
+            );
+          })}
+        </select>
+        <span className="mt-0.5 block text-[12.5px] font-normal text-[#64748b]">
+          All rates shows every code HMS returned. Choosing a plan filters the cards below.
+        </span>
+      </Field>
+      <div className="flex flex-col gap-1.5 border-t border-[#e2e8f0] pt-2">
+        <span className="text-[12.5px] font-semibold text-[#475569]">Notes for HMS</span>
+        <p className="text-[12.5px] text-[#64748b]">Copy the room, rate and authorisation details after checking the HMS results.</p>
+        <CopyHmsNotesButton block={notesBlock} />
+      </div>
+      <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+        <div>
+          <h4 className="text-[13px] font-semibold text-[#475569]">Extras</h4>
+          <p className="text-[12.5px] text-[#64748b]">
+            Set once. Allowances apply to relevant stays; shuttle and one-off items are included once.
+          </p>
+        </div>
+        <StaffExtraFields header={header} onPatch={onPatch} />
+      </div>
+    </Disclosure>
   );
 }
 
 function StatusNote({ children }: { children: React.ReactNode }) {
   return (
-    <p aria-live="polite" className="rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]">
+    <p aria-live="polite" className="rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-[12.5px] text-[#475569]">
       {children}
     </p>
   );
@@ -819,18 +787,18 @@ function OfferCard({
         selected ? 'border-[#1a4332] bg-[#eaf4ee]' : 'border-[#cbd5e1] bg-white'
       }`}
     >
-      <span className="text-[12.5px] font-bold text-[#1e293b]">
+      <span className="text-[13px] font-bold text-[#1e293b]">
         {offer.roomLabel} · {offer.rateCode} · {offer.board}
       </span>
-      <span className="text-[11px] text-[#64748b]">
+      <span className="text-[12.5px] text-[#64748b]">
         {offer.kind === 'alternative' ? 'Alternative — not counted in the total' : 'Counted in the total'}
       </span>
       <span className="text-[13.5px] font-extrabold text-[#1e293b]">{money(offer.stayTotalMinor)}</span>
       <span className="text-[10px] text-[#64748b]">Checked in HMS {offer.observedAt}</span>
       {varying ? (
         <details>
-          <summary className="text-[11px] text-[#0066cc]">Nightly breakdown</summary>
-          <ul className="text-[11px] text-[#475569]">
+          <summary className="text-[12.5px] text-[#0066cc]">Nightly breakdown</summary>
+          <ul className="text-[12.5px] text-[#475569]">
             {offer.nightly.map((night) => (
               <li key={night.date}>
                 {night.date}: {money(night.amountMinor)}
@@ -840,30 +808,12 @@ function OfferCard({
         </details>
       ) : null}
       {offer.restrictions.map((restriction) => (
-        <p key={restriction} className="text-[11px] text-amber-800">
+        <p key={restriction} className="text-[12.5px] text-amber-800">
           {restriction}
         </p>
       ))}
-      {showShot ? <p className="text-[11px] text-[#64748b]">{shot}</p> : null}
+      {showShot ? <p className="text-[12.5px] text-[#64748b]">{shot}</p> : null}
     </button>
-  );
-}
-
-/** The request's rooms and guests. The Available chip shows once HMS has found the selected stay. */
-function RequestTotals({ groups, available }: { groups: StayGroupRequirement[]; available: boolean }) {
-  const totals = stayTotals(groups);
-  return (
-    <div className="flex items-center justify-between gap-2 rounded-[3px] border border-[#cbd5e1] bg-[#f8fafc] px-3 py-2.5">
-      <div className="flex flex-col gap-0.5">
-        <span className="text-[10px] font-bold uppercase tracking-[0.3px] text-[#64748b]">Total</span>
-        <span className="text-[13px] font-bold text-[#1e293b]">
-          {totals.rooms} {totals.rooms === 1 ? 'room' : 'rooms'} · {totals.guests} {totals.guests === 1 ? 'guest' : 'guests'}
-        </span>
-      </div>
-      {available ? (
-        <span className="rounded-full bg-[#eaf4ee] px-2 py-0.5 text-[11px] font-bold text-[#1a4332]">Available</span>
-      ) : null}
-    </div>
   );
 }
 
@@ -883,28 +833,29 @@ function intentOf(session: QuoteSession): QuoteIntent | null {
   return session.analysis?.luna?.workflow ?? null;
 }
 
-/**
- * Why "Get rates from HMS" cannot run now, or null when it can. A runnable step's own wait shows first, as before;
- * every row still needs a room type before rates run.
- */
-function ratesBlockReason(session: QuoteSession, nextStep: QuoteToolStep | undefined): string | null {
+/** Why this stay's availability search cannot run yet, or null when its one HMS step can run. */
+function stayRatesBlockReason(
+  session: QuoteSession,
+  rows: StayGroupRequirement[],
+  step: QuoteToolStep | undefined,
+): string | null {
   const lookupWait = partyLookupWaitReason(session);
   if (lookupWait) return lookupWait;
-  if (nextStep) {
-    const stepWait = quoteRunBlockReason(session, nextStep);
-    if (stepWait) return stepWait;
-    return session.groups.some((group) => !rowRoomCode(group)) ? 'Choose a room type for each row.' : null;
-  }
-  if (!session.groups.length) return 'Nava has not found a stay yet.';
-  if (session.groups.some((group) => !group.arrivalDate || !group.departureDate)) {
+  if (!rows.length) return 'Add a stay before searching.';
+  if (rows.some((group) => !group.arrivalDate || !group.departureDate)) {
     return 'Add arrival and departure dates first.';
   }
-  if (session.groups.some((group) => !rowRoomCode(group))) return 'Choose a room type for each row.';
-  if (session.groups.some((group) => !group.quantity)) return 'Add the number of rooms first.';
-  if (session.steps.length > 0 && session.steps.every((step) => step.status === 'succeeded')) {
+  if (rows.some((group) => !rowRoomCode(group))) return 'Choose a room type for each row.';
+  if (rows.some((group) => !group.quantity)) return 'Add the number of rooms first.';
+  if (!step) return 'The HMS search is not ready yet.';
+  if (step.status === 'succeeded') {
     return 'Already up to date.';
   }
-  return 'Nothing is ready to search yet.';
+  if (session.runningStepId && session.runningStepId !== step.id) return 'Another HMS search is running.';
+  const stepWait = quoteRunBlockReason(session, step);
+  if (stepWait) return stepWait;
+  if (!canRunQuoteStep(step, session.steps, session.runningStepId)) return 'Wait for the earlier HMS search to finish.';
+  return null;
 }
 
 /** A row price or rate change waiting to reach the session. Once every `check` has landed, the stay re-runs. */
@@ -952,6 +903,26 @@ function quoteNotesBlock(
       };
     }),
   });
+}
+
+function stayDisplayTotal(session: QuoteSession, stayKey: string): number | null {
+  const run = currentStayRun(session, stayKey);
+  if (run) return run.totalMinor;
+  const selected = session.offers.filter(
+    (offer) => offer.quoteRequestKey === stayKey && offer.kind === 'allocation' && session.selectedOfferIds.includes(offer.id),
+  );
+  return selected.length ? allocationTotal(selected) : null;
+}
+
+function allStaysDisplayTotal(session: QuoteSession): { total: number | null; rated: number; stays: number } {
+  const keys = requestedQuoteKeys(session.groups);
+  const amounts = keys.map((key) => stayDisplayTotal(session, key));
+  const known = amounts.filter((amount): amount is number => amount !== null);
+  return {
+    total: amounts.length > 0 && known.length === amounts.length ? known.reduce((sum, amount) => sum + amount, 0) : null,
+    rated: known.length,
+    stays: keys.length,
+  };
 }
 
 export function QuoteWorkflowPanel({
@@ -1039,6 +1010,7 @@ export function QuoteWorkflowPanel({
     analysis: QuoteSession['analysis'];
     value: string;
   } | null>(null);
+  const [mealPlanFilters, setMealPlanFilters] = useState<Record<string, QuoteBoard | 'all'>>({});
   useEffect(() => {
     if (!pinRun) return;
     const landed = pinRun.changes.every(({ groupId, check }) => {
@@ -1136,6 +1108,12 @@ export function QuoteWorkflowPanel({
     if (salesStrategy !== header.salesStrategy) onPatchStaffHeader?.({ salesStrategy });
   };
   const stays = groupStays(formGroups);
+  const mealPlanForStay = (stayId: string, rows: StayGroupRequirement[]): QuoteBoard | 'all' => {
+    const saved = mealPlanFilters[stayId];
+    if (saved) return saved;
+    const boards = new Set(rows.map((row) => row.board).filter((board) => board !== 'unknown'));
+    return boards.size === 1 ? [...boards][0]! : 'all';
+  };
   // Row names for the price boxes: "Room 1", or "Stay 1 · Room 1" when the quote has more than one stay.
   const rowLabels = new Map<string, string>();
   stays.forEach((stay, stayIndex) =>
@@ -1143,18 +1121,16 @@ export function QuoteWorkflowPanel({
       rowLabels.set(row.id, stays.length > 1 ? `Stay ${stayIndex + 1} · Room ${rowIndex + 1}` : `Room ${rowIndex + 1}`),
     ),
   );
-  const nextStep = pickNextRunnableStep(session.steps, session.runningStepId);
-  const ratesReason = ratesBlockReason(session, nextStep);
   const running = Boolean(session.runningStepId) || Boolean(hmsQueue?.pending);
   const showRates = session.phase !== 'failed' && session.phase !== 'missing_source';
   /** The stay step a row belongs to. A re-run of that step prices the row. */
   const stepFor = (group: StayGroupRequirement) =>
     session.steps.find((item) => item.kind === 'quote_stay' && item.shareKey === stayKeyForGroup(group));
-  // All HMS options stay visible under All rates; selecting one plan filters the row's cards only.
+  // All returned codes stay visible under All rates; a plan filters cards, and the meal dropdown only highlights them.
   const rateGroups = session.groups.flatMap((group) => {
     const groupOptions = (session.rateOptions ?? []).filter((option) => option.groupId === group.id);
     const options = filteredRateOptions(groupOptions, ratePlan, ratePlans);
-    if (!options.length || (ratePlan === 'all' && options.length < 2)) return [];
+    if (!groupOptions.length) return [];
     const step = stepFor(group);
     const pinned = pinRun?.changes.find((change) => change.groupId === group.id);
     return [
@@ -1169,6 +1145,7 @@ export function QuoteWorkflowPanel({
       },
     ];
   });
+  const quotationTotal = allStaysDisplayTotal(session);
   /** Tapping a rate pins it on its group and re-runs that date option. Only a card whose run is not in flight can start one. */
   const pickRate = (option: RateOption) => {
     const group = session.groups.find((item) => item.id === option.groupId);
@@ -1224,7 +1201,7 @@ export function QuoteWorkflowPanel({
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3.5">
       <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
       {TELL_NAVA_ENABLED ? (
         <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
@@ -1244,33 +1221,15 @@ export function QuoteWorkflowPanel({
               index={index}
               stayCount={stays.length}
               requestedRoomsTotal={session.analysis?.requestedRoomsByStay?.[stay.id]}
+              mealPlan={mealPlanForStay(stay.id, stay.rows)}
+              onMealPlanChange={(value) =>
+                setMealPlanFilters((current) => ({ ...current, [stay.id]: value }))
+              }
               onPatch={onPatchGroup}
               onStayAction={onStayAction}
               evidence={session.analysis?.luna?.evidence}
             />
           ))}
-          <div className="flex flex-col gap-2">
-            <SecondaryButton onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
-              Add stay
-            </SecondaryButton>
-            {session.groups.length ? (
-              <RequestTotals groups={session.groups} available={Boolean(session.staffQuote)} />
-            ) : null}
-          </div>
-          <StaffPartyFields
-            header={header}
-            onPatch={onPatchStaffHeader}
-            findParty={findParty}
-            partySuggestions={partySuggestions}
-            partyIndex={partyIndex}
-            onPartyLookupPending={onPartyLookupPending}
-            ratePlans={ratePlans}
-            ratePlan={ratePlan}
-            onRatePlanChange={changeRatePlan}
-          />
-          <Disclosure summary={<span>Extras: allowances, contact, notes</span>} defaultOpen={hasExtras(header)}>
-            <StaffExtraFields header={header} onPatch={onPatchStaffHeader} />
-          </Disclosure>
           <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} unreadFiles={hasUnreadFiles} />
           <NeedsAnswerList missing={session.analysis?.luna?.missing} />
           <ItemsForYou
@@ -1284,87 +1243,157 @@ export function QuoteWorkflowPanel({
           />
         </Section>
       ) : null}
+      {showWorkspace ? (
+        <Section title="Booked by">
+          <StaffPartyFields
+            header={header}
+            onPatch={onPatchStaffHeader}
+            findParty={findParty}
+            partySuggestions={partySuggestions}
+            partyIndex={partyIndex}
+            onPartyLookupPending={onPartyLookupPending}
+          />
+        </Section>
+      ) : null}
+      {showWorkspace ? (
+        <AdvancedFields
+          header={header}
+          onPatch={onPatchStaffHeader}
+          ratePlans={ratePlans}
+          ratePlan={ratePlan}
+          onRatePlanChange={changeRatePlan}
+          notesBlock={quoteNotesBlock(session, rowLabels, contact)}
+        />
+      ) : null}
       {showWorkspace && (showRates || session.offers.length) ? (
-        <Section step={2} title="Rates from HMS">
+        <Section step={2} title="Search availability & room rates">
           {showRates ? (
-            <StayScopePicker session={session} onSelect={onSelectStayKey} />
-          ) : null}
-          {showRates ? (
-            <PrimaryButton
-              onClick={onRunNext}
-              disabled={ratesReason !== null}
-              disabledReason={ratesReason}
-              loading={running}
-              loadingText="Getting rates from HMS… about 2 minutes"
-            >
-              Get rates from HMS
-            </PrimaryButton>
-          ) : null}
-          {showRates ? (
-            <Disclosure summary={<span>HMS steps</span>} defaultOpen={session.steps.length > 1}>
-              <ToolStepList
-                steps={session.steps}
-                runningStepId={session.runningStepId}
-                onRunStep={onRunStep}
-                blockReason={(step) => quoteRunBlockReason(session, step)}
-              />
-            </Disclosure>
-          ) : null}
-          {hmsQueue ? <HmsQueueStatusLine pending={hmsQueue.pending} status={hmsQueue.status} /> : null}
-          {session.groups.map((group) => {
-            const rateGroup = rateGroups.find((item) => item.group.id === group.id);
-            const step = stepFor(group);
-            const rowRate = session.staffQuotes[stayKeyForGroup(group)]?.rowRates?.find(
-              (item) => item.groupId === group.id,
-            );
-            const priceRunning =
-              pinRun?.changes.some((change) => change.groupId === group.id) === true ||
-              (step !== undefined && session.runningStepId === step.id);
-            return (
-              <Fragment key={group.id}>
-                {showRates ? (
-                  <RowRateControls
-                    group={group}
-                    label={rowLabels.get(group.id) ?? 'Room'}
-                    rowRate={rowRate}
-                    saved={saved}
-                    pending={priceRunning}
-                    busy={running || pinRun !== null}
-                    blockReason={step ? quoteRunBlockReason(session, step) : 'Nothing is ready to search yet.'}
-                    onSetPrice={(rowPrice) => setRowPrices([{ group, rowPrice }])}
-                    onSavedRateChanged={followSavedRate}
-                  />
-                ) : null}
-                {rateGroup ? (
-                  <>
-                    <RateCards
-                      options={rateGroup.options}
-                      partyName={contractPartyName(header)}
-                      disabled={running || pinRun !== null || rateGroup.blockReason !== null}
-                      pendingRateCode={rateGroup.pendingRateCode}
-                      onPick={pickRate}
-                    />
-                    {rateGroup.blockReason ? (
-                      <p className="text-[11px] text-[#64748b]">{rateGroup.blockReason}</p>
+            <>
+              {stays.map((stay) => {
+                const first = stay.rows[0];
+                if (!first) return null;
+                const stayKey = stayKeyForGroup(first);
+                const step = stepFor(first);
+                const reason = stayRatesBlockReason(session, stay.rows, step);
+                const actionReason = reason ?? (!onRunStep && !onRunNext ? 'Search is not available in this view.' : null);
+                const loadingThisStay =
+                  (step !== undefined && session.runningStepId === step.id) ||
+                  Boolean(hmsQueue?.pending && step !== undefined && !session.runningStepId);
+                const stayTotal = stayDisplayTotal(session, stayKey);
+                // This stay's own HMS result. The selected stay's result is also session.staffQuote.
+                const selectedQuote = session.selectedStayKey === stayKey ? session.staffQuote : null;
+                const stayFound = Boolean(session.staffQuotes[stayKey] ?? selectedQuote);
+                return (
+                  <article key={`${stay.id}-search`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
+                    <div className="flex flex-col gap-0.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-[13px] font-bold text-[#1e293b]">Availability for this date range</h4>
+                        {stayFound ? (
+                          <span className="rounded-full bg-[#eaf4ee] px-2 py-0.5 text-[11px] font-bold text-[#1a4332]">
+                            Available
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="text-[12.5px] text-[#64748b]">Separate HMS booking · one availability search for these dates.</p>
+                    </div>
+                    <PrimaryButton
+                      onClick={() => {
+                        onSelectStayKey?.(stayKey);
+                        if (step && onRunStep) onRunStep(step.id);
+                        else onRunNext?.();
+                      }}
+                      disabled={actionReason !== null}
+                      disabledReason={actionReason}
+                      loading={loadingThisStay}
+                      loadingText="Checking HMS… about 2 min"
+                    >
+                      {step?.status === 'failed' ? 'Retry Search availability' : 'Search availability'}
+                    </PrimaryButton>
+                    {session.steps.length ? (
+                      <details className="text-[12.5px] text-[#64748b]">
+                        <summary className="w-fit cursor-pointer font-semibold text-[#0066cc]">Details</summary>
+                        <div className="mt-2 rounded-[3px] border border-[#e2e8f0] bg-[#f8fafc] p-2">
+                          <ToolStepList
+                            steps={session.steps}
+                            runningStepId={session.runningStepId}
+                            onRunStep={onRunStep}
+                            blockReason={(item) => quoteRunBlockReason(session, item)}
+                          />
+                        </div>
+                      </details>
                     ) : null}
-                  </>
-                ) : null}
-              </Fragment>
-            );
-          })}
-          <CopyHmsNotesButton block={quoteNotesBlock(session, rowLabels, contact)} />
+                    {stay.rows.map((group, roomIndex) => {
+                      const rateGroup = rateGroups.find((item) => item.group.id === group.id);
+                      const rowStep = stepFor(group);
+                      const rowRate = session.staffQuotes[stayKeyForGroup(group)]?.rowRates?.find(
+                        (item) => item.groupId === group.id,
+                      );
+                      const priceRunning =
+                        pinRun?.changes.some((change) => change.groupId === group.id) === true ||
+                        (rowStep !== undefined && session.runningStepId === rowStep.id);
+                      return (
+                        <div key={group.id} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
+                          <h5 className="text-[12.5px] font-semibold text-[#475569]">{`Room ${roomIndex + 1} rates`}</h5>
+                          {rateGroup?.options.length ? (
+                            <RateCards
+                              options={rateGroup.options}
+                              partyName={contractPartyName(header)}
+                              disabled={running || pinRun !== null || rateGroup.blockReason !== null}
+                              pendingRateCode={rateGroup.pendingRateCode}
+                              preferredBoard={mealPlanForStay(stay.id, stay.rows)}
+                              selectedControls={
+                                <div className="border-t border-[#dce8df] bg-white p-2.5">
+                                  <RowRateControls
+                                    group={group}
+                                    label={rowLabels.get(group.id) ?? 'Room'}
+                                    toggleLabel="Set a specific price"
+                                    rowRate={rowRate}
+                                    saved={saved}
+                                    pending={priceRunning}
+                                    busy={running || pinRun !== null}
+                                    blockReason={rowStep ? quoteRunBlockReason(session, rowStep) : 'Search availability first.'}
+                                    onSetPrice={(rowPrice) => setRowPrices([{ group, rowPrice }])}
+                                    onSavedRateChanged={followSavedRate}
+                                  />
+                                </div>
+                              }
+                              onPick={pickRate}
+                            />
+                          ) : session.rateOptions?.some((option) => option.groupId === group.id) ? (
+                            <p className="text-[12.5px] text-[#64748b]">No rates match this filter. Choose All rates to show every HMS code.</p>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                    <div className="flex items-center justify-between gap-2 border-t border-[#e2e8f0] pt-2 text-[13px]">
+                      <span className="font-semibold text-[#475569]">Stay subtotal</span>
+                      <span className="font-bold text-[#1e293b]">{stayTotal === null ? 'Search availability to calculate' : money(stayTotal)}</span>
+                    </div>
+                  </article>
+                );
+              })}
+              {hmsQueue ? <HmsQueueStatusLine pending={hmsQueue.pending} status={hmsQueue.status} /> : null}
+            </>
+          ) : null}
+          <div className="flex flex-col gap-1">
+            <SecondaryButton className="w-full" onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
+              + Add another date range
+            </SecondaryButton>
+            <p className="text-center text-[12.5px] text-[#64748b]">Each date range creates a separate HMS booking.</p>
+          </div>
           {session.offers.length ? (
             <div className="flex flex-col gap-2">
-              <h3 className="text-[11.5px] font-semibold text-[#475569]">Results</h3>
-              <p className="text-[11px] text-[#64748b]">
-                Selected total {money(allocationTotal(session.offers.filter((o) => session.selectedOfferIds.includes(o.id))))}.
+              <h3 className="text-[13px] font-semibold text-[#475569]">HMS results and evidence</h3>
+              <p className="text-[12.5px] text-[#64748b]">
+                Selected rates total {money(allocationTotal(session.offers.filter((o) => session.selectedOfferIds.includes(o.id))))}.
                 Alternatives are not added to this total.
                 {new Set(session.offers.filter((o) => o.kind === 'allocation').map((o) => o.quoteRequestKey)).size > 1
-                  ? ' Every date option goes into one quote. Prepare the quote once every option is rated, then create one reply with all date options.'
+                  ? ' Every date range is quoted separately, then included in one quotation.'
                   : ''}
               </p>
               {session.offers.map((offer) => {
-                const staffQuote = session.staffQuote?.revisionRef === offer.id ? session.staffQuote : null;
+                const candidate = session.staffQuotes[offer.quoteRequestKey] ?? session.staffQuote;
+                const staffQuote = candidate?.revisionRef === offer.id ? candidate : null;
                 return (
                   <Fragment key={offer.id}>
                     <OfferCard
@@ -1386,14 +1415,41 @@ export function QuoteWorkflowPanel({
               })}
             </div>
           ) : null}
+          {showRates ? (
+            <div aria-label="Quotation total" className="flex flex-col gap-1 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-[13px] font-bold text-[#1e293b]">Quotation total (all stays)</h3>
+                <span className="text-[14px] font-extrabold text-[#1e293b]">
+                  {quotationTotal.total === null ? 'Not ready' : money(quotationTotal.total)}
+                </span>
+              </div>
+              {quotationTotal.total === null ? (
+                <p className="text-[12.5px] text-[#64748b]">
+                  {quotationTotal.stays
+                    ? `${quotationTotal.rated} of ${quotationTotal.stays} stays rated. Search each date range for the complete total.`
+                    : 'Add a date range and search availability to see the total.'}
+                </p>
+              ) : (
+                <p className="text-[12.5px] text-[#64748b]">Extras are shown as their own lines in the quotation PDF.</p>
+              )}
+            </div>
+          ) : null}
         </Section>
+      ) : null}
+      {showWorkspace && !showRates && !session.offers.length ? (
+        <div className="flex flex-col gap-1">
+          <SecondaryButton className="w-full" onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
+            + Add another date range
+          </SecondaryButton>
+          <p className="text-center text-[12.5px] text-[#64748b]">Each date range creates a separate HMS booking.</p>
+        </div>
       ) : null}
       {requestedQuoteKeys(session.groups)
         .filter((key) => session.bookingDrafts[key])
         .map((key) => (
           <Fragment key={key}>
             {isMultiStay(session) ? (
-              <p className="text-[11.5px] font-semibold text-[#475569]">Booking for {key.replace(':', ' → ')}</p>
+              <p className="text-[12.5px] font-semibold text-[#475569]">Booking for {key.replace(':', ' → ')}</p>
             ) : null}
             <BookingCards
               draft={session.bookingDrafts[key]!}

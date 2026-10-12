@@ -132,7 +132,7 @@ function ResultChips({
           <button
             key={`${row.kind}:${row.nativeId}`}
             type="button"
-            className="rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
+            className="rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
             onClick={() => onPick(row)}
           >
             {`${row.name} (#${row.nativeId})`}
@@ -322,10 +322,10 @@ export function PartyPicker({
     <div
       role={kind ? 'group' : undefined}
       aria-label={kind ? `${partyKindLabel(kind)} lookup in HMS` : undefined}
-      className="flex flex-col gap-1 text-[11px] text-[#64748b]"
+      className="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
     >
       {picked.map((party) => (
-        <div key={party.kind} className="flex flex-wrap items-center gap-2 text-[11.5px] font-semibold text-[#166534]">
+        <div key={party.kind} className="flex flex-wrap items-center gap-2 text-[12.5px] font-semibold text-[#166534]">
           <span>{`✓ ${party.name} (#${party.nativeId})${pickedByNava(party) ? ' — picked by Nava' : ''}`}</span>
           <LinkButton onClick={() => onClear(party.kind)}>Change</LinkButton>
         </div>
@@ -341,7 +341,7 @@ export function PartyPicker({
               <span>{`${suggestion.name} (${partyKindLabel(suggestion.kind)}), not confirmed in HMS`}</span>
               <button
                 type="button"
-                className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#1e293b] disabled:opacity-50"
+                className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#1e293b] disabled:opacity-50"
                 disabled={!onSearchName}
                 onClick={() => onSearchName?.(suggestion.name, suggestion.kind)}
               >
@@ -362,11 +362,11 @@ export function PartyPicker({
               </Notice>
             )}
             <div>
-              <LinkButton onClick={searchAgain}>Search again</LinkButton>
+              <LinkButton onClick={searchAgain}>Find in HMS</LinkButton>
             </div>
           </div>
         ) : (
-          <p role="status" className="flex items-center gap-2 text-[11.5px] text-[#0066cc]">
+          <p role="status" className="flex items-center gap-2 text-[12.5px] text-[#0066cc]">
             <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-2 border-[#0066cc] border-t-transparent" />
             {`Searching HMS for "${query}"… about 20 seconds`}
           </p>
@@ -380,7 +380,7 @@ export function PartyPicker({
               <li key={`${candidate.kind}:${candidate.nativeId}`} className="flex items-center gap-2">
                 <button
                   type="button"
-                  className="text-left text-[11.5px] font-semibold text-[#0066cc] underline"
+                  className="text-left text-[12.5px] font-semibold text-[#0066cc] underline"
                   onClick={() => {
                     onPick({ kind: candidate.kind, nativeId: candidate.nativeId, name: candidate.name });
                     setIndex(IDLE_INDEX);

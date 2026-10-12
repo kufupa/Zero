@@ -79,6 +79,23 @@ export function knownRoomCode(raw: string | undefined): RoomTypeCode | null {
   return Object.hasOwn(ROOM_TYPE_NAMES, code) ? (code as RoomTypeCode) : (matchRoomType(raw).code ?? null);
 }
 
+/**
+ * The room a row quotes. Staff picks win: a rate-card pick (roomCodes), then the select's value (roomPreference).
+ * The server's projected roomTypeCode is only the fallback, so a stale projection never overrides a pick.
+ */
+export function rowRoomTypeCode(row: {
+  roomTypeCode?: RoomTypeCode;
+  roomCodes?: string[];
+  roomPreference?: string;
+}): RoomTypeCode | null {
+  return (
+    (row.roomCodes?.length === 1 ? knownRoomCode(row.roomCodes[0]) : null) ??
+    knownRoomCode(row.roomPreference) ??
+    row.roomTypeCode ??
+    null
+  );
+}
+
 /** "Standard Queen (STQN)" for a known code. An unknown code comes back unchanged. */
 export function roomTypeLabel(code: string): string {
   const known = knownRoomCode(code);

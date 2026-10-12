@@ -20,7 +20,7 @@ import type {
   StayGroupRequirement,
 } from './types';
 import { staffHeaderFieldProblem } from './types';
-import { knownRoomCode, ROOM_TYPE_CODES } from './room-types';
+import { knownRoomCode, ROOM_TYPE_CODES, rowRoomTypeCode } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
@@ -248,9 +248,11 @@ export function staffQuoteGroupsFromStay(
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
+    // The same room the row shows (rowRoomTypeCode): a staff pick wins over the projected roomTypeCode.
+    const rowCode = rowRoomTypeCode(group);
     const rooms = resolveNativeRoomCodes({
       roomPreference: group.roomPreference,
-      roomCodes: group.roomCodes,
+      roomCodes: group.roomCodes?.length ? group.roomCodes : rowCode ? [rowCode] : undefined,
     });
     if (rooms.status === 'unresolved') {
       return {
