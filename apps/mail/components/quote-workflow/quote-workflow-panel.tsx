@@ -348,11 +348,15 @@ function filteredRateOptions(
   choices: RatePlanChoice[],
 ): RateOption[] {
   if (selectedPlan === 'all') return options;
-  if (selectedPlan === 'government') {
+  if (selectedPlan === 'government' || selectedPlan === 'public') {
+    // Public (BAR) is every code that is not a government code, so it still filters with no catalogue.
     const governmentCodes = new Set(
       choices.filter((choice) => choice.category === 'government').map((choice) => choice.code),
     );
-    return options.filter((option) => governmentCodes.has(option.rateCode.trim().toUpperCase()));
+    const wantGovernment = selectedPlan === 'government';
+    return options.filter(
+      (option) => governmentCodes.has(option.rateCode.trim().toUpperCase()) === wantGovernment,
+    );
   }
   const selected = selectedPlan.toUpperCase();
   return options.filter((option) => option.rateCode.trim().toUpperCase() === selected);
@@ -433,10 +437,12 @@ function StaffPartyFields({
           <option value="all">All rates</option>
           {(['public', 'contract', 'government', 'other'] as const).map((category) => {
             const plans = ratePlans.filter((entry) => entry.category === category);
-            if (!plans.length && category !== 'government') return null;
+            // Public (BAR) and government keep their "All" choice even when the catalogue is down.
+            if (!plans.length && category !== 'government' && category !== 'public') return null;
             const label = category === 'other' ? 'Other HMS rates' : `${category[0]!.toUpperCase()}${category.slice(1)}`;
             return (
               <optgroup key={category} label={label}>
+                {category === 'public' ? <option value="public">All public rates (BAR)</option> : null}
                 {category === 'government' ? <option value="government">All government rates</option> : null}
                 {plans.map((plan) => (
                   <option key={plan.code} value={plan.code}>
@@ -1121,13 +1127,17 @@ export function QuoteWorkflowPanel({
       : header.salesStrategy === 'Government'
         ? 'government'
         : 'all';
+  // A government party defaults to Government (session.ts prefill); "All rates" returns to that default.
+  const governmentParty = session.analysis?.luna?.party?.kind === 'government';
   const changeRatePlan = (value: string) => {
     setRatePlanState({ selectionEpoch, analysis: session.analysis, value });
-    // The search's sales strategy still lives in the header (the old Rate type select's two options): a government plan
-    // asks HMS for Government pricing, any other plan asks for BAR. "All rates" leaves the strategy as it is.
-    if (value === 'all') return;
+    // The search's sales strategy lives in the header. A government plan asks HMS for Government
+    // pricing. "All rates" restores the party's default: Government for a government party, else BAR.
+    // Public (BAR) and any other plan ask for BAR.
     const government =
-      value === 'government' || ratePlans.some((plan) => plan.code === value && plan.category === 'government');
+      value === 'all'
+        ? governmentParty
+        : value === 'government' || ratePlans.some((plan) => plan.code === value && plan.category === 'government');
     const salesStrategy = government ? 'Government' : 'BAR';
     if (salesStrategy !== header.salesStrategy) onPatchStaffHeader?.({ salesStrategy });
   };

@@ -848,6 +848,75 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
   });
 
+  // Greptile P1 (PR #187): the Rate plan select must always be able to restore BAR.
+  function RatePlanGate({
+    initial,
+    onPatch,
+  }: {
+    initial: QuoteSession;
+    onPatch: (header: Partial<QuoteSession['staffHeader']>) => void;
+  }) {
+    const [current, setCurrent] = useState<QuoteSession>(initial);
+    return (
+      <QuoteWorkflowPanel
+        session={current}
+        rateCatalogue={[]}
+        onPatchStaffHeader={(header) => {
+          onPatch(header);
+          setCurrent((previous) => reduceQuoteSession(previous, { type: 'patch_staff_header', header }));
+        }}
+      />
+    );
+  }
+
+  it('catalogue down: All rates restores BAR after a government pick, and public is offered', () => {
+    const onPatchStaffHeader = vi.fn();
+    render(<RatePlanGate initial={sessionFromFixture('public-single')} onPatch={onPatchStaffHeader} />);
+    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    expect([...planSelect.options].map((option) => option.value)).toEqual(
+      expect.arrayContaining(['all', 'public', 'government']),
+    );
+    fireEvent.change(planSelect, { target: { value: 'government' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
+    fireEvent.change(planSelect, { target: { value: 'all' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
+    expect(planSelect.value).toBe('all');
+    fireEvent.change(planSelect, { target: { value: 'government' } });
+    fireEvent.change(planSelect, { target: { value: 'public' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
+  });
+
+  it('a government party keeps Government when All rates is picked', () => {
+    const onPatchStaffHeader = vi.fn();
+    const session = headerSession({});
+    const governmentSession = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        ...session.analysis!,
+        luna: {
+          workflow: 'quote' as const,
+          flags: [],
+          groups: [],
+          party: { kind: 'government' as const, name: 'Department X', reference: null },
+          rateClaims: [],
+          missing: [],
+          evidence: [],
+          tasks: [],
+        },
+      },
+    });
+    expect(governmentSession.staffHeader.salesStrategy).toBe('Government');
+    render(<RatePlanGate initial={governmentSession} onPatch={onPatchStaffHeader} />);
+    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    expect(planSelect.value).toBe('government');
+    fireEvent.change(planSelect, { target: { value: 'all' } });
+    expect(onPatchStaffHeader).not.toHaveBeenCalledWith(expect.objectContaining({ salesStrategy: 'BAR' }));
+    fireEvent.change(planSelect, { target: { value: 'public' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
+    fireEvent.change(planSelect, { target: { value: 'all' } });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
+  });
+
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.
   it('looks each named field up in HMS by itself, once, with its own kind; no finder, no lookup', async () => {
     resetPartyAutoLookupForTests();
