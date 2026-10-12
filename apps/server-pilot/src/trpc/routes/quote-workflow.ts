@@ -38,7 +38,8 @@ import { isNoReplyAddress } from '../../mail/conversation-signals.js';
 import { recordStaffNote } from '../../ai/work-events.js';
 import { workItemIdForMail } from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
-import { mailboxProcedure, router } from '../trpc.js';
+import { mailboxProcedure, privateProcedure, router } from '../trpc.js';
+import { CENTURION_RATE_PLANS } from '../../hms/rate-catalogue.js';
 import { z } from 'zod';
 
 export { hashSyncedQuoteSelection } from '../../ai/quote-workflow-analyse-selection.js';
@@ -140,6 +141,7 @@ export const runStepInput = z.object({
 });
 
 export const quoteWorkflowRouter = router({
+  rateCatalogue: privateProcedure.query(() => CENTURION_RATE_PLANS),
   analyseSelection: mailboxProcedure
     .input(analyseSelectionInput)
     .mutation(async ({ input, ctx }) => {

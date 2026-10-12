@@ -245,6 +245,23 @@ describe('rate cards in the quote panel', () => {
     expect(screen.getByText(/Counted in the total/)).toBeDefined();
   });
 
+  it('keeps unknown HMS rate codes visible under All rates and uses the code when no label is supplied', async () => {
+    const unknown = rate({ id: 'o-unseen', rateCode: 'UNSEEN9', rateLabel: '' });
+    render(
+      <QuoteWorkflowPanel
+        session={await quotedSession([BAR, unknown])}
+        rateCatalogue={[{ code: 'BAR', name: 'Best Available Rate', board: 'bed_breakfast' }] as never}
+      />,
+    );
+
+    const select = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    expect(select.value).toBe('all');
+    expect([...select.options].map((option) => option.value)).toContain('UNSEEN9');
+    const cards = rateCards();
+    expect(cards.map((card) => card.textContent?.split(':')[0])).toEqual(['BAR', 'UNSEEN9']);
+    expect(cards[1]?.textContent).toContain('UNSEEN9: UNSEEN9');
+  });
+
   it('tapping another option pins it and re-runs that date option with its board, room and rate', async () => {
     const onRunStep = vi.fn();
     const seen = { session: null as QuoteSession | null };

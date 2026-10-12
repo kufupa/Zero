@@ -1,3 +1,5 @@
+import type { RoomTypeCode } from './room-types';
+
 export type QuoteIntent = 'quote' | 'other';
 
 export type FactProvenance = 'extracted' | 'staff_corrected' | 'missing' | 'defaulted';
@@ -41,6 +43,10 @@ export type StayGroupRequirement = {
   departureDate?: string;
   quantity?: number;
   roomPreference?: string;
+  /** Server projection of the same preference; absent when unmatched or from a mail-only draft. */
+  roomTypeCode?: RoomTypeCode;
+  /** Never collapsed to one guess when the extracted wording matches multiple native types. */
+  roomTypeSuggestions?: RoomTypeCode[];
   /** Explicit native room-type codes. Labels never belong here. */
   roomCodes?: string[];
   adults?: number;
@@ -189,6 +195,18 @@ export type QuoteAnalysis = {
   aiUnavailable?: boolean;
   source?: QuoteAnalysisSource;
   fallbackReason?: QuoteWorkflowFallbackReason;
+};
+
+export type RatePlanBoard = 'room_only' | 'bed_breakfast' | 'dinner_bed_breakfast' | 'unknown';
+
+/** The server's read-only Centurion catalogue; flags group choices, but do not prove rate eligibility. */
+export type RatePlanCatalogueEntry = {
+  code: string;
+  name: string;
+  board: RatePlanBoard;
+  contract?: boolean;
+  government?: boolean;
+  event?: boolean;
 };
 
 export type StaffQuoteSource = {

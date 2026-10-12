@@ -20,7 +20,7 @@ import type {
   StayGroupRequirement,
 } from './types';
 import { staffHeaderFieldProblem } from './types';
-import { ROOM_TYPE_CODES } from './room-types';
+import { knownRoomCode, ROOM_TYPE_CODES } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
@@ -194,8 +194,7 @@ export function qualifiedPdfFailureReason(error: unknown): string {
 }
 
 function knownNativeCode(raw: string): string | null {
-  const code = raw.trim().toUpperCase();
-  return KNOWN_NATIVE_ROOM_CODES.has(code) ? code : null;
+  return knownRoomCode(raw);
 }
 
 export function resolveNativeRoomCodes(input: {

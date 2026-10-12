@@ -28,7 +28,7 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteSessionAction } from '@/lib/quote-workflow/types';
+import type { QuoteSessionAction, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
@@ -176,6 +176,7 @@ export function NavaPane({
     activateMailboxSync,
   } = bridge;
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
+  const [rateCatalogue, setRateCatalogue] = useState<RatePlanCatalogueEntry[]>([]);
   // Preview/Book in HMS show only when the server flag is on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
   // Staff's edit of the combined reply. It is used only while the completed options are the same ones.
@@ -215,6 +216,32 @@ export function NavaPane({
     : null;
   const { data: session, isLoading } = useSession();
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
+  useEffect(() => {
+    let alive = true;
+    if (!session?.user?.id) {
+      setRateCatalogue([]);
+      return () => {
+        alive = false;
+      };
+    }
+    const query = quoteWorkflowFromTrpc(trpcClient).rateCatalogue?.query;
+    if (!query) {
+      setRateCatalogue([]);
+      return () => {
+        alive = false;
+      };
+    }
+    void query()
+      .then((entries) => {
+        if (alive) setRateCatalogue(entries);
+      })
+      .catch(() => {
+        if (alive) setRateCatalogue([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [session?.user?.id]);
   const sync = useOutlookSync({userId:session?.user?.id??null,sessionId:session?.session?.id??null,transportId:activeConnection?.id??null,mailbox:activeConnection?.email??'',deviceId:workstationInfo?.deviceId??null,capabilityVersion:capabilities?.mailboxSync,readRoots:capabilities?.readRoots??[],authorized:Boolean(isConnected&&!requiresRelogin&&!authorizationUnavailable),activateNative:activateMailboxSync});
   const currentScope =
     !requiresRelogin && session?.user?.id && activeConnection?.id
@@ -1453,6 +1480,7 @@ export function NavaPane({
             {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
             <QuoteWorkflowPanel
               session={quoteSession}
+              rateCatalogue={rateCatalogue}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
               findParty={PANE_PARTY_FINDER}

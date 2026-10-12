@@ -29,6 +29,8 @@ import type {
   QuoteReviewItem,
   QuoteSession,
   QuoteToolStep,
+  RatePlanBoard,
+  RatePlanCatalogueEntry,
   RateOption,
   RowPriceChoice,
   StaffQuoteHeader,
@@ -298,7 +300,65 @@ function fieldErrorReporter(
   };
 }
 
-/** Rate type, company and agency: the fields that decide the quote, each with its HMS picker. */
+type RatePlanCategory = 'public' | 'contract' | 'government' | 'other';
+type RatePlanChoice = RatePlanCatalogueEntry & { category: RatePlanCategory };
+
+const RATE_OPTION_BOARD: Record<RateOption['board'], RatePlanBoard> = {
+  room_only: 'room_only',
+  bb: 'bed_breakfast',
+  dinner_bb: 'dinner_bed_breakfast',
+};
+
+function ratePlanCategory(entry: RatePlanCatalogueEntry): RatePlanCategory {
+  if (entry.event) return 'other';
+  if (entry.government) return 'government';
+  if (entry.contract) return 'contract';
+  return 'public';
+}
+
+/** Add HMS-only codes without treating their labels or flags as static catalogue facts. */
+function ratePlanChoices(
+  catalogue: readonly RatePlanCatalogueEntry[],
+  hmsOptions: readonly RateOption[],
+): RatePlanChoice[] {
+  const choices = new Map<string, RatePlanChoice>();
+  for (const entry of catalogue) {
+    const code = entry.code.trim().toUpperCase();
+    if (code) choices.set(code, { ...entry, code, category: ratePlanCategory(entry) });
+  }
+  for (const option of hmsOptions) {
+    const code = option.rateCode.trim().toUpperCase();
+    if (!code || choices.has(code)) continue;
+    const event = option.hint === 'event_rate';
+    choices.set(code, {
+      code,
+      name: code,
+      board: RATE_OPTION_BOARD[option.board],
+      ...(event ? { event: true } : {}),
+      ...(option.contract ? { contract: true } : {}),
+      category: event ? 'other' : option.contract ? 'contract' : 'other',
+    });
+  }
+  return [...choices.values()];
+}
+
+function filteredRateOptions(
+  options: RateOption[],
+  selectedPlan: string,
+  choices: RatePlanChoice[],
+): RateOption[] {
+  if (selectedPlan === 'all') return options;
+  if (selectedPlan === 'government') {
+    const governmentCodes = new Set(
+      choices.filter((choice) => choice.category === 'government').map((choice) => choice.code),
+    );
+    return options.filter((option) => governmentCodes.has(option.rateCode.trim().toUpperCase()));
+  }
+  const selected = selectedPlan.toUpperCase();
+  return options.filter((option) => option.rateCode.trim().toUpperCase() === selected);
+}
+
+/** Rate plan filters returned options. Contract eligibility still comes only from each HMS result. */
 function StaffPartyFields({
   header,
   onPatch,
@@ -306,6 +366,9 @@ function StaffPartyFields({
   partySuggestions,
   partyIndex,
   onPartyLookupPending,
+  ratePlans,
+  ratePlan,
+  onRatePlanChange,
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
@@ -317,6 +380,9 @@ function StaffPartyFields({
   partyIndex?: PartyIndexSearcher | null;
   /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+  ratePlans: RatePlanChoice[];
+  ratePlan: string;
+  onRatePlanChange: (value: string) => void;
 }) {
   // Each field's picker searches that field's own text and holds only that kind: its results, its pick and its suggestions.
   // HOOK(#84, not on main): the HMS typeahead's onSearchName lands on the onSearchName prop below.
@@ -356,19 +422,34 @@ function StaffPartyFields({
   return (
     <>
       <p className="text-[11px] text-[#64748b]">These exact values go on the PDF. Leave Agency blank if there is none.</p>
-      <Field label="Rate type" required htmlFor="quote-rate-type">
+      <Field label="Rate plan" htmlFor="quote-rate-plan">
         <select
-          id="quote-rate-type"
-          aria-label="Rate type"
+          id="quote-rate-plan"
+          aria-label="Rate plan"
           className={paneFieldClass}
-          value={header.salesStrategy}
-          onChange={(event) =>
-            onPatch?.({ salesStrategy: event.target.value === 'Government' ? 'Government' : 'BAR' })
-          }
+          value={ratePlan}
+          onChange={(event) => onRatePlanChange(event.target.value)}
         >
-          <option value="BAR">BAR (best available rate)</option>
-          <option value="Government">Government rate</option>
+          <option value="all">All rates</option>
+          {(['public', 'contract', 'government', 'other'] as const).map((category) => {
+            const plans = ratePlans.filter((entry) => entry.category === category);
+            if (!plans.length && category !== 'government') return null;
+            const label = category === 'other' ? 'Other HMS rates' : `${category[0]!.toUpperCase()}${category.slice(1)}`;
+            return (
+              <optgroup key={category} label={label}>
+                {category === 'government' ? <option value="government">All government rates</option> : null}
+                {plans.map((plan) => (
+                  <option key={plan.code} value={plan.code}>
+                    {plan.name === plan.code ? plan.code : `${plan.code}: ${plan.name}`}
+                  </option>
+                ))}
+              </optgroup>
+            );
+          })}
         </select>
+        <span className="mt-0.5 block text-[11px] font-normal text-[#64748b]">
+          All rates shows every code HMS returned; choosing a plan filters the results.
+        </span>
       </Field>
       <Field label="Company" htmlFor="quote-company">
         <input
@@ -901,6 +982,7 @@ export function QuoteWorkflowPanel({
   partySuggestions,
   partyIndex,
   rates,
+  rateCatalogue,
   contact,
 }: {
   session: QuoteSession;
@@ -913,6 +995,8 @@ export function QuoteWorkflowPanel({
   partyIndex?: PartyIndexSearcher | null;
   /** The saved rates for each row's price. Null or absent: no saved-rate picker, but one-off and override still show. */
   rates?: SavedRatesClient | null;
+  /** Static Centurion rates from the authenticated read-only query. */
+  rateCatalogue?: RatePlanCatalogueEntry[];
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   /** Adds, duplicates or removes a room or a stay. The shell keeps a removed stay for Undo. */
   onStayAction?: (action: StayEditAction) => void;
@@ -948,6 +1032,11 @@ export function QuoteWorkflowPanel({
 }) {
   // A row price or rate tapped and waiting for its pin to reach the session. The re-run starts once every pin is there, so it reads them.
   const [pinRun, setPinRun] = useState<PinRun | null>(null);
+  const [ratePlanState, setRatePlanState] = useState<{
+    selectionEpoch: number;
+    analysis: QuoteSession['analysis'];
+    value: string;
+  } | null>(null);
   useEffect(() => {
     if (!pinRun) return;
     const landed = pinRun.changes.every(({ groupId, check }) => {
@@ -1024,6 +1113,17 @@ export function QuoteWorkflowPanel({
       : session.groups;
 
   const header = session.staffHeader ?? emptyStaffQuoteHeader();
+  const selectionEpoch = session.binding?.selectionEpoch ?? 0;
+  const ratePlans = ratePlanChoices(rateCatalogue ?? [], session.rateOptions ?? []);
+  const ratePlan =
+    ratePlanState?.selectionEpoch === selectionEpoch && ratePlanState.analysis === session.analysis
+      ? ratePlanState.value
+      : header.salesStrategy === 'Government'
+        ? 'government'
+        : 'all';
+  const changeRatePlan = (value: string) => {
+    setRatePlanState({ selectionEpoch, analysis: session.analysis, value });
+  };
   const stays = groupStays(formGroups);
   // Row names for the price boxes: "Room 1", or "Stay 1 · Room 1" when the quote has more than one stay.
   const rowLabels = new Map<string, string>();
@@ -1039,10 +1139,11 @@ export function QuoteWorkflowPanel({
   /** The stay step a row belongs to. A re-run of that step prices the row. */
   const stepFor = (group: StayGroupRequirement) =>
     session.steps.find((item) => item.kind === 'quote_stay' && item.shareKey === stayKeyForGroup(group));
-  // Rate cards show for a room group with two or more options. One option keeps the plain result below.
+  // All HMS options stay visible under All rates; selecting one plan filters the row's cards only.
   const rateGroups = session.groups.flatMap((group) => {
-    const options = (session.rateOptions ?? []).filter((option) => option.groupId === group.id);
-    if (options.length < 2) return [];
+    const groupOptions = (session.rateOptions ?? []).filter((option) => option.groupId === group.id);
+    const options = filteredRateOptions(groupOptions, ratePlan, ratePlans);
+    if (!options.length || (ratePlan === 'all' && options.length < 2)) return [];
     const step = stepFor(group);
     const pinned = pinRun?.changes.find((change) => change.groupId === group.id);
     return [
@@ -1150,6 +1251,9 @@ export function QuoteWorkflowPanel({
             partySuggestions={partySuggestions}
             partyIndex={partyIndex}
             onPartyLookupPending={onPartyLookupPending}
+            ratePlans={ratePlans}
+            ratePlan={ratePlan}
+            onRatePlanChange={changeRatePlan}
           />
           <Disclosure summary={<span>Extras: allowances, contact, notes</span>} defaultOpen={hasExtras(header)}>
             <StaffExtraFields header={header} onPatch={onPatchStaffHeader} />

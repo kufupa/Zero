@@ -30,6 +30,7 @@ export function RateCards({
       {options.map((option) => {
         const selected = loading ? option.rateCode === pendingRateCode : option.selected;
         const from = option.priced === 'summary' && !selected ? 'from ' : '';
+        const rateLabel = option.rateLabel.trim() || option.rateCode;
         return (
           <button
             key={option.id}
@@ -47,7 +48,7 @@ export function RateCards({
           >
             <span className="flex min-w-0 flex-col gap-0.5">
               <span className="flex flex-wrap items-center gap-1.5 text-[12.5px] font-bold text-[#1e293b]">
-                {`${option.rateCode}: ${option.rateLabel}`}
+                {`${option.rateCode}: ${rateLabel}`}
                 {selected ? (
                   <span className="rounded-[2px] bg-[#1a4332] px-1 text-[10px] font-semibold text-white">Selected</span>
                 ) : null}

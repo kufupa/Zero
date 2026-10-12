@@ -8,7 +8,8 @@ import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-
 import { resetPartyAutoLookupForTests } from '../components/quote-workflow/party-picker';
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
-import type { QuoteSession } from '../lib/quote-workflow/types';
+import type { QuoteSession, RateOption, RatePlanCatalogueEntry } from '../lib/quote-workflow/types';
+import { CENTURION_RATE_PLANS } from '../../server-pilot/src/hms/rate-catalogue';
 
 afterEach(() => cleanup());
 
@@ -713,6 +714,116 @@ describe('the Find in HMS picker in the quote header', () => {
       />
     );
   }
+
+  it('lists every catalogue rate plan and reflects an auto-selected government party', () => {
+    const rateCatalogue: RatePlanCatalogueEntry[] = CENTURION_RATE_PLANS;
+    const session = headerSession({});
+    const { unmount } = render(
+      <QuoteWorkflowPanel session={session} rateCatalogue={rateCatalogue as never} />,
+    );
+    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    const values = [...planSelect.options].map((option) => option.value);
+    expect(planSelect.value).toBe('all');
+    expect(values).toEqual(
+      expect.arrayContaining([
+        'all', 'BAR', 'BARRO', 'DBB', 'DBBX', 'NCOR1B', 'NCOR2B', 'GNC3B', 'GNC4B',
+        'BCO1B', 'BCO2B', 'BBP', 'BWKPB', 'NGOVB',
+      ]),
+    );
+    expect(planSelect.querySelector('optgroup[label="Contract"]')?.querySelector('option[value="BCO1B"]')).not.toBeNull();
+    expect(planSelect.querySelector('optgroup[label="Other HMS rates"] option[value="GNC3B"]')).not.toBeNull();
+    expect(planSelect.querySelector('optgroup[label="Other HMS rates"] option[value="GNC4B"]')).not.toBeNull();
+    unmount();
+
+    const governmentAnalysis = {
+      ...session.analysis!,
+      luna: {
+        workflow: 'quote' as const,
+        flags: [],
+        groups: [],
+        party: { kind: 'government' as const, name: 'Department X', reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    };
+    const governmentSession = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: governmentAnalysis,
+    });
+    expect(governmentSession.staffHeader.salesStrategy).toBe('Government');
+    render(<QuoteWorkflowPanel session={governmentSession} rateCatalogue={rateCatalogue as never} />);
+    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government');
+    expect(screen.getByRole('option', { name: 'All government rates' })).toBeDefined();
+  });
+
+  it('filters returned rate cards locally without clearing the quoted HMS results', () => {
+    const rateOptions: RateOption[] = [
+      {
+        id: 'g1:BAR',
+        groupId: 'g1',
+        board: 'bb',
+        boardLabel: 'Bed & Breakfast',
+        rateCode: 'BAR',
+        rateLabel: 'Best Available Rate',
+        roomCode: 'STQN',
+        roomLabel: 'Standard Queen',
+        contract: false,
+        onlyContract: false,
+        matchesRequest: true,
+        perNightMinor: 100_000,
+        totalMinor: 200_000,
+        currency: 'ZAR',
+        priced: 'summary',
+        selected: true,
+      },
+      {
+        id: 'g1:NCOR1B',
+        groupId: 'g1',
+        board: 'bb',
+        boardLabel: 'Bed & Breakfast',
+        rateCode: 'NCOR1B',
+        rateLabel: 'Corporate Negotiated',
+        roomCode: 'STQN',
+        roomLabel: 'Standard Queen',
+        contract: true,
+        onlyContract: false,
+        matchesRequest: true,
+        perNightMinor: 90_000,
+        totalMinor: 180_000,
+        currency: 'ZAR',
+        priced: 'summary',
+        selected: false,
+      },
+    ];
+    const session = { ...sessionFromFixture('public-single'), rateOptions };
+    const rateCatalogue: RatePlanCatalogueEntry[] = [
+      { code: 'BAR', name: 'Best Available Rate', board: 'bed_breakfast' },
+      { code: 'NCOR1B', name: 'Corporate Negotiated', board: 'unknown', contract: true },
+    ];
+
+    function FilterHarness() {
+      const [current, setCurrent] = useState<QuoteSession>(session);
+      return (
+        <QuoteWorkflowPanel
+          session={current}
+          rateCatalogue={rateCatalogue}
+          onPatchStaffHeader={(header) =>
+            setCurrent((previous) => reduceQuoteSession(previous, { type: 'patch_staff_header', header }))
+          }
+        />
+      );
+    }
+
+    render(<FilterHarness />);
+    expect(screen.getByRole('button', { name: /BAR: Best Available Rate/ })).toBeDefined();
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'NCOR1B' } });
+
+    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('NCOR1B');
+    expect(screen.queryByRole('button', { name: /BAR: Best Available Rate/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /NCOR1B: Corporate Negotiated/ })).toBeDefined();
+  });
 
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.
   it('looks each named field up in HMS by itself, once, with its own kind; no finder, no lookup', async () => {

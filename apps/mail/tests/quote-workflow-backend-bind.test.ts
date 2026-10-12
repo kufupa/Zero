@@ -23,6 +23,7 @@ describe('quote workflow backend bind', () => {
     expect(QUOTE_WORKFLOW_BIND_TARGETS.staffQuoteSource).toBe('workstation.staffQuoteSource');
     expect(QUOTE_WORKFLOW_BIND_TARGETS.executeStaffQuote).toBe('workstation.executeStaffQuote');
     expect(QUOTE_WORKFLOW_BIND_TARGETS.qualifiedPdf).toBe('workstation.qualifiedQuoteProposalPdf');
+    expect(QUOTE_WORKFLOW_BIND_TARGETS.rateCatalogue).toBe('quoteWorkflow.rateCatalogue');
     expect(QUOTE_WORKFLOW_BIND_TARGETS.staffActions).toMatch(/staffActions/);
     expect(QUOTE_WORKFLOW_BIND_TARGETS).not.toHaveProperty('runStepServerLater');
   });
@@ -34,6 +35,10 @@ describe('quote workflow backend bind', () => {
       quoteWorkflowFromTrpc({ quoteWorkflow: { analyseSelection: { mutate } } }).analyseSelection
         ?.mutate,
     ).toBe(mutate);
+    const query = vi.fn(async () => []);
+    expect(
+      quoteWorkflowFromTrpc({ quoteWorkflow: { rateCatalogue: { query } } }).rateCatalogue?.query,
+    ).toBe(query);
   });
 
   it('reports unavailable when analyseSelection is not on the client', async () => {
@@ -405,6 +410,10 @@ describe('staff quote execute/PDF header bind', () => {
   it('sends staff-approved Government/contact and the actual native room-code set', async () => {
     expect(nativeRoomCodes('SUITE')).toEqual(['SUITE']);
     expect(nativeRoomCodes('DLXKNG')).toEqual(['DLXKNG']);
+    expect(resolveNativeRoomCodes({ roomPreference: 'Standard Queen' })).toEqual({
+      status: 'codes',
+      codes: ['STQN'],
+    });
     expect(nativeRoomCodes('SINGLE')).toBeUndefined();
     expect(resolveNativeRoomCodes({ roomPreference: 'SINGLE' })).toEqual({
       status: 'unresolved',

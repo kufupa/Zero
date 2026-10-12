@@ -6,6 +6,7 @@ import type {
   QuoteDocumentFailure,
   QuoteOffer,
   QuoteReviewItem,
+  RatePlanCatalogueEntry,
   QuoteWorkflowFallbackReason,
   LunaAnalysisWire,
 } from './types';
@@ -25,6 +26,7 @@ export const QUOTE_WORKFLOW_BIND_TARGETS = {
   staffQuoteSource: 'workstation.staffQuoteSource',
   executeStaffQuote: 'workstation.executeStaffQuote',
   qualifiedPdf: 'workstation.qualifiedQuoteProposalPdf',
+  rateCatalogue: 'quoteWorkflow.rateCatalogue',
   nativeReply: 'CREATE_REPLY_DRAFT',
   nativeAttach: 'ADD_ATTACHMENT_TO_DRAFT',
 } as const;
@@ -91,6 +93,7 @@ export type QualifiedProposalPdfResult = {
 };
 
 type QuoteWorkflowClient = {
+  rateCatalogue?: { query: () => Promise<RatePlanCatalogueEntry[]> };
   analyseSelection?: { mutate: (input: AnalyseSelectionInput) => Promise<AnalyseSelectionResult> };
   runStep?: {
     mutate: (input: RunStepRequest) => Promise<RunStepResult>;
