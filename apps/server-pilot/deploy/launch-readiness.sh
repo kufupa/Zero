@@ -69,6 +69,11 @@ for required_command in aws node bash; do
   fi
 done
 
+LAST_GOOD_DEPLOY_AT_B64="$(
+  LAST_GOOD_DEPLOY_AT="${LAST_GOOD_DEPLOY_AT:-}" node -e \
+    'process.stdout.write(Buffer.from(process.env.LAST_GOOD_DEPLOY_AT).toString("base64"))'
+)"
+
 REMOTE_COMMAND="$(cat <<'REMOTE'
 set -euo pipefail
 set +x
@@ -79,6 +84,9 @@ ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
 REMOTE_ADMIN_MODE="__REMOTE_ADMIN_MODE__"
 export REQUIRE_HOTEL_PROBE=1
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
+LAST_GOOD_DEPLOY_AT_B64="__LAST_GOOD_DEPLOY_AT_B64__"
+LAST_GOOD_DEPLOY_AT="$(node -e 'process.stdout.write(Buffer.from(process.argv[1], "base64").toString("utf8"))' "$LAST_GOOD_DEPLOY_AT_B64")"
+export LAST_GOOD_DEPLOY_AT
 
 ENV_LOADED=false
 if [ -r "$ENV_FILE" ]; then
@@ -352,6 +360,42 @@ DB_SUMMARY="$(
   node --input-type=module <<'NODE'
 import postgres from "postgres";
 
+const rawLastGoodDeployAt = process.env.LAST_GOOD_DEPLOY_AT;
+const isoTimestampPattern =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-](\d{2}):(\d{2}))$/;
+function isValidIsoTimestamp(value) {
+  if (typeof value !== "string") return false;
+  const match = value.match(isoTimestampPattern);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHours = Number(match[8] ?? 0);
+  const offsetMinutes = Number(match[9] ?? 0);
+  const calendarDate = new Date(0);
+  calendarDate.setUTCFullYear(year, month - 1, day);
+  calendarDate.setUTCHours(hour, minute, second, 0);
+  return (
+    calendarDate.getUTCFullYear() === year &&
+    calendarDate.getUTCMonth() === month - 1 &&
+    calendarDate.getUTCDate() === day &&
+    calendarDate.getUTCHours() === hour &&
+    calendarDate.getUTCMinutes() === minute &&
+    calendarDate.getUTCSeconds() === second &&
+    offsetHours <= 14 &&
+    offsetMinutes <= 59 &&
+    (offsetHours < 14 || offsetMinutes === 0) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+const lastGoodDeployAt =
+  isValidIsoTimestamp(rawLastGoodDeployAt)
+    ? new Date(rawLastGoodDeployAt).toISOString()
+    : null;
+
 const empty = {
   connected: false,
   centurionActiveTransportCount: 0,
@@ -360,6 +404,7 @@ const empty = {
   workflowNonterminalCount: 0,
   workflowDeadLetterCount: 0,
   workflowDeadLetterRecentCount: 0,
+  workflowDeadLetterWindowStart: null,
   outboundNonterminalCount: 0,
   latestInboundAt: null,
   counts: { threads: 0, messages: 0, inboundMessages: 0 },
@@ -409,6 +454,8 @@ try {
           AND c.is_active = true
       )
   `;
+  // Dead-letter window = last-good deploy, capped at 24 h back: a stale marker can never widen it.
+  // greatest() ignores a NULL marker, so no marker means now() - 24 h.
   const [workflow] = await sql`
     SELECT
       count(*) FILTER (
@@ -417,8 +464,15 @@ try {
       count(*) FILTER (WHERE state = 'dead_letter')::int AS dead_letter,
       count(*) FILTER (
         WHERE state = 'dead_letter'
-          AND coalesce(finished_at, updated_at) > now() - interval '24 hours'
-      )::int AS dead_letter_recent
+          AND coalesce(finished_at, updated_at) > greatest(
+            ${lastGoodDeployAt}::timestamptz,
+            now() - interval '24 hours'
+          )
+      )::int AS dead_letter_recent,
+      greatest(
+        ${lastGoodDeployAt}::timestamptz,
+        now() - interval '24 hours'
+      ) AS dead_letter_window_start
     FROM ai_workflow_run
   `;
   const [outbound] = await sql`
@@ -443,6 +497,9 @@ try {
     workflowNonterminalCount: Number(workflow?.nonterminal ?? 0),
     workflowDeadLetterCount: Number(workflow?.dead_letter ?? 0),
     workflowDeadLetterRecentCount: Number(workflow?.dead_letter_recent ?? 0),
+    workflowDeadLetterWindowStart: workflow?.dead_letter_window_start
+      ? new Date(workflow.dead_letter_window_start).toISOString()
+      : null,
     outboundNonterminalCount: Number(outbound?.nonterminal ?? 0),
     latestInboundAt: mail?.latest_inbound_at
       ? new Date(mail.latest_inbound_at).toISOString()
@@ -461,7 +518,7 @@ try {
 NODE
 )"
 if [ -z "$DB_SUMMARY" ]; then
-  DB_SUMMARY='{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowCategoryMissingCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}}'
+  DB_SUMMARY='{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowCategoryMissingCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"workflowDeadLetterWindowStart":null,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}}'
 fi
 
 node - "$PM2_SUMMARY" "$DB_SUMMARY" <<'NODE'
@@ -507,6 +564,7 @@ NODE
 REMOTE
 )"
 REMOTE_COMMAND="${REMOTE_COMMAND//__REMOTE_ADMIN_MODE__/$REMOTE_ADMIN_MODE}"
+REMOTE_COMMAND="${REMOTE_COMMAND//__LAST_GOOD_DEPLOY_AT_B64__/$LAST_GOOD_DEPLOY_AT_B64}"
 
 SSM_RESULT=""
 SSM_EXIT=0
@@ -536,7 +594,7 @@ NODE
 )" || REMOTE_JSON=""
 
 if [ "$SSM_EXIT" -ne 0 ] || [ -z "$REMOTE_JSON" ]; then
-  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"firewall":{"statusRead":false,"rulesRead":false,"active":false,"defaultDeny":false,"tunnel443":false,"broad443Absent":false,"listenerSafe":false},"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowCategoryMissingCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
+  REMOTE_JSON='{"health":{"http":false,"https":false,"tls":false},"pm2":{"required":{},"allOnline":false},"hotelProbe":false,"firewall":{"statusRead":false,"rulesRead":false,"active":false,"defaultDeny":false,"tunnel443":false,"broad443Absent":false,"listenerSafe":false},"config":{"envLoaded":false,"mailTransportModeReal":false,"betterAuthUrlCorrect":false,"undoSendSecondsCorrect":false,"aiWriteGateEnabled":false,"aiDraftsDisabled":false},"db":{"connected":false,"centurionActiveTransportCount":0,"centurionActiveCategoryCount":0,"workflowCategoryMissingCount":0,"workflowNonterminalCount":0,"workflowDeadLetterCount":0,"workflowDeadLetterRecentCount":0,"workflowDeadLetterWindowStart":null,"outboundNonterminalCount":0,"latestInboundAt":null,"counts":{"threads":0,"messages":0,"inboundMessages":0}},"disk":{"safe":false,"usedPercent":100,"freeMB":0}}'
 fi
 
 RDS_JSON="$(
@@ -1988,7 +2046,7 @@ const checks = {
   centurionCategoriesActive: db.centurionActiveCategoryCount === 12,
   workflowCategoriesComplete: Number(db.workflowCategoryMissingCount ?? 0) === 0,
   workflowNonterminalBacklogEmpty: db.workflowNonterminalCount === 0,
-  // Fail only on recent dead letters (24h). Historical terminal rows stay in observations.
+  // Fail on dead letters since the last good deploy, capped at the previous 24 hours.
   workflowDeadLetterBacklogEmpty: Number(db.workflowDeadLetterRecentCount ?? 0) === 0,
   // Warn-only (see WARN_ONLY_CHECKS below): printed as a warning, never fails the gate.
   outboundBacklogEmpty: db.outboundNonterminalCount === 0,
@@ -2119,6 +2177,7 @@ const report = {
     latestInboundAt: db.latestInboundAt ?? null,
     workflowDeadLetterCount: Number(db.workflowDeadLetterCount ?? 0),
     workflowDeadLetterRecentCount: Number(db.workflowDeadLetterRecentCount ?? 0),
+    workflowDeadLetterWindowStart: db.workflowDeadLetterWindowStart ?? null,
     outboundNonterminalCount: db.outboundNonterminalCount ?? null,
     counts: db.counts ?? {},
     pm2Restarts: {
