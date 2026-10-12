@@ -32,7 +32,8 @@ const markerValidatorSource = script.slice(
 );
 const markerReadBlock = opsDeployScript.slice(
   opsDeployScript.indexOf('  echo "== ops-deploy: read last-good deploy marker =="'),
-  opsDeployScript.indexOf('  REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0'),
+  // Ends before the host-clock boundary block, which the stubbed deploy-flow tests below run for real.
+  opsDeployScript.indexOf('  # Boundary for the marker written after every gate passes'),
 );
 
 const SG = 'sg-0123456789abcdef0';
@@ -227,6 +228,7 @@ case "$payload" in
   *'mv -f "$tmp" "$marker_path"'*) kind=marker-write ;;
   *vpn-health-assert*) kind=vpn ;;
   *source-registry-cas.sh*) kind=cas ;;
+  *NAVA_HOST_CLOCK_UTC*) kind=host-clock ;;
   *) kind=other ;;
 esac
 printf '%s\n' "$kind" >>"$SCRATCH/calls.log"
@@ -236,6 +238,10 @@ case "$kind" in
     if [ "$kind" = marker-read ]; then
       "$NODE_BIN" -e 'process.stdout.write(JSON.stringify({ Stdout: process.argv[1] }))' "$out"
     fi
+    ;;
+  host-clock)
+    if [ "$FAIL_HOST_CLOCK" = 1 ]; then exit 70; fi
+    "$NODE_BIN" -e 'process.stdout.write(JSON.stringify({ Stdout: process.argv[1] }))' "$HOST_CLOCK_STDOUT"
     ;;
   vpn) sleep "$VPN_DELAY"; exit "$FAIL_VPN" ;;
   cas) exit "$FAIL_CAS" ;;
@@ -280,6 +286,8 @@ exit "$FAIL_READINESS"
           FAIL_VPN: '0',
           FAIL_CAS: '0',
           VPN_DELAY: '0',
+          FAIL_HOST_CLOCK: '0',
+          HOST_CLOCK_STDOUT: `NAVA_HOST_CLOCK_UTC=${new Date().toISOString().slice(0, 19)}Z`,
           ...options.env,
         },
       });
@@ -311,6 +319,34 @@ exit "$FAIL_READINESS"
     // The write happens about two seconds after readiness starts, so a stamp taken at write time fails this check.
     expect(run.marker!.at <= run.readinessStartedAt!).toBe(true);
     expect(run.calls.at(-1)).toBe('marker-write');
+  });
+
+  it('takes the readiness boundary from the EC2 host clock minus a 5-minute margin, right before readiness', () => {
+    const run = runOpsDeploy({ env: { HOST_CLOCK_STDOUT: 'NAVA_HOST_CLOCK_UTC=2026-10-12T10:00:00Z' } });
+
+    expect(run.status).toBe(0);
+    expect(run.marker).toEqual({ commit: run.head, at: '2026-10-12T09:55:00Z' });
+    expect(run.calls.slice(-5)).toEqual(['marker-read', 'host-clock', 'readiness', 'vpn', 'marker-write']);
+    expect(run.stdout).not.toContain('host clock unavailable');
+  });
+
+  it.each<[string, Record<string, string>]>([
+    ['the SSM read fails', { FAIL_HOST_CLOCK: '1' }],
+    ['the host clock line is missing', { HOST_CLOCK_STDOUT: 'unrelated output' }],
+    ['the host clock is not a timestamp', { HOST_CLOCK_STDOUT: 'NAVA_HOST_CLOCK_UTC=yesterday' }],
+  ])('falls back to the operator clock minus 15 minutes with one note when %s', (_label, env) => {
+    const before = Date.now();
+    const run = runOpsDeploy({ env });
+    const after = Date.now();
+
+    expect(run.status).toBe(0);
+    expect(run.calls).toContain('readiness');
+    expect(run.calls.at(-1)).toBe('marker-write');
+    expect(run.stdout.match(/host clock unavailable/g)).toHaveLength(1);
+    // Whole seconds, rounded down, so the stamp can sit up to one second below the window start.
+    const at = Date.parse(run.marker!.at);
+    expect(at).toBeGreaterThanOrEqual(before - 15 * 60_000 - 1_000);
+    expect(at).toBeLessThanOrEqual(after - 15 * 60_000);
   });
 
   it('writes no marker when readiness fails', () => {

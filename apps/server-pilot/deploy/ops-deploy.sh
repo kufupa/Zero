@@ -119,9 +119,36 @@ NODE
     unset LAST_GOOD_DEPLOY_AT
     echo "ops-deploy: last-good marker unavailable (missing, unreadable, or invalid); using 24-hour readiness window"
   fi
-  # Boundary for the marker written after every gate passes. Taken before readiness queries the database, so a dead
-  # letter that lands after that query is still inside the next window. Whole seconds, rounded down: that only widens it.
-  READINESS_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # Boundary for the marker written after every gate passes: the EC2 host clock (the clock the workers and their dead
+  # letters run on), read right before readiness queries the database, minus a 5-minute margin for clock skew and the
+  # SSM round trip. The operator laptop clock is only a fallback, and it is pulled back 15 minutes to stay on the safe
+  # side. An earlier boundary only counts more dead letters next time, which is the safe direction.
+  READINESS_HOST_CLOCK_SSM_RESULT="$(
+    bash "${SCRIPT_DIR}/ssm-run-command.sh" \
+      'printf "NAVA_HOST_CLOCK_UTC=%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"'
+  )" || READINESS_HOST_CLOCK_SSM_RESULT=""
+  READINESS_STARTED_AT="$(
+    node - "$READINESS_HOST_CLOCK_SSM_RESULT" <<'NODE' || true
+const prefix = "NAVA_HOST_CLOCK_UTC=";
+const marginMs = 5 * 60 * 1000;
+try {
+  const invocation = JSON.parse(process.argv[2] || "");
+  const line = String(invocation.Stdout ?? "")
+    .split(/\r?\n/)
+    .find((candidate) => candidate.startsWith(prefix));
+  if (!line) process.exit(1);
+  const hostNow = line.slice(prefix.length);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(hostNow)) process.exit(1);
+  process.stdout.write(new Date(Date.parse(hostNow) - marginMs).toISOString().replace(/\.\d{3}Z$/, "Z"));
+} catch {
+  process.exit(1);
+}
+NODE
+  )"
+  if [ -z "$READINESS_STARTED_AT" ]; then
+    READINESS_STARTED_AT="$(node -e 'process.stdout.write(new Date(Date.now() - 15 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, "Z"))')"
+    echo "ops-deploy: host clock unavailable; readiness boundary uses the operator clock minus 15 minutes"
+  fi
   REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"
 fi
 
