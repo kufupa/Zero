@@ -1503,12 +1503,6 @@ export type NeedsYouHmsView = {
   summary: 'found' | 'not found' | null;
 };
 
-function objectRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function jsonDate(value: unknown): Date | null {
   if (value instanceof Date) return value;
   if (typeof value !== 'string') return null;
@@ -1516,25 +1510,22 @@ function jsonDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function hmsReadSummary(readResult: Record<string, unknown>): NeedsYouHmsView['summary'] {
-  if (['found', 'ambiguous', 'ambiguous_capped'].includes(String(readResult.outcome))) return 'found';
-  if (readResult.outcome === 'not_found') return 'not found';
-  if (readResult.outcome === 'ok') {
-    return Array.isArray(readResult.rows) && readResult.rows.length > 0 ? 'found' : 'not found';
-  }
+function hmsReadSummary(outcome: unknown, rowCount: unknown): NeedsYouHmsView['summary'] {
+  if (['found', 'ambiguous', 'ambiguous_capped'].includes(String(outcome))) return 'found';
+  if (outcome === 'not_found') return 'not found';
+  if (outcome === 'ok') return Number(rowCount) > 0 ? 'found' : 'not found';
   return null;
 }
 
+// Input is the compact latestHmsRead row from listWorkItems: asOf, outcome, rowCount and batch item skip, not the stored read.
 function needsYouHmsView(value: Record<string, unknown> | null, now: Date): NeedsYouHmsView | null {
   if (!value || typeof value.runId !== 'string') return null;
-  const readResult = objectRecord(value.readResult);
-  const metrics = objectRecord(value.metrics);
-  const asOf = typeof readResult.asOf === 'string'
-    ? readResult.asOf
+  const asOf = typeof value.asOf === 'string'
+    ? value.asOf
     : jsonDate(value.finishedAt)?.toISOString() ?? null;
-  const summary = hmsReadSummary(readResult);
+  const summary = hmsReadSummary(value.outcome, value.rowCount);
 
-  if (metrics.batchItemStatus === 'skipped' && metrics.batchItemReason === 'insufficient_data') {
+  if (value.batchItemStatus === 'skipped' && value.batchItemReason === 'insufficient_data') {
     return { status: 'insufficient_data', asOf: null, runId: value.runId, summary: null };
   }
   switch (value.state) {
@@ -1588,14 +1579,29 @@ export async function listWorkItems(
     where batch_link.value->>'workItemId' = ${workItem.id}::text
       and batch_link.value->>'status' is distinct from 'cancelled'
   )`;
+  const now = new Date();
+  // The newest current read wins whatever its origin (own, batch-linked or legacy thread). Current means in flight, or
+  // succeeded and not yet expired (expiry falls back to finishedAt plus the fresh window, as in needsYouHmsView).
+  // Failed and expired reads sort after every current read, so they show only when no current read exists.
+  const hmsReadCurrent = sql`(${aiWorkflowRun.state} in ('queued', 'claimed', 'running', 'retry_wait')
+    or (${aiWorkflowRun.state} = 'succeeded' and coalesce(
+      ${aiWorkflowRun.readResultExpiresAt},
+      ${aiWorkflowRun.finishedAt} + make_interval(secs => ${HMS_READ_RESULT_FRESH_MS / 1000}),
+      'infinity'::timestamp
+    ) > ${now.toISOString()}::timestamp))`;
+  // Only the small fields the chip needs. The whole stored read and metrics stay in the database.
   const latestHmsRead = sql<Record<string, unknown> | null>`(
     select jsonb_build_object(
       'runId', ${aiWorkflowRun.id},
       'state', ${aiWorkflowRun.state},
-      'readResult', ${aiWorkflowRun.readResult},
       'readResultExpiresAt', ${aiWorkflowRun.readResultExpiresAt},
       'finishedAt', ${aiWorkflowRun.finishedAt},
-      'metrics', ${aiWorkflowRun.metrics}
+      'asOf', ${aiWorkflowRun.readResult}->>'asOf',
+      'outcome', ${aiWorkflowRun.readResult}->>'outcome',
+      'rowCount', case when jsonb_typeof(${aiWorkflowRun.readResult}->'rows') = 'array'
+        then jsonb_array_length(${aiWorkflowRun.readResult}->'rows') else 0 end,
+      'batchItemStatus', ${aiWorkflowRun.metrics}->>'batchItemStatus',
+      'batchItemReason', ${aiWorkflowRun.metrics}->>'batchItemReason'
     )
     from ${aiWorkflowRun}
     where ${aiWorkflowRun.runKind} = 'read_tool'
@@ -1609,8 +1615,7 @@ export async function listWorkItems(
           and ${aiWorkflowRun.threadId} = ${workItem.threadId}
         )
       )
-    order by case when ${aiWorkflowRun.workItemId} = ${workItem.id} then 0
-      when ${activeHmsBatchLink} then 1 else 2 end,
+    order by case when ${hmsReadCurrent} then 0 else 1 end,
       ${aiWorkflowRun.createdAt} desc,
       ${aiWorkflowRun.id} desc
     limit 1
@@ -1654,7 +1659,6 @@ export async function listWorkItems(
       asc(workItem.id),
     )
     .limit(input.limit);
-  const now = new Date();
   return rows.map(({ chipRank: rank, latestHmsRead: readRun, hmsPayload, hmsTextBody, ...row }) => {
     // Only booking, amendment, cancellation and voucher rows get an HMS status; quote rows keep none.
     const hmsKind = (HMS_NEEDS_YOU_KINDS as readonly string[]).includes(row.kind);

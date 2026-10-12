@@ -184,7 +184,14 @@ function isActiveHmsStatus(
 
 function resultSummary(result: Record<string, unknown> | null | undefined): string | null {
   if (typeof result?.summary === 'string') return result.summary;
-  if (result?.outcome === 'found' || result?.outcome === 'ambiguous') return 'found';
+  // Same outcome set as the server's hmsReadSummary, so a finished check and a reopened row agree.
+  if (
+    result?.outcome === 'found' ||
+    result?.outcome === 'ambiguous' ||
+    result?.outcome === 'ambiguous_capped'
+  ) {
+    return 'found';
+  }
   if (result?.outcome === 'not_found') return 'not found';
   if (result?.outcome === 'ok') {
     return Array.isArray(result.rows) && result.rows.length > 0 ? 'found' : 'not found';
@@ -264,11 +271,16 @@ function NeedsYouRowView({
 
   useEffect(() => {
     if (queuing.current) return;
+    // Row details (why Run HMS is off) follow every list read, apart from the HMS status guard below.
+    setHmsDisabledReason(row.hmsDisabledReason);
     const local = localHms.current;
+    const incoming = row.hms;
     if (local) {
-      const incoming = row.hms;
-      // A list read may have started before our enqueue or before its latest status read.
-      if (incoming?.runId !== local.runId) {
+      if (local.runId === null && local.asOf === null) {
+        // Placeholder from a local insufficient-data answer: the first server state with a run id or asOf supersedes it.
+        if (!incoming?.runId && !incoming?.asOf) return;
+      } else if (incoming?.runId !== local.runId) {
+        // A list read may have started before our enqueue or before its latest status read.
         if (
           isActiveHmsStatus(local.status) ||
           !incoming?.asOf ||
@@ -283,9 +295,8 @@ function NeedsYouRowView({
         return;
       localHms.current = incoming;
     }
-    setHms(row.hms);
-    setHmsDisabledReason(row.hmsDisabledReason);
-  }, [row.hms, row.hmsDisabledReason]);
+    setHms(incoming);
+  }, [row]);
 
   useEffect(() => {
     mounted.current = true;

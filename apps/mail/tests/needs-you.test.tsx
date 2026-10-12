@@ -662,6 +662,65 @@ describe('Needs-you list', () => {
     expect(screen.queryByText('Not enough details to check HMS.')).toBeNull();
   });
 
+  it('a guest search that ends ambiguous_capped reads as found when the check finishes, as on reopen', async () => {
+    runNeedsYouItemMutate.mockResolvedValueOnce(foundRunResult('wi-2', 'ambiguous_capped'));
+    render(<Harness host="web" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Run HMS Confirm booking' }));
+
+    expect(await screen.findByText('In HMS: found')).toBeDefined();
+    expect(screen.queryByText('In HMS: checked')).toBeNull();
+  });
+
+  it('a list read with the marker run re-enables Run HMS once the row details are complete', async () => {
+    listQuery.mockResolvedValueOnce(TWO_OPEN).mockResolvedValueOnce([
+      TWO_OPEN[0]!,
+      {
+        ...TWO_OPEN[1]!,
+        hms: { status: 'insufficient_data', asOf: null, runId: RUN_ID, summary: null },
+        hmsDisabledReason: null,
+      },
+    ]);
+    runNeedsYouItemMutate.mockResolvedValueOnce({
+      batchId: 'batch-fixture-3',
+      status: 'done',
+      summary: {
+        total: 1,
+        queued: 0,
+        running: 0,
+        retrying: 0,
+        done: 0,
+        failed: 0,
+        cancelled: 0,
+        skipped: 1,
+        reused: 0,
+      },
+      items: [
+        {
+          itemIndex: 0,
+          workItemId: 'wi-2',
+          status: 'skipped',
+          reason: 'insufficient_data',
+          runId: null,
+          request: null,
+          job: null,
+        },
+      ],
+    });
+    render(<ReloadingHarness />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Run HMS Confirm booking' }));
+    expect(await screen.findByText('Not enough details to check HMS.')).toBeDefined();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reload now' }));
+
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: 'Run HMS Confirm booking' }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+  });
+
   it('updates a skipped insufficient-data response into a visible disabled state', async () => {
     runNeedsYouItemMutate.mockResolvedValueOnce({
       batchId: 'batch-fixture-2',

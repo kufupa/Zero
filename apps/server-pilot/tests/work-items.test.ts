@@ -1522,7 +1522,7 @@ describe('needs-you list', () => {
       });
     }));
 
-  it('prefers direct HMS reads, then active batch links, then legacy unlinked thread reads', () =>
+  it('shows the newest usable HMS read whatever its origin: direct, active batch link, or legacy thread read', () =>
     withDb(async (db) => {
       const primary = await openItem(db, 'hms-link-primary', '2026-10-01T09:00:00Z', 'booking');
       const linked = await openItem(db, 'hms-link-target', '2026-10-02T09:00:00Z', 'booking');
@@ -1561,7 +1561,8 @@ describe('needs-you list', () => {
         metrics: { batchLinks: [{ workItemId: linked, status: 'reused' }] },
       });
       // An explicit link can serve a different thread, but cannot outrank a direct read.
-      await addRead({
+      // An explicit link can serve a different thread. Here it is the newest usable read, so it wins.
+      const donorId = await addRead({
         workItemId: donor,
         threadId: 'thread-hms-link-donor',
         createdAt: now,
@@ -1584,10 +1585,59 @@ describe('needs-you list', () => {
         metrics: { batchLinks: [{ workItemId: cancelled, status: 'cancelled' }] },
       });
       const rows = await openList(db);
-      expect(rows.find((row) => row.id === primary)?.hms?.runId).toBe(directId);
-      expect(rows.find((row) => row.id === linked)?.hms?.runId).toBe(directId);
+      expect(rows.find((row) => row.id === primary)?.hms?.runId).toBe(donorId);
+      expect(rows.find((row) => row.id === linked)?.hms?.runId).toBe(legacyId);
       expect(rows.find((row) => row.id === cancelled)?.hms?.runId).toBe(cancelledLegacyId);
-      expect(rows.find((row) => row.id === linked)?.hms?.runId).not.toBe(legacyId);
+      expect(rows.find((row) => row.id === primary)?.hms?.runId).not.toBe(directId);
+    }));
+
+  it('a fresh batch-linked read beats a newer direct run that failed, so reopening the list shows the current lookup', () =>
+    withDb(async (db) => {
+      const primary = await openItem(db, 'hms-fresh-primary', '2026-10-01T09:00:00Z', 'booking');
+      const donor = await openItem(db, 'hms-fresh-donor', '2026-10-02T09:00:00Z', 'booking');
+      const now = new Date();
+      const freshId = randomUUID();
+      // Another email's prefetch, linked to the primary item by a Run HMS that reused it.
+      await db.insert(aiWorkflowRun).values({
+        id: freshId,
+        transportId: CENTURION,
+        threadId: 'thread-hms-fresh-donor',
+        triggerMessageId: 'msg-hms-fresh-donor',
+        workItemId: donor,
+        runKind: 'read_tool',
+        idempotencyKey: `test-run:${freshId}`,
+        modelId: NOT_APPLICABLE_MODEL_ID,
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        executorLane: 'hms',
+        state: 'succeeded',
+        readResult: { kind: 'find', outcome: 'found', asOf: now.toISOString() },
+        readResultExpiresAt: new Date(now.getTime() + 60_000),
+        metrics: { batchLinks: [{ workItemId: primary, status: 'reused' }] },
+        finishedAt: now,
+        createdAt: new Date(now.getTime() - 60_000),
+        updatedAt: now,
+      });
+      // The primary item's newer direct run failed. It must not hide the fresh read.
+      await db.insert(aiWorkflowRun).values({
+        id: randomUUID(),
+        transportId: CENTURION,
+        threadId: 'thread-hms-fresh-primary',
+        triggerMessageId: 'msg-hms-fresh-primary',
+        workItemId: primary,
+        runKind: 'read_tool',
+        idempotencyKey: `test-run:${randomUUID()}`,
+        modelId: NOT_APPLICABLE_MODEL_ID,
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        executorLane: 'hms',
+        state: 'dead_letter',
+        finishedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const rows = await openList(db);
+      expect(rows.find((row) => row.id === primary)).toMatchObject({
+        hms: { status: 'done', runId: freshId, summary: 'found' },
+      });
     }));
 
   it('derives legacy null-expiry HMS staleness from finishedAt plus one hour', () =>
