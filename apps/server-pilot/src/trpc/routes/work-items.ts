@@ -1,5 +1,6 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
+import { parseNeedsYouSince } from '../../env.js';
 import { getDb } from '../../db/client.js';
 import { WORK_ITEM_STATUSES } from '../../db/schema/work.js';
 import { retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
@@ -101,13 +102,15 @@ export const workItemsRouter = router({
         })
         .strict(),
     )
-    .query(({ input, ctx }) =>
-      listWorkItems(getDb(), {
+    .query(({ input, ctx }) => {
+      const receivedSince = parseNeedsYouSince(process.env.NEEDS_YOU_SINCE);
+      return listWorkItems(getDb(), {
         transportId: ctx.activeTransportId,
         statuses: input.statuses ?? ['needs_you', 'review'],
         limit: input.limit ?? 50,
-      }),
-    ),
+        ...(receivedSince ? { receivedSince } : {}),
+      });
+    }),
   recordEvent: mailboxProcedure.input(fieldEventInput).mutation(async ({ input, ctx }) => {
     const result = await recordFieldEvent(getDb(), {
       transportId: ctx.activeTransportId,

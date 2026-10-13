@@ -283,6 +283,15 @@ export function guestSearchPrefetchIdempotencyKey(
   return `hms-job:prefetch-guest:${transportId}:${threadId}:${digest}`;
 }
 
+/** The automatic pane find shares this daily key with confirmation prefetches. */
+export function confirmationPrefetchIdempotencyKey(
+  transportId: string,
+  confirmation: string,
+  day = new Date().toISOString().slice(0, 10),
+): string {
+  return `hms-job:prefetch:${transportId}:${confirmation}:${day}`;
+}
+
 /** One kind-less party prefetch per transport, normalized name and UTC day.
  * Its result can be read by either matching picker.
  */
@@ -1447,7 +1456,7 @@ export async function prefetchHmsConfirmations(
         request: { kind: 'find', confirmation },
         priority: HMS_JOB_PRIORITY_PREFETCH,
         // Same number again on the same day is a no-op, whichever mail carried it.
-        idempotencyKey: `hms-job:prefetch:${run.transportId}:${confirmation}:${dayKey}`,
+        idempotencyKey: confirmationPrefetchIdempotencyKey(run.transportId, confirmation, dayKey),
       },
       db,
     );

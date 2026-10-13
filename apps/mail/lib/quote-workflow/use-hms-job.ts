@@ -50,12 +50,14 @@ function samePartyName(a: string, b: string): boolean {
 function resumedFor(
   request: HmsJobRequest | null,
   prefetch: boolean,
+  confirmation: string | null,
   lastName: string | null,
   partyName: string | null,
   partyKind: 'company' | 'agency' | null,
   arrival: string | null,
   departure: string | null | undefined,
 ): boolean {
+  if (confirmation && !(request?.kind === 'find' && request.confirmation === confirmation)) return false;
   if (lastName && !(request?.kind === 'search_guest' && sameSurname(request.lastName, lastName)))
     return false;
   if (partyName && !(request?.kind === 'party' && samePartyName(request.name, partyName)))
@@ -280,6 +282,7 @@ export function useHmsJob(input: {
           resumedFor(
             found.request,
             found.prefetch,
+            resumeConfirmation,
             resumeLastName,
             resumeName,
             resumePartyKind,
@@ -297,23 +300,27 @@ export function useHmsJob(input: {
         }
         if (!autoStartIfMissing) return;
         const autoRequest: HmsJobRequest | null =
-          resumeKind === 'search_guest' && resumeLastName && resumeArrival
-            ? { kind: 'search_guest', lastName: resumeLastName, arrival: resumeArrival }
-            : null;
+          resumeKind === 'find' && resumeConfirmation
+            ? { kind: 'find', confirmation: resumeConfirmation }
+            : resumeKind === 'search_guest' && resumeLastName && resumeArrival
+              ? { kind: 'search_guest', lastName: resumeLastName, arrival: resumeArrival }
+              : null;
         if (!autoRequest) return;
         const key =
-          autoRequest.kind === 'search_guest'
-            ? [
-                scope ?? '',
-                autoRequest.lastName.trim().replace(/\s+/g, ' ').toLowerCase(),
-                autoRequest.arrival,
-              ].join('\u0000')
-            : [
-                scope ?? '',
-                'party',
-                autoRequest.name.trim().replace(/\s+/g, ' ').toLowerCase(),
-                autoRequest.partyKind ?? '',
-              ].join('\u0000');
+          autoRequest.kind === 'find'
+            ? [scope ?? '', 'find', autoRequest.confirmation].join('\u0000')
+            : autoRequest.kind === 'search_guest'
+              ? [
+                  scope ?? '',
+                  autoRequest.lastName.trim().replace(/\s+/g, ' ').toLowerCase(),
+                  autoRequest.arrival,
+                ].join('\u0000')
+              : [
+                  scope ?? '',
+                  'party',
+                  autoRequest.name.trim().replace(/\s+/g, ' ').toLowerCase(),
+                  autoRequest.partyKind ?? '',
+                ].join('\u0000');
         if (autoStartedKey.current === key) return;
         const startMissing = () => {
           if (!live || generation.current !== mine || autoStartedKey.current === key) return;

@@ -59,6 +59,14 @@ describe('env', () => {
     expect(env.AWS_REGION).toBe('af-south-1');
     expect(env.POP3_MAX_MESSAGES_PER_CYCLE).toBe(500);
     expect(env.CATCHUP_UPLOAD_ENABLED).toBe(false);
+    expect(env.NEEDS_YOU_SINCE).toBeUndefined();
+  });
+
+  it('parses an optional ISO Needs-you cutoff and rejects invalid timestamps', () => {
+    expect(parseEnv(baseEnv({ NEEDS_YOU_SINCE: '2026-10-08T00:00:00.000Z' })).NEEDS_YOU_SINCE).toBe(
+      '2026-10-08T00:00:00.000Z',
+    );
+    expect(() => parseEnv(baseEnv({ NEEDS_YOU_SINCE: '2026-10-08' }))).toThrow(/NEEDS_YOU_SINCE/);
   });
 
   it('keeps optional measurement config server-only and does not reject ordinary mail on malformed JSON', () => {

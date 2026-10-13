@@ -4,6 +4,7 @@ import {
   HmsBatchInputError,
   HmsPartyQueueLimitError,
   hmsJobQueueEnabled,
+  confirmationPrefetchIdempotencyKey,
   guestSearchPrefetchIdempotencyKey,
   queueUserPartyHmsJob,
   queueUserHmsJob,
@@ -53,7 +54,7 @@ const searchGuestInput = z
 // Queued variants: the same lookups as read_tool jobs on the hms lane. The thread anchors the job to mail.
 const threadIdInput = z.string().min(1);
 const queueFindInput = z
-  .object({ threadId: threadIdInput, confirmation, arrival: arrival.optional() })
+  .object({ threadId: threadIdInput, confirmation, arrival: arrival.optional(), autoStart: z.literal(true).optional() })
   .strict();
 const queueSearchGuestInput = z
   .object({
@@ -168,6 +169,9 @@ export const paneStayLookupRouter = router({
       userId: ctx.sessionUser.id,
       threadId: input.threadId,
       request: { kind: 'find', confirmation: input.confirmation, arrival: input.arrival },
+      ...(input.autoStart
+        ? { idempotencyKey: confirmationPrefetchIdempotencyKey(ctx.activeTransportId, input.confirmation) }
+        : {}),
     });
     if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'thread has no inbound mail' });
     return { runId: run.id };

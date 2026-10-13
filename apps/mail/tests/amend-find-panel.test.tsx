@@ -6,6 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import { AmendLookupPanel } from '../components/quote-workflow/amend-lookup-panel';
 import {
+  HmsJobNoticeBanner,
+  HmsJobNoticeProvider,
+  HmsJobRunningChip,
+} from '../components/quote-workflow/hms-job-notices';
+import {
   askedDates,
   AMEND_FIND_COPY,
   amendDiffs,
@@ -135,6 +140,21 @@ const AS_OF = '2026-10-09T08:05:00.000Z';
 
 type FindMock = { findStay: ReturnType<typeof vi.fn>; screenshot?: ReturnType<typeof vi.fn> };
 type SearchMock = { searchGuest: ReturnType<typeof vi.fn> };
+type LookupStatusInput =
+  | { runId: string }
+  | {
+      threadId: string;
+      kind: 'find' | 'search_guest' | 'party' | 'availability';
+      confirmation?: string;
+      lastName?: string;
+      arrival?: string;
+      departure?: string | null;
+    };
+type LookupTrpcOptions = {
+  autoStartFind?: boolean;
+  readback?: HmsJobView | null;
+  status?: (input: LookupStatusInput) => Promise<HmsJobView | null>;
+};
 
 /**
  * The paneStayLookup job routes and the capability route, as the panel reads them off the tRPC client. Each queue call
@@ -145,6 +165,7 @@ function lookupTrpc(
   findStay: ReturnType<typeof vi.fn>,
   shot: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(NO_SHOT),
   searchGuest: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [], screenshots: [], runId: null }),
+  options: LookupTrpcOptions = {},
 ) {
   const jobs = new Map<string, HmsJobView>();
   let issued = 0;
@@ -165,23 +186,48 @@ function lookupTrpc(
     });
     return { runId };
   };
+  const queueFind = vi.fn(async (input: FindStayInput & { threadId: string; autoStart?: true }) => {
+    void input.threadId;
+    const request = input.arrival
+      ? { confirmation: input.confirmation, arrival: input.arrival }
+      : { confirmation: input.confirmation };
+    if (input.autoStart && !options.autoStartFind) return { runId: null };
+    return finish({ kind: 'find', ...request }, await findStay(request));
+  });
+  const jobStatus = vi.fn(async (input: LookupStatusInput) => {
+    if (options.status) return options.status(input);
+    if ('runId' in input) {
+      return jobs.get(input.runId) ?? (options.readback?.runId === input.runId ? options.readback : null);
+    }
+    const resumed = options.readback;
+    if (!resumed?.request || resumed.request.kind !== input.kind) return null;
+    if (input.kind === 'find' && 'confirmation' in resumed.request && input.confirmation !== resumed.request.confirmation) {
+      return null;
+    }
+    if (input.kind === 'search_guest' && 'lastName' in resumed.request) {
+      if (input.lastName && resumed.request.lastName.trim().toLowerCase() !== input.lastName.trim().toLowerCase()) {
+        return null;
+      }
+      if (input.arrival && resumed.request.arrival !== input.arrival) return null;
+      if ('departure' in input && (resumed.request.departure ?? null) !== input.departure) return null;
+    }
+    return resumed;
+  });
   return {
     paneStayLookup: {
-      queueFind: {
-        mutate: async ({ threadId: _threadId, ...input }: FindStayInput & { threadId: string }) =>
-          finish({ kind: 'find', ...input }, await findStay(input)),
-      },
+      queueFind: { mutate: queueFind },
       queueSearchGuest: {
-        mutate: async ({ threadId: _threadId, ...input }: GuestSearchInput & { threadId: string }) =>
-          finish({ kind: 'search_guest', ...input }, await searchGuest(input)),
+        mutate: async ({ threadId, ...input }: GuestSearchInput & { threadId: string }) => {
+          void threadId;
+          return finish({ kind: 'search_guest', ...input }, await searchGuest(input));
+        },
       },
-      jobStatus: {
-        query: async (input: { runId: string } | { threadId: string }) =>
-          'runId' in input ? (jobs.get(input.runId) ?? null) : null,
-      },
+      jobStatus: { query: jobStatus },
       screenshot: { query: shot },
     },
     brain: { getCapabilities: { query: async () => ({ paneSave: capabilities.paneSave }) } },
+    jobStatus,
+    queueFind,
   };
 }
 
@@ -257,14 +303,22 @@ const ROW_CANCELLED = {
   departure: null,
 };
 
-/** Staff press the find button. The panel never looks up HMS on its own. */
-function pressFind() {
-  fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
+/** Staff can retry a lookup after its persisted result has failed. */
+async function pressFind() {
+  const button = screen.getByRole('button', { name: 'Find this booking in HMS' }) as HTMLButtonElement;
+  await waitFor(() => expect(button.disabled).toBe(false));
+  fireEvent.click(button);
+}
+
+async function pressSearch() {
+  const button = screen.getByRole('button', { name: 'Search HMS' }) as HTMLButtonElement;
+  await waitFor(() => expect(button.disabled).toBe(false));
+  fireEvent.click(button);
 }
 
 /** The HMS column shows its Status row once HMS holds the booking. */
 async function expectFoundBooking() {
-  await waitFor(() => expect(document.querySelector('[data-field="status"]')).not.toBeNull());
+  await waitFor(() => expect(screen.queryByTestId('amend-hms-result-card')).not.toBeNull());
 }
 
 function cancelRun(overrides: Partial<CancelRun> = {}): CancelRun {
@@ -315,7 +369,7 @@ describe('AmendLookupPanel', () => {
     render(<AmendLookupPanel session={sessionWith(ask)} trpc={lookupTrpc(findStay)} />);
     expect(screen.getByText('11 Oct 2026')).toBeTruthy();
     expect(screen.getByText('15 Oct 2026')).toBeTruthy();
-    pressFind();
+    await pressFind();
     await waitFor(() => expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' }));
     await waitFor(() => expect(screen.getByText('Guest wants: 11 Oct 2026')).toBeTruthy());
     expect(screen.getByText('Guest wants: 15 Oct 2026')).toBeTruthy();
@@ -342,7 +396,7 @@ describe('AmendLookupPanel', () => {
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     expect(screen.queryByTestId('booked-dates-missing')).toBeNull();
-    pressFind();
+    await pressFind();
     await waitFor(() => expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' }));
   });
 
@@ -357,7 +411,7 @@ describe('AmendLookupPanel', () => {
     };
     render(<AmendLookupPanel session={sessionWith(requestedOnly)} trpc={lookupTrpc(findStay)} />);
     expect(screen.getByText(AMEND_FIND_COPY.bookedMissing)).toBeTruthy();
-    pressFind();
+    await pressFind();
     await waitFor(() => expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION }));
     expect(findStay.mock.calls[0]?.[0]).not.toHaveProperty('arrival');
     await expectFoundBooking();
@@ -400,31 +454,120 @@ describe('AmendLookupPanel', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('never looks up HMS on its own: staff press the find button, and the wait is said up front', async () => {
-    const findStay = vi.fn(NEVER_SETTLES);
-    const session = sessionWith(AMEND);
-    const { rerender } = render(<AmendLookupPanel session={session} trpc={lookupTrpc(findStay)} />);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  it('auto-queues one confirmation lookup when there is no prefetched job', async () => {
+    const findStay = vi.fn().mockResolvedValue(found());
+    const trpc = lookupTrpc(findStay, undefined, undefined, { autoStartFind: true });
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
+
+    await expectFoundBooking();
+    expect(trpc.queueFind).toHaveBeenCalledWith({
+      threadId: THREAD,
+      confirmation: CONFIRMATION,
+      autoStart: true,
+    });
+    expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION });
+    expect(screen.queryByRole('button', { name: 'Find this booking in HMS' })).toBeNull();
+    expect(screen.queryByText('Takes about 1–2 minutes. Quotes wait while it runs.')).toBeNull();
+  });
+
+  it('shows a completed prefetch on open and does not queue another lookup', async () => {
+    const prefetched: HmsJobView = {
+      runId: 'prefetch-find-1',
+      request: { kind: 'find', confirmation: CONFIRMATION },
+      prefetch: true,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: AS_OF,
+      result: { ...found(), kind: 'find', asOf: AS_OF },
+    };
+    const findStay = vi.fn();
+    const trpc = lookupTrpc(findStay, undefined, undefined, { readback: prefetched });
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
+
+    expect(await screen.findByTestId('amend-hms-result-card')).toBeTruthy();
+    expect(trpc.jobStatus).toHaveBeenCalledWith({
+      threadId: THREAD,
+      kind: 'find',
+      confirmation: CONFIRMATION,
+    });
+    expect(trpc.queueFind).not.toHaveBeenCalled();
     expect(findStay).not.toHaveBeenCalled();
-    expect(screen.getByText('Takes about 1–2 minutes. Quotes wait while it runs.')).toBeTruthy();
-    pressFind();
-    await waitFor(() => expect(findStay).toHaveBeenCalledTimes(1));
-    expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
-    expect(screen.getByText('Nava is looking up the booking in HMS…')).toBeTruthy();
-    rerender(<AmendLookupPanel session={session} trpc={lookupTrpc(findStay)} />);
-    expect(findStay).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a running prefetch to the HMS notice system and shows the elapsed status', async () => {
+    const pending: HmsJobView = {
+      runId: 'prefetch-find-running',
+      request: { kind: 'find', confirmation: CONFIRMATION },
+      prefetch: true,
+      status: 'running',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: null,
+      createdAt: new Date(Date.now() - 65_000).toISOString(),
+      result: null,
+    };
+    const complete: HmsJobView = {
+      ...pending,
+      status: 'done',
+      asOf: AS_OF,
+      result: { ...found(), kind: 'find', asOf: AS_OF },
+    };
+    const poll = { resolve: null as ((view: HmsJobView | null) => void) | null };
+    const status = vi.fn(async (input: LookupStatusInput) => {
+      if ('runId' in input) {
+        return new Promise<HmsJobView | null>((resolve) => {
+          poll.resolve = resolve;
+        });
+      }
+      return input.kind === 'find' && input.confirmation === CONFIRMATION ? pending : null;
+    });
+    const trpc = lookupTrpc(vi.fn(), undefined, undefined, { status });
+    render(
+      <HmsJobNoticeProvider emailKey="mail-1" emailSubject="Change booking">
+        <HmsJobRunningChip />
+        <HmsJobNoticeBanner />
+        <AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />
+      </HmsJobNoticeProvider>,
+    );
+
+    const progress = await screen.findByTestId('hms-job-status');
+    expect(progress.textContent).toContain('Looking up in HMS — you can keep working');
+    expect(progress.textContent).toContain('elapsed');
+    expect((await screen.findByTestId('hms-running-count')).textContent).toBe('HMS: 1 pending');
+    expect(trpc.queueFind).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(poll.resolve).toBeTypeOf('function'));
+    poll.resolve?.(complete);
+    const banner = await screen.findByTestId('hms-job-notice-banner');
+    expect(banner.textContent).toContain('HMS lookup finished');
+    expect(await screen.findByTestId('amend-hms-result-card')).toBeTruthy();
   });
 
   it('shows the booking HMS returns and highlights the field that differs', async () => {
     const findStay = vi.fn().mockResolvedValue(found({ departure: '2026-10-13' }));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    pressFind();
+    await pressFind();
     await waitFor(() => expect(screen.getByText('Guest wants: 14 Oct 2026')).toBeTruthy());
     expect(screen.queryByText('Matched on')).toBeNull();
     expect(screen.getAllByText(/^Guest wants:/)).toHaveLength(1);
+    expect(screen.getByTestId('amend-hms-result-card').textContent).toContain(
+      `Booking found in HMS: ${CONFIRMATION} · Thabo Mokoena · 12 Oct 2026–13 Oct 2026 · Deluxe King`,
+    );
+    expect(screen.getByTestId('amend-hms-result-card').textContent).toContain('Confirmed');
     expect(document.querySelector('[data-field="departure"]')?.getAttribute('data-differs')).toBe('true');
     expect(document.querySelector('[data-field="arrival"]')?.getAttribute('data-differs')).toBe('false');
     expect(document.querySelector('[data-field="guest"]')?.getAttribute('data-differs')).toBe('false');
+  });
+
+  it('labels a cancelled stay when HMS returns it', async () => {
+    const findStay = vi.fn().mockResolvedValue(found({ status: 'Cancelled' }));
+    render(<AmendLookupPanel session={sessionWith(CANCEL)} trpc={lookupTrpc(findStay)} />);
+    await pressFind();
+    await expectFoundBooking();
+    expect(screen.getByTestId('amend-hms-result-card').textContent).toContain('Cancelled');
   });
 
   it('says what the guest mentioned and when HMS holds the booking, when the arrivals differ', async () => {
@@ -435,7 +578,7 @@ describe('AmendLookupPanel', () => {
       hmsArrival: '2026-10-13',
     });
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    pressFind();
+    await pressFind();
     await waitFor(() =>
       expect(
         screen.getByText('The guest mentioned 12 Oct 2026; the booking in HMS arrives 13 Oct 2026.'),
@@ -446,7 +589,7 @@ describe('AmendLookupPanel', () => {
   it('shows rate plan, meal plan and grand total when HMS shows them', async () => {
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    pressFind();
+    await pressFind();
     await expectFoundBooking();
     expect(screen.getByText('Rate plan')).toBeTruthy();
     expect(screen.getByText('BAR')).toBeTruthy();
@@ -459,7 +602,7 @@ describe('AmendLookupPanel', () => {
   it('hides rate plan, meal plan and grand total when HMS does not show them', async () => {
     const findStay = vi.fn().mockResolvedValue(found({ ratePlan: null, mealPlan: null, grandTotal: null }));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    pressFind();
+    await pressFind();
     await expectFoundBooking();
     expect(screen.queryByText('Rate plan')).toBeNull();
     expect(screen.queryByText('Meal plan')).toBeNull();
@@ -470,7 +613,7 @@ describe('AmendLookupPanel', () => {
     const findStay = vi.fn().mockResolvedValue(found());
     const shot = vi.fn().mockResolvedValue({ status: 'ok', dataUrl: SHOT_PNG });
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay, shot)} />);
-    pressFind();
+    await pressFind();
     await waitFor(() => expect(shot).toHaveBeenCalledWith({ runId: RUN_ID, name: 'record.png' }));
     fireEvent.click(await screen.findByRole('button', { name: 'See the booking in HMS' }));
     const dialog = screen.getByRole('dialog', { name: 'See the booking in HMS' });
@@ -482,23 +625,55 @@ describe('AmendLookupPanel', () => {
   it('explains a booking number HMS does not know, with the next step', async () => {
     const findStay = vi.fn().mockResolvedValue(NOT_FOUND);
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    pressFind();
+    await pressFind();
     await waitFor(() =>
       expect(
-        screen.getByText(
-          'No booking with that number in HMS. Check the number in the email or find the booking by guest name below.',
-        ),
+        screen.getByText(`Not found in HMS by confirmation number ${CONFIRMATION}. Use the surname and arrival search below.`),
       ).toBeTruthy(),
     );
+    expect(screen.queryByRole('button', { name: 'Find this booking in HMS' })).toBeNull();
+    expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
   });
 
-  it('says HMS matched more than one booking', async () => {
+  it('names the booking selected from search when that confirmation is not found', async () => {
+    const findStay = vi.fn().mockResolvedValueOnce(NOT_FOUND).mockResolvedValueOnce(NOT_FOUND);
+    const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA], screenshots: [], runId: null });
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay, undefined, search)} />);
+
+    await pressFind();
+    expect(
+      await screen.findByText(
+        `Not found in HMS by confirmation number ${CONFIRMATION}. Use the surname and arrival search below.`,
+      ),
+    ).toBeTruthy();
+    await pressSearch();
+    const list = await screen.findByRole('list', { name: 'Bookings found in HMS' });
+    fireEvent.click(within(list).getByRole('button', { name: 'Show booking in HMS' }));
+
+    const note = await screen.findByText(
+      `Not found in HMS by confirmation number ${ROW_MOKOENA.confirmation}. Use the surname and arrival search below.`,
+    );
+    expect(note.hasAttribute('data-pii')).toBe(true);
+    expect(
+      screen.queryByText(
+        `Not found in HMS by confirmation number ${CONFIRMATION}. Use the surname and arrival search below.`,
+      ),
+    ).toBeNull();
+    expect(findStay).toHaveBeenNthCalledWith(2, {
+      confirmation: ROW_MOKOENA.confirmation,
+      arrival: ROW_MOKOENA.arrival,
+    });
+  });
+
+  it('opens the manual surname and arrival search when the confirmation is ambiguous', async () => {
     const findStay = vi.fn().mockResolvedValue(AMBIGUOUS);
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    pressFind();
+    await pressFind();
     await waitFor(() =>
       expect(screen.getByText('HMS matched more than one booking for that number. Check HMS directly.')).toBeTruthy(),
     );
+    expect(screen.queryByRole('button', { name: 'Find this booking in HMS' })).toBeNull();
+    expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
   });
 
   it('does not look up an agent reference HMS cannot take: the number is named and the find stays disabled', () => {
@@ -516,7 +691,7 @@ describe('AmendLookupPanel', () => {
     ).toBeTruthy();
     expect(screen.getByText('No HMS booking number found in the email.')).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Find this booking in HMS' }) as HTMLButtonElement).disabled).toBe(true);
-    pressFind();
+    fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
     expect(findStay).not.toHaveBeenCalled();
   });
 
@@ -541,7 +716,7 @@ describe('AmendLookupPanel', () => {
   ])('shows the copy for a %s result', async (outcome, message) => {
     const findStay = vi.fn().mockResolvedValue(refusal(outcome));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    pressFind();
+    await pressFind();
     await waitFor(() => expect(screen.getByText(message)).toBeTruthy());
   });
 
@@ -550,7 +725,7 @@ describe('AmendLookupPanel', () => {
       .fn()
       .mockRejectedValue(new Error('[{"code":"invalid_string","path":["confirmation"]}] socket hang up'));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    pressFind();
+    await pressFind();
     await waitFor(() => expect(screen.getByText("Nava couldn't look this up. Search HMS yourself.")).toBeTruthy());
     expect(screen.queryByText(/invalid_string|socket hang up/)).toBeNull();
   });
@@ -561,20 +736,18 @@ describe('AmendLookupPanel', () => {
       .mockResolvedValueOnce(refusal('execution_failure'))
       .mockResolvedValueOnce(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    pressFind();
+    await pressFind();
     await screen.findByText('Nava could not read the HMS result. Try again in a minute.');
-    fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try the lookup again' }));
     await expectFoundBooking();
     expect(findStay).toHaveBeenCalledTimes(2);
   });
 
   it('shows a queued job as queued while its status reads fail, never as idle', async () => {
     const trpc = lookupTrpc(vi.fn().mockResolvedValue(found()));
-    trpc.paneStayLookup.jobStatus.query = async () => {
-      throw new Error('status read failed');
-    };
+    trpc.jobStatus.mockRejectedValue(new Error('status read failed'));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
-    pressFind();
+    await pressFind();
     await waitFor(() =>
       expect(screen.getByTestId('hms-job-status').getAttribute('data-state')).toBe('queued'),
     );
@@ -608,8 +781,8 @@ function syncTrpc(
     .fn()
     .mockResolvedValue({ outcome: 'no_match', results: [], truncated: false }),
 ) {
-  const jobStatus = vi.fn(async (_input: object) => null);
-  const queueParty = vi.fn(async (_input: object) => ({ runId: null }));
+  const jobStatus = vi.fn<(input: object) => Promise<null>>(async () => null);
+  const queueParty = vi.fn(async () => ({ runId: null }));
   return {
     jobStatus,
     queueParty,
@@ -634,7 +807,7 @@ describe('AmendLookupPanel with the job queue off', () => {
     const findStay = vi.fn().mockResolvedValue(found({ departure: '2026-10-13' }));
     const { trpc, jobStatus } = syncTrpc(findStay);
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
-    pressFind();
+    await pressFind();
     await waitFor(() => expect(screen.getByText('Guest wants: 14 Oct 2026')).toBeTruthy());
     expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
     expect(jobStatus.mock.calls.some(([input]) => 'runId' in input)).toBe(false);
@@ -645,15 +818,31 @@ describe('AmendLookupPanel with the job queue off', () => {
     const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA], screenshots: [], runId: null });
     const { trpc } = syncTrpc(vi.fn(), search);
     render(<AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: null })} trpc={trpc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search HMS' }));
+    await pressSearch();
     await screen.findByRole('list', { name: 'Bookings found in HMS' });
     expect(search).toHaveBeenCalledWith({ lastName: 'Mokoena', arrival: '2026-10-12', departure: '2026-10-14' });
+  });
+
+  it('does not run an automatic find inline when the queue is off, while a manual find stays synchronous', async () => {
+    const findStay = vi.fn().mockResolvedValue(found());
+    const { trpc } = syncTrpc(findStay);
+    const transport = hmsJobTransport(amendFindClientFromTrpc(trpc), THREAD);
+    expect(transport).not.toBeNull();
+
+    await expect(
+      transport!.queue({ kind: 'find', confirmation: CONFIRMATION }, { autoStart: true }),
+    ).resolves.toEqual({ runId: null });
+    expect(findStay).not.toHaveBeenCalled();
+
+    const started = await transport!.queue({ kind: 'find', confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    expect(started.view).toMatchObject({ status: 'done', outcome: 'found' });
   });
 
   it('reads a failed synchronous call as the lookup failure, as before jobs', async () => {
     const { trpc } = syncTrpc(vi.fn().mockRejectedValue(new Error('socket hang up')));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
-    pressFind();
+    await pressFind();
     await waitFor(() => expect(screen.getByText("Nava couldn't look this up. Search HMS yourself.")).toBeTruthy());
   });
 });
@@ -695,18 +884,46 @@ describe('AmendLookupPanel guest-name search', () => {
   const SEARCH_BUTTON = 'Search HMS';
   const NO_ROWS_OK = { outcome: 'ok', rows: [], screenshots: [], runId: null };
 
-  it('prefills the name search from the email, and opens it when the email has no booking number', () => {
+  it('prefills the name search from the email, and opens it when the email has no booking number', async () => {
     render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn())} />);
     expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
     expect((screen.getByLabelText('Guest surname') as HTMLInputElement).value).toBe('Mokoena');
     expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('2026-10-12');
     expect((screen.getByLabelText('Departure (optional)') as HTMLInputElement).value).toBe('2026-10-14');
-    expect((screen.getByRole('button', { name: SEARCH_BUTTON }) as HTMLButtonElement).disabled).toBe(false);
+    await waitFor(() => expect((screen.getByRole('button', { name: SEARCH_BUTTON }) as HTMLButtonElement).disabled).toBe(false));
   });
 
   it('keeps the name search closed while the email has a usable booking number', () => {
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(vi.fn())} />);
     expect(screen.queryByTestId('amend-guest-search')).toBeNull();
+  });
+
+  it('resumes only the matching surname and arrival guest prefetch', async () => {
+    const prefetched: HmsJobView = {
+      runId: 'prefetch-guest-1',
+      request: { kind: 'search_guest', lastName: 'Mokoena', arrival: '2026-10-12' },
+      prefetch: true,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: AS_OF,
+      result: { outcome: 'ok', rows: [ROW_MOKOENA], screenshots: [], runId: null },
+    };
+    const findStay = vi.fn();
+    const trpc = lookupTrpc(findStay, undefined, undefined, { readback: prefetched });
+    render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={trpc} />);
+
+    expect(await screen.findByRole('list', { name: 'Bookings found in HMS' })).toBeTruthy();
+    expect(trpc.jobStatus).toHaveBeenCalledWith({
+      threadId: THREAD,
+      kind: 'search_guest',
+      lastName: 'Mokoena',
+      arrival: '2026-10-12',
+      departure: null,
+    });
+    expect(findStay).not.toHaveBeenCalled();
+    expect(trpc.queueFind).not.toHaveBeenCalled();
   });
 
   it('searches by surname and arrival, lists the bookings, and a click runs the find for that booking', async () => {
@@ -718,32 +935,47 @@ describe('AmendLookupPanel guest-name search', () => {
       runId: null,
     });
     render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(findStay, undefined, search)} />);
-    fireEvent.click(screen.getByRole('button', { name: SEARCH_BUTTON }));
+    await pressSearch();
     await waitFor(() =>
       expect(search).toHaveBeenCalledWith({ lastName: 'Mokoena', arrival: '2026-10-12', departure: '2026-10-14' }),
     );
     const list = await screen.findByRole('list', { name: 'Bookings found in HMS' });
-    const items = within(list).getAllByRole('button') as HTMLButtonElement[];
+    const items = within(list).getAllByRole('listitem');
     expect(items).toHaveLength(2);
     expect(items[0]?.textContent).toContain('46184891-1');
     expect(items[0]?.textContent).toContain('Thabo Mokoena');
-    expect(items[0]?.textContent).toContain('Reserved');
+    expect(items[0]?.textContent).toContain('Confirmed');
     expect(items[0]?.textContent).toContain('12 Oct 2026 to 13 Oct 2026');
     expect(items[1]?.textContent).toContain('Cancelled');
     expect(items[1]?.textContent).toContain('12 Oct 2026 to Not shown');
-    fireEvent.click(items[0] as HTMLButtonElement);
+    expect(within(list).getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(2);
+    fireEvent.click(within(items[0] as HTMLElement).getByRole('button', { name: 'Show booking in HMS' }));
     await expectFoundBooking();
     expect(findStay).toHaveBeenCalledWith({ confirmation: '46184891-1', arrival: '2026-10-12' });
-    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
+  });
+
+  it('caps an ambiguous candidate list at five rows with one copy action per booking', async () => {
+    const rows = Array.from({ length: 8 }, (_, index) => ({
+      ...ROW_MOKOENA,
+      confirmation: `4618489${index}-1`,
+    }));
+    const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows, screenshots: [], runId: null });
+    render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn(), undefined, search)} />);
+    await pressSearch();
+    const list = await screen.findByRole('list', { name: 'Bookings found in HMS' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(5);
+    expect(within(list).getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(5);
+    expect(screen.getByText('Showing the first 5 matches. Add the departure date to narrow the search.')).toBeTruthy();
   });
 
   it('says no booking matched the surname and arrival, and says what to check', async () => {
     const search = vi.fn().mockResolvedValue(NO_ROWS_OK);
     render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn(), undefined, search)} />);
-    fireEvent.click(screen.getByRole('button', { name: SEARCH_BUTTON }));
+    await pressSearch();
     await waitFor(() =>
       expect(
-        screen.getByText('No booking for Mokoena arriving 12 Oct 2026 in HMS. Check the spelling or dates.'),
+        screen.getByText('Not found in HMS by surname Mokoena and arrival 12 Oct 2026.'),
       ).toBeTruthy(),
     );
     expect(screen.queryByRole('list', { name: 'Bookings found in HMS' })).toBeNull();
@@ -752,7 +984,7 @@ describe('AmendLookupPanel guest-name search', () => {
   it('says to add the departure date when the search is capped, and lists nothing from the partial read', async () => {
     const search = vi.fn().mockResolvedValue({ outcome: 'ambiguous_capped', rows: [], screenshots: [], runId: null });
     render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn(), undefined, search)} />);
-    fireEvent.click(screen.getByRole('button', { name: SEARCH_BUTTON }));
+    await pressSearch();
     await waitFor(() => expect(screen.getByText('Many matches — add the departure date.')).toBeTruthy());
     expect(screen.queryByRole('list', { name: 'Bookings found in HMS' })).toBeNull();
   });
@@ -760,12 +992,12 @@ describe('AmendLookupPanel guest-name search', () => {
   it('maps a refused search to plain copy, and checks the dates before any call', async () => {
     const search = vi.fn().mockResolvedValue({ outcome: 'refused_lock_busy', rows: [], screenshots: [], runId: null });
     render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn(), undefined, search)} />);
-    fireEvent.click(screen.getByRole('button', { name: SEARCH_BUTTON }));
+    await pressSearch();
     await waitFor(() =>
       expect(screen.getByText('HMS is busy with another quote or lookup. Try again in a minute.')).toBeTruthy(),
     );
     fireEvent.change(screen.getByLabelText('Departure (optional)'), { target: { value: '2026-10-11' } });
-    fireEvent.click(screen.getByRole('button', { name: SEARCH_BUTTON }));
+    await pressSearch();
     await waitFor(() => expect(screen.getByText('Check the surname and dates, then search again.')).toBeTruthy());
     expect(search).toHaveBeenCalledTimes(1);
   });
@@ -784,7 +1016,7 @@ describe('AmendLookupPanel guest-name search', () => {
           `The number in the email (${bare}) looks like the agent's own reference, not an HMS booking number. Find the booking by guest name below.`,
         ),
       ).toBeTruthy();
-      pressFind();
+      fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
       expect(findStay).not.toHaveBeenCalled();
     },
   );
@@ -794,7 +1026,7 @@ describe('AmendLookupPanel guest-name search', () => {
     render(
       <AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: '64318608-1' })} trpc={lookupTrpc(findStay)} />,
     );
-    pressFind();
+    await pressFind();
     await expectFoundBooking();
     expect(findStay).toHaveBeenCalledWith({ confirmation: '64318608-1', arrival: '2026-10-12' });
     expect(screen.queryByText('Matched on')).toBeNull();
@@ -802,7 +1034,7 @@ describe('AmendLookupPanel guest-name search', () => {
     expect(screen.queryByTestId('amend-guest-search')).toBeNull();
   });
 
-  it('shows one handoff row, Copy link and Copy confirmation, with Open HMS beside them and no link target', async () => {
+  it('shows one confirmation-only copy action after a found result', async () => {
     const HMS_LANDING = 'https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY';
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
@@ -814,13 +1046,11 @@ describe('AmendLookupPanel guest-name search', () => {
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     expect(screen.getAllByRole('button', { name: 'Copy link' })).toHaveLength(1);
     expect(screen.getAllByRole('link', { name: 'Open HMS' })).toHaveLength(1);
-    pressFind();
+    await pressFind();
     await expectFoundBooking();
-    const links = screen.getAllByRole('link', { name: 'Open HMS' });
-    expect(links).toHaveLength(1);
-    expect(links[0]?.getAttribute('href')).toBe(HMS_LANDING);
-    expect(links[0]?.hasAttribute('target')).toBe(false);
-    expect(screen.getAllByRole('button', { name: 'Copy link' })).toHaveLength(1);
+    expect(screen.queryByRole('link', { name: 'Open HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy for HMS' })).toBeNull();
     expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
   });
 
@@ -828,7 +1058,7 @@ describe('AmendLookupPanel guest-name search', () => {
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     expect(screen.getByRole('button', { name: 'Find this booking in HMS' })).toBeTruthy();
-    pressFind();
+    await pressFind();
     await expectFoundBooking();
     expect(screen.queryByRole('button', { name: 'Find this booking in HMS' })).toBeNull();
     expect(screen.queryByText('Takes about 1–2 minutes. Quotes wait while it runs.')).toBeNull();
@@ -840,7 +1070,7 @@ describe('AmendLookupPanel guest-name search', () => {
       .fn()
       .mockResolvedValue(found({ arrival: '2026-11-01', departure: '2026-11-06' }));
     render(<AmendLookupPanel session={sessionWith(amend)} trpc={lookupTrpc(findStay)} />);
-    pressFind();
+    await pressFind();
     await expectFoundBooking();
     expect(screen.getByText('31 Oct 2026')).toBeTruthy();
     expect(screen.getByText('7 Nov 2026')).toBeTruthy();
@@ -939,7 +1169,7 @@ describe('guest-name search helpers', () => {
 
   it('names the surname and arrival in the no-match copy', () => {
     expect(noSearchMatchCopy('Mokoena', '2026-10-12')).toBe(
-      'No booking for Mokoena arriving 12 Oct 2026 in HMS. Check the spelling or dates.',
+      'Not found in HMS by surname Mokoena and arrival 12 Oct 2026.',
     );
   });
 
@@ -965,7 +1195,7 @@ type CancelMocks = {
 };
 
 /** Renders a cancel email whose booking HMS finds, with the paneStayCancel routes mocked. */
-function renderCancel(mocks: CancelMocks) {
+async function renderCancel(mocks: CancelMocks) {
   const findStay = vi.fn().mockResolvedValue(found({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []));
   const preview = mocks.preview ?? vi.fn();
   const commit = mocks.commit ?? vi.fn();
@@ -979,7 +1209,7 @@ function renderCancel(mocks: CancelMocks) {
     },
   };
   render(<AmendLookupPanel session={sessionWith(CANCEL)} trpc={trpc} />);
-  pressFind();
+  await pressFind();
   return { preview, commit, shot, findStay };
 }
 
@@ -988,7 +1218,7 @@ describe('AmendLookupPanel marks guest details for the preview gate (H6b)', () =
     const findStay = vi.fn().mockResolvedValue(found({ lastName: 'Mokoena-Dube' }));
     const { container } = render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     expect(screen.getByText('Mokoena').hasAttribute('data-pii')).toBe(true);
-    pressFind();
+    await pressFind();
     await expectFoundBooking();
     expect(unmaskedPii(container, [CONFIRMATION, 'Mokoena', 'Thabo'])).toEqual([]);
   });
@@ -997,14 +1227,14 @@ describe('AmendLookupPanel marks guest details for the preview gate (H6b)', () =
     const noNumber: QuoteAmendment = { ...AMEND, confirmationNumber: null };
     const rows = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA, ROW_CANCELLED], screenshots: [], runId: null });
     const listed = render(<AmendLookupPanel session={sessionWith(noNumber)} trpc={lookupTrpc(vi.fn(), undefined, rows)} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search HMS' }));
+    await pressSearch();
     await screen.findByRole('list', { name: 'Bookings found in HMS' });
     expect(unmaskedPii(listed.container, ['Mokoena', 'Thabo', 'Lerato', '46184891-1', '46184892-1'])).toEqual([]);
     listed.unmount();
 
     const none = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [], screenshots: [], runId: null });
     const empty = render(<AmendLookupPanel session={sessionWith(noNumber)} trpc={lookupTrpc(vi.fn(), undefined, none)} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search HMS' }));
+    await pressSearch();
     await screen.findByText(noSearchMatchCopy('Mokoena', '2026-10-12'));
     expect(unmaskedPii(empty.container, ['Mokoena'])).toEqual([]);
     empty.unmount();
@@ -1017,7 +1247,7 @@ describe('AmendLookupPanel marks guest details for the preview gate (H6b)', () =
   });
 
   it('marks the cancel lines and hides the preview while cancel writes are off', async () => {
-    renderCancel({});
+    await renderCancel({});
     await screen.findByText(/^Cancelling from here is switched off/);
     expect(unmaskedPii(document.body, [CONFIRMATION, 'Mokoena', 'Thabo'])).toEqual([]);
     expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
@@ -1027,7 +1257,7 @@ describe('AmendLookupPanel marks guest details for the preview gate (H6b)', () =
     capabilities.paneSave = true;
     const preview = vi.fn();
     const commit = vi.fn();
-    renderCancel({ preview, commit });
+    await renderCancel({ preview, commit });
     await screen.findByText(/^Cancelling from here is switched off/);
     expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
     expect(screen.queryByText('Coming soon')).toBeNull();
@@ -1040,7 +1270,7 @@ describe('AmendLookupPanel marks guest details for the preview gate (H6b)', () =
 // Cancellation is disabled with "Coming soon" while writes are off (U-3). These cases assert that state.
 describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
   it('says cancelling is switched off and hides its preview control when the pane save flag is off', async () => {
-    const { preview } = renderCancel({});
+    const { preview } = await renderCancel({});
     await screen.findByText(/^Cancelling from here is switched off/);
     expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
     expect(screen.queryByText('Coming soon')).toBeNull();
@@ -1055,7 +1285,7 @@ describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
   it('keeps the look-up footer and a disabled preview on cancel mail even when the pane save flag is on', async () => {
     capabilities.paneSave = true;
     const preview = vi.fn();
-    renderCancel({ preview });
+    await renderCancel({ preview });
     await screen.findByText('Nava only looks the booking up. Make the change in HMS yourself.');
     expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
     expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
@@ -1064,7 +1294,7 @@ describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
   });
 
   it('keeps the look-up footer on cancel mail when the pane save flag is off', async () => {
-    renderCancel({});
+    await renderCancel({});
     await screen.findByText(
       'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
     );
@@ -1089,7 +1319,7 @@ describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
     const commit = vi.fn().mockResolvedValue(
       cancelRun({ outcome: 'cancelled', statusBefore: 'Reserved', statusAfter: 'Cancelled', screenshots: ['readback.png'], runId: RUN_ID }),
     );
-    renderCancel({ preview, commit, shot });
+    await renderCancel({ preview, commit, shot });
 
     fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
     expect(await screen.findByText(`HMS says: ${PENALTY}`)).toBeTruthy();
@@ -1139,8 +1369,11 @@ describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
       },
     };
     render(<AmendLookupPanel session={sessionWith({ ...CANCEL, confirmationNumber: null })} trpc={trpc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Search HMS' }));
-    const bookings = () => within(screen.getByRole('list', { name: 'Bookings found in HMS' })).getAllByRole('button');
+    await pressSearch();
+    const bookings = () =>
+      within(screen.getByRole('list', { name: 'Bookings found in HMS' })).getAllByRole('button', {
+        name: 'Show booking in HMS',
+      });
     await screen.findByRole('list', { name: 'Bookings found in HMS' });
     fireEvent.click(bookings()[0] as HTMLButtonElement);
     fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
@@ -1156,7 +1389,7 @@ describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
   it('says so when HMS shows no cancellation fee', async () => {
     capabilities.paneSave = true;
     const preview = vi.fn().mockResolvedValue({ ...PREVIEW_OK, penaltyText: null });
-    renderCancel({ preview });
+    await renderCancel({ preview });
     fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
     fireEvent.change(await screen.findByLabelText('Cancellation reason'), {
       target: { value: 'Duplicate Booking' },
@@ -1173,7 +1406,7 @@ describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
     capabilities.paneSave = true;
     const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
     const commit = vi.fn().mockResolvedValue(cancelRun({ outcome: 'cancel_unconfirmed' }));
-    renderCancel({ preview, commit });
+    await renderCancel({ preview, commit });
     fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
     fireEvent.change(await screen.findByLabelText('Cancellation reason'), {
       target: { value: 'Duplicate Booking' },
@@ -1189,7 +1422,7 @@ describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
     const preview = vi.fn().mockResolvedValue(
       cancelRun({ outcome: 'already_cancelled', statusBefore: 'Cancelled', statusAfter: 'Cancelled' }),
     );
-    renderCancel({ preview });
+    await renderCancel({ preview });
     fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
     expect(await screen.findByText('This booking is already cancelled in HMS.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
@@ -1207,7 +1440,7 @@ describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
   ])('explains the %s preview result and keeps the preview button', async (outcome, message) => {
     capabilities.paneSave = true;
     const preview = vi.fn().mockResolvedValue(cancelRun({ outcome }));
-    renderCancel({ preview });
+    await renderCancel({ preview });
     fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
     expect(await screen.findByText(message)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
@@ -1220,7 +1453,7 @@ describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
       capabilities.paneSave = true;
       const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
       const commit = vi.fn().mockResolvedValue(cancelRun({ outcome }));
-      renderCancel({ preview, commit });
+      await renderCancel({ preview, commit });
       fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
       fireEvent.change(await screen.findByLabelText('Cancellation reason'), {
         target: { value: 'Duplicate Booking' },
@@ -1236,7 +1469,7 @@ describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
     capabilities.paneSave = true;
     const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
     const commit = vi.fn().mockResolvedValue(cancelRun({ outcome: 'refused_reason_missing' }));
-    renderCancel({ preview, commit });
+    await renderCancel({ preview, commit });
     fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
     fireEvent.change(await screen.findByLabelText('Cancellation reason'), {
       target: { value: 'Duplicate Booking' },
@@ -1250,7 +1483,7 @@ describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
   it('reports a failed preview call and leaves the preview button in place', async () => {
     capabilities.paneSave = true;
     const preview = vi.fn().mockRejectedValue(new Error('socket hang up'));
-    renderCancel({ preview });
+    await renderCancel({ preview });
     fireEvent.click(await screen.findByRole('button', { name: 'Preview cancellation' }));
     expect(await screen.findByText("Nava couldn't finish in HMS. Check HMS yourself.")).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Preview cancellation' })).toBeTruthy();

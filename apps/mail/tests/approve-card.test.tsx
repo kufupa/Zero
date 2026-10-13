@@ -345,6 +345,75 @@ describe('ApproveCard reads', () => {
 describe('BookingVoucherCard write card', () => {
   const attachForm = { action: 'attach_document', confirmation: '57291630-1', documentName: 'Voucher.pdf' };
 
+  const emailSession = (workflow: 'quote' | 'create_booking' | 'other', amendment: QuoteAmendment | null = null) => {
+    const analysis: QuoteAnalysis = {
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      amendment,
+      luna: {
+        workflow,
+        flags: [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    };
+    return { ...initialQuoteSession(), analysis };
+  };
+
+  it('shows OTA attribution on amendment and booking mail without enabling automation', () => {
+    const amendment: QuoteAmendment = {
+      kind: 'amend',
+      confirmationNumber: '57291630-1',
+      guestLastName: 'Mokoena',
+      arrival: '2026-10-12',
+      departure: '2026-10-14',
+      requestedChange: 'Change room',
+    };
+    const first = render(
+      <BookingVoucherCard
+        session={emailSession('other', amendment)}
+        internetMessageId={null}
+        syncCommitted={null}
+        syncPending={false}
+        senderEmail="confirmations@booking.com"
+      />,
+    );
+    expect(screen.getByTestId('ota-booking-channel').textContent).toBe('Booked via Booking.com');
+    expect(screen.queryByRole('button', { name: /automate/i })).toBeNull();
+
+    first.unmount();
+    render(
+      <BookingVoucherCard
+        session={emailSession('create_booking')}
+        internetMessageId={null}
+        syncCommitted={null}
+        syncPending={false}
+        senderEmail="reservations@guest.example"
+        bodyText="This reservation was made through Expedia."
+      />,
+    );
+    expect(screen.getByTestId('ota-booking-channel').textContent).toBe('Booked via Expedia');
+  });
+
+  it('does not show OTA attribution for unrelated quote mail', () => {
+    render(
+      <BookingVoucherCard
+        session={emailSession('quote')}
+        internetMessageId={null}
+        syncCommitted={null}
+        syncPending={false}
+        senderEmail="confirmations@booking.com"
+      />,
+    );
+    expect(screen.queryByTestId('ota-booking-channel')).toBeNull();
+  });
+
   it('shows the approve card for an attach on mail that is not an amend or cancel', async () => {
     paneWrite.view = viewWith({ form: attachForm, before: null });
     render(
@@ -520,7 +589,7 @@ describe('BookingVoucherCard write card', () => {
     /** Renders the amendment Find panel and returns what its Copy for HMS handoff wrote to the clipboard. */
     async function copiedForHms(session: QuoteSession): Promise<string> {
       vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
-      const writeText = vi.fn(async (_text: string) => undefined);
+      const writeText = vi.fn<(text: string) => Promise<void>>(async () => undefined);
       Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
       paneWrite.view = viewWith();
       render(
