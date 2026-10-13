@@ -4,6 +4,7 @@ import { ApproveCard } from '@/components/quote-workflow/approve-card';
 import { hmsApprovalFromTrpc } from '@/lib/quote-workflow/hms-write';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { amendmentOf } from '@/lib/quote-workflow/session';
+import { otaBookingChannel } from '@/lib/quote-workflow/ota-channel';
 import { trpcClient } from '@/providers/query-provider';
 
 const HMS_APPROVAL_CLIENT = hmsApprovalFromTrpc(trpcClient);
@@ -19,6 +20,9 @@ export function BookingVoucherCard({
   syncPending,
   workItemId = null,
   writesEnabled = false,
+  senderEmail = null,
+  subject = null,
+  bodyText = null,
 }: {
   session: QuoteSession;
   internetMessageId: string | null;
@@ -28,8 +32,13 @@ export function BookingVoucherCard({
   workItemId?: string | null;
   /** The pane save flag. Off keeps write controls visible but disabled with a reason. */
   writesEnabled?: boolean;
+  senderEmail?: string | null;
+  subject?: string | null;
+  bodyText?: string | null;
 }) {
   const amendment = amendmentOf(session);
+  const hasBookingWorkflow = session.analysis?.luna?.workflow === 'create_booking';
+  const ota = amendment || hasBookingWorkflow ? otaBookingChannel({ senderEmail, subject, bodyText }) : null;
   const lunaGroups = session.analysis?.luna?.groups ?? [];
   const guestName = lunaGroups.flatMap((group) => group.guestNames).find((name) => name.trim());
   const guestNameParts = guestName?.trim().split(/\s+/).filter(Boolean) ?? [];
@@ -40,6 +49,14 @@ export function BookingVoucherCard({
   const arrival = amendment ? amendment.arrival : lunaGroups.find((group) => group.arrival)?.arrival;
   return (
     <>
+      {ota ? (
+        <p
+          data-testid="ota-booking-channel"
+          className="inline-flex w-fit items-center rounded-full border border-[#bfdbfe] bg-[#eff6ff] px-2 py-1 text-[10.5px] font-medium text-[#1d4ed8]"
+        >
+          {`Booked via ${ota}`}
+        </p>
+      ) : null}
       <AmendLookupPanel session={session} trpc={trpcClient} />
       {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}
       {workItemId && !amendment ? (

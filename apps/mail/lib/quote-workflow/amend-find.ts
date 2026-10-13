@@ -14,8 +14,6 @@ export const AMEND_FIND_COPY = {
   noNumber:
     "Nava couldn't find a booking number in the email. Find the booking by guest name below.",
   waitingThread: 'Waiting for this email to sync before the HMS lookup can start.',
-  notFound:
-    'No booking with that number in HMS. Check the number in the email or find the booking by guest name below.',
   notExact:
     'HMS needs one exact booking number from the latest email. Check the email or find the booking by guest name below.',
   ambiguous: 'HMS matched more than one booking for that number. Check HMS directly.',
@@ -30,8 +28,7 @@ export const AMEND_FIND_COPY = {
   unreachable: "Nava can't reach HMS right now. Tell the Nava team.",
   seeBooking: 'See the booking in HMS',
   footer: 'Nava only looks the booking up. Make the change in HMS yourself.',
-  searchIntro:
-    'The email has no HMS booking number, so find the booking by surname and arrival day.',
+  searchIntro: 'Search by surname and arrival day to find the booking in HMS.',
   searchButton: 'Search HMS',
   searching: 'Nava is searching HMS by guest name…',
   searchCapped: 'Many matches — add the departure date.',
@@ -175,7 +172,7 @@ export type HmsJobStart = { runId: string; view?: undefined } | { runId: null; v
 
 /** The paneStayLookup job routes, bound off the pane's tRPC client. */
 export type HmsJobClient = {
-  queueFind: (input: FindStayInput & { threadId: string }) => Promise<QueuedHmsJob>;
+  queueFind: (input: FindStayInput & { threadId: string; autoStart?: true }) => Promise<QueuedHmsJob>;
   queueSearchGuest: (
     input: GuestSearchInput & { threadId: string; autoStart?: true },
   ) => Promise<QueuedHmsJob>;
@@ -302,8 +299,13 @@ export function hmsJobTransport(
         const input: FindStayInput = request.arrival
           ? { confirmation: request.confirmation, arrival: request.arrival }
           : { confirmation: request.confirmation };
-        const { runId } = await client.queueFind({ threadId, ...input });
+        const { runId } = await client.queueFind({
+          threadId,
+          ...input,
+          ...(options?.autoStart ? { autoStart: true } : {}),
+        });
         if (runId) return { runId };
+        if (options?.autoStart) return { runId: null };
         if (!client.findStay) throw new Error('paneStayLookup.findStay unavailable');
         return { runId: null, view: syncView(request, await client.findStay(input)) };
       }
@@ -562,7 +564,12 @@ export type HmsSearchRun =
 
 /** One plain sentence for a search that matched nothing. The surname and arrival are the ones searched. */
 export function noSearchMatchCopy(lastName: string, arrival: string): string {
-  return `No booking for ${lastName} arriving ${formatStayDate(arrival)} in HMS. Check the spelling or dates.`;
+  return `Not found in HMS by surname ${lastName} and arrival ${formatStayDate(arrival)}.`;
+}
+
+/** The exact key shown on the email, so staff can see what HMS was asked to find. */
+export function notFoundConfirmationCopy(confirmation: string): string {
+  return `Not found in HMS by confirmation number ${confirmation}. Use the surname and arrival search below.`;
 }
 
 /**

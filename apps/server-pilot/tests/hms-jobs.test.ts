@@ -11,6 +11,7 @@ import {
 } from '../src/ai/run-ledger.js';
 import {
   enqueueHmsJob,
+  confirmationPrefetchIdempotencyKey,
   executeHmsJob,
   extractHmsConfirmations,
   extractUniqueArrivalForHmsPrefetch,
@@ -211,6 +212,12 @@ describe('U23 HMS job queue (pure)', () => {
     expect(key).toBe(guestSearchPrefetchIdempotencyKey(TRANSPORT_ID, 'thread-1', 'smith jones', '2026-11-12'));
     expect(key).not.toBe(guestSearchPrefetchIdempotencyKey(TRANSPORT_ID, 'thread-2', 'Smith Jones', '2026-11-12'));
     expect(key).not.toBe(guestSearchPrefetchIdempotencyKey(TRANSPORT_ID, 'thread-1', 'Smith Jones', '2026-11-13'));
+  });
+
+  it('builds the confirmation key shared by prefetch and automatic pane find', () => {
+    expect(confirmationPrefetchIdempotencyKey(TRANSPORT_ID, CONFIRMATION, '2026-10-13')).toBe(
+      `hms-job:prefetch:${TRANSPORT_ID}:${CONFIRMATION}:2026-10-13`,
+    );
   });
 
   it('turns the job queue on only for HMS_JOB_QUEUE=on', () => {

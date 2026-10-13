@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { sqlList } from '../db/schema/hitl.js';
@@ -1512,7 +1512,7 @@ export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
  */
 export async function listWorkItems(
   db: DB,
-  input: { transportId: string; statuses: readonly string[]; limit: number },
+  input: { transportId: string; statuses: readonly string[]; limit: number; receivedSince?: Date },
 ) {
   if (input.statuses.length === 0) return [];
   // Stored origin `person` means human-written; `system_notice` means automated and is excluded.
@@ -1547,6 +1547,7 @@ export async function listWorkItems(
         ne(origin, 'system_notice'),
         isNull(mailThread.spamAt),
         isNull(mailThread.trashedAt),
+        ...(input.receivedSince ? [gte(message.receivedAt, input.receivedSince)] : []),
       ),
     )
     .orderBy(

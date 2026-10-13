@@ -1482,6 +1482,9 @@ export function NavaPane({
             <BookingVoucherCard
               session={quoteSession}
               internetMessageId={activeEmail?.internetMessageId ?? null}
+              senderEmail={activeEmail?.senderEmail ?? null}
+              subject={activeEmail?.subject ?? null}
+              bodyText={activeEmail?.bodyText ?? null}
               syncCommitted={sync.status?.committed ?? null}
               syncPending={
                 sync.status

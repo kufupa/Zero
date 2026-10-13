@@ -1336,6 +1336,27 @@ describe('needs-you list', () => {
       expect(rows[0]!.receivedAt?.toISOString()).toBe('2026-10-05T09:00:00.000Z');
     }));
 
+  it('filters the Needs-you route by source-mail received time, inclusively, when the pilot cutoff is set', () =>
+    withDb(async (db) => {
+      const before = await openItem(db, 'nys-before', '2026-10-07T23:59:59.999Z');
+      const boundary = await openItem(db, 'nys-boundary', '2026-10-08T00:00:00.000Z');
+      const after = await openItem(db, 'nys-after', '2026-10-09T08:00:00.000Z');
+
+      try {
+        vi.stubEnv('NEEDS_YOU_SINCE', '');
+        expect((await centurionCaller().workItems.list({})).map((row) => row.id)).toEqual([
+          before,
+          boundary,
+          after,
+        ]);
+
+        vi.stubEnv('NEEDS_YOU_SINCE', '2026-10-08T00:00:00.000Z');
+        expect((await centurionCaller().workItems.list({})).map((row) => row.id)).toEqual([boundary, after]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }));
+
   it('lists five human-written kinds, excludes automated/other, and includes missing origins', () =>
     withDb(async (db) => {
       const addItem = async (id: string, kind: MailKind, origin?: 'person' | 'system_notice') => {

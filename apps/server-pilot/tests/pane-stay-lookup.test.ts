@@ -449,6 +449,9 @@ describe('paneStayLookup router', () => {
       runId: null,
     });
     await expect(
+      caller.paneStayLookup.queueFind({ threadId: 'thread-1', confirmation: '57291630-1', autoStart: true }),
+    ).resolves.toEqual({ runId: null });
+    await expect(
       caller.paneStayLookup.queueSearchGuest({ threadId: 'thread-1', lastName: 'Mokoena', arrival: '2027-09-14' }),
     ).resolves.toEqual({ runId: null });
     await expect(
