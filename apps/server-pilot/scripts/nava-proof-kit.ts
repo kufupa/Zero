@@ -47,6 +47,22 @@ export type GuardDecision<Reason extends string = string> = {
 
 export type ProofPage = { browser: Browser; context: BrowserContext; page: Page; captured: Captured };
 
+/** The stay a rates run is for: its groups' one arrival:departure. Null when the groups are missing or span dates. */
+export function stayKeyOfRatesInput(input: unknown): string | null {
+  const groups = (input as { groups?: unknown } | null)?.groups;
+  if (!Array.isArray(groups) || groups.length === 0) return null;
+  const keys = new Set(
+    groups.map((group) => {
+      const row = (group ?? {}) as { arrivalDate?: unknown; departureDate?: unknown };
+      return typeof row.arrivalDate === 'string' && typeof row.departureDate === 'string'
+        ? `${row.arrivalDate}:${row.departureDate}`
+        : '';
+    }),
+  );
+  const [key] = keys;
+  return keys.size === 1 && key ? key : null;
+}
+
 /**
  * Launches Chromium with the run's session and pins the host, as nava-preview-run.ts does. Every tRPC request from any
  * page of the context (the pane's page and the driver's own mailbox page) goes through `classify`; a refused one is
