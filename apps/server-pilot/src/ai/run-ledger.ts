@@ -274,6 +274,8 @@ export interface EnqueueAiRunInput {
   readRequest?: Record<string, unknown>;
   /** Private typed receipt reference; only present for read_tool runs. */
   readResultRef?: string;
+  /** Deterministic provenance carried from ingress into worker metrics. */
+  metrics?: Record<string, unknown>;
   /** Non-serializable server-issued admission provenance. */
   readAdmissionIssuer?: ReadAdmissionIssuer;
   /** Earliest claim time. Omitted means due now. The backfill spreads its runs across hours with this. */
@@ -483,9 +485,10 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
     admissionSnapshotHash: input.admissionSnapshotHash,
     readRequest: input.readRequest,
     readResultRef: input.readResultRef,
-    ...(readAdmissionBinding || readAdmissionIssuer
+    ...(input.metrics || readAdmissionBinding || readAdmissionIssuer
       ? {
           metrics: {
+            ...(input.metrics ?? {}),
             ...(readAdmissionIssuer ? { readAdmissionIssuer } : {}),
             ...(readAdmissionBinding ? { readAdmissionBinding } : {}),
           },

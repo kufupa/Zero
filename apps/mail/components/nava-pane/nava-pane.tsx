@@ -111,6 +111,7 @@ import { SelectedEmailBlock } from './blocks/selected-email';
 import { ContactBlock } from './blocks/contact-block';
 import { TranslationBox } from './blocks/translation-box';
 import { BookingVoucherCard } from './blocks/booking-voucher-card';
+import { MailSourceNoActionCard } from './blocks/mail-source-no-action';
 import { FollowUpCard } from './blocks/follow-up-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
 import { SystemCheckResultsBlock } from './blocks/system-check-results';
@@ -118,6 +119,7 @@ import { ReplyBody } from './reply-body';
 import { useInsertAiDraft } from './use-insert-ai-draft';
 import { useSavedReply } from './use-saved-reply';
 import { useSystemCheck } from './use-system-check';
+import { classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
 type SenderFallback = Pick<StoredContact, 'name' | 'email'>;
@@ -248,6 +250,14 @@ export function NavaPane({
     refreshAuthorization,
     activateMailboxSync,
   } = bridge;
+  const sourceClassification = classifyMailSource({
+    fromAddress: activeEmail?.senderEmail,
+    subject: activeEmail?.subject,
+    bodyText: activeEmail?.bodyText,
+  });
+  const nonActionableMailSource =
+    sourceClassification.kind === 'direct' ? null : sourceClassification;
+  const isNonActionableMailSource = nonActionableMailSource !== null;
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
   const partyJobThreadId = quoteSession.staffSource?.threadId ?? null;
   const partyJobTransport = useMemo(
@@ -420,7 +430,8 @@ export function NavaPane({
     supportsAction,
   });
   // The thread's saved reply (Save reply on the webmail panel), offered for Insert in Outlook.
-  const savedReplyThreadId = preview ? null : (quoteSession.staffSource?.threadId ?? null);
+  const savedReplyThreadId =
+    preview || isNonActionableMailSource ? null : (quoteSession.staffSource?.threadId ?? null);
   const savedReply = useSavedReply(
     (input) => trpcClient.drafts.savedReply.query(input),
     savedReplyThreadId,
@@ -490,7 +501,7 @@ export function NavaPane({
   // note asks for a fresh read, so the stored read is not used then, and it does not re-trigger the effect below.
   const storedWork = useStoredWork({
     trpc: trpcClient,
-    internetMessageId: activeEmail?.internetMessageId ?? null,
+    internetMessageId: isNonActionableMailSource ? null : activeEmail?.internetMessageId ?? null,
     scope: currentScope,
   });
   const senderFallback =
@@ -526,6 +537,7 @@ export function NavaPane({
   // With a treat-as or note the read is live, so only Retry read (its count) re-runs it, not a stored-read change.
   const storedGate = storedOverridden ? `override|${storedWork.retryCount}` : storedWork.key;
   useEffect(() => {
+    if (isNonActionableMailSource) return;
     const binding = quoteSession.binding;
     if (!binding || !quoteAdmissionKey) return;
     // The binding follows the selected mail one render later. Until then it names the previous mail.
@@ -620,7 +632,7 @@ export function NavaPane({
     };
     // Admission key is the selection identity. Body/subject are no longer read on the client.
     // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
-  }, [quoteAnalysisRetryKey, storedGate]);
+  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMailSource]);
 
   const priorQuoteKey = [
     quoteSession.analysis?.luna?.workflow ?? '',
@@ -636,6 +648,7 @@ export function NavaPane({
     Object.keys(quoteSession.bookingDrafts).join(','),
   ].join(':');
   useEffect(() => {
+    if (isNonActionableMailSource) return;
     const luna = quoteSession.analysis?.luna;
     const source = quoteSession.staffSource;
     const binding = quoteSession.binding;
@@ -892,7 +905,7 @@ export function NavaPane({
         staffQuoteReadBackInFlight.current = false;
       }
     };
-  }, [priorQuoteKey]);
+  }, [priorQuoteKey, isNonActionableMailSource]);
 
   useEffect(() => {
     if (staffQuoteQueueMode !== 'on') return;
@@ -905,6 +918,7 @@ export function NavaPane({
     isLoading,
     session?.user?.id,
     requiresRelogin,
+    isNonActionableMailSource,
   ]);
 
   // Onboarding & Screen State
@@ -921,6 +935,12 @@ export function NavaPane({
   });
   // Preview starts on the quoting tool; the welcome, connection and tour screens never show there.
   const shownScreen: PaneScreen = preview && currentScreen !== 'needs-you' ? 'tool' : currentScreen;
+  const mailSourceNoActionNotice = nonActionableMailSource ? (
+    <MailSourceNoActionCard
+      kind={nonActionableMailSource.kind}
+      source={nonActionableMailSource.source}
+    />
+  ) : null;
   // One list for the header entry and the screen, so a dismiss on the screen moves the entry count at once.
   const needsYou = useNeedsYou(trpcClient);
   const [tourSlideIndex, setTourSlideIndex] = useState(0);
@@ -1216,6 +1236,7 @@ export function NavaPane({
     });
 
   const runQuoteStep = (stepId: string, autoStart = false, readBack = false) => {
+    if (isNonActionableMailSource) return;
     if ((autoStart || readBack) && (staffQuoteQueueMode !== 'on' || isQuoteFixturePreview())) return;
     const step = quoteSession.steps.find((item) => item.id === stepId);
     const maySearchAgain = step?.kind === 'quote_stay' && step.status === 'succeeded' && !quoteSession.runningStepId;
@@ -1457,6 +1478,7 @@ export function NavaPane({
 
   const autoStartStaffQuoteStep = () => {
     if (
+      isNonActionableMailSource ||
       staffQuoteQueueMode !== 'on' ||
       isLoading ||
       !session?.user ||
@@ -1734,6 +1756,10 @@ export function NavaPane({
           </div>
         </header>
 
+        {shownScreen !== 'tool' && mailSourceNoActionNotice ? (
+          <div className="mx-3 mt-2">{mailSourceNoActionNotice}</div>
+        ) : null}
+
         <HmsJobNoticeBanner />
 
         {isConnected && capabilities && capabilities.mailboxSync !== 1 && <p className="mx-3 mt-2 text-[11px] text-slate-600">Update the Outlook add-in to enable automatic email copying.</p>}
@@ -1881,6 +1907,10 @@ export function NavaPane({
             style={shownScreen === 'tool' ? undefined : { display: 'none' }}
             className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5"
           >
+            {nonActionableMailSource ? (
+              shownScreen === 'tool' ? mailSourceNoActionNotice : null
+            ) : (
+              <>
             {/* Contact is the first selected-message context. Extraction values win; only an external sender can fill its early fallback. */}
             {activeEmail ? (
               <ContactBlock
@@ -2037,6 +2067,8 @@ export function NavaPane({
             )}
             {(testResults.bridge !== null || testResults.serverPing !== null) && (
               <SystemCheckResultsBlock results={testResults} />
+            )}
+              </>
             )}
           </main>
         )}

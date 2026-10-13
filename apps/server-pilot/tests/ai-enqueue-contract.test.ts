@@ -9,6 +9,7 @@ import {
   mailThread,
   message,
 } from '../src/db/schema/mail.js';
+import { workItem } from '../src/db/schema/work.js';
 import { generateMessageId, parseRawMessage } from '../src/mail/ingest/parse-message.js';
 import { persistInboundMessage } from '../src/mail/ingest/store.js';
 import {
@@ -153,6 +154,56 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI enqueue contract', () => {
       expect(runs[0]?.runKind).toBe('inbound_triage');
       expect(runs[0]?.state).toBe('queued');
     });
+  });
+
+  it('source-routes channel mail without extraction, shadow, or work-item rows when triage is retired', async () => {
+    const previous = {
+      classifier: process.env.INBOUND_TRIAGE_CLASSIFIER,
+      extraction: process.env.INBOUND_EXTRACTION,
+    };
+    process.env.INBOUND_TRIAGE_CLASSIFIER = 'off';
+    process.env.INBOUND_EXTRACTION = 'on';
+    try {
+      await withSeededTestDb(async (db) => {
+        const storage = withFakeS3();
+        const raw = readFixture('centurion-stamped.eml');
+        const messageId = generateMessageId();
+        const parsed = await parseRawMessage(raw, { messageId, storage });
+        parsed.fromAddress = 'notifications@m.expediapartnercentral.com';
+        parsed.subject = 'Expedia Partner Central - New reservation';
+        parsed.textBody = 'A reservation has been created.';
+
+        await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: `uidl-source-${randomUUID()}`,
+            messageId,
+          },
+          { db, storage },
+        );
+
+        const runs = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.triggerMessageId, messageId));
+        expect(runs.map((run) => run.runKind)).toEqual(['inbound_triage']);
+        expect(runs[0]?.metrics).toMatchObject({
+          mailSourceDecision: {
+            kind: 'channel',
+            source: 'Expedia Partner Central',
+            reason: 'sender_domain:m.expediapartnercentral.com',
+          },
+        });
+        expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(0);
+      });
+    } finally {
+      if (previous.classifier === undefined) delete process.env.INBOUND_TRIAGE_CLASSIFIER;
+      else process.env.INBOUND_TRIAGE_CLASSIFIER = previous.classifier;
+      if (previous.extraction === undefined) delete process.env.INBOUND_EXTRACTION;
+      else process.env.INBOUND_EXTRACTION = previous.extraction;
+    }
   });
 
   it('does not create a duplicate run for duplicate inbound UIDL', async () => {

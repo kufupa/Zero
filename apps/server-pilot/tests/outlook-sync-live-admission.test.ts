@@ -1,4 +1,5 @@
-import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import { aiShadowAdmission, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import { workItem } from '../src/db/schema/work.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { describe, expect, it } from 'vitest';
 // Each integration case creates/migrates a fresh database and compiles the worker.
@@ -28,6 +29,58 @@ const history = (id: string, at = '2026-10-04T10:00:00Z') => ({
 });
 
 describe('first live admission and immutable inputs on PostgreSQL', () => {
+  it(
+    'queues triage only for channel mail when the regular classifier is retired',
+    async () => {
+      const previous = {
+        classifier: process.env.INBOUND_TRIAGE_CLASSIFIER,
+        extraction: process.env.INBOUND_EXTRACTION,
+      };
+      process.env.INBOUND_TRIAGE_CLASSIFIER = 'off';
+      process.env.INBOUND_EXTRACTION = 'on';
+      try {
+        await withIngestionDb(async ({ db }) => {
+          const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
+          const { admitLiveMessage } = await import('../src/mail/ingest/live-admission.js');
+          const saved = await persistOutlookHistory(db, {
+            ...history('expedia-live-source'),
+            fromAddress: 'notifications@m.expediapartnercentral.com',
+            subject: 'Expedia Partner Central - New reservation',
+          });
+
+          await db.transaction((tx) =>
+            admitLiveMessage(tx as typeof db, {
+              transportId: 'transport-centurion',
+              canonicalMessageId: saved.messageId,
+              evidence: { kind: 'verified-pop3', sourceReceiptId: 'uidl-expedia-source' },
+            }),
+          );
+
+          const runs = await db
+            .select()
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.triggerMessageId, saved.messageId));
+          expect(runs.map((run) => run.runKind)).toEqual(['inbound_triage']);
+          expect(runs[0]?.metrics).toMatchObject({
+            mailSourceDecision: {
+              kind: 'channel',
+              source: 'Expedia Partner Central',
+              reason: 'sender_domain:m.expediapartnercentral.com',
+            },
+          });
+          expect(await db.select().from(aiShadowAdmission)).toHaveLength(0);
+          expect(await db.select().from(workItem)).toHaveLength(0);
+        });
+      } finally {
+        if (previous.classifier === undefined) delete process.env.INBOUND_TRIAGE_CLASSIFIER;
+        else process.env.INBOUND_TRIAGE_CLASSIFIER = previous.classifier;
+        if (previous.extraction === undefined) delete process.env.INBOUND_EXTRACTION;
+        else process.env.INBOUND_EXTRACTION = previous.extraction;
+      }
+    },
+    20_000,
+  );
+
   it(
     'admits a history-created message once and snapshots pre-admission richer context',
     async () =>

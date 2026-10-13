@@ -18,6 +18,7 @@ import {
   inboundExtractionEnabled,
 } from '../../ai/extraction/inbound-run.js';
 import { isInboundTriageClassifierEnabled } from '../../env.js';
+import { classifyMailSource } from '../../ai/mail-source.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
 import { lockCanonicalMailbox } from './canonical-identity.js';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
@@ -253,6 +254,16 @@ export async function admitLiveMessage(
     .limit(1);
   if (!trigger) throw new Error('Live admission trigger unavailable');
   if (trigger.attention === 'AMBIGUOUS_IDENTITY') return { admitted: false, receiptId: '' };
+  const mailSourceDecision =
+    trigger.direction === 'inbound'
+      ? classifyMailSource({
+          fromAddress: trigger.fromAddress,
+          subject: trigger.subject,
+          bodyText: trigger.textBody ?? trigger.htmlBody,
+        })
+      : null;
+  const routeAsAutomatedChannel =
+    mailSourceDecision !== null && mailSourceDecision.kind !== 'direct';
   // Existing operational rows predate this admission authority. A fresh producer
   // explicitly marks its insertion under the same mailbox lock; reconciliation
   // and native retries can never replay an old row while startup seeding runs.
@@ -378,7 +389,7 @@ export async function admitLiveMessage(
     })
     .where(eq(mailThread.id, trigger.threadId));
   // A reply that lands closes the thread's open items, and a newer request supersedes the older ones (C2, C3).
-  if (trigger.threadId)
+  if (trigger.threadId && !routeAsAutomatedChannel)
     await refreshThreadWork(db, { transportId: input.transportId, threadId: trigger.threadId });
   if (trigger.direction === 'outbound')
     await markThreadRead(db, input.transportId, [trigger.threadId]);
@@ -431,7 +442,11 @@ export async function admitLiveMessage(
     }
   }
   // The inbound folder/label classifier is retired by INBOUND_TRIAGE_CLASSIFIER=off. Sent copies keep their baseline run.
-  if (trigger.direction === 'outbound' || isInboundTriageClassifierEnabled(process.env))
+  if (
+    trigger.direction === 'outbound' ||
+    routeAsAutomatedChannel ||
+    isInboundTriageClassifierEnabled(process.env)
+  )
     await enqueueAiRun(
       {
         transportId: input.transportId,
@@ -446,10 +461,15 @@ export async function admitLiveMessage(
         promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
         admissionSnapshotId: id,
         admissionSnapshotHash: snapshotHash,
+        ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
       },
       db,
     );
-  if (trigger.direction === 'inbound' && inboundExtractionEnabled(process.env))
+  if (
+    trigger.direction === 'inbound' &&
+    !routeAsAutomatedChannel &&
+    inboundExtractionEnabled(process.env)
+  )
     await enqueueInboundExtraction(
       {
         transportId: input.transportId,
@@ -457,10 +477,11 @@ export async function admitLiveMessage(
         messageId: trigger.id,
         admissionSnapshotId: id,
         admissionSnapshotHash: snapshotHash,
+        ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
       },
       db,
     );
-  if (trigger.direction === 'inbound')
+  if (trigger.direction === 'inbound' && !routeAsAutomatedChannel)
     await enqueueShadowPrediction({
       transportId: input.transportId,
       threadId: trigger.threadId,

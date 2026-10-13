@@ -31,6 +31,15 @@ describe('otaBookingChannel', () => {
       }),
     ).toBeNull();
   });
+
+  it.each([
+    ['notice@m.expediapartnercentral.com', 'Expedia Partner Central'],
+    ['booking@webbeds.com', 'WebBeds'],
+    ['booking@hotelbeds.com', 'Hotelbeds'],
+    ['booking@get-e.com', 'Get-e'],
+  ])('uses shared source rule for %s', (senderEmail, source) => {
+    expect(otaBookingChannel({ senderEmail })).toBe(source);
+  });
 });
 
 describe('otaBookingChannel false positives', () => {

@@ -26,6 +26,7 @@ import {
   threadMessagesToTransportIndex,
 } from '../src/ai/worker.js';
 import { createLocalModelAdapter, type LocalModelRouteEvidence } from '../src/ai/bedrock/local.js';
+import { classifyMailSource } from '../src/ai/mail-source.js';
 import { __forceSendAtPastForTests, flushDue } from '../src/mail/send/outbound-queue.js';
 import { FakeSmtpTransport, __setSmtpTransportForTests } from '../src/mail/send/smtp.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
@@ -33,6 +34,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDb, __setDbForTests, type DB } from '../src/db/client.js';
 import { resolveModelRoute } from '../src/ai/local-model-routing.js';
 import { user as userAuthTable } from '../src/db/schema/auth.js';
+import { workItem } from '../src/db/schema/work.js';
 import { resolveMailboxContext } from '../src/trpc/context.js';
 import * as mastraModule from '../src/ai/mastra.js';
 import { appRouter } from '../src/trpc/router.js';
@@ -42,7 +44,7 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
 const here = dirname(fileURLToPath(import.meta.url));
@@ -602,6 +604,128 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
     });
     return { transportId, threadId, messageId };
   }
+
+  it('routes marked channel mail deterministically without model, baseline, HMS, or work-item work', async () => {
+    const previous = {
+      writeGate: process.env.AI_WRITE_GATE_ENABLED,
+      workflowTriage: process.env.WORKFLOW_TRIAGE_V6,
+      classifier: process.env.INBOUND_TRIAGE_CLASSIFIER,
+      extraction: process.env.INBOUND_EXTRACTION,
+      warmer: process.env.LUNA_ANALYSE_WARMER,
+      workerLane: process.env.AI_WORKER_LANE,
+    };
+    process.env.AI_WRITE_GATE_ENABLED = 'true';
+    process.env.WORKFLOW_TRIAGE_V6 = 'false';
+    process.env.INBOUND_TRIAGE_CLASSIFIER = 'on';
+    process.env.INBOUND_EXTRACTION = 'on';
+    process.env.LUNA_ANALYSE_WARMER = 'on';
+    process.env.AI_WORKER_LANE = 'default';
+    try {
+      await withWorkerDb(async (db) => {
+        const threadId = randomUUID();
+        const messageId = randomUUID();
+        const fromAddress = 'reservations@legacyhotels.co.za';
+        const subject = 'FW: Expedia Partner Central - New reservation';
+        const textBody =
+          'Forwarded message:\nFrom: Expedia Partner Central <notice@m.expediapartnercentral.com>\nSubject: New reservation';
+        const mailSourceDecision = classifyMailSource({ fromAddress, subject, bodyText: textBody });
+        expect(mailSourceDecision.kind).toBe('channel');
+
+        await db.insert(mailThread).values({
+          id: threadId,
+          transportId: TRANSPORT_ID,
+          threadRootId: `<${threadId}@example.com>`,
+          subject,
+          snippet: 'Forwarded Expedia notice',
+          latestMessageAt: new Date(),
+        });
+        await db.insert(message).values({
+          id: messageId,
+          transportId: TRANSPORT_ID,
+          threadId,
+          direction: 'inbound',
+          fromAddress,
+          toAddresses: ['centurion@legacyhotels.co.za'],
+          subject,
+          textBody,
+          receivedAt: new Date(),
+        });
+        const [existingPrimary] = await db
+          .select({ id: mailCategory.id })
+          .from(mailCategory)
+          .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'new-bookings')))
+          .limit(1);
+        expect(existingPrimary).toBeDefined();
+        if (!existingPrimary) throw new Error('seeded new-bookings category is required');
+        await db.insert(mailThreadCategory).values({
+          threadId,
+          categoryId: existingPrimary.id,
+          transportId: TRANSPORT_ID,
+        });
+        const run = await enqueueAiRun(
+          {
+            transportId: TRANSPORT_ID,
+            threadId,
+            triggerMessageId: messageId,
+            runKind: 'inbound_triage',
+            idempotencyKey: `mail-source-worker:${messageId}`,
+            modelId: 'amazon.nova-lite-v1:0',
+            promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
+            metrics: { mailSourceDecision },
+          },
+          db,
+        );
+        const routeFactory = vi.fn(() => {
+          throw new Error('source-routed mail must not initialize baseline model routes');
+        });
+        const mastraFactory = vi.spyOn(mastraModule, 'createMastraRuntime');
+
+        expect(
+          await runAiWorkerOnce({
+            transportId: TRANSPORT_ID,
+            runKind: 'inbound_triage',
+            mailBaselineExtractionRouteFactory: routeFactory,
+          }),
+        ).toBe(true);
+
+        expect(routeFactory).not.toHaveBeenCalled();
+        expect(mastraFactory).not.toHaveBeenCalled();
+        const runs = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.threadId, threadId));
+        expect(runs.map((row) => row.runKind)).toEqual(['inbound_triage']);
+        expect(runs[0]?.id).toBe(run.id);
+        expect(runs[0]?.metrics).toMatchObject({
+          mailSourceDecision: {
+            kind: 'channel',
+            source: 'Expedia Partner Central',
+            reason: 'forwarded_sender:m.expediapartnercentral.com',
+          },
+          deterministicMailSourceRoute: true,
+          triageRationale: expect.stringContaining('Expedia Partner Central'),
+          applyMode: 'full',
+        });
+        const folders = await db
+          .select({ slug: mailCategory.slug })
+          .from(mailThreadCategory)
+          .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+          .where(eq(mailThreadCategory.threadId, threadId));
+        expect(folders.map((row) => row.slug)).toEqual(['automated-channel']);
+        expect(await db.select().from(workItem).where(eq(workItem.threadId, threadId))).toHaveLength(0);
+      });
+    } finally {
+      if (previous.writeGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
+      else process.env.AI_WRITE_GATE_ENABLED = previous.writeGate;
+      if (previous.workflowTriage === undefined) delete process.env.WORKFLOW_TRIAGE_V6;
+      else process.env.WORKFLOW_TRIAGE_V6 = previous.workflowTriage;
+      if (previous.classifier === undefined) delete process.env.INBOUND_TRIAGE_CLASSIFIER;
+      else process.env.INBOUND_TRIAGE_CLASSIFIER = previous.classifier;
+      if (previous.extraction === undefined) delete process.env.INBOUND_EXTRACTION;
+      else process.env.INBOUND_EXTRACTION = previous.extraction;
+      if (previous.warmer === undefined) delete process.env.LUNA_ANALYSE_WARMER;
+      else process.env.LUNA_ANALYSE_WARMER = previous.warmer;
+      if (previous.workerLane === undefined) delete process.env.AI_WORKER_LANE;
+      else process.env.AI_WORKER_LANE = previous.workerLane;
+    }
+  }, 20_000);
 
   it('claims a candidate run and persists the assessed prepared reply from the approved route', async () => {
     await withWorkerDb(async (db) => {
