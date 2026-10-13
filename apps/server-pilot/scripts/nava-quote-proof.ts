@@ -1462,10 +1462,14 @@ async function proveThread(
   const rates = await runRates(page, captured, guard, proof.prefilled.stays, config.timeoutMs);
   proof.rates = { outcome: rates.outcome, seconds: rates.seconds, cards: rates.cards };
   proof.blocker = rates.blocker;
-  if (rates.outcome !== 'priced') return;
 
   const prefix = 'thread-' + String(threadIndex + 1).padStart(2, '0') + '-' + safeSegment(threadId);
   const ratesRegion = page.getByRole('region', { name: QUOTE_SELECTORS.ratesRegion, exact: true });
+  if (rates.outcome !== 'priced') {
+    // What staff would see when HMS did not price: kept so a timeout or refusal can be read without a rerun.
+    await captureRegion(page, ratesRegion, join(config.outDir, prefix + '-rates-unpriced.png'));
+    return;
+  }
   const ratesShot = await captureRegion(page, ratesRegion, join(config.outDir, prefix + '-rates.png'));
   if (!ratesShot) {
     proof.rates.outcome = 'priced_evidence_failed';

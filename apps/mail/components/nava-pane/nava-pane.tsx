@@ -15,6 +15,7 @@ import {
 } from '@/lib/workstation/pane-release-watch';
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
+import { withContactLines } from '@/lib/quote-workflow/document-contact';
 import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
@@ -494,6 +495,10 @@ export function NavaPane({
   });
   const senderFallback =
     storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
+  // The contact the quotation's client lines fall back to: the read's contact, else the external sender.
+  const documentContact = storedWork.pane.state === 'ready' ? storedWork.pane.contact : senderFallback;
+  const documentContactRef = useRef(documentContact);
+  documentContactRef.current = documentContact;
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
   const suppressAutoStaffQuoteForCurrentEmail = () => {
@@ -984,6 +989,7 @@ export function NavaPane({
     const owner = currentPaneOwner();
     void downloadStaffQuoteWorkbook({
       session: quoteSessionRef.current,
+      contact: documentContactRef.current,
       mutate: staffQuoteFromTrpc(trpcClient).workstation.quoteWorkbook?.mutate,
       notify: (message) => toast.warning(message),
     }).then((saved) => {
@@ -1554,7 +1560,7 @@ export function NavaPane({
       const staff = staffQuoteFromTrpc(trpcClient);
       void bindQualifiedStaffProposalPdf({
         mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
-        input: request.input,
+        input: withContactLines(request.input, documentContactRef.current),
         expectedTotalMinor: request.expectedTotalMinor,
       }).then((remote) => {
         if (remote.status === 'unavailable') {
@@ -1629,9 +1635,10 @@ export function NavaPane({
         factRefs: quote.factRefs,
         company: header.company,
         agency: header.agency,
-        attention: header.attention,
-        clientEmail: header.clientEmail,
-        clientTelephone: header.clientTelephone,
+        ...withContactLines(
+          { attention: header.attention, clientEmail: header.clientEmail, clientTelephone: header.clientTelephone },
+          documentContactRef.current,
+        ),
       },
       expectedTotalMinor: quote.totalMinor,
     }).then((remote) => {
