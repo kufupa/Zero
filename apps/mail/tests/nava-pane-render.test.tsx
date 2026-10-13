@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
+import { prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
 import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
+import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 
 // The pane reloads only through reloadPane(). Tests observe it; the real reload is never called.
 vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
@@ -18,9 +20,10 @@ vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
 }));
 
 // State the mocks below read. Defaults match outlook-pane-render.test.tsx.
-const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFindQuery } = vi.hoisted(() => ({
+const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFindQuery, saveReplyMutate } = vi.hoisted(() => ({
   pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
   voucherFindQuery: vi.fn().mockResolvedValue({ status: 'not_voucher' }),
+  saveReplyMutate: vi.fn().mockResolvedValue({ id: 'draft-1', replaced: false }),
   quotePdfMutate: vi.fn().mockResolvedValue({
     fileName: 'Quote - CIDB 15-17 Sep.pdf',
     pdfBase64: 'JVBERw==',
@@ -230,6 +233,7 @@ vi.mock('../providers/query-provider', () => ({
         mutate: async () => AUTHORISED_QUOTE_PDF,
       },
     },
+    drafts: { saveReply: { mutate: saveReplyMutate } },
   },
 }));
 
@@ -257,6 +261,8 @@ describe('NavaPane', () => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     voucherFindQuery.mockReset();
     voucherFindQuery.mockResolvedValue({ status: 'not_voucher' });
+    saveReplyMutate.mockReset();
+    saveReplyMutate.mockResolvedValue({ id: 'draft-1', replaced: false });
   });
 
   afterEach(() => {
@@ -854,6 +860,55 @@ describe('NavaPane screen states', () => {
     expect(screen.getByRole('button', { name: 'Draft quotation into email reply' })).toBeDefined();
     expect(screen.queryByText(/add-in is too old/)).toBeNull();
   });
+
+  it('preview: uses Guest for a nameless sender and saves the reviewed PDF through webmail', async () => {
+    bridgeMockState.analysisOverride = {
+      status: 'ready',
+      intent: 'quote',
+      groups: [
+        {
+          id: 'g1',
+          childrenAges: [],
+          board: 'bb',
+          quantity: 1,
+          specialRequests: [],
+          fields: { arrivalDate: 'missing', departureDate: 'missing', adults: 'missing' },
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      sourceRevision: 1,
+    };
+    const namelessBridge = {
+      ...fakeBridge,
+      activeEmail: {
+        ...fakeBridge.activeEmail!,
+        senderName: fakeBridge.activeEmail!.senderEmail,
+      },
+    } as PaneBridge;
+    render(<NavaPane bridge={namelessBridge} preview />);
+    await prepareReviewedQuote(null);
+
+    const expectedHtml = quoteWrapperHtml('', 'R Opperman');
+    expect((screen.getByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(expectedHtml);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft quotation into email reply' }));
+
+    await waitFor(() => {
+      expect(saveReplyMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          html: expectedHtml.trim(),
+          attachments: [
+            expect.objectContaining({
+              name: AUTHORISED_QUOTE_PDF.fileName,
+              type: 'application/pdf',
+              base64: AUTHORISED_QUOTE_PDF.pdfBase64,
+            }),
+          ],
+        }),
+      );
+    });
+    expect(sendCommandMock).not.toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything());
+  }, 15_000);
 
   // These render the pane after the snapshots above, so the useId values in those snapshots do not shift.
   it('retry read runs the read again after a failed live read', async () => {

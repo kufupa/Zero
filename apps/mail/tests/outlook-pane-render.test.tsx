@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import path from 'node:path';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 
 const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.hoisted(() => ({
   pairDeviceMock: vi.fn(async () => {}),
@@ -385,6 +386,29 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
           entryId: '001',
           storeId: 'store-1',
           operationId: expect.any(String),
+        }),
+      );
+    });
+  });
+
+  it('prefills the reviewed reply and inserts its PDF through the Outlook bridge', async () => {
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote(null);
+
+    const expectedHtml = quoteWrapperHtml('David Miller', 'R Opperman');
+    expect((screen.getByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(expectedHtml);
+    fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
+
+    await waitFor(() => {
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'CREATE_REPLY_DRAFT',
+        expect.objectContaining({ htmlBody: expectedHtml.trim() }),
+      );
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'ADD_ATTACHMENT_TO_DRAFT',
+        expect.objectContaining({
+          fileName: AUTHORISED_QUOTE_PDF.fileName,
+          base64Data: AUTHORISED_QUOTE_PDF.pdfBase64,
         }),
       );
     });

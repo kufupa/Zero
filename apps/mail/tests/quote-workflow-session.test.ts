@@ -1235,6 +1235,39 @@ describe('quote session staff review items', () => {
     expect(s.reviewedReplyHtml).toBe('<p>Full staff-edited reply</p>');
   });
 
+  it('prefills a blank reply when its single-stay PDF is ready, but keeps staff-edited text', () => {
+    const preparedReply = '<p>Good day David,</p>';
+    const quoteReady = () => {
+      let s = analysisReady();
+      s = reduceQuoteSession(s, {
+        type: 'results_ready',
+        offers: [authorisedOffer],
+        selectionEpoch: 1,
+        inputRevision: 1,
+        provenance: { kind: 'authorised', selectionEpoch: 1, inputRevision: 1 },
+      });
+      s = reduceQuoteSession(s, { type: 'select_offers', offerIds: ['o1'] });
+      return withStaffSource(s);
+    };
+    const preparePdf = (s: QuoteSession) => reduceQuoteSession(s, {
+      type: 'pdf_ready',
+      pdf: { fileName: 'Quote-authorised.pdf', bytesBase64: 'JVBERi0xLjQK' },
+      selectionEpoch: 1,
+      inputRevision: 1,
+      selectedOfferIds: ['o1'],
+      reviewedReplyHtml: preparedReply,
+    });
+
+    const prepared = preparePdf(quoteReady());
+    expect(prepared.reviewedReplyHtml).toBe(preparedReply);
+
+    const typed = reduceQuoteSession(quoteReady(), {
+      type: 'set_reviewed_reply',
+      html: '<p>Staff typed this first.</p>',
+    });
+    expect(preparePdf(typed).reviewedReplyHtml).toBe('<p>Staff typed this first.</p>');
+  });
+
   it('still blocks PDF when a pricing-critical fact is missing', () => {
     let s = analysisReady({
       intent: 'quote',
