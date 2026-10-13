@@ -406,7 +406,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         db,
         { signal: undefined, deadlineAt: claimed.deadlineAt!.getTime() },
       );
-      const view = await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id }, db);
+      const view = await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id, staffQuoteOwnerId: CENTURION_USER_ID }, db);
       expect(view?.result).toMatchObject({
         ...quoteResult,
         kind: 'staff_quote',
@@ -426,7 +426,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       );
 
       expect(await runClaimedJob(db, await claimJob(db))).toBe('succeeded');
-      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id }, db)).toMatchObject({
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id, staffQuoteOwnerId: CENTURION_USER_ID }, db)).toMatchObject({
         status: 'done',
         failureClass: null,
         result: {
@@ -449,7 +449,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       );
 
       expect(await runClaimedJob(db, await claimJob(db))).toBe('retry_wait');
-      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id }, db)).toMatchObject({
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id, staffQuoteOwnerId: CENTURION_USER_ID }, db)).toMatchObject({
         status: 'retrying',
         failureClass: 'HMS_LOCK_BUSY',
         attempts: 1,
@@ -463,7 +463,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       staffQuoteRunner.run.mockRejectedValueOnce(new Error('native session ECONNRESET'));
 
       expect(await runClaimedJob(db, await claimJob(db))).toBe('retry_wait');
-      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id }, db)).toMatchObject({
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id, staffQuoteOwnerId: CENTURION_USER_ID }, db)).toMatchObject({
         status: 'retrying',
         failureClass: 'TRANSIENT_NETWORK',
         attempts: 1,

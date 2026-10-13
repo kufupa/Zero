@@ -1585,6 +1585,33 @@ async function toView(
   };
 }
 
+/** The newest staff quote job on this message whose stay inputs match, ignoring the pane's selection counters. */
+async function latestStaffQuoteRunFor(
+  db: DB,
+  scope: ReturnType<typeof and>,
+  messageId: string,
+  quoteInput: StaffQuoteInput,
+): Promise<AiWorkflowRun[]> {
+  const wanted = hmsRequestKey({ kind: 'staff_quote', input: quoteInput });
+  const rows = await db
+    .select()
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        scope,
+        sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+        sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${messageId}`,
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+    .limit(20);
+  const match = rows.find((row) => {
+    const parsed = hmsJobRequestSchema.safeParse(row.readRequest);
+    return parsed.success && hmsRequestKey(parsed.data) === wanted;
+  });
+  return match ? [match] : [];
+}
+
 /**
  * The job's status and snapshot from the database. By run id for polling, or
  * the latest matching request to resume after the pane remounts. Null when nothing matches.
@@ -1640,19 +1667,7 @@ export async function readHmsJobView(
           )
           .limit(1)
       : input.kind === 'staff_quote'
-        ? await db
-            .select()
-            .from(aiWorkflowRun)
-            .where(
-              and(
-                scope,
-                sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
-                sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${input.messageId}`,
-                sql`(${aiWorkflowRun.readRequest}->'input' - 'selectionEpoch' - 'inputRevision') = ${JSON.stringify(stableStaffQuoteInput(input.input))}::jsonb`,
-              ),
-            )
-            .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
-            .limit(1)
+        ? await latestStaffQuoteRunFor(db, scope, input.messageId, input.input)
         : await db
           .select()
           .from(aiWorkflowRun)
