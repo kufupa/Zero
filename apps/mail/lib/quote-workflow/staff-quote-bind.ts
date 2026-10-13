@@ -121,10 +121,36 @@ export type ExecuteStaffQuoteResult = {
 export type StaffQuoteJobView = {
   runId: string;
   status: 'queued' | 'running' | 'retrying' | 'done' | 'failed';
+  request?: { kind: 'staff_quote'; input: ExecuteStaffQuoteInput } | null;
   result: Record<string, unknown> | null;
   failureClass: string | null;
   asOf?: string | null;
 };
+
+function stableJson(value: unknown): string {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+    .join(',')}}`;
+}
+
+function staffQuoteRequestMatches(
+  request: StaffQuoteJobView['request'],
+  expected: ExecuteStaffQuoteInput,
+): boolean {
+  if (request?.kind !== 'staff_quote') return false;
+  const stableInput = (input: ExecuteStaffQuoteInput) =>
+    Object.fromEntries(
+      Object.entries(input).filter(([key]) => key !== 'selectionEpoch' && key !== 'inputRevision'),
+    );
+  return stableJson(stableInput(request.input)) === stableJson(stableInput(expected));
+}
 
 type StaffQuoteCallOptions = {
   signal?: AbortSignal;
@@ -1130,7 +1156,18 @@ export async function bindAutoStartStaffQuote(
     if (!first) {
       return { status: 'unavailable', reason: 'Nava could not read the queued quote. Try again in a minute.' };
     }
-    return boundStaffQuoteJob(await pollStaffQuoteJob(args.staffQuoteJob, first), args, built);
+    const settled = await pollStaffQuoteJob(args.staffQuoteJob, first);
+    const rebased = staffQuoteRequestMatches(settled.request, built.input) && settled.result
+      ? {
+          ...settled,
+          result: {
+            ...settled.result,
+            selectionEpoch: args.selectionEpoch,
+            inputRevision: args.inputRevision,
+          },
+        }
+      : settled;
+    return boundStaffQuoteJob(rebased, args, built);
   } catch (error) {
     return { status: 'unavailable', ...searchFailure(error) };
   }
@@ -1390,16 +1427,21 @@ export function staffQuoteFromTrpc(trpc: unknown): {
   // A bound route may outlive the active mailbox, so every call through it stays on its starting transport.
   const mailbox = inMailbox(getMailCacheScope().activeTransportId);
   return {
-    workstation: {
-      ...routes,
-      ...(routes.executeStaffQuote
-        ? { executeStaffQuote: mailboxStaffQuoteMutation(routes.executeStaffQuote, mailbox) }
-        : {}),
-      ...(routes.queueStaffQuote
-        ? { queueStaffQuote: mailboxStaffQuoteMutation(routes.queueStaffQuote, mailbox) }
-        : {}),
-      ...(routes.staffQuoteJob ? { staffQuoteJob: mailboxStaffQuoteQuery(routes.staffQuoteJob, mailbox) } : {}),
-    },
+    workstation: new Proxy(routes, {
+      get(target, property) {
+        const route = Reflect.get(target, property, target);
+        if (property === 'executeStaffQuote') {
+          return mailboxStaffQuoteMutation(route as StaffQuoteClient['executeStaffQuote'], mailbox);
+        }
+        if (property === 'queueStaffQuote') {
+          return mailboxStaffQuoteMutation(route as StaffQuoteClient['queueStaffQuote'], mailbox);
+        }
+        if (property === 'staffQuoteJob') {
+          return mailboxStaffQuoteQuery(route as StaffQuoteClient['staffQuoteJob'], mailbox);
+        }
+        return route;
+      },
+    }),
     drafts: row.drafts ?? {},
   };
 }

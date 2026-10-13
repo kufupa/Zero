@@ -230,9 +230,10 @@ export function formatQuoteStepInputs(inputs: Record<string, unknown>): string {
       if (!raw || typeof raw !== 'object') continue;
       const group = raw as Record<string, unknown>;
       const qty = typeof group.quantity === 'number' ? group.quantity : 1;
-      const room = typeof group.roomPreference === 'string' && group.roomPreference.trim()
-        ? group.roomPreference
-        : 'any room';
+      const room =
+        typeof group.roomPreference === 'string' && group.roomPreference.trim()
+          ? group.roomPreference
+          : '';
       const adults =
         typeof group.adults === 'number' ? `${group.adults} ${group.adults === 1 ? 'adult' : 'adults'}` : 'adults not set';
       bits.push(`${rowRoomLabel({ roomPreference: room, quantity: qty })}, ${adults}`);

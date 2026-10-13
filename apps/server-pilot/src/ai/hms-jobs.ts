@@ -676,6 +676,7 @@ export async function queueUserPartyHmsJob(
           eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
           eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_USER),
           eq(aiWorkflowRun.state, 'queued'),
+          sql`coalesce(${aiWorkflowRun.metrics}->'sharedThreadIds', '[]'::jsonb) = '[]'::jsonb`,
           sql`${aiWorkflowRun.readRequest}->>'kind' = 'party'`,
           fieldKind
             ? sql`${aiWorkflowRun.readRequest}->>'partyKind' = ${fieldKind}`
@@ -1912,7 +1913,7 @@ export async function executeHmsJob(input: {
       return 'dead_letter';
     }
     try {
-      const result = await recordedToolRun(
+      await recordedToolRun(
         {
           kind: 'quote',
           transportId: run.transportId,

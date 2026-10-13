@@ -1327,6 +1327,8 @@ export function NavaPane({
       emailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
       emailSubject: activeEmail?.subject?.trim() || null,
     };
+    const staffQuoteStep = step;
+    const staffQuoteSource = source;
     const retry = () => {
       const lostRunId = pollLostRunId;
       const retryRun = lostRunId && originalStaffQuoteJob
@@ -1351,7 +1353,7 @@ export function NavaPane({
             header: runHeader,
             stayKey: step.shareKey,
           });
-      void runNoticed(retryRun);
+      void runNoticed(retryRun).then(applyStaffQuoteResult);
     };
     const runNoticed = (pendingRun: Promise<BoundExecuteStaffQuote | null>) =>
       trackMainStaffQuoteRun(pendingRun, retry, noticeEmail).then((remote) => {
@@ -1361,11 +1363,11 @@ export function NavaPane({
             : null;
         return remote;
       });
-    void runNoticed(run).then((remote) => {
+    function applyStaffQuoteResult(remote: BoundExecuteStaffQuote | null) {
       if (remote === null) {
         dispatchQuote({
           type: 'results_unavailable',
-          stepId: step.id,
+          stepId: staffQuoteStep.id,
           reason: 'The background HMS quote did not start. Run Get rates to try again.',
           selectionEpoch,
           inputRevision,
@@ -1380,7 +1382,7 @@ export function NavaPane({
       if (remote.status !== 'ok') {
         dispatchQuote({
           type: 'results_unavailable',
-          stepId: step.id,
+          stepId: staffQuoteStep.id,
           reason: remote.reason,
           detail: remote.detail,
           selectionEpoch,
@@ -1401,7 +1403,7 @@ export function NavaPane({
                   toast.warning('That quote has changed. Run the quote again to quote as B&B.');
                   return;
                 }
-                quoteAsBbWithDinnerAllowance(step.id, dinnerGroupIds);
+                quoteAsBbWithDinnerAllowance(staffQuoteStep.id, dinnerGroupIds);
               },
             },
           });
@@ -1424,10 +1426,10 @@ export function NavaPane({
       if (luna?.workflow === 'create_booking') {
         void bindPrepareBookingDraft({
           mutate: staff.workstation.prepareBookingDraft?.mutate,
-          source,
+          source: staffQuoteSource,
           workflowRunId: remote.staffQuote.workflowRunId,
           revisionRef: remote.staffQuote.revisionRef,
-          messageId: source.messageId,
+          messageId: staffQuoteSource.messageId,
           selectionEpoch,
           inputRevision,
           analysis: { ...luna, groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups) },
@@ -1439,11 +1441,12 @@ export function NavaPane({
           dispatchQuote({
             type: 'booking_draft_ready',
             payload: draftRemote.payload,
-            sourceHash: source.sourceHash,
+            sourceHash: staffQuoteSource.sourceHash,
           });
         });
       }
-    });
+    }
+    void runNoticed(run).then(applyStaffQuoteResult);
   };
 
   const autoStartStaffQuoteStep = () => {
@@ -1494,7 +1497,7 @@ export function NavaPane({
         stayKey: candidate.shareKey,
       });
     });
-    if (!step) return;
+    if (!step?.shareKey) return;
     const attemptKey = staffQuoteAttemptKey(
       binding.transportId,
       source.messageId,

@@ -57,6 +57,20 @@ function view(status: 'running' | 'done' | 'failed', result: unknown = null, asO
   };
 }
 
+function storedStaffQuoteRequest(
+  input: ExecuteStaffQuoteInput,
+  overrides: Partial<ExecuteStaffQuoteInput> = {},
+) {
+  const storedInput = {
+    ...input,
+    selectionEpoch: 1,
+    inputRevision: 2,
+    ...overrides,
+  } as ExecuteStaffQuoteInput & { autoStart?: true };
+  delete storedInput.autoStart;
+  return { kind: 'staff_quote' as const, input: storedInput };
+}
+
 afterEach(() => {
   vi.useRealTimers();
   setMailCacheScope({ userId: null, activeTransportId: null });
@@ -361,6 +375,52 @@ describe('staff quote HMS job binding', () => {
     expect(queue).toHaveBeenCalledTimes(1);
     expect(staffQuoteJob).toHaveBeenCalledWith({ runId: 'staff-job-1' });
     expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it('rebases reused auto-start result counters when its stored request matches', async () => {
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'staff-job-reused' }));
+    const staffQuoteJob = vi.fn(async () => ({
+      ...view('done', { ...READY, selectionEpoch: 1, inputRevision: 2 }),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0]),
+    }));
+
+    const result = await bindAutoStartStaffQuote({
+      queue,
+      staffQuoteJob,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      staffQuote: { selectionEpoch: 3, inputRevision: 4 },
+    });
+  });
+
+  it('does not rebase a reused auto-start result for a different stored request', async () => {
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'staff-job-reused' }));
+    const staffQuoteJob = vi.fn(async () => ({
+      ...view('done', { ...READY, selectionEpoch: 1, inputRevision: 2 }),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { company: 'Different Company' }),
+    }));
+
+    const result = await bindAutoStartStaffQuote({
+      queue,
+      staffQuoteJob,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'unavailable',
+      reason: 'The quote is out of date because the stay details changed. Run it again.',
+    });
   });
 
   it('does not queue an incomplete auto-start request', async () => {

@@ -1506,6 +1506,8 @@ describe('NavaPane screen states', () => {
     });
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1);
     expect((await screen.findByTestId('hms-job-notice-banner')).textContent).toContain('Rates ready');
+    expect(await screen.findByText('Available')).toBeDefined();
+    expect(screen.getByRole('button', { name: /Restored HMS allocation/ })).toBeDefined();
   });
 
   it('keeps the rates progress line while an overlapping prior-quote read settles', async () => {

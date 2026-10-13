@@ -37,6 +37,12 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
           class="flex min-w-0 shrink items-center gap-1.5 text-[11.5px] font-medium text-[#475569] [&_button]:whitespace-nowrap"
         >
           <span
+            class="whitespace-nowrap rounded-full bg-[#eff6ff] px-2 py-1 text-[10.5px] font-semibold text-[#0066cc]"
+            data-testid="hms-running-count"
+          >
+            HMS: 1 pending
+          </span>
+          <span
             class="h-2 w-2 rounded-full animate-pulse bg-emerald-600"
           />
           <span>
@@ -469,7 +475,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
               <p
                 class="text-[11.5px] text-[#64748b]"
               >
-                Nothing shown yet.
+                Looking up…
               </p>
             </div>
           </div>
@@ -478,6 +484,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
           >
             <button
               class="rounded-sm border border-[#0066cc] bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8]"
+              disabled=""
               type="button"
             >
               Find this booking in HMS
@@ -486,6 +493,29 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
               class="text-[10.5px] text-[#64748b]"
             >
               Takes about 1–2 minutes. Quotes wait while it runs.
+            </p>
+            <p
+              class="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]"
+              data-state="queued"
+              data-testid="hms-job-status"
+              role="status"
+            >
+              <span
+                class="font-semibold text-[#1e293b]"
+              >
+                Looking up in HMS — you can keep working
+              </span>
+              <span
+                class="font-semibold text-[#475569]"
+              >
+                Queued
+              </span>
+              <span>
+                Nava is looking up the booking in HMS…
+              </span>
+              <span>
+                0 s elapsed
+              </span>
             </p>
             <div
               aria-live="polite"
@@ -2266,7 +2296,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                         <p
                           class="text-[11px] text-[#64748b]"
                         >
-                          Dates unknown → unknown · Any Room ×1, adults not set
+                          Dates unknown → unknown · Room type needed ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
@@ -4344,7 +4374,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                         <p
                           class="text-[11px] text-[#64748b]"
                         >
-                          Dates unknown → unknown · Any Room ×1, adults not set
+                          Dates unknown → unknown · Room type needed ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
@@ -6655,7 +6685,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                         <p
                           class="text-[11px] text-[#64748b]"
                         >
-                          Dates unknown → unknown · Any Room ×1, adults not set
+                          Dates unknown → unknown · Room type needed ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
@@ -8633,7 +8663,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                         <p
                           class="text-[11px] text-[#64748b]"
                         >
-                          Dates unknown → unknown · Any Room ×1, adults not set
+                          Dates unknown → unknown · Room type needed ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"

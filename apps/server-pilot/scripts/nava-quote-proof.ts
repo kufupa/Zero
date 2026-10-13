@@ -45,18 +45,19 @@ const PARTY_SEARCH_LIMIT = 2;
 const FIELD_EDIT_LIMIT = 2;
 const MESSAGE_LIMIT = 220;
 
-/** Page targets use accessible names; structural locators only scope a semantic rate-card article or labelled field. */
+/** Page targets use accessible names; structural locators only scope a semantic rate card or labelled field. */
 export const QUOTE_SELECTORS = {
   intent: 'Nava reads this as',
-  contactRegion: 'Contact',
-  contactName: 'Name',
-  contactEmail: 'Email',
-  stayRegion: 'Stay details',
+  contactRegion: 'Guest & contact',
+  contactNameValue: '[data-contact-field="name"] dd > span',
+  contactEmailValue: '[data-contact-field="email"] dd > span',
+  stayRegion: 'Stay',
   stayArticle: /^Stay \d+ details$/,
   changeDates: 'Change dates',
   arrival: 'Arrival',
   departure: 'Departure',
-  roomRow: /^Room \d+$/,
+  roomTable: 'Room types & occupancy',
+  roomRow: /^.+ ×(?:\d+|\?)$/,
   roomType: 'Room type',
   roomCount: /^Rooms for stay \d+, room \d+$/,
   adultText: /^(?:\d+\s+adults?\s+per\s+room|Adults per room not set)$/i,
@@ -74,7 +75,7 @@ export const QUOTE_SELECTORS = {
   selectedParty: /✓\s*(.+?)\s+\(#([^)]+)\)(?:\s+— picked by Nava)?/,
   advanced: 'Advanced',
   ratePlan: 'Rate plan',
-  ratesRegion: 'Search availability & room rates',
+  ratesRegion: 'Rates',
   rateHeading: 'Availability for this date range',
   rateArticleAncestor: 'xpath=ancestor::article[1]',
   searchButton: /^(?:Search availability|Retry search|Search again)$/,
@@ -84,22 +85,32 @@ export const QUOTE_SELECTORS = {
   detailsButton: 'Details',
   pendingParty: /Searching HMS for|Queued(?:\s|\(|$)|Running(?:\s|\(|\.|$)|Retrying/i,
   pendingRate: /Starting the HMS run|Getting rates from HMS|Queued(?:\s|\(|$)|Running(?:\s|\(|\.|$)|Retrying/i,
-  docsRegion: 'Quote documents',
+  docsRegion: 'Quote',
   prepareButton: /^Prepare (?:quote|PDF)$/,
   excelButton: 'Download Excel',
   screenshotMask: '[data-runner-mask], [data-pii]',
 } as const;
 
 const STAFF_QUOTE_PROCEDURE = 'workstation.executeStaffQuote';
+const QUEUED_STAFF_QUOTE_PROCEDURE = 'workstation.queueStaffQuote';
+const STAFF_QUOTE_PROCEDURES: ReadonlySet<string> = new Set([
+  STAFF_QUOTE_PROCEDURE,
+  QUEUED_STAFF_QUOTE_PROCEDURE,
+]);
 const PDF_PROCEDURE = 'workstation.qualifiedQuoteProposalPdf';
 const WORKBOOK_PROCEDURE = 'workstation.quoteWorkbook';
 const PARTY_LOOKUP_PROCEDURE = 'panePartyLookup.findParty';
+const QUEUED_PARTY_LOOKUP_PROCEDURE = 'paneStayLookup.queueParty';
+const QUEUED_JOB_READS: ReadonlySet<string> = new Set([
+  'workstation.staffQuoteJob',
+  'paneStayLookup.jobStatus',
+  'paneStayLookup.jobQueueEnabled',
+]);
 const QUOTE_SUPPORT_WRITES: ReadonlySet<string> = new Set([
   'workItems.open',
   'workItems.recordActions',
   'workItems.acceptFields',
   'workItems.recordEvent',
-  STAFF_QUOTE_PROCEDURE,
   PDF_PROCEDURE,
   WORKBOOK_PROCEDURE,
 ]);
@@ -159,10 +170,21 @@ export function classifyQuoteRequest(
   const pending = { rates: [] as string[], parties: 0, edits: 0, pdfs: 0, workbooks: 0 };
   procedures.forEach((procedure, index) => {
     const refuse = (reason: QuoteGuardReason) => blocked.push({ procedure, reason });
-    if (READ_PROCEDURES.has(procedure) || ANALYSIS_PROCEDURES.has(procedure)) return;
-    if (procedure === PARTY_LOOKUP_PROCEDURE && HMS_READ_PROCEDURES.has(procedure)) {
+    if (READ_PROCEDURES.has(procedure) || ANALYSIS_PROCEDURES.has(procedure) || QUEUED_JOB_READS.has(procedure)) return;
+    if (
+      (procedure === PARTY_LOOKUP_PROCEDURE && HMS_READ_PROCEDURES.has(procedure)) ||
+      procedure === QUEUED_PARTY_LOOKUP_PROCEDURE
+    ) {
       if (state.partyLookups + pending.parties >= PARTY_SEARCH_LIMIT) refuse('party_lookup_limit');
       else pending.parties += 1;
+      return;
+    }
+    if (STAFF_QUOTE_PROCEDURES.has(procedure)) {
+      const key = stayKeyOfRatesInput(batchInput(postData, index));
+      if (!key) refuse('rate_without_stay');
+      else if (!state.expectedRateKeys.has(key)) refuse('unexpected_stay');
+      else if (state.ratedRateKeys.includes(key) || pending.rates.includes(key)) refuse('duplicate_rate');
+      else pending.rates.push(key);
       return;
     }
     if (!QUOTE_SUPPORT_WRITES.has(procedure)) {
@@ -173,14 +195,6 @@ export function classifyQuoteRequest(
       if (!state.allowEdits) refuse('edits_disabled');
       else if (state.fieldEdits + pending.edits >= FIELD_EDIT_LIMIT) refuse('edit_limit');
       else pending.edits += 1;
-      return;
-    }
-    if (procedure === STAFF_QUOTE_PROCEDURE) {
-      const key = stayKeyOfRatesInput(batchInput(postData, index));
-      if (!key) refuse('rate_without_stay');
-      else if (!state.expectedRateKeys.has(key)) refuse('unexpected_stay');
-      else if (state.ratedRateKeys.includes(key) || pending.rates.includes(key)) refuse('duplicate_rate');
-      else pending.rates.push(key);
       return;
     }
     if (procedure === PDF_PROCEDURE) {
@@ -386,6 +400,11 @@ async function controlValue(locator: Locator): Promise<string | null> {
   return value.trim() || null;
 }
 
+async function displayValue(locator: Locator): Promise<string | null> {
+  const value = (await locator.innerText().catch(() => '')).trim();
+  return value && value !== '—' ? value : null;
+}
+
 async function selectedOptionLabel(locator: Locator): Promise<string | null> {
   const option = locator.getByRole('option', { selected: true }).first();
   const label = await option.innerText().catch(() => '');
@@ -416,8 +435,8 @@ export async function openStayDateInputs(stay: Locator): Promise<{ arrival: Loca
 async function readPrefilled(page: Page): Promise<QuotePrefilled> {
   const contact = page.getByRole('region', { name: QUOTE_SELECTORS.contactRegion });
   const prefilled = emptyPrefilled();
-  prefilled.contact.name = await controlValue(contact.getByRole('textbox', { name: QUOTE_SELECTORS.contactName, exact: true }));
-  prefilled.contact.email = await controlValue(contact.getByRole('textbox', { name: QUOTE_SELECTORS.contactEmail, exact: true }));
+  prefilled.contact.name = await displayValue(contact.locator(QUOTE_SELECTORS.contactNameValue));
+  prefilled.contact.email = await displayValue(contact.locator(QUOTE_SELECTORS.contactEmailValue));
 
   const stays = page.getByRole('region', { name: QUOTE_SELECTORS.stayRegion }).getByRole('article', {
     name: QUOTE_SELECTORS.stayArticle,
@@ -426,7 +445,9 @@ async function readPrefilled(page: Page): Promise<QuotePrefilled> {
     const stay = stays.nth(stayIndex);
     const dateInputs = await openStayDateInputs(stay);
     const rooms: QuotePrefilledRoom[] = [];
-    const rows = stay.getByRole('row', { name: QUOTE_SELECTORS.roomRow });
+    const rows = stay
+      .getByRole('table', { name: QUOTE_SELECTORS.roomTable, exact: true })
+      .getByRole('row', { name: QUOTE_SELECTORS.roomRow });
     for (let roomIndex = 0; roomIndex < (await rows.count()); roomIndex += 1) {
       const row = rows.nth(roomIndex);
       const typeSelect = row.getByRole('combobox', { name: QUOTE_SELECTORS.roomType, exact: true });
@@ -939,7 +960,7 @@ async function runRates(
     await rates.waitFor({ state: 'visible', timeout: initialWait });
   } catch {
     if (Date.now() >= deadline) return timedOut();
-    throw new Blocker('the Search availability & room rates step is missing');
+    throw new Blocker('the Rates step is missing');
   }
   const articles = await rateArticles(rates);
   const keys = uniqueRateKeys(stays);
@@ -1091,6 +1112,7 @@ async function proveThread(
   }
 
   proof.prefilled = await readPrefilled(page);
+  guard.expectedRateKeys = new Set(uniqueRateKeys(proof.prefilled.stays).map((item) => item.key));
   const missing = requiredQuoteEdits(proof.prefilled);
   if (missing.length) {
     proof.blocker = 'needs_edits:' + missing.join(',');
@@ -1127,7 +1149,7 @@ async function proveThread(
 
   const docsRegion = page.getByRole('region', { name: QUOTE_SELECTORS.docsRegion, exact: true });
   await docsRegion.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
-    throw new Blocker('the Quote documents step is missing');
+    throw new Blocker('the Quote step is missing');
   });
   try {
     proof.docs.pdfBytes = await saveDocument(

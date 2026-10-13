@@ -967,7 +967,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       );
     }));
 
-  it('deduplicates user party searches per transport, normalized name, kind and day; a new field Find supersedes queued only', () =>
+  it('deduplicates user party searches per transport, normalized name, kind and day; a new field Find preserves jobs shared with another thread', () =>
     withSeededTestDb(async (db) => {
       const firstThread = await seedThread(db);
       const secondThread = await seedThread(db);
@@ -1003,11 +1003,25 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       ).toBe(first?.id);
 
       const next = await queue(firstThread.threadId, 'Different Agency', 'company');
-      const [superseded] = await db
+      const [stillShared] = await db
         .select({ state: aiWorkflowRun.state })
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.id, first!.id));
-      expect(superseded?.state).toBe('superseded');
+      expect(stillShared?.state).toBe('queued');
+      expect(
+        (
+          await readHmsJobView(
+            {
+              transportId: TRANSPORT_ID,
+              threadId: secondThread.threadId,
+              kind: 'party',
+              name: 'Horizon Trail Tours',
+              partyKind: 'company',
+            },
+            db,
+          )
+        )?.runId,
+      ).toBe(first?.id);
       expect(next?.state).toBe('queued');
 
       const retry = await queue(firstThread.threadId, 'Different Agency', 'company', true);

@@ -9,6 +9,7 @@ import {
   namedRateRefusal,
   newQuoteGuardState,
   partyLookupsReady,
+  QUOTE_SELECTORS,
   rateWaitBudget,
   quoteThreadFailure,
   quoteProofPass,
@@ -125,6 +126,18 @@ describe('quote proof input review', () => {
 });
 
 describe('quote proof interaction helpers', () => {
+  it('targets display-first contact values and the guided quote section and room labels', () => {
+    expect(QUOTE_SELECTORS.contactRegion).toBe('Guest & contact');
+    expect(QUOTE_SELECTORS.contactNameValue).toBe('[data-contact-field="name"] dd > span');
+    expect(QUOTE_SELECTORS.contactEmailValue).toBe('[data-contact-field="email"] dd > span');
+    expect(QUOTE_SELECTORS.stayRegion).toBe('Stay');
+    expect(QUOTE_SELECTORS.ratesRegion).toBe('Rates');
+    expect(QUOTE_SELECTORS.docsRegion).toBe('Quote');
+    expect(QUOTE_SELECTORS.roomRow.test('Standard Queen ×2')).toBe(true);
+    expect(QUOTE_SELECTORS.roomRow.test('Room type needed ×1')).toBe(true);
+    expect(QUOTE_SELECTORS.roomRow.test('Room 1')).toBe(false);
+  });
+
   it('opens each stay date disclosure before exposing its native date inputs', async () => {
     const datesVisible = { Arrival: false, Departure: false };
     let clicks = 0;
@@ -247,6 +260,23 @@ describe('quote proof request guard', () => {
     for (const procedure of ['hmsApproval.approve', 'quoteWorkflow.commitStay', 'drafts.saveReply', 'unknown.call']) {
       expect(classifyQuoteRequest(tRPC(procedure), null, state).allowed, procedure).toBe(false);
     }
+  });
+
+  it('allows queued quote and party reads while retaining the per-stay and party-search limits', () => {
+    const state = newQuoteGuardState(['2026-11-02:2026-11-04']);
+    const quoteInput = batch({ groups: [{ arrivalDate: '2026-11-02', departureDate: '2026-11-04' }] });
+
+    expect(classifyQuoteRequest(tRPC('workstation.queueStaffQuote'), quoteInput, state).allowed).toBe(true);
+    expect(classifyQuoteRequest(tRPC('workstation.staffQuoteJob'), null, state).allowed).toBe(true);
+    expect(classifyQuoteRequest(tRPC('paneStayLookup.jobStatus'), null, state).allowed).toBe(true);
+    expect(classifyQuoteRequest(tRPC('paneStayLookup.jobQueueEnabled'), null, state).allowed).toBe(true);
+    expect(classifyQuoteRequest(tRPC('workstation.executeStaffQuote'), quoteInput, state).allowed).toBe(false);
+
+    expect(classifyQuoteRequest(tRPC('paneStayLookup.queueParty'), null, state).allowed).toBe(true);
+    expect(classifyQuoteRequest(tRPC('paneStayLookup.queueParty'), null, state).allowed).toBe(true);
+    expect(classifyQuoteRequest(tRPC('paneStayLookup.queueParty'), null, state).allowed).toBe(false);
+    expect(classifyQuoteRequest(tRPC('paneStayLookup.queueFind'), null, state).allowed).toBe(false);
+    expect(classifyQuoteRequest(tRPC('workstation.prepareBookingDraft'), null, state).allowed).toBe(false);
   });
 
   it('only allows pane field events when NAVA_PROOF_ALLOW_EDITS is enabled', () => {
