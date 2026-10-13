@@ -536,24 +536,15 @@ export function HmsJobNoticeBanner() {
         {moreCount ? <p className="mt-0.5 text-[11px]">{`+${moreCount} more`}</p> : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {notice.status === 'done' ? (
-          <button
-            type="button"
-            aria-controls={notice.targetId}
-            onClick={show}
-            className="font-semibold underline"
-          >
-            Show
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => reporter.retryNotice(notice.id)}
-            className="font-semibold underline"
-          >
-            Retry
-          </button>
-        )}
+        {/* A failed lookup is retried from its own card, which re-reads the current stay and refreshes the result there. */}
+        <button
+          type="button"
+          aria-controls={notice.targetId}
+          onClick={show}
+          className="font-semibold underline"
+        >
+          {notice.status === 'done' ? 'Show' : 'Show and retry'}
+        </button>
         <button
           type="button"
           aria-label="Dismiss HMS notice"

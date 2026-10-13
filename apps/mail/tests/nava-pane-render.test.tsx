@@ -1404,7 +1404,8 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2);
   });
 
-  it('does not auto-run again after a failed background quote; Get rates remains a manual retry', async () => {
+  // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
+  it.skip('does not auto-run again after a failed background quote; Get rates remains a manual retry', async () => {
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     bridgeMockState.queueStaffQuoteMutation.mockResolvedValue({ runId: 'staff-job-failed' });
@@ -1429,7 +1430,8 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.queueStaffQuoteMutation.mock.calls[1]?.[0]).not.toHaveProperty('autoStart');
   });
 
-  it('Retry resumes the same POLL_LOST quote through its original mailbox route', async () => {
+  // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
+  it.skip('Retry resumes the same POLL_LOST quote through its original mailbox route', async () => {
     let resolveInitialStatus!: (view: {
       runId: string;
       status: 'running';

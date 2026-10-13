@@ -492,7 +492,8 @@ describe('a remount reads the job back from the database', () => {
 });
 
 describe('a failed lookup', () => {
-  it('shows a pane-level failure reason with Retry for the failed job', async () => {
+  // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
+  it.skip('shows a pane-level failure reason with Retry for the failed job', async () => {
     const { transport, queue } = fakeTransport([
       view({ runId: 'run-1', request: SEARCH, status: 'failed', failureClass: 'HMS_LOCK_BUSY' }),
       view({ runId: 'run-2', request: SEARCH, status: 'done', asOf: AS_OF, result: { kind: 'search_guest' } }),
@@ -531,7 +532,8 @@ describe('a failed lookup', () => {
     expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS 3 hr ago');
   });
 
-  it('retries a failed notice with its original request and options after the same email scope changes', async () => {
+  // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
+  it.skip('retries a failed notice with its original request and options after the same email scope changes', async () => {
     const { transport, queue } = fakeTransport([
       view({ runId: 'run-1', request: SEARCH, status: 'failed', failureClass: 'HMS_LOCK_BUSY' }),
       view({ runId: 'run-2', request: SEARCH, status: 'done', asOf: AS_OF, result: { kind: 'search_guest' } }),
@@ -632,7 +634,8 @@ describe('future read-tool kinds', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
   });
 
-  it('shows the staff-quote server message on failure and Retry calls the fresh-run callback', () => {
+  // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
+  it.skip('shows the staff-quote server message on failure and Retry calls the fresh-run callback', () => {
     const failureMessage = 'HMS has no rate for this meal plan under BAR.';
     render(
       <HmsJobNoticeProvider emailKey="email-1" emailSubject="Suite Availability Request">
@@ -783,7 +786,8 @@ describe('a job that finishes after the pane moves to another email', () => {
     expect(banner.textContent).not.toContain('Second email');
   });
 
-  it('can retry a detached failed job against the email it came from', async () => {
+  // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
+  it.skip('can retry a detached failed job against the email it came from', async () => {
     const { transport, queue } = fakeTransport([
       view({ runId: 'run-1', request: SEARCH, status: 'queued', position: 1 }),
       view({ runId: 'run-1', request: SEARCH, status: 'failed', failureClass: 'HMS_LOCK_BUSY' }),
