@@ -26,7 +26,7 @@ export function BookingVoucherCard({
   syncPending: boolean;
   /** The stored work item for the selected mail. The write attaches to it. */
   workItemId?: string | null;
-  /** The pane save flag. Off keeps write controls visible but disabled with a reason. */
+  /** The pane save flag. Off hides HMS write controls; read-only lookup and Copy actions remain available. */
   writesEnabled?: boolean;
 }) {
   const amendment = amendmentOf(session);

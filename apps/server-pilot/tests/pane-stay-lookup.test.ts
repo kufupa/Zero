@@ -445,6 +445,7 @@ describe('paneStayLookup router', () => {
     const spawn = vi.fn(async () => lookupResult());
     paneStayLookupLoaders.spawn = spawn;
     const caller = mailboxCaller();
+    await expect(caller.paneStayLookup.jobQueueEnabled()).resolves.toBe(false);
     await expect(caller.paneStayLookup.queueFind({ threadId: 'thread-1', confirmation: '57291630-1' })).resolves.toEqual({
       runId: null,
     });
@@ -464,14 +465,6 @@ describe('paneStayLookup router', () => {
         threadId: 'thread-1',
         name: 'Acme Travel',
         partyKind: 'company',
-      }),
-    ).resolves.toEqual({ runId: null });
-    await expect(
-      caller.paneStayLookup.queueParty({
-        threadId: 'thread-1',
-        name: 'Acme Travel',
-        partyKind: 'company',
-        autoStart: true,
       }),
     ).resolves.toEqual({ runId: null });
     await expect(

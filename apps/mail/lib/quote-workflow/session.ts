@@ -24,7 +24,7 @@ import {
 } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
 import { approvedExecuteHeader, hasPerStaySingleChargeExtras, staffHeaderForStay } from './staff-quote-bind';
-import { rowRoomTypeCode, type RoomTypeCode } from './room-types';
+import { rowRoomLabel, rowRoomTypeCode, type RoomTypeCode } from './room-types';
 
 /**
  * The amendment Luna reported on this email, or null. It lives on the analysis, so it survives every reducer
@@ -215,7 +215,7 @@ export function parseChildrenAges(raw: string): number[] {
 
 /**
  * One HMS step's inputs in a line. A step searches one stay (one set of dates), so its groups are that stay's rooms:
- * "Dates 2026-11-02 → 2026-11-06 · Room 1: 15 × STQN, 1 adult · Room 2: 15 × STWN, 2 adults".
+ * "Dates 2026-11-02 → 2026-11-06 · Standard Queen ×15, 1 adult · Standard Twin ×15, 2 adults".
  */
 export function formatQuoteStepInputs(inputs: Record<string, unknown>): string {
   const bits: string[] = [];
@@ -226,7 +226,7 @@ export function formatQuoteStepInputs(inputs: Record<string, unknown>): string {
     bits.push(`Dates ${inputs.quoteRequestKey.replace(':', ' → ')}`);
   }
   if (Array.isArray(inputs.groups)) {
-    for (const [index, raw] of inputs.groups.entries()) {
+    for (const raw of inputs.groups) {
       if (!raw || typeof raw !== 'object') continue;
       const group = raw as Record<string, unknown>;
       const qty = typeof group.quantity === 'number' ? group.quantity : 1;
@@ -235,7 +235,7 @@ export function formatQuoteStepInputs(inputs: Record<string, unknown>): string {
         : 'any room';
       const adults =
         typeof group.adults === 'number' ? `${group.adults} ${group.adults === 1 ? 'adult' : 'adults'}` : 'adults not set';
-      bits.push(`Room ${index + 1}: ${qty} × ${room}, ${adults}`);
+      bits.push(`${rowRoomLabel({ roomPreference: room, quantity: qty })}, ${adults}`);
     }
   }
   return bits.length ? bits.join(' · ') : 'Nothing to search yet';

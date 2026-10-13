@@ -180,7 +180,7 @@ describe('party prefetch selection', () => {
         sender: 'sender@example.test',
         body: 'Travel Agency Details: Another Agency',
       }),
-    ).toEqual({ kind: 'party', name: 'Horizon Trail Tours', partyKind: 'agency' });
+    ).toEqual({ kind: 'party', name: 'Horizon Trail Tours' });
   });
 
   it('falls back to the top email party suggestion and skips non-quote mail', () => {
@@ -191,7 +191,7 @@ describe('party prefetch selection', () => {
         sender: 'sender@example.test',
         body: 'Travel Agency Details: Sample Agency',
       }),
-    ).toEqual({ kind: 'party', name: 'Sample Agency', partyKind: 'agency' });
+    ).toEqual({ kind: 'party', name: 'Sample Agency' });
     expect(
       selectPartyPrefetchRequest({
         kind: 'booking',
@@ -202,47 +202,30 @@ describe('party prefetch selection', () => {
     ).toBeNull();
   });
 
-  it('builds an idempotency key from transport, thread, kind, normalized name, and day', () => {
+  it('builds one kind-less prefetch key from transport, normalized name, and day', () => {
     const key = partyPrefetchIdempotencyKey(
       'transport-1',
-      'thread-1',
       ' Horizon  Trail Tours ',
-      'agency',
       '2026-10-12',
     );
     expect(key).toBe(
       partyPrefetchIdempotencyKey(
         'transport-1',
-        'thread-1',
         'horizon trail tours',
-        'agency',
+        '2026-10-12',
+      ),
+    );
+    expect(key).not.toBe(
+      partyPrefetchIdempotencyKey(
+        'transport-2',
+        'horizon trail tours',
         '2026-10-12',
       ),
     );
     expect(key).not.toBe(
       partyPrefetchIdempotencyKey(
         'transport-1',
-        'thread-1',
         'horizon trail tours',
-        'company',
-        '2026-10-12',
-      ),
-    );
-    expect(key).not.toBe(
-      partyPrefetchIdempotencyKey(
-        'transport-1',
-        'thread-2',
-        'horizon trail tours',
-        'agency',
-        '2026-10-12',
-      ),
-    );
-    expect(key).not.toBe(
-      partyPrefetchIdempotencyKey(
-        'transport-1',
-        'thread-1',
-        'horizon trail tours',
-        'agency',
         '2026-10-13',
       ),
     );
@@ -345,7 +328,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           );
         expect(rows).toEqual([
           expect.objectContaining({
-            request: { kind: 'party', name: 'Horizon Trail Tours', partyKind: 'agency' },
+            request: { kind: 'party', name: 'Horizon Trail Tours' },
             priority: HMS_JOB_PRIORITY_PREFETCH,
           }),
         ]);

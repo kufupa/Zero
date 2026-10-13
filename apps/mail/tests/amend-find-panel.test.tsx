@@ -661,7 +661,7 @@ describe('AmendLookupPanel with the job queue off', () => {
 describe('party lookup transport with the job queue off', () => {
   const request = { kind: 'party' as const, name: 'ABC Travel', partyKind: 'company' as const };
 
-  it('does not repeat a live lookup for an automatic read-back start', async () => {
+  it('does not queue or run a party lookup from an automatic read-back start', async () => {
     const findParty = vi
       .fn()
       .mockResolvedValue({ outcome: 'resolved', results: [], truncated: false });
@@ -670,12 +670,7 @@ describe('party lookup transport with the job queue off', () => {
     expect(transport).not.toBeNull();
 
     await expect(transport!.queue(request, { autoStart: true })).resolves.toEqual({ runId: null });
-    expect(queueParty).toHaveBeenCalledWith({
-      threadId: THREAD,
-      name: request.name,
-      partyKind: request.partyKind,
-      autoStart: true,
-    });
+    expect(queueParty).not.toHaveBeenCalled();
     expect(findParty).not.toHaveBeenCalled();
   });
 
@@ -1021,20 +1016,21 @@ describe('AmendLookupPanel marks guest details for the preview gate (H6b)', () =
     expect(unmaskedPii(refused.container, ['9999SH999999', 'Mokoena'])).toEqual([]);
   });
 
-  it('marks the cancel lines and keeps the preview visibly disabled', async () => {
+  it('marks the cancel lines and hides the preview while cancel writes are off', async () => {
     renderCancel({});
     await screen.findByText(/^Cancelling from here is switched off/);
     expect(unmaskedPii(document.body, [CONFIRMATION, 'Mokoena', 'Thabo'])).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
+    expect(screen.queryByText('Coming soon')).toBeNull();
     cleanup();
 
     capabilities.paneSave = true;
     const preview = vi.fn();
     const commit = vi.fn();
     renderCancel({ preview, commit });
-    const previewButton = (await screen.findByRole('button', { name: 'Preview cancellation' })) as HTMLButtonElement;
-    expect(previewButton.disabled).toBe(true);
-    expect(screen.getByText('Coming soon')).toBeTruthy();
-    fireEvent.click(previewButton);
+    await screen.findByText(/^Cancelling from here is switched off/);
+    expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
+    expect(screen.queryByText('Coming soon')).toBeNull();
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
     expect(unmaskedPii(document.body, [CONFIRMATION, 'Mokoena', 'Thabo'])).toEqual([]);
@@ -1043,17 +1039,16 @@ describe('AmendLookupPanel marks guest details for the preview gate (H6b)', () =
 
 // Cancellation is disabled with "Coming soon" while writes are off (U-3). These cases assert that state.
 describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
-  it('says cancelling is switched off, shows Coming soon and sends no preview when the pane save flag is off', async () => {
+  it('says cancelling is switched off and hides its preview control when the pane save flag is off', async () => {
     const { preview } = renderCancel({});
-    const previewButton = (await screen.findByRole('button', { name: 'Preview cancellation' })) as HTMLButtonElement;
-    expect(previewButton.disabled).toBe(true);
-    expect(screen.getByText('Coming soon')).toBeTruthy();
+    await screen.findByText(/^Cancelling from here is switched off/);
+    expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
+    expect(screen.queryByText('Coming soon')).toBeNull();
     expect(
       screen.getByText(
         'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
       ),
     ).toBeTruthy();
-    fireEvent.click(previewButton);
     expect(preview).not.toHaveBeenCalled();
   });
 
@@ -1061,11 +1056,10 @@ describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
     capabilities.paneSave = true;
     const preview = vi.fn();
     renderCancel({ preview });
-    const previewButton = (await screen.findByRole('button', { name: 'Preview cancellation' })) as HTMLButtonElement;
-    expect(previewButton.disabled).toBe(true);
+    await screen.findByText('Nava only looks the booking up. Make the change in HMS yourself.');
+    expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
     expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
     expect(screen.queryByText(/Nava can preview the cancellation/)).toBeNull();
-    fireEvent.click(previewButton);
     expect(preview).not.toHaveBeenCalled();
   });
 

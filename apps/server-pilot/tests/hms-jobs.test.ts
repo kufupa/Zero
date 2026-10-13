@@ -20,6 +20,7 @@ import {
   HMS_JOB_PRIORITY_PREFETCH,
   HMS_JOB_PRIORITY_USER,
   prefetchHmsConfirmations,
+  queueUserPartyHmsJob,
   queueUserHmsJob,
   readHmsJobView,
   requeueHmsReadsAfterRestart,
@@ -353,6 +354,113 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect((await resume(' horizon   trail tours ', 'agency'))?.runId).toBe(agency!.id);
       expect((await resume('HORIZON TRAIL TOURS', 'company'))?.runId).toBe(company!.id);
       expect(await resume('Another Agency', 'agency')).toBeNull();
+    }));
+
+  it('reads a kind-less prefetched party job for either field, but not a party job older than 24 hours', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const queued = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'party', name: 'Horizon Trail Tours' },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: `test:party-prefetch:${randomUUID()}`,
+        },
+        db,
+      );
+      const resume = (partyKind: 'company' | 'agency') =>
+        readHmsJobView(
+          { transportId: TRANSPORT_ID, threadId, kind: 'party', name: 'Horizon Trail Tours', partyKind },
+          db,
+        );
+
+      expect((await resume('company'))?.runId).toBe(queued.run.id);
+      expect((await resume('agency'))?.runId).toBe(queued.run.id);
+
+      await db
+        .update(aiWorkflowRun)
+        .set({ createdAt: new Date(Date.now() - 25 * 60 * 60_000) })
+        .where(eq(aiWorkflowRun.id, queued.run.id));
+      expect(await resume('company')).toBeNull();
+      expect((await readHmsJobView({ transportId: TRANSPORT_ID, runId: queued.run.id }, db))?.runId).toBe(
+        queued.run.id,
+      );
+    }));
+
+  it('deduplicates user party searches per transport, normalized name, kind and day; a new field Find supersedes queued only', () =>
+    withSeededTestDb(async (db) => {
+      const firstThread = await seedThread(db);
+      const secondThread = await seedThread(db);
+      const queue = (threadId: string, name: string, partyKind: 'company' | 'agency', retry = false) =>
+        queueUserPartyHmsJob(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            threadId,
+            request: { kind: 'party', name, partyKind },
+            retry,
+          },
+          db,
+        );
+
+      const first = await queue(firstThread.threadId, 'Horizon Trail Tours', 'company');
+      const duplicate = await queue(secondThread.threadId, ' horizon   trail tours ', 'company');
+      expect(duplicate?.id).toBe(first?.id);
+      expect(first?.priority).toBe(HMS_JOB_PRIORITY_USER);
+      expect(
+        (
+          await readHmsJobView(
+            {
+              transportId: TRANSPORT_ID,
+              threadId: secondThread.threadId,
+              kind: 'party',
+              name: 'Horizon Trail Tours',
+              partyKind: 'company',
+            },
+            db,
+          )
+        )?.runId,
+      ).toBe(first?.id);
+
+      const next = await queue(firstThread.threadId, 'Different Agency', 'company');
+      const [superseded] = await db
+        .select({ state: aiWorkflowRun.state })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.id, first!.id));
+      expect(superseded?.state).toBe('superseded');
+      expect(next?.state).toBe('queued');
+
+      const retry = await queue(firstThread.threadId, 'Different Agency', 'company', true);
+      expect(retry?.id).not.toBe(next?.id);
+      const [priorRetryState] = await db
+        .select({ state: aiWorkflowRun.state })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.id, next!.id));
+      expect(priorRetryState?.state).toBe('superseded');
+    }));
+
+  it('caps user party jobs at twelve per transport per hour while reusing duplicate requests', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      const queue = (name: string) =>
+        queueUserPartyHmsJob(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            threadId,
+            request: { kind: 'party', name, partyKind: 'company' },
+          },
+          db,
+        );
+
+      const jobs = [await queue('Company 0')];
+      expect((await queue(' Company 0 '))?.id).toBe(jobs[0]?.id);
+      for (let index = 1; index < 12; index += 1) jobs.push(await queue(`Company ${index}`));
+      await expect(queue('Company 12')).rejects.toMatchObject({ name: 'HmsPartyQueueLimitError' });
     }));
 
   it('queued user jobs report their position in the lane', () =>

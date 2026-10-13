@@ -1,10 +1,12 @@
 import { createContext, useContext } from 'react';
-import type { HmsJobRequest, HmsJobTransport, HmsJobView } from './amend-find';
+import type { HmsJobQueueOptions, HmsJobRequest, HmsJobTransport, HmsJobView } from './amend-find';
 
 export type HmsJobNoticeInput = {
   observerId: string;
   jobId: string;
   request: HmsJobRequest;
+  options?: HmsJobQueueOptions;
+  retryOptions?: HmsJobQueueOptions;
   targetId?: string;
   retry: () => void;
   transport: HmsJobTransport | null;

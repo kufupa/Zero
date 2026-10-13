@@ -217,6 +217,7 @@ describe('QuoteWorkflowPanel', () => {
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.getByText('Standard Twin ×1')).toBeDefined();
     expect(screen.getByText('Standard Queen ×2')).toBeDefined();
+    expect(screen.getByText('3 rooms · 4 guests')).toBeDefined();
     expect(screen.queryByText('Room 1')).toBeNull();
     expect(screen.queryByText('Room 2')).toBeNull();
   });
@@ -365,6 +366,70 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByRole('status').querySelector('svg')).toBeNull();
   });
 
+  it('keeps the other stay editable while a stay HMS search runs', () => {
+    const base = staggeredDatesSession();
+    const activeStep = base.steps[0]!;
+    const [activeGroup, otherGroup] = base.groups;
+    if (!activeGroup || !otherGroup) throw new Error('Expected two stays.');
+    const rateOption = (groupId: string, id: string): RateOption => ({
+      id,
+      groupId,
+      board: 'bb',
+      boardLabel: 'Bed & breakfast',
+      rateCode: 'BAR',
+      rateLabel: 'Best available',
+      roomCode: 'STQN',
+      roomLabel: 'Standard Queen',
+      contract: false,
+      onlyContract: false,
+      matchesRequest: true,
+      perNightMinor: 100_000,
+      totalMinor: 200_000,
+      currency: 'ZAR',
+      priced: 'summary',
+      selected: true,
+    });
+    const session: QuoteSession = {
+      ...base,
+      phase: 'tools',
+      runningStepId: activeStep.id,
+      steps: base.steps.map((step) => step.id === activeStep.id ? { ...step, status: 'running' as const } : step),
+      rateOptions: [rateOption(activeGroup.id, 'active-rate'), rateOption(otherGroup.id, 'other-rate')],
+    };
+    const onRunStep = vi.fn();
+    const onPatchGroup = vi.fn();
+    const { rerender } = render(
+      <QuoteWorkflowPanel session={session} onRunStep={onRunStep} onPatchGroup={onPatchGroup} />,
+    );
+
+    const roomTypes = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
+    expect(roomTypes.every((input) => !input.disabled)).toBe(true);
+    const searchButtons = screen.getAllByRole('button', { name: 'Search availability' }) as HTMLButtonElement[];
+    expect(searchButtons[0]?.disabled).toBe(true);
+    expect(searchButtons[1]?.disabled).toBe(false);
+    fireEvent.click(searchButtons[1]!);
+    expect(screen.getByText('Search queued until the current stay finishes.')).toBeDefined();
+    expect(onRunStep).not.toHaveBeenCalled();
+    const rateCards = screen.getAllByRole('button', { name: /BAR: Best available/ }) as HTMLButtonElement[];
+    expect(rateCards[0]?.disabled).toBe(true);
+    expect(rateCards[1]?.disabled).toBe(false);
+    const priceToggles = screen.getAllByRole('button', { name: 'Special price' });
+    fireEvent.click(priceToggles[0]!);
+    fireEvent.click(priceToggles[1]!);
+    const typeRate = screen.getAllByRole('button', { name: 'Type a rate' }) as HTMLButtonElement[];
+    expect(typeRate[0]?.disabled).toBe(true);
+    expect(typeRate[1]?.disabled).toBe(false);
+    expect((screen.getByRole('textbox', { name: 'Notes for HMS' }) as HTMLTextAreaElement).disabled).toBe(false);
+
+    const finished: QuoteSession = {
+      ...session,
+      runningStepId: null,
+      steps: session.steps.map((step) => step.id === activeStep.id ? { ...step, status: 'succeeded' as const } : step),
+    };
+    rerender(<QuoteWorkflowPanel session={finished} onRunStep={onRunStep} onPatchGroup={onPatchGroup} />);
+    expect(onRunStep).toHaveBeenCalledWith(base.steps[1]!.id);
+  });
+
   it('does not sum alternatives and shows honest missing screenshots', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('ro-vs-bb')} />);
     expect(screen.getByText(/not counted in the total/i)).toBeDefined();
@@ -462,6 +527,17 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.queryByLabelText('Check before sending')).toBeNull();
     expect(screen.queryByLabelText(/Arrival/i)).toBeNull();
     expect(screen.queryByLabelText('Reviewed reply')).toBeNull();
+  });
+
+  it('keeps reply content visible when the analysis is unsynced', () => {
+    render(
+      <QuoteWorkflowPanel
+        session={{ ...sessionFromFixture('public-single'), phase: 'unsynced' }}
+        replyContent={<p>Reply draft stays visible</p>}
+      />,
+    );
+    expect(screen.getByText('Reply draft stays visible')).toBeDefined();
+    expect(screen.getByText(/not finished syncing/i)).toBeDefined();
   });
 
   it('shows the actual question, filename+reason, handle/undo, and partial-failure reply', () => {

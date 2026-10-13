@@ -2,9 +2,10 @@ import {
   cancelHmsBatch,
   enqueueHmsBatch,
   HmsBatchInputError,
+  HmsPartyQueueLimitError,
   hmsJobQueueEnabled,
   guestSearchPrefetchIdempotencyKey,
-  partyPrefetchIdempotencyKey,
+  queueUserPartyHmsJob,
   queueUserHmsJob,
   readHmsBatchView,
   readHmsJobView,
@@ -71,7 +72,7 @@ const queuePartyInput = z
     threadId: threadIdInput,
     name: z.string().min(1).max(256),
     partyKind: z.enum(['company', 'agency']).optional(),
-    autoStart: z.literal(true).optional(),
+    retry: z.literal(true).optional(),
   })
   .strict();
 const hmsBatchIdInput = z.object({ batchId: z.string().uuid() }).strict();
@@ -114,6 +115,7 @@ const paneStayLookupScreenshotInput = z
   .strict();
 
 export const paneStayLookupRouter = router({
+  jobQueueEnabled: mailboxProcedure.query(() => hmsJobQueueEnabled()),
   findStay: mailboxProcedure
     .input(findStayInput)
     .use(({ input, ctx, next }) =>
@@ -200,29 +202,26 @@ export const paneStayLookupRouter = router({
     }),
   queueParty: mailboxProcedure.input(queuePartyInput).mutation(async ({ input, ctx }) => {
     if (!hmsJobQueueEnabled()) return { runId: null };
-    const run = await queueUserHmsJob({
-      transportId: ctx.activeTransportId,
-      userId: ctx.sessionUser.id,
-      threadId: input.threadId,
-      request: {
-        kind: 'party',
-        name: input.name,
-        ...(input.partyKind ? { partyKind: input.partyKind } : {}),
-      },
-      ...(input.autoStart
-        ? {
-            idempotencyKey: partyPrefetchIdempotencyKey(
-              ctx.activeTransportId,
-              input.threadId,
-              input.name,
-              input.partyKind,
-              new Date().toISOString().slice(0, 10),
-            ),
-          }
-        : {}),
-    });
-    if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'thread has no inbound mail' });
-    return { runId: run.id };
+    try {
+      const run = await queueUserPartyHmsJob({
+        transportId: ctx.activeTransportId,
+        userId: ctx.sessionUser.id,
+        threadId: input.threadId,
+        request: {
+          kind: 'party',
+          name: input.name,
+          ...(input.partyKind ? { partyKind: input.partyKind } : {}),
+        },
+        ...(input.retry ? { retry: true } : {}),
+      });
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'thread has no inbound mail' });
+      return { runId: run.id };
+    } catch (error) {
+      if (error instanceof HmsPartyQueueLimitError) {
+        throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: error.message });
+      }
+      throw error;
+    }
   }),
   // Work-item IDs are validated as one batch; disabled queue remains a no-op like queueFind.
   queueBatch: mailboxProcedure.input(hmsBatchQueueInput).mutation(async ({ input, ctx }) => {

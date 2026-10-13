@@ -17,6 +17,7 @@ import {
 import {
   isSettled,
   pollHmsJob,
+  type HmsJobQueueOptions,
   type HmsJobRequest,
   type HmsJobTransport,
   type HmsJobView,
@@ -27,6 +28,8 @@ type TrackedJob = {
   jobId: string;
   runId: string | null;
   request: HmsJobRequest;
+  options?: HmsJobQueueOptions;
+  retryOptions?: HmsJobQueueOptions;
   targetId: string;
   emailKey: string | null;
   emailSubject: string | null;
@@ -39,6 +42,7 @@ type TrackedJob = {
 type HmsNotice = TrackedJob & {
   id: string;
   status: 'done' | 'failed';
+  completedAt: number;
   failureClass: string | null;
   failureReason: string | null;
   message: string;
@@ -98,6 +102,8 @@ function failureReason(failureClass: string | null): string {
       return 'HMS is busy. Retry shortly.';
     case 'RUN_DEADLINE':
       return 'The lookup took too long to finish. Retry the HMS lookup.';
+    case 'PARTY_SEARCH_TIMEOUT':
+      return 'The party search took longer than four minutes. Retry the HMS lookup.';
     case 'POLL_LOST':
       return 'Nava could not confirm that the lookup finished. Retry checking HMS.';
     case 'POLICY_BLOCK':
@@ -170,6 +176,7 @@ export function HmsJobNoticeProvider({
         {
           ...current,
           id: `hms-notice-${++nextNotice.current}`,
+          completedAt: Date.now(),
           runId: view.runId,
           request,
           status,
@@ -197,6 +204,7 @@ export function HmsJobNoticeProvider({
         {
           ...current,
           id: `hms-notice-${++nextNotice.current}`,
+          completedAt: Date.now(),
           status: 'failed',
           failureClass: 'QUEUE_FAILED',
           failureReason: reason,
@@ -257,6 +265,8 @@ export function HmsJobNoticeProvider({
         jobId: input.jobId,
         runId: null,
         request: input.request,
+        options: input.options,
+        retryOptions: input.retryOptions,
         targetId: input.targetId ?? targetFor(input.request),
         emailKey: currentEmail.current.emailKey,
         emailSubject: currentEmail.current.emailSubject,
@@ -280,6 +290,8 @@ export function HmsJobNoticeProvider({
           jobId: input.jobId,
           runId: input.runId ?? null,
           request: input.request,
+          options: input.options,
+          retryOptions: input.retryOptions,
           targetId: input.targetId ?? targetFor(input.request),
           emailKey: currentEmail.current.emailKey,
           emailSubject: currentEmail.current.emailSubject,
@@ -291,6 +303,8 @@ export function HmsJobNoticeProvider({
         active.current.set(key, current);
       } else {
         current.request = input.request;
+        current.options = input.options;
+        current.retryOptions = input.retryOptions;
         current.targetId = input.targetId ?? current.targetId;
         current.retry = input.retry;
         current.transport = input.transport ?? current.transport;
@@ -360,9 +374,7 @@ export function HmsJobNoticeProvider({
       if (!notice) return;
       notices.current = notices.current.filter((item) => item.id !== notice.id);
       publish();
-      const shouldRetryInBackground =
-        notice.detached || notice.emailKey !== currentEmail.current.emailKey;
-      if (!shouldRetryInBackground || !notice.transport) {
+      if (!notice.transport) {
         notice.retry();
         return;
       }
@@ -381,7 +393,11 @@ export function HmsJobNoticeProvider({
         startBackgroundWatch(key);
         return;
       }
-      void notice.transport.queue(notice.request).then(
+      const options = notice.retryOptions ?? notice.options;
+      const queued = options
+        ? notice.transport.queue(notice.request, options)
+        : notice.transport.queue(notice.request);
+      void queued.then(
         (started) => {
           const current = active.current.get(key);
           if (!current) return;
@@ -448,7 +464,7 @@ export function HmsJobRunningChip() {
       className="whitespace-nowrap rounded-full bg-[#eff6ff] px-2 py-1 text-[10.5px] font-semibold text-[#0066cc]"
       data-testid="hms-running-count"
     >
-      {`HMS: ${view.activeCount} running`}
+      {`HMS: ${view.activeCount} pending`}
     </span>
   );
 }
@@ -458,10 +474,22 @@ export function HmsJobNoticeBanner() {
   const view = useContext(ViewContext);
   const reporter = useContext(HmsJobNoticeReporterContext);
   const [returnHint, setReturnHint] = useState<string | null>(null);
-  const notice = view?.notices[0] ?? null;
+  const notice = view?.notices.find((item) => item.status === 'failed') ?? view?.notices[0] ?? null;
   useEffect(() => setReturnHint(null), [notice?.id]);
+  useEffect(() => {
+    const timers = (view?.notices ?? [])
+      .filter((item) => item.status === 'done')
+      .map((item) =>
+        window.setTimeout(
+          () => reporter.dismiss(item.id),
+          Math.max(0, item.completedAt + 20_000 - Date.now()),
+        ),
+      );
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [view?.notices, reporter]);
   if (!view || !notice) return null;
   const sameEmail = notice.emailKey === view.emailKey;
+  const moreCount = Math.max(0, view.notices.length - 1);
 
   // This component cannot switch the selection; if it changed, identify the email to select.
   const show = () => {
@@ -473,9 +501,13 @@ export function HmsJobNoticeBanner() {
       );
       return;
     }
-    document
-      .getElementById(notice.targetId)
-      ?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    const target = document.getElementById(notice.targetId);
+    if (!target) {
+      setReturnHint("That section isn't open any more");
+      return;
+    }
+    target.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    reporter.dismiss(notice.id);
   };
 
   return (
@@ -496,6 +528,7 @@ export function HmsJobNoticeBanner() {
           </p>
         ) : null}
         {returnHint ? <p className="mt-0.5 text-[11px]">{returnHint}</p> : null}
+        {moreCount ? <p className="mt-0.5 text-[11px]">{`+${moreCount} more`}</p> : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {notice.status === 'done' ? (

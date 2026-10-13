@@ -49,6 +49,7 @@ function samePartyName(a: string, b: string): boolean {
 /** True when read-back found the requested party name or guest/date constraints, when given. */
 function resumedFor(
   request: HmsJobRequest | null,
+  prefetch: boolean,
   lastName: string | null,
   partyName: string | null,
   partyKind: 'company' | 'agency' | null,
@@ -59,7 +60,10 @@ function resumedFor(
     return false;
   if (partyName && !(request?.kind === 'party' && samePartyName(request.name, partyName)))
     return false;
-  if (partyKind && !(request?.kind === 'party' && request.partyKind === partyKind)) return false;
+  if (
+    partyKind &&
+    !(request?.kind === 'party' && (request.partyKind === partyKind || (prefetch && !request.partyKind)))
+  ) return false;
   if (arrival && (!request || !('arrival' in request) || request.arrival !== arrival)) return false;
   if (
     departure !== undefined &&
@@ -90,12 +94,18 @@ export function useHmsJob(input: {
   autoStartIfMissing?: boolean;
   /** Wait after a miss, so changing inputs don't enqueue per-prefix jobs. */
   autoStartDelayMs?: number;
+  /** Stop polling and show a local failure after this long; the persisted job remains read-only and may finish later. */
+  deadlineMs?: number;
+  /** Queue options used when Retry starts a fresh job after a terminal failure. */
+  retryOptions?: HmsJobQueueOptions;
   /** Pane section to return to from the completion notice. Defaults by request kind. */
   targetId?: string;
 }): HmsJobState {
   const { transport, resume, scope } = input;
   const autoStartIfMissing = input.autoStartIfMissing ?? false;
   const autoStartDelayMs = Math.max(0, input.autoStartDelayMs ?? 0);
+  const deadlineMs = Math.max(0, input.deadlineMs ?? 0);
+  const retryOptions = input.retryOptions;
   const targetId = input.targetId;
   const noticeReporter = useHmsJobNoticeReporter();
   const noticeObserverId = useId();
@@ -123,6 +133,7 @@ export function useHmsJob(input: {
   const generation = useRef(0);
   const lastRequest = useRef<HmsJobRequest | null>(null);
   const lastRequestOptions = useRef<HmsJobQueueOptions | undefined>(undefined);
+  const requestStartedAt = useRef<number | null>(null);
   const autoStartedKey = useRef<string | null>(null);
 
   const start = useCallback(
@@ -135,12 +146,15 @@ export function useHmsJob(input: {
         observerId: noticeObserverId,
         jobId,
         request,
+        options,
+        retryOptions,
         targetId,
         retry: () => retryRef.current(),
         transport,
       });
       lastRequest.current = request;
       lastRequestOptions.current = options;
+      requestStartedAt.current = Date.now();
       setRunId(null);
       setView(null);
       setQueueFailed(false);
@@ -157,6 +171,8 @@ export function useHmsJob(input: {
                   observerId: noticeObserverId,
                   jobId,
                   request: started.view.request ?? request,
+                  options,
+                  retryOptions,
                   targetId,
                   retry: () => retryRef.current(),
                   transport,
@@ -168,6 +184,8 @@ export function useHmsJob(input: {
                 observerId: noticeObserverId,
                 jobId,
                 request,
+                options,
+                retryOptions,
                 targetId,
                 retry: () => retryRef.current(),
                 transport,
@@ -224,10 +242,10 @@ export function useHmsJob(input: {
     // POLL_LOST with no known run keeps the stable key, so the server can reattach to a job that may be running.
     const options =
       view?.status === 'failed' && view.failureClass !== 'POLL_LOST'
-        ? undefined
+        ? retryOptions
         : lastRequestOptions.current;
     start(last, options);
-  }, [runId, start, statusFailed, view]);
+  }, [retryOptions, runId, start, statusFailed, view]);
   retryRef.current = retry;
 
   // Scope change or remount: clear, then read back the latest job of this kind on the thread.
@@ -261,6 +279,7 @@ export function useHmsJob(input: {
           found &&
           resumedFor(
             found.request,
+            found.prefetch,
             resumeLastName,
             resumeName,
             resumePartyKind,
@@ -270,6 +289,8 @@ export function useHmsJob(input: {
         ) {
           lastRequest.current = found.request;
           lastRequestOptions.current = undefined;
+          const foundAt = found.createdAt ? Date.parse(found.createdAt) : Number.NaN;
+          requestStartedAt.current = Number.isNaN(foundAt) ? Date.now() : foundAt;
           setView(found);
           if (!isSettled(found)) setRunId(found.runId);
           return;
@@ -278,13 +299,7 @@ export function useHmsJob(input: {
         const autoRequest: HmsJobRequest | null =
           resumeKind === 'search_guest' && resumeLastName && resumeArrival
             ? { kind: 'search_guest', lastName: resumeLastName, arrival: resumeArrival }
-            : resumeKind === 'party' && resumeName
-              ? {
-                  kind: 'party',
-                  name: resumeName,
-                  ...(resumePartyKind ? { partyKind: resumePartyKind } : {}),
-                }
-              : null;
+            : null;
         if (!autoRequest) return;
         const key =
           autoRequest.kind === 'search_guest'
@@ -336,6 +351,24 @@ export function useHmsJob(input: {
     start,
   ]);
 
+  // A four-minute party deadline releases the rate hold even if a queue row keeps moving in the background.
+  useEffect(() => {
+    if (!deadlineMs || !runId || view?.prefetch || (view !== null && isSettled(view))) return;
+    const createdAt = view?.createdAt ? Date.parse(view.createdAt) : Number.NaN;
+    const startedAt = Number.isNaN(createdAt)
+      ? (requestStartedAt.current ?? Date.now())
+      : createdAt;
+    const timer = window.setTimeout(() => {
+      setView((current) =>
+        current?.runId === runId
+          ? { ...current, status: 'failed', failureClass: 'PARTY_SEARCH_TIMEOUT' }
+          : current,
+      );
+      setRunId((current) => (current === runId ? null : current));
+    }, Math.max(0, deadlineMs - (Date.now() - startedAt)));
+    return () => window.clearTimeout(timer);
+  }, [deadlineMs, runId, view?.createdAt, view?.status]);
+
   // Polls the current run id until it settles. A new run id, a new scope or an unmount ends the old loop.
   useEffect(() => {
     if (!transport || !runId) return;
@@ -365,6 +398,8 @@ export function useHmsJob(input: {
       observerId: noticeObserverId,
       jobId,
       request,
+      options: lastRequestOptions.current,
+      ...(retryOptions ? { retryOptions } : {}),
       targetId,
       retry: () => retryRef.current(),
       transport,
@@ -386,6 +421,7 @@ export function useHmsJob(input: {
     targetId,
     transport,
     view,
+    retryOptions,
   ]);
 
   useEffect(

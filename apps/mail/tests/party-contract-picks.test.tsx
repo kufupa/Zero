@@ -203,7 +203,7 @@ describe('PartyPicker scoped to one field of the header', () => {
 });
 
 describe('the quote workflow header: each field finds in HMS with its own text', () => {
-  it('Nava searches the Company text in HMS by itself and picks the best company', async () => {
+  it('Nava searches the Company text in HMS by itself and waits for staff to confirm the best company', async () => {
     const { QuoteWorkflowPanel } = await import('../components/quote-workflow/quote-workflow-panel');
     const { initialQuoteSession } = await import('../lib/quote-workflow/session');
     const { resetPartyAutoLookupForTests } = await import('../components/quote-workflow/party-picker');
@@ -223,6 +223,9 @@ describe('the quote workflow header: each field finds in HMS with its own text',
       staffHeader: { ...emptyStaffQuoteHeader(), company: 'Woolworths' },
     };
     render(<QuoteWorkflowPanel session={session} onPatchStaffHeader={onPatchStaffHeader} findParty={find} />);
+    const confirm = await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' });
+    expect(onPatchStaffHeader).not.toHaveBeenCalled();
+    fireEvent.click(confirm);
     await waitFor(
       () =>
         expect(onPatchStaffHeader).toHaveBeenCalledWith({

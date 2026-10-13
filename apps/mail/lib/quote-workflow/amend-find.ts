@@ -141,7 +141,7 @@ export type HmsJobRequest =
   | { kind: 'search_guest'; lastName: string; arrival: string; departure?: string }
   | { kind: 'party'; name: string; partyKind?: 'company' | 'agency' };
 
-export type HmsJobQueueOptions = { autoStart?: true };
+export type HmsJobQueueOptions = { autoStart?: true; retry?: true };
 
 export type HmsJobStatus = 'queued' | 'running' | 'retrying' | 'done' | 'failed';
 
@@ -183,8 +183,10 @@ export type HmsJobClient = {
     threadId: string;
     name: string;
     partyKind?: 'company' | 'agency';
-    autoStart?: true;
+    retry?: true;
   }) => Promise<QueuedHmsJob>;
+  /** The server's exact HMS_JOB_QUEUE switch, used to preserve the queue-off inline party lookup. */
+  jobQueueEnabled?: () => Promise<boolean>;
   /** The synchronous find and search, used while the server's job queue is off. */
   findStay?: (input: FindStayInput) => Promise<FindStayReply>;
   searchGuest?: (input: GuestSearchInput) => Promise<GuestSearchReply>;
@@ -209,6 +211,7 @@ export type HmsJobClient = {
 /** The job calls for one thread: queue a request, and read a job by run id or the latest of a kind on the thread. */
 export type HmsJobTransport = {
   queue: (request: HmsJobRequest, options?: HmsJobQueueOptions) => Promise<HmsJobStart>;
+  jobQueueEnabled?: () => Promise<boolean>;
   status: (
     input:
       | { runId: string }
@@ -226,6 +229,7 @@ export type HmsJobTransport = {
 
 type TrpcPaneStayLookupRoutes = {
   paneStayLookup?: {
+    jobQueueEnabled?: { query: NonNullable<HmsJobClient['jobQueueEnabled']> };
     queueFind?: { mutate: HmsJobClient['queueFind'] };
     queueSearchGuest?: { mutate: HmsJobClient['queueSearchGuest'] };
     queueParty?: { mutate: NonNullable<HmsJobClient['queueParty']> };
@@ -264,6 +268,7 @@ export function amendFindClientFromTrpc(trpc: unknown): HmsJobClient | null {
     screenshot: (input) => shot.query(input),
   };
   if (queueParty) client.queueParty = (input) => queueParty.mutate(input);
+  if (routes.jobQueueEnabled) client.jobQueueEnabled = () => routes.jobQueueEnabled!.query();
   return client;
 }
 
@@ -297,6 +302,7 @@ export function hmsJobTransport(
 ): HmsJobTransport | null {
   if (!client || !threadId) return null;
   return {
+    ...(client.jobQueueEnabled ? { jobQueueEnabled: client.jobQueueEnabled } : {}),
     queue: async (request, options) => {
       if (request.kind === 'find') {
         const input: FindStayInput = request.arrival
@@ -308,17 +314,17 @@ export function hmsJobTransport(
         return { runId: null, view: syncView(request, await client.findStay(input)) };
       }
       if (request.kind === 'party') {
+        // Party reads are never generated from read-back: only the pane's explicit Find action may queue one.
+        if (options?.autoStart) return { runId: null };
         const queued = client.queueParty
           ? await client.queueParty({
               threadId,
               name: request.name,
               ...(request.partyKind ? { partyKind: request.partyKind } : {}),
-              ...(options?.autoStart ? { autoStart: true } : {}),
+              ...(options?.retry ? { retry: true } : {}),
             })
           : { runId: null };
         if (queued.runId) return { runId: queued.runId };
-        // Queue-off auto-starts must not run a live lookup every time the pane opens.
-        if (options?.autoStart) return { runId: null };
         if (!client.findParty) throw new Error('panePartyLookup.findParty unavailable');
         return {
           runId: null,

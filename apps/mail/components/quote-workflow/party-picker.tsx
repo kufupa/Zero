@@ -38,6 +38,7 @@ export const PARTY_INDEX_DEBOUNCE_MS = 250;
  * name still being typed must not start one.
  */
 export const PARTY_AUTO_LOOKUP_DEBOUNCE_MS = 600;
+export const PARTY_SEARCH_DEADLINE_MS = 4 * 60_000;
 
 /** An automatic search needs at least this many characters. */
 const AUTO_LOOKUP_MIN_CHARS = 3;
@@ -45,6 +46,7 @@ const MANUAL_LOOKUP_MIN_CHARS = 2;
 
 /** The most HMS rows shown as chips under a field. The server already sends at most this many. */
 const CHIP_LIMIT = 5;
+const PARTY_RETRY_OPTIONS = { retry: true } as const;
 
 // Every state names the query it belongs to, so a result for one name never shows for another.
 type PickerState =
@@ -163,7 +165,7 @@ function partyReplyFromJob(
 ): PartyFindReply | null {
   if (!view || view.request?.kind !== 'party' || (name && !sameJobName(view.request.name, name)))
     return null;
-  if (kind && view.request.partyKind !== kind) return null;
+  if (kind && view.request.partyKind !== kind && !(view.prefetch && !view.request.partyKind)) return null;
   if (view.status === 'failed' || view.status === 'retrying') {
     const outcome =
       view.outcome ??
@@ -259,11 +261,10 @@ function ResultChips({
  * only that kind: its pick, its matches and its suggestions. Without a kind, one picker covers both kinds and each result
  * shows its kind.
  *
- * With autoLookup, Nava searches HMS for the field's name by itself, once the typing rests, and picks the best match. The
- * other matches show as chips. With no match, or with a failure, the field says so; the one Find in HMS button lets staff
- * retry and see the candidates. Without autoLookup, that button is the only HMS search. The HMS list the sweep wrote is
- * searched as staff type, and its matches are a candidate only. Suggestions from the email are offered for staff to
- * confirm. A suggestion carries no HMS id, so it can only be searched.
+ * With autoLookup and the queue off, Nava searches the field's name inline once typing rests. A match is only offered for
+ * staff confirmation. With the queue on, only Find starts a pane job; extraction prefetch may still suggest a best row.
+ * The HMS list the sweep wrote is searched as staff type, and its matches are a candidate only. Email suggestions also
+ * need a deliberate search and staff confirmation.
  */
 export function PartyPicker({
   name,
@@ -310,13 +311,28 @@ export function PartyPicker({
   // Each manual search takes the next number, and only the latest number may write a reply. A name change takes one too.
   const latest = useRef(0);
   const [, rerender] = useReducer((count: number) => count + 1, 0);
-  // The search that last decided this field's pick: the row Nava picked from it, or null when staff picked a row. A search
-  // decides once, so a pick made after it is never overwritten by it.
-  const autoPicked = useRef<{ key: string; party: StaffQuoteParty | null } | null>(null);
   // A field that already holds its pick asks the list and HMS nothing more.
   const pickedHere = Boolean(kind ? parties[kind] : parties.company || parties.agency);
+  const [queueMode, setQueueMode] = useState<'checking' | 'on' | 'off'>(() =>
+    jobTransport?.jobQueueEnabled ? 'checking' : 'off',
+  );
+  useEffect(() => {
+    const readQueueMode = jobTransport?.jobQueueEnabled;
+    if (!readQueueMode) {
+      setQueueMode('off');
+      return;
+    }
+    let live = true;
+    void readQueueMode().then(
+      (enabled) => live && setQueueMode(enabled ? 'on' : 'off'),
+      () => live && setQueueMode('on'),
+    );
+    return () => {
+      live = false;
+    };
+  }, [jobTransport?.jobQueueEnabled]);
   const autoMemoKey =
-    autoLookup && kind && query.length >= AUTO_LOOKUP_MIN_CHARS
+    autoLookup && (!jobTransport || queueMode === 'off') && kind && query.length >= AUTO_LOOKUP_MIN_CHARS
       ? `${kind}:${searchKey(query)}`
       : null;
   const autoKey = pickedHere ? null : autoMemoKey;
@@ -332,37 +348,25 @@ export function PartyPicker({
     transport: jobTransport ?? null,
     resume: jobResume,
     scope: jobTransport && threadId ? `${threadId}:${kind ?? ''}:${searchKey(query)}` : null,
-    autoStartIfMissing: Boolean(
-      jobTransport && autoLookup && kind && query.length >= AUTO_LOOKUP_MIN_CHARS && !pickedHere,
-    ),
-    autoStartDelayMs: PARTY_AUTO_LOOKUP_DEBOUNCE_MS,
+    deadlineMs: PARTY_SEARCH_DEADLINE_MS,
+    retryOptions: PARTY_RETRY_OPTIONS,
   });
   const viewRequest = partyJob.view?.request;
   const currentJobView =
     viewRequest?.kind === 'party' &&
     (!query || sameJobName(viewRequest.name, query)) &&
-    (!kind || viewRequest.partyKind === kind)
+    (!kind || viewRequest.partyKind === kind || (partyJob.view?.prefetch && !viewRequest.partyKind))
       ? partyJob.view
       : null;
   const jobReply = partyReplyFromJob(currentJobView, query, kind);
-  const autoReply = jobTransport
-    ? jobReply
-    : autoMemoKey
-      ? (autoMemo.get(autoMemoKey)?.reply ?? null)
-      : null;
-  // A prefetched best match still needs one explicit confirmation before rates can use it.
+  const autoReply = autoMemoKey ? (autoMemo.get(autoMemoKey)?.reply ?? null) : null;
+  // Only an explicit, user-started job can hold rates. A prefetch and the typed-name read-back never do.
   const lookupPending =
-    Boolean(jobTransport && currentJobView?.prefetch && jobReply?.best && !pickedHere) ||
-    (Boolean(autoKey) &&
-      (jobTransport
-        ? !partyJob.readBackSettled ||
-          partyJob.queuing ||
-          Boolean(currentJobView && !isSettled(currentJobView)) ||
-          Boolean(currentJobView?.prefetch && jobReply?.best) ||
-          Boolean(
-            jobReply?.best && !currentJobView?.prefetch && autoPicked.current?.key !== autoKey,
-          )
-        : !autoReply || (Boolean(autoReply.best) && autoPicked.current?.key !== autoKey)));
+    Boolean(autoKey && !autoReply) ||
+    Boolean(
+      !currentJobView?.prefetch &&
+        (partyJob.queuing || (currentJobView && !isSettled(currentJobView))),
+    );
 
   useEffect(() => {
     latest.current += 1;
@@ -386,9 +390,9 @@ export function PartyPicker({
     return () => clearTimeout(timer);
   }, [query, indexSearch, pickedHere]);
 
-  // The automatic search. It starts once the typing rests, and a name's search runs once, however often the pane renders.
+  // Queue-off automatic lookup only. Queue-on typed text never starts a job.
   useEffect(() => {
-    if (!autoKey || !kind || jobTransport) return;
+    if (!autoKey || !kind) return;
     const searchKind = kind;
     let live = true;
     const timer = setTimeout(() => {
@@ -401,24 +405,9 @@ export function PartyPicker({
       live = false;
       clearTimeout(timer);
     };
-  }, [autoKey, jobTransport]);
+  }, [autoKey]);
 
-  // The best row of an automatic search is picked for the field, once for each search.
-  useEffect(() => {
-    if (!autoKey || !autoReply?.best) return;
-    if (jobTransport && currentJobView?.prefetch) return;
-    if (autoPicked.current?.key === autoKey) return;
-    const best = autoReply.best;
-    autoPicked.current = {
-      key: autoKey,
-      party: { kind: best.kind, nativeId: best.nativeId, name: best.name },
-    };
-    onPick({ kind: best.kind, nativeId: best.nativeId, name: best.name });
-    rerender();
-  }, [autoKey, autoReply, jobTransport, currentJobView?.prefetch]);
-
-  // The pane holds a rates run until this field's search decides its pick. Reported on every render, so a session reset
-  // cannot drop it while the search runs. Released when the field unmounts.
+  // Only an inline queue-off lookup or an explicit non-prefetch job holds the rates step.
   useEffect(() => {
     onLookupPending?.(lookupPending);
   });
@@ -471,15 +460,18 @@ export function PartyPicker({
   const offered = suggestions.filter(
     (suggestion) => inScope(suggestion) && !pickedKinds.has(suggestion.kind),
   );
-  const pickedByNava = (party: StaffQuoteParty) => {
-    const byNava = autoPicked.current?.party;
-    return byNava?.kind === party.kind && byNava.nativeId === party.nativeId;
-  };
   // The automatic search's matches, without the row already picked for this field.
   const autoRows = uniqueCandidates(autoReply?.results ?? []).filter(
-    (row) => !picked.some((party) => party.kind === row.kind && party.nativeId === row.nativeId),
+    (row) =>
+      inScope(row) &&
+      !picked.some((party) => party.kind === row.kind && party.nativeId === row.nativeId),
   );
   const jobResults = uniqueCandidates(jobReply?.results.filter(inScope) ?? []);
+  const autoBest =
+    !pickedHere && autoReply?.best && inScope(autoReply.best) ? autoReply.best : null;
+  const autoOtherRows = autoRows.filter(
+    (row) => !autoBest || row.kind !== autoBest.kind || row.nativeId !== autoBest.nativeId,
+  );
   const prefetchedBest =
     !pickedHere && currentJobView?.prefetch && jobReply?.best && inScope(jobReply.best)
       ? jobReply.best
@@ -492,12 +484,13 @@ export function PartyPicker({
   );
   // A row staff pick, in this field's search, is theirs: the search does not pick over it.
   const pickRow = (row: PartyCandidate) => {
-    if (autoMemoKey) autoPicked.current = { key: autoMemoKey, party: null };
     onPick({ kind: row.kind, nativeId: row.nativeId, name: row.name });
   };
   const showAutoStatus =
-    Boolean(autoMemoKey) && !pickedHere && shown.status === 'idle' && !jobTransport;
+    Boolean(autoMemoKey) && !pickedHere && shown.status === 'idle';
   const jobFailureOutcome = jobReply?.outcome ?? 'execution_failure';
+  const partySearchTimedOut = currentJobView?.failureClass === 'PARTY_SEARCH_TIMEOUT';
+  const timeoutMessage = 'Party search timed out after four minutes. You can retry.';
   const jobName = currentJobView?.request?.kind === 'party' ? currentJobView.request.name : query;
   const jobDisplayName = query || jobName;
   const partyType = kind ? partyKindLabel(kind).toLowerCase() : 'company or agency';
@@ -506,9 +499,7 @@ export function PartyPicker({
     jobTransport && jobResume && !partyJob.readBackSettled && !partyJob.statusFailed,
   );
   const jobBusy = Boolean(
-    partyJob.queuing ||
-      (currentJobView && !isSettled(currentJobView)) ||
-      (jobResume && !partyJob.readBackSettled),
+    partyJob.queuing || (jobResume && !partyJob.readBackSettled),
   );
   const showManualButton = true;
 
@@ -523,7 +514,7 @@ export function PartyPicker({
           key={party.kind}
           className="flex flex-wrap items-center gap-2 text-[12.5px] font-semibold text-[#166534]"
         >
-          <span>{`✓ ${party.name} (#${party.nativeId})${pickedByNava(party) ? ' — picked by Nava' : ''}`}</span>
+          <span>{`✓ ${party.name} (#${party.nativeId})`}</span>
           <LinkButton onClick={() => onClear(party.kind)}>Change</LinkButton>
         </div>
       ))}
@@ -554,7 +545,22 @@ export function PartyPicker({
       {showAutoStatus ? (
         autoReply ? (
           <div className="flex flex-col gap-1">
-            {autoReply.results.length ? (
+            {autoBest ? (
+              <div className="flex flex-col gap-1" aria-label="Suggested match from HMS">
+                <p>{PARTY_PREFETCH_HINT}</p>
+                <button
+                  type="button"
+                  className="w-fit rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
+                  aria-label={`Confirm ${autoBest.name}`}
+                  onClick={() => pickRow(autoBest)}
+                >
+                  {`Confirm ${autoBest.name}`}
+                </button>
+                {autoOtherRows.length ? (
+                  <ResultChips label="Other matches in HMS:" rows={autoOtherRows} onPick={pickRow} />
+                ) : null}
+              </div>
+            ) : autoRows.length ? (
               <ResultChips label="Found in HMS:" rows={autoRows} onPick={pickRow} />
             ) : (
               <Notice
@@ -582,7 +588,7 @@ export function PartyPicker({
           statusFailed={partyJob.statusFailed}
           queueFailed={partyJob.queueFailed}
           failureMessage={partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
-          failedMessage={partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
+          failedMessage={partySearchTimedOut ? timeoutMessage : partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
           queueFailureMessage={partyNoCandidateNote('execution_failure', kind, query)}
         />
       ) : null}

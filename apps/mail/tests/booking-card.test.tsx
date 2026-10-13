@@ -248,13 +248,12 @@ describe('booking cards', () => {
       'XYZ TRAVEL',
       'XYZ TRAVEL',
     ]);
-    expect(screen.getByRole('heading', { name: 'Room 1' })).toBeDefined();
-    expect(screen.getByRole('heading', { name: 'Room 2' })).toBeDefined();
+    expect(screen.getAllByRole('heading', { name: 'Standard Queen ×2' })).toHaveLength(2);
     expect(screen.getAllByText('STQN')).toHaveLength(2);
     expect(screen.getAllByText('TAXYZ')).toHaveLength(2);
     expect(screen.getByText('Smith')).toBeDefined();
     expect(screen.getByText('Doe')).toBeDefined();
-    expect(screen.getAllByRole('button', { name: /^Copy Adults for room \d$/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Copy Adults for Standard Queen ×2' })).toHaveLength(2);
   });
 
   it('shows an amber mismatch banner with the claim quote', () => {
@@ -407,22 +406,22 @@ describe('booking card copy buttons', () => {
     const writeText = stubClipboard();
     vi.useFakeTimers();
     render(<BookingCards draft={draftReady()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy Arrival for room 1' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]!);
     expect(writeText).toHaveBeenCalledWith('2026-11-12');
     await flushClipboard();
-    expect(screen.getByRole('button', { name: 'Copied Arrival for room 1' })).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Copied Arrival for Standard Queen ×2' })[0]).toBeDefined();
     act(() => {
       vi.advanceTimersByTime(1500);
     });
-    expect(screen.getByRole('button', { name: 'Copy Arrival for room 1' })).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]).toBeDefined();
   });
 
   it('copies the track the staff picked, and stays disabled until one is picked', () => {
     const writeText = stubClipboard();
     render(<BookingCards draft={draftReady()} />);
-    expect(screen.getByRole('button', { name: 'Copy Track for room 1' })).toHaveProperty('disabled', true);
+    expect(screen.getAllByRole('button', { name: 'Copy Track for Standard Queen ×2' })[0]).toHaveProperty('disabled', true);
     fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'COR' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Copy Track for room 1' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Track for Standard Queen ×2' })[0]!);
     expect(writeText).toHaveBeenCalledWith('COR');
   });
 
@@ -431,14 +430,14 @@ describe('booking card copy buttons', () => {
     const rooms = draftReady().draft.rooms.map((room) => ({ ...room, board: 'bb' as const }));
     render(<BookingCards draft={draftReady({ rooms })} groups={[{ ...g1, board: 'room_only' }]} />);
     expect(screen.queryByText('Room only')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Copy Meal plan for room 1' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Meal plan for Standard Queen ×2' })[0]!);
     expect(writeText).toHaveBeenCalledWith('Bed & breakfast');
   });
 
   it('leaves the meal plan unset rather than using the analysis board when the draft has no quoted board', () => {
     stubClipboard();
     render(<BookingCards draft={draftReady()} groups={[{ ...g1, board: 'room_only' }]} />);
-    expect(screen.getByRole('button', { name: 'Copy Meal plan for room 1' })).toHaveProperty('disabled', true);
+    expect(screen.getAllByRole('button', { name: 'Copy Meal plan for Standard Queen ×2' })[0]).toHaveProperty('disabled', true);
     expect(screen.queryByText('Room only')).toBeNull();
   });
 
@@ -456,12 +455,12 @@ describe('booking card copy buttons', () => {
       return true;
     });
     render(<BookingCards draft={draftReady()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy Arrival for room 1' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]!);
     await flushClipboard();
     expect(execCommand).toHaveBeenCalledWith('copy');
     expect(copiedFrom).toBe('2026-11-12');
     expect(document.querySelector('textarea[readonly]')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Copied Arrival for room 1' })).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Copied Arrival for Standard Queen ×2' })[0]).toBeDefined();
     expect(screen.queryByText('Copy failed – select the text')).toBeNull();
   });
 
@@ -470,11 +469,11 @@ describe('booking card copy buttons', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     const execCommand = stubExecCommand(() => true);
     render(<BookingCards draft={draftReady()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy Arrival for room 1' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]!);
     await flushClipboard();
     expect(writeText).toHaveBeenCalledWith('2026-11-12');
     expect(execCommand).toHaveBeenCalledWith('copy');
-    expect(screen.getByRole('button', { name: 'Copied Arrival for room 1' })).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Copied Arrival for Standard Queen ×2' })[0]).toBeDefined();
   });
 
   it('says Copy failed – select the text briefly when both copy paths fail', async () => {
@@ -483,10 +482,10 @@ describe('booking card copy buttons', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     stubExecCommand(() => false);
     render(<BookingCards draft={draftReady()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy Arrival for room 1' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]!);
     await flushClipboard();
     expect(screen.getByText('Copy failed – select the text')).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Copy Arrival for room 1' })).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]).toBeDefined();
     act(() => {
       vi.advanceTimersByTime(3000);
     });
@@ -530,7 +529,7 @@ function paneClient(overrides: Partial<PaneStayClient> = {}) {
   return { client, preview, commit, screenshot };
 }
 
-// Room 1 has no track, source or guarantee until the staff pick them.
+// The first room has no track, source or guarantee until the staff pick them.
 function pickRoomChoices(index: number) {
   fireEvent.change(screen.getAllByLabelText('Track')[index]!, { target: { value: 'COR' } });
   fireEvent.change(screen.getAllByLabelText('Source of business')[index]!, { target: { value: 'E-Mail' } });
@@ -799,8 +798,8 @@ describe('booking card save modes and the note fields', () => {
     expect(screen.queryByText('Coming soon')).toBeNull();
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
-    expect(screen.getAllByRole('button', { name: 'Copy Reservation note for room 1' })).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: 'Copy Booking agency for room 2' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Copy Reservation note for Standard Queen ×2' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Copy Booking agency for Standard Queen ×2' })).toHaveLength(2);
   });
 
   it('a room with children is copy-only with the reason, and the other room can still save', () => {
@@ -1059,12 +1058,15 @@ describe('bindUsePriorQuoteForBooking', () => {
     expect(
       overlayLunaGroupsFromStaff(named, [
         {
+          id: 'staff-edited-group',
           arrivalDate: '2026-11-12',
           departureDate: '2026-11-14',
           quantity: 2,
           adults: 1,
           childrenAges: [],
           board: 'room_only',
+          specialRequests: [],
+          fields: {},
         },
       ])[0]?.guestNames,
     ).toEqual(['John Smith', 'Jane Doe']);

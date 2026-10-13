@@ -16,6 +16,7 @@ import {
   rowRoomCode,
   stayKeyForGroup,
   staffSourceReady,
+  stayTotals,
 } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
@@ -857,15 +858,15 @@ function stayRatesBlockReason(
   if (rows.some((group) => !group.quantity)) return 'Add the number of rooms first.';
   if (!step) return 'The HMS search is not ready yet.';
   if (step.status === 'succeeded') return null;
-  if (session.runningStepId && session.runningStepId !== step.id) return 'Another HMS search is running.';
   const stepWait = quoteRunBlockReason(session, step);
   if (stepWait) return stepWait;
-  if (!canRunQuoteStep(step, session.steps, session.runningStepId)) return 'Wait for the earlier HMS search to finish.';
+  if (!canRunQuoteStep(step, session.steps, null)) return 'Wait for the earlier HMS search to finish.';
   return null;
 }
 
 /** A row price or rate change waiting to reach the session. Once every `check` has landed, the stay re-runs. */
 type PinRun = { stepId: string; changes: { groupId: string; check: Partial<StayGroupRequirement> }[] };
+type QueuedStayRun = { stepId: string; selectionEpoch: number };
 
 /** Equal for a session check. A cleared price (undefined) matches a row with no price. */
 function sameValue(current: unknown, wanted: unknown): boolean {
@@ -1016,6 +1017,8 @@ export function QuoteWorkflowPanel({
 }) {
   // A row price or rate tapped and waiting for its pin to reach the session. The re-run starts once every pin is there, so it reads them.
   const [pinRun, setPinRun] = useState<PinRun | null>(null);
+  const [queuedStayRuns, setQueuedStayRuns] = useState<QueuedStayRun[]>([]);
+  const queuedLaunchPending = useRef(false);
   const [ratePlanState, setRatePlanState] = useState<{
     selectionEpoch: number;
     analysis: QuoteSession['analysis'];
@@ -1038,6 +1041,7 @@ export function QuoteWorkflowPanel({
   const appliedContactPrefill = useRef<string | null>(null);
   useEffect(() => {
     if (!pinRun) return;
+    if (session.runningStepId || hmsQueue?.pending) return;
     const landed = pinRun.changes.every(({ groupId, check }) => {
       const group = session.groups.find((item) => item.id === groupId);
       return (
@@ -1048,7 +1052,42 @@ export function QuoteWorkflowPanel({
     if (!landed) return;
     setPinRun(null);
     onRunStep?.(pinRun.stepId);
-  }, [pinRun, session.groups, onRunStep]);
+  }, [pinRun, session.groups, session.runningStepId, hmsQueue?.pending, onRunStep]);
+  useEffect(() => {
+    if (session.runningStepId || hmsQueue?.pending || pinRun) {
+      queuedLaunchPending.current = false;
+      return;
+    }
+    const next = queuedStayRuns[0];
+    if (!next) return;
+    if (next.selectionEpoch !== selectionEpoch) {
+      setQueuedStayRuns((current) => current.slice(1));
+      return;
+    }
+    const step = session.steps.find((item) => item.id === next.stepId);
+    const rows = session.groups.filter((group) => step?.shareKey === stayKeyForGroup(group));
+    const reason = step
+      ? stayRatesBlockReason(session, rows, step)
+      : 'The stay changed before its search could start.';
+    if (reason) {
+      setQueuedStayRuns((current) => current.slice(1));
+      toast.warning(reason);
+      return;
+    }
+    if (!onRunStep || queuedLaunchPending.current) return;
+    queuedLaunchPending.current = true;
+    setQueuedStayRuns((current) => current.slice(1));
+    onRunStep(next.stepId);
+  }, [
+    hmsQueue?.pending,
+    onRunStep,
+    pinRun,
+    queuedStayRuns,
+    selectionEpoch,
+    session.groups,
+    session.runningStepId,
+    session.steps,
+  ]);
   useEffect(() => {
     if (!contactPrefillKey || !onPatchStaffHeader || appliedContactPrefill.current === contactPrefillKey) return;
     appliedContactPrefill.current = contactPrefillKey;
@@ -1095,7 +1134,12 @@ export function QuoteWorkflowPanel({
     return <StatusNote>Select an email in Outlook. Nava will read it and list what the quote needs.</StatusNote>;
   }
   if (session.phase === 'unsynced') {
-    return <StatusNote>This email has not finished syncing yet. Wait a moment, then select it again.</StatusNote>;
+    return (
+      <div className="flex flex-col gap-3">
+        <StatusNote>This email has not finished syncing yet. Wait a moment, then select it again.</StatusNote>
+        {replyContent ? <div className="flex flex-col gap-2.5">{replyContent}</div> : null}
+      </div>
+    );
   }
   if (session.phase === 'unsupported') {
     return (
@@ -1173,6 +1217,7 @@ export function QuoteWorkflowPanel({
     if (salesStrategy !== header.salesStrategy) onPatchStaffHeader?.({ salesStrategy });
   };
   const stays = groupStays(formGroups);
+  const roomTotals = stayTotals(session.groups);
   const mealPlanForStay = (stayId: string, rows: StayGroupRequirement[]): QuoteBoard | 'all' => {
     const saved = mealPlanFilters[stayId];
     if (saved) return saved;
@@ -1187,6 +1232,8 @@ export function QuoteWorkflowPanel({
     ),
   );
   const running = Boolean(session.runningStepId) || Boolean(hmsQueue?.pending);
+  const activeStep = session.steps.find((step) => step.id === session.runningStepId);
+  const runningStayKey = activeStep?.shareKey ?? (running ? session.selectedStayKey : null);
   const stayReady =
     stays.length > 0 &&
     stays.every(
@@ -1259,7 +1306,7 @@ export function QuoteWorkflowPanel({
     const { session: current, pinRun: pending } = latest.current;
     for (const { group, rowPrice } of changes) onPatchGroup(group.id, { rowPrice });
     // A run in flight or another price waiting for its re-run keeps its turn. These rows wait for the next run.
-    if (pending || current.runningStepId) return false;
+    if (pending) return false;
     const steps = changes.map(({ group }) =>
       current.steps.find((item) => item.kind === 'quote_stay' && item.shareKey === stayKeyForGroup(group)),
     );
@@ -1286,6 +1333,17 @@ export function QuoteWorkflowPanel({
     const verb = many ? 'are' : 'is';
     const outcome = next ? `${verb} now priced at the new amount` : `${verb} back on the HMS rate`;
     toast.warning(`${subject} ${outcome}.${rerun ? '' : ' Search availability to update the totals.'}`);
+  };
+  const requestStayRun = (stepId: string) => {
+    if (session.runningStepId || hmsQueue?.pending || pinRun) {
+      setQueuedStayRuns((current) =>
+        current.some((item) => item.stepId === stepId && item.selectionEpoch === selectionEpoch)
+          ? current
+          : [...current, { stepId, selectionEpoch }],
+      );
+      return;
+    }
+    onRunStep?.(stepId);
   };
 
   return (
@@ -1318,6 +1376,11 @@ export function QuoteWorkflowPanel({
               evidence={session.analysis?.luna?.evidence}
             />
           ))}
+          {session.groups.length ? (
+            <p className="text-center text-[12.5px] font-semibold text-[#475569]">
+              {`${roomTotals.rooms} ${roomTotals.rooms === 1 ? 'room' : 'rooms'} · ${roomTotals.guests} ${roomTotals.guests === 1 ? 'guest' : 'guests'}`}
+            </p>
+          ) : null}
           <div className="flex flex-col gap-1">
             <SecondaryButton className="w-full" onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
               + Add another date range
@@ -1364,8 +1427,11 @@ export function QuoteWorkflowPanel({
                 const actionReason = reason ?? (!onRunStep && !onRunNext ? 'Search is not available in this view.' : null);
                 const retryActionReason = reason ?? (!onRunStep ? 'Search is not available in this view.' : null);
                 const loadingThisStay =
-                  (step !== undefined && session.runningStepId === step.id) ||
-                  Boolean(hmsQueue?.pending && step !== undefined && !session.runningStepId);
+                  running && stayKey === runningStayKey;
+                const pinRunningThisStay = pinRun?.stepId === step?.id;
+                const queuedThisStay = queuedStayRuns.some(
+                  (item) => item.stepId === step?.id && item.selectionEpoch === selectionEpoch,
+                );
                 const stayTotal = stayDisplayTotal(session, stayKey);
                 // Each stay's Details lists only its own HMS search. The steps are session-wide, so the full list would repeat under every card.
                 const stayRunSteps = session.steps.filter((item) => item.shareKey === stayKey);
@@ -1394,16 +1460,23 @@ export function QuoteWorkflowPanel({
                       <>
                         <SecondaryButton
                           className="w-full"
-                          disabled={running}
-                          disabledReason={running ? 'A search is running.' : null}
+                          disabled={loadingThisStay || queuedThisStay}
+                          disabledReason={
+                            loadingThisStay
+                              ? 'A search is running for this stay.'
+                              : queuedThisStay
+                                ? 'Waiting for the earlier search to finish.'
+                                : null
+                          }
                           onClick={() => {
                             onSelectStayKey?.(stayKey);
-                            if (step && onRunStep) onRunStep(step.id);
+                            if (step && onRunStep) requestStayRun(step.id);
                             else toast.warning(retryActionReason ?? 'Search is not available in this view.');
                           }}
                         >
                           Search again
                         </SecondaryButton>
+                        {queuedThisStay ? <p role="status">Search queued until the current stay finishes.</p> : null}
                         {retryActionReason ? <p className="text-[13px] text-[#334155]">{retryActionReason}</p> : null}
                       </>
                     ) : (
@@ -1411,14 +1484,21 @@ export function QuoteWorkflowPanel({
                         <PrimaryButton
                           onClick={() => {
                             onSelectStayKey?.(stayKey);
-                            if (step && onRunStep) onRunStep(step.id);
+                            if (step && onRunStep) requestStayRun(step.id);
                             else onRunNext?.();
                           }}
-                          disabled={actionReason !== null || loadingThisStay}
-                          disabledReason={loadingThisStay ? 'Looking up in HMS — you can keep working.' : actionReason}
+                          disabled={actionReason !== null || loadingThisStay || queuedThisStay}
+                          disabledReason={
+                            loadingThisStay
+                              ? 'Looking up in HMS — you can keep working.'
+                              : queuedThisStay
+                                ? 'Waiting for the earlier search to finish.'
+                                : actionReason
+                          }
                         >
                           {step?.status === 'failed' ? 'Retry search' : 'Search availability'}
                         </PrimaryButton>
+                        {queuedThisStay ? <p role="status">Search queued until the current stay finishes.</p> : null}
                         {step?.status === 'failed' && step.retryGuidance ? (
                           <p className="text-[13px] text-[#334155]">{step.retryGuidance}</p>
                         ) : null}
@@ -1462,7 +1542,7 @@ export function QuoteWorkflowPanel({
                             rowRate={rowRate}
                             saved={saved}
                             pending={priceRunning}
-                            busy={running || pinRun !== null}
+                            busy={loadingThisStay || pinRunningThisStay}
                             blockReason={rowStep ? quoteRunBlockReason(session, rowStep) : 'Search availability first.'}
                             onSetPrice={(rowPrice) => setRowPrices([{ group, rowPrice }])}
                             onSavedRateChanged={followSavedRate}
@@ -1476,7 +1556,7 @@ export function QuoteWorkflowPanel({
                             <RateCards
                               options={rateGroup.options}
                               partyName={contractPartyName(header)}
-                              disabled={running || pinRun !== null || rateGroup.blockReason !== null}
+                              disabled={loadingThisStay || pinRunningThisStay || rateGroup.blockReason !== null}
                               pendingRateCode={rateGroup.pendingRateCode}
                               preferredBoard={mealPlanForStay(stay.id, stay.rows)}
                               selectedControls={cardHostsControls ? rowControls : undefined}

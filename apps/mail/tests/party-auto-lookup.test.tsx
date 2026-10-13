@@ -87,6 +87,7 @@ function inlinePartyJobTransport(find: PartyFinder): HmsJobTransport {
     queueFind: async () => ({ runId: null }),
     queueSearchGuest: async () => ({ runId: null }),
     queueParty: async () => ({ runId: null }),
+    jobQueueEnabled: async () => false,
     findParty: ({ name, kind }) => find(name, kind),
     jobStatus: async () => null,
     screenshot: async () => ({ status: 'unavailable', reason: 'screenshot_unavailable' }),
@@ -100,7 +101,7 @@ function waitForDebounce(): Promise<void> {
 }
 
 describe('automatic HMS lookup for a company or agency field', () => {
-  it('searches HMS once for its kind and name, and picks the best match by itself', async () => {
+  it('searches inline when the queue is off and offers the best match for staff confirmation', async () => {
     const find = vi.fn(async () =>
       reply({
         outcome: 'ambiguous',
@@ -115,12 +116,15 @@ describe('automatic HMS lookup for a company or agency field', () => {
     expect(status.textContent).toContain('elapsed');
     expect(status.textContent).toContain('Searching HMS for "Woolworths" (company)');
     expect(status.querySelector('svg')).toBeNull();
-    expect(await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, { timeout: 3000 })).toBeTruthy();
+    const confirm = await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' });
+    expect(screen.queryByText(/✓ Woolworths Holdings/)).toBeNull();
+    fireEvent.click(confirm);
+    expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
     expect(find).toHaveBeenCalledWith('Woolworths', 'company');
   });
 
-  it('keeps queue-off auto-start quiet and explicit Find in HMS inline', async () => {
+  it('keeps queue-off explicit Find inline and lists manual results for a staff pick', async () => {
     const find = vi.fn(async () =>
       reply({
         outcome: 'ambiguous',
@@ -133,19 +137,19 @@ describe('automatic HMS lookup for a company or agency field', () => {
     render(<Harness find={find} jobTransport={jobTransport} />);
 
     await waitForDebounce();
-    expect(find).not.toHaveBeenCalled();
+    expect(find).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     const results = await screen.findByRole('list', {
       name: 'Companies and agencies found in HMS',
     });
-    expect(find).toHaveBeenCalledTimes(1);
+    expect(find).toHaveBeenCalledTimes(2);
     fireEvent.click(within(results).getByRole('button', { name: 'Woolworths Holdings' }));
     expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
-    expect(find).toHaveBeenCalledTimes(1);
+    expect(find).toHaveBeenCalledTimes(2);
     expect(find).toHaveBeenCalledWith('Woolworths', 'company');
   });
 
-  it('waits for a stable name before auto-starting an HMS job', async () => {
+  it('does not queue HMS jobs while typing; explicit Find queues one user lookup', async () => {
     const find = vi.fn<PartyFinder>();
     const queueParty = vi.fn<NonNullable<HmsJobClient['queueParty']>>(async () => ({
       runId: 'party-run',
@@ -155,6 +159,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
       queueFind: async () => ({ runId: null }),
       queueSearchGuest: async () => ({ runId: null }),
       queueParty,
+      jobQueueEnabled: async () => true,
       jobStatus,
       screenshot: async () => ({ status: 'unavailable', reason: 'screenshot_unavailable' }),
     };
@@ -166,13 +171,15 @@ describe('automatic HMS lookup for a company or agency field', () => {
     rendered.rerender(<Harness find={find} name="Woolworths" jobTransport={jobTransport} />);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(queueParty).not.toHaveBeenCalled();
+    await waitForDebounce();
+    expect(queueParty).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(queueParty).toHaveBeenCalledTimes(1), { timeout: 3000 });
 
     expect(queueParty).toHaveBeenCalledWith({
       threadId: 'thread-1',
       name: 'Woolworths',
       partyKind: 'company',
-      autoStart: true,
     });
     expect(find).not.toHaveBeenCalled();
   });
@@ -187,21 +194,18 @@ describe('automatic HMS lookup for a company or agency field', () => {
       }),
     );
     render(<Harness find={find} />);
-    expect(
-      await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, {
-        timeout: 3000,
-      }),
-    ).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' }));
+    expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Woolworths Foods (#50)' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Change' }));
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Woolworths Holdings (#49)' })).toBeTruthy(),
+      expect(screen.getByRole('button', { name: 'Confirm Woolworths Holdings' })).toBeTruthy(),
     );
     expect(screen.getByRole('button', { name: 'Find in HMS' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
   });
 
-  it('a pick from the chips is a plain pick, not "picked by Nava"', async () => {
+  it('a pick from the chips is staff-confirmed', async () => {
     const find = vi.fn(async () =>
       reply({
         outcome: 'ambiguous',
@@ -211,11 +215,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
       }),
     );
     render(<Harness find={find} />);
-    expect(
-      await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, {
-        timeout: 3000,
-      }),
-    ).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' }));
     fireEvent.click(screen.getByRole('button', { name: 'Woolworths Foods (#50)' }));
     expect(await screen.findByText('✓ Woolworths Foods (#50)')).toBeTruthy();
     expect(screen.queryByText(/picked by Nava/)).toBeNull();
@@ -363,7 +363,7 @@ describe('automatic lookup when the name changes mid-search', () => {
     rerender(<Harness find={find} name="Pick n Pay" />);
     finish(reply({ results: [WOOLWORTHS], best: WOOLWORTHS, searchedFor: 'Woolworths' }));
     rerender(<Harness find={find} name="Woolworths" />);
-    await screen.findByText(/Woolworths Holdings \(#49\)/, undefined, { timeout: 3000 });
+    await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' }, { timeout: 3000 });
     expect(screen.queryByText(/Searching HMS/)).toBeNull();
   });
 });

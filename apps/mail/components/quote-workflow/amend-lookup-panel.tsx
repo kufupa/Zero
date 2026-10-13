@@ -632,15 +632,18 @@ function CancelSection({
         <p data-pii className={warnNoteClass}>
           {cancelConfirmLine({ confirmation, guest: guestName, penaltyText: run.penaltyText })}
         </p>
-        <button
-          type="button"
-          className={buttonClass}
-          disabled={!canPreview || !reason || committing}
-          onClick={onCommit}
-        >
-          {AMEND_CANCEL_COPY.commit}
-        </button>
-        {!canPreview ? <p className={infoNoteClass}>Coming soon</p> : null}
+        {canPreview ? (
+          <button
+            type="button"
+            className={buttonClass}
+            disabled={!reason || committing}
+            onClick={onCommit}
+          >
+            {AMEND_CANCEL_COPY.commit}
+          </button>
+        ) : (
+          <p className={infoNoteClass}>{offNote}</p>
+        )}
         {committing ? <p className={infoNoteClass}>{AMEND_CANCEL_COPY.committing}</p> : null}
         {current.kind === 'ready' && current.note ? <p className={warnNoteClass}>{current.note}</p> : null}
       </div>
@@ -651,15 +654,16 @@ function CancelSection({
   return (
     <div aria-live="polite" className="flex flex-col gap-2">
       <p className={headingClass}>Cancel in HMS</p>
-      <button
-        type="button"
-        className={buttonClass}
-        disabled={!canPreview || previewing}
-        onClick={onPreview}
-      >
-        {AMEND_CANCEL_COPY.preview}
-      </button>
-      {!canPreview ? <p className={infoNoteClass}>Coming soon</p> : null}
+      {canPreview ? (
+        <button
+          type="button"
+          className={buttonClass}
+          disabled={previewing}
+          onClick={onPreview}
+        >
+          {AMEND_CANCEL_COPY.preview}
+        </button>
+      ) : null}
       {canPreview ? (
         <>
           <p className={captionClass}>{AMEND_CANCEL_COPY.previewHint}</p>

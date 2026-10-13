@@ -88,6 +88,8 @@ const JOB_RETRY_MS = 30_000;
 const JOB_YIELD_MS = 30_000;
 const PREFETCH_PER_MAIL_MAX = 3;
 const PREFETCH_WINDOW_MS = 60 * 60_000;
+const PARTY_USER_PER_HOUR = 12;
+const PARTY_READBACK_FRESH_MS = 24 * 60 * 60_000;
 const ISO_DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 // Same shape amend-find.ts accepts for an HMS confirmation number. Prefetch takes only numbers in this shape.
@@ -253,21 +255,19 @@ export function guestSearchPrefetchIdempotencyKey(
   return `hms-job:prefetch-guest:${transportId}:${threadId}:${digest}`;
 }
 
-/** One party lookup per thread, kind, normalized name and UTC day.
- * Shared by quote prefetch and automatic pane resume.
+/** One kind-less party prefetch per transport, normalized name and UTC day.
+ * Its result can be read by either matching picker.
  */
 export function partyPrefetchIdempotencyKey(
   transportId: string,
-  threadId: string,
   name: string,
-  partyKind: 'company' | 'agency' | undefined,
   day: string,
 ): string {
   const digest = createHash('sha256')
-    .update(`${partyKind ?? ''}\n${name.replace(/\s+/g, ' ').trim().toLowerCase()}\n${day}`)
+    .update(`${name.replace(/\s+/g, ' ').trim().toLowerCase()}\n${day}`)
     .digest('hex')
     .slice(0, 24);
-  return `hms-job:prefetch-party:${transportId}:${threadId}:${digest}`;
+  return `hms-job:prefetch-party:${transportId}:${digest}`;
 }
 
 /** A quote's extracted agency wins; otherwise use the first unverified email hint.
@@ -283,10 +283,10 @@ export function selectPartyPrefetchRequest(input: {
   const payload = objectRecord(input.payload);
   const agency = typeof payload.agency === 'string' ? payload.agency.trim() : '';
   if (agency.length > 0 && agency.length <= 256)
-    return { kind: 'party', name: agency, partyKind: 'agency' };
+    return { kind: 'party', name: agency };
   const suggestion = suggestPartiesFor({ sender: input.sender ?? '', body: input.body ?? '' })[0];
   if (!suggestion || !suggestion.name.trim() || suggestion.name.trim().length > 256) return null;
-  return { kind: 'party', name: suggestion.name.trim(), partyKind: suggestion.kind };
+  return { kind: 'party', name: suggestion.name.trim() };
 }
 
 function prefetchConfirmations(
@@ -492,6 +492,143 @@ export async function queueUserHmsJob(
     db,
   );
   return run;
+}
+
+export class HmsPartyQueueLimitError extends Error {
+  constructor() {
+    super('HMS party search limit reached for this mailbox. Try again later.');
+    this.name = 'HmsPartyQueueLimitError';
+  }
+}
+
+function userPartyIdempotencyKey(input: {
+  transportId: string;
+  request: Extract<HmsJobRequest, { kind: 'party' }>;
+  day: string;
+  retry: boolean;
+}): string {
+  const digest = createHash('sha256')
+    .update(
+      `${input.request.partyKind ?? ''}\n${input.request.name.replace(/\s+/g, ' ').trim().toLowerCase()}\n${input.day}`,
+    )
+    .digest('hex')
+    .slice(0, 24);
+  const key = `hms-job:user-party:${input.transportId}:${digest}`;
+  return input.retry ? `${key}:retry:${randomUUID()}` : key;
+}
+
+/** A pane party search: user-priority, transport-capped, and deduplicated for one normalized field/name per day. */
+export async function queueUserPartyHmsJob(
+  input: {
+    transportId: string;
+    userId: string;
+    threadId: string;
+    request: Extract<HmsJobRequest, { kind: 'party' }>;
+    retry?: boolean;
+  },
+  db: DB = getDb(),
+): Promise<AiWorkflowRun | null> {
+  const triggerMessageId = await latestInboundMessageId(db, input.transportId, input.threadId);
+  if (!triggerMessageId) return null;
+  const workItemId = await latestWorkItemId(db, input.transportId, input.threadId);
+  const day = new Date().toISOString().slice(0, 10);
+  let idempotencyKey = userPartyIdempotencyKey({
+    transportId: input.transportId,
+    request: input.request,
+    day,
+    retry: input.retry === true,
+  });
+
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${'hms-user-party:' + input.transportId}, 0))`,
+    );
+    const scoped = tx as unknown as DB;
+    if (!input.retry) {
+      const [existing] = await scoped
+        .select({ lastError: aiWorkflowRun.lastError })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.idempotencyKey, idempotencyKey))
+        .limit(1);
+      if (existing && existing.lastError !== 'HMS_PARTY_SUPERSEDED') {
+        return (
+          await enqueueHmsJob(
+            {
+              transportId: input.transportId,
+              threadId: input.threadId,
+              triggerMessageId,
+              workItemId,
+              userId: input.userId,
+              request: input.request,
+              priority: HMS_JOB_PRIORITY_USER,
+              idempotencyKey,
+            },
+            scoped,
+          )
+        ).run;
+      }
+      if (existing) idempotencyKey = `${idempotencyKey}:retry:${randomUUID()}`;
+    }
+
+    const [usedRow] = await scoped
+      .select({ n: sql<number>`count(*)::int` })
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.transportId, input.transportId),
+          eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+          eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_USER),
+          sql`${aiWorkflowRun.readRequest}->>'kind' = 'party'`,
+          gt(aiWorkflowRun.createdAt, new Date(Date.now() - PREFETCH_WINDOW_MS)),
+        ),
+      );
+    if (Number(usedRow?.n ?? 0) >= PARTY_USER_PER_HOUR) throw new HmsPartyQueueLimitError();
+
+    const fieldKind = input.request.partyKind;
+    await scoped
+      .update(aiWorkflowRun)
+      .set({
+        state: 'superseded',
+        nextRunAt: null,
+        claimOwner: null,
+        claimToken: null,
+        deadlineAt: null,
+        lastError: 'HMS_PARTY_SUPERSEDED',
+        failureClass: null,
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(aiWorkflowRun.transportId, input.transportId),
+          eq(aiWorkflowRun.threadId, input.threadId),
+          eq(aiWorkflowRun.runKind, 'read_tool'),
+          eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+          eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_USER),
+          eq(aiWorkflowRun.state, 'queued'),
+          sql`${aiWorkflowRun.readRequest}->>'kind' = 'party'`,
+          fieldKind
+            ? sql`${aiWorkflowRun.readRequest}->>'partyKind' = ${fieldKind}`
+            : sql`${aiWorkflowRun.readRequest}->>'partyKind' IS NULL`,
+        ),
+      );
+
+    return (
+      await enqueueHmsJob(
+        {
+          transportId: input.transportId,
+          threadId: input.threadId,
+          triggerMessageId,
+          workItemId,
+          userId: input.userId,
+          request: input.request,
+          priority: HMS_JOB_PRIORITY_USER,
+          idempotencyKey,
+        },
+        scoped,
+      )
+    ).run;
+  });
 }
 
 const HMS_BATCH_INSERT_CHUNK = 500;
@@ -1421,9 +1558,7 @@ export async function prefetchPartyForExtraction(
       priority: HMS_JOB_PRIORITY_PREFETCH,
       idempotencyKey: partyPrefetchIdempotencyKey(
         run.transportId,
-        source.threadId,
         request.name,
-        request.partyKind,
         new Date().toISOString().slice(0, 10),
       ),
     },
@@ -1747,6 +1882,9 @@ export async function readHmsJobView(
               ),
               scope,
               sql`${aiWorkflowRun.readRequest}->>'kind' = ${input.kind}`,
+              ...(input.kind === 'party'
+                ? [gte(aiWorkflowRun.createdAt, new Date(Date.now() - PARTY_READBACK_FRESH_MS))]
+                : []),
               ...(input.confirmation
                 ? [sql`${aiWorkflowRun.readRequest}->>'confirmation' = ${input.confirmation}`]
                 : []),
@@ -1770,7 +1908,15 @@ export async function readHmsJobView(
                   ]
                 : []),
               ...(input.partyKind
-                ? [sql`${aiWorkflowRun.readRequest}->>'partyKind' = ${input.partyKind}`]
+                ? [
+                    or(
+                      sql`${aiWorkflowRun.readRequest}->>'partyKind' = ${input.partyKind}`,
+                      and(
+                        eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+                        sql`${aiWorkflowRun.readRequest}->>'partyKind' IS NULL`,
+                      ),
+                    ),
+                  ]
                 : []),
               ...(input.arrival
                 ? [sql`${aiWorkflowRun.readRequest}->>'arrival' = ${input.arrival}`]

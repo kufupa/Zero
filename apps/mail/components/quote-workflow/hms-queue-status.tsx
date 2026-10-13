@@ -34,6 +34,7 @@ export function HmsLookupProgress({ pending, detail }: { pending: boolean; detai
     <p role="status" className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[12.5px] text-[#475569]">
       <span className="font-semibold text-[#1e293b]">Looking up in HMS — you can keep working</span>
       <span>{`· ${formatQueueElapsed(elapsedMs)} elapsed`}</span>
+      {elapsedMs >= 30_000 ? <span>Still looking in HMS…</span> : null}
       {detail ? <span>{`· ${detail}`}</span> : null}
     </p>
   );
@@ -69,6 +70,7 @@ export function HmsQueueStatusLine({
       <span className="font-semibold text-[#1e293b]">Looking up in HMS — you can keep working</span>
       <span>{` · ${formatQueueElapsed(elapsed)} elapsed`}</span>
       {status && status.state !== 'idle' && status.message ? <span>{` · ${status.message}`}</span> : null}
+      {status?.state === 'running' && elapsed >= 30_000 ? <span>Still looking in HMS…</span> : null}
     </p>
   );
 }
@@ -195,6 +197,7 @@ export function HmsJobStatusLine({
           <span>{`${elapsed} elapsed`}</span>
         </>
       )}
+      {view?.status === 'running' && elapsedMs >= 30_000 ? <span>Still looking in HMS…</span> : null}
     </p>
   );
 }

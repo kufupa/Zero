@@ -1833,6 +1833,11 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                   </section>
                 </div>
               </article>
+              <p
+                class="text-center text-[12.5px] font-semibold text-[#475569]"
+              >
+                1 room · 0 guests
+              </p>
               <div
                 class="flex flex-col gap-1"
               >
@@ -2221,7 +2226,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                         <p
                           class="text-[11px] text-[#64748b]"
                         >
-                          Dates unknown → unknown · Room 1: 1 × any room, adults not set
+                          Dates unknown → unknown · Any Room ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
@@ -3866,6 +3871,11 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                   </section>
                 </div>
               </article>
+              <p
+                class="text-center text-[12.5px] font-semibold text-[#475569]"
+              >
+                1 room · 0 guests
+              </p>
               <div
                 class="flex flex-col gap-1"
               >
@@ -4254,7 +4264,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                         <p
                           class="text-[11px] text-[#64748b]"
                         >
-                          Dates unknown → unknown · Room 1: 1 × any room, adults not set
+                          Dates unknown → unknown · Any Room ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
@@ -6132,6 +6142,11 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                   </section>
                 </div>
               </article>
+              <p
+                class="text-center text-[12.5px] font-semibold text-[#475569]"
+              >
+                1 room · 0 guests
+              </p>
               <div
                 class="flex flex-col gap-1"
               >
@@ -6520,7 +6535,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                         <p
                           class="text-[11px] text-[#64748b]"
                         >
-                          Dates unknown → unknown · Room 1: 1 × any room, adults not set
+                          Dates unknown → unknown · Any Room ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
@@ -8065,6 +8080,11 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                   </section>
                 </div>
               </article>
+              <p
+                class="text-center text-[12.5px] font-semibold text-[#475569]"
+              >
+                1 room · 0 guests
+              </p>
               <div
                 class="flex flex-col gap-1"
               >
@@ -8453,7 +8473,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                         <p
                           class="text-[11px] text-[#64748b]"
                         >
-                          Dates unknown → unknown · Room 1: 1 × any room, adults not set
+                          Dates unknown → unknown · Any Room ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   HmsAsOf,
   HmsJobStatusLine,
+  HmsQueueStatusLine,
   formatAsOfAgo,
   hmsJobLabel,
 } from '../components/quote-workflow/hms-queue-status';
@@ -83,12 +84,14 @@ function fakeTransport(polls: (HmsJobView | null)[], readBack: HmsJobView | null
 function Harness({
   transport,
   request,
+  options,
   resume = null,
   scope = 'email-1',
   autoStartIfMissing = false,
 }: {
   transport: HmsJobTransport | null;
   request: HmsJobRequest;
+  options?: HmsJobQueueOptions;
   resume?: { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string } | null;
   scope?: string;
   autoStartIfMissing?: boolean;
@@ -96,7 +99,7 @@ function Harness({
   const job = useHmsJob({ transport, resume, scope, autoStartIfMissing });
   return (
     <div>
-      <button type="button" onClick={() => job.start(request)}>
+      <button type="button" onClick={() => job.start(request, options)}>
         Look up
       </button>
       <HmsJobStatusLine view={job.view} queuing={job.queuing} detail={DETAIL} onRetry={job.retry} />
@@ -189,6 +192,32 @@ describe('the status line', () => {
     expect(screen.getByText(`${DETAIL} 1 min 0 s elapsed.`)).toBeTruthy();
     await advance(1_000);
     expect(screen.getByText(`${DETAIL} 1 min 1 s elapsed.`)).toBeTruthy();
+  });
+
+  it('says “Still looking in HMS…” after thirty seconds of a running job', async () => {
+    render(
+      <HmsJobStatusLine
+        view={view({ runId: 'r', status: 'running', createdAt: new Date(2026, 9, 9, 12, 0).toISOString() })}
+        queuing={false}
+        detail={DETAIL}
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('Still looking in HMS…')).toBeNull();
+    await advance(29_000);
+    expect(screen.queryByText('Still looking in HMS…')).toBeNull();
+    await advance(1_000);
+    expect(screen.getByText('Still looking in HMS…')).toBeTruthy();
+  });
+
+  it('says “Still looking in HMS…” after thirty seconds on the quote queue status', () => {
+    render(
+      <HmsQueueStatusLine
+        pending
+        status={{ state: 'running', runningForMs: 30_000, message: 'HMS search running' }}
+      />,
+    );
+    expect(screen.getByText('Still looking in HMS…')).toBeTruthy();
   });
 
   it('shows Failed as an alert, and Retry calls onRetry', () => {
@@ -288,7 +317,7 @@ describe('a queued lookup, polled on the 3 s clock', () => {
     expect(status.mock.calls.length).toBe(reads);
   });
 
-  it('shows a pane-level completion notice and running count, and Show returns to the rates section', async () => {
+  it('shows a pending count; Show returns to the rates section and clears the done notice', async () => {
     const { transport } = fakeTransport([
       view({ runId: 'run-1', request: SEARCH, status: 'queued', position: 1 }),
       view({ runId: 'run-1', request: SEARCH, status: 'done', asOf: AS_OF, result: { kind: 'search_guest' } }),
@@ -310,15 +339,93 @@ describe('a queued lookup, polled on the 3 s clock', () => {
 
     await lookUp();
     await advance(0);
-    expect(screen.getByText('HMS: 1 running')).toBeTruthy();
+    expect(screen.getByText('HMS: 1 pending')).toBeTruthy();
 
     await advance(HMS_JOB_POLL_MS);
-    expect(screen.queryByText('HMS: 1 running')).toBeNull();
+    expect(screen.queryByText('HMS: 1 pending')).toBeNull();
     expect(screen.getByRole('status').textContent).toContain('HMS lookup finished');
     expect(screen.getByRole('button', { name: 'Show' }).getAttribute('aria-controls')).toBe('quote-rates');
     fireEvent.click(screen.getByRole('button', { name: 'Show' }));
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
     expect(container.querySelector('#quote-rates')).not.toBeNull();
+    expect(screen.queryByTestId('hms-job-notice-banner')).toBeNull();
+  });
+
+  it('dismisses a done notice after twenty seconds and hints when Show has no target', async () => {
+    const { transport } = fakeTransport([
+      view({ runId: 'run-1', request: SEARCH, status: 'done', asOf: AS_OF, result: { kind: 'search_guest' } }),
+    ]);
+    render(
+      <HmsJobNoticeProvider emailKey="email-1" emailSubject="Suite Availability Request">
+        <HmsJobNoticeBanner />
+        <Harness transport={transport} request={SEARCH} />
+      </HmsJobNoticeProvider>,
+    );
+    await lookUp();
+    await advance(0);
+    const banner = screen.getByTestId('hms-job-notice-banner');
+    fireEvent.click(within(banner).getByRole('button', { name: 'Show' }));
+    expect(screen.getByText("That section isn't open any more")).toBeTruthy();
+    await advance(20_000);
+    expect(screen.queryByTestId('hms-job-notice-banner')).toBeNull();
+  });
+
+  it('shows failures before done notices and counts the remaining notices', async () => {
+    const transport: HmsJobTransport = {
+      queue: vi.fn(async (request) => ({ runId: request.kind === 'find' ? 'run-find' : 'run-party' })),
+      status: vi.fn(async (input) => {
+        if (!('runId' in input)) return null;
+        return input.runId === 'run-find'
+          ? view({ runId: input.runId, request: FIND, status: 'done', asOf: AS_OF, result: { kind: 'find' } })
+          : view({ runId: input.runId, request: SEARCH, status: 'failed', failureClass: 'AUTH' });
+      }),
+    };
+    render(
+      <HmsJobNoticeProvider emailKey="email-1" emailSubject="Suite Availability Request">
+        <HmsJobNoticeBanner />
+        <Harness transport={transport} request={FIND} />
+        <Harness transport={transport} request={SEARCH} />
+      </HmsJobNoticeProvider>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Look up' })[0]!);
+      fireEvent.click(screen.getAllByRole('button', { name: 'Look up' })[1]!);
+    });
+    await advance(0);
+    const banner = screen.getByTestId('hms-job-notice-banner');
+    expect(banner.getAttribute('role')).toBe('alert');
+    expect(banner.textContent).toContain('HMS lookup failed:');
+    expect(banner.textContent).toContain('+1 more');
+  });
+
+  it('expires a done notice after twenty seconds even while a failure is pinned above it', async () => {
+    const transport: HmsJobTransport = {
+      queue: vi.fn(async (request) => ({ runId: request.kind === 'find' ? 'run-find' : 'run-search' })),
+      status: vi.fn(async (input) => {
+        if (!('runId' in input)) return null;
+        return input.runId === 'run-find'
+          ? view({ runId: input.runId, request: FIND, status: 'done', asOf: AS_OF, result: { kind: 'find' } })
+          : view({ runId: input.runId, request: SEARCH, status: 'failed', failureClass: 'AUTH' });
+      }),
+    };
+    render(
+      <HmsJobNoticeProvider emailKey="email-1" emailSubject="Suite Availability Request">
+        <HmsJobNoticeBanner />
+        <Harness transport={transport} request={FIND} />
+        <Harness transport={transport} request={SEARCH} />
+      </HmsJobNoticeProvider>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Look up' })[0]!);
+      fireEvent.click(screen.getAllByRole('button', { name: 'Look up' })[1]!);
+    });
+    await advance(0);
+    await advance(HMS_JOB_POLL_MS);
+    const failure = screen.getByTestId('hms-job-notice-banner');
+    expect(failure.textContent).toContain('+1 more');
+    await advance(20_000);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss HMS notice' }));
+    expect(screen.queryByTestId('hms-job-notice-banner')).toBeNull();
   });
 });
 
@@ -379,6 +486,34 @@ describe('a failed lookup', () => {
     expect(queue).toHaveBeenNthCalledWith(2, SEARCH);
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByTestId('hms-as-of').textContent).toBe('Looked up in HMS 3 hr ago');
+  });
+
+  it('retries a failed notice with its original request and options after the same email scope changes', async () => {
+    const { transport, queue } = fakeTransport([
+      view({ runId: 'run-1', request: SEARCH, status: 'failed', failureClass: 'HMS_LOCK_BUSY' }),
+      view({ runId: 'run-2', request: SEARCH, status: 'done', asOf: AS_OF, result: { kind: 'search_guest' } }),
+    ]);
+    const pane = (request: HmsJobRequest, options: HmsJobQueueOptions, scope: string) => (
+      <HmsJobNoticeProvider emailKey="email-1" emailSubject="Suite Availability Request">
+        <HmsJobNoticeBanner />
+        <section id="quote-rates" />
+        <Harness transport={transport} request={request} options={options} scope={scope} />
+      </HmsJobNoticeProvider>
+    );
+    const { rerender } = render(pane(SEARCH, { autoStart: true }, 'email-1:search'));
+    await lookUp();
+    await advance(0);
+    expect(queue).toHaveBeenNthCalledWith(1, SEARCH, { autoStart: true });
+    await advance(HMS_JOB_POLL_MS);
+    expect(screen.getByTestId('hms-job-notice-banner').textContent).toContain('HMS lookup failed:');
+
+    rerender(pane(FIND, { retry: true }, 'email-1:find'));
+    await advance(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await advance(0);
+    expect(queue).toHaveBeenNthCalledWith(2, SEARCH, { autoStart: true });
+    await advance(HMS_JOB_POLL_MS);
+    expect(screen.getByRole('status').textContent).toContain('HMS lookup finished');
   });
 
   it('says so when the queue call itself fails, and shows no job', async () => {
@@ -472,11 +607,11 @@ describe('a job that finishes after the pane moves to another email', () => {
     const { rerender } = render(pane('email-1', 'First quote request'));
     await lookUp();
     await advance(0);
-    expect(screen.getByText('HMS: 1 running')).toBeTruthy();
+    expect(screen.getByText('HMS: 1 pending')).toBeTruthy();
 
     rerender(pane('email-2', 'Second email'));
     await advance(0);
-    expect(screen.getByText('HMS: 1 running')).toBeTruthy();
+    expect(screen.getByText('HMS: 1 pending')).toBeTruthy();
 
     await advance(HMS_JOB_POLL_MS);
     const banner = screen.getByTestId('hms-job-notice-banner');
@@ -503,11 +638,11 @@ describe('a job that finishes after the pane moves to another email', () => {
     const { rerender } = render(pane('email-1', 'First quote request'));
     await lookUp();
     await advance(0);
-    expect(screen.getByText('HMS: 1 running')).toBeTruthy();
+    expect(screen.getByText('HMS: 1 pending')).toBeTruthy();
 
     rerender(pane('email-2', 'Second email'));
     await advance(0);
-    expect(screen.getByText('HMS: 1 running')).toBeTruthy();
+    expect(screen.getByText('HMS: 1 pending')).toBeTruthy();
 
     await advance(HMS_JOB_POLL_MS);
     const banner = screen.getByTestId('hms-job-notice-banner');
@@ -543,7 +678,7 @@ describe('a job that finishes after the pane moves to another email', () => {
     const { rerender } = render(pane('email-1', 'First quote request'));
     await lookUp();
     await advance(0);
-    expect(screen.getByText('HMS: 1 running')).toBeTruthy();
+    expect(screen.getByText('HMS: 1 pending')).toBeTruthy();
 
     rerender(pane('email-2', 'Second email'));
     await advance(0);
@@ -553,7 +688,7 @@ describe('a job that finishes after the pane moves to another email', () => {
     });
     await advance(0);
 
-    expect(screen.queryByText('HMS: 1 running')).toBeNull();
+    expect(screen.queryByText('HMS: 1 pending')).toBeNull();
     const banner = screen.getByTestId('hms-job-notice-banner');
     expect(banner.textContent).toContain('HMS lookup finished');
     expect(banner.textContent).toContain('First quote request');
@@ -578,7 +713,7 @@ describe('a job that finishes after the pane moves to another email', () => {
     await advance(0);
     rerender(pane('email-2', 'Second email'));
     await advance(0);
-    expect(screen.getByRole('alert').textContent).toContain('HMS lookup failed:');
+    expect(screen.getByTestId('hms-job-notice-banner').textContent).toContain('HMS lookup failed:');
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await advance(0);
@@ -650,7 +785,7 @@ describe('an auto-start when the queue is off', () => {
 
     await advance(0);
     expect(transport.queue).toHaveBeenCalledWith(SEARCH, { autoStart: true });
-    expect(screen.queryByText('HMS: 1 running')).toBeNull();
+    expect(screen.queryByText('HMS: 1 pending')).toBeNull();
   });
 });
 
@@ -686,7 +821,7 @@ describe('a panel that unmounts while its queue call is pending', () => {
     render(<Pane />);
     await lookUp();
     await advance(0);
-    expect(screen.getByText('HMS: 1 running')).toBeTruthy();
+    expect(screen.getByText('HMS: 1 pending')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Change pane section' }));
     await advance(0);
@@ -695,7 +830,7 @@ describe('a panel that unmounts while its queue call is pending', () => {
       await Promise.resolve();
     });
 
-    expect(screen.queryByText('HMS: 1 running')).toBeNull();
+    expect(screen.queryByText('HMS: 1 pending')).toBeNull();
     expect(screen.getByRole('status').textContent).toContain('HMS lookup finished');
   });
 });

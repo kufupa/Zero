@@ -556,18 +556,15 @@ describe('BookingVoucherCard write card', () => {
 });
 
 describe('ApproveCard gated off', () => {
-  it('shows disabled approval and reread controls and keeps the Copy confirmation handoff', async () => {
+  it('hides write controls and keeps the Copy confirmation handoff', async () => {
     const client = fakeClient(viewWith({ snapshot: null, run: runWith('dead_letter', { failureClass: 'AUTH' }) }));
     renderCard(client, { writesEnabled: false });
     expect(screen.getByText(/Saving to HMS from this pane is off for now/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
-    const approve = (await screen.findByRole('button', { name: /approve/i })) as HTMLButtonElement;
-    const reread = (await screen.findByRole('button', { name: /re.?read/i })) as HTMLButtonElement;
-    expect(approve.disabled).toBe(true);
-    expect(reread.disabled).toBe(true);
-    expect(screen.getAllByText('Coming soon').length).toBeGreaterThanOrEqual(2);
-    fireEvent.click(approve);
-    fireEvent.click(reread);
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /re.?read/i })).toBeNull();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByText('Coming soon')).toBeNull();
     expect(client.approve).not.toHaveBeenCalled();
     expect(client.reread).not.toHaveBeenCalled();
     expect(client.writeState).toHaveBeenCalledTimes(1);

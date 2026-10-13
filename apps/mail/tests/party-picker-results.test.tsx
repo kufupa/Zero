@@ -4,8 +4,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
-import { PartyPicker } from '../components/quote-workflow/party-picker';
-import { PARTY_PICKER_HINT } from '../components/quote-workflow/party-picker';
+import {
+  PARTY_PICKER_HINT,
+  PARTY_SEARCH_DEADLINE_MS,
+  PartyPicker,
+} from '../components/quote-workflow/party-picker';
 import type { HmsJobTransport, HmsJobView } from '../lib/quote-workflow/amend-find';
 import {
   PARTY_TRUNCATED_NOTE,
@@ -15,15 +18,17 @@ import {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 const ABC_TRAVEL = { kind: 'company' as const, nativeId: '4411', name: 'ABC Travel' };
 const ABCD_TRAVEL = { kind: 'company' as const, nativeId: '4412', name: 'ABCD Travel' };
+const ABC_TRAVEL_AGENCY = { kind: 'agency' as const, nativeId: '7711', name: 'ABC Travel Agency' };
 
 function prefetchedPartyView(): HmsJobView {
   return {
     runId: 'party-run-1',
-    request: { kind: 'party', name: 'ABC Travel', partyKind: 'company' },
+    request: { kind: 'party', name: 'ABC Travel' },
     prefetch: true,
     status: 'done',
     position: null,
@@ -34,7 +39,7 @@ function prefetchedPartyView(): HmsJobView {
     result: {
       kind: 'party',
       outcome: 'ambiguous',
-      results: [ABC_TRAVEL, ABCD_TRAVEL],
+      results: [ABC_TRAVEL, ABCD_TRAVEL, ABC_TRAVEL_AGENCY],
       best: ABC_TRAVEL,
       truncated: false,
       searchedFor: 'ABC Travel',
@@ -92,7 +97,7 @@ describe('PartyPicker outcome copy', () => {
       'external_system_unavailable',
       'agency',
       'Travel Hub',
-      "Couldn't reach HMS. Try again in a minute.",
+      "Nava couldn't check HMS for this name. Try again, or quote at public rates.",
     ],
     ['execution_failure', 'company', 'Acme Travel', "Couldn't reach HMS. Try again in a minute."],
     ['refused_flag_off', 'company', 'Acme Travel', 'Company and agency rates are switched off.'],
@@ -136,6 +141,60 @@ describe('PartyPicker prefetched party jobs', () => {
     expect(onPick).not.toHaveBeenCalled();
     fireEvent.click(confirm);
     expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL);
+  });
+
+  it('shares a kind-less prefetched job without offering another kind’s best row', async () => {
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(),
+      status: vi.fn(async () => prefetchedPartyView()),
+    };
+    const onCompanyPick = vi.fn();
+    const onAgencyPick = vi.fn();
+    render(
+      <>
+        <PartyPicker
+          name="ABC Travel"
+          kind="company"
+          parties={{}}
+          find={vi.fn()}
+          jobTransport={jobTransport}
+          threadId="thread-1"
+          onPick={onCompanyPick}
+          onClear={vi.fn()}
+        />
+        <PartyPicker
+          name="ABC Travel"
+          kind="agency"
+          parties={{}}
+          find={vi.fn()}
+          jobTransport={jobTransport}
+          threadId="thread-1"
+          onPick={onAgencyPick}
+          onClear={vi.fn()}
+        />
+      </>,
+    );
+
+    const company = screen.getByRole('group', { name: 'Company lookup in HMS' });
+    const agency = screen.getByRole('group', { name: 'Agency lookup in HMS' });
+    expect(await within(company).findByRole('button', { name: 'Confirm ABC Travel' })).toBeTruthy();
+    expect(within(agency).queryByRole('button', { name: 'Confirm ABC Travel' })).toBeNull();
+    expect(
+      within(agency).getByRole('list', { name: 'Companies and agencies found in HMS' }).textContent,
+    ).toContain('ABC Travel Agency');
+    expect(within(company).queryByText('ABC Travel Agency')).toBeNull();
+    expect(jobTransport.status).toHaveBeenCalledWith({
+      kind: 'party',
+      name: 'ABC Travel',
+      partyKind: 'company',
+    });
+    expect(jobTransport.status).toHaveBeenCalledWith({
+      kind: 'party',
+      name: 'ABC Travel',
+      partyKind: 'agency',
+    });
+    expect(onCompanyPick).not.toHaveBeenCalled();
+    expect(onAgencyPick).not.toHaveBeenCalled();
   });
 
   it('reads a prefetched suggestion by thread and kind when the party name is blank', async () => {
@@ -279,7 +338,14 @@ describe('PartyPicker queued party jobs', () => {
     const jobTransport: HmsJobTransport = {
       queue: vi.fn(async () => ({ runId: 'party-run-2' })),
       status: vi.fn(async (input) =>
-        'runId' in input ? { ...prefetchedPartyView(), runId: input.runId, prefetch: false } : null,
+        'runId' in input
+          ? {
+              ...prefetchedPartyView(),
+              request: { kind: 'party' as const, name: 'ABC Travel', partyKind: 'company' as const },
+              runId: input.runId,
+              prefetch: false,
+            }
+          : null,
       ),
     };
     const find = vi.fn();
@@ -312,6 +378,65 @@ describe('PartyPicker queued party jobs', () => {
     expect(onPick).not.toHaveBeenCalled();
     fireEvent.click(within(results).getByRole('button', { name: 'ABC Travel' }));
     expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL);
+  });
+
+  it('releases the rates hold after four minutes and offers a named Retry', async () => {
+    vi.useFakeTimers();
+    const queue = vi.fn(async () => ({ runId: 'party-run-slow' }));
+    const jobTransport: HmsJobTransport = {
+      queue,
+      status: vi.fn(async (input) =>
+        'runId' in input ? new Promise<never>(() => {}) : null,
+      ),
+    };
+    const onLookupPending = vi.fn();
+    render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-1"
+        autoLookup={false}
+        onLookupPending={onLookupPending}
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.click(findButton());
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(queue).toHaveBeenNthCalledWith(1, {
+      kind: 'party',
+      name: 'ABC Travel',
+      partyKind: 'company',
+    });
+    expect(onLookupPending).toHaveBeenLastCalledWith(true);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PARTY_SEARCH_DEADLINE_MS);
+    });
+    expect(screen.getByRole('alert').textContent).toContain('Party search timed out after four minutes.');
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(onLookupPending).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(queue).toHaveBeenNthCalledWith(2, {
+      kind: 'party',
+      name: 'ABC Travel',
+      partyKind: 'company',
+    }, { retry: true });
   });
 });
 

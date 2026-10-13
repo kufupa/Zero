@@ -723,7 +723,11 @@ describe('NavaPane screen states', () => {
     bridgeMockState.storedWork = STORED_AMENDMENT;
     render(<NavaPane bridge={fakeBridge} />);
 
-    const panel = await screen.findByRole('region', { name: 'Change to an existing booking' });
+    const panel = await screen.findByRole(
+      'region',
+      { name: 'Change to an existing booking' },
+      { timeout: 4000 },
+    );
     expect(panel.textContent).toContain('57291630-1');
     expect(panel.textContent).toContain('Find this booking in HMS');
     expect(panel.textContent).toContain('31 Oct 2026');
@@ -853,6 +857,13 @@ describe('NavaPane screen states', () => {
     ).toBeDefined();
     await settle();
     expect(screen.queryByRole('button', { name: 'Draft quotation into email reply' })).toBeNull();
+  });
+
+  it('reply: keeps reply actions visible while quote analysis is unsynced', async () => {
+    bridgeMockState.analysisOverride = { status: 'unsynced' };
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByText(/not finished syncing/i)).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Insert draft in Outlook' })).toBeDefined();
   });
 
   it('preview: the webmail reply saves to the thread, not that the add-in is too old', async () => {

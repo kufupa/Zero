@@ -137,7 +137,7 @@ export function ReviewCard({
       {live.length > 0 && live.length < run.evidence.length ? (
         <p className={writeClasses.note}>{HMS_WRITE_COPY.someExpired}</p>
       ) : null}
-      {reviewed === null ? (
+      {reviewed === null && writesEnabled ? (
         <div className="flex flex-col gap-2">
           <label htmlFor={noteId} className="text-[12px] font-semibold text-[#1e293b]">
             {HMS_WRITE_COPY.reviewLabel}
@@ -148,22 +148,19 @@ export function ReviewCard({
             onChange={(event) => setNote(event.target.value)}
             maxLength={HMS_NOTE_MAX}
             rows={2}
-            disabled={!writesEnabled}
             className={writeClasses.textarea}
           />
           <div className="flex flex-wrap gap-2">
             <SecondaryButton
               className={writeClasses.primary}
-              disabled={busy || !writesEnabled}
-              disabledReason={writesEnabled ? null : 'Coming soon'}
+              disabled={busy}
               onClick={() => decide('ok')}
             >
               {HMS_WRITE_COPY.reviewOk}
             </SecondaryButton>
             <SecondaryButton
               className={writeClasses.danger}
-              disabled={busy || !writesEnabled}
-              disabledReason={writesEnabled ? null : 'Coming soon'}
+              disabled={busy}
               onClick={() => decide('flag')}
             >
               {HMS_WRITE_COPY.flag}
