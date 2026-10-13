@@ -64,9 +64,9 @@ const draftApprovalInput = z
         routeId: z.string(),
         modelId: z.string(),
         purpose: z.literal('draft'),
-        protocol: z.literal('in_process'),
+        protocol: z.enum(['in_process', 'azure-foundry-responses']),
         access: z.literal('current_app'),
-        egress: z.literal('none'),
+        egress: z.enum(['none', 'azure-foundry']),
         retention: z.literal('bounded'),
         usage: z.literal('reported'),
         release: z
@@ -84,6 +84,9 @@ const draftApprovalInput = z
           .strict(),
       })
       .strict()
+      .refine((route) =>
+        route.protocol === 'in_process' ? route.egress === 'none' : route.egress === 'azure-foundry',
+      )
       .optional(),
     fingerprint: z.string(),
     signature: z.string(),

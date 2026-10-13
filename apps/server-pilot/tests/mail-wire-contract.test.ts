@@ -190,6 +190,64 @@ describe('mail wire contract — send accepts FE payload from create-email.tsx',
   });
 });
 
+describe('mail wire contract — send accepts draft approvals for every draft route', () => {
+  const approval = (route: { protocol: string; egress: string }) => ({
+    version: 'u6-v1',
+    purpose: 'draft',
+    draftId: 'draft-uuid-1',
+    generationId: 'gen-1',
+    transportId: 'transport-1',
+    threadId: 'thread-1',
+    revisionId: 'rev-1',
+    threadStateVersion: 'tsv-1',
+    policyVersion: 'policy-1',
+    approvedByUserId: 'user-1',
+    approvedAt: '2026-10-13T09:00:00.000Z',
+    bodyDigest: 'a'.repeat(64),
+    recipientDigest: 'b'.repeat(64),
+    attachmentDigest: 'c'.repeat(64),
+    evidenceDigest: 'd'.repeat(64),
+    routeBinding: {
+      routeId: 'route-1',
+      modelId: 'model-1',
+      purpose: 'draft',
+      access: 'current_app',
+      retention: 'bounded',
+      usage: 'reported',
+      ...route,
+      release: {
+        releaseId: 'release-1',
+        releaseVersion: '1',
+        sourceRevision: 'rev',
+        fingerprint: 'fp',
+        purpose: 'draft',
+        capabilityFamilyVersions: { draft: '1' },
+        issuedAt: '2026-10-13T08:00:00.000Z',
+        expiresAt: '2026-10-14T08:00:00.000Z',
+        withdrawn: false,
+      },
+    },
+    fingerprint: 'e'.repeat(64),
+    signature: 'f'.repeat(64),
+  });
+  const send = (draftApproval: unknown) =>
+    sendInput.safeParse({ to: ['guest@example.com'], html: '<p>x</p>', draftApproval });
+
+  it('accepts in-process and Azure Foundry route bindings', () => {
+    expect(send(approval({ protocol: 'in_process', egress: 'none' })).success).toBe(true);
+    expect(
+      send(approval({ protocol: 'azure-foundry-responses', egress: 'azure-foundry' })).success,
+    ).toBe(true);
+  });
+
+  it('rejects a route binding whose egress does not match its protocol', () => {
+    expect(send(approval({ protocol: 'in_process', egress: 'azure-foundry' })).success).toBe(false);
+    expect(send(approval({ protocol: 'azure-foundry-responses', egress: 'none' })).success).toBe(
+      false,
+    );
+  });
+});
+
 describe('mail wire contract — parseFromEmail for spoof check', () => {
   it('extracts bare email from display string', () => {
     expect(parseFromEmail('Front Desk <frontdesk@legacyhotel.com>')).toBe(
