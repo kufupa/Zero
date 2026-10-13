@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { and, eq, gt, lt, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, lt, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { mailboxAccess, mailboxTransport } from '../db/schema/mail.js';
 import { user } from '../db/schema/auth.js';
@@ -176,7 +176,7 @@ const readRootWhere = (input: ReadRootApprovalInput) => and(eq(outlookDeviceRead
   eq(outlookDeviceReadRoot.storeId, input.storeId), eq(outlookDeviceReadRoot.rootEntryId, input.rootEntryId));
 
 /** Restricted operator only. Approval cannot create a device/mailbox/staff grant. */
-export async function approveReadRoot(db: DB, input: ReadRootApprovalInput, options: { unchangedIsNoop?: boolean } = {}): Promise<boolean> {
+export async function approveReadRoot(db: DB, input: ReadRootApprovalInput, options: { unchangedIsNoop?: boolean; refuseRevoked?: boolean } = {}): Promise<boolean> {
   if (!validReadRoot(input)) throw new Error('Invalid read root approval');
   return db.transaction(async tx => {
     // Serialize operator approvals per enrolled device so concurrent adds cannot exceed the finite DTO bound.
@@ -206,6 +206,21 @@ export async function approveReadRoot(db: DB, input: ReadRootApprovalInput, opti
     );
     if (activeForStore.length >= 1 && !sameBinding)
       throw new Error('Read root policy allows at most one active root per device store');
+    // A device report never undoes an operator revocation on this store; only the operator path can reactivate it.
+    if (options.refuseRevoked) {
+      const revoked = await tx
+        .select({ rootEntryId: outlookDeviceReadRoot.rootEntryId })
+        .from(outlookDeviceReadRoot)
+        .where(
+          and(
+            eq(outlookDeviceReadRoot.deviceId, input.deviceId),
+            eq(outlookDeviceReadRoot.storeId, input.storeId),
+            isNotNull(outlookDeviceReadRoot.revokedAt),
+          ),
+        )
+        .limit(1);
+      if (revoked.length) throw new Error('Read root was revoked by an operator');
+    }
     // An identical active root is already authority. Re-reporting it must not bump the generation under live sync sessions.
     if (sameBinding && options.unchangedIsNoop) return false;
     await tx.insert(outlookDeviceReadRoot).values(input).onConflictDoUpdate({
@@ -228,6 +243,7 @@ const READ_ROOT_DENIALS: Record<string, string> = {
   'Invalid read root approval': 'invalid_root',
   'Read root requires an active exact device, staff and mailbox grant': 'binding_denied',
   'Read root policy allows at most one active root per device store': 'root_conflict',
+  'Read root was revoked by an operator': 'root_revoked',
 };
 
 /** Signed device reports its store root. Accepted only when the device's single active staff/mailbox grant exists and the store matches enrollment. An identical active root is a no-op, so a repeat report after an Outlook restart leaves live sync sessions alone. */
@@ -239,7 +255,7 @@ export async function acceptDeviceStoreRoot(db: DB, device: VerifiedDevice, inpu
     .where(and(eq(outlookDeviceGrant.deviceId, device.deviceId), eq(mailboxTransport.isActive, true)));
   if (grants.length !== 1) return { accepted: false, reason: 'grant_not_single' };
   try {
-    const changed = await approveReadRoot(db, { ...grants[0], deviceId: device.deviceId, storeId: input.storeId, rootEntryId: input.rootEntryId, policyVersion: 1 }, { unchangedIsNoop: true });
+    const changed = await approveReadRoot(db, { ...grants[0], deviceId: device.deviceId, storeId: input.storeId, rootEntryId: input.rootEntryId, policyVersion: 1 }, { unchangedIsNoop: true, refuseRevoked: true });
     return { accepted: true, reason: changed ? 'accepted' : 'unchanged' };
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
