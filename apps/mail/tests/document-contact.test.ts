@@ -27,4 +27,8 @@ describe('withContactLines', () => {
   it('leaves lines blank when there is no contact', () => {
     expect(withContactLines(blank, null)).toMatchObject({ attention: '', clientEmail: '', clientTelephone: '' });
   });
+
+  it('cuts a long contact phone to the document limit', () => {
+    expect(withContactLines(blank, { name: null, email: null, phone: '1'.repeat(200) }).clientTelephone).toHaveLength(128);
+  });
 });

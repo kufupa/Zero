@@ -10,11 +10,13 @@ export function withContactLines<T extends ContactLines>(
   input: T,
   contact: Pick<StoredContact, 'name' | 'email'> & Partial<Pick<StoredContact, 'phone'>> | null | undefined,
 ): T {
-  const fill = (value: string, fallback: string | null | undefined) => value.trim() || fallback?.trim() || '';
+  // A fallback is cut to the document routes' limits (256, 256, 128) so a long contact value never blocks the export.
+  const fill = (value: string, fallback: string | null | undefined, limit: number) =>
+    value.trim() || fallback?.trim().slice(0, limit) || '';
   return {
     ...input,
-    attention: fill(input.attention, contact?.name),
-    clientEmail: fill(input.clientEmail, contact?.email),
-    clientTelephone: fill(input.clientTelephone, contact?.phone),
+    attention: fill(input.attention, contact?.name, 256),
+    clientEmail: fill(input.clientEmail, contact?.email, 256),
+    clientTelephone: fill(input.clientTelephone, contact?.phone, 128),
   };
 }
