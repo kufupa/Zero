@@ -235,6 +235,40 @@ describe('nava-preview-gate.sh --ae1-rates and --ae2-find', () => {
   });
 });
 
+describe('nava-preview-gate.sh --quote', () => {
+  it('plans a sequential quote proof for the requested threads with the six-minute rates bound', () => {
+    const env = envFile(['S3_BUCKET=test-bucket-xyz', 'BETTER_AUTH_URL=https://nava.legacyhotels.co.za']);
+    const result = gateRun(['--quote', 'thread-a,thread-b', '--dry-run'], { ENV_FILE: env });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Quote proof on threads thread-a,thread-b');
+    expect(result.stdout).toContain('360000 ms per thread');
+    expect(result.stdout).toContain('/opt/nava/shared/nava-preview/quote-<UTC run id>/');
+    expect(result.stdout).toContain('sequentially; one browser, no HMS writes');
+  });
+
+  it('refuses malformed thread lists and unknown trailing flags', () => {
+    for (const args of [
+      ['--quote'],
+      ['--quote', 'thread-a,,thread-b'],
+      ['--quote', 'bad id;rm'],
+      ['--quote', 'thread-a', '--now'],
+    ]) {
+      const result = gateRun(args);
+      expect(result.status, args.join(' ')).toBe(2);
+      expect(result.stderr).toContain('--quote');
+    }
+  });
+
+  it('runs the quote driver and uploads only its proof artifacts', () => {
+    const script = readFileSync(gate, 'utf8');
+    expect(script).toContain(
+      'RUNNER=(scripts/nava-quote-proof.ts --threads "$QUOTE_THREADS" --out "$OUT_DIR" --timeout-ms "$QUOTE_TIMEOUT_MS")',
+    );
+    expect(script).toContain("UPLOAD=(--exclude '*' --include 'summary.json' --include '*.png' --include '*.pdf' --include '*.xlsx')");
+    expect(existsSync(join(here, '..', 'scripts', 'nava-quote-proof.ts'))).toBe(true);
+  });
+});
+
 describe('nava-preview-gate.sh --summarize', () => {
   it('prints counts and thread ids, never subjects, emails or phone numbers', () => {
     const runDir = fixtureRun(['intent', 'intent', 'unsynced', 'timeout']);
@@ -400,6 +434,7 @@ describe('nava-preview-gate.sh full run with shims', () => {
   let bin: string;
   let log: string;
   let results: string;
+  let quoteSummary: string;
 
   function shim(name: string, body: string) {
     const path = join(bin, name);
@@ -411,6 +446,7 @@ describe('nava-preview-gate.sh full run with shims', () => {
     bin = join(dir, 'bin');
     log = join(dir, 'sim.log');
     results = join(dir, 'fixture-results.json');
+    quoteSummary = join(dir, 'fixture-quote-summary.json');
     mkdirSync(bin, { recursive: true });
     writeFileSync(
       results,
@@ -438,6 +474,10 @@ describe('nava-preview-gate.sh full run with shims', () => {
           },
         ],
       }),
+    );
+    writeFileSync(
+      quoteSummary,
+      JSON.stringify({ threads: [{ threadId: 'quote-thread', kind: 'quote' }], pass: true }, null, 2) + '\n',
     );
 
     // Health check and sign-in. The sign-in writes fake session cookies to the -D file.
@@ -479,9 +519,11 @@ exit 1`,
       'pnpm',
       `if [ "$1" = install ]; then exit 0; fi
 out=""
+runner="preview"
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
+    scripts/nava-quote-proof.ts) runner="quote"; shift ;;
     *) shift ;;
   esac
 done
@@ -492,18 +534,27 @@ done
   echo "runner state-file-mode=$(stat -c %a "$NAVA_PREVIEW_STORAGE_STATE")"
 } >> "$SIM_LOG"
 mkdir -p "$out"
-cp "$SIM_RESULTS" "$out/results.json"
+if [ "$runner" = quote ]; then
+  echo "quote runner progress"
+  if [ "\${SIM_OMIT_QUOTE_SUMMARY:-0}" = "1" ]; then
+    echo "quote runner config failed" >&2
+    exit 2
+  fi
+  cp "$SIM_QUOTE_SUMMARY" "$out/summary.json"
+else
+  cp "$SIM_RESULTS" "$out/results.json"
+fi
 exit "\${SIM_RUN_EXIT:-0}"`,
     );
   });
 
-  function runGate(extra: Record<string, string> = {}) {
+  function runGate(extra: Record<string, string> = {}, args: string[] = []) {
     const env = envFile([
       'BETTER_AUTH_URL=https://nava.legacyhotels.co.za',
       'S3_BUCKET=test-bucket-xyz',
       'AWS_REGION=af-south-1',
     ]);
-    return spawnSync('bash', [gate], {
+    return spawnSync('bash', [gate, ...args], {
       encoding: 'utf8',
       timeout: 120_000,
       env: cleanEnv({
@@ -512,6 +563,7 @@ exit "\${SIM_RUN_EXIT:-0}"`,
         NAVA_PREVIEW_OUT_ROOT: outRoot,
         SIM_LOG: log,
         SIM_RESULTS: results,
+        SIM_QUOTE_SUMMARY: quoteSummary,
         SIM_SECRET_JSON: JSON.stringify({ 'navaai@legacyhotels.co.za': { password: PASSWORD } }),
         ...extra,
       }),
@@ -548,6 +600,47 @@ exit "\${SIM_RUN_EXIT:-0}"`,
     expect(result.status).toBe(1);
     expect(result.stdout).toContain('runner exit: 1');
     expect(result.stdout).toContain('errors or timeouts: 0');
+  });
+
+  it('prints the one-line quote summary last and preserves the runner exit status', () => {
+    const summary = { threads: [{ threadId: 'quote-thread', kind: 'quote' }], pass: true };
+    const lastLine = (stdout: string) => stdout.trimEnd().split(/\r?\n/).at(-1);
+    const summaryLine = readFileSync(quoteSummary, 'utf8').replace(/[\r\n]/g, '');
+
+    const passed = runGate({}, ['--quote', 'quote-thread']);
+    expect(passed.status, passed.stderr).toBe(0);
+    expect(passed.stdout).toContain('quote runner progress');
+    expect(passed.stdout).toContain('gallery: s3://test-bucket-xyz/nava-preview-gate/');
+    expect(passed.stdout).toContain('runner exit: 0');
+    expect(lastLine(passed.stdout), passed.stdout + passed.stderr).toBe(summaryLine);
+    expect(JSON.parse(summaryLine)).toEqual(summary);
+
+    const failed = runGate({ SIM_RUN_EXIT: '1' }, ['--quote', 'quote-thread']);
+    expect(failed.status).toBe(1);
+    expect(failed.stdout).toContain('runner exit: 1');
+    expect(lastLine(failed.stdout)).toBe(summaryLine);
+  });
+
+  it('prints a fail-closed quote summary for every requested thread when the runner writes none', () => {
+    const result = runGate({ SIM_OMIT_QUOTE_SUMMARY: '1' }, ['--quote', 'thread-a,thread-b']);
+    const lastLine = result.stdout.trimEnd().split(/\r?\n/).at(-1);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('quote runner config failed');
+    expect(lastLine).toBe(
+      JSON.stringify({
+        threads: ['thread-a', 'thread-b'].map((threadId) => ({
+          threadId,
+          kind: 'unknown',
+          prefilled: { contact: { name: null, email: null }, stays: [], ratePlan: null },
+          party: { suggested: [], accepted: [], prefetched: false },
+          rates: { outcome: null, seconds: null, cards: 0 },
+          docs: { pdfBytes: null, xlsxBytes: null },
+          blocker: 'crashed: quote proof runner did not produce summary.json (exit 2)',
+        })),
+        pass: false,
+      }),
+    );
   });
 
   it('stops before the runner when sign-in is refused, and leaves no auth files', () => {

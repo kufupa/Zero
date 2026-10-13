@@ -1,7 +1,7 @@
 import { strToU8, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { buildQuoteWorkbook, type WorkbookLine } from '../src/quote-proposal/quote-workbook';
-import { countWorkbookLines, rateSegments, unexpectedBlocks, xlsxSheetRows } from '../scripts/nava-proof-kit';
+import { countWorkbookLines, rateSegments, stayKeyOfRatesInput, unexpectedBlocks, xlsxSheetRows } from '../scripts/nava-proof-kit';
 
 const HEADER = {
   attention: 'Fixture Attention',
@@ -76,6 +76,27 @@ describe('proposal Excel rows', () => {
 });
 
 describe('helpers', () => {
+  it('derives one stay key only when every group shares the same arrival and departure', () => {
+    expect(
+      stayKeyOfRatesInput({
+        groups: [
+          { arrivalDate: '2026-10-26', departureDate: '2026-10-27' },
+          { arrivalDate: '2026-10-26', departureDate: '2026-10-27' },
+        ],
+      }),
+    ).toBe('2026-10-26:2026-10-27');
+    expect(stayKeyOfRatesInput({ groups: [] })).toBeNull();
+    expect(stayKeyOfRatesInput({ groups: [{ arrivalDate: '2026-10-26' }] })).toBeNull();
+    expect(
+      stayKeyOfRatesInput({
+        groups: [
+          { arrivalDate: '2026-10-26', departureDate: '2026-10-27' },
+          { arrivalDate: '2026-11-17', departureDate: '2026-11-18' },
+        ],
+      }),
+    ).toBeNull();
+  });
+
   it('counts one Excel line per run of nights at one rate', () => {
     expect(rateSegments([150_000])).toBe(1);
     expect(rateSegments([150_000, 150_000, 160_000, 150_000])).toBe(3);

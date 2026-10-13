@@ -16,6 +16,7 @@
 #   nava-preview-gate.sh --ae4 <thread-id> [--dry-run]      AE4 discount-override proof on one thread
 #   nava-preview-gate.sh --ae1-rates <thread-id> [--dry-run] AE1 multi-stay rates proof on one thread
 #   nava-preview-gate.sh --ae2-find <thread-id> [--dry-run]  AE2 amendment find proof on one thread
+#   nava-preview-gate.sh --quote <thread-id>[,<thread-id>...] [--dry-run] sequential quote proof
 #
 # --ae4 drives scripts/nava-ae4-override-proof.ts with the same sign-in: it uses the stay the pane already has (it
 # never overwrites a stored stay), saves an NCOR1B override, prepares the PDF and the Excel and screenshots the row's
@@ -76,7 +77,10 @@ MODE="run"
 SUMMARIZE_TARGET=""
 AE4_THREAD=""
 AE4_DRY=0
-PROOF_USAGE="--ae4 | --ae1-rates | --ae2-find <thread-id> [--dry-run]"
+QUOTE_THREADS=""
+QUOTE_TIMEOUT_MS=360000
+QUOTE_DRY=0
+PROOF_USAGE="--ae4 | --ae1-rates | --ae2-find <thread-id> [--dry-run] | --quote <thread-id>[,<thread-id>...] [--dry-run]"
 case "${1:-}" in
   "") ;;
   --dry-run) MODE="dry-run" ;;
@@ -85,6 +89,40 @@ case "${1:-}" in
     SUMMARIZE_TARGET="${2:-}"
     if [ -z "$SUMMARIZE_TARGET" ]; then
       echo "usage: $0 --summarize <results.json | run-dir>" >&2
+      exit 2
+    fi
+    ;;
+  --quote)
+    MODE="quote"
+    if [ "$#" -lt 2 ] || [ "$#" -gt 3 ] || [ -z "$2" ]; then
+      echo "usage: $0 --quote <thread-id>[,<thread-id>...] [--dry-run]" >&2
+      exit 2
+    fi
+    QUOTE_THREADS="$2"
+    if ! [[ "$QUOTE_THREADS" =~ ^[A-Za-z0-9_.:~@-]{1,128}(,[A-Za-z0-9_.:~@-]{1,128})*$ ]]; then
+      echo "usage: $0 --quote <thread-id>[,<thread-id>...] [--dry-run]" >&2
+      exit 2
+    fi
+    if [ "$#" -eq 3 ]; then
+      if [ "$3" = "--dry-run" ]; then
+        QUOTE_DRY=1
+      else
+        echo "usage: $0 --quote <thread-id>[,<thread-id>...] [--dry-run]" >&2
+        exit 2
+      fi
+    fi
+    IFS=',' read -r -a quote_ids <<< "$QUOTE_THREADS"
+    quote_count=${#quote_ids[@]}
+    seen_quote_ids=" "
+    for quote_id in "${quote_ids[@]}"; do
+      if [[ "$seen_quote_ids" == *" $quote_id "* ]]; then
+        echo "usage: $0 --quote <thread-id>[,<thread-id>...] [--dry-run]" >&2
+        exit 2
+      fi
+      seen_quote_ids="$seen_quote_ids$quote_id "
+    done
+    if [ "$quote_count" -lt 1 ] || [ "$quote_count" -gt 20 ]; then
+      echo "usage: $0 --quote <thread-id>[,<thread-id>...] [--dry-run]" >&2
       exit 2
     fi
     ;;
@@ -186,6 +224,7 @@ case "$MODE" in
   ae4) RUN_PREFIX="ae4" ;;
   ae1) RUN_PREFIX="ae1-rates" ;;
   ae2) RUN_PREFIX="ae2-find" ;;
+  quote) RUN_PREFIX="quote" ;;
 esac
 
 S3_BUCKET_NAME="${S3_BUCKET:-$(read_env_value S3_BUCKET "$ENV_FILE")}"
@@ -197,7 +236,7 @@ if [ -n "$BETTER_AUTH_VALUE" ] && [ "$BETTER_AUTH_VALUE" != "$CANONICAL_ORIGIN" 
   fail "refusing: BETTER_AUTH_URL must be ${CANONICAL_ORIGIN}"
 fi
 
-if [ "$MODE" = "dry-run" ] || [ "$AE4_DRY" = "1" ]; then
+if [ "$MODE" = "dry-run" ] || [ "$AE4_DRY" = "1" ] || [ "$QUOTE_DRY" = "1" ]; then
   echo "nava-preview gate: dry run. No network, AWS or browser calls are made."
   for tool in node pnpm curl aws; do
     if command -v "$tool" >/dev/null 2>&1; then
@@ -217,6 +256,10 @@ if [ "$MODE" = "dry-run" ] || [ "$AE4_DRY" = "1" ]; then
     echo "rooms:       ${NAVA_AE1_ROOMS:-none (counts from the read)} per stay where the pane has no count (NAVA_AE1_ROOMS)"
     echo "hms:         one rates read per stay (workstation.executeStaffQuote), at most one party search; every HMS write is blocked"
     echo "edits:       NAVA_PROOF_ALLOW_EDITS=${NAVA_PROOF_ALLOW_EDITS:-0} (AE1 needs 1 to fill the missing room counts)"
+  elif [ "$MODE" = "quote" ]; then
+    echo "proof:       Quote proof on threads $QUOTE_THREADS, $QUOTE_TIMEOUT_MS ms per thread"
+    echo "hms:         sequentially; one browser, no HMS writes"
+    echo "edits:       NAVA_PROOF_ALLOW_EDITS=1 only accepts a shown HMS party match; dates and rooms are never invented"
   elif [ "$MODE" = "ae2" ]; then
     echo "proof:       AE2 amendment find on thread ${AE4_THREAD}, ${AE2_TIMEOUT_MS} ms for the find job"
     echo "hms:         one read-only find (paneStayLookup.queueFind); every HMS and mailbox write is blocked"
@@ -332,7 +375,12 @@ HUSKY=0 pnpm install --frozen-lockfile --reporter=silent || { echo "gate: pnpm i
 
 echo "run: ${RUN_ID}"
 echo "out: ${OUT_DIR}"
-if [ "$MODE" = "ae4" ]; then
+if [ "$MODE" = "quote" ]; then
+  RUNNER=(scripts/nava-quote-proof.ts --threads "$QUOTE_THREADS" --out "$OUT_DIR" --timeout-ms "$QUOTE_TIMEOUT_MS")
+  RESULT_FILE="summary.json"
+  # Thread-prefixed proof artifacts keep a multi-thread run collision-free.
+  UPLOAD=(--exclude '*' --include 'summary.json' --include '*.png' --include '*.pdf' --include '*.xlsx')
+elif [ "$MODE" = "ae4" ]; then
   RUNNER=(scripts/nava-ae4-override-proof.ts --threads "$AE4_THREAD" --out "$OUT_DIR" --timeout-ms "$AE4_TIMEOUT_MS")
   RESULT_FILE="summary.json"
   # The AE4 run dir holds only the proof's own files: the summary, two screenshots, the PDF and the Excel.
@@ -389,5 +437,21 @@ if [ "$MODE" = "ae4" ] || [ "$MODE" = "ae1" ] || [ "$MODE" = "ae2" ]; then
   echo "runner exit: ${RUN_EXIT} (0 ${PROOF_NAME} pass, 1 ${PROOF_NAME} failed, 2 blocked, config or launch)"
 else
   echo "runner exit: ${RUN_EXIT} (0 pass, 1 gate failure, 2 config or launch)"
+fi
+if [ "$MODE" = "quote" ]; then
+  if [ -f "$OUT_DIR/$RESULT_FILE" ]; then
+    # Keep the pretty-printed file on the gate's final, machine-readable line.
+    tr -d '\r\n' < "$OUT_DIR/$RESULT_FILE"
+    printf '\n'
+  else
+    printf '{"threads":['
+    separator=""
+    for quote_id in "${quote_ids[@]}"; do
+      printf '%s{"threadId":"%s","kind":"unknown","prefilled":{"contact":{"name":null,"email":null},"stays":[],"ratePlan":null},"party":{"suggested":[],"accepted":[],"prefetched":false},"rates":{"outcome":null,"seconds":null,"cards":0},"docs":{"pdfBytes":null,"xlsxBytes":null},"blocker":"crashed: quote proof runner did not produce summary.json (exit %s)"}' \
+        "$separator" "$quote_id" "$RUN_EXIT"
+      separator=","
+    done
+    printf '],"pass":false}\n'
+  fi
 fi
 exit "$RUN_EXIT"
