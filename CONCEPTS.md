@@ -528,9 +528,9 @@ The message chosen as the enquiry anchor for unanswered detection and EPV demand
 
 ### Channel-automated inbound
 
-Inbound mail whose sender/obligation is channel or system notice (SynXis confirms/modifications/cancellations, OTA digests, confirmation-letter style automation) rather than a guest, agent, or company request. Must not win Trigger inbound selection for EPV-eligible unanswered scoring.
+Inbound mail identified as a known channel or automated-system notice and routed by its source as no-work traffic, rather than treated as a guest/agent request. This is distinct from travel-agent messages that can require reservationist work, and from Needs action / Primary action labels, which describe whether and what work is due. It must not win Trigger inbound selection for EPV-eligible unanswered scoring.
 
-*Avoid: treating SynXis/OTA confirms as external guest enquiries for uEPV.*
+*Avoid: treating channel/system origin as a sender-domain filter for travel-agent work or as an external guest enquiry for uEPV.*
 
 ### EPV (Estimated Pipeline Value)
 
@@ -543,6 +543,26 @@ Sum of EPV on unanswered external-enquiry threads (at-risk pipeline). Distinct f
 ### rEPV
 
 Sum of EPV on responded actionable threads. Distinct from uEPV.
+
+## Reservationist research and evaluation
+
+### Corpus snapshot
+
+A private, dated export of source mail and supporting evidence used as a repeatable offline research baseline. Refreshing the baseline creates a new snapshot rather than silently replacing the prior one.
+
+### Answer key
+
+A reservation-level record of ground-truth facts established from authoritative HMS reads and used to score inferred or looked-up results.
+
+Missing company or agency labels in supporting mail or PDFs leave the answer unknown; they do not establish a negative party match.
+
+### Needs action
+
+A judgment that an inbound still requires reservationist work after considering thread context and prior resolution.
+
+### Primary action
+
+A label for the kind of reservationist work required by an actionable inbound, distinct from whether work is still due.
 
 ## Agent workflow (Cursor skills)
 
@@ -607,6 +627,8 @@ The versioned JSON RPC message contract exchanged over `window.chrome.webview.po
 - **"never-spam"** names the auto-triage allowlist (not a ban on manual mark-spam or ingest block); the same hotel domain list also seeds Image trust defaults — spam auto-path and image-loading are still distinct product surfaces.
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
 - **"SynXis exclusion"** had been applied only at actionable-thread filter — within-thread Trigger inbound can still be a Channel-automated inbound unless selection hard-excludes it; thread filter alone does not protect uEPV.
+- **"Needs action" vs "Primary action"** are separate labels — whether work is still due versus what work to perform.
+- **"Channel-automated inbound" vs travel-agent mail** are separate source/work distinctions — known channel/system notices are source-routed no-work traffic; a travel-agent sender can still request reservation work.
 - **"proof green" / PROOF_EXIT=0** is Packaging gate only — Payload gate (field contract + live fixture) and Tool promotion HITL are separate; do not promote the next PMS tool on packaging alone.
 - **"Office.js Web Add-in"** had been assumed to work across all Outlook clients — modern Office.js web taskpanes strictly require an Exchange or Microsoft 365 mailbox and fail to load on POP3/IMAP accounts in Outlook 2016 desktop. VSTO COM Add-ins (.NET/C#) remain mandatory for non-Exchange local POP3 environments.
 - **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.
