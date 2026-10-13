@@ -176,6 +176,7 @@ export type HmsJobStatus = 'queued' | 'running' | 'retrying' | 'done' | 'failed'
 
 export type HmsJobView = {
   runId: string;
+  sourceMessageId: string;
   request: HmsJobRequest | null;
   prefetch: boolean;
   status: HmsJobStatus;
@@ -2455,6 +2456,7 @@ async function toView(
   const result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
   return {
     runId: run.id,
+    sourceMessageId: run.triggerMessageId,
     request: request.success ? request.data : null,
     prefetch: run.priority === HMS_JOB_PRIORITY_PREFETCH,
     status,

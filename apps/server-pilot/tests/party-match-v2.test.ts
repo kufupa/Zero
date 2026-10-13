@@ -131,6 +131,35 @@ describe('PARTY MATCH V2 search plan', () => {
       ),
     ).toBe(true);
   });
+
+  it('keeps a party candidate when the sender organization is repeated in the signature', () => {
+    const candidates = buildPartyMatchCandidates({
+      fromAddress: 'Northwind Mining <bookings@northwind-mining.com>',
+      body: 'Please arrange the quote.\nRegards,\nNorthwind Mining',
+      payload: { endClient: 'Northwind Mining' },
+    });
+
+    expect(candidates).toContainEqual({
+      name: 'Northwind Mining',
+      kind: 'company',
+      source: 'extraction_end_client',
+      strength: 'strong',
+    });
+  });
+
+  it('does not discard a sender-domain party hint as a signature person', () => {
+    const candidates = buildPartyMatchCandidates({
+      fromAddress: 'Northwind Mining <bookings@northwind-mining.com>',
+      body: 'Please arrange the quote.\nRegards,\nNorthwind Mining',
+    });
+
+    expect(candidates).toContainEqual({
+      name: 'northwind mining',
+      kind: 'company',
+      source: 'sender_domain_label',
+      strength: 'weak',
+    });
+  });
 });
 
 describe('PARTY MATCH V2 binding', () => {
@@ -225,6 +254,27 @@ describe('PARTY MATCH V2 binding', () => {
       },
     });
     expect(result).toMatchObject({ matchStatus: 'bound', boundParty: { nativeId: 'nexus' } });
+  });
+
+  it('does not bind a broader row when an exact row makes a stronger claim', () => {
+    const result = applyPartyBindRule({
+      candidates: [candidate('Nexus Travel')],
+      rows: [
+        { kind: 'company', nativeId: 'nexus', name: 'Nexus Travel' },
+        { kind: 'company', nativeId: 'xl-nexus', name: 'XL Nexus Travel ATNS' },
+      ],
+      pick: {
+        pickNativeId: 'xl-nexus',
+        kind: 'company',
+        confidence: 'high',
+        reason: 'The broader row also contains Nexus Travel.',
+        alternatives: ['nexus'],
+        source: 'llm',
+      },
+    });
+
+    expect(result).toMatchObject({ matchStatus: 'needs_pick', boundParty: null });
+    expect(result.suggestions.map((row) => row.nativeId)).toEqual(['nexus', 'xl-nexus']);
   });
 
   it('never binds from a sender-domain-only hint, even when the HMS name is exact', () => {

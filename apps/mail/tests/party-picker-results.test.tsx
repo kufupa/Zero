@@ -28,6 +28,7 @@ const ABC_TRAVEL_AGENCY = { kind: 'agency' as const, nativeId: '7711', name: 'AB
 function prefetchedPartyView(): HmsJobView {
   return {
     runId: 'party-run-1',
+    sourceMessageId: 'message-1',
     request: { kind: 'party', name: 'ABC Travel' },
     prefetch: true,
     status: 'done',
@@ -51,6 +52,7 @@ function v2PartyView(matchStatus: 'bound' | 'needs_pick', requestName = 'ABC Tra
   const boundParty = matchStatus === 'bound' ? ABC_TRAVEL : null;
   return {
     runId: `party-v2-${matchStatus}`,
+    sourceMessageId: 'message-1',
     request: { kind: 'party', name: requestName, matchVersion: 2 },
     prefetch: true,
     status: 'done',
@@ -156,6 +158,7 @@ describe('PartyPicker prefetched party jobs', () => {
         find={vi.fn()}
         jobTransport={jobTransport}
         threadId="thread-1"
+        sourceMessageId="message-1"
         onPick={onPick}
         onClear={vi.fn()}
       />,
@@ -374,12 +377,76 @@ describe('PartyPicker prefetched party jobs', () => {
         find={vi.fn()}
         jobTransport={jobTransport}
         threadId="thread-1"
+        sourceMessageId="message-1"
         onPick={onPick}
         onClear={vi.fn()}
       />,
     );
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL));
     expect(screen.queryByRole('button', { name: 'Confirm ABC Travel' })).toBeNull();
+  });
+
+  it('ignores a V2 bound result created for a different message in the same thread', async () => {
+    const onPick = vi.fn();
+    let settleStatus!: (view: HmsJobView) => void;
+    const statusReply = new Promise<HmsJobView>((resolve) => {
+      settleStatus = resolve;
+    });
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(),
+      status: vi.fn(() => statusReply),
+    };
+    render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-1"
+        sourceMessageId="message-1"
+        onPick={onPick}
+        onClear={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(jobTransport.status).toHaveBeenCalled());
+    await act(async () => {
+      settleStatus({ ...v2PartyView('bound'), sourceMessageId: 'message-2' });
+      await statusReply;
+    });
+    expect(onPick).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Confirm ABC Travel' })).toBeNull();
+    expect(screen.queryByText('Pick the company/agency')).toBeNull();
+  });
+
+  it('renders an ordinary prefetched result when the request marker says V2 but the result does not', async () => {
+    const onPick = vi.fn();
+    const ordinaryResult = {
+      ...prefetchedPartyView(),
+      request: { kind: 'party' as const, name: 'ABC Travel', matchVersion: 2 as const },
+    };
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(),
+      status: vi.fn(async () => ordinaryResult),
+    };
+    render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-1"
+        sourceMessageId="message-1"
+        onPick={onPick}
+        onClear={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole('button', { name: 'Confirm ABC Travel' })).toBeTruthy();
+    expect(screen.queryByText('Pick the company/agency')).toBeNull();
+    expect(onPick).not.toHaveBeenCalled();
   });
 
   it('shows stored V2 suggestions with Pick the company/agency when it cannot bind', async () => {

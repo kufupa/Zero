@@ -149,6 +149,8 @@ export type HmsJobStatus = 'queued' | 'running' | 'retrying' | 'done' | 'failed'
  */
 export type HmsJobView = {
   runId: string;
+  /** Message that produced the job; party prefetch read-back is scoped to the selected message. */
+  sourceMessageId?: string | null;
   request: HmsJobRequest | null;
   prefetch: boolean;
   status: HmsJobStatus;

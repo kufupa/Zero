@@ -158,9 +158,13 @@ function sameJobName(left: string, right: string): boolean {
 }
 
 function partyJobIsV2(view: HmsJobView | null): boolean {
+  const result = view?.result;
   return Boolean(
     view?.request?.kind === 'party' &&
-      (view.request.matchVersion === 2 || view.result?.matchVersion === 2),
+      result?.matchVersion === 2 &&
+      (result.matchStatus === 'bound' || result.matchStatus === 'needs_pick') &&
+      Object.hasOwn(result, 'boundParty') &&
+      Array.isArray(result.suggestions),
   );
 }
 
@@ -286,6 +290,7 @@ export function PartyPicker({
   indexSearch,
   jobTransport,
   threadId,
+  sourceMessageId,
   autoLookup = false,
   onLookupPending,
 }: {
@@ -307,6 +312,8 @@ export function PartyPicker({
   jobTransport?: HmsJobTransport | null;
   /** The message thread whose party job is resumed when this field reopens. */
   threadId?: string | null;
+  /** The selected email whose party prefetch may be resumed. */
+  sourceMessageId?: string | null;
   /** Search HMS by itself for this field's name and pick the best match. Needs a kind. Off, the field keeps Find in HMS. */
   autoLookup?: boolean;
   /** Told whether this field's automatic search still has to decide its pick. The pane holds a rates run until it does. */
@@ -347,7 +354,10 @@ export function PartyPicker({
       : null;
   const autoKey = pickedHere ? null : autoMemoKey;
   const jobResume =
-    jobTransport && !pickedHere && (query.length >= MANUAL_LOOKUP_MIN_CHARS || kind)
+    jobTransport &&
+    sourceMessageId !== null &&
+    !pickedHere &&
+    (query.length >= MANUAL_LOOKUP_MIN_CHARS || kind)
       ? {
           kind: 'party' as const,
           ...(query && !(autoLookup && queueMode === 'on') ? { name: query } : {}),
@@ -357,14 +367,20 @@ export function PartyPicker({
   const partyJob = useHmsJob({
     transport: jobTransport ?? null,
     resume: jobResume,
-    scope: jobTransport && threadId ? `${threadId}:${kind ?? ''}:${searchKey(query)}` : null,
+    scope:
+      jobTransport && threadId
+        ? `${threadId}:${sourceMessageId ?? ''}:${kind ?? ''}:${searchKey(query)}`
+        : null,
     deadlineMs: PARTY_SEARCH_DEADLINE_MS,
     retryOptions: PARTY_RETRY_OPTIONS,
   });
   const viewRequest = partyJob.view?.request;
   const v2Readback = partyJobIsV2(partyJob.view);
+  const sourceMatches =
+    sourceMessageId === undefined ||
+    (sourceMessageId !== null && partyJob.view?.sourceMessageId === sourceMessageId);
   const currentJobView =
-    viewRequest?.kind === 'party' &&
+    sourceMatches && viewRequest?.kind === 'party' &&
     (!query || v2Readback || sameJobName(viewRequest.name, query)) &&
     (!kind || viewRequest.partyKind === kind || (partyJob.view?.prefetch && !viewRequest.partyKind))
       ? partyJob.view

@@ -40,6 +40,7 @@ import {
   partyPrefetchV2IdempotencyKey,
   selectPartyPrefetchRequest,
   selectPartyMatchV2PrefetchRequest,
+  readHmsJobView,
 } from '../src/ai/hms-jobs.js';
 
 const reachable = await probeTestDb();
@@ -344,7 +345,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(await prefetchPartyForExtraction(booking, db, env)).toBe(0);
 
         const rows = await db
-          .select({ request: aiWorkflowRun.readRequest, priority: aiWorkflowRun.priority })
+          .select({
+            id: aiWorkflowRun.id,
+            request: aiWorkflowRun.readRequest,
+            priority: aiWorkflowRun.priority,
+            triggerMessageId: aiWorkflowRun.triggerMessageId,
+          })
           .from(aiWorkflowRun)
           .where(
             and(
@@ -357,8 +363,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           expect.objectContaining({
             request: { kind: 'party', name: 'Horizon Trail Tours' },
             priority: HMS_JOB_PRIORITY_PREFETCH,
+            triggerMessageId: quote.triggerMessageId,
           }),
         ]);
+        const job = rows[0];
+        if (!job) throw new Error('party prefetch row missing');
+        await expect(
+          readHmsJobView({ transportId: TRANSPORT_ID, runId: job.id }, db),
+        ).resolves.toMatchObject({ sourceMessageId: quote.triggerMessageId });
       }));
 
     it('uses the existing hourly prefetch cap', () =>
