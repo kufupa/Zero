@@ -24,6 +24,7 @@ import { paneStayCancelRouter } from './routes/pane-stay-cancel.js';
 import { paneStayLookupRouter } from './routes/pane-stay-lookup.js';
 import { panePartyLookupRouter } from './routes/pane-party-lookup.js';
 import { workItemsRouter } from './routes/work-items.js';
+import { workflowFoldersRouter } from './routes/workflow-folders.js';
 import { ratesRouter } from './routes/rates.js';
 import { hmsApprovalRouter } from './routes/hms-approval.js';
 
@@ -48,6 +49,7 @@ export const appRouter = router({
   paneStayLookup: paneStayLookupRouter,
   panePartyLookup: panePartyLookupRouter,
   workItems: workItemsRouter,
+  workflowFolders: workflowFoldersRouter,
   rates: ratesRouter,
   hmsApproval: hmsApprovalRouter,
 });

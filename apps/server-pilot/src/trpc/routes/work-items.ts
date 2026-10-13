@@ -1,12 +1,15 @@
 import { TRPCError } from '@trpc/server';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { parseNeedsYouSince } from '../../env.js';
 import { getDb } from '../../db/client.js';
-import { WORK_ITEM_STATUSES } from '../../db/schema/work.js';
+import { mailThread, message } from '../../db/schema/mail.js';
+import { MAIL_KINDS, mailExtraction, workEvent, WORK_ITEM_STATUSES } from '../../db/schema/work.js';
 import { retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
 import {
   acceptUneditedFields,
   dismissWorkItem,
+  ensureWorkItem,
   listWorkItems,
   openStoredWork,
   recordFieldEvent,
@@ -19,8 +22,10 @@ import {
   PANE_ACTION_FIELDS,
   PANE_ACTION_KINDS,
   PANE_ACTION_TYPES,
+  maskStaffNote,
   recordPaneActions,
 } from '../../ai/work-events.js';
+import type { MailKind } from '../../ai/extraction/schema.js';
 import {
   dismissFollowUpDraft,
   followUpForMessage,
@@ -31,6 +36,14 @@ import { mailboxProcedure, router } from '../trpc.js';
 
 const internetMessageId = z.string().min(1).max(998);
 const followUpDraftId = z.string().min(1).max(200);
+const adminReviewInput = z
+  .object({
+    sourceMessageId: z.string().min(1).max(998),
+    extractionId: z.string().uuid(),
+    decision: z.enum(['right', 'edited', 'wrong']),
+    note: z.string().max(2000).optional(),
+  })
+  .strict();
 
 // Pane action telemetry (B1): small enums and numbers only, and the type list is the allowlist. Field and approval
 // events never reach this route.
@@ -131,6 +144,84 @@ export const workItemsRouter = router({
       throw new TRPCError({ code: 'BAD_REQUEST', message: 'Value does not fit this field.' });
     }
     return { aiValue: result.aiValue, value: result.value };
+  }),
+  /** Owner/developer review of exactly the succeeded extraction shown by the workflow console. */
+  adminReview: mailboxProcedure.input(adminReviewInput).mutation(async ({ input, ctx }) => {
+    // Owner console only: hotel staff with member access must not change review counts.
+    if (ctx.accessRole === 'member') throw new TRPCError({ code: 'FORBIDDEN', message: 'Owner access required' });
+    const db = getDb();
+    const [source] = await db
+      .select({
+        threadId: message.threadId,
+        kind: mailExtraction.kind,
+        action: sql<string | null>`to_jsonb(${mailExtraction})->>'action'`,
+      })
+      .from(message)
+      .innerJoin(
+        mailThread,
+        and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, ctx.activeTransportId)),
+      )
+      .innerJoin(
+        mailExtraction,
+        and(
+          eq(mailExtraction.messageId, message.id),
+          eq(mailExtraction.id, input.extractionId),
+          eq(mailExtraction.status, 'succeeded'),
+        ),
+      )
+      .where(
+        and(
+          eq(message.id, input.sourceMessageId),
+          eq(message.transportId, ctx.activeTransportId),
+          eq(message.direction, 'inbound'),
+          isNull(mailThread.trashedAt),
+        ),
+      )
+      .limit(1);
+    if (!source) throw new TRPCError({ code: 'NOT_FOUND', message: 'Workflow email not found.' });
+
+    const [latest] = await db
+      .select({ id: mailExtraction.id })
+      .from(mailExtraction)
+      .where(and(eq(mailExtraction.messageId, input.sourceMessageId), eq(mailExtraction.status, 'succeeded')))
+      .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
+      .limit(1);
+    if (latest?.id !== input.extractionId) {
+      throw new TRPCError({ code: 'CONFLICT', message: 'The extraction changed. Reload before reviewing.' });
+    }
+
+    const kind = MAIL_KINDS.includes(source.kind as MailKind) ? (source.kind as MailKind) : 'other';
+    const item = await ensureWorkItem(db, {
+      transportId: ctx.activeTransportId,
+      threadId: source.threadId,
+      messageId: input.sourceMessageId,
+      kind,
+      extractionId: input.extractionId,
+    });
+    const note = maskStaffNote(input.note?.trim() ?? '').trim();
+    const value = { decision: input.decision, ...(note ? { note } : {}) };
+    const [event] = await db
+      .insert(workEvent)
+      .values({
+        workItemId: item.id,
+        actorKind: 'user',
+        actorUserId: ctx.sessionUser.id,
+        type: 'admin_review',
+        value,
+        evidence: {
+          sourceMessageId: input.sourceMessageId,
+          extractionId: input.extractionId,
+          kind,
+          action: source.action,
+        },
+      })
+      .returning({ id: workEvent.id, at: workEvent.at });
+    return {
+      workItemId: item.id,
+      eventId: event!.id,
+      decision: input.decision,
+      reviewedAt: event!.at.toISOString(),
+    };
   }),
   /** One batch of pane actions from the Nava pane (B1), fire-and-forget. Refused when the item is in another transport. */
   recordActions: mailboxProcedure
