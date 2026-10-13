@@ -578,6 +578,11 @@ export function notFoundConfirmationCopy(confirmation: string): string {
   return `Not found in HMS by confirmation number ${confirmation}. Use the surname and arrival search below.`;
 }
 
+/** The prefetch result shown on a later open, with the exact confirmation number it searched. */
+export function prefetchedNotFoundConfirmationCopy(confirmation: string): string {
+  return `Not found in HMS when this email arrived — searched by confirmation number ${confirmation}.`;
+}
+
 /**
  * The panel's search run for a stored search reply. Only an ok read with rows is a list. A capped read has no list to
  * pick from, so it says to add the departure.
