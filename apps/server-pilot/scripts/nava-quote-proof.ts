@@ -1451,7 +1451,14 @@ async function proveThread(
   proof.prefilled = await readPrefilled(page);
   if (config.allowEdits) {
     proof.edits = await fillOpenRoomTypes(page, proof.prefilled);
-    if (proof.edits.length) proof.prefilled = await readPrefilled(page);
+    if (proof.edits.length) {
+      proof.prefilled = await readPrefilled(page);
+      // The rates the pane queued on open for an edited stay were for the old inputs; it drops them and offers Search
+      // availability again, so the driver searches that stay once more, as staff would. Other stays keep their rates.
+      const edited = new Set(proof.edits.map((edit) => Number(/^stay(\d+)\./.exec(edit)?.[1])));
+      const stale = rateKeysForDateRanges(proof.prefilled.stays.filter((stay) => edited.has(stay.stay)));
+      guard.ratedRateKeys = guard.ratedRateKeys.filter((key) => !stale.has(key));
+    }
   }
   if (!guard.expectedRateKeys.size) guard.expectedRateKeys = rateKeysForDateRanges(proof.prefilled.stays);
   const missing = requiredQuoteEdits(proof.prefilled);
