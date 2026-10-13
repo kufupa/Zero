@@ -1,14 +1,15 @@
-import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { Field, paneFieldClass, Section } from '../pane-ui';
 import { useEffect, useRef, useState } from 'react';
-import { copyText } from '@/components/quote-workflow/hms-link-actions';
+import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { currentPaneOwner, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
+import { copyText } from '@/components/quote-workflow/hms-link-actions';
+import { Field, paneFieldClass, Section, StepState } from '../pane-ui';
 
-// pii: guest details the preview gate masks (data-pii). The email-named line can include an end client.
 const FIELDS: Array<{ field: ContactField; label: string; pii: boolean }> = [
   { field: 'name', label: 'Name', pii: true },
   { field: 'email', label: 'Email', pii: true },
   { field: 'phone', label: 'Phone', pii: true },
+  { field: 'company', label: 'Company', pii: false },
+  { field: 'endClient', label: 'End client', pii: true },
 ];
 
 const NO_CONTACT: StoredContact = {
@@ -19,10 +20,7 @@ const NO_CONTACT: StoredContact = {
   phone: null,
 };
 
-/**
- * Contact block (U16, R4): booker contact details are editable; the email-named agency/client is a read-only note so
- * the same party has one editable home under Booked by. Copies record only the field name, never the copied value.
- */
+/** Read-only guest and company details from the email; corrections are scoped to this request, never written to HMS. */
 export function ContactBlock({
   contact,
   senderFallback,
@@ -32,16 +30,16 @@ export function ContactBlock({
   senderFallback?: Pick<StoredContact, 'name' | 'email'> | null;
   onEdit: (field: ContactField, value: string | null) => void;
 }) {
-  // The block is keyed by the mail and its work item, so a new mail or a landed read starts from its own values.
   const [values, setValues] = useState<StoredContact>(() => ({
     ...NO_CONTACT,
     ...contact,
     name: contact?.name ?? senderFallback?.name ?? null,
     email: contact?.email ?? senderFallback?.email ?? null,
   }));
+  const [correcting, setCorrecting] = useState(false);
   const [feedback, setFeedback] = useState<{ field: ContactField; copied: boolean } | null>(null);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const namedInEmail = [values.company, values.endClient].map((value) => value?.trim()).filter(Boolean).join(' · ');
+  const ready = Boolean(values.name?.trim() || values.email?.trim());
 
   useEffect(
     () => () => {
@@ -60,17 +58,60 @@ export function ContactBlock({
     if (resetTimer.current) clearTimeout(resetTimer.current);
     resetTimer.current = setTimeout(() => setFeedback(null), 2000);
   };
-  const copy = (field: ContactField) => copyValue(field, values[field] ?? '');
+
   return (
-    <Section title="Contact" id="quote-contact">
-      <div className="grid grid-cols-2 gap-x-2.5 gap-y-2">
-        {FIELDS.map(({ field, label, pii }) => (
-          <Field key={field} label={label} htmlFor={`quote-contact-${field}`}>
-            <div className="flex min-w-0 gap-1">
+    <Section
+      title="Guest & contact"
+      step={1}
+      id="quote-contact"
+      action={<StepState state={ready ? 'Done' : 'Pending'} />}
+    >
+      <dl className="grid grid-cols-2 gap-x-2.5 gap-y-2">
+        {FIELDS.map(({ field, label, pii }) => {
+          const value = values[field]?.trim() ?? '';
+          return (
+            <div key={field} data-contact-field={field} className="flex min-w-0 flex-col gap-0.5">
+              <dt className="text-[11.5px] font-semibold text-[#64748b]">{label}</dt>
+              <dd data-pii={pii || undefined} className="flex min-w-0 items-start justify-between gap-1 text-[13px] text-[#1e293b]">
+                <span className="min-w-0 break-words">{value || '—'}</span>
+                <button
+                  type="button"
+                  className="h-6 shrink-0 rounded-[3px] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
+                  aria-label={(feedback?.field === field && feedback.copied ? 'Copied ' : 'Copy ') + label.toLowerCase()}
+                  disabled={!value}
+                  onClick={() => void copyValue(field, value)}
+                >
+                  {feedback?.field === field && feedback.copied ? 'Copied' : 'Copy'}
+                </button>
+              </dd>
+              {feedback?.field === field && !feedback.copied ? (
+                <span role="status" className="text-[10px] text-amber-900">
+                  Couldn&apos;t copy {label.toLowerCase()}.
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
+      </dl>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#e2e8f0] pt-2">
+        <button
+          type="button"
+          aria-expanded={correcting}
+          onClick={() => setCorrecting((open) => !open)}
+          className="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
+        >
+          {correcting ? 'Hide corrections' : 'Correct'}
+        </button>
+        <p className="text-[11.5px] text-[#64748b]">Corrections save to this request only. HMS is not changed.</p>
+      </div>
+      {correcting ? (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {FIELDS.map(({ field, label, pii }) => (
+            <Field key={field} label={label} htmlFor={`quote-contact-${field}`}>
               <input
                 id={`quote-contact-${field}`}
                 data-pii={pii || undefined}
-                className={`${paneFieldClass} min-w-0`}
+                className={paneFieldClass}
                 maxLength={200}
                 value={values[field] ?? ''}
                 onChange={(event) => {
@@ -79,39 +120,10 @@ export function ContactBlock({
                   onEdit(field, next.trim() || null);
                 }}
               />
-              <button
-                type="button"
-                className="h-8 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
-                aria-label={(feedback?.field === field && feedback.copied ? 'Copied ' : 'Copy ') + label.toLowerCase()}
-                disabled={!values[field]?.trim()}
-                onClick={() => void copy(field)}
-              >
-                {feedback?.field === field && feedback.copied ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-            {feedback?.field === field && !feedback.copied ? (
-              <span role="status" className="text-[10px] text-amber-900">
-                Couldn&apos;t copy {label.toLowerCase()}.
-              </span>
-            ) : null}
-          </Field>
-        ))}
-        <div className="col-span-2 flex min-w-0 items-start justify-between gap-2 border-t border-[#e2e8f0] pt-2">
-          <p id="quote-contact-named-email" data-pii className="min-w-0 text-[13px] text-[#475569]">
-            <span className="font-semibold">Named in email:</span>
-            {` ${namedInEmail || '—'}`}
-          </p>
-          <button
-            type="button"
-            className="h-7 shrink-0 rounded-[3px] border border-[#cbd5e1] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
-            aria-label={feedback?.field === 'company' && feedback.copied ? 'Copied named in email' : 'Copy named in email'}
-            disabled={!namedInEmail}
-            onClick={() => void copyValue('company', namedInEmail)}
-          >
-            {feedback?.field === 'company' && feedback.copied ? 'Copied' : 'Copy'}
-          </button>
+            </Field>
+          ))}
         </div>
-      </div>
+      ) : null}
     </Section>
   );
 }

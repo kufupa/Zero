@@ -62,7 +62,11 @@ describe('automatic HMS lookup for a company or agency field', () => {
       reply({ outcome: 'ambiguous', results: [WOOLWORTHS, WOOLWORTHS_FOODS], best: WOOLWORTHS, searchedFor: 'Woolworths' }),
     );
     render(<Harness find={find} />);
-    expect(screen.getByRole('status').textContent).toContain('Searching HMS for "Woolworths"');
+    const status = screen.getByRole('status');
+    expect(status.textContent).toContain('Looking up in HMS — you can keep working');
+    expect(status.textContent).toContain('elapsed');
+    expect(status.textContent).toContain('Searching company "Woolworths"');
+    expect(status.querySelector('svg')).toBeNull();
     expect(await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, { timeout: 3000 })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
     expect(find).toHaveBeenCalledWith('Woolworths', 'company');

@@ -2,7 +2,6 @@ import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
 import { PaneMenu } from './pane-menu';
-import { Section } from './pane-ui';
 import {
   createPaneVersionWatch,
   fetchPaneVersion,
@@ -20,6 +19,11 @@ import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import {
+  HmsJobNoticeBanner,
+  HmsJobNoticeProvider,
+  HmsJobRunningChip,
+} from '@/components/quote-workflow/hms-job-notices';
 import { savedRatesFromTrpc } from '@/components/quote-workflow/rate-controls';
 import {
   fixtureReplyHtml,
@@ -153,11 +157,14 @@ export function NavaPane({
   bridge,
   preview = false,
   onOpenThread,
+  hmsNoticesManagedByParent = false,
 }: {
   bridge: PaneBridge;
   preview?: boolean;
   /** Webmail only: opens a Needs-you row's thread in the webmail. Outlook passes nothing. */
   onOpenThread?: (threadId: string) => void;
+  /** Webmail keeps notice state above its keyed thread panel so lookups survive email switches. */
+  hmsNoticesManagedByParent?: boolean;
 }) {
   const {
     isConnected,
@@ -1229,12 +1236,17 @@ export function NavaPane({
   );
 
   return (
-    <div
-      onKeyDownCapture={markInput}
-      onInputCapture={markInput}
-      onPointerDownCapture={markInput}
-      className="flex h-screen w-full justify-center overflow-hidden bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
+    <HmsJobNoticeProvider
+      emailKey={activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null}
+      emailSubject={activeEmail?.subject?.trim() || null}
+      passthrough={hmsNoticesManagedByParent}
     >
+      <div
+        onKeyDownCapture={markInput}
+        onInputCapture={markInput}
+        onPointerDownCapture={markInput}
+        className="flex h-screen w-full justify-center overflow-hidden bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
+      >
       {/* Fills the Outlook pane height, so the body below scrolls with a visible bar; never narrower than 320px. */}
       <div className="shadow-xs relative flex h-full w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
         {/* Outlook 2016 Header */}
@@ -1257,6 +1269,7 @@ export function NavaPane({
             ) : null}
           </div>
           <div className="flex min-w-0 shrink items-center gap-1.5 text-[11.5px] font-medium text-[#475569] [&_button]:whitespace-nowrap">
+            <HmsJobRunningChip />
             <span
               className={`h-2 w-2 rounded-full ${
                 isConnected ? 'animate-pulse bg-emerald-600' : 'bg-rose-500'
@@ -1270,6 +1283,8 @@ export function NavaPane({
             </span>
           </div>
         </header>
+
+        <HmsJobNoticeBanner />
 
         {isConnected && capabilities && capabilities.mailboxSync !== 1 && <p className="mx-3 mt-2 text-[11px] text-slate-600">Update the Outlook add-in to enable automatic email copying.</p>}
         {/* An old installer cannot perform even read-only COM actions. */}
@@ -1544,16 +1559,11 @@ export function NavaPane({
               onPreparePdf={() => preparePdfFor(null)}
               onDownloadWorkbook={downloadWorkbook}
               workbookPending={workbookPending}
+              replyContent={quoteOrBookingEmail ? replyBody : undefined}
             />
 
-            {/* Step 4: the reply. Quote and booking mail shows it as the numbered step; other mail keeps a plain button. */}
-            {quoteOrBookingEmail ? (
-              <Section step={4} title="Reply">
-                {replyBody}
-              </Section>
-            ) : (
-              <div className="flex flex-col gap-2.5">{replyBody}</div>
-            )}
+            {/* Non-quote mail keeps its plain reply actions; quote mail's action is inside Step 5. */}
+            {!quoteOrBookingEmail ? <div className="flex flex-col gap-2.5">{replyBody}</div> : null}
 
             {/* Outlook Email Draft Preview Box */}
             {showDraftPreview && draftedDetails && (
@@ -1587,6 +1597,7 @@ export function NavaPane({
           />
         </footer>
       </div>
-    </div>
+      </div>
+    </HmsJobNoticeProvider>
   );
 }

@@ -89,8 +89,9 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     transport,
     resume: hmsNumber ? { kind: 'find', confirmation: hmsNumber } : null,
     scope: key,
+    targetId: 'quote-booking',
   });
-  const search = useHmsJob({ transport, resume: { kind: 'search_guest' }, scope: key });
+  const search = useHmsJob({ transport, resume: { kind: 'search_guest' }, scope: key, targetId: 'quote-booking' });
   // A search the form refused before queueing. It shows in place of a run, for the scope it was made in.
   const [refusedSearch, setRefusedSearch] = useState<{ scope: string; message: string } | null>(null);
   // Cancel views are kept per booking on an email (see cancelScope), so a reply for one booking never shows on another.
@@ -191,7 +192,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const grandTotal = stayText(stay?.grandTotal);
 
   return (
-    <section aria-labelledby="amend-lookup-title" data-testid="amend-lookup-panel" className={panelClass}>
+    <section id="quote-booking" aria-labelledby="amend-lookup-title" data-testid="amend-lookup-panel" className={panelClass}>
       <h3 id="amend-lookup-title" className="text-[13px] font-semibold text-[#1e293b]">
         {amendment.kind === 'cancel' ? 'Cancellation request' : 'Change to an existing booking'}
       </h3>

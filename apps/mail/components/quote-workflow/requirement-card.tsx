@@ -9,7 +9,14 @@ import {
   paneFieldClass,
   paneTextareaClass,
 } from '@/components/nava-pane/pane-ui';
-import { ROOM_TYPE_CODES, knownRoomCode, roomTypeLabel, rowRoomTypeCode, type RoomTypeCode } from '@/lib/quote-workflow/room-types';
+import {
+  ROOM_TYPE_CODES,
+  knownRoomCode,
+  roomTypeLabel,
+  rowRoomLabel,
+  rowRoomTypeCode,
+  type RoomTypeCode,
+} from '@/lib/quote-workflow/room-types';
 import { newQuoteToken, parseChildrenAges, stayTotals } from '@/lib/quote-workflow/session';
 import type { QuoteBoard, StayEditAction, StayGroupRequirement } from '@/lib/quote-workflow/types';
 
@@ -75,7 +82,7 @@ function inferredMealPlan(rows: StayGroupRequirement[]): QuoteBoard | 'all' {
 
 /**
  * One stay: the dates, meal-plan display filter, room types and occupancy for this date range. Its HMS request and
- * rates are attached by the parent after Booked by and Advanced, so those shared controls appear only once.
+ * rates are attached by the parent under Rates, so those shared controls appear only once.
  */
 export function StayCard({
   stayId,
@@ -248,10 +255,12 @@ export function RequirementCard({
       ? 'Adults per room not set'
       : `${group.adults} ${group.adults === 1 ? 'adult' : 'adults'} per room`;
 
+  const displayName = rowRoomLabel(group);
+
   return (
-    <div role="row" aria-label={`Room ${roomNumber}`} className="flex flex-col gap-2.5 bg-white p-2.5">
+    <div role="row" aria-label={displayName} data-room-index={roomNumber} className="flex flex-col gap-2.5 bg-white p-2.5">
       <div role="rowheader" className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-[13px] font-bold text-[#334155]">{`Room ${roomNumber}`}</span>
+        <span className="text-[13px] font-bold text-[#334155]">{displayName}</span>
         <div className="flex items-center gap-3">
           <LinkButton onClick={() => onStayAction?.({ type: 'duplicate_row', groupId: group.id, token: newQuoteToken() })}>
             Duplicate room
@@ -261,28 +270,38 @@ export function RequirementCard({
           ) : null}
         </div>
       </div>
-      <div role="cell" className="min-w-0">
-        <Field label="Room type" required htmlFor={`${id}-room`} aside={<ProvenanceFlag value={group.fields.roomPreference} />}>
-          <select
-            id={`${id}-room`}
-            ref={roomSelect}
-            aria-label="Room type"
-            aria-invalid={!selectedCode || undefined}
-            className={`${paneFieldClass} ${selectedCode ? '' : 'border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]'}`}
-            value={selectedCode ?? unknownValue ?? ''}
-            onChange={(event) => chooseRoomType(event.target.value)}
+      <div role="cell" className="grid grid-cols-2 gap-2">
+        <div className="min-w-0">
+          <Field
+            label="Room type"
+            required
+            htmlFor={`${id}-room`}
+            aside={<ProvenanceFlag value={group.fields.roomPreference} />}
           >
-            <option value="">Choose room type</option>
-            {unknownValue ? <option value={unknownValue}>Email request</option> : null}
-            {ROOM_TYPE_CODES.map((code) => (
-              <option key={code} value={code}>
-                {roomTypeLabel(code)}
-              </option>
-            ))}
-          </select>
-          {unknownValue && suggestions.length ? (
-            <div role="group" aria-label="Room type suggestions" className="flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-[#1e3a8a]">
-              <span className="mr-0.5">{`Email said '${unknownValue}' →`}</span>
+            <select
+              id={`${id}-room`}
+              ref={roomSelect}
+              aria-label="Room type"
+              aria-invalid={!selectedCode || undefined}
+              className={`${paneFieldClass} ${selectedCode ? '' : 'border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]'}`}
+              value={selectedCode ?? unknownValue ?? ''}
+              onChange={(event) => chooseRoomType(event.target.value)}
+            >
+              <option value="">Choose room type</option>
+              {unknownValue ? <option value={unknownValue}>Email request</option> : null}
+              {ROOM_TYPE_CODES.map((code) => (
+                <option key={code} value={code}>
+                  {roomTypeLabel(code)}
+                </option>
+              ))}
+            </select>
+            {unknownValue && suggestions.length ? (
+              <div
+                role="group"
+                aria-label="Room type suggestions"
+                className="flex min-w-0 flex-wrap items-center gap-1 text-[12px] text-[#1e3a8a]"
+              >
+                <span className="mr-0.5">{`Email said '${unknownValue}' →`}</span>
                 {suggestions.map((code) => (
                   <button
                     key={code}
@@ -293,22 +312,21 @@ export function RequirementCard({
                     {roomTypeLabel(code).replace(/\s+\([A-Z]+\)$/, '')}
                   </button>
                 ))}
-              <span aria-hidden="true">·</span>
-              <button
-                type="button"
-                aria-label="Choose other room type"
-                className="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline"
-                onClick={() => roomSelect.current?.focus()}
-              >
-                other…
-              </button>
-            </div>
-          ) : null}
-          <FieldEvidence quotes={quotesFor('roomPreference', evidence)} />
-        </Field>
-      </div>
+                <span aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  aria-label="Choose other room type"
+                  className="rounded-[3px] text-[11.5px] font-semibold text-[#0066cc] hover:underline"
+                  onClick={() => roomSelect.current?.focus()}
+                >
+                  other…
+                </button>
+              </div>
+            ) : null}
+            <FieldEvidence quotes={quotesFor('roomPreference', evidence)} />
+          </Field>
+        </div>
 
-      <div role="cell" className="grid grid-cols-2 gap-2">
         <div className="flex min-w-0 flex-col gap-1">
           <span
             role="group"
@@ -337,7 +355,7 @@ export function RequirementCard({
           />
           <FieldEvidence quotes={quotesFor('quantity', evidence)} />
         </div>
-        <div className="flex min-w-0 flex-col gap-1">
+        <div className="col-span-2 flex min-w-0 flex-col gap-1">
           <span className="flex flex-wrap items-center gap-1 text-[13px] font-semibold text-[#475569]">
             <span>{adultsText}</span>
             <ProvenanceFlag value={group.fields.adults} />

@@ -201,7 +201,7 @@ export type HmsNotesStay = { arrival: string; departure: string };
 
 /** One room for the HMS notes. Each field is optional: a field with no value adds no line. */
 export type HmsNotesRoom = {
-  /** The room's name in the pane, e.g. "Room 1" or "Stay 2 · Room 1". It heads the room's lines when there are several rooms. */
+  /** The room's type and count in the pane, e.g. "Standard Twin ×2". It heads the room's lines when there are several rooms. */
   label: string;
   specialRequests?: string[];
   /** Who approved the discount and why, as staff typed it on the row's override. */
@@ -373,7 +373,7 @@ export function RowRateControls({
   onSavedRateChanged,
 }: {
   group: StayGroupRequirement;
-  /** Names the row for staff, e.g. "Room 1" or "Stay 2 · Room 1". */
+  /** Names the row for staff, e.g. "Standard Twin ×2" or "Stay 2 · Standard Twin ×2". */
   label: string;
   /** Rate cards surface the price control directly on the selected card. */
   toggleLabel?: string;
@@ -890,7 +890,7 @@ function OverrideForm({
           onChange={(event) => setDraft({ ...draft, rate: event.target.value })}
         />
       </Field>
-      <Field label="Authorised by / why" htmlFor={`${id}-note`} required>
+      <Field label="Authorised by" htmlFor={`${id}-note`} required>
         <input
           id={`${id}-note`}
           maxLength={NOTE_MAX}

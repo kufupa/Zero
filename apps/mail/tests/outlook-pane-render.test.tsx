@@ -347,16 +347,17 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     ).toBe(true);
   });
 
-  it('shows Starting the HMS run while the staff quote is pending and the first read is idle', async () => {
+  it('shows a non-blocking HMS lookup message while the staff quote is pending and the first read is idle', async () => {
     bridgeMockState.holdStaffQuote = true;
     render(<OutlookPanePage />);
     await fillStayFactsMatchingAuthorisedOffer();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
-    expect(await screen.findByText('Starting the HMS run…')).toBeDefined();
+    expect(await screen.findByText('Looking up in HMS — you can keep working')).toBeDefined();
+    expect(screen.getByRole('status').textContent).toContain('elapsed');
     await act(async () => {
       bridgeMockState.releaseStaffQuote?.();
     });
-    await waitFor(() => expect(screen.queryByText('Starting the HMS run…')).toBeNull());
+    await waitFor(() => expect(screen.queryByText('Looking up in HMS — you can keep working')).toBeNull());
   });
 
   it('offers the system check in the ⋯ menu', async () => {

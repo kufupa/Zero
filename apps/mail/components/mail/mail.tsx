@@ -43,6 +43,11 @@ import {
 import { useAtom } from 'jotai';
 import { navaSidePanelAtom } from '@/store/navaSidePanel';
 import { NeedsYouWebControl } from '@/components/nava-pane/screens/needs-you';
+import {
+  HmsJobNoticeBanner,
+  HmsJobNoticeProvider,
+  HmsJobRunningChip,
+} from '@/components/quote-workflow/hms-job-notices';
 import { trpcClient } from '@/providers/query-provider';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
@@ -358,6 +363,15 @@ const MAIL_SEARCH_FOLDER_TITLES: Record<string, string> = {
 // };
 
 export function MailLayout() {
+  const [threadId] = useQueryState('threadId');
+  return (
+    <HmsJobNoticeProvider emailKey={threadId ?? null} emailSubject={null}>
+      <MailLayoutContent />
+    </HmsJobNoticeProvider>
+  );
+}
+
+function MailLayoutContent() {
   const params = useParams<{ folder: string }>();
   const folder = params?.folder ?? 'inbox';
   const [mail, setMail] = useMail();
@@ -712,11 +726,21 @@ export function MailLayout() {
                 maxSize={MAIL_NAVA_SPLIT.nava.max}
               >
                 <div className="flex h-full min-h-0 flex-col">
-                  <Suspense fallback={<div className="flex h-full items-center justify-center" />}>
+                  <Suspense
+                    fallback={
+                      <div className="flex h-full min-h-0 flex-col">
+                        <div className="flex h-11 shrink-0 items-center justify-end px-3">
+                          <HmsJobRunningChip />
+                        </div>
+                        <HmsJobNoticeBanner />
+                      </div>
+                    }
+                  >
                     <WebPanePanel
                       key={threadId}
                       threadId={threadId}
                       onOpenThread={openListThread}
+                      hmsNoticesManagedByParent
                     />
                   </Suspense>
                 </div>

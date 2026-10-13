@@ -13,6 +13,7 @@ import {
 } from '../../lib/quote-workflow/party-lookup';
 import type { StaffQuoteParties, StaffQuoteParty } from '../../lib/quote-workflow/types';
 import { LinkButton, Notice, SecondaryButton } from '../nava-pane/pane-ui';
+import { HmsLookupProgress } from './hms-queue-status';
 import { useEffect, useReducer, useRef, useState } from 'react';
 
 export const PARTY_PICKER_HINT =
@@ -356,10 +357,10 @@ export function PartyPicker({
             )}
           </div>
         ) : (
-          <p role="status" className="flex items-center gap-2 text-[12.5px] text-[#0066cc]">
-            <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-2 border-[#0066cc] border-t-transparent" />
-            {`Searching HMS for "${query}"… about 20 seconds`}
-          </p>
+          <HmsLookupProgress
+            pending
+            detail={`Searching ${kind ? partyKindLabel(kind).toLowerCase() : 'party'} "${query}"`}
+          />
         )
       ) : null}
       {indexResults.length ? (

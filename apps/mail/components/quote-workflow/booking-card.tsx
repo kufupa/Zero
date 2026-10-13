@@ -829,22 +829,16 @@ export function BookingCards({
                 {PANE_CHILDREN_COPY}
               </p>
             ) : null}
-            {childCount === 0 ? (
-              client && savesOn ? (
-                <RoomSave
-                  stay={built.stay}
-                  missing={built.missing}
-                  save={saves[key] ?? {}}
-                  screenshot={client.screenshot}
-                  bookLabel={mode === 'on' ? BOOK_LABEL.on : BOOK_LABEL.lab}
-                  onPreview={(stay) => void previewRoom(key, client, stay)}
-                  onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
-                />
-              ) : (
-                <PrimaryButton disabled disabledReason="Coming soon">
-                  {BOOK_LABEL.on}
-                </PrimaryButton>
-              )
+            {childCount === 0 && client && savesOn ? (
+              <RoomSave
+                stay={built.stay}
+                missing={built.missing}
+                save={saves[key] ?? {}}
+                screenshot={client.screenshot}
+                bookLabel={mode === 'on' ? BOOK_LABEL.on : BOOK_LABEL.lab}
+                onPreview={(stay) => void previewRoom(key, client, stay)}
+                onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
+              />
             ) : null}
           </article>
         );

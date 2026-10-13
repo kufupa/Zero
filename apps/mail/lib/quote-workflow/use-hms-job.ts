@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useHmsJobNoticeReporter } from './hms-job-notice-context';
 import {
   isSettled,
   pendingJobView,
@@ -65,9 +66,17 @@ export function useHmsJob(input: {
   scope: string | null;
   /** Starts a search_guest request after read-back confirms that no matching job exists. */
   autoStartIfMissing?: boolean;
+  /** Pane section to return to from the completion notice. Defaults by request kind. */
+  targetId?: string;
 }): HmsJobState {
   const { transport, resume, scope } = input;
   const autoStartIfMissing = input.autoStartIfMissing ?? false;
+  const targetId = input.targetId;
+  const noticeReporter = useHmsJobNoticeReporter();
+  const noticeObserverId = useId();
+  const nextNoticeJobId = useRef(0);
+  const activeNoticeJobId = useRef<string | null>(null);
+  const retryRef = useRef<() => void>(() => undefined);
   const resumeKind = resume?.kind ?? null;
   const resumeConfirmation = resume?.confirmation ?? null;
   const resumeLastName = resume?.lastName ?? null;
@@ -93,6 +102,16 @@ export function useHmsJob(input: {
     (request: HmsJobRequest, options?: HmsJobQueueOptions) => {
       if (!transport) return;
       const mine = ++generation.current;
+      const jobId = `${noticeObserverId}:${++nextNoticeJobId.current}`;
+      activeNoticeJobId.current = jobId;
+      noticeReporter.started({
+        observerId: noticeObserverId,
+        jobId,
+        request,
+        targetId,
+        retry: () => retryRef.current(),
+        transport,
+      });
       lastRequest.current = request;
       lastRequestOptions.current = options;
       setRunId(null);
@@ -102,25 +121,64 @@ export function useHmsJob(input: {
       setQueuing(true);
       (options ? transport.queue(request, options) : transport.queue(request)).then(
         (started) => {
-          if (generation.current !== mine) return;
+          if (generation.current !== mine) {
+            if (started.view) {
+              if (isSettled(started.view)) {
+                noticeReporter.settled(noticeObserverId, jobId, started.view, () => retryRef.current());
+              } else {
+                noticeReporter.pending({
+                  observerId: noticeObserverId,
+                  jobId,
+                  request: started.view.request ?? request,
+                  targetId,
+                  retry: () => retryRef.current(),
+                  transport,
+                  runId: started.runId,
+                });
+              }
+            } else if (started.runId !== null) {
+              noticeReporter.pending({
+                observerId: noticeObserverId,
+                jobId,
+                request,
+                targetId,
+                retry: () => retryRef.current(),
+                transport,
+                runId: started.runId,
+              });
+            } else {
+              noticeReporter.cancel(noticeObserverId, jobId);
+            }
+            return;
+          }
           setQueuing(false);
           // Job queue off: the lookup ran synchronously and its answer is already settled.
-          if (started.view) setView(started.view);
+          if (started.view) {
+            setView(started.view);
+            if (isSettled(started.view)) {
+              noticeReporter.settled(noticeObserverId, jobId, started.view, () => retryRef.current());
+            }
+          }
           else if (started.runId !== null) {
             // Queued until the first status read lands, so the panel never looks idle while the job exists.
             setView(pendingJobView(started.runId, request));
             setRunId(started.runId);
+          } else {
+            // An auto-start with the queue off queues nothing: the card stays idle until staff search by hand.
+            noticeReporter.cancel(noticeObserverId, jobId);
           }
-          // An auto-start with the queue off queues nothing: the card stays idle until staff search by hand.
         },
         () => {
-          if (generation.current !== mine) return;
+          if (generation.current !== mine) {
+            noticeReporter.queueFailed(noticeObserverId, jobId, () => retryRef.current());
+            return;
+          }
           setQueuing(false);
           setQueueFailed(true);
         },
       );
     },
-    [transport],
+    [noticeReporter, noticeObserverId, targetId, transport],
   );
 
   const retry = useCallback(() => {
@@ -141,6 +199,7 @@ export function useHmsJob(input: {
       view?.status === 'failed' && view.failureClass !== 'POLL_LOST' ? undefined : lastRequestOptions.current;
     start(last, options);
   }, [runId, start, statusFailed, view]);
+  retryRef.current = retry;
 
   // Scope change or remount: clear, then read back the latest job of this kind on the thread.
   useEffect(() => {
@@ -161,6 +220,7 @@ export function useHmsJob(input: {
       ...(resumeArrival ? { arrival: resumeArrival } : {}),
       ...(resumeHasDeparture ? { departure: resumeDeparture } : {}),
     };
+    activeNoticeJobId.current = `${noticeObserverId}:${++nextNoticeJobId.current}`;
     transport.status(query).then(
       (found) => {
         if (!live || generation.current !== mine) return;
@@ -189,6 +249,7 @@ export function useHmsJob(input: {
     };
   }, [
     transport,
+    noticeObserverId,
     scope,
     resumeKind,
     resumeConfirmation,
@@ -214,6 +275,52 @@ export function useHmsJob(input: {
       live = false;
     };
   }, [transport, runId, pollRound]);
+
+  const lastNoticeScope = useRef(scope);
+  useEffect(() => {
+    if (lastNoticeScope.current !== scope) {
+      lastNoticeScope.current = scope;
+      noticeReporter.detached(noticeObserverId);
+      return;
+    }
+    const request = view?.request ?? lastRequest.current;
+    if (!request) return;
+    const jobId = activeNoticeJobId.current;
+    if (!jobId) return;
+    const input = {
+      observerId: noticeObserverId,
+      jobId,
+      request,
+      targetId,
+      retry: () => retryRef.current(),
+      transport,
+      runId: view?.runId ?? runId,
+    };
+    if (queuing || (view !== null && !isSettled(view))) {
+      noticeReporter.pending(input);
+      return;
+    }
+    if (view && isSettled(view)) noticeReporter.settled(noticeObserverId, jobId, view, () => retryRef.current());
+    else if (queueFailed) noticeReporter.queueFailed(noticeObserverId, jobId, () => retryRef.current());
+  }, [
+    noticeReporter,
+    noticeObserverId,
+    queueFailed,
+    queuing,
+    runId,
+    scope,
+    targetId,
+    transport,
+    view,
+  ]);
+
+  useEffect(
+    () => () => {
+      generation.current += 1;
+      noticeReporter.detached(noticeObserverId);
+    },
+    [noticeReporter, noticeObserverId],
+  );
 
   return { view, queuing, queueFailed, statusFailed, readBackSettled, start, retry };
 }
