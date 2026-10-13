@@ -1,23 +1,26 @@
+import type { PartyFindReply } from './party-lookup';
 import type { QuoteAmendment } from './types';
 
 /**
- * HMS lookup for amend and cancel mail. A find (paneStayLookup.queueFind) or a guest-name search (queueSearchGuest) is
- * a persisted HMS job, about 1-2 minutes in HMS. The pane polls the job by run id and shows the dated snapshot the worker
- * stored, so a lookup keeps going while the pane is closed or the email changes. The panels call these helpers and
- * nothing else, so the transport can change here. Nothing here changes HMS.
+ * Shared HMS read helpers for quote, amend and cancel mail.
+ * Find, guest-search, and party-search may use persisted jobs when enabled.
+ * The pane polls by run id and shows a dated snapshot after remount.
+ * These helpers never change HMS.
  */
 
 export const AMEND_FIND_COPY = {
   looking: 'Nava is looking up the booking in HMS…',
   lookupWait: 'Takes about 1–2 minutes. Quotes wait while it runs.',
-  noNumber: "Nava couldn't find a booking number in the email. Find the booking by guest name below.",
+  noNumber:
+    "Nava couldn't find a booking number in the email. Find the booking by guest name below.",
   waitingThread: 'Waiting for this email to sync before the HMS lookup can start.',
   notFound:
     'No booking with that number in HMS. Check the number in the email or find the booking by guest name below.',
   notExact:
     'HMS needs one exact booking number from the latest email. Check the email or find the booking by guest name below.',
   ambiguous: 'HMS matched more than one booking for that number. Check HMS directly.',
-  arrivalDiffers: 'HMS shows this booking on another arrival date from the email. Check the dates in HMS directly.',
+  arrivalDiffers:
+    'HMS shows this booking on another arrival date from the email. Check the dates in HMS directly.',
   bookedMissing: 'Booked dates not in mail. Nava does not use the requested dates for this lookup.',
   busy: 'HMS is busy with another quote or lookup. Try again in a minute.',
   readFailed: 'Nava could not read the HMS result. Try again in a minute.',
@@ -27,7 +30,8 @@ export const AMEND_FIND_COPY = {
   unreachable: "Nava can't reach HMS right now. Tell the Nava team.",
   seeBooking: 'See the booking in HMS',
   footer: 'Nava only looks the booking up. Make the change in HMS yourself.',
-  searchIntro: 'The email has no HMS booking number, so find the booking by surname and arrival day.',
+  searchIntro:
+    'The email has no HMS booking number, so find the booking by surname and arrival day.',
   searchButton: 'Search HMS',
   searching: 'Nava is searching HMS by guest name…',
   searchCapped: 'Many matches — add the departure date.',
@@ -105,7 +109,9 @@ export type FindStayReply = {
 };
 
 export type ScreenshotInput = { runId: string; name: string };
-export type ScreenshotReply = { status: 'ok'; dataUrl: string } | { status: 'unavailable'; reason: string };
+export type ScreenshotReply =
+  | { status: 'ok'; dataUrl: string }
+  | { status: 'unavailable'; reason: string };
 
 /** One row of a guest-name search, as the search reply carries it. Dates are ISO days or null. */
 export type GuestSearchRow = {
@@ -127,20 +133,22 @@ export type GuestSearchReply = {
   runId: string | null;
 };
 
-export type HmsJobKind = 'find' | 'search_guest';
+export type HmsJobKind = 'find' | 'search_guest' | 'party';
 
 /** What a job was queued for. paneStayLookup stores it with the job. */
 export type HmsJobRequest =
   | { kind: 'find'; confirmation: string; arrival?: string }
-  | { kind: 'search_guest'; lastName: string; arrival: string; departure?: string };
+  | { kind: 'search_guest'; lastName: string; arrival: string; departure?: string }
+  | { kind: 'party'; name: string; partyKind?: 'company' | 'agency' };
 
 export type HmsJobQueueOptions = { autoStart?: true };
 
 export type HmsJobStatus = 'queued' | 'running' | 'retrying' | 'done' | 'failed';
 
 /**
- * One job as paneStayLookup.jobStatus returns it. `result` is the find or search reply the worker stored, a snapshot
- * taken at `asOf`, and is null until the job succeeds. `position` counts the HMS queue ahead of the job while it waits.
+ * One job as paneStayLookup.jobStatus returns it.
+ * `result` is the stored reply, null until success. `asOf` dates the snapshot.
+ * `position` counts the HMS queue ahead while it waits.
  */
 export type HmsJobView = {
   runId: string;
@@ -151,6 +159,8 @@ export type HmsJobView = {
   attempts: number;
   failureClass: string | null;
   asOf: string | null;
+  createdAt?: string | null;
+  outcome?: string | null;
   result: Record<string, unknown> | null;
 };
 
@@ -166,10 +176,19 @@ export type HmsJobStart = { runId: string; view?: undefined } | { runId: null; v
 /** The paneStayLookup job routes, bound off the pane's tRPC client. */
 export type HmsJobClient = {
   queueFind: (input: FindStayInput & { threadId: string }) => Promise<QueuedHmsJob>;
-  queueSearchGuest: (input: GuestSearchInput & { threadId: string; autoStart?: true }) => Promise<QueuedHmsJob>;
+  queueSearchGuest: (
+    input: GuestSearchInput & { threadId: string; autoStart?: true },
+  ) => Promise<QueuedHmsJob>;
+  queueParty?: (input: {
+    threadId: string;
+    name: string;
+    partyKind?: 'company' | 'agency';
+    autoStart?: true;
+  }) => Promise<QueuedHmsJob>;
   /** The synchronous find and search, used while the server's job queue is off. */
   findStay?: (input: FindStayInput) => Promise<FindStayReply>;
   searchGuest?: (input: GuestSearchInput) => Promise<GuestSearchReply>;
+  findParty?: (input: { name: string; kind?: 'company' | 'agency' }) => Promise<PartyFindReply>;
   jobStatus: (
     input:
       | { runId: string }
@@ -178,6 +197,8 @@ export type HmsJobClient = {
           kind: HmsJobKind;
           confirmation?: string;
           lastName?: string;
+          name?: string;
+          partyKind?: 'company' | 'agency';
           arrival?: string;
           departure?: string | null;
         },
@@ -191,7 +212,15 @@ export type HmsJobTransport = {
   status: (
     input:
       | { runId: string }
-      | { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string; departure?: string | null },
+      | {
+          kind: HmsJobKind;
+          confirmation?: string;
+          lastName?: string;
+          name?: string;
+          partyKind?: 'company' | 'agency';
+          arrival?: string;
+          departure?: string | null;
+        },
   ) => Promise<HmsJobView | null>;
 };
 
@@ -199,10 +228,14 @@ type TrpcPaneStayLookupRoutes = {
   paneStayLookup?: {
     queueFind?: { mutate: HmsJobClient['queueFind'] };
     queueSearchGuest?: { mutate: HmsJobClient['queueSearchGuest'] };
+    queueParty?: { mutate: NonNullable<HmsJobClient['queueParty']> };
     findStay?: { mutate: NonNullable<HmsJobClient['findStay']> };
     searchGuest?: { mutate: NonNullable<HmsJobClient['searchGuest']> };
     jobStatus?: { query: HmsJobClient['jobStatus'] };
     screenshot?: { query: (input: ScreenshotInput) => Promise<ScreenshotReply> };
+  };
+  panePartyLookup?: {
+    findParty?: { mutate: NonNullable<HmsJobClient['findParty']> };
   };
 };
 
@@ -212,25 +245,35 @@ export function amendFindClientFromTrpc(trpc: unknown): HmsJobClient | null {
   const routes = (trpc as TrpcPaneStayLookupRoutes).paneStayLookup;
   const queueFind = routes?.queueFind;
   const queueSearch = routes?.queueSearchGuest;
+  const queueParty = routes?.queueParty;
   const status = routes?.jobStatus;
   const shot = routes?.screenshot;
   const find = routes?.findStay;
   const search = routes?.searchGuest;
+  const party = (trpc as TrpcPaneStayLookupRoutes).panePartyLookup?.findParty;
   if (!queueFind || !queueSearch || !status || !shot) return null;
-  return {
+  const client: HmsJobClient = {
     queueFind: (input) => queueFind.mutate(input),
     queueSearchGuest: (input) => queueSearch.mutate(input),
     ...(find ? { findStay: (input: FindStayInput) => find.mutate(input) } : {}),
     ...(search ? { searchGuest: (input: GuestSearchInput) => search.mutate(input) } : {}),
+    ...(party
+      ? { findParty: (input: { name: string; kind?: 'company' | 'agency' }) => party.mutate(input) }
+      : {}),
     jobStatus: (input) => status.query(input),
     screenshot: (input) => shot.query(input),
   };
+  if (queueParty) client.queueParty = (input) => queueParty.mutate(input);
+  return client;
 }
 
 /** A synchronous reply shown as a settled job, so the panels read it the same way. No as-of stamp: it is live. */
-function syncView(request: HmsJobRequest, reply: FindStayReply | GuestSearchReply): HmsJobView {
+function syncView(
+  request: HmsJobRequest,
+  reply: FindStayReply | GuestSearchReply | PartyFindReply,
+): HmsJobView {
   return {
-    runId: reply.runId ?? '',
+    runId: 'runId' in reply ? (reply.runId ?? '') : '',
     request,
     prefetch: false,
     status: 'done',
@@ -238,15 +281,20 @@ function syncView(request: HmsJobRequest, reply: FindStayReply | GuestSearchRepl
     attempts: 0,
     failureClass: null,
     asOf: null,
+    createdAt: null,
+    outcome: reply.outcome,
     result: reply as unknown as Record<string, unknown>,
   };
 }
 
 /**
- * The job calls for one thread, or null when the client or the thread is missing. With the server's job queue off, the
- * queue call returns no run id and the request runs through the synchronous findStay or searchGuest, as before jobs.
+ * The job call includes one thread, or returns null if client/thread is missing.
+ * With the queue off, manual lookup stays inline. Auto-start does not rerun on each pane open.
  */
-export function hmsJobTransport(client: HmsJobClient | null, threadId: string | null): HmsJobTransport | null {
+export function hmsJobTransport(
+  client: HmsJobClient | null,
+  threadId: string | null,
+): HmsJobTransport | null {
   if (!client || !threadId) return null;
   return {
     queue: async (request, options) => {
@@ -258,6 +306,30 @@ export function hmsJobTransport(client: HmsJobClient | null, threadId: string | 
         if (runId) return { runId };
         if (!client.findStay) throw new Error('paneStayLookup.findStay unavailable');
         return { runId: null, view: syncView(request, await client.findStay(input)) };
+      }
+      if (request.kind === 'party') {
+        const queued = client.queueParty
+          ? await client.queueParty({
+              threadId,
+              name: request.name,
+              ...(request.partyKind ? { partyKind: request.partyKind } : {}),
+              ...(options?.autoStart ? { autoStart: true } : {}),
+            })
+          : { runId: null };
+        if (queued.runId) return { runId: queued.runId };
+        // Queue-off auto-starts must not run a live lookup every time the pane opens.
+        if (options?.autoStart) return { runId: null };
+        if (!client.findParty) throw new Error('panePartyLookup.findParty unavailable');
+        return {
+          runId: null,
+          view: syncView(
+            request,
+            await client.findParty({
+              name: request.name,
+              ...(request.partyKind ? { kind: request.partyKind } : {}),
+            }),
+          ),
+        };
       }
       const input: GuestSearchInput = request.departure
         ? { lastName: request.lastName, arrival: request.arrival, departure: request.departure }
@@ -307,7 +379,9 @@ export function findRequestFor(
 ): { request: HmsJobRequest } | { error: string } {
   if (!isHmsConfirmation(confirmation)) return { error: notHmsNumberNote(confirmation) };
   const day = sendableArrival(arrival);
-  return { request: day ? { kind: 'find', confirmation, arrival: day } : { kind: 'find', confirmation } };
+  return {
+    request: day ? { kind: 'find', confirmation, arrival: day } : { kind: 'find', confirmation },
+  };
 }
 
 /** A settled job, done or failed. Other states are still moving. */
@@ -364,7 +438,8 @@ export function findRunFromReply(reply: FindStayReply): HmsFindRun {
 export function findRunFromJob(view: HmsJobView | null, queueFailed: boolean): HmsFindRun | null {
   if (queueFailed) return { kind: 'error', message: AMEND_FIND_COPY.lookupFailed };
   if (!view || !isSettled(view)) return null;
-  if (view.status === 'failed') return { kind: 'error', message: failedCopy(view.failureClass, 'find') };
+  if (view.status === 'failed')
+    return { kind: 'error', message: failedCopy(view.failureClass, 'find') };
   if (!view.result) return { kind: 'error', message: AMEND_FIND_COPY.readFailed };
   return findRunFromReply(view.result as unknown as FindStayReply);
 }
@@ -387,9 +462,14 @@ export type AmendDiff = { guest?: string; arrival?: string; departure?: string }
  * booked date never stands in for it and hides a difference from HMS. The booking dates are used only on an older
  * payload with no requested pair, and for a cancellation, which asks about the stay as booked.
  */
-export function askedDates(amendment: QuoteAmendment): { arrival: string | null; departure: string | null } {
+export function askedDates(amendment: QuoteAmendment): {
+  arrival: string | null;
+  departure: string | null;
+} {
   const asked = (requested: string | null | undefined, booked: string | null) =>
-    requested === undefined || (requested === null && amendment.kind === 'cancel') ? booked : requested;
+    requested === undefined || (requested === null && amendment.kind === 'cancel')
+      ? booked
+      : requested;
   return {
     arrival: asked(amendment.requestedArrival, amendment.arrival),
     departure: asked(amendment.requestedDeparture, amendment.departure),
@@ -465,7 +545,8 @@ export function searchRequestFor(form: {
   const departureText = (form.departure ?? '').trim();
   const departure = departureText ? sendableArrival(departureText) : null;
   if (!isSearchSurname(lastName) || !arrival) return { error: AMEND_FIND_COPY.searchInvalid };
-  if (departureText && (!departure || departure <= arrival)) return { error: AMEND_FIND_COPY.searchInvalid };
+  if (departureText && (!departure || departure <= arrival))
+    return { error: AMEND_FIND_COPY.searchInvalid };
   return {
     request: departure
       ? { kind: 'search_guest', lastName, arrival, departure }
@@ -488,10 +569,16 @@ export function noSearchMatchCopy(lastName: string, arrival: string): string {
  * The panel's search run for a stored search reply. Only an ok read with rows is a list. A capped read has no list to
  * pick from, so it says to add the departure.
  */
-export function searchRunFromReply(reply: GuestSearchReply, lastName: string, arrival: string): HmsSearchRun {
+export function searchRunFromReply(
+  reply: GuestSearchReply,
+  lastName: string,
+  arrival: string,
+): HmsSearchRun {
   switch (reply.outcome) {
     case 'ok':
-      return reply.rows.length > 0 ? { kind: 'rows', rows: reply.rows } : { kind: 'none', lastName, arrival };
+      return reply.rows.length > 0
+        ? { kind: 'rows', rows: reply.rows }
+        : { kind: 'none', lastName, arrival };
     case 'ambiguous_capped':
       return { kind: 'capped' };
     case 'refused_input_invalid':
@@ -508,10 +595,14 @@ export function searchRunFromReply(reply: GuestSearchReply, lastName: string, ar
 }
 
 /** The search run a job shows. Null while the job is still moving. */
-export function searchRunFromJob(view: HmsJobView | null, queueFailed: boolean): HmsSearchRun | null {
+export function searchRunFromJob(
+  view: HmsJobView | null,
+  queueFailed: boolean,
+): HmsSearchRun | null {
   if (queueFailed) return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
   if (!view || !isSettled(view)) return null;
-  if (view.status === 'failed') return { kind: 'error', message: failedCopy(view.failureClass, 'search_guest') };
+  if (view.status === 'failed')
+    return { kind: 'error', message: failedCopy(view.failureClass, 'search_guest') };
   if (!view.result) return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
   const request = view.request?.kind === 'search_guest' ? view.request : null;
   return searchRunFromReply(
@@ -567,7 +658,11 @@ export async function pollHmsJob(
       misses += 1;
       if (misses >= HMS_JOB_MAX_MISSES) {
         // Shown as failed even when no read ever succeeded, so the panel offers Retry instead of looking idle.
-        options.onView({ ...(last ?? pendingJobView(runId, null)), status: 'failed', failureClass: 'POLL_LOST' });
+        options.onView({
+          ...(last ?? pendingJobView(runId, null)),
+          status: 'failed',
+          failureClass: 'POLL_LOST',
+        });
         return;
       }
     }
@@ -576,5 +671,8 @@ export async function pollHmsJob(
 }
 
 function nameWords(name: string): string[] {
-  return name.toLowerCase().split(/[\s,.]+/).filter(Boolean);
+  return name
+    .toLowerCase()
+    .split(/[\s,.]+/)
+    .filter(Boolean);
 }

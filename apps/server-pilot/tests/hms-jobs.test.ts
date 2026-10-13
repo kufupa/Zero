@@ -329,6 +329,32 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(await resume('Brown')).toBeNull();
     }));
 
+  it('a remount reads back the party job for the asked name and field kind', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      const queue = (partyKind: 'company' | 'agency') =>
+        queueUserHmsJob(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            threadId,
+            request: { kind: 'party', name: 'Horizon Trail Tours', partyKind },
+          },
+          db,
+        );
+      const agency = await queue('agency');
+      const company = await queue('company');
+      const resume = (name: string, partyKind: 'company' | 'agency') =>
+        readHmsJobView(
+          { transportId: TRANSPORT_ID, threadId, kind: 'party', name, partyKind },
+          db,
+        );
+
+      expect((await resume(' horizon   trail tours ', 'agency'))?.runId).toBe(agency!.id);
+      expect((await resume('HORIZON TRAIL TOURS', 'company'))?.runId).toBe(company!.id);
+      expect(await resume('Another Agency', 'agency')).toBeNull();
+    }));
+
   it('queued user jobs report their position in the lane', () =>
     withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);

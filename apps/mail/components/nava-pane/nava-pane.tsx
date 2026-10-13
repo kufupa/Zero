@@ -18,7 +18,7 @@ import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { savedRatesFromTrpc } from '@/components/quote-workflow/rate-controls';
 import {
@@ -51,6 +51,7 @@ import {
 } from '@/lib/quote-workflow/booking-draft-bind';
 import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
 import { partyFinderFromTrpc, partyIndexFromTrpc } from '@/lib/quote-workflow/party-lookup';
+import { amendFindClientFromTrpc, hmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import {
   bindExecuteStaffQuote,
   bindHmsQueueStatus,
@@ -137,6 +138,7 @@ function externalSenderFallback(
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
 // One HMS party search for the quote header's Find in HMS picker. Null when the panePartyLookup route is missing.
 const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
+const PANE_HMS_JOB_CLIENT = amendFindClientFromTrpc(trpcClient);
 // The same picker's typeahead: the HMS list and the listed parties, as staff type. Null when the route is missing.
 const PANE_PARTY_INDEX = partyIndexFromTrpc(trpcClient);
 // The saved rates for each row's price (R7). Null when the rates route is missing, so only one-off and override show.
@@ -175,6 +177,11 @@ export function NavaPane({
     activateMailboxSync,
   } = bridge;
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
+  const partyJobThreadId = quoteSession.staffSource?.threadId ?? null;
+  const partyJobTransport = useMemo(
+    () => hmsJobTransport(PANE_HMS_JOB_CLIENT, partyJobThreadId),
+    [partyJobThreadId],
+  );
   const [rateCatalogue, setRateCatalogue] = useState<RatePlanCatalogueEntry[]>([]);
   // Preview/Book in HMS show only when the server flag is on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
@@ -1485,6 +1492,7 @@ export function NavaPane({
               findParty={PANE_PARTY_FINDER}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
               partyIndex={PANE_PARTY_INDEX}
+              partyJobTransport={partyJobTransport}
               rates={PANE_SAVED_RATES}
               onPatchGroup={(groupId, patch) => editStayRows({ type: 'patch_group', groupId, patch })}
               // Shown only on a failed-read item, which stays listed after she starts typing in the form.

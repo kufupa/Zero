@@ -1,7 +1,7 @@
-import { Loader2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
 import type { HmsJobView } from '@/lib/quote-workflow/amend-find';
 import type { QueueStatus } from '@/lib/quote-workflow/types';
+import { useEffect, useState } from 'react';
+import { Loader2 } from 'lucide-react';
 
 /** "45 s" under a minute, then "1 min 20 s". */
 export function formatQueueElapsed(ms: number): string {
@@ -21,7 +21,10 @@ export function HmsQueueStatusLine({
   if (!pending) return null;
   if (status?.state === 'unavailable') {
     return (
-      <p role="alert" className="rounded-xs border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+      <p
+        role="alert"
+        className="rounded-xs border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+      >
         {status.message}
       </p>
     );
@@ -34,7 +37,10 @@ export function HmsQueueStatusLine({
         ? `${status.message} ${formatQueueElapsed(status.runningForMs)} so far.`
         : status.message;
   return (
-    <p role="status" className="flex items-center gap-2 rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]">
+    <p
+      role="status"
+      className="rounded-xs flex items-center gap-2 border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]"
+    >
       <Loader2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin text-[#0066cc]" />
       <span>{text}</span>
     </p>
@@ -90,6 +96,7 @@ export function HmsJobStatusLine({
   statusFailed = false,
   queueFailed = false,
   failureMessage = 'Could not check for an existing HMS lookup.',
+  failedMessage = 'Failed',
   queueFailureMessage = 'Could not queue the HMS lookup.',
 }: {
   view: HmsJobView | null;
@@ -100,15 +107,26 @@ export function HmsJobStatusLine({
   statusFailed?: boolean;
   queueFailed?: boolean;
   failureMessage?: string;
+  failedMessage?: string;
   queueFailureMessage?: string;
 }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (
+      !view?.createdAt ||
+      (view.status !== 'queued' && view.status !== 'running' && view.status !== 'retrying')
+    )
+      return;
+    const timer = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [view?.createdAt, view?.status]);
   if (statusFailed || queueFailed) {
     return (
       <div
         role="alert"
         data-testid="hms-job-status"
         data-state="failed"
-        className="flex items-center justify-between gap-2 rounded-xs border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+        className="rounded-xs flex items-center justify-between gap-2 border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
       >
         <span>{queueFailed ? queueFailureMessage : failureMessage}</span>
         <button
@@ -129,9 +147,9 @@ export function HmsJobStatusLine({
         role="alert"
         data-testid="hms-job-status"
         data-state="failed"
-        className="flex items-center justify-between gap-2 rounded-xs border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+        className="rounded-xs flex items-center justify-between gap-2 border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
       >
-        <span className="font-semibold">Failed</span>
+        <span>{failedMessage}</span>
         <button
           type="button"
           onClick={onRetry}
@@ -142,16 +160,19 @@ export function HmsJobStatusLine({
       </div>
     );
   }
+  const elapsed = view?.createdAt
+    ? formatQueueElapsed(Math.max(0, now - new Date(view.createdAt).getTime()))
+    : null;
   return (
     <p
       role="status"
       data-testid="hms-job-status"
       data-state={view?.status ?? 'running'}
-      className="flex items-center gap-2 rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]"
+      className="rounded-xs flex items-center gap-2 border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]"
     >
       <Loader2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin text-[#0066cc]" />
       <span className="font-semibold text-[#1e293b]">{label}</span>
-      <span>{detail}</span>
+      <span>{elapsed ? `${detail} ${elapsed} elapsed.` : detail}</span>
     </p>
   );
 }

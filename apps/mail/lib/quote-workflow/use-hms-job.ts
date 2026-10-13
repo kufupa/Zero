@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   isSettled,
   pendingJobView,
@@ -9,6 +8,7 @@ import {
   type HmsJobTransport,
   type HmsJobView,
 } from './amend-find';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * One pane HMS lookup as a persisted job. start queues a request and polls its run id until the job settles. The job
@@ -40,16 +40,30 @@ function sameSurname(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
-/** True when a read-back job was queued for the resume's surname and arrival, each only when given. */
+function samePartyName(a: string, b: string): boolean {
+  const norm = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/** True when read-back found the requested party name or guest/date constraints, when given. */
 function resumedFor(
   request: HmsJobRequest | null,
   lastName: string | null,
+  partyName: string | null,
+  partyKind: 'company' | 'agency' | null,
   arrival: string | null,
   departure: string | null | undefined,
 ): boolean {
-  if (lastName && !(request?.kind === 'search_guest' && sameSurname(request.lastName, lastName))) return false;
-  if (arrival && request?.arrival !== arrival) return false;
-  if (departure !== undefined && (request?.kind !== 'search_guest' || (request.departure ?? null) !== departure))
+  if (lastName && !(request?.kind === 'search_guest' && sameSurname(request.lastName, lastName)))
+    return false;
+  if (partyName && !(request?.kind === 'party' && samePartyName(request.name, partyName)))
+    return false;
+  if (partyKind && !(request?.kind === 'party' && request.partyKind === partyKind)) return false;
+  if (arrival && (!request || !('arrival' in request) || request.arrival !== arrival)) return false;
+  if (
+    departure !== undefined &&
+    (request?.kind !== 'search_guest' || (request.departure ?? null) !== departure)
+  )
     return false;
   return true;
 }
@@ -60,20 +74,33 @@ export function useHmsJob(input: {
    * The job to read back after a remount. Null reads nothing back. A surname or arrival limits the read-back to a job
    * queued for them, so a thread with mail about two guests never shows one guest's job under the other.
    */
-  resume: { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string; departure?: string | null } | null;
+  resume: {
+    kind: HmsJobKind;
+    confirmation?: string;
+    lastName?: string;
+    name?: string;
+    partyKind?: 'company' | 'agency';
+    arrival?: string;
+    departure?: string | null;
+  } | null;
   /** Changes with the email or booking selection. The shown job is cleared and the read-back runs again. */
   scope: string | null;
-  /** Starts a search_guest request after read-back confirms that no matching job exists. */
+  /** Starts a missing request after read-back confirms that no matching job exists. */
   autoStartIfMissing?: boolean;
+  /** Wait after a miss, so changing inputs don't enqueue per-prefix jobs. */
+  autoStartDelayMs?: number;
 }): HmsJobState {
   const { transport, resume, scope } = input;
   const autoStartIfMissing = input.autoStartIfMissing ?? false;
+  const autoStartDelayMs = Math.max(0, input.autoStartDelayMs ?? 0);
   const resumeKind = resume?.kind ?? null;
   const resumeConfirmation = resume?.confirmation ?? null;
   const resumeLastName = resume?.lastName ?? null;
+  const resumeName = resume?.name ?? null;
+  const resumePartyKind = resume?.partyKind ?? null;
   const resumeArrival = resume?.arrival ?? null;
   const resumeHasDeparture = resume !== null && Object.hasOwn(resume, 'departure');
-  const resumeDeparture = resumeHasDeparture ? resume?.departure ?? null : undefined;
+  const resumeDeparture = resumeHasDeparture ? (resume?.departure ?? null) : undefined;
   const [runId, setRunId] = useState<string | null>(null);
   const [view, setView] = useState<HmsJobView | null>(null);
   const [queuing, setQueuing] = useState(false);
@@ -138,13 +165,16 @@ export function useHmsJob(input: {
     // A persisted terminal failure can be retried as a fresh user job; keeping autoStart would reuse its failed key.
     // POLL_LOST with no known run keeps the stable key, so the server can reattach to a job that may be running.
     const options =
-      view?.status === 'failed' && view.failureClass !== 'POLL_LOST' ? undefined : lastRequestOptions.current;
+      view?.status === 'failed' && view.failureClass !== 'POLL_LOST'
+        ? undefined
+        : lastRequestOptions.current;
     start(last, options);
   }, [runId, start, statusFailed, view]);
 
   // Scope change or remount: clear, then read back the latest job of this kind on the thread.
   useEffect(() => {
     const mine = ++generation.current;
+    let autoStartTimer: ReturnType<typeof setTimeout> | null = null;
     lastRequest.current = null;
     setRunId(null);
     setView(null);
@@ -158,6 +188,8 @@ export function useHmsJob(input: {
       kind: resumeKind,
       ...(resumeConfirmation ? { confirmation: resumeConfirmation } : {}),
       ...(resumeLastName ? { lastName: resumeLastName } : {}),
+      ...(resumeName ? { name: resumeName } : {}),
+      ...(resumePartyKind ? { partyKind: resumePartyKind } : {}),
       ...(resumeArrival ? { arrival: resumeArrival } : {}),
       ...(resumeHasDeparture ? { departure: resumeDeparture } : {}),
     };
@@ -165,18 +197,56 @@ export function useHmsJob(input: {
       (found) => {
         if (!live || generation.current !== mine) return;
         setReadBackSettled(true);
-        if (found && resumedFor(found.request, resumeLastName, resumeArrival, resumeDeparture)) {
+        if (
+          found &&
+          resumedFor(
+            found.request,
+            resumeLastName,
+            resumeName,
+            resumePartyKind,
+            resumeArrival,
+            resumeDeparture,
+          )
+        ) {
           lastRequest.current = found.request;
           lastRequestOptions.current = undefined;
           setView(found);
           if (!isSettled(found)) setRunId(found.runId);
           return;
         }
-        if (!autoStartIfMissing || resumeKind !== 'search_guest' || !resumeLastName || !resumeArrival) return;
-        const key = `${scope ?? ''}\u0000${resumeLastName.trim().replace(/\s+/g, ' ').toLowerCase()}\u0000${resumeArrival}`;
+        if (!autoStartIfMissing) return;
+        const autoRequest: HmsJobRequest | null =
+          resumeKind === 'search_guest' && resumeLastName && resumeArrival
+            ? { kind: 'search_guest', lastName: resumeLastName, arrival: resumeArrival }
+            : resumeKind === 'party' && resumeName
+              ? {
+                  kind: 'party',
+                  name: resumeName,
+                  ...(resumePartyKind ? { partyKind: resumePartyKind } : {}),
+                }
+              : null;
+        if (!autoRequest) return;
+        const key =
+          autoRequest.kind === 'search_guest'
+            ? [
+                scope ?? '',
+                autoRequest.lastName.trim().replace(/\s+/g, ' ').toLowerCase(),
+                autoRequest.arrival,
+              ].join('\u0000')
+            : [
+                scope ?? '',
+                'party',
+                autoRequest.name.trim().replace(/\s+/g, ' ').toLowerCase(),
+                autoRequest.partyKind ?? '',
+              ].join('\u0000');
         if (autoStartedKey.current === key) return;
-        autoStartedKey.current = key;
-        start({ kind: 'search_guest', lastName: resumeLastName, arrival: resumeArrival }, { autoStart: true });
+        const startMissing = () => {
+          if (!live || generation.current !== mine || autoStartedKey.current === key) return;
+          autoStartedKey.current = key;
+          start(autoRequest, { autoStart: true });
+        };
+        if (autoStartDelayMs > 0) autoStartTimer = setTimeout(startMissing, autoStartDelayMs);
+        else startMissing();
       },
       () => {
         if (!live || generation.current !== mine) return;
@@ -186,6 +256,7 @@ export function useHmsJob(input: {
     );
     return () => {
       live = false;
+      if (autoStartTimer !== null) clearTimeout(autoStartTimer);
     };
   }, [
     transport,
@@ -193,10 +264,13 @@ export function useHmsJob(input: {
     resumeKind,
     resumeConfirmation,
     resumeLastName,
+    resumeName,
+    resumePartyKind,
     resumeArrival,
     resumeHasDeparture,
     resumeDeparture,
     autoStartIfMissing,
+    autoStartDelayMs,
     statusRetryRound,
     start,
   ]);

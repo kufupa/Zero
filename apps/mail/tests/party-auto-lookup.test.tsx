@@ -1,12 +1,24 @@
 /**
  * @vitest-environment happy-dom
  */
+import {
+  partyFinderFromTrpc,
+  type PartyFindReply,
+  type PartyFinder,
+} from '../lib/quote-workflow/party-lookup';
+import {
+  hmsJobTransport,
+  type HmsJobClient,
+  type HmsJobTransport,
+} from '../lib/quote-workflow/amend-find';
+import {
+  PartyPicker,
+  resetPartyAutoLookupForTests,
+} from '../components/quote-workflow/party-picker';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { StaffQuoteParties, StaffQuoteParty } from '../lib/quote-workflow/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
-import { PartyPicker, resetPartyAutoLookupForTests } from '../components/quote-workflow/party-picker';
-import { partyFinderFromTrpc, type PartyFindReply, type PartyFinder } from '../lib/quote-workflow/party-lookup';
-import type { StaffQuoteParties, StaffQuoteParty } from '../lib/quote-workflow/types';
 
 afterEach(() => {
   cleanup();
@@ -16,11 +28,26 @@ beforeEach(() => {
   resetPartyAutoLookupForTests();
 });
 
-const WOOLWORTHS: StaffQuoteParty = { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' };
-const WOOLWORTHS_FOODS: StaffQuoteParty = { kind: 'company', nativeId: '50', name: 'Woolworths Foods' };
+const WOOLWORTHS: StaffQuoteParty = {
+  kind: 'company',
+  nativeId: '49',
+  name: 'Woolworths Holdings',
+};
+const WOOLWORTHS_FOODS: StaffQuoteParty = {
+  kind: 'company',
+  nativeId: '50',
+  name: 'Woolworths Foods',
+};
 
 function reply(overrides: Partial<PartyFindReply>): PartyFindReply {
-  return { outcome: 'resolved', results: [], truncated: false, best: null, searchedFor: null, ...overrides };
+  return {
+    outcome: 'resolved',
+    results: [],
+    truncated: false,
+    best: null,
+    searchedFor: null,
+    ...overrides,
+  };
 }
 
 /** A picker that keeps its picks the way the quote header does: a pick sets the field, a clear empties it. */
@@ -30,12 +57,14 @@ function Harness({
   initial = {},
   name = 'Woolworths',
   kind = 'company',
+  jobTransport,
 }: {
   find: PartyFinder;
   autoLookup?: boolean;
   initial?: StaffQuoteParties;
   name?: string;
   kind?: StaffQuoteParty['kind'];
+  jobTransport?: HmsJobTransport | null;
 }) {
   const [parties, setParties] = useState<StaffQuoteParties>(initial);
   return (
@@ -45,10 +74,24 @@ function Harness({
       parties={parties}
       find={find}
       autoLookup={autoLookup}
+      jobTransport={jobTransport}
+      threadId="thread-1"
       onPick={(party) => setParties((current) => ({ ...current, [party.kind]: party }))}
       onClear={(cleared) => setParties((current) => ({ ...current, [cleared]: undefined }))}
     />
   );
+}
+
+function inlinePartyJobTransport(find: PartyFinder): HmsJobTransport {
+  const client: HmsJobClient = {
+    queueFind: async () => ({ runId: null }),
+    queueSearchGuest: async () => ({ runId: null }),
+    queueParty: async () => ({ runId: null }),
+    findParty: ({ name, kind }) => find(name, kind),
+    jobStatus: async () => null,
+    screenshot: async () => ({ status: 'unavailable', reason: 'screenshot_unavailable' }),
+  };
+  return hmsJobTransport(client, 'thread-1')!;
 }
 
 /** Lets the debounce pass without a search, so "no search ran" is a real check. */
@@ -59,34 +102,120 @@ function waitForDebounce(): Promise<void> {
 describe('automatic HMS lookup for a company or agency field', () => {
   it('searches HMS once for its kind and name, and picks the best match by itself', async () => {
     const find = vi.fn(async () =>
-      reply({ outcome: 'ambiguous', results: [WOOLWORTHS, WOOLWORTHS_FOODS], best: WOOLWORTHS, searchedFor: 'Woolworths' }),
+      reply({
+        outcome: 'ambiguous',
+        results: [WOOLWORTHS, WOOLWORTHS_FOODS],
+        best: WOOLWORTHS,
+        searchedFor: 'Woolworths',
+      }),
     );
     render(<Harness find={find} />);
     expect(screen.getByRole('status').textContent).toContain('Searching HMS for "Woolworths"');
-    expect(await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, { timeout: 3000 })).toBeTruthy();
+    expect(
+      await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, {
+        timeout: 3000,
+      }),
+    ).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
     expect(find).toHaveBeenCalledWith('Woolworths', 'company');
   });
 
+  it('keeps queue-off auto-start quiet and explicit Find in HMS inline', async () => {
+    const find = vi.fn(async () =>
+      reply({
+        outcome: 'ambiguous',
+        results: [WOOLWORTHS, WOOLWORTHS_FOODS],
+        best: WOOLWORTHS,
+        searchedFor: 'Woolworths',
+      }),
+    );
+    const jobTransport = inlinePartyJobTransport(find);
+    render(<Harness find={find} jobTransport={jobTransport} />);
+
+    await waitForDebounce();
+    expect(find).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
+    const results = await screen.findByRole('list', {
+      name: 'Companies and agencies found in HMS',
+    });
+    expect(find).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(results).getByRole('button', { name: 'Woolworths Holdings' }));
+    expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
+    expect(find).toHaveBeenCalledTimes(1);
+    expect(find).toHaveBeenCalledWith('Woolworths', 'company');
+  });
+
+  it('waits for a stable name before auto-starting an HMS job', async () => {
+    const find = vi.fn<PartyFinder>();
+    const queueParty = vi.fn<NonNullable<HmsJobClient['queueParty']>>(async () => ({
+      runId: 'party-run',
+    }));
+    const jobStatus: HmsJobClient['jobStatus'] = async () => null;
+    const client: HmsJobClient = {
+      queueFind: async () => ({ runId: null }),
+      queueSearchGuest: async () => ({ runId: null }),
+      queueParty,
+      jobStatus,
+      screenshot: async () => ({ status: 'unavailable', reason: 'screenshot_unavailable' }),
+    };
+    const jobTransport = hmsJobTransport(client, 'thread-1')!;
+    const rendered = render(<Harness find={find} name="Woolw" jobTransport={jobTransport} />);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(queueParty).not.toHaveBeenCalled();
+    rendered.rerender(<Harness find={find} name="Woolworths" jobTransport={jobTransport} />);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(queueParty).not.toHaveBeenCalled();
+    await waitFor(() => expect(queueParty).toHaveBeenCalledTimes(1), { timeout: 3000 });
+
+    expect(queueParty).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      name: 'Woolworths',
+      partyKind: 'company',
+      autoStart: true,
+    });
+    expect(find).not.toHaveBeenCalled();
+  });
+
   it('lists other matches as chips, and Change leaves one Find in HMS control', async () => {
     const find = vi.fn(async () =>
-      reply({ outcome: 'ambiguous', results: [WOOLWORTHS, WOOLWORTHS_FOODS], best: WOOLWORTHS, searchedFor: 'Woolworths' }),
+      reply({
+        outcome: 'ambiguous',
+        results: [WOOLWORTHS, WOOLWORTHS_FOODS],
+        best: WOOLWORTHS,
+        searchedFor: 'Woolworths',
+      }),
     );
     render(<Harness find={find} />);
-    expect(await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, { timeout: 3000 })).toBeTruthy();
+    expect(
+      await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, {
+        timeout: 3000,
+      }),
+    ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Woolworths Foods (#50)' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Change' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Woolworths Holdings (#49)' })).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Woolworths Holdings (#49)' })).toBeTruthy(),
+    );
     expect(screen.getByRole('button', { name: 'Find in HMS' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
   });
 
   it('a pick from the chips is a plain pick, not "picked by Nava"', async () => {
     const find = vi.fn(async () =>
-      reply({ outcome: 'ambiguous', results: [WOOLWORTHS, WOOLWORTHS_FOODS], best: WOOLWORTHS, searchedFor: 'Woolworths' }),
+      reply({
+        outcome: 'ambiguous',
+        results: [WOOLWORTHS, WOOLWORTHS_FOODS],
+        best: WOOLWORTHS,
+        searchedFor: 'Woolworths',
+      }),
     );
     render(<Harness find={find} />);
-    expect(await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, { timeout: 3000 })).toBeTruthy();
+    expect(
+      await screen.findByText('✓ Woolworths Holdings (#49) — picked by Nava', undefined, {
+        timeout: 3000,
+      }),
+    ).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Woolworths Foods (#50)' }));
     expect(await screen.findByText('✓ Woolworths Foods (#50)')).toBeTruthy();
     expect(screen.queryByText(/picked by Nava/)).toBeNull();
@@ -96,9 +225,22 @@ describe('automatic HMS lookup for a company or agency field', () => {
     const find = vi
       .fn<PartyFinder>()
       .mockResolvedValueOnce(reply({ outcome: 'no_match', searchedFor: 'Woolworths' }))
-      .mockResolvedValueOnce(reply({ outcome: 'resolved', results: [WOOLWORTHS], best: WOOLWORTHS, searchedFor: 'Woolworths' }));
+      .mockResolvedValueOnce(
+        reply({
+          outcome: 'resolved',
+          results: [WOOLWORTHS],
+          best: WOOLWORTHS,
+          searchedFor: 'Woolworths',
+        }),
+      );
     render(<Harness find={find} />);
-    expect(await screen.findByText('Not found in HMS — quote uses public rates', undefined, { timeout: 3000 })).toBeTruthy();
+    expect(
+      await screen.findByText(
+        'No company in HMS matches “Woolworths”. Check the spelling or search a shorter name.',
+        undefined,
+        { timeout: 3000 },
+      ),
+    ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Search again' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     const result = await screen.findByRole('list', { name: 'Companies and agencies found in HMS' });
@@ -112,19 +254,37 @@ describe('automatic HMS lookup for a company or agency field', () => {
   it('a busy HMS shows its copy and Find in HMS, and picks nothing', async () => {
     const find = vi.fn(async () => reply({ outcome: 'refused_lock_busy' }));
     const onPick = vi.fn();
-    render(<PartyPicker name="Woolworths" kind="company" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} autoLookup />);
-    expect(await screen.findByText('HMS is busy with another run. Try again in a minute.', undefined, { timeout: 3000 })).toBeTruthy();
+    render(
+      <PartyPicker
+        name="Woolworths"
+        kind="company"
+        parties={{}}
+        find={find}
+        onPick={onPick}
+        onClear={vi.fn()}
+        autoLookup
+      />,
+    );
+    expect(
+      await screen.findByText('HMS is busy with another lookup. Nava will retry.', undefined, {
+        timeout: 3000,
+      }),
+    ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Find in HMS' })).toBeTruthy();
     expect(onPick).not.toHaveBeenCalled();
   });
 
   it('runs no search without autoLookup, and keeps one Find in HMS button', async () => {
-    const find = vi.fn(async () => reply({ outcome: 'resolved', results: [WOOLWORTHS], best: WOOLWORTHS }));
+    const find = vi.fn(async () =>
+      reply({ outcome: 'resolved', results: [WOOLWORTHS], best: WOOLWORTHS }),
+    );
     render(<Harness find={find} autoLookup={false} />);
     await waitForDebounce();
     expect(find).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    expect(await screen.findByRole('button', { name: 'Woolworths Holdings' }, { timeout: 3000 })).toBeTruthy();
+    expect(
+      await screen.findByRole('button', { name: 'Woolworths Holdings' }, { timeout: 3000 }),
+    ).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
     expect(find).toHaveBeenCalledWith('Woolworths', 'company');
   });
@@ -140,7 +300,9 @@ describe('automatic HMS lookup for a company or agency field', () => {
   it('enables manual Find in HMS from two characters, not one', async () => {
     const find = vi.fn<PartyFinder>().mockResolvedValue(reply({ outcome: 'no_match' }));
     const { rerender } = render(<Harness find={find} name="A" autoLookup={false} />);
-    expect((screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
 
     rerender(<Harness find={find} name="Ab" autoLookup={false} />);
     const button = screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement;
@@ -151,17 +313,25 @@ describe('automatic HMS lookup for a company or agency field', () => {
 
   it('shows manual HMS matches under the party field so staff can confirm one', async () => {
     const find = vi.fn(async () =>
-      reply({ outcome: 'ambiguous', results: [WOOLWORTHS, WOOLWORTHS_FOODS], searchedFor: 'Woolworths' }),
+      reply({
+        outcome: 'ambiguous',
+        results: [WOOLWORTHS, WOOLWORTHS_FOODS],
+        searchedFor: 'Woolworths',
+      }),
     );
     render(<Harness find={find} autoLookup={false} />);
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    expect(await screen.findByRole('list', { name: 'Companies and agencies found in HMS' })).toBeTruthy();
+    expect(
+      await screen.findByRole('list', { name: 'Companies and agencies found in HMS' }),
+    ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Woolworths Holdings' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Woolworths Foods' })).toBeTruthy();
   });
 
   it('runs no search when the field already holds its pick', async () => {
-    const find = vi.fn(async () => reply({ outcome: 'resolved', results: [WOOLWORTHS], best: WOOLWORTHS }));
+    const find = vi.fn(async () =>
+      reply({ outcome: 'resolved', results: [WOOLWORTHS], best: WOOLWORTHS }),
+    );
     render(<Harness find={find} initial={{ company: WOOLWORTHS }} />);
     await waitForDebounce();
     expect(find).not.toHaveBeenCalled();
@@ -169,7 +339,9 @@ describe('automatic HMS lookup for a company or agency field', () => {
   });
 
   it('runs no search for a name under three characters', async () => {
-    const find = vi.fn(async () => reply({ outcome: 'resolved', results: [WOOLWORTHS], best: WOOLWORTHS }));
+    const find = vi.fn(async () =>
+      reply({ outcome: 'resolved', results: [WOOLWORTHS], best: WOOLWORTHS }),
+    );
     render(<Harness find={find} name="Wo" />);
     await waitForDebounce();
     expect(find).not.toHaveBeenCalled();

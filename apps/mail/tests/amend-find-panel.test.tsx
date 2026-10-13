@@ -600,20 +600,30 @@ describe('pollHmsJob', () => {
   });
 });
 
-/** The server with its job queue off (HMS_JOB_QUEUE unset): queue calls return no run id, findStay/searchGuest answer. */
-function syncTrpc(findStay: ReturnType<typeof vi.fn>, searchGuest: ReturnType<typeof vi.fn> = vi.fn()) {
+/** With jobs off, auto-start is quiet; explicit party Find stays inline. */
+function syncTrpc(
+  findStay: ReturnType<typeof vi.fn>,
+  searchGuest: ReturnType<typeof vi.fn> = vi.fn(),
+  findParty: ReturnType<typeof vi.fn> = vi
+    .fn()
+    .mockResolvedValue({ outcome: 'no_match', results: [], truncated: false }),
+) {
   const jobStatus = vi.fn(async (_input: object) => null);
+  const queueParty = vi.fn(async (_input: object) => ({ runId: null }));
   return {
     jobStatus,
+    queueParty,
     trpc: {
       paneStayLookup: {
         queueFind: { mutate: async () => ({ runId: null }) },
         queueSearchGuest: { mutate: async () => ({ runId: null }) },
+        queueParty: { mutate: queueParty },
         findStay: { mutate: findStay },
         searchGuest: { mutate: searchGuest },
         jobStatus: { query: jobStatus },
         screenshot: { query: vi.fn().mockResolvedValue(NO_SHOT) },
       },
+      panePartyLookup: { findParty: { mutate: findParty } },
       brain: { getCapabilities: { query: async () => ({ paneSave: capabilities.paneSave }) } },
     },
   };
@@ -645,6 +655,43 @@ describe('AmendLookupPanel with the job queue off', () => {
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
     pressFind();
     await waitFor(() => expect(screen.getByText("Nava couldn't look this up. Search HMS yourself.")).toBeTruthy());
+  });
+});
+
+describe('party lookup transport with the job queue off', () => {
+  const request = { kind: 'party' as const, name: 'ABC Travel', partyKind: 'company' as const };
+
+  it('does not repeat a live lookup for an automatic read-back start', async () => {
+    const findParty = vi
+      .fn()
+      .mockResolvedValue({ outcome: 'resolved', results: [], truncated: false });
+    const { trpc, queueParty } = syncTrpc(vi.fn(), vi.fn(), findParty);
+    const transport = hmsJobTransport(amendFindClientFromTrpc(trpc), THREAD);
+    expect(transport).not.toBeNull();
+
+    await expect(transport!.queue(request, { autoStart: true })).resolves.toEqual({ runId: null });
+    expect(queueParty).toHaveBeenCalledWith({
+      threadId: THREAD,
+      name: request.name,
+      partyKind: request.partyKind,
+      autoStart: true,
+    });
+    expect(findParty).not.toHaveBeenCalled();
+  });
+
+  it('keeps the explicit party search on the existing synchronous path', async () => {
+    const reply = { outcome: 'no_match', results: [], truncated: false };
+    const findParty = vi.fn().mockResolvedValue(reply);
+    const { trpc } = syncTrpc(vi.fn(), vi.fn(), findParty);
+    const transport = hmsJobTransport(amendFindClientFromTrpc(trpc), THREAD);
+    expect(transport).not.toBeNull();
+
+    const started = await transport!.queue(request);
+    expect(findParty).toHaveBeenCalledWith({ name: 'ABC Travel', kind: 'company' });
+    expect(started).toMatchObject({
+      runId: null,
+      view: { status: 'done', outcome: 'no_match', result: reply },
+    });
   });
 });
 

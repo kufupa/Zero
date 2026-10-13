@@ -20,6 +20,7 @@ import {
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
 import { emptyStaffQuoteHeader, staffStayExtrasFor } from '@/lib/quote-workflow/types';
+import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type {
   QueueStatus,
@@ -362,6 +363,8 @@ function StaffPartyFields({
   findParty,
   partySuggestions,
   partyIndex,
+  partyJobTransport,
+  threadId,
   onPartyLookupPending,
 }: {
   header: StaffQuoteHeader;
@@ -373,6 +376,8 @@ function StaffPartyFields({
   partySuggestions?: PartySuggestion[];
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
+  partyJobTransport?: HmsJobTransport | null;
+  threadId?: string | null;
   /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
 }) {
@@ -386,6 +391,8 @@ function StaffPartyFields({
         name={kind === 'company' ? header.company : header.agency}
         parties={header.parties ?? {}}
         find={findParty}
+        jobTransport={partyJobTransport}
+        threadId={threadId}
         suggestions={partySuggestions}
         indexSearch={partyIndex}
         onLookupPending={(pending) => onPartyLookupPending?.(kind, pending)}
@@ -937,6 +944,7 @@ export function QuoteWorkflowPanel({
   onPatchStaffHeader,
   onPatchStayExtras,
   findParty,
+  partyJobTransport,
   onPartyLookupPending,
   onSelectStayKey,
   onTreatAs,
@@ -960,6 +968,8 @@ export function QuoteWorkflowPanel({
   partySuggestions?: PartySuggestion[];
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
+  /** Persisted party searches use the shared HMS job transport. */
+  partyJobTransport?: HmsJobTransport | null;
   /** The saved rates for each row's price. Null or absent: no saved-rate picker, but one-off and override still show. */
   rates?: SavedRatesClient | null;
   /** Static Centurion rates from the authenticated read-only query. */
@@ -1290,6 +1300,8 @@ export function QuoteWorkflowPanel({
             findParty={findParty}
             partySuggestions={partySuggestions}
             partyIndex={partyIndex}
+            partyJobTransport={partyJobTransport}
+            threadId={session.staffSource?.threadId ?? null}
             onPartyLookupPending={onPartyLookupPending}
           />
         </Section>

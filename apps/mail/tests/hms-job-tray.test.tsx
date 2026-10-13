@@ -140,6 +140,25 @@ describe('the status line', () => {
     expect(screen.queryByRole('button')).toBeNull();
   });
 
+  it('shows time elapsed since the job entered the HMS lane', async () => {
+    render(
+      <HmsJobStatusLine
+        view={view({
+          runId: 'r',
+          status: 'running',
+          createdAt: new Date(2026, 9, 9, 11, 59).toISOString(),
+        })}
+        queuing={false}
+        detail={DETAIL}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(`${DETAIL} 1 min 0 s elapsed.`)).toBeTruthy();
+    await advance(1_000);
+    expect(screen.getByText(`${DETAIL} 1 min 1 s elapsed.`)).toBeTruthy();
+  });
+
   it('shows Failed as an alert, and Retry calls onRetry', () => {
     const onRetry = vi.fn();
     render(

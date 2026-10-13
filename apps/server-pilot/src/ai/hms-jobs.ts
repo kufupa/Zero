@@ -10,38 +10,6 @@
  * requeue on contention. Availability probes (U10) are a third kind, enqueued
  * from a stored quote extraction behind HMS_AVAILABILITY_PREFETCH=on.
  */
-import { createHash, randomUUID } from 'node:crypto';
-import { basename } from 'node:path';
-import { and, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
-import { z } from 'zod';
-import { getDb, type DB } from '../db/client.js';
-import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
-import { mailExtraction, workItem } from '../db/schema/work.js';
-import { parseEnv } from '../env.js';
-import { staffQuoteInFlight } from '../hms/property-queue-state.js';
-import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
-import {
-  availabilityRequestSchema,
-  availabilityRequestsFor,
-  probeAvailability,
-  type AvailabilityRequest,
-} from './hms-availability.js';
-import { classifyFind, classifySearch, recordedToolRun, toolInputDigest } from './hitl-tool-run.js';
-import {
-  findStay,
-  GUEST_SURNAME_PATTERN,
-  paneStayLookupLoaders,
-  searchGuest,
-} from './pane-stay-lookup.js';
-import {
-  PANE_RUN_ID_PATTERN,
-  paneStayPropertyLock,
-  pruneExpiredPaneRuns,
-  registerPaneRun,
-} from './pane-stay-save.js';
-import { normalizeEmailAddress } from './never-spam.js';
-import { extractVoucherGuest } from './voucher-find.js';
-import { isStaffSender, knownSenders } from './work-items.js';
 import {
   type AiFailureClass,
   type AiRunFence,
@@ -53,6 +21,40 @@ import {
   markAiRunSucceeded,
   NOT_APPLICABLE_MODEL_ID,
 } from './run-ledger.js';
+import {
+  availabilityRequestSchema,
+  availabilityRequestsFor,
+  probeAvailability,
+  type AvailabilityRequest,
+} from './hms-availability.js';
+import {
+  PANE_RUN_ID_PATTERN,
+  paneStayPropertyLock,
+  pruneExpiredPaneRuns,
+  registerPaneRun,
+} from './pane-stay-save.js';
+import {
+  findStay,
+  GUEST_SURNAME_PATTERN,
+  paneStayLookupLoaders,
+  searchGuest,
+} from './pane-stay-lookup.js';
+import { classifyFind, classifySearch, recordedToolRun, toolInputDigest } from './hitl-tool-run.js';
+import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
+import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { and, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
+import { findParty, type PanePartyKind } from './pane-party-lookup.js';
+import { staffQuoteInFlight } from '../hms/property-queue-state.js';
+import { mailExtraction, workItem } from '../db/schema/work.js';
+import { isStaffSender, knownSenders } from './work-items.js';
+import { extractVoucherGuest } from './voucher-find.js';
+import { normalizeEmailAddress } from './never-spam.js';
+import { suggestPartiesFor } from './party-aliases.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { getDb, type DB } from '../db/client.js';
+import { basename } from 'node:path';
+import { parseEnv } from '../env.js';
+import { z } from 'zod';
 
 /**
  * The queued pane path. Only the exact value `on` enables it. Off (the default), pane finds and searches run
@@ -108,6 +110,13 @@ export const hmsJobRequestSchema = z.discriminatedUnion('kind', [
       departure: ISO_DAY.optional(),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal('party'),
+      name: z.string().min(1).max(256),
+      partyKind: z.enum(['company', 'agency']).optional(),
+    })
+    .strict(),
   availabilityRequestSchema,
 ]);
 export type HmsJobRequest = z.infer<typeof hmsJobRequestSchema>;
@@ -125,6 +134,10 @@ export type HmsJobView = {
   failureClass: string | null;
   /** When the snapshot in `result` was taken (ISO). Null until a run succeeds. */
   asOf: string | null;
+  /** When the job entered the HMS lane (ISO), used to show elapsed time while it runs. */
+  createdAt: string;
+  /** A safe, closed outcome for party failures that do not have a result snapshot. */
+  outcome: string | null;
   result: Record<string, unknown> | null;
 };
 
@@ -201,7 +214,9 @@ function extractionConfirmations(payload: unknown): string[] {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
   const values = (payload as { confirmationNumbers?: unknown }).confirmationNumbers;
   if (!Array.isArray(values)) return [];
-  return values.filter((value): value is string => typeof value === 'string' && HMS_CONFIRMATION.test(value));
+  return values.filter(
+    (value): value is string => typeof value === 'string' && HMS_CONFIRMATION.test(value),
+  );
 }
 
 /** Reads only when every valid matching stay resolves to one arrival; ambiguous/missing dates are not auto-searched. */
@@ -238,9 +253,52 @@ export function guestSearchPrefetchIdempotencyKey(
   return `hms-job:prefetch-guest:${transportId}:${threadId}:${digest}`;
 }
 
-function prefetchConfirmations(payload: unknown, subject: string | null, textBody: string | null): string[] {
+/** One party lookup per thread, kind, normalized name and UTC day.
+ * Shared by quote prefetch and automatic pane resume.
+ */
+export function partyPrefetchIdempotencyKey(
+  transportId: string,
+  threadId: string,
+  name: string,
+  partyKind: 'company' | 'agency' | undefined,
+  day: string,
+): string {
+  const digest = createHash('sha256')
+    .update(`${partyKind ?? ''}\n${name.replace(/\s+/g, ' ').trim().toLowerCase()}\n${day}`)
+    .digest('hex')
+    .slice(0, 24);
+  return `hms-job:prefetch-party:${transportId}:${threadId}:${digest}`;
+}
+
+/** A quote's extracted agency wins; otherwise use the first unverified email hint.
+ * Never infer a party id.
+ */
+export function selectPartyPrefetchRequest(input: {
+  kind: string | null;
+  payload: unknown;
+  sender: string | null;
+  body: string | null;
+}): Extract<HmsJobRequest, { kind: 'party' }> | null {
+  if (input.kind !== 'quote') return null;
+  const payload = objectRecord(input.payload);
+  const agency = typeof payload.agency === 'string' ? payload.agency.trim() : '';
+  if (agency.length > 0 && agency.length <= 256)
+    return { kind: 'party', name: agency, partyKind: 'agency' };
+  const suggestion = suggestPartiesFor({ sender: input.sender ?? '', body: input.body ?? '' })[0];
+  if (!suggestion || !suggestion.name.trim() || suggestion.name.trim().length > 256) return null;
+  return { kind: 'party', name: suggestion.name.trim(), partyKind: suggestion.kind };
+}
+
+function prefetchConfirmations(
+  payload: unknown,
+  subject: string | null,
+  textBody: string | null,
+): string[] {
   const text = extractHmsConfirmations(`${subject ?? ''}\n${textBody ?? ''}`);
-  return [...new Set([...extractionConfirmations(payload), ...text])].slice(0, PREFETCH_PER_MAIL_MAX);
+  return [...new Set([...extractionConfirmations(payload), ...text])].slice(
+    0,
+    PREFETCH_PER_MAIL_MAX,
+  );
 }
 
 export function selectHmsBatchRequest(input: {
@@ -259,7 +317,11 @@ export function selectHmsBatchRequest(input: {
   return { skipped: 'insufficient_data' };
 }
 
-async function latestWorkItemId(db: DB, transportId: string, threadId: string): Promise<string | null> {
+async function latestWorkItemId(
+  db: DB,
+  transportId: string,
+  threadId: string,
+): Promise<string | null> {
   const item = await latestWorkItem(db, transportId, threadId);
   return item?.id ?? null;
 }
@@ -296,7 +358,11 @@ async function workItemForMessage(
       ),
     )
     .orderBy(desc(workItem.updatedAt), desc(workItem.createdAt), desc(workItem.id));
-  return items.find((item) => item.status === 'needs_you' || item.status === 'review') ?? items[0] ?? null;
+  return (
+    items.find((item) => item.status === 'needs_you' || item.status === 'review') ??
+    items[0] ??
+    null
+  );
 }
 
 async function latestInboundMessageId(
@@ -475,7 +541,9 @@ function batchItemIdempotencyKey(batchId: string, workItemId: string): string {
 // One lock per transport, not per batch: overlapping batches must see each other's runs before they reuse or insert,
 // or the same work item is read twice.
 async function acquireHmsBatchLock(db: DB, input: { transportId: string }): Promise<void> {
-  await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${'hms-batch:' + input.transportId}, 0))`);
+  await db.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${'hms-batch:' + input.transportId}, 0))`,
+  );
 }
 
 function batchMembershipWhere(input: HmsBatchScope) {
@@ -491,7 +559,11 @@ function batchMembershipWhere(input: HmsBatchScope) {
 }
 
 // Locking reads take rows in id order, the same order the restart sweep uses, so no two transactions wait on each other.
-async function hmsBatchRows(db: DB, input: HmsBatchScope, forUpdate = false): Promise<AiWorkflowRun[]> {
+async function hmsBatchRows(
+  db: DB,
+  input: HmsBatchScope,
+  forUpdate = false,
+): Promise<AiWorkflowRun[]> {
   const query = db
     .select()
     .from(aiWorkflowRun)
@@ -500,13 +572,17 @@ async function hmsBatchRows(db: DB, input: HmsBatchScope, forUpdate = false): Pr
   return forUpdate ? query.for('update') : query;
 }
 
-function batchMemberships(rows: AiWorkflowRun[], batchId: string): Array<{ itemIndex: number; workItemId: string }> {
+function batchMemberships(
+  rows: AiWorkflowRun[],
+  batchId: string,
+): Array<{ itemIndex: number; workItemId: string }> {
   const memberships: Array<{ itemIndex: number; workItemId: string }> = [];
   for (const row of rows) {
     const metrics = objectRecord(row.metrics);
     if (metrics.batchId === batchId && typeof row.workItemId === 'string') {
       const itemIndex = Number(metrics.itemIndex);
-      if (Number.isInteger(itemIndex) && itemIndex >= 0) memberships.push({ itemIndex, workItemId: row.workItemId });
+      if (Number.isInteger(itemIndex) && itemIndex >= 0)
+        memberships.push({ itemIndex, workItemId: row.workItemId });
     }
     if (!Array.isArray(metrics.batchLinks)) continue;
     for (const value of metrics.batchLinks) {
@@ -525,16 +601,18 @@ function batchMemberships(rows: AiWorkflowRun[], batchId: string): Array<{ itemI
   return memberships;
 }
 
-function assertBatchReplayMatches(
-  rows: AiWorkflowRun[],
-  input: HmsBatchEnqueueInput,
-): void {
+function assertBatchReplayMatches(rows: AiWorkflowRun[], input: HmsBatchEnqueueInput): void {
   const existing = batchMemberships(rows, input.batchId).sort((a, b) => a.itemIndex - b.itemIndex);
   if (
     existing.length !== input.workItemIds.length ||
-    existing.some((item, index) => item.itemIndex !== index || item.workItemId !== input.workItemIds[index])
+    existing.some(
+      (item, index) => item.itemIndex !== index || item.workItemId !== input.workItemIds[index],
+    )
   ) {
-    throw new HmsBatchInputError('batchId was already used for a different work-item list', 'CONFLICT');
+    throw new HmsBatchInputError(
+      'batchId was already used for a different work-item list',
+      'CONFLICT',
+    );
   }
 }
 
@@ -616,7 +694,11 @@ async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise
 
 function hmsRequestKey(request: HmsJobRequest): string {
   if (request.kind === 'find') {
-    return JSON.stringify({ kind: request.kind, confirmation: request.confirmation, arrival: request.arrival ?? null });
+    return JSON.stringify({
+      kind: request.kind,
+      confirmation: request.confirmation,
+      arrival: request.arrival ?? null,
+    });
   }
   if (request.kind === 'search_guest') {
     return JSON.stringify({
@@ -638,10 +720,14 @@ function batchPrefetchKeys(
   if (request.kind === 'find') {
     const today = now.toISOString().slice(0, 10);
     const yesterday = new Date(now.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10);
-    return [today, yesterday].map((day) => `hms-job:prefetch:${transportId}:${request.confirmation}:${day}`);
+    return [today, yesterday].map(
+      (day) => `hms-job:prefetch:${transportId}:${request.confirmation}:${day}`,
+    );
   }
   if (request.kind === 'search_guest') {
-    return [guestSearchPrefetchIdempotencyKey(transportId, threadId, request.lastName, request.arrival)];
+    return [
+      guestSearchPrefetchIdempotencyKey(transportId, threadId, request.lastName, request.arrival),
+    ];
   }
   return [];
 }
@@ -649,7 +735,12 @@ function batchPrefetchKeys(
 function isReusableHmsRun(run: AiWorkflowRun, request: HmsJobRequest, now: Date): boolean {
   const parsed = hmsJobRequestSchema.safeParse(run.readRequest);
   if (!parsed.success || hmsRequestKey(parsed.data) !== hmsRequestKey(request)) return false;
-  if (run.state === 'queued' || run.state === 'claimed' || run.state === 'running' || run.state === 'retry_wait') {
+  if (
+    run.state === 'queued' ||
+    run.state === 'claimed' ||
+    run.state === 'running' ||
+    run.state === 'retry_wait'
+  ) {
     return true;
   }
   return (
@@ -678,7 +769,11 @@ async function loadReusableHmsRuns(
   ];
   // Pass 1, unlocked: collect every candidate id across the chunks.
   const candidateIds = new Set<string>();
-  for (let start = 0; start < Math.max(sourceIds.length, allPrefetchKeys.length); start += HMS_BATCH_INSERT_CHUNK) {
+  for (
+    let start = 0;
+    start < Math.max(sourceIds.length, allPrefetchKeys.length);
+    start += HMS_BATCH_INSERT_CHUNK
+  ) {
     const ids = sourceIds.slice(start, start + HMS_BATCH_INSERT_CHUNK);
     const keys = allPrefetchKeys.slice(start, start + HMS_BATCH_INSERT_CHUNK);
     // A run also serves every work item in its batchLinks, so a link to the item is a match, not only workItemId.
@@ -687,7 +782,8 @@ async function loadReusableHmsRuns(
         ? [
             inArray(aiWorkflowRun.workItemId, ids),
             ...ids.map(
-              (id) => sql`${aiWorkflowRun.metrics}->'batchLinks' @> ${JSON.stringify([{ workItemId: id }])}::jsonb`,
+              (id) =>
+                sql`${aiWorkflowRun.metrics}->'batchLinks' @> ${JSON.stringify([{ workItemId: id }])}::jsonb`,
             ),
           ]
         : []),
@@ -705,7 +801,10 @@ async function loadReusableHmsRuns(
           eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
           or(
             inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
-            and(eq(aiWorkflowRun.state, 'succeeded'), gte(aiWorkflowRun.finishedAt, new Date(now.getTime() - HMS_BATCH_RESULT_FRESH_MS))),
+            and(
+              eq(aiWorkflowRun.state, 'succeeded'),
+              gte(aiWorkflowRun.finishedAt, new Date(now.getTime() - HMS_BATCH_RESULT_FRESH_MS)),
+            ),
           ),
           or(...candidatePredicates),
         ),
@@ -808,16 +907,18 @@ export async function enqueueHmsBatch(
     const now = new Date();
     // Spam gets no lookup: the thread-state gate (spamAt) the automatic prefetch also applies. An extraction label
     // alone is not spam, because staff can clear spam on a thread whose extraction still says spam.
-    const selections = orderedSources.map((source): { skipped: HmsBatchSkipReason } | { request: HmsJobRequest } => {
-      if (source.spamAt) return { skipped: 'spam' };
-      // No succeeded extraction still leaves the message text, so a confirmation in the subject or body queues.
-      return selectHmsBatchRequest({
-        kind: source.extraction?.kind ?? null,
-        payload: source.extraction?.payload ?? null,
-        subject: source.subject,
-        textBody: source.textBody,
-      });
-    });
+    const selections = orderedSources.map(
+      (source): { skipped: HmsBatchSkipReason } | { request: HmsJobRequest } => {
+        if (source.spamAt) return { skipped: 'spam' };
+        // No succeeded extraction still leaves the message text, so a confirmation in the subject or body queues.
+        return selectHmsBatchRequest({
+          kind: source.extraction?.kind ?? null,
+          payload: source.extraction?.payload ?? null,
+          subject: source.subject,
+          textBody: source.textBody,
+        });
+      },
+    );
     const requested = orderedSources.flatMap((source, itemIndex) => {
       const selection = selections[itemIndex]!;
       return 'request' in selection ? [{ source, request: selection.request }] : [];
@@ -832,8 +933,16 @@ export async function enqueueHmsBatch(
     }
     for (const runs of reusableBySignature.values()) {
       runs.sort((left, right) => {
-        const leftActive = left.state === 'queued' || left.state === 'claimed' || left.state === 'running' || left.state === 'retry_wait';
-        const rightActive = right.state === 'queued' || right.state === 'claimed' || right.state === 'running' || right.state === 'retry_wait';
+        const leftActive =
+          left.state === 'queued' ||
+          left.state === 'claimed' ||
+          left.state === 'running' ||
+          left.state === 'retry_wait';
+        const rightActive =
+          right.state === 'queued' ||
+          right.state === 'claimed' ||
+          right.state === 'running' ||
+          right.state === 'retry_wait';
         if (leftActive !== rightActive) return leftActive ? -1 : 1;
         return right.createdAt.getTime() - left.createdAt.getTime();
       });
@@ -859,18 +968,24 @@ export async function enqueueHmsBatch(
           workItemId: source.workItemId,
           linkedRunId: linkedRun.id,
         });
-        linksByExistingRunId.set(linkedRun.id, [...(linksByExistingRunId.get(linkedRun.id) ?? []), link]);
+        linksByExistingRunId.set(linkedRun.id, [
+          ...(linksByExistingRunId.get(linkedRun.id) ?? []),
+          link,
+        ]);
         continue;
       }
 
       const plannedRun = newRunBySignature.get(signature);
       if (plannedRun) {
-        appendBatchLink(plannedRun, hmsBatchLink({
-          batchId: input.batchId,
-          itemIndex,
-          workItemId: source.workItemId,
-          linkedRunId: String(plannedRun.id),
-        }));
+        appendBatchLink(
+          plannedRun,
+          hmsBatchLink({
+            batchId: input.batchId,
+            itemIndex,
+            workItemId: source.workItemId,
+            linkedRunId: String(plannedRun.id),
+          }),
+        );
         continue;
       }
 
@@ -924,7 +1039,7 @@ export async function enqueueHmsBatch(
 async function countRecentPrefetches(
   db: DB,
   transportId: string,
-  kind: 'find' | 'search_guest' | 'availability',
+  kind: 'find' | 'search_guest' | 'party' | 'availability',
   since: Date,
 ): Promise<number> {
   const [row] = await db
@@ -955,7 +1070,37 @@ async function enqueueGuestPrefetchWithinCap(
       sql`select pg_advisory_xact_lock(hashtextextended(${'hms-prefetch:search_guest:' + input.transportId}, 0))`,
     );
     const scoped = tx as unknown as DB;
-    const used = await countRecentPrefetches(scoped, input.transportId, 'search_guest', new Date(Date.now() - PREFETCH_WINDOW_MS));
+    const used = await countRecentPrefetches(
+      scoped,
+      input.transportId,
+      'search_guest',
+      new Date(Date.now() - PREFETCH_WINDOW_MS),
+    );
+    if (used >= perHour) return false;
+    const result = await enqueueHmsJob(input, scoped);
+    return result.created;
+  });
+}
+
+/** Serializes the party count and insert per transport, using the shared mail-prefetch cap. */
+async function enqueuePartyPrefetchWithinCap(
+  db: DB,
+  input: Parameters<typeof enqueueHmsJob>[0],
+  perHour: number,
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(
+        ${'hms-prefetch:party:' + input.transportId}, 0
+      ))`,
+    );
+    const scoped = tx as unknown as DB;
+    const used = await countRecentPrefetches(
+      scoped,
+      input.transportId,
+      'party',
+      new Date(Date.now() - PREFETCH_WINDOW_MS),
+    );
     if (used >= perHour) return false;
     const result = await enqueueHmsJob(input, scoped);
     return result.created;
@@ -974,8 +1119,10 @@ export async function prefetchHmsConfirmations(
 ): Promise<number> {
   if (!env.HMS_PREFETCH_ENABLED || !hmsJobQueueEnabled()) return 0;
   // Live admission stamps an admission snapshot; backfill and imports do not.
-  const isLiveExtraction = run.runKind === 'inbound_extraction' && run.idempotencyKey.startsWith('inbound-extraction:');
-  const isLiveTriage = run.runKind === 'inbound_triage' && run.idempotencyKey.startsWith('inbound-triage:');
+  const isLiveExtraction =
+    run.runKind === 'inbound_extraction' && run.idempotencyKey.startsWith('inbound-extraction:');
+  const isLiveTriage =
+    run.runKind === 'inbound_triage' && run.idempotencyKey.startsWith('inbound-triage:');
   if ((!isLiveExtraction && !isLiveTriage) || !run.admissionSnapshotId) {
     return 0;
   }
@@ -1060,7 +1207,12 @@ export async function prefetchHmsConfirmations(
     if (sentFrom.has(from)) return 0;
   }
 
-  const triggerItem = await workItemForMessage(db, run.transportId, run.threadId, run.triggerMessageId);
+  const triggerItem = await workItemForMessage(
+    db,
+    run.transportId,
+    run.threadId,
+    run.triggerMessageId,
+  );
   if (triggerItem?.status === 'done' || triggerItem?.status === 'dismissed') return 0;
   const workItemId = triggerItem?.id ?? null;
   let created = 0;
@@ -1106,7 +1258,12 @@ export async function prefetchHmsConfirmations(
         userId: null,
         request: { kind: 'search_guest', lastName, arrival },
         priority: HMS_JOB_PRIORITY_PREFETCH,
-        idempotencyKey: guestSearchPrefetchIdempotencyKey(run.transportId, run.threadId, lastName, arrival),
+        idempotencyKey: guestSearchPrefetchIdempotencyKey(
+          run.transportId,
+          run.threadId,
+          lastName,
+          arrival,
+        ),
       },
       env.HMS_GUEST_PREFETCH_PER_HOUR,
     );
@@ -1132,7 +1289,11 @@ export async function prefetchAvailabilityForExtraction(
 ): Promise<number> {
   if (!availabilityPrefetchEnabled(env) || run.runKind !== 'inbound_extraction') return 0;
   const [extraction] = await db
-    .select({ threadId: message.threadId, payload: mailExtraction.payload, spamAt: mailThread.spamAt })
+    .select({
+      threadId: message.threadId,
+      payload: mailExtraction.payload,
+      spamAt: mailThread.spamAt,
+    })
     .from(mailExtraction)
     .innerJoin(message, eq(message.id, mailExtraction.messageId))
     .innerJoin(mailThread, eq(mailThread.id, message.threadId))
@@ -1183,6 +1344,101 @@ export function scheduleAvailabilityPrefetch(
   run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
 ): void {
   void prefetchAvailabilityForExtraction(run).catch(() => undefined);
+}
+
+/** One background company/agency search for a successful quote extraction,
+ * under the normal mail-prefetch cap.
+ */
+export async function prefetchPartyForExtraction(
+  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
+  db: DB = getDb(),
+  env = parseEnv(process.env as Record<string, string | undefined>),
+): Promise<number> {
+  if (!env.HMS_PREFETCH_ENABLED || !hmsJobQueueEnabled() || run.runKind !== 'inbound_extraction')
+    return 0;
+  const [source] = await db
+    .select({
+      threadId: message.threadId,
+      extractionStatus: mailExtraction.status,
+      kind: mailExtraction.kind,
+      payload: mailExtraction.payload,
+      subject: message.subject,
+      textBody: message.textBody,
+      direction: message.direction,
+      historyOnly: message.historyOnly,
+      fromAddress: message.fromAddress,
+      threadHistoryOnly: mailThread.historyOnly,
+      spamAt: mailThread.spamAt,
+      mailboxEmail: mailboxTransport.email,
+    })
+    .from(mailExtraction)
+    .innerJoin(message, eq(message.id, mailExtraction.messageId))
+    .innerJoin(mailThread, eq(mailThread.id, message.threadId))
+    .innerJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
+    .where(
+      and(
+        eq(mailExtraction.messageId, run.triggerMessageId),
+        eq(message.transportId, run.transportId),
+      ),
+    )
+    .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
+    .limit(1);
+  if (
+    !source ||
+    source.extractionStatus !== 'succeeded' ||
+    source.kind !== 'quote' ||
+    source.spamAt ||
+    source.threadHistoryOnly ||
+    source.historyOnly ||
+    source.direction !== 'inbound'
+  ) {
+    return 0;
+  }
+  const from = normalizeEmailAddress(source.fromAddress);
+  const mailbox = normalizeEmailAddress(source.mailboxEmail);
+  if (from === mailbox) return 0;
+  if (isStaffSender(source.fromAddress, source.mailboxEmail)) {
+    const sentFrom = await knownSenders(db, run.transportId, [source.fromAddress]);
+    if (sentFrom.has(from)) return 0;
+  }
+
+  const request = selectPartyPrefetchRequest({
+    kind: source.kind,
+    payload: source.payload,
+    sender: source.fromAddress,
+    body: source.textBody,
+  });
+  if (!request || env.HMS_PREFETCH_PER_HOUR <= 0) return 0;
+  const queued = await enqueuePartyPrefetchWithinCap(
+    db,
+    {
+      transportId: run.transportId,
+      threadId: source.threadId,
+      triggerMessageId: run.triggerMessageId,
+      workItemId: await latestWorkItemId(db, run.transportId, source.threadId),
+      userId: null,
+      request,
+      priority: HMS_JOB_PRIORITY_PREFETCH,
+      idempotencyKey: partyPrefetchIdempotencyKey(
+        run.transportId,
+        source.threadId,
+        request.name,
+        request.partyKind,
+        new Date().toISOString().slice(0, 10),
+      ),
+    },
+    env.HMS_PREFETCH_PER_HOUR,
+  );
+  return queued ? 1 : 0;
+}
+
+/** Fire-and-forget after a successful quote extraction.
+ * Off unless the queue and HMS_PREFETCH_ENABLED are on.
+ */
+export function schedulePartyPrefetch(
+  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
+): void {
+  void prefetchPartyForExtraction(run).catch(() => undefined);
 }
 
 async function requeueRun(
@@ -1296,19 +1552,24 @@ export async function executeHmsJob(input: {
               ),
             classifyFind,
           )
-        : await recordedToolRun(
-            { kind: 'guest_search', ...audit },
-            () =>
-              searchGuest(
-                {
-                  lastName: request.lastName,
-                  arrival: request.arrival,
-                  ...(request.departure ? { departure: request.departure } : {}),
-                },
-                deps,
-              ),
-            classifySearch,
-          );
+        : request.kind === 'party'
+          ? await findParty(
+              { name: request.name, ...(request.partyKind ? { kind: request.partyKind } : {}) },
+              { acquisition: deps.acquisition },
+            )
+          : await recordedToolRun(
+              { kind: 'guest_search', ...audit },
+              () =>
+                searchGuest(
+                  {
+                    lastName: request.lastName,
+                    arrival: request.arrival,
+                    ...(request.departure ? { departure: request.departure } : {}),
+                  },
+                  deps,
+                ),
+              classifySearch,
+            );
 
   const outcome: string = result.outcome;
   if (outcome === 'refused_lock_busy') {
@@ -1361,6 +1622,34 @@ const STATUS_BY_STATE: Record<AiWorkflowRunState, HmsJobStatus> = {
   superseded: 'failed',
 };
 
+const PARTY_JOB_OUTCOMES = new Set([
+  'resolved',
+  'ambiguous',
+  'no_match',
+  'input_gap',
+  'execution_failure',
+  'external_system_unavailable',
+  'refused_flag_off',
+  'refused_input_invalid',
+  'refused_lock_unavailable',
+  'refused_lock_busy',
+]);
+
+function safePartyJobOutcome(
+  run: AiWorkflowRun,
+  request: HmsJobRequest | null,
+  result: Record<string, unknown> | null,
+): string | null {
+  if (request?.kind !== 'party') return null;
+  const resultOutcome = result?.outcome;
+  if (typeof resultOutcome === 'string' && PARTY_JOB_OUTCOMES.has(resultOutcome))
+    return resultOutcome;
+  if (run.lastError && PARTY_JOB_OUTCOMES.has(run.lastError)) return run.lastError;
+  if (run.failureClass === 'HMS_LOCK_BUSY') return 'refused_lock_busy';
+  if (run.failureClass === 'TRANSIENT_NETWORK') return 'execution_failure';
+  return null;
+}
+
 async function queuePosition(db: DB, run: AiWorkflowRun): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
@@ -1373,10 +1662,7 @@ async function queuePosition(db: DB, run: AiWorkflowRun): Promise<number> {
         inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
         or(
           gt(aiWorkflowRun.priority, run.priority),
-          and(
-            eq(aiWorkflowRun.priority, run.priority),
-            lt(aiWorkflowRun.createdAt, run.createdAt),
-          ),
+          and(eq(aiWorkflowRun.priority, run.priority), lt(aiWorkflowRun.createdAt, run.createdAt)),
         ),
       ),
     );
@@ -1396,10 +1682,15 @@ async function toView(
     request: request.success ? request.data : null,
     prefetch: run.priority === HMS_JOB_PRIORITY_PREFETCH,
     status,
-    position: status === 'queued' && options.includePosition !== false ? await queuePosition(db, run) : null,
+    position:
+      status === 'queued' && options.includePosition !== false
+        ? await queuePosition(db, run)
+        : null,
     attempts: run.attempts,
     failureClass: run.failureClass,
     asOf: typeof result?.asOf === 'string' ? result.asOf : null,
+    createdAt: run.createdAt.toISOString(),
+    outcome: safePartyJobOutcome(run, request.success ? request.data : null, result),
     result,
   };
 }
@@ -1415,10 +1706,16 @@ export async function readHmsJobView(
     | {
         transportId: string;
         threadId: string;
-        kind: 'find' | 'search_guest' | 'availability';
+        kind: 'find' | 'search_guest' | 'party' | 'availability';
         confirmation?: string;
         /** A guest search's surname, compared case- and space-insensitively: one thread can carry two guests' searches. */
         lastName?: string;
+        /** A party search's name, compared case- and space-insensitively.
+         * One thread can search multiple parties.
+         */
+        name?: string;
+        /** Narrows a party search to the company or agency field that is resuming it. */
+        partyKind?: PanePartyKind;
         /** A stay's dates pick its availability snapshot; its rooms tell apart two stays on the same dates. */
         arrival?: string;
         /** Null explicitly matches a guest-search request with no departure constraint. */
@@ -1458,6 +1755,23 @@ export async function readHmsJobView(
                     sql`lower(btrim(regexp_replace(${aiWorkflowRun.readRequest}->>'lastName', '[[:space:]]+', ' ', 'g'))) = ${input.lastName.trim().replace(/\s+/g, ' ').toLowerCase()}`,
                   ]
                 : []),
+              ...(input.name
+                ? [
+                    sql`lower(
+                      btrim(
+                        regexp_replace(
+                          ${aiWorkflowRun.readRequest}->>'name',
+                          '[[:space:]]+',
+                          ' ',
+                          'g'
+                        )
+                      )
+                    ) = ${input.name.trim().replace(/\s+/g, ' ').toLowerCase()}`,
+                  ]
+                : []),
+              ...(input.partyKind
+                ? [sql`${aiWorkflowRun.readRequest}->>'partyKind' = ${input.partyKind}`]
+                : []),
               ...(input.arrival
                 ? [sql`${aiWorkflowRun.readRequest}->>'arrival' = ${input.arrival}`]
                 : []),
@@ -1467,7 +1781,9 @@ export async function readHmsJobView(
                   ? [sql`${aiWorkflowRun.readRequest}->>'departure' IS NULL`]
                   : [sql`${aiWorkflowRun.readRequest}->>'departure' = ${input.departure}`]),
               ...(input.rooms
-                ? [sql`${aiWorkflowRun.readRequest}->'rooms' = ${JSON.stringify(input.rooms)}::jsonb`]
+                ? [
+                    sql`${aiWorkflowRun.readRequest}->'rooms' = ${JSON.stringify(input.rooms)}::jsonb`,
+                  ]
                 : []),
             ),
           )
@@ -1490,11 +1806,12 @@ function hmsBatchRollup(items: HmsBatchItemView[]): HmsBatchStatus {
   const hasQueued = effective.some((status) => status === 'queued' || status === 'retrying');
   const hasRunning = effective.includes('running');
   if (hasQueued || hasRunning) {
-    const started = items.some((item) =>
-      item.status !== 'skipped' &&
-      item.status !== 'cancelled' &&
-      item.job !== null &&
-      (item.job.status !== 'queued' || item.job.attempts > 0),
+    const started = items.some(
+      (item) =>
+        item.status !== 'skipped' &&
+        item.status !== 'cancelled' &&
+        item.job !== null &&
+        (item.job.status !== 'queued' || item.job.attempts > 0),
     );
     return started ? 'running' : 'queued';
   }
@@ -1521,7 +1838,10 @@ function hmsBatchSummary(items: HmsBatchItemView[]): HmsBatchView['summary'] {
 }
 
 /** Reads durable batch membership and the linked job snapshots; no pane state is required after remount. */
-export async function readHmsBatchView(input: HmsBatchScope, db: DB = getDb()): Promise<HmsBatchView | null> {
+export async function readHmsBatchView(
+  input: HmsBatchScope,
+  db: DB = getDb(),
+): Promise<HmsBatchView | null> {
   const rows = await hmsBatchRows(db, input);
   if (rows.length === 0) return null;
 
@@ -1592,7 +1912,10 @@ export async function readHmsBatchView(input: HmsBatchScope, db: DB = getDb()): 
 }
 
 /** Cancels this batch's unclaimed remainder without stopping a lookup another batch still reuses. */
-export async function cancelHmsBatch(input: HmsBatchScope, db: DB = getDb()): Promise<HmsBatchView | null> {
+export async function cancelHmsBatch(
+  input: HmsBatchScope,
+  db: DB = getDb(),
+): Promise<HmsBatchView | null> {
   return db.transaction(async (tx) => {
     const scoped = tx as unknown as DB;
     await acquireHmsBatchLock(scoped, input);
@@ -1632,7 +1955,9 @@ export async function cancelHmsBatch(input: HmsBatchScope, db: DB = getDb()): Pr
       const primaryCancelled =
         cancelPrimary ||
         (typeof metrics.batchId === 'string' && metrics.batchItemStatus === 'cancelled');
-      const hasOtherBatchConsumers = batchLinks.some((value) => objectRecord(value).status === 'reused');
+      const hasOtherBatchConsumers = batchLinks.some(
+        (value) => objectRecord(value).status === 'reused',
+      );
       const cancelRun = queued && primaryCancelled && !hasOtherBatchConsumers;
       changed ||= cancelRun;
       if (!changed) continue;
@@ -1721,7 +2046,9 @@ export async function requeueHmsReadsAfterRestart(
       return await requeueStaleHmsReads(input, db);
     } catch (error) {
       if (!isLockConflict(error) || attempt >= RESTART_SWEEP_ATTEMPTS) throw error;
-      await new Promise((resolve) => setTimeout(resolve, RESTART_SWEEP_BACKOFF_MS * 2 ** (attempt - 1)));
+      await new Promise((resolve) =>
+        setTimeout(resolve, RESTART_SWEEP_BACKOFF_MS * 2 ** (attempt - 1)),
+      );
     }
   }
 }
@@ -1750,7 +2077,8 @@ async function requeueStaleHmsReads(input: { ownerId: string }, db: DB): Promise
     for (const run of staleRuns) {
       const metrics = objectRecord(run.metrics);
       const previousCrashes = Number(metrics.crashCount);
-      const crashCount = (Number.isInteger(previousCrashes) && previousCrashes >= 0 ? previousCrashes : 0) + 1;
+      const crashCount =
+        (Number.isInteger(previousCrashes) && previousCrashes >= 0 ? previousCrashes : 0) + 1;
       const deadLetter = crashCount >= 3;
       await tx
         .update(aiWorkflowRun)
@@ -1787,7 +2115,8 @@ export function createHmsRecoveryGate(
   input: { ownerId: string },
   deps: { sweep?: (sweepInput: { ownerId: string }) => Promise<number>; now?: () => number } = {},
 ): HmsRecoveryGate {
-  const sweep = deps.sweep ?? ((sweepInput: { ownerId: string }) => requeueHmsReadsAfterRestart(sweepInput));
+  const sweep =
+    deps.sweep ?? ((sweepInput: { ownerId: string }) => requeueHmsReadsAfterRestart(sweepInput));
   const now = deps.now ?? Date.now;
   let pending = true;
   let nextAttemptAt = 0;

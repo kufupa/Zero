@@ -166,6 +166,7 @@ import {
   executeHmsJob,
   hmsJobQueueEnabled,
   scheduleAvailabilityPrefetch,
+  schedulePartyPrefetch,
   schedulePrefetchForInbound,
   type HmsRecoveryGate,
 } from './hms-jobs.js';
@@ -5289,6 +5290,7 @@ export async function executeAiRun(
       // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
       if (extracted.state === 'succeeded') {
         scheduleAvailabilityPrefetch(runWithFence);
+        schedulePartyPrefetch(runWithFence);
         // U3 reads the committed extraction; the scheduler waits for matching triage too when that run exists.
         schedulePrefetchForInbound(runWithFence);
       }

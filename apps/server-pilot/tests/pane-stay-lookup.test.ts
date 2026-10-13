@@ -460,6 +460,21 @@ describe('paneStayLookup router', () => {
       }),
     ).resolves.toEqual({ runId: null });
     await expect(
+      caller.paneStayLookup.queueParty({
+        threadId: 'thread-1',
+        name: 'Acme Travel',
+        partyKind: 'company',
+      }),
+    ).resolves.toEqual({ runId: null });
+    await expect(
+      caller.paneStayLookup.queueParty({
+        threadId: 'thread-1',
+        name: 'Acme Travel',
+        partyKind: 'company',
+        autoStart: true,
+      }),
+    ).resolves.toEqual({ runId: null });
+    await expect(
       caller.paneStayLookup.queueSearchGuest({
         threadId: 'thread-1',
         lastName: 'Mokoena',
@@ -478,6 +493,14 @@ describe('paneStayLookup router', () => {
         lastName: 'Mokoena',
         arrival: '2027-09-14',
         departure: null,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      caller.paneStayLookup.jobStatus({
+        threadId: 'thread-1',
+        kind: 'party',
+        name: 'Acme Travel',
+        partyKind: 'company',
       }),
     ).resolves.toBeNull();
     expect(spawn).not.toHaveBeenCalled();

@@ -62,16 +62,19 @@ export function partyKindLabel(kind: StaffQuoteParty['kind']): string {
 export const PARTY_TRUNCATED_NOTE = '50+ matches — type more of the name';
 
 /** What the picker says when a search gives no candidate to pick. The quote still runs. */
-export function partyNoCandidateNote(outcome: PartyFindReply['outcome']): string {
-  if (outcome === 'no_match')
-    return 'Not found in HMS — quote uses public rates';
-  if (outcome === 'execution_failure') return "HMS search didn't apply — try again";
-  if (outcome === 'refused_lock_busy')
-    return 'HMS is busy with another run. Try again in a minute.';
-  // The switch is off, so no company or agency rate is checked. The copy does not say which rates the quote uses.
-  if (outcome === 'refused_flag_off')
-    return 'HMS rate lookup is turned off here, so company and agency rates are not checked.';
-  return "Nava couldn't check HMS for this name. Try again, or quote at public rates.";
+export function partyNoCandidateNote(
+  outcome: PartyFindReply['outcome'],
+  kind?: StaffQuoteParty['kind'],
+  name = '',
+): string {
+  if (outcome === 'no_match') {
+    const type = kind ? partyKindLabel(kind).toLowerCase() : 'company or agency';
+    return `No ${type} in HMS matches “${name}”. Check the spelling or search a shorter name.`;
+  }
+  if (outcome === 'refused_lock_busy') return 'HMS is busy with another lookup. Nava will retry.';
+  if (outcome === 'refused_flag_off') return 'Company and agency rates are switched off.';
+  if (outcome === 'refused_input_invalid') return 'Type a company or agency name.';
+  return "Couldn't reach HMS. Try again in a minute.";
 }
 
 /** Shown when HMS matched the name, but none of the kind the field holds. */
@@ -93,7 +96,10 @@ export type PartySuggestion = {
 
 export type PartySuggestReply = { suggestions: PartySuggestion[] };
 
-export type PartySuggester = (input: { sender: string; body: string }) => Promise<PartySuggestReply>;
+export type PartySuggester = (input: {
+  sender: string;
+  body: string;
+}) => Promise<PartySuggestReply>;
 
 type TrpcPanePartySuggestRoutes = {
   panePartyLookup?: {

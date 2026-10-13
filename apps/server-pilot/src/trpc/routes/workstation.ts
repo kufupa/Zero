@@ -319,7 +319,10 @@ const PARTY_VERIFY_COPY: Record<string, string> = {
  * Re-checks each picked party in HMS and returns the HMS id and name. A pick HMS does not confirm is refused before any
  * rate is bound, so an id the client made up never reaches a quote.
  */
-export async function verifyStaffParties(parties: StaffQuoteParties): Promise<StaffQuoteParties> {
+export async function verifyStaffParties(
+  parties: StaffQuoteParties,
+  transportId?: string,
+): Promise<StaffQuoteParties> {
   const verified: StaffQuoteParties = {};
   const refuse = (reason: string): never => {
     throw new TRPCError({
@@ -332,6 +335,7 @@ export async function verifyStaffParties(parties: StaffQuoteParties): Promise<St
       kind: 'company',
       nativeId: parties.company.nativeId,
       name: parties.company.name,
+      ...(transportId ? { transportId } : {}),
     });
     if (!result.ok) refuse(result.reason);
     if (result.ok) verified.company = { kind: 'company', nativeId: result.party.nativeId, name: result.party.name };
@@ -341,6 +345,7 @@ export async function verifyStaffParties(parties: StaffQuoteParties): Promise<St
       kind: 'agency',
       nativeId: parties.agency.nativeId,
       name: parties.agency.name,
+      ...(transportId ? { transportId } : {}),
     });
     if (!result.ok) refuse(result.reason);
     if (result.ok) verified.agency = { kind: 'agency', nativeId: result.party.nativeId, name: result.party.name };
@@ -908,7 +913,10 @@ export const workstationRouter = router({
     let quoteInput: StaffQuoteInput = input;
     if (input.parties) {
       if (quoteRateContextEnabled()) {
-        quoteInput = { ...input, parties: await verifyStaffParties(input.parties) };
+        quoteInput = {
+          ...input,
+          parties: await verifyStaffParties(input.parties, ctx.activeTransportId),
+        };
       } else {
         quoteInput = { ...input, parties: undefined };
         notes.push(PARTY_LOOKUP_OFF_NOTE);

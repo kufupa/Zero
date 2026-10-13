@@ -481,9 +481,12 @@ describe('voucher find card: the existing search', () => {
     trpc.paneStayLookup.jobStatus.query = async (input: { runId: string } | { threadId: string; lastName?: string; arrival?: string }) =>
       'runId' in input
         ? byRun(input)
-        : (latest.find((view) =>
-            (!input.arrival || view.request?.arrival === input.arrival) &&
-            (!input.lastName || (view.request?.kind === 'search_guest' && view.request.lastName.toLowerCase() === input.lastName.toLowerCase())),
+        : (latest.find(
+            (view) =>
+              view.request?.kind === 'search_guest' &&
+              (!input.arrival || view.request.arrival === input.arrival) &&
+              (!input.lastName ||
+                view.request.lastName.toLowerCase() === input.lastName.toLowerCase()),
           ) ?? null);
 
     const { rerender } = render(<VoucherFindCard internetMessageId="first@host" trpc={trpc} download={vi.fn()} />);
