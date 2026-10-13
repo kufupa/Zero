@@ -4,6 +4,7 @@ import {
   buildQuoteWorkflowPrompt,
   K2_MAPPING,
   mapLlmDecision,
+  partyNotGuest,
   QUOTE_WORKFLOW_PROMPT_VERSION,
   quoteWorkflowLlmEnabled,
 } from '../src/ai/quote-workflow-llm.js';
@@ -851,3 +852,22 @@ describe('LunaModelAdapter effort + completion', () => {
     ).rejects.toThrow(/incomplete/);
   });
 });
+
+describe('partyNotGuest', () => {
+  it('drops a company that is one of the guests', () => {
+    expect(
+      partyNotGuest({
+        groups: [{ ...group, guestNames: ['Karen  Vickers'] }],
+        party: { kind: 'organization', name: 'karen vickers', reference: null },
+      }),
+    ).toEqual({ kind: null, name: null, reference: null });
+  });
+
+  it('keeps a real company and a private party', () => {
+    const company = { kind: 'organization' as const, name: 'Purple Surgical', reference: null };
+    expect(partyNotGuest({ groups: [{ ...group, guestNames: ['Karen Vickers'] }], party: company })).toEqual(company);
+    const person = { kind: 'private' as const, name: 'Ann Example', reference: null };
+    expect(partyNotGuest({ groups: [group], party: person })).toEqual(person);
+  });
+});
+

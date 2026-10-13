@@ -11,6 +11,7 @@ import {
   newQuoteGuardState,
   partyLookupAction,
   partyLookupsReady,
+  queuedJobRefusal,
   QUOTE_SELECTORS,
   rateKeysForDateRanges,
   rateSearchAction,
@@ -424,4 +425,18 @@ describe('quote proof request guard', () => {
       expect(chooseRoomType(false, [], options)).toEqual({ value: 'STWN', how: 'first_listed' });
     });
   });
+
+  it('reads a queued staff quote refusal as a named refusal', () => {
+    const message = 'No qualified available rate covers every requested room-night; review the room and meal choices.';
+    expect(
+      queuedJobRefusal({
+        procedure: 'workstation.staffQuoteJob',
+        data: { status: 'succeeded', result: { ok: false, code: 'PRECONDITION_FAILED', message } },
+      }),
+    ).toBe('refused: ' + message);
+    expect(
+      queuedJobRefusal({ procedure: 'workstation.staffQuoteJob', data: { status: 'running', result: null } }),
+    ).toBeNull();
+  });
 });
+
