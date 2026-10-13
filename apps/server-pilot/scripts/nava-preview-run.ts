@@ -95,6 +95,8 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.quoteRunScreenshot',
   'workstation.staffQuoteJob',
   'workstation.staffQuoteSource',
+  // Mutation-shaped RPC, but only reads stored quote data and returns an unsaved draft.
+  'workstation.usePriorQuoteForBooking',
 ]);
 /** The one mutation the viewer may call: a read-only analysis (cache and ledger rows, no HMS, no mail). */
 export const ANALYSIS_PROCEDURES: ReadonlySet<string> = new Set(['quoteWorkflow.analyseSelection']);
@@ -147,7 +149,6 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.qualifiedQuoteProposalPdf',
   'workstation.quoteWorkbook',
   'workstation.reportBridgeFailure',
-  'workstation.usePriorQuoteForBooking',
 ]);
 
 /**
