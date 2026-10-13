@@ -6,8 +6,11 @@ import {
   partyNames,
   prepareStaffQuote,
   quoteWithPartyFallback,
+  staffQuoteDinnerFallback,
+  staffQuoteDinnerGroupIdsToRetryAsBb,
   staffQuoteSourceHash,
   type StaffQuoteAttestation,
+  type StaffQuoteDinnerAddOn,
   type StaffQuoteInput,
   type StaffQuoteParties,
 } from './staff-quote-workflow.js';
@@ -70,9 +73,10 @@ export function staffExtrasOrBadRequest(
   scope: Parameters<typeof buildStaffProposalFacts>[1],
   prepared: Parameters<typeof buildStaffProposalFacts>[2],
   revision: QuoteRevision,
+  options: Parameters<typeof buildStaffProposalFacts>[4] = {},
 ): { proposal: ReturnType<typeof buildStaffProposalFacts>; extraTotal: number } {
   try {
-    const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
+    const proposal = buildStaffProposalFacts(input, scope, prepared, revision, options);
     const extraTotal = proposal.facts
       ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce(
           (sum, line) => sum + line.totalMinor,
@@ -87,6 +91,36 @@ export function staffExtrasOrBadRequest(
         'The extras on this quote are not valid. Check the amounts and counts, then run the quote again.',
     });
   }
+}
+
+export type StaffQuoteRoomAlternative = {
+  groupId: string;
+  roomCode: string;
+  roomLabel: string;
+  quantity: number;
+};
+
+/** Safe read of HMS alternatives; malformed, duplicate or untrusted labels never reach the pane. */
+export function staffQuoteRoomAlternatives(value: unknown): StaffQuoteRoomAlternative[] {
+  if (!Array.isArray(value)) return [];
+  const result: StaffQuoteRoomAlternative[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const alternative = raw as Record<string, unknown>;
+    const { groupId, roomCode, roomLabel, quantity } = alternative;
+    if (
+      typeof groupId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(groupId) ||
+      typeof roomCode !== 'string' || !/^[A-Z0-9_-]{1,16}$/.test(roomCode) ||
+      typeof roomLabel !== 'string' || !roomLabel.trim() || roomLabel.length > 120 || /[<>\u0000-\u001f]/.test(roomLabel) ||
+      !Number.isSafeInteger(quantity) || (quantity as number) < 1 || (quantity as number) > 100
+    ) continue;
+    const key = `${groupId}|${roomCode}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({ groupId, roomCode, roomLabel: roomLabel.trim(), quantity: quantity as number });
+  }
+  return result;
 }
 
 export function staffQuoteFailureCode(error: unknown): string {
@@ -115,7 +149,7 @@ const STAFF_QUOTE_CAUSE_TRANSIENT_CODES = new Set([
 ]);
 
 /** Cause metadata is safe for tRPC logging and retains only codes needed for queue classification. */
-function staffQuoteCauseSummary(error: unknown): { name: string; code: string; message: string } {
+function staffQuoteCauseSummary(error: unknown): { name: string; code: string; message: string; alternatives?: StaffQuoteRoomAlternative[] } {
   if (isPropertyReadLockDeadline(error)) {
     return {
       name: 'Error',
@@ -127,10 +161,15 @@ function staffQuoteCauseSummary(error: unknown): { name: string; code: string; m
   let current: unknown = error;
   let leaf: unknown = error;
   let transientCode: string | undefined;
+  let alternatives: StaffQuoteRoomAlternative[] = [];
   for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
     if (typeof current !== 'object') break;
     leaf = current;
     const record = current as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown };
+    const detail = (current as { detail?: unknown }).detail;
+    if (!alternatives.length && detail && typeof detail === 'object') {
+      alternatives = staffQuoteRoomAlternatives((detail as { alternatives?: unknown }).alternatives);
+    }
     const code = typeof record.code === 'string' ? record.code : undefined;
     const message = typeof record.message === 'string' ? record.message : '';
     if (code && STAFF_QUOTE_CAUSE_TRANSIENT_CODES.has(code)) {
@@ -157,7 +196,30 @@ function staffQuoteCauseSummary(error: unknown): { name: string; code: string; m
     name: /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(rawName) ? rawName : 'Error',
     code: transientCode ?? (/^[A-Za-z0-9_.:-]{1,120}$/.test(rawCode) ? rawCode : 'unknown'),
     message: 'Staff quote execution failed.',
+    ...(alternatives.length ? { alternatives } : {}),
   };
+}
+
+function dinnerAddOnDetails(
+  proposal: ReturnType<typeof buildStaffProposalFacts>,
+  revision: QuoteRevision,
+): {
+  label: string;
+  amountMinor: number;
+  unit: StaffQuoteDinnerAddOn['unit'];
+  totalMinor: number;
+} | undefined {
+  if (!proposal.facts) return undefined;
+  const line = deriveAuthorizedExtraLines(revision, proposal.facts).find((item) => item.service === 'dinner_add_on');
+  const extra = proposal.facts.extras.find((item) => item.service === 'dinner_add_on');
+  if (!line || !extra) return undefined;
+  const unit: StaffQuoteDinnerAddOn['unit'] =
+    extra.chargeUnit === 'per_person_night'
+      ? 'per_person_per_night'
+      : extra.chargeUnit === 'per_person'
+        ? 'per_person'
+        : 'per_room_per_night';
+  return { label: line.description, amountMinor: line.rateMinor, unit, totalMinor: line.totalMinor };
 }
 
 /**
@@ -275,14 +337,14 @@ function isHmsExecutionFailure(error: unknown, code: string, phase: string): boo
 
 export const NATIVE_NO_MATCHING_RATE_PREFIX = 'HMS has no rate for this meal plan under ';
 
-/** Clean HMS no-match: name the strategy, and offer the dinner fallback only when dinner was requested. */
+/** Clean HMS no-match: name the strategy and the automatic dinner fallback that was attempted. */
 export function nativeNoMatchingRateMessage(context: {
   salesStrategy?: string;
   dinnerRequested?: boolean;
 }): string {
   const strategy = context.salesStrategy ?? 'the selected rate type';
   const next = context.dinnerRequested
-    ? 'For dinner, quote Bed & Breakfast and add a dinner allowance (button below), or use the Government rate if the guest is entitled.'
+    ? 'Nava retries dinner requests on Bed & Breakfast with a separate dinner add-on. If no B&B rate is available, choose an available room option below or check the Government rate only if the guest is entitled.'
     : 'Try another meal plan or rate type.';
   return `${NATIVE_NO_MATCHING_RATE_PREFIX}${strategy}. ${next}`;
 }
@@ -510,6 +572,8 @@ export async function runStaffQuote(
   // The rate cards of the attempt that priced. Empty when the quote failed before they were built.
   let rateOptions: RateOption[] = [];
   let quoteInput: StaffQuoteInput = input;
+  let effectiveQuoteInput: StaffQuoteInput = input;
+  let dinnerFallbackGroupIds: string[] = [];
   if (input.parties) {
     if (quoteRateContextEnabled()) {
       quoteInput = { ...input, parties: await verifyStaffParties(input.parties) };
@@ -518,9 +582,9 @@ export async function runStaffQuote(
       notes.push(PARTY_LOOKUP_OFF_NOTE);
     }
   }
-  const prepare = (rates?: 'party' | 'public') =>
+  const prepare = (rates?: 'party' | 'public', attemptInput: StaffQuoteInput = quoteInput) =>
     withRunDeadline(
-      prepareStaffQuote(quoteInput, scope, signer, signal, rates),
+      prepareStaffQuote(attemptInput, scope, signer, signal, rates),
       options.deadlineAt,
     );
   let prepared: ReturnType<typeof prepareStaffQuote>;
@@ -643,23 +707,64 @@ export async function runStaffQuote(
               stillCurrent,
             );
           };
-          const quote = quoteWithPartyFallback({
-            input: quoteInput,
-            first: prepared,
-            retry: () => prepare('public'),
-            run: quoteAt,
-          }).then((attempt) => {
+          const quoteOneInput = async (
+            attemptInput: StaffQuoteInput,
+            firstPrepared: ReturnType<typeof prepareStaffQuote>,
+          ) => {
+            const attempt = await quoteWithPartyFallback({
+              input: attemptInput,
+              first: firstPrepared,
+              retry: () => prepare('public', attemptInput),
+              run: quoteAt,
+            });
             prepared = attempt.prepared;
-            const contractNote = partyContractReviewNote(quoteInput.parties, attempt.result.groups);
+            effectiveQuoteInput = attemptInput;
+            const contractNote = partyContractReviewNote(attemptInput.parties, attempt.result.groups);
             // A contract on another board only: the public quote says which contract it did not take, instead of "no contract".
-            const elsewhere = quoteInput.parties
-              ? otherBoardContractNotes(partyNames(quoteInput.parties), rateOptions)
+            const elsewhere = attemptInput.parties
+              ? otherBoardContractNotes(partyNames(attemptInput.parties), rateOptions)
               : [];
             if (attempt.note) notes.push(attempt.note);
             else if (elsewhere.length) notes.push(...elsewhere);
             else if (contractNote) notes.push(contractNote);
             return attempt.result;
-          });
+          };
+          const quote = (async () => {
+            const allDinnerFallback = staffQuoteDinnerFallback(quoteInput);
+            const retryDinnerAsBb = (fallback = allDinnerFallback) => {
+              if (!fallback) throw new Error('staff_quote_dinner_fallback_missing');
+              // Retry only groups without a selected verified party contract; another group's contract stays pinned.
+              dinnerFallbackGroupIds = fallback.groupIds;
+              rateOptions = [];
+              return quoteOneInput(fallback.input, prepare(undefined, fallback.input));
+            };
+            const retryAllDinnerAsBb = () => {
+              if (!allDinnerFallback) throw new Error('staff_quote_dinner_fallback_missing');
+              // A no-match result has no selected-rate evidence, so preserve the existing all-dinner retry behavior.
+              dinnerFallbackGroupIds = allDinnerFallback.groupIds;
+              rateOptions = [];
+              return quoteOneInput(allDinnerFallback.input, prepare(undefined, allDinnerFallback.input));
+            };
+            const attemptNotesStart = notes.length;
+            let result: Awaited<ReturnType<typeof quoteOneInput>>;
+            try {
+              result = await quoteOneInput(quoteInput, prepared);
+            } catch (error) {
+              if (staffQuoteFailureCode(error) !== 'native_quote_no_matching_rate' || !allDinnerFallback) throw error;
+              // Preserve the same dates, room, occupancy, strategy and verified party context.
+              return retryAllDinnerAsBb();
+            }
+            const fallbackGroupIds = staffQuoteDinnerGroupIdsToRetryAsBb(quoteInput, rateOptions);
+            if (fallbackGroupIds.length) {
+              const dinnerFallback = staffQuoteDinnerFallback(quoteInput, fallbackGroupIds);
+              if (!dinnerFallback) throw new Error('staff_quote_dinner_fallback_missing');
+              // A public DBB/HB result is not the staff quote: use B&B and list dinner separately. Discard notes/rate
+              // cards from the superseded attempt; a selected, verified contract result is preserved group-by-group.
+              notes.splice(attemptNotesStart);
+              return retryDinnerAsBb(dinnerFallback);
+            }
+            return result;
+          })();
           return traceAsync ? awaitProvisionalCapture(quote, traceFinishes, captured) : quote;
         },
         { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
@@ -701,8 +806,13 @@ export async function runStaffQuote(
     let proposal: ReturnType<typeof buildStaffProposalFacts>;
     let extraTotal: number;
     try {
-      attestation = attestStaffQuote(input, scope, prepared, revision, rowPrices);
-      ({ proposal, extraTotal } = staffExtrasOrBadRequest(input, scope, prepared, revision));
+      ({ proposal, extraTotal } = staffExtrasOrBadRequest(effectiveQuoteInput, scope, prepared, revision, {
+        dinnerGroupIds: effectiveQuoteInput.dinnerAllowanceGroupIds ?? dinnerFallbackGroupIds,
+        ...(config.dinnerAddOn ? { dinnerAddOn: config.dinnerAddOn } : {}),
+      }));
+      attestation = attestStaffQuote(input, scope, prepared, revision, rowPrices, {
+        dinnerAddOnRequired: proposal.dinnerAddOnRequired,
+      });
       if (!(await stillCurrent()))
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
@@ -775,6 +885,11 @@ export async function runStaffQuote(
       threadId: mail.threadId,
       factRefs: proposal.factRefs,
       extrasReviewItems: [...notes, ...proposal.extrasReviewItems],
+      dinnerAddOnRequired: proposal.dinnerAddOnRequired,
+      ...(proposal.dinnerGroupIds.length || dinnerFallbackGroupIds.length
+        ? { dinnerFallbackGroupIds: proposal.dinnerGroupIds.length ? proposal.dinnerGroupIds : dinnerFallbackGroupIds }
+        : {}),
+      ...(dinnerAddOnDetails(proposal, revision) ? { dinnerAddOn: dinnerAddOnDetails(proposal, revision) } : {}),
       rateOptions,
       selectionEpoch: input.selectionEpoch,
       inputRevision: input.inputRevision,

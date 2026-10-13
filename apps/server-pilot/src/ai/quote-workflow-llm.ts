@@ -29,6 +29,7 @@ export const K2_MAPPING = [
   'text; if no exact span exists, omit the claim.',
   'Never paraphrase, tidy, complete, or invent a quoted amount.',
   'Extras (shuttle, dinner, transfers) become missing questions, not invented prices.',
+  'Half-board, half board, DBB or dinner with breakfast means quote Bed & Breakfast and show dinner as a separate staff-priced add-on.',
   'adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2.',
   '"single room" means 1 adult per room.',
   'A double or twin room with no headcount means 2 adults.',
@@ -135,6 +136,8 @@ export type MappedQuoteDecision = {
     specialRequests: string[];
     fields: Record<string, 'extracted' | 'staff_corrected' | 'missing' | 'defaulted'>;
   }>;
+  /** Empty when dates are complete; otherwise only the date/occupancy fields needed for a request-only reply. */
+  missingQuoteReplyFields: string[];
   secondaryAsks: string[];
   alternatives: string[];
   missing: Array<{ field: string; question: string }>;
@@ -277,7 +280,28 @@ function mapStatedOrDefaultBoard(
   partyKind: LunaAnalysis['party']['kind'],
 ): MappedQuoteDecision['groups'][number]['board'] {
   if (board === null) return defaultBoard(partyKind);
-  return board === 'dbb' ? 'dinner_bb' : board;
+  return board === 'dbb' || board === 'half_board' ? 'dinner_bb' : board;
+}
+
+function missingQuoteReplyFields(
+  groups: MappedQuoteDecision['groups'],
+): string[] {
+  if (groups.every((group) => group.arrivalDate && group.departureDate)) return [];
+  const fields: string[] = [];
+  const targets = groups.length ? groups : [{ id: 'g1', childrenAges: [], board: 'unknown' as const, specialRequests: [], fields: {} }];
+  targets.forEach((group, index) => {
+    const stay = index + 1;
+    if (!group.arrivalDate) fields.push(`Arrival date for stay ${stay}`);
+    if (!group.departureDate) fields.push(`Departure date for stay ${stay}`);
+    if (group.quantity === undefined && group.adults === undefined) {
+      fields.push(`Number of rooms and occupancy per room for stay ${stay}`);
+    } else if (group.quantity === undefined) {
+      fields.push(`Number of rooms for stay ${stay}`);
+    } else if (group.adults === undefined) {
+      fields.push(`Number of guests per room for stay ${stay}`);
+    }
+  });
+  return fields;
 }
 
 function venueOrEventManual(analysis: LunaAnalysis): boolean {
@@ -370,6 +394,7 @@ export function mapLlmDecision(
     return {
       intent: 'other',
       groups: [],
+      missingQuoteReplyFields: [],
       secondaryAsks: [],
       alternatives: [],
       missing: routed,
@@ -440,7 +465,14 @@ export function mapLlmDecision(
   if (roomsOnlyInfoNeeded(analysis)) {
     missing.unshift({ field: 'rooms_only_group', question: ROOMS_ONLY_INFO_QUESTION });
   }
-  return { intent: 'quote', groups, secondaryAsks: [], alternatives: [], missing };
+  return {
+    intent: 'quote',
+    groups,
+    missingQuoteReplyFields: missingQuoteReplyFields(groups),
+    secondaryAsks: [],
+    alternatives: [],
+    missing,
+  };
 }
 
 function fallbackReasonFromError(error: unknown): 'timeout' | 'error' {

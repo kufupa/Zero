@@ -364,6 +364,7 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
           stayId: order[index]?.stayId,
         };
       }),
+      missingQuoteReplyFields: mapped.missingQuoteReplyFields,
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
       reviewItems: [...failures, ...questionItems(mapped.missing)],

@@ -12,7 +12,7 @@ import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
 import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
-import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
+import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 
@@ -385,6 +385,7 @@ function mountBuildMeta(content: string) {
 describe('NavaPane', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    sendCommandMock.mockClear();
     bridgeMockState.holdStaffQuote = false;
     bridgeMockState.releaseStaffQuote = null;
     bridgeMockState.lastStaffQuoteInput = null;
@@ -597,6 +598,9 @@ describe('NavaPane', () => {
       file: null,
     });
     render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() =>
+      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' }),
+    );
     expect(await screen.findByRole('region', { name: 'Find the booking' })).toBeDefined();
     expect(screen.getByText(/Guest Smith/)).toBeDefined();
     expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' });
@@ -665,6 +669,8 @@ describe('NavaPane', () => {
 describe('NavaPane screen states', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    sendCommandMock.mockClear();
+    saveReplyMutate.mockReset().mockResolvedValue({ id: 'draft-1', replaced: false });
     bridgeMockState.holdStaffQuote = false;
     bridgeMockState.releaseStaffQuote = null;
     bridgeMockState.lastStaffQuoteInput = null;
@@ -980,6 +986,9 @@ describe('NavaPane screen states', () => {
       file: null,
     });
     const { container } = render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() =>
+      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' }),
+    );
     const card = await screen.findByRole('region', { name: VOUCHER_COPY.heading });
     expect(card.textContent).toContain('Guest Smith');
     await settle();
@@ -996,6 +1005,9 @@ describe('NavaPane screen states', () => {
       unreadPdfs: 1,
     });
     const { container } = render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() =>
+      expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' }),
+    );
     const card = await screen.findByRole('region', { name: VOUCHER_COPY.heading });
     expect(card.textContent).not.toContain(VOUCHER_COPY.missingGuest);
     // No warning list: the quote panel names the unreadable file once.
@@ -1103,6 +1115,122 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     expect(await screen.findByText(/not finished syncing/i)).toBeDefined();
     expect(screen.getByRole('button', { name: 'Insert draft in Outlook' })).toBeDefined();
+  });
+
+  it('prefills a request-only reply for missing quote dates and occupancy without queueing HMS', async () => {
+    const analysis = {
+      status: 'ready',
+      intent: 'quote',
+      groups: [
+        {
+          id: 'g1',
+          childrenAges: [],
+          board: 'bb',
+          quantity: null,
+          specialRequests: [],
+          fields: { arrivalDate: 'missing', departureDate: 'extracted', adults: 'missing' },
+          departureDate: '2026-11-14',
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      missingQuoteReplyFields: ['Arrival date for stay 1', 'Number of rooms and occupancy per room for stay 1'],
+      sourceRevision: 1,
+    };
+    bridgeMockState.analysisOverride = analysis;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    render(<NavaPane bridge={fakeBridge} />);
+
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const expected = missingQuoteDetailsWrapperHtml(
+      'David Miller',
+      analysis.missingQuoteReplyFields,
+      'R Opperman',
+    );
+    await waitFor(() => expect(reply.value).toBe(expected));
+    expect(reply.value).not.toContain('Room type');
+    expect(reply.value).not.toContain('meal plan');
+    const requestOnly = await screen.findByRole('button', { name: 'Draft reply asking for missing details' });
+    expect((requestOnly as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(requestOnly);
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith(
+      'CREATE_REPLY_DRAFT',
+      expect.objectContaining({ htmlBody: expected }),
+    ));
+    expect(sendCommandMock).not.toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything());
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
+  it('clears the automatic missing-details reply once staff complete the date range', async () => {
+    bridgeMockState.analysisOverride = {
+      status: 'ready',
+      intent: 'quote',
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: null,
+          departureDate: '2026-11-14',
+          quantity: 1,
+          adults: 2,
+          childrenAges: [],
+          board: 'bb',
+          specialRequests: [],
+          fields: { arrivalDate: 'missing', departureDate: 'extracted', quantity: 'extracted', adults: 'extracted' },
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      missingQuoteReplyFields: ['Arrival date for stay 1'],
+      sourceRevision: 1,
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    render(<NavaPane bridge={fakeBridge} />);
+
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    await waitFor(() => expect(reply.value).toContain('Please confirm the following details'));
+    fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-11-12' } });
+    expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('2026-11-12');
+
+    await waitFor(() => expect(screen.queryByLabelText('Reviewed reply')).toBeNull());
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
+  it('preview: saves the missing-details reply without a PDF or HMS search', async () => {
+    const analysis = {
+      status: 'ready',
+      intent: 'quote',
+      groups: [
+        {
+          id: 'g1',
+          childrenAges: [],
+          board: 'bb',
+          quantity: null,
+          specialRequests: [],
+          fields: { arrivalDate: 'missing', departureDate: 'extracted', adults: 'missing' },
+          departureDate: '2026-11-14',
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      missingQuoteReplyFields: ['Arrival date for stay 1', 'Number of rooms and occupancy per room for stay 1'],
+      sourceRevision: 1,
+    };
+    bridgeMockState.analysisOverride = analysis;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    render(<NavaPane bridge={fakeBridge} preview />);
+
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const expected = missingQuoteDetailsWrapperHtml('David Miller', analysis.missingQuoteReplyFields, 'R Opperman');
+    await waitFor(() => expect(reply.value).toBe(expected));
+    fireEvent.click(await screen.findByRole('button', { name: 'Draft reply asking for missing details' }));
+
+    await waitFor(() => expect(saveReplyMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ html: expected, attachments: [] }),
+    ));
+    expect(screen.getByText('Saved the reply asking for the missing details. Nothing is sent.')).toBeDefined();
+    expect(sendCommandMock).not.toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything());
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
   it('preview: hides the quote Save reply block unless analysis intent is quote', async () => {

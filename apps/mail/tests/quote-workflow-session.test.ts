@@ -19,7 +19,9 @@ import {
   staffSourceReady,
   analysisRetryKey,
   hasStaffStayEdits,
+  dinnerAddOnInputProblem,
   dinnerAllowanceStillRequired,
+  missingQuoteDetailsReplyOnly,
   groupStays,
   removedStayFor,
   rowRoomCode,
@@ -27,7 +29,12 @@ import {
   stayTotals,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
-import { staffHeaderFieldProblem, staffStayExtrasFor } from '../lib/quote-workflow/types';
+import {
+  defaultStaffStayExtras,
+  emptyStaffQuoteHeader,
+  staffHeaderFieldProblem,
+  staffStayExtrasFor,
+} from '../lib/quote-workflow/types';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
 import type {
   LunaAnalysisWire,
@@ -567,7 +574,8 @@ describe('quote session', () => {
       selectionEpoch: 1,
       inputRevision: 1,
     });
-    expect(current.errorMessage).toBe('live bind unavailable');
+    expect(stepFor(current, '2026-11-12:2026-11-14').retryGuidance).toBe('live bind unavailable');
+    expect(current.errorMessage).toBeNull();
     expect(current.phase).toBe('tools');
 
     const switched = reduceQuoteSession(s, {
@@ -1035,6 +1043,61 @@ function twoDateSession() {
 function stepFor(session: { steps: QuoteToolStep[] }, stayKey: string): QuoteToolStep {
   return session.steps.find((step) => step.shareKey === stayKey)!;
 }
+
+describe('mixed complete and incomplete quote dates', () => {
+  it('allows the complete date option to run without sending the incomplete sibling to HMS', () => {
+    const analysis = {
+      ...twoDateAnalysis(),
+      groups: [
+        twoDateAnalysis().groups[0]!,
+        { ...twoDateAnalysis().groups[1]!, arrivalDate: undefined, departureDate: undefined },
+      ],
+      missingQuoteReplyFields: ['Arrival date for stay 2', 'Departure date for stay 2'],
+    };
+    const session = analysisReady(analysis);
+
+    expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toBeNull();
+    expect(quoteRunBlockReason(session, stepFor(session, 'unknown:unknown'))).toMatch(/missing arrival and departure/i);
+    expect(missingQuoteDetailsReplyOnly(session)).toBe(false);
+  });
+
+  it('clears only Nava’s generated missing-date reply after the stay becomes complete', () => {
+    const incompleteGroup = {
+      ...quoteAnalysis.groups[0]!,
+      arrivalDate: undefined,
+      fields: { ...quoteAnalysis.groups[0]!.fields, arrivalDate: 'missing' as const },
+    };
+    const session = analysisReady({
+      ...quoteAnalysis,
+      groups: [incompleteGroup],
+      missingQuoteReplyFields: ['Arrival date for stay 1'],
+    });
+    const automatic = reduceQuoteSession(session, {
+      type: 'set_reviewed_reply',
+      html: '<p>Please confirm the arrival date.</p>',
+      source: 'missing_quote_details',
+    });
+    const completed = reduceQuoteSession(automatic, {
+      type: 'patch_group',
+      groupId: incompleteGroup.id,
+      patch: { arrivalDate: '2026-11-12' },
+    });
+
+    expect(completed.reviewedReplyHtml).toBe('');
+    expect(completed.reviewedReplySource).toBeUndefined();
+
+    const manual = reduceQuoteSession(automatic, {
+      type: 'set_reviewed_reply',
+      html: '<p>Staff wrote this reply.</p>',
+    });
+    const completedManual = reduceQuoteSession(manual, {
+      type: 'patch_group',
+      groupId: incompleteGroup.id,
+      patch: { arrivalDate: '2026-11-12' },
+    });
+    expect(completedManual.reviewedReplyHtml).toBe('<p>Staff wrote this reply.</p>');
+  });
+});
 
 function staffQuoteFor(
   stayKey: string,
@@ -1664,7 +1727,8 @@ describe('quote session staff review items', () => {
     expect(stepFor(s, STAY_B).status).toBe('failed');
     expect(stepFor(s, STAY_A).status).toBe('succeeded');
     expect(s.staffQuotes[STAY_A]?.revisionRef).toBe('rev-a');
-    expect(s.errorMessage).toBe('HMS did not answer. Run option B again.');
+    expect(stepFor(s, STAY_B).retryGuidance).toBe('HMS did not answer. Run option B again.');
+    expect(s.errorMessage).toBeNull();
     expect(quoteRunBlockReason(s, stepFor(s, STAY_B))).toBeNull();
     expect(canRunQuoteStep(stepFor(s, STAY_B), s.steps, null)).toBe(true);
   });
@@ -1890,7 +1954,7 @@ describe('quote session staff review items', () => {
     expect(s.staffHeader.salesStrategy).toBe('BAR');
   });
 
-  it('prefills a per-person dinner allowance and ignores room rates that include dinner', () => {
+  it('does not treat email rate claims as installed staff dinner add-on prices', () => {
     const allowance = analysisReady({
       ...quoteAnalysis,
       luna: lunaQuote({
@@ -1906,7 +1970,7 @@ describe('quote session staff review items', () => {
         ],
       }),
     });
-    expect(allowance.staffHeader.dinnerAllowanceMinor).toBe(45000);
+    expect(allowance.staffHeader.dinnerAllowanceMinor).toBeUndefined();
     const included = analysisReady({
       ...quoteAnalysis,
       luna: lunaQuote({
@@ -1923,6 +1987,14 @@ describe('quote session staff review items', () => {
       }),
     });
     expect(included.staffHeader.dinnerAllowanceMinor).toBeUndefined();
+  });
+
+  it('does not infer a dinner charging basis from an amount without staff or hotel configuration', () => {
+    const extras = defaultStaffStayExtras({
+      ...emptyStaffQuoteHeader(),
+      dinnerAllowanceMinor: 45_000,
+    });
+    expect(extras.dinnerAllowanceUnit).toBeUndefined();
   });
 
   it('checks shuttle only when the email mentions a shuttle or transfer', () => {
@@ -2274,15 +2346,21 @@ describe('staff dinner B&B fallback', () => {
     expect(extras?.dinnerAllowanceMinor).toBeUndefined();
     expect(after.inputRevision).toBe(before.inputRevision);
     expect(dinnerAllowanceStillRequired(after.staffHeader)).toBe(true);
-    expect(
-      dinnerAllowanceStillRequired({
-        ...after.staffHeader,
-        stayExtrasByKey: {
-          ...after.staffHeader.stayExtrasByKey,
-          [stayKey]: { ...staffStayExtrasFor(after.staffHeader, stayKey), dinnerAllowanceMinor: 45_000 },
+    const priceEntered = {
+      ...after.staffHeader,
+      stayExtrasByKey: {
+        ...after.staffHeader.stayExtrasByKey,
+        [stayKey]: {
+          ...staffStayExtrasFor(after.staffHeader, stayKey),
+          dinnerAllowanceMinor: 45_000,
+          dinnerAllowanceUnit: 'per_person_per_night' as const,
         },
-      }),
-    ).toBe(false);
+      },
+    };
+    expect(dinnerAllowanceStillRequired(priceEntered)).toBe(true);
+    expect(dinnerAddOnInputProblem(priceEntered)).toBe(
+      'Run Get rates again to apply the dinner price before preparing documents.',
+    );
     expect(reduceQuoteSession(before, { type: 'staff_dinner_bb_fallback', groupIds: [] })).toBe(
       before,
     );

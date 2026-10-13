@@ -40,7 +40,7 @@ function baseInput(overrides: Partial<StaffQuoteInput> = {}): StaffQuoteInput {
     inputRevision: 1,
     groups: [
       {
-        id: 'stay',
+        id: 'g1',
         arrivalDate: '2026-10-12',
         departureDate: '2026-10-15',
         quantity: 1,
@@ -67,6 +67,7 @@ async function staffScenario(overrides: Partial<StaffQuoteInput> = {}, amounts?:
 /** Everything the staff quote can add, so the sheet has more lines than fit. */
 const fullExtras: Partial<StaffQuoteInput> = {
   dinnerAllowanceMinor: 45_000,
+  dinnerAllowanceUnit: 'per_person_per_night',
   lunchAllowanceMinor: 20_000,
   officeTransferMinor: 20_000,
   shuttleRequested: true,
@@ -172,13 +173,39 @@ describe('quote workbook totals and formulas', () => {
 });
 
 describe('quote workbook line rows', () => {
+  it.each([
+    ['per_person_per_night', 'per person per night', 270_000],
+    ['per_room_per_night', 'per room per night', 135_000],
+    ['per_person', 'per person', 90_000],
+  ] as const)('prints the dinner add-on charging basis for %s', async (unit, basis, dinnerTotalMinor) => {
+    const revision = await syntheticRevision();
+    const built = buildStaffProposalFacts(
+      baseInput({ groups: [{ ...baseInput().groups[0]!, id: 'g1' }] }),
+      { messageId: 'message-1', sourceHash: SOURCE_HASH },
+      { authorizationId: revision.authorizationId },
+      revision,
+      {
+        dinnerGroupIds: ['g1'],
+        dinnerAddOn: { amountMinor: 45_000, unit, label: 'Dinner buffet' },
+      },
+    );
+    expect(built.facts).not.toBeNull();
+
+    const { bytes, totalMinor } = quoteWorkbookForRevision({ revision, facts: built.facts!, header });
+    const sheet = sheetOf(bytes);
+    const lineCount = workbookLinesFor(revision, built.facts!).lines.length;
+    expect(sheet).toContain(`Dinner add-on (Dinner buffet) (${basis})`);
+    expect(totalMinor).toBe(revision.totalMinor + dinnerTotalMinor);
+    expect(cachedCents(sheet, `H${33 + Math.max(0, lineCount - 6)}`)).toBe(totalMinor);
+  });
+
   it('gives every authorised extra its own row, with no collapse into Other charges', async () => {
     const { revision, facts } = await staffScenario(fullExtras);
     const { lines, totalMinor } = workbookLinesFor(revision, facts);
     // Two room rate runs, then one row each for the dinner, lunch, office transfer, shuttle and parking.
     expect(lines).toHaveLength(7);
     expect(lines.slice(2).map((line) => line.description)).toEqual([
-      'Dinner allowance',
+      'Dinner add-on (per person per night)',
       'Lunch allowance',
       'Office transfer',
       'Shuttle',

@@ -1,5 +1,5 @@
 import { Send } from 'lucide-react';
-import { isMultiStay, optionLetter, requestedQuoteKeys } from '@/lib/quote-workflow/session';
+import { isMultiStay, missingQuoteDetailsReplyOnly, optionLetter, requestedQuoteKeys } from '@/lib/quote-workflow/session';
 import {
   multiOptionSignature,
   requireMultiOptionDraft,
@@ -54,8 +54,9 @@ export function ReplyBody({
   const reply = onSaveReply ?? onDraft;
   // A no-reply sender (an automated mailbox) gets no insert actions. The reply text stays for copying.
   const noReplySender = quoteSession.analysis?.noReplySender === true;
+  const requestOnly = missingQuoteDetailsReplyOnly(quoteSession);
   // A multi-stay quote is one combined PDF, so its one reply covers every date option. A single stay keeps its own reply.
-  const allOptionsDraft = isMultiStay(quoteSession);
+  const allOptionsDraft = !requestOnly && isMultiStay(quoteSession);
   const quotationDraft = quoteSession.treatAs === 'quote' || quoteSession.analysis?.intent === 'quote';
   const dateOptionLetters = requestedQuoteKeys(quoteSession.groups).map((_, index) => optionLetter(index));
   const allOptionsLabel = `Create one reply with all date options (${dateOptionLetters.join(', ')})`;
@@ -65,9 +66,13 @@ export function ReplyBody({
     ? 'Select an email first'
     : preview
       ? PREVIEW_ONLY_MESSAGE
-      : !supportsAction('CREATE_REPLY_DRAFT') || !supportsAction('ADD_ATTACHMENT_TO_DRAFT')
+      : !supportsAction('CREATE_REPLY_DRAFT')
+        ? 'This Outlook add-in is too old to create replies. Update the Nava Outlook add-in, then try again.'
+        : !requestOnly && !supportsAction('ADD_ATTACHMENT_TO_DRAFT')
         ? 'This Outlook add-in is too old to attach the PDF. Update the Nava Outlook add-in, then try again.'
-        : allOptionsDraft
+        : requestOnly
+          ? null
+          : allOptionsDraft
           ? requireMultiOptionDraft(quoteSession, combinedEdit)
             ? null
             : (ratedStaysReason(quoteSession) ?? 'Prepare the quote first')
@@ -81,6 +86,8 @@ export function ReplyBody({
     ? 'Select an email first'
     : !quoteSession.staffSource
       ? 'Wait for this email to sync, then select it again'
+      : requestOnly
+        ? null
       : allOptionsDraft
         ? requireMultiOptionDraft(quoteSession, combinedEdit)
           ? null
@@ -124,11 +131,15 @@ export function ReplyBody({
           {saving
             ? isDraftPending
               ? 'Saving the reply…'
+              : requestOnly
+                ? 'Draft reply asking for missing details'
               : quotationDraft
                 ? 'Draft quotation into email reply'
                 : 'Save reply'
             : isDraftPending
               ? 'Creating the draft in Outlook…'
+              : requestOnly
+                ? 'Draft reply asking for missing details'
               : allOptionsDraft
                 ? quotationDraft
                   ? 'Draft quotation into email reply'
@@ -173,7 +184,9 @@ export function ReplyBody({
       ) : null}
       {noReplySender ? null : (
         <p className="text-[11px] text-[#64748b]">
-          {saving
+          {requestOnly
+            ? 'Creates an unsent reply asking for the missing details. No quote PDF is attached; review it before sending manually.'
+            : saving
             ? 'Saves one unsent draft for this thread with the PDF attached. Nothing is sent.'
             : 'Creates an unsent reply with the PDF attached. Review it, then Send manually in Outlook. Nava never sends from this pane.'}
         </p>

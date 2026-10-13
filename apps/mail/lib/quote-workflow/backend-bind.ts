@@ -56,6 +56,7 @@ export type AnalyseSelectionResult =
       intent: QuoteAnalysis['intent'];
       groups: QuoteAnalysis['groups'];
       requestedRoomsByStay?: QuoteAnalysis['requestedRoomsByStay'];
+      missingQuoteReplyFields?: QuoteAnalysis['missingQuoteReplyFields'];
       secondaryAsks: QuoteAnalysis['secondaryAsks'];
       alternatives: QuoteAnalysis['alternatives'];
       sourceRevision: number;
@@ -161,6 +162,7 @@ export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
     intent: ready.intent,
     groups: ready.groups,
     ...(ready.requestedRoomsByStay ? { requestedRoomsByStay: ready.requestedRoomsByStay } : {}),
+    ...(ready.missingQuoteReplyFields ? { missingQuoteReplyFields: ready.missingQuoteReplyFields } : {}),
     secondaryAsks: ready.secondaryAsks,
     alternatives: ready.alternatives,
     ...(ready.reviewItems?.length ? { reviewItems: ready.reviewItems } : {}),

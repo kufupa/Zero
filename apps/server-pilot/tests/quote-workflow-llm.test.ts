@@ -262,6 +262,35 @@ describe('mapLlmDecision', () => {
     expect(JSON.stringify(mapped)).not.toMatch(/price|rate"|amount/i);
   });
 
+  it('maps half-board to dinner B&B and derives only missing dates and occupancy for the reply', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{
+            ...group,
+            arrival: null,
+            departure: '2026-11-14',
+            rooms: null,
+            adultsPerRoom: null,
+            board: 'half_board',
+          }],
+          missing: [],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      departureDate: '2026-11-14',
+      board: 'dinner_bb',
+      fields: { arrivalDate: 'missing', departureDate: 'extracted' },
+    });
+    expect(mapped.missingQuoteReplyFields).toEqual([
+      'Arrival date for stay 1',
+      'Number of rooms and occupancy per room for stay 1',
+    ]);
+  });
+
   it('maps create_booking to intent quote and leaves groups in place', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(analysis({ workflow: 'create_booking' })),

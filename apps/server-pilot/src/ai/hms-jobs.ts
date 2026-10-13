@@ -76,6 +76,7 @@ import {
   runStaffQuote,
   staffQuoteFailureCode,
   staffQuoteFailureMessage,
+  staffQuoteRoomAlternatives,
   type StaffQuoteRunIdentity,
 } from './staff-quote-run.js';
 import { quoteDigest } from '../quote-proposal/quote-revision.js';
@@ -2154,7 +2155,11 @@ async function storeStaffQuoteResult(input: {
   return marked ? 'succeeded' : 'retry_wait';
 }
 
-function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): { code: string; message: string } {
+export function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): {
+  code: string;
+  message: string;
+  alternatives?: ReturnType<typeof staffQuoteRoomAlternatives>;
+} {
   const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
   const code = typeof rawCode === 'string' ? rawCode : staffQuoteFailureCode(error);
   const directMessage = error instanceof Error ? error.message : '';
@@ -2165,7 +2170,20 @@ function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): { code: st
         salesStrategy: request.salesStrategy,
         dinnerRequested: request.groups.some((group) => group.board === 'dinner_bb'),
       });
-  return { code, message: message || 'The requested quote could not be qualified; review the stay inputs and try again.' };
+  const cause = error && typeof error === 'object' && 'cause' in error ? error.cause : undefined;
+  const detail = error && typeof error === 'object' && 'detail' in error ? error.detail : undefined;
+  const fromCause = cause && typeof cause === 'object' && 'alternatives' in cause
+    ? (cause as { alternatives?: unknown }).alternatives
+    : undefined;
+  const fromDetail = detail && typeof detail === 'object' && 'alternatives' in detail
+    ? (detail as { alternatives?: unknown }).alternatives
+    : undefined;
+  const alternatives = staffQuoteRoomAlternatives(fromCause ?? fromDetail);
+  return {
+    code,
+    message: message || 'The requested quote could not be qualified; review the stay inputs and try again.',
+    ...(alternatives.length ? { alternatives } : {}),
+  };
 }
 
 /**

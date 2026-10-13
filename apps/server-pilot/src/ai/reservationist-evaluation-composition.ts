@@ -163,7 +163,8 @@ export function isReservationistAuditedRestrictedNights(source:unknown,expectedR
  try{return capture.schemaVersion===2&&capture.outcome==='partial'&&capture.audit?.status==='complete'&&(capture.propertyCode===undefined||capture.propertyCode===expectedRequest.propertyCode)&&capture.requested?.propertyCode===expectedRequest.propertyCode&&quoteDigest(capture.requested)===quoteDigest(expectedRequest)&&capture.searchCompleteness?.status==='complete'&&Array.isArray(capture.issues)&&capture.issues.length===0&&Array.isArray(capture.groups)&&capture.groups.length===expectedRequest.rooms.length&&new Set(capture.groups.map(group=>group.id)).size===capture.groups.length&&capture.groups.every(group=>(group.outcome==='quote'||restrictedGroup(group))&&group.completeness?.search==='complete'&&group.completeness?.requiredFacts==='complete'&&Array.isArray(group.issues)&&group.issues.length===0&&expectedRequest.rooms.some(room=>room.id===group.id&&quoteDigest(room)===quoteDigest(group.request))&&Array.isArray(group.options)&&group.options.every(option=>Array.isArray(option.issues)&&option.issues.length===0))&&capture.groups.some(restrictedGroup)&&['not_selected','unknown','insufficient'].includes(capture.allocation?.status)&&quoteDigest(capture.allocation)===quoteDigest(composeAllocation(capture.groups,expectedRequest.propertyCode));}catch{return false;}
 }
 /** Why a multi-room capture cannot be quoted, for staff logs: statuses and HMS codes only (no guest data, no prices). */
-export type NativeQuoteGapDetail={allocationStatus:string;allocationReason:string;sharedInventoryPoolGap:boolean;rows:{row:number;outcome:string;roomCode:string|null;rateCode:string|null;buildingCode:'present'|'null'}[];evidenceRun:string|null};
+export type NativeRoomAlternative={groupId:string;roomCode:string;roomLabel:string;quantity:number};
+export type NativeQuoteGapDetail={allocationStatus:string;allocationReason:string;sharedInventoryPoolGap:boolean;rows:{row:number;outcome:string;roomCode:string|null;rateCode:string|null;buildingCode:'present'|'null'}[];evidenceRun:string|null;alternatives?:NativeRoomAlternative[]};
 const SAFE_CODE=/^[A-Za-z0-9_.-]{1,40}$/,SAFE_REASON=/^[A-Za-z0-9 .,;:'()-]{1,200}$/;
 const safeCode=(value:unknown)=>typeof value==='string'&&SAFE_CODE.test(value)?value:null;
 /**
@@ -171,7 +172,7 @@ const safeCode=(value:unknown)=>typeof value==='string'&&SAFE_CODE.test(value)?v
  * allocation would pick (the requested room and rate code that HMS matched, else the first offer) with whether HMS gave
  * its building. A null building is why no shared pool id can be built (quote-contract.mjs composeAllocation).
  */
-export function nativeQuoteGapDetail(capture:{allocation?:{status?:unknown;reason?:unknown;diagnostic?:unknown};groups?:unknown},evidenceDirectory:string|null):NativeQuoteGapDetail{
+export function nativeQuoteGapDetail(capture:{allocation?:{status?:unknown;reason?:unknown;diagnostic?:unknown};groups?:unknown},evidenceDirectory:string|null,alternatives?:NativeRoomAlternative[]):NativeQuoteGapDetail{
  const groups=Array.isArray(capture.groups)?capture.groups as {outcome?:unknown;request?:{required?:{roomCodes?:unknown;rateCodes?:unknown}};options?:unknown}[]:[];
  const rows=groups.map((group,index)=>{
   const options=Array.isArray(group.options)?group.options as {room?:{code?:unknown;buildingCode?:unknown};rate?:{code?:unknown};matchStatus?:unknown;eligibility?:unknown;availability?:unknown}[]:[];
@@ -183,7 +184,7 @@ export function nativeQuoteGapDetail(capture:{allocation?:{status?:unknown;reaso
  });
  const allocationStatus=safeCode(capture.allocation?.status)??'unknown',reason=capture.allocation?.reason,allocationReason=typeof reason==='string'&&SAFE_REASON.test(reason)?reason:'';
  const run=evidenceDirectory?basename(evidenceDirectory):'';
- return{allocationStatus,allocationReason,sharedInventoryPoolGap:allocationStatus==='unknown'&&rows.length>1&&(capture.allocation?.diagnostic==='room_profile_mismatch'||/shared inventory-pool identity/.test(allocationReason)),rows,evidenceRun:/^[A-Za-z0-9_.:-]{1,120}$/.test(run)?run:null};
+ return{allocationStatus,allocationReason,sharedInventoryPoolGap:allocationStatus==='unknown'&&rows.length>1&&(capture.allocation?.diagnostic==='room_profile_mismatch'||/shared inventory-pool identity/.test(allocationReason)),rows,evidenceRun:/^[A-Za-z0-9_.:-]{1,120}$/.test(run)?run:null,...(alternatives?.length?{alternatives}: {})};
 }
 type NativeSummaryCapture={schemaVersion:number;outcome:string;propertyCode:string;observedAt:string;requested:QuoteSourceRecord['request'];groups:(Omit<QuoteSourceRecord['result']['groups'][number],'options'>&{outcome:string;issues:unknown[];restrictedNights?:{roomCode:string;roomLabel:string;date:string}[];options:(QuoteSourceRecord['result']['groups'][number]['options'][number]&{issues:unknown[];details?:{status:string}})[]})[];allocation:{status:string;reason?:string};issues:unknown[];searchCompleteness:{status:string};audit:{status:string};evidenceDirectory:string};
 export type ExistingOwnerNativeQuoteOptions={owner:{cdpUrl:string;browserOwnership:'borrowed';propertyCode:string;secretPath:string};outputDir:string;dispatch?:(input:{executable:string;args:string[];env:NodeJS.ProcessEnv;signal:AbortSignal;timeout:number})=>Promise<{stdout:string;traceFinish?:'pending'}>};
@@ -201,7 +202,7 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
   if(evidence&&inside(evidence)&&resolve(evidence).startsWith(`${output}/`)&&await savedFailure(evidence))return{stdout};
   throw new Error('native_quote_read_unavailable');}});
  return async(request,signal)=>{signal.throwIfAborted();if(quoteDigest(options.owner)!==ownerHash||request.propertyCode!==owner.propertyCode)throw new Error('native_quote_owner_scope_mismatch');
-  const normalize=await import(pathToFileURL(contract).href) as {normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request?:unknown};composeAllocation:(groups:unknown[],propertyCode:string)=>{status:string};shortfallsOf:(groups:unknown[],propertyCode:string)=>{roomCode:string;roomLabel:string;date:string;demand:number;supply:number}[]};
+  const normalize=await import(pathToFileURL(contract).href) as {normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request?:unknown};composeAllocation:(groups:unknown[],propertyCode:string)=>{status:string};shortfallsOf:(groups:unknown[],propertyCode:string)=>{roomCode:string;roomLabel:string;date:string;demand:number;supply:number}[];availableRoomAlternatives:(groups:unknown[],request:unknown)=>NativeRoomAlternative[]};
   const wire={schemaVersion:2,...structuredClone(request)},normalized=normalize.normalizeQuoteRequest(wire);if(!normalized.ok)throw new Error('native_quote_request_invalid');const toolHashBefore=createHash('sha256').update(await readFile(script)).update(await readFile(contract)).digest('hex');
   await mkdir(output,{recursive:true,mode:0o700});const requestPath=join(output,`request-${randomUUID()}.json`);await writeFile(requestPath,JSON.stringify(wire),{mode:0o600});
   const dispatched:{stdout:string;traceFinish?:'pending'}=await dispatch({executable:process.execPath,args:[script,'--request',requestPath,'--output',output],signal,timeout:15*60000,env:{...process.env,HMS_STAGEHAND_CDP_URL:owner.cdpUrl,HMS_STAGEHAND_BROWSER_OWNERSHIP:owner.browserOwnership,HMS_QUOTE_SECRET_PATH:owner.secretPath}});signal.throwIfAborted();const provisional=dispatched.traceFinish==='pending';
@@ -215,7 +216,7 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
   // ponytail: a provisional (async trace) capture is only accepted as a quote above, so R6 shows on a settled capture only.
   if(source.outcome==='unavailable'&&isReservationistAuditedShortSupply(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation)){
    const shortfall=normalize.shortfallsOf(source.groups,request.propertyCode)[0];
-   if(shortfall)throw new ReservationistTaskEvidenceUnavailable('native_quote_insufficient_inventory',['room inventory for the requested stay'],undefined,{shortfall});
+   if(shortfall)throw new ReservationistTaskEvidenceUnavailable('native_quote_insufficient_inventory',['room inventory for the requested stay'],undefined,{shortfall,alternatives:normalize.availableRoomAlternatives(source.groups,normalized.request)});
   }
   if(source.outcome!=='quote'&&!summaryPartial){
    const reading=source.outcome==='partial'?partyReadingOf(source.groups,request.rateContext):null;
@@ -224,9 +225,9 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
    // Intact full captures with unqualified business facts need staff evidence, never quote admission.
    const fullBusinessGap=isReservationistAuditedFullBusinessGap(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation);
    // Deliberate block (handoff-reports/2026-10-06-quote-pilot-landing.md): only the diagnostics say which gap it is.
-   if(fullBusinessGap)throw new ReservationistTaskEvidenceUnavailable('native_quote_business_evidence_unavailable',['qualified rate eligibility and proven shared room inventory'],['room_options'],nativeQuoteGapDetail(source,evidence));
+   if(fullBusinessGap)throw new ReservationistTaskEvidenceUnavailable('native_quote_business_evidence_unavailable',['qualified rate eligibility and proven shared room inventory'],['room_options'],nativeQuoteGapDetail(source,evidence,normalize.availableRoomAlternatives(source.groups,normalized.request)));
    // A clean audited no-match means HMS has no rate for this meal plan; it is not invalid capture evidence.
-   if(isReservationistCleanNoMatch(source,normalized.request as QuoteSourceRecord['request']))throw new Error('native_quote_no_matching_rate');
+   if(isReservationistCleanNoMatch(source,normalized.request as QuoteSourceRecord['request']))throw new ReservationistTaskEvidenceUnavailable('native_quote_no_matching_rate',['a qualified rate for the requested stay'],undefined,{alternatives:normalize.availableRoomAlternatives(source.groups,normalized.request)});
    // HMS closed a requested room type to sale on named nights and offered no row for it: staff hear which room types and nights.
    if(isReservationistAuditedRestrictedNights(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation))throw new ReservationistTaskEvidenceUnavailable('native_quote_restricted_nights',['room availability on the restricted nights'],undefined,{restrictedNights:source.groups.flatMap(group=>group.restrictedNights??[])});
    throw new Error('native_quote_capture_scope_or_completeness_invalid');

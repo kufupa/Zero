@@ -15,6 +15,10 @@ export function pdfBlockReason(session: QuoteSession): string | null {
   switch (blocker.kind) {
     case 'amounts':
       return `Fix the amounts first. ${blocker.problem}`;
+    case 'dinner_add_on':
+      return blocker.problem;
+    case 'missing_stay_details':
+      return 'Add the missing arrival and departure dates before preparing quote documents.';
     case 'source_not_ready':
       return blocker.unsynced
         ? 'Waiting for this email to finish syncing.'

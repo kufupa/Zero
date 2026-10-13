@@ -38,6 +38,7 @@ import type {
   StaffExtraField,
   StaffQuoteOtherUnit,
   StaffStayExtras,
+  DinnerAddOnUnit,
   StayEditAction,
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
@@ -583,16 +584,32 @@ function StayExtrasFields({
         </label>
       ) : null}
       {label === 'Dinner allowance' && enabled ? (
-        <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
-          <span>Note (optional)</span>
-          <input
-            aria-label="Dinner label"
-            className={paneFieldClass}
-            maxLength={120}
-            value={extras.dinnerAllowanceLabel ?? ''}
-            onChange={(event) => patch({ dinnerAllowanceLabel: event.target.value })}
-          />
-        </label>
+        <>
+          <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
+            <span>Charging unit</span>
+            <select
+              aria-label="Dinner add-on unit"
+              className={paneFieldClass}
+              value={extras.dinnerAllowanceUnit ?? ''}
+              onChange={(event) => patch({ dinnerAllowanceUnit: event.target.value as DinnerAddOnUnit | undefined })}
+            >
+              <option value="">Choose a unit</option>
+              <option value="per_person_per_night">Per person per night</option>
+              <option value="per_room_per_night">Per room per night</option>
+              <option value="per_person">Per person</option>
+            </select>
+          </label>
+          <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
+            <span>Label (optional)</span>
+            <input
+              aria-label="Dinner label"
+              className={paneFieldClass}
+              maxLength={120}
+              value={extras.dinnerAllowanceLabel ?? ''}
+              onChange={(event) => patch({ dinnerAllowanceLabel: event.target.value })}
+            />
+          </label>
+        </>
       ) : null}
       {label === 'Other' ? (
         <>
@@ -638,7 +655,13 @@ function StayExtrasFields({
         </>
       ) : null}
       {label === 'Dinner allowance' && required ? (
-        <p className="col-span-2 text-[13px] text-[#475569]">Enter the dinner allowance for this stay.</p>
+        <p className="col-span-2 text-[13px] text-[#475569]">
+          {!(amount && amount > 0)
+            ? 'Dinner price — enter amount'
+            : !extras.dinnerAllowanceUnit
+              ? 'Choose how the dinner price is charged.'
+              : 'Run Get rates again to apply the dinner price before documents can be made.'}
+        </p>
       ) : null}
     </div>
   );
@@ -1562,6 +1585,32 @@ export function QuoteWorkflowPanel({
                       return (
                         <div key={group.id} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
                           <h5 className="text-[13px] font-semibold text-[#475569]">{`${rowLabels.get(group.id) ?? 'Room type needed'} rates`}</h5>
+                          {rowStep?.roomAlternatives?.filter((alternative) => alternative.groupId === group.id).map((alternative) => (
+                            <div key={`${alternative.roomCode}:${alternative.quantity}`} className="flex flex-col gap-2 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-2.5">
+                              <p className="text-[13px] text-[#334155]">
+                                Requested type not available — available instead: {alternative.roomLabel} × {alternative.quantity}
+                              </p>
+                              <SecondaryButton
+                                className="w-full"
+                                disabled={loadingThisStay || pinRunningThisStay || !onPatchGroup}
+                                onClick={() => {
+                                  if (!onPatchGroup || !rowStep) return;
+                                  const check = {
+                                    roomCodes: [alternative.roomCode],
+                                    roomPreference: alternative.roomLabel,
+                                    roomTypeSuggestions: [],
+                                    quantity: alternative.quantity,
+                                    ...(group.rateCode ? { rateCode: group.rateCode } : {}),
+                                    rowPrice: undefined,
+                                  } satisfies Partial<StayGroupRequirement>;
+                                  onPatchGroup(group.id, check);
+                                  setPinRun({ stepId: rowStep.id, changes: [{ groupId: group.id, check }] });
+                                }}
+                              >
+                                Use this
+                              </SecondaryButton>
+                            </div>
+                          ))}
                           {rateGroup?.options.length ? (
                             <RateCards
                               options={rateGroup.options}

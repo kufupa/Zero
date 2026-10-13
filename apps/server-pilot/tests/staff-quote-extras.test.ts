@@ -22,7 +22,7 @@ function baseInput(overrides: Partial<StaffQuoteInput> = {}): StaffQuoteInput {
     inputRevision: 1,
     groups: [
       {
-        id: 'stay',
+        id: 'g1',
         arrivalDate: '2026-10-12',
         departureDate: '2026-10-15',
         quantity: 1,
@@ -38,12 +38,12 @@ function baseInput(overrides: Partial<StaffQuoteInput> = {}): StaffQuoteInput {
 describe('buildStaffProposalFacts', () => {
   it('charges dinner allowance across 2 adults and 3 nights as 6 person-service units', async () => {
     const revision = await syntheticRevision();
-    const input = baseInput({ dinnerAllowanceMinor: 12_500 });
+    const input = baseInput({ dinnerAllowanceMinor: 12_500, dinnerAllowanceUnit: 'per_person_per_night' });
     const built = buildStaffProposalFacts(input, scope, { authorizationId: revision.authorizationId }, revision);
     expect(built.factRefs).toEqual(['extras']);
     expect(built.facts?.extras).toHaveLength(1);
     expect(built.facts?.extras[0]).toMatchObject({
-      label: 'Dinner allowance',
+      label: 'Dinner add-on',
       unitKind: 'person_service',
       quantity: 1,
       units: 6,
@@ -51,25 +51,25 @@ describe('buildStaffProposalFacts', () => {
     });
     const lines = deriveAuthorizedExtraLines(revision, built.facts!);
     expect(lines).toHaveLength(1);
-    expect(lines[0].description).toContain('Dinner allowance');
+    expect(lines[0].description).toContain('Dinner add-on');
     expect(lines[0].totalMinor).toBe(12_500 * 6);
   });
 
   it('charges the dinner allowance only to the groups that took the B&B fallback, never to the other guests', async () => {
     const revision = await syntheticRevision();
     const groups = [
-      { id: 'dinner', arrivalDate: '2026-10-12', departureDate: '2026-10-15', quantity: 1, adults: 2, childrenAges: [], board: 'bb' as const },
+      { id: 'g1', arrivalDate: '2026-10-12', departureDate: '2026-10-15', quantity: 1, adults: 2, childrenAges: [], board: 'bb' as const },
       { id: 'room', arrivalDate: '2026-10-12', departureDate: '2026-10-15', quantity: 1, adults: 1, childrenAges: [], board: 'room_only' as const },
     ];
     const onDinner = buildStaffProposalFacts(
-      baseInput({ groups, dinnerAllowanceMinor: 12_500, dinnerAllowanceGroupIds: ['dinner'] }),
+      baseInput({ groups, dinnerAllowanceMinor: 12_500, dinnerAllowanceUnit: 'per_person_per_night', dinnerAllowanceGroupIds: ['g1'] }),
       scope,
       { authorizationId: revision.authorizationId },
       revision,
     );
     expect(onDinner.facts?.extras[0]).toMatchObject({ units: 6 });
     const onOtherDates = buildStaffProposalFacts(
-      baseInput({ groups, dinnerAllowanceMinor: 12_500, dinnerAllowanceGroupIds: ['elsewhere'] }),
+      baseInput({ groups, dinnerAllowanceMinor: 12_500, dinnerAllowanceUnit: 'per_person_per_night', dinnerAllowanceGroupIds: ['elsewhere'] }),
       scope,
       { authorizationId: revision.authorizationId },
       revision,
@@ -128,7 +128,7 @@ describe('buildStaffProposalFacts', () => {
   it('puts dinner and shuttle labels on the staff proposal HTML', async () => {
     const revision = await syntheticRevision();
     const built = buildStaffProposalFacts(
-      baseInput({ dinnerAllowanceMinor: 12_500, shuttleRequested: true, shuttleMinor: 45_000 }),
+      baseInput({ dinnerAllowanceMinor: 12_500, dinnerAllowanceUnit: 'per_person_per_night', shuttleRequested: true, shuttleMinor: 45_000 }),
       scope,
       { authorizationId: revision.authorizationId },
       revision,
@@ -147,7 +147,7 @@ describe('buildStaffProposalFacts', () => {
       },
       built.facts!,
     );
-    expect(html).toContain('Dinner allowance');
+    expect(html).toContain('Dinner add-on');
     expect(html).toContain('Shuttle');
   });
 
@@ -184,11 +184,38 @@ async function staffExtras(overrides: Partial<StaffQuoteInput> = {}) {
 }
 
 describe('staff extras: separate dinner, lunch, office transfer, shuttle, other and notes', () => {
+  it.each([
+    ['per_person_per_night', 'per_person_night', 'per person per night', 270_000],
+    ['per_room_per_night', 'per_room_per_night', 'per room per night', 135_000],
+    ['per_person', 'per_person', 'per person', 90_000],
+  ] as const)('prints the dinner add-on charging basis for %s', async (unit, chargeUnit, basis, totalMinor) => {
+    const revision = await syntheticRevision();
+    const built = buildStaffProposalFacts(
+      baseInput({ groups: [{ ...baseInput().groups[0]!, id: 'g1' }] }),
+      scope,
+      { authorizationId: revision.authorizationId },
+      revision,
+      {
+        dinnerGroupIds: ['g1'],
+        dinnerAddOn: { amountMinor: 45_000, unit, label: 'Dinner buffet' },
+      },
+    );
+    expect(built.facts).not.toBeNull();
+    const lines = deriveAuthorizedExtraLines(revision, built.facts!);
+    expect(lines).toEqual([
+      expect.objectContaining({ service: 'dinner_add_on', chargeUnit, totalMinor }),
+    ]);
+
+    const html = compact(renderRevisionProposalHtml(revision, pdfHeader, built.facts!));
+    expect(html).toContain(compact(`<td>Dinner add-on (Dinner buffet) (${basis})</td>`));
+    expect(html).toContain(`data-proposal-total="${revision.totalMinor + totalMinor}"`);
+  });
+
   it('prices 2 guests x 3 nights x R450 dinner as one R2,700 line with QTY 2 and NIGHTS 3', async () => {
-    const { revision, built, lines } = await staffExtras({ dinnerAllowanceMinor: 45_000 });
+    const { revision, built, lines } = await staffExtras({ dinnerAllowanceMinor: 45_000, dinnerAllowanceUnit: 'per_person_per_night' });
     expect(lines).toEqual([
       expect.objectContaining({
-        description: 'Dinner allowance',
+        description: 'Dinner add-on',
         quantity: 2,
         nights: 3,
         rateMinor: 45_000,
@@ -196,13 +223,13 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
       }),
     ]);
     const html = compact(renderRevisionProposalHtml(revision, pdfHeader, built.facts!));
-    expect(html).toContain(compact('<td>2</td><td>Dinner allowance</td><td>3</td><td>R450.00</td><td>R2 700.00</td>'));
+    expect(html).toContain(compact('<td>2</td><td>Dinner add-on (per person per night)</td><td>3</td><td>R450.00</td><td>R2 700.00</td>'));
   });
 
   it('prints lunch and dinner as two separate lines', async () => {
-    const { lines } = await staffExtras({ dinnerAllowanceMinor: 45_000, lunchAllowanceMinor: 20_000 });
+    const { lines } = await staffExtras({ dinnerAllowanceMinor: 45_000, dinnerAllowanceUnit: 'per_person_per_night', lunchAllowanceMinor: 20_000 });
     expect(lines.map((line) => [line.description, line.quantity, line.nights, line.totalMinor])).toEqual([
-      ['Dinner allowance', 2, 3, 270_000],
+      ['Dinner add-on', 2, 3, 270_000],
       ['Lunch allowance', 2, 3, 120_000],
     ]);
   });
@@ -255,12 +282,13 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
   it('adds the staff qualifier to the dinner and lunch labels', async () => {
     const { lines } = await staffExtras({
       dinnerAllowanceMinor: 45_000,
+      dinnerAllowanceUnit: 'per_person_per_night',
       dinnerAllowanceLabel: 'food only',
       lunchAllowanceMinor: 20_000,
       lunchAllowanceLabel: 'incl. R40 gratuity',
     });
     expect(lines.map((line) => line.description)).toEqual([
-      'Dinner allowance (food only)',
+      'Dinner add-on (food only)',
       'Lunch allowance (incl. R40 gratuity)',
     ]);
   });
@@ -268,6 +296,7 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
   it('totals the PDF as room plus every extra, prints the note once, and never prints person_service', async () => {
     const { revision, built, lines } = await staffExtras({
       dinnerAllowanceMinor: 45_000,
+      dinnerAllowanceUnit: 'per_person_per_night',
       lunchAllowanceMinor: 20_000,
       officeTransferMinor: 20_000,
       shuttleRequested: true,
@@ -314,9 +343,10 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
     }
     const { built, lines } = await staffExtras({
       dinnerAllowanceMinor: 45_000,
+      dinnerAllowanceUnit: 'per_person_per_night',
       other: { label: '', amountMinor: 30_000, unit: 'per_person_night' },
     });
-    expect(lines.map((line) => line.description)).toEqual(['Dinner allowance']);
+    expect(lines.map((line) => line.description)).toEqual(['Dinner add-on']);
     expect(built.extrasReviewItems).toHaveLength(1);
   });
 
@@ -329,13 +359,14 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
     const legacy = staffQuoteInput.parse({
       ...baseInput(),
       dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceUnit: 'per_person_per_night',
       shuttleRequested: true,
       shuttleMinor: 45_000,
     });
     expect(legacy.shuttleTrips).toBeUndefined();
-    const { lines } = await staffExtras({ dinnerAllowanceMinor: 12_500, shuttleRequested: true, shuttleMinor: 45_000 });
+    const { lines } = await staffExtras({ dinnerAllowanceMinor: 12_500, dinnerAllowanceUnit: 'per_person_per_night', shuttleRequested: true, shuttleMinor: 45_000 });
     expect(lines.map((line) => [line.description, line.totalMinor])).toEqual([
-      ['Dinner allowance', 75_000],
+      ['Dinner add-on', 75_000],
       ['Shuttle', 45_000],
     ]);
   });
@@ -432,7 +463,7 @@ describe('staff extras: separate dinner, lunch, office transfer, shuttle, other 
   it('prices extras that cannot be priced as a BAD_REQUEST, never an internal error', async () => {
     const revision = await syntheticRevision();
     const prepared = { authorizationId: revision.authorizationId };
-    const priced = staffExtrasOrBadRequest(baseInput({ dinnerAllowanceMinor: 45_000 }), scope, prepared, revision);
+    const priced = staffExtrasOrBadRequest(baseInput({ dinnerAllowanceMinor: 45_000, dinnerAllowanceUnit: 'per_person_per_night' }), scope, prepared, revision);
     expect(priced.extraTotal).toBe(270_000);
     const oversize = { ...baseInput(), dinnerAllowanceMinor: MAX_EXTRA_AMOUNT_MINOR * 10 } as unknown as StaffQuoteInput;
     let caught: unknown;

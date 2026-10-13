@@ -237,6 +237,7 @@ export function resolveLedgerProposal(
     | undefined;
   if (!result) throw new Error('proposal_not_ready');
   const staff = run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
+  if (staff?.dinnerAddOnRequired === true) throw new Error('dinner_add_on_required');
   const qualifiedStaff =
     staff?.version === 1 &&
     staff.kind === 'staff_approved_quote' &&

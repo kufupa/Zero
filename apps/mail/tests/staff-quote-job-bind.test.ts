@@ -188,6 +188,36 @@ describe('staff quote HMS job binding', () => {
     expect(result).toMatchObject({ status: 'ok', staffQuote: { workflowRunId: 'workflow-1' } });
   });
 
+  it('labels a server-priced dinner fallback as B&B and carries the verified add-on', async () => {
+    const dinnerGroups = groups.map((group) => ({ ...group, board: 'dinner_bb' as const }));
+    const dinnerAddOn = {
+      label: 'Dinner buffet',
+      amountMinor: 25_000,
+      unit: 'per_person_per_night' as const,
+      totalMinor: 50_000,
+    };
+    const result = await bindExecuteStaffQuote({
+      queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
+      staffQuoteJob: vi.fn(async () => view('done', {
+        ...READY,
+        dinnerFallbackGroupIds: ['single'],
+        dinnerAddOnRequired: false,
+        dinnerAddOn,
+      })),
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups: dinnerGroups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      offer: { board: 'bb' },
+      staffQuote: { dinnerFallbackGroupIds: ['single'], dinnerAddOn },
+    });
+  });
+
   it('surfaces the exact business refusal stored by the worker', async () => {
     const refusal = 'HMS has no rate for this meal plan under BAR. Try another meal plan.';
     const queue = vi.fn(async () => ({ runId: 'staff-job-1' }));
@@ -235,6 +265,30 @@ describe('staff quote HMS job binding', () => {
       detail: 'PRECONDITION_FAILED',
       noMatchingRate: true,
     });
+  });
+
+  it('preserves validated available-room alternatives from a persisted refusal', async () => {
+    const alternatives = [
+      { groupId: 'single', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 2 },
+    ];
+    const result = await bindExecuteStaffQuote({
+      queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
+      staffQuoteJob: vi.fn(async () =>
+        view('done', {
+          ok: false,
+          code: 'PRECONDITION_FAILED',
+          message: 'No qualified rate covers every room-night.',
+          alternatives,
+        }),
+      ),
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({ status: 'unavailable', alternatives });
   });
 
   it.each([

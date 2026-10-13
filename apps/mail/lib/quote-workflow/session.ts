@@ -11,6 +11,7 @@ import type {
   QuoteStepInputs,
   QuoteToolStep,
   RemovedStay,
+  DinnerAddOnUnit,
   StaffQuoteAllocation,
   StaffStayExtras,
   StayGroupRequirement,
@@ -49,7 +50,10 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
   };
 }
 
-export function groupsForQuoteStep(session: QuoteSession, step: QuoteToolStep): StayGroupRequirement[] {
+export function groupsForQuoteStep(
+  session: Pick<QuoteSession, 'groups'>,
+  step: QuoteToolStep,
+): StayGroupRequirement[] {
   if (step.kind === 'quote_stay' && step.shareKey) {
     return session.groups.filter(
       (group) => `${group.arrivalDate ?? 'unknown'}:${group.departureDate ?? 'unknown'}` === step.shareKey,
@@ -186,6 +190,13 @@ export function quoteRunBlockReason(
   session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'>,
   step: QuoteToolStep,
 ): string | null {
+  if (
+    step.kind === 'quote_stay' &&
+    step.shareKey &&
+    groupsForQuoteStep(session, step).some((group) => !group.arrivalDate || !group.departureDate)
+  ) {
+    return 'Add the missing arrival and departure dates before searching availability.';
+  }
   const lookupWait = partyLookupWaitReason(session);
   if (lookupWait) return lookupWait;
   if (step.kind === 'quote_stay' && step.shareKey) {
@@ -512,6 +523,10 @@ export function staffQuoteMatchesSession(session: QuoteSession): boolean {
 export type PdfBlocker =
   /** A typed amount in the quote header cannot be read. */
   | { kind: 'amounts'; problem: string }
+  /** A required dinner add-on has no verified amount or charging unit yet. */
+  | { kind: 'dinner_add_on'; problem: string }
+  /** The quote request is missing a complete arrival/departure range. */
+  | { kind: 'missing_stay_details' }
   /** The email is not yet linked to its synced mailbox copy (hash, message and thread). */
   | { kind: 'source_not_ready'; unsynced: boolean }
   /** No rates were found for this email. */
@@ -536,6 +551,11 @@ export type PdfBlocker =
   | { kind: 'occupancy' };
 
 export function pdfBlocker(session: QuoteSession): PdfBlocker | null {
+  if (session.groups.some((group) => !group.arrivalDate || !group.departureDate)) {
+    return { kind: 'missing_stay_details' };
+  }
+  const dinnerProblem = dinnerAddOnInputProblem(session);
+  if (dinnerProblem) return { kind: 'dinner_add_on', problem: dinnerProblem };
   // An unreadable amount means the saved one is not what staff see: no PDF, Excel or reply until it is fixed.
   const problem = staffHeaderFieldProblem(session.staffHeader, undefined, new Set(session.groups.map(stayKeyForGroup)));
   if (problem) return { kind: 'amounts', problem };
@@ -592,6 +612,17 @@ function ratedOptionOnlyMismatch(session: QuoteSession, quote: StaffQuoteAllocat
 
 export function canCreatePdf(session: QuoteSession): boolean {
   return pdfBlocker(session) === null;
+}
+
+/** A missing-stay-details response asks for context only; it must not turn a partial read into an HMS quote. */
+export function missingQuoteDetailsReplyOnly(
+  session: Pick<QuoteSession, 'analysis' | 'groups'>,
+): boolean {
+  return Boolean(
+    session.analysis?.intent === 'quote' &&
+      session.analysis.missingQuoteReplyFields?.length &&
+      !session.groups.some((group) => group.arrivalDate && group.departureDate),
+  );
 }
 
 export function canCreateNativeDraft(session: QuoteSession): boolean {
@@ -679,35 +710,6 @@ export function hasStaffStayEdits(session: QuoteSession): boolean {
   );
 }
 
-function rateClaimAmountMinor(amount: string): number | undefined {
-  const normalized = amount.replaceAll(',', '').trim();
-  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(normalized);
-  if (!match) return undefined;
-  const major = Number(match[1]);
-  const frac = (match[2] ?? '00').padEnd(2, '0').slice(0, 2);
-  const minor = major * 100 + Number(frac);
-  return Number.isSafeInteger(minor) && minor > 0 ? minor : undefined;
-}
-
-function dinnerAllowanceFromRateClaims(analysis: QuoteAnalysis): number | undefined {
-  for (const claim of analysis.luna?.rateClaims ?? []) {
-    const quote = claim.quote?.trim() ?? '';
-    if (!quote) continue;
-    if (claim.currency && claim.currency !== 'ZAR') continue;
-    const separateDinner =
-      /dinner allowance|meal allowance/i.test(quote) ||
-      (/dinner/i.test(quote) && /per person/i.test(quote));
-    if (!separateDinner) continue;
-    if (/includ(?:e|ing)/i.test(quote) && !/allowance|per person/i.test(quote)) continue;
-    const minor = rateClaimAmountMinor(claim.amount);
-    if (!minor) continue;
-    const amountDigits = claim.amount.replace(/[^\d]/g, '');
-    if (!amountDigits || !quote.replace(/[^\d]/g, '').includes(amountDigits)) continue;
-    return minor;
-  }
-  return undefined;
-}
-
 function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
   const texts = [
     ...(analysis.luna?.evidence ?? []).map((row) => row.quote),
@@ -728,10 +730,6 @@ function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAna
     else if (party.kind === 'government') {
       next = { ...next, company: name, salesStrategy: 'Government' };
     }
-  }
-  if (next.dinnerAllowanceMinor === undefined) {
-    const dinner = dinnerAllowanceFromRateClaims(analysis);
-    if (dinner) next = { ...next, dinnerAllowanceMinor: dinner };
   }
   if (!next.shuttleRequested && shuttleRequestedFromAnalysis(analysis)) {
     next = { ...next, shuttleRequested: true };
@@ -985,7 +983,17 @@ function editStays(
     session.reviewItems.filter((item) => item.kind === 'document_failure' || item.kind === 'analysis_failure'),
     session.staffActions,
   );
-  const edited = { ...session, groups, stayRevision: session.stayRevision + 1, selectedStayKey, reviewItems };
+  const completedRequestReply =
+    session.reviewedReplySource === 'missing_quote_details' &&
+    !missingQuoteDetailsReplyOnly({ ...session, groups });
+  const edited = {
+    ...session,
+    groups,
+    stayRevision: session.stayRevision + 1,
+    selectedStayKey,
+    reviewItems,
+    ...(completedRequestReply ? { reviewedReplyHtml: '', reviewedReplySource: undefined } : {}),
+  };
   if (running?.shareKey && affected.has(running.shareKey)) {
     const cleared = clearDownstream({
       ...edited,
@@ -1066,12 +1074,21 @@ function keptFieldErrors(
   return kept;
 }
 
-/** A B&B fallback for dinner needs a staff-entered per-person allowance before any PDF; never price it here. */
+/** A B&B fallback needs an explicit staff price and unit, then a refreshed server quote before any document. */
 export function dinnerAllowanceStillRequired(
   value:
-    | Pick<StaffQuoteHeader, 'dinnerAllowanceRequired' | 'dinnerAllowanceMinor' | 'stayExtrasByKey'>
+    | Pick<StaffQuoteHeader, 'dinnerAllowanceRequired' | 'dinnerAllowanceMinor' | 'dinnerAllowanceUnit' | 'stayExtrasByKey'>
     | Pick<QuoteSession, 'staffHeader' | 'groups'>,
 ): boolean {
+  return dinnerAddOnInputProblem(value) !== null;
+}
+
+/** Why staff still need to finish a required dinner add-on, or null when amount and charging unit are explicit. */
+export function dinnerAddOnInputProblem(
+  value:
+    | Pick<StaffQuoteHeader, 'dinnerAllowanceRequired' | 'dinnerAllowanceMinor' | 'dinnerAllowanceUnit' | 'stayExtrasByKey'>
+    | Pick<QuoteSession, 'staffHeader' | 'groups'>,
+): string | null {
   const header = 'staffHeader' in value ? value.staffHeader : value;
   const extras =
     'staffHeader' in value
@@ -1079,11 +1096,24 @@ export function dinnerAllowanceStillRequired(
       : Object.values(header.stayExtrasByKey ?? {});
   const required = extras.filter((item) => item.dinnerAllowanceRequired);
   if (required.length) {
-    return required.some(
-      (item) => !item.dinnerEnabled || !(item.dinnerAllowanceMinor && item.dinnerAllowanceMinor > 0),
-    );
+    let hasEnteredDinnerPrice = false;
+    for (const item of required) {
+      if (!item.dinnerEnabled || !(item.dinnerAllowanceMinor && item.dinnerAllowanceMinor > 0)) {
+        return 'Dinner price — enter amount.';
+      }
+      if (!isDinnerAddOnUnit(item.dinnerAllowanceUnit)) return 'Choose how the dinner price is charged.';
+      hasEnteredDinnerPrice = true;
+    }
+    return hasEnteredDinnerPrice ? 'Run Get rates again to apply the dinner price before preparing documents.' : null;
   }
-  return Boolean(header.dinnerAllowanceRequired) && !(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0);
+  if (!header.dinnerAllowanceRequired) return null;
+  if (!(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0)) return 'Dinner price — enter amount.';
+  if (!isDinnerAddOnUnit(header.dinnerAllowanceUnit)) return 'Choose how the dinner price is charged.';
+  return 'Run Get rates again to apply the dinner price before preparing documents.';
+}
+
+function isDinnerAddOnUnit(value: unknown): value is DinnerAddOnUnit {
+  return value === 'per_person_per_night' || value === 'per_room_per_night' || value === 'per_person';
 }
 
 /** A quote run and the actions it offers belong to one selection and one input revision. Once either moves on, they are stale. */
@@ -1390,6 +1420,29 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       delete stayPdfs[stayKey];
       // The same goes for rate cards: this run's groups get its options, and the other groups keep theirs.
       const runGroupIds = new Set(action.offer.coversGroupIds);
+      const fallbackGroupIds = [...new Set(staffQuote.dinnerFallbackGroupIds ?? [])].filter((id) => runGroupIds.has(id));
+      let staffHeader = action.approvedHeader
+        ? { ...session.staffHeader, ...action.approvedHeader }
+        : session.staffHeader;
+      if (fallbackGroupIds.length) {
+        const existing = staffStayExtrasFor(staffHeader, stayKey);
+        const dinnerAddOn = staffQuote.dinnerAddOn;
+        staffHeader = {
+          ...staffHeader,
+          stayExtrasByKey: {
+            ...staffHeader.stayExtrasByKey,
+            [stayKey]: {
+              ...existing,
+              dinnerEnabled: true,
+              dinnerAllowanceRequired: staffQuote.dinnerAddOnRequired === true || !dinnerAddOn,
+              dinnerAllowanceMinor: dinnerAddOn?.amountMinor ?? existing.dinnerAllowanceMinor,
+              dinnerAllowanceUnit: dinnerAddOn?.unit ?? existing.dinnerAllowanceUnit,
+              dinnerAllowanceLabel: dinnerAddOn?.label ?? existing.dinnerAllowanceLabel,
+              dinnerAllowanceGroupIds: fallbackGroupIds,
+            },
+          },
+        };
+      }
       return {
         ...session,
         phase: stayCount > 1 ? 'tools' : 'results',
@@ -1418,16 +1471,26 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         },
         errorMessage: null,
         runningStepId: null,
-        reviewedReplyHtml: action.reviewedReplyHtml ?? session.reviewedReplyHtml,
-        staffHeader: action.approvedHeader
-          ? { ...session.staffHeader, ...action.approvedHeader }
-          : session.staffHeader,
+        reviewedReplyHtml:
+          action.reviewedReplyHtml ??
+          (session.reviewedReplySource === 'missing_quote_details' ? '' : session.reviewedReplyHtml),
+        reviewedReplySource:
+          action.reviewedReplyHtml !== undefined || session.reviewedReplySource === 'missing_quote_details'
+            ? undefined
+            : session.reviewedReplySource,
+        staffHeader,
         groups: action.groups?.length ? replaceStayRows(session.groups, action.groups) : session.groups,
         stayRevision: action.groups?.length ? session.stayRevision + 1 : session.stayRevision,
         reviewItems: reviewItemsFromExtrasNotes(session, action.extrasReviewItems ?? []),
         steps: session.steps.map((step) =>
           step.shareKey === stayKey
-            ? { ...step, status: 'succeeded' as const, retryGuidance: undefined, errorDetail: undefined }
+            ? {
+                ...step,
+                status: 'succeeded' as const,
+                retryGuidance: undefined,
+                errorDetail: undefined,
+                roomAlternatives: undefined,
+              }
             : step,
         ),
         // Only this stay's booking draft is stale. The other stays' drafts still match their own runs.
@@ -1665,7 +1728,13 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         evidence: action.provenance,
         errorMessage: null,
         runningStepId: null,
-        reviewedReplyHtml: action.reviewedReplyHtml ?? session.reviewedReplyHtml,
+        reviewedReplyHtml:
+          action.reviewedReplyHtml ??
+          (session.reviewedReplySource === 'missing_quote_details' ? '' : session.reviewedReplyHtml),
+        reviewedReplySource:
+          action.reviewedReplyHtml !== undefined || session.reviewedReplySource === 'missing_quote_details'
+            ? undefined
+            : session.reviewedReplySource,
         steps: session.steps.map((step) =>
           step.status === 'running' || step.id === session.runningStepId
             ? { ...step, status: 'succeeded' as const }
@@ -1721,7 +1790,13 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         errorMessage: null,
         steps: session.steps.map((step) =>
           step.id === action.stepId
-            ? { ...step, status: 'failed' as const, retryGuidance: action.reason, errorDetail: action.detail }
+            ? {
+                ...step,
+                status: 'failed' as const,
+                retryGuidance: action.reason,
+                errorDetail: action.detail,
+                roomAlternatives: action.alternatives,
+              }
             : step,
         ),
       };
@@ -1732,7 +1807,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         phase: 'tools',
         runningStepId: action.stepId,
         steps: session.steps.map((step) =>
-          step.id === action.stepId ? { ...step, status: 'running' as const } : step,
+          step.id === action.stepId
+            ? { ...step, status: 'running' as const, roomAlternatives: undefined }
+            : step,
         ),
       };
     case 'step_failed':
@@ -1758,20 +1835,26 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         return session;
       }
       const stayKey = session.selectedStayKey;
-      const reviewedReplyHtml = !isMultiStay(session) && !session.reviewedReplyHtml.trim()
-        ? action.reviewedReplyHtml ?? session.reviewedReplyHtml
+      const generatedRequestReply = session.reviewedReplySource === 'missing_quote_details';
+      const reviewedReplyHtml = !isMultiStay(session) && (generatedRequestReply || !session.reviewedReplyHtml.trim())
+        ? action.reviewedReplyHtml ?? (generatedRequestReply ? '' : session.reviewedReplyHtml)
         : session.reviewedReplyHtml;
       return {
         ...session,
         pdf: action.pdf,
         phase: 'review',
         reviewedReplyHtml,
+        reviewedReplySource: generatedRequestReply ? undefined : session.reviewedReplySource,
         // A combined PDF is one document for all stays, so it is not kept under any one of them.
         stayPdfs: stayKey && !isMultiStay(session) ? { ...session.stayPdfs, [stayKey]: action.pdf } : session.stayPdfs,
       };
     }
     case 'set_reviewed_reply':
-      return { ...session, reviewedReplyHtml: action.html };
+      return {
+        ...session,
+        reviewedReplyHtml: action.html,
+        reviewedReplySource: action.source,
+      };
     case 'select_offers':
       if (sameSelectedOfferIds(action.offerIds, session.selectedOfferIds)) return session;
       // A combined PDF covers every stay's run, not the selection, so it stays.

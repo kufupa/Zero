@@ -45,7 +45,7 @@ const lunaGroupSchema = z.object({
     .nullable()
     .describe("Adults in EACH room; '6 adults in 3 rooms' = 2"),
   childAges: z.array(z.number().int()),
-  board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
+  board: z.enum(['room_only', 'bb', 'dbb', 'half_board']).nullable(),
   roomPreference: z.string().nullable(),
   guestNames: z.array(z.string()),
 });
