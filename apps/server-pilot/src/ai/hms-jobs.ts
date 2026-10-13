@@ -2059,8 +2059,10 @@ function staffQuoteTransientFailure(error: unknown): boolean {
       }
       if (typeof code === 'string' && STAFF_QUOTE_TRANSIENT_CODES.has(code)) return true;
       if (current instanceof TRPCError && current.code === 'INTERNAL_SERVER_ERROR') return true;
+      // A plain data cause (for example { alternatives }) is refusal detail, not an unknown failure.
       if (
         depth > 0 &&
+        current instanceof Error &&
         !(current instanceof TRPCError) &&
         !STAFF_QUOTE_BUSINESS_CODES.has(staffQuoteErrorCode(current))
       ) {
