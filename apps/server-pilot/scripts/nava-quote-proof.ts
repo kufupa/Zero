@@ -1451,7 +1451,12 @@ async function proveThread(
   proof.prefilled = await readPrefilled(page);
   if (config.allowEdits) {
     proof.edits = await fillOpenRoomTypes(page, proof.prefilled);
-    if (proof.edits.length) proof.prefilled = await readPrefilled(page);
+    if (proof.edits.length) {
+      proof.prefilled = await readPrefilled(page);
+      // The rates the pane queued on open were for the old inputs; it drops them and offers Search availability
+      // again, so the driver searches once more, as staff would.
+      guard.ratedRateKeys = [];
+    }
   }
   if (!guard.expectedRateKeys.size) guard.expectedRateKeys = rateKeysForDateRanges(proof.prefilled.stays);
   const missing = requiredQuoteEdits(proof.prefilled);
