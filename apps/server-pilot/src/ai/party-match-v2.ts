@@ -43,6 +43,7 @@ export type PartyMatchEmailContext = {
   subject: string | null;
   signatureBlock: string;
   extractedNames: string[];
+  personNames: string[];
 };
 
 export type PartyMatchPick = {
@@ -102,7 +103,7 @@ const BRACKETED = /\(([^()]*)\)|\[([^\[\]]*)\]/g;
 const LEGAL_ABBREVIATION = /\b(?:P\.T\.Y\.?|L\.T\.D\.?|L\.L\.C\.?|S\.A\.?|S\.L\.?)\b/giu;
 const ACRONYM = /^\p{Lu}[\p{Lu}\p{N}&]{1,15}$/u;
 const ORG_WORDS =
-  /\b(?:pty\s*ltd|proprietary|limited|incorporated|llc|llp|cc|travel|travels|tours|agency|services|holdings|group|hotel|university|management|solutions|restaurant|surgical|health|science|destination|consulting|international|africa|company)\b/i;
+  /\b(?:pty|ltd|proprietary|limited|incorporated|llc|llp|cc|travel|travels|tours?|agency|services|holdings|group|hotel|university|management|solutions|restaurant|surgical|health|science|destination|consulting|international|africa|company|mining)\b/i;
 const PUBLIC_EMAIL_DOMAINS = new Set([
   'gmail.com',
   'googlemail.com',
@@ -283,30 +284,6 @@ function isLikelyPersonName(value: string): boolean {
   return words.every((word) => /^\p{Lu}[\p{L}'’.-]*$/u.test(word));
 }
 
-function matchesPartyName(name: string, partyNames: readonly string[]): boolean {
-  const key = normalisePartyName(name);
-  if (!key) return false;
-  const compact = key.replace(/\s+/gu, '');
-  return partyNames.some((partyName) => {
-    const partyKey = normalisePartyName(partyName);
-    return partyKey === key || (partyKey && partyKey.replace(/\s+/gu, '') === compact);
-  });
-}
-
-function partyNamesWithSenderDisplay(
-  senderDisplayName: string | null,
-  partyNames: readonly string[],
-  personNames: readonly string[],
-): string[] {
-  const isDisplayNameParty = Boolean(
-    senderDisplayName &&
-      !isLikelyPersonName(senderDisplayName) &&
-      !personNames.some((person) => overlapsPersonName(senderDisplayName, person)) &&
-      (ORG_WORDS.test(senderDisplayName) || matchesPartyName(senderDisplayName, partyNames)),
-  );
-  return isDisplayNameParty ? [...partyNames, senderDisplayName!] : [...partyNames];
-}
-
 function namesFromText(textValue: string): string[] {
   const out = new Set<string>();
   const boundedText = textValue.slice(0, MAX_PERSON_SCAN_CHARS);
@@ -328,7 +305,6 @@ function namesFromText(textValue: string): string[] {
 function signaturePersonNames(
   signature: string,
   senderDisplayName: string | null,
-  partyNames: readonly string[],
 ): string[] {
   return signature
     .split(/\r?\n/u)
@@ -347,13 +323,32 @@ function signaturePersonNames(
           ?.trim() ?? '',
     )
     .map((line) => line.replace(/^(?:(?:mr|mrs|ms|miss|dr|prof)\.?\s+)/iu, ''))
-    .filter((line) => {
-      if (matchesPartyName(line, partyNames)) return false;
-      return (
+    .filter(
+      (line) =>
         Boolean(senderDisplayName && overlapsPersonName(line, senderDisplayName)) ||
-        isLikelyPersonName(line)
-      );
-    });
+        isLikelyPersonName(line),
+    );
+}
+
+function explicitPersonNames(input: {
+  displayName: string | null;
+  contactName: string | null;
+  guestNames: readonly string[];
+  subject?: string | null;
+  body?: string | null;
+  signature: string;
+}): string[] {
+  const bodyAndSubject = `${input.subject ?? ''}\n${input.body ?? ''}`.slice(
+    0,
+    MAX_PERSON_SCAN_CHARS,
+  );
+  return [
+    ...(input.displayName && isLikelyPersonName(input.displayName) ? [input.displayName] : []),
+    ...(input.contactName ? [input.contactName] : []),
+    ...input.guestNames,
+    ...namesFromText(bodyAndSubject),
+    ...signaturePersonNames(input.signature, input.displayName),
+  ];
 }
 
 function signatureOrganisationRows(
@@ -372,7 +367,12 @@ function signatureOrganisationRows(
       });
       continue;
     }
-    if (line.length <= MAX_CANDIDATE_NAME && ORG_WORDS.test(line) && !isLikelyPersonName(line)) {
+    if (
+      line.length <= MAX_CANDIDATE_NAME &&
+      !line.includes(':') &&
+      ORG_WORDS.test(line) &&
+      !isLikelyPersonName(line)
+    ) {
       found.push({
         name: line,
         kind: /\b(?:travel|travels|tours|agency)\b/i.test(line) ? 'agency' : 'company',
@@ -479,41 +479,23 @@ export function buildPartyMatchCandidates(input: {
   const signature = extractPartySignature(input.body);
   const quoteParty = quoteLlmPartyOf({ payload, quoteLlmParty: input.quoteLlmParty });
   const contact = objectRecord(payload.contact);
+  const contactName = text(contact.name);
   const agency = text(payload.agency);
   const endClient = text(payload.endClient);
   const bodyPartyMentions = extractPartyMentions(input.body);
   const signatureOrganisations = signatureOrganisationRows(signature);
   const domain = domainLabel(sender.address);
   const alias = suggestPartyFromSender(sender.address);
-  const partyNames = partyNamesWithSenderDisplay(
-    displayName,
-    [
-      agency,
-      endClient,
-      ...(quoteParty.name && quoteParty.kind ? [quoteParty.name] : []),
-      ...bodyPartyMentions.map((mention) => mention.name),
-      ...signatureOrganisations.map((row) => row.name),
-      ...(alias ? [alias.name] : []),
-      ...(domain ? [domain.name] : []),
-    ].filter((name): name is string => Boolean(name)),
-    [text(contact.name), ...quoteParty.guestNames, ...(input.guestNames ?? [])].filter(
-      (name): name is string => Boolean(name),
-    ),
+  const people = new Set(
+    explicitPersonNames({
+      displayName,
+      contactName,
+      guestNames: [...quoteParty.guestNames, ...(input.guestNames ?? [])],
+      subject: input.subject,
+      body: input.body,
+      signature,
+    }),
   );
-  const bodyAndSubject = `${input.subject ?? ''}\n${input.body ?? ''}`.slice(
-    0,
-    MAX_PERSON_SCAN_CHARS,
-  );
-  const people = new Set([
-    ...(displayName && isLikelyPersonName(displayName) && !matchesPartyName(displayName, partyNames)
-      ? [displayName]
-      : []),
-    ...(text(contact.name) ? [text(contact.name)!] : []),
-    ...quoteParty.guestNames,
-    ...(input.guestNames ?? []),
-    ...namesFromText(bodyAndSubject).filter((name) => !matchesPartyName(name, partyNames)),
-    ...signaturePersonNames(signature, displayName, partyNames),
-  ]);
   const candidates: PartyMatchCandidate[] = [];
   const add = (
     nameValue: unknown,
@@ -522,7 +504,7 @@ export function buildPartyMatchCandidates(input: {
     strength: PartyMatchStrength,
   ) => {
     const name = text(nameValue);
-    if (!name || peopleHasMatch(name, people)) return;
+    if (!name || (peopleHasMatch(name, people) && !ORG_WORDS.test(name))) return;
     const key = `${kind}:${normalisePartyName(name)}`;
     const existing = candidates.find(
       (candidate) => `${candidate.kind}:${normalisePartyName(candidate.name)}` === key,
@@ -577,23 +559,14 @@ export function partyMatchEmailContext(input: {
   const contactName = text(objectRecord(payload.contact).name);
   const bodyPartyMentions = extractPartyMentions(input.body);
   const signatureOrganisations = signatureOrganisationRows(signature);
-  const domain = domainLabel(sender.address);
-  const alias = suggestPartyFromSender(sender.address);
-  const partyNames = partyNamesWithSenderDisplay(
+  const personNames = explicitPersonNames({
     displayName,
-    [
-      text(payload.agency),
-      text(payload.endClient),
-      ...(quoteParty.name && quoteParty.kind ? [quoteParty.name] : []),
-      ...bodyPartyMentions.map((mention) => mention.name),
-      ...signatureOrganisations.map((row) => row.name),
-      ...(alias ? [alias.name] : []),
-      ...(domain ? [domain.name] : []),
-    ].filter((name): name is string => Boolean(name)),
-    [contactName, ...quoteParty.guestNames, ...(input.guestNames ?? [])].filter(
-      (name): name is string => Boolean(name),
-    ),
-  );
+    contactName,
+    guestNames: [...quoteParty.guestNames, ...(input.guestNames ?? [])],
+    subject: input.subject,
+    body: input.body,
+    signature,
+  });
   const names = [
     text(payload.agency),
     text(payload.endClient),
@@ -603,12 +576,7 @@ export function partyMatchEmailContext(input: {
     text(input.displayName),
     ...bodyPartyMentions.map((mention) => mention.name),
     ...signatureOrganisations.map((row) => row.name),
-    ...namesFromText(
-      `${input.subject ?? ''}\n${input.body ?? ''}`.slice(0, MAX_PERSON_SCAN_CHARS),
-    ).filter((name) => !matchesPartyName(name, partyNames)),
-    ...signaturePersonNames(signature, displayName, partyNames),
-    ...quoteParty.guestNames,
-    ...(input.guestNames ?? []),
+    ...personNames,
   ].filter((name): name is string => Boolean(name));
   return {
     fromAddress: sender.address,
@@ -616,6 +584,7 @@ export function partyMatchEmailContext(input: {
     subject: text(input.subject),
     signatureBlock: signature,
     extractedNames: [...new Set(names)].slice(0, 12),
+    personNames: [...new Set(personNames)].slice(0, 12),
   };
 }
 
@@ -649,13 +618,20 @@ const partyPickSchema = z
 function fallbackPartyPick(
   candidates: readonly PartyMatchCandidate[],
   rows: readonly PartyMatchRow[],
+  personNames: readonly string[],
 ): PartyMatchPick {
-  if (!candidates.length || !rows.length) {
+  const people = new Set(personNames);
+  const safeCandidates = candidates.filter(
+    (candidate) =>
+      ORG_WORDS.test(candidate.name) ||
+      (!isLikelyPersonName(candidate.name) && !peopleHasMatch(candidate.name, people)),
+  );
+  if (!safeCandidates.length || !rows.length) {
     return {
       pickNativeId: null,
       kind: null,
       confidence: 'low',
-      reason: !candidates.length
+      reason: !safeCandidates.length
         ? 'No safe company or agency name could be extracted from the email.'
         : 'HMS returned no party rows for the planned searches.',
       alternatives: [],
@@ -663,7 +639,7 @@ function fallbackPartyPick(
     };
   }
   const exact = new Map<string, PartyMatchRow>();
-  for (const candidate of candidates) {
+  for (const candidate of safeCandidates) {
     if (candidate.strength !== 'strong') continue;
     const wanted = normalisePartyName(candidate.name);
     if (!wanted) continue;
@@ -708,7 +684,8 @@ export async function pickPartyMatch(input: {
   deadlineAt?: number;
 }): Promise<PartyMatchPick> {
   const rows = input.rows.slice(0, PARTY_MATCH_V2_ROW_CAP);
-  if (!input.adapter) return fallbackPartyPick(input.candidates, rows);
+  const fallback = () => fallbackPartyPick(input.candidates, rows, input.context.personNames);
+  if (!input.adapter) return fallback();
   try {
     const invoked = await input.adapter.invoke({
       modelId: 'gpt-6-luna',
@@ -729,13 +706,13 @@ export async function pickPartyMatch(input: {
       maxOutputTokens: 500,
     });
     const parsed = partyPickSchema.safeParse(invoked.output);
-    if (!parsed.success) return fallbackPartyPick(input.candidates, rows);
+    if (!parsed.success) return fallback();
     const returned = new Map(rows.map((row) => [`${row.kind}:${row.nativeId}`, row]));
     if (
       parsed.data.pickNativeId &&
       !returned.has(`${parsed.data.kind}:${parsed.data.pickNativeId}`)
     ) {
-      return fallbackPartyPick(input.candidates, rows);
+      return fallback();
     }
     if (
       parsed.data.alternatives.some(
@@ -747,11 +724,11 @@ export async function pickPartyMatch(input: {
           ),
       )
     ) {
-      return fallbackPartyPick(input.candidates, rows);
+      return fallback();
     }
     return { ...parsed.data, reason: parsed.data.reason.trim(), source: 'llm' };
   } catch {
-    return fallbackPartyPick(input.candidates, rows);
+    return fallback();
   }
 }
 
@@ -804,9 +781,10 @@ export function applyPartyBindRule(input: {
   const hasHigherClaim = Boolean(
     picked &&
       rows.some((row) =>
-        input.candidates.some(
-          (candidate) => partyClaimScore(candidate, row) > partyClaimScore(candidate, picked),
-        ),
+        input.candidates.some((candidate) => {
+          const pickedClaim = partyClaimScore(candidate, picked);
+          return pickedClaim > 0 && partyClaimScore(candidate, row) > pickedClaim;
+        }),
       ),
   );
   const ranked = rows

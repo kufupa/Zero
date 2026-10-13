@@ -375,13 +375,14 @@ export function PartyPicker({
     retryOptions: PARTY_RETRY_OPTIONS,
   });
   const viewRequest = partyJob.view?.request;
-  const v2Readback = partyJobIsV2(partyJob.view);
+  const v2Prefetch = Boolean(partyJob.view?.prefetch && partyJobIsV2(partyJob.view));
   const sourceMatches =
+    !v2Prefetch ||
     sourceMessageId === undefined ||
     (sourceMessageId !== null && partyJob.view?.sourceMessageId === sourceMessageId);
   const currentJobView =
     sourceMatches && viewRequest?.kind === 'party' &&
-    (!query || v2Readback || sameJobName(viewRequest.name, query)) &&
+    (!query || v2Prefetch || sameJobName(viewRequest.name, query)) &&
     (!kind || viewRequest.partyKind === kind || (partyJob.view?.prefetch && !viewRequest.partyKind))
       ? partyJob.view
       : null;

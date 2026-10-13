@@ -2,6 +2,7 @@ import {
   applyPartyBindRule,
   buildPartyMatchCandidates,
   normalisePartyName,
+  partyMatchEmailContext,
   pickPartyMatch,
   planPartySearches,
   type PartyMatchCandidate,
@@ -88,13 +89,23 @@ describe('PARTY MATCH V2 search plan', () => {
       body: 'Please arrange the quote.\nRegards, Karen Vickers | Reservations Consultant',
       payload: { agency: 'Karen Vickers Travel' },
     });
-    expect(mixedSignature).toEqual([]);
+    expect(mixedSignature).toContainEqual({
+      name: 'Karen Vickers Travel',
+      kind: 'agency',
+      source: 'extraction_agency',
+      strength: 'strong',
+    });
 
     const titledContact = buildPartyMatchCandidates({
       fromAddress: 'karen@example.test',
       payload: { agency: 'Karen Vickers Travel', contact: { name: 'Dr. Karen Vickers' } },
     });
-    expect(titledContact).toEqual([]);
+    expect(titledContact).toContainEqual({
+      name: 'Karen Vickers Travel',
+      kind: 'agency',
+      source: 'extraction_agency',
+      strength: 'strong',
+    });
   });
 
   it('uses guest names from the existing quote-Luna answer to reject a party-shaped person name', () => {
@@ -106,6 +117,39 @@ describe('PARTY MATCH V2 search plan', () => {
       },
     });
     expect(candidates).toEqual([]);
+  });
+
+  it('rejects an extracted end client repeated as a guest before planning HMS searches', () => {
+    const candidates = buildPartyMatchCandidates({
+      payload: { endClient: 'Karen Vickers' },
+      body: 'Guest: Karen Vickers',
+    });
+
+    expect(candidates).toEqual([]);
+    expect(planPartySearches(candidates)).toEqual([]);
+  });
+
+  it('keeps a person-name candidate only when it also contains an organisation word', () => {
+    const candidates = buildPartyMatchCandidates({
+      payload: { endClient: 'Karen Vickers Travel' },
+      body: 'Guest: Karen Vickers',
+    });
+
+    expect(candidates).toContainEqual({
+      name: 'Karen Vickers Travel',
+      kind: 'company',
+      source: 'extraction_end_client',
+      strength: 'strong',
+    });
+  });
+
+  it.each([
+    ['sender display name', { fromAddress: 'Karen Vickers <karen@example.test>' }],
+    ['signature person line', { body: 'Regards,\nKaren Vickers' }],
+  ] as const)('prefers %s evidence over an extracted end client', (_source, evidence) => {
+    expect(
+      buildPartyMatchCandidates({ payload: { endClient: 'Karen Vickers' }, ...evidence }),
+    ).toEqual([]);
   });
 
   it('treats a compact travel domain as a weak agency-first hint', () => {
@@ -147,17 +191,17 @@ describe('PARTY MATCH V2 search plan', () => {
     });
   });
 
-  it('does not discard a sender-domain party hint as a signature person', () => {
+  it('recognizes a sender organization with an organisation word in the signature', () => {
     const candidates = buildPartyMatchCandidates({
       fromAddress: 'Northwind Mining <bookings@northwind-mining.com>',
       body: 'Please arrange the quote.\nRegards,\nNorthwind Mining',
     });
 
     expect(candidates).toContainEqual({
-      name: 'northwind mining',
+      name: 'Northwind Mining',
       kind: 'company',
-      source: 'sender_domain_label',
-      strength: 'weak',
+      source: 'signature',
+      strength: 'strong',
     });
   });
 });
@@ -277,6 +321,32 @@ describe('PARTY MATCH V2 binding', () => {
     expect(result.suggestions.map((row) => row.nativeId)).toEqual(['nexus', 'xl-nexus']);
   });
 
+  it('ignores stronger claims from an unrelated agency candidate when the client row is picked', () => {
+    const result = applyPartyBindRule({
+      candidates: [
+        candidate('Amicis Health'),
+        { ...candidate('Northwind Travel', 'agency'), source: 'extraction_agency' },
+      ],
+      rows: [
+        { kind: 'company', nativeId: 'client', name: 'Amicis Health' },
+        { kind: 'agency', nativeId: 'agency', name: 'Northwind Travel' },
+      ],
+      pick: {
+        pickNativeId: 'client',
+        kind: 'company',
+        confidence: 'high',
+        reason: 'Exact client row.',
+        alternatives: [],
+        source: 'llm',
+      },
+    });
+
+    expect(result).toMatchObject({
+      matchStatus: 'bound',
+      boundParty: { kind: 'company', nativeId: 'client', name: 'Amicis Health' },
+    });
+  });
+
   it('never binds from a sender-domain-only hint, even when the HMS name is exact', () => {
     const result = applyPartyBindRule({
       candidates: [
@@ -371,6 +441,7 @@ describe('PARTY MATCH V2 structured Luna pick', () => {
         subject: 'Quote request',
         signatureBlock: 'Regards, Nexus Travel',
         extractedNames: ['Nexus Travel'],
+        personNames: [],
       },
     });
     expect(result).toMatchObject({ source: 'llm', pickNativeId: 'nexus', confidence: 'high' });
@@ -390,9 +461,30 @@ describe('PARTY MATCH V2 structured Luna pick', () => {
         subject: null,
         signatureBlock: '',
         extractedNames: ['Amicis Health (Pty) Ltd'],
+        personNames: [],
       },
     });
     expect(result).toMatchObject({ source: 'fallback', pickNativeId: '1', confidence: 'high' });
+  });
+
+  it('does not let no-model fallback bind an exact candidate that is also a guest person name', async () => {
+    const context = partyMatchEmailContext({
+      payload: { endClient: 'karen vickers' },
+      guestNames: ['Karen Vickers'],
+    });
+    const result = await pickPartyMatch({
+      adapter: null,
+      candidates: [candidate('karen vickers')],
+      rows: [{ kind: 'company', nativeId: 'guest', name: 'karen vickers' }],
+      context,
+    });
+
+    expect(result).toMatchObject({
+      source: 'fallback',
+      pickNativeId: null,
+      kind: null,
+      confidence: 'low',
+    });
   });
 
   it('explains when there is no safe name or no HMS row instead of implying an LLM failure', async () => {
@@ -402,6 +494,7 @@ describe('PARTY MATCH V2 structured Luna pick', () => {
       subject: null,
       signatureBlock: '',
       extractedNames: [],
+      personNames: [],
     };
     const noName = await pickPartyMatch({ adapter: null, candidates: [], rows: [], context });
     const noRows = await pickPartyMatch({
@@ -445,6 +538,7 @@ describe('PARTY MATCH V2 structured Luna pick', () => {
         subject: 'Quote request',
         signatureBlock: '',
         extractedNames: [],
+        personNames: [],
       },
     });
     expect(result).toMatchObject({

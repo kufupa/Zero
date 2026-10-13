@@ -78,6 +78,17 @@ function v2PartyView(matchStatus: 'bound' | 'needs_pick', requestName = 'ABC Tra
   };
 }
 
+function manualPartyView(sourceMessageId?: string): HmsJobView {
+  const view: HmsJobView = {
+    ...prefetchedPartyView(),
+    request: { kind: 'party', name: 'ABC Travel', partyKind: 'company' },
+    prefetch: false,
+  };
+  delete view.sourceMessageId;
+  if (sourceMessageId) view.sourceMessageId = sourceMessageId;
+  return view;
+}
+
 
 function listed(...results: Array<typeof ABC_TRAVEL>): PartyFindReply {
   return { outcome: 'ambiguous', results, truncated: false };
@@ -545,6 +556,78 @@ describe('PartyPicker queued party jobs', () => {
     expect(onPick).not.toHaveBeenCalled();
     fireEvent.click(within(results).getByRole('button', { name: 'ABC Travel' }));
     expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL);
+  });
+
+  it('shows a queue-off manual result when the synchronous view has no source message id', async () => {
+    const jobTransport: HmsJobTransport = {
+      jobQueueEnabled: vi.fn(async () => false),
+      queue: vi.fn(async () => ({ runId: null, view: manualPartyView() })),
+      status: vi.fn(async () => null),
+    };
+    render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-1"
+        sourceMessageId="message-selected"
+        autoLookup={false}
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(findButton().disabled).toBe(false));
+    fireEvent.click(findButton());
+
+    const results = await screen.findByRole('list', {
+      name: 'Companies and agencies found in HMS',
+    });
+    expect(within(results).getByRole('button', { name: 'ABC Travel' })).toBeTruthy();
+    expect(jobTransport.queue).toHaveBeenCalledWith({
+      kind: 'party',
+      name: 'ABC Travel',
+      partyKind: 'company',
+    });
+  });
+
+  it('shows a queued manual result attached to the latest inbound message for an older email', async () => {
+    const jobTransport: HmsJobTransport = {
+      jobQueueEnabled: vi.fn(async () => true),
+      queue: vi.fn(async () => ({ runId: 'party-run-older-email' })),
+      status: vi.fn(async (input) =>
+        'runId' in input ? manualPartyView('message-latest') : null,
+      ),
+    };
+    render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-1"
+        sourceMessageId="message-older"
+        autoLookup={false}
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(findButton().disabled).toBe(false));
+    fireEvent.click(findButton());
+
+    const results = await screen.findByRole('list', {
+      name: 'Companies and agencies found in HMS',
+    });
+    expect(within(results).getByRole('button', { name: 'ABC Travel' })).toBeTruthy();
+    expect(jobTransport.queue).toHaveBeenCalledWith({
+      kind: 'party',
+      name: 'ABC Travel',
+      partyKind: 'company',
+    });
   });
 
   it('releases the rates hold after four minutes and offers a named Retry', async () => {
