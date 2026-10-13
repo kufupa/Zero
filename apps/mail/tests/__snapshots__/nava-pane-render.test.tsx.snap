@@ -515,7 +515,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r69»"
+          id="radix-«r6c»"
           type="button"
         >
           <svg
@@ -951,7 +951,7 @@ exports[`NavaPane screen states > diagnostics: the connection step after a succe
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r97»"
+          id="radix-«r9e»"
           type="button"
         >
           <svg
@@ -1519,7 +1519,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r8t»-arrival"
+                                for="«r94»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -1529,7 +1529,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r8t»-arrival"
+                              id="«r94»-arrival"
                               type="date"
                               value=""
                             />
@@ -1542,7 +1542,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r8t»-departure"
+                                for="«r94»-departure"
                               >
                                 <span>
                                   Departure
@@ -1552,7 +1552,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r8t»-departure"
+                              id="«r94»-departure"
                               type="date"
                               value=""
                             />
@@ -1569,7 +1569,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r8s»-meal-plan"
+                        for="«r93»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -1582,7 +1582,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r8s»-meal-plan"
+                      id="«r93»-meal-plan"
                     >
                       <option
                         value="all"
@@ -1679,7 +1679,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                                 >
                                   <label
                                     class="flex items-center gap-1.5"
-                                    for="«r96»-room"
+                                    for="«r9d»-room"
                                   >
                                     <span>
                                       Room type
@@ -1699,7 +1699,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                                   aria-invalid="true"
                                   aria-label="Room type"
                                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]"
-                                  id="«r96»-room"
+                                  id="«r9d»-room"
                                 >
                                   <option
                                     value=""
@@ -2972,7 +2972,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r8q»"
+          id="radix-«r91»"
           type="button"
         >
           <svg
@@ -3540,7 +3540,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r5e»-arrival"
+                                for="«r5h»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -3550,7 +3550,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r5e»-arrival"
+                              id="«r5h»-arrival"
                               type="date"
                               value=""
                             />
@@ -3563,7 +3563,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r5e»-departure"
+                                for="«r5h»-departure"
                               >
                                 <span>
                                   Departure
@@ -3573,7 +3573,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r5e»-departure"
+                              id="«r5h»-departure"
                               type="date"
                               value=""
                             />
@@ -3590,7 +3590,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r5d»-meal-plan"
+                        for="«r5g»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -3603,7 +3603,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r5d»-meal-plan"
+                      id="«r5g»-meal-plan"
                     >
                       <option
                         value="all"
@@ -3700,7 +3700,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                                 >
                                   <label
                                     class="flex items-center gap-1.5"
-                                    for="«r5i»-room"
+                                    for="«r5l»-room"
                                   >
                                     <span>
                                       Room type
@@ -3720,7 +3720,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                                   aria-invalid="true"
                                   aria-label="Room type"
                                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]"
-                                  id="«r5i»-room"
+                                  id="«r5l»-room"
                                 >
                                   <option
                                     value=""
@@ -4853,7 +4853,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r5b»"
+          id="radix-«r5e»"
           type="button"
         >
           <svg
@@ -5317,7 +5317,7 @@ exports[`NavaPane screen states > tour: the first slide of the feature tour, ope
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r99»"
+          id="radix-«r9g»"
           type="button"
         >
           <svg
@@ -5885,7 +5885,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r87»-arrival"
+                                for="«r8c»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -5895,7 +5895,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r87»-arrival"
+                              id="«r8c»-arrival"
                               type="date"
                               value=""
                             />
@@ -5908,7 +5908,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r87»-departure"
+                                for="«r8c»-departure"
                               >
                                 <span>
                                   Departure
@@ -5918,7 +5918,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r87»-departure"
+                              id="«r8c»-departure"
                               type="date"
                               value=""
                             />
@@ -5935,7 +5935,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r86»-meal-plan"
+                        for="«r8b»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -5948,7 +5948,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r86»-meal-plan"
+                      id="«r8b»-meal-plan"
                     >
                       <option
                         value="all"
@@ -6045,7 +6045,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                                 >
                                   <label
                                     class="flex items-center gap-1.5"
-                                    for="«r8b»-room"
+                                    for="«r8g»-room"
                                   >
                                     <span>
                                       Room type
@@ -6065,7 +6065,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                                   aria-invalid="true"
                                   aria-label="Room type"
                                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]"
-                                  id="«r8b»-room"
+                                  id="«r8g»-room"
                                 >
                                   <option
                                     value=""
@@ -7238,7 +7238,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r84»"
+          id="radix-«r89»"
           type="button"
         >
           <svg
@@ -7806,7 +7806,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r8i»-arrival"
+                                for="«r8o»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -7816,7 +7816,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r8i»-arrival"
+                              id="«r8o»-arrival"
                               type="date"
                               value=""
                             />
@@ -7829,7 +7829,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r8i»-departure"
+                                for="«r8o»-departure"
                               >
                                 <span>
                                   Departure
@@ -7839,7 +7839,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r8i»-departure"
+                              id="«r8o»-departure"
                               type="date"
                               value=""
                             />
@@ -7856,7 +7856,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r8h»-meal-plan"
+                        for="«r8n»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -7869,7 +7869,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r8h»-meal-plan"
+                      id="«r8n»-meal-plan"
                     >
                       <option
                         value="all"
@@ -7966,7 +7966,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                                 >
                                   <label
                                     class="flex items-center gap-1.5"
-                                    for="«r8m»-room"
+                                    for="«r8s»-room"
                                   >
                                     <span>
                                       Room type
@@ -7986,7 +7986,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                                   aria-invalid="true"
                                   aria-label="Room type"
                                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]"
-                                  id="«r8m»-room"
+                                  id="«r8s»-room"
                                 >
                                   <option
                                     value=""
@@ -9159,7 +9159,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r8f»"
+          id="radix-«r8l»"
           type="button"
         >
           <svg
@@ -9547,7 +9547,7 @@ exports[`NavaPane screen states > welcome: a first run shows the account step an
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r57»"
+          id="radix-«r5a»"
           type="button"
         >
           <svg
