@@ -1823,6 +1823,26 @@ function staffQuoteUserFromMetrics(metrics: Record<string, unknown>): StaffQuote
   return { id: user.id, name: user.name, email: user.email };
 }
 
+/**
+ * How long a staff quote result is reused. A priced result lives only as long as its HMS evidence (freshUntil, 15
+ * minutes), since the PDF refuses older evidence; opening the email after that queues a fresh quote. Other results
+ * (refusals, no rate) keep the 6-hour TTL.
+ */
+export function staffQuoteResultExpiry(result: Record<string, unknown>, now: Date): Date {
+  const ttl = now.getTime() + STAFF_QUOTE_RESULT_TTL_MS;
+  const fresh = typeof result.freshUntil === 'string' ? Date.parse(result.freshUntil) : Number.NaN;
+  return new Date(Number.isFinite(fresh) ? Math.min(ttl, fresh) : ttl);
+}
+
+/** A priced result is reused only while freshUntil is ahead; one stored without it (before 2026-10-13) never is. */
+export function staffQuoteResultReusable(result: unknown, now: Date): boolean {
+  if (!result || typeof result !== 'object') return true;
+  const stored = result as { status?: unknown; freshUntil?: unknown };
+  if (stored.status !== 'ready') return true;
+  const fresh = typeof stored.freshUntil === 'string' ? Date.parse(stored.freshUntil) : Number.NaN;
+  return Number.isFinite(fresh) && fresh > now.getTime();
+}
+
 async function storeStaffQuoteResult(input: {
   db: DB;
   mark: Mark;
@@ -1838,7 +1858,7 @@ async function storeStaffQuoteResult(input: {
         kind: 'staff_quote',
         asOf: now.toISOString(),
       },
-      readResultExpiresAt: new Date(now.getTime() + STAFF_QUOTE_RESULT_TTL_MS),
+      readResultExpiresAt: staffQuoteResultExpiry(input.result, now),
       metrics: { hmsJob: true, kind: 'staff_quote', outcome: input.outcome },
     },
     input.db,
@@ -2161,6 +2181,7 @@ async function latestStaffQuoteRunFor(
   quoteInput: StaffQuoteInput,
 ): Promise<AiWorkflowRun[]> {
   const wanted = hmsRequestKey({ kind: 'staff_quote', input: quoteInput });
+  const now = new Date();
   const rows = await db
     .select()
     .from(aiWorkflowRun)
@@ -2170,7 +2191,8 @@ async function latestStaffQuoteRunFor(
         eq(aiWorkflowRun.triggerMessageId, messageId),
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
         sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${messageId}`,
-        staffQuoteRunFreshness(new Date()),
+        // Every success counts when picking the newest: an expired price must not let an older refusal answer.
+        or(eq(aiWorkflowRun.state, 'succeeded'), staffQuoteRunFreshness(now)),
       ),
     )
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
@@ -2178,6 +2200,13 @@ async function latestStaffQuoteRunFor(
   // superseded by a later quote, so its documents would be refused; the pane must quote again instead.
   const [newest] = rows;
   if (!newest) return [];
+  if (
+    newest.state === 'succeeded' &&
+    (!newest.readResultExpiresAt ||
+      newest.readResultExpiresAt <= now ||
+      !staffQuoteResultReusable(newest.readResult, now))
+  )
+    return [];
   const parsed = hmsJobRequestSchema.safeParse(newest.readRequest);
   return parsed.success && hmsRequestKey(parsed.data) === wanted ? [newest] : [];
 }

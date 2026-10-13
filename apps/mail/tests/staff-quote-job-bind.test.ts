@@ -2,6 +2,8 @@ import {
   bindAutoStartStaffQuote,
   bindExecuteStaffQuote,
   bindReadBackStaffQuote,
+  EXPIRED_STAFF_QUOTE_COPY,
+  qualifiedPdfFailureReason,
   type ExecuteStaffQuoteInput,
   type ExecuteStaffQuoteResult,
   staffQuoteFromTrpc,
@@ -548,5 +550,11 @@ describe('staff quote HMS job binding', () => {
       }),
     ).resolves.toMatchObject({ status: 'ok' });
     expect(rerun).toHaveBeenCalledOnce();
+  });
+});
+
+describe('qualifiedPdfFailureReason', () => {
+  it('asks staff to run the quote again when HMS evidence is past its 15 minutes', () => {
+    expect(qualifiedPdfFailureReason(new Error('Proposal evidence is not ready'))).toBe(EXPIRED_STAFF_QUOTE_COPY);
   });
 });
