@@ -1,4 +1,5 @@
-import { aiShadowAdmission, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import { aiShadowAdmission } from '../src/db/schema/ai-shadow-evaluation.js';
 import { workItem } from '../src/db/schema/work.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { describe, expect, it } from 'vitest';
