@@ -37,7 +37,9 @@ export function BookingVoucherCard({
   bodyText?: string | null;
 }) {
   const amendment = amendmentOf(session);
-  const hasBookingWorkflow = session.analysis?.luna?.workflow === 'create_booking';
+  const intent = session.treatAs ?? session.analysis?.luna?.workflow;
+  const hasBookingWorkflow = intent === 'create_booking';
+  const showVoucherFindCard = hasBookingWorkflow || amendment !== null;
   const ota = amendment || hasBookingWorkflow ? otaBookingChannel({ senderEmail, subject, bodyText }) : null;
   const lunaGroups = session.analysis?.luna?.groups ?? [];
   const guestName = lunaGroups.flatMap((group) => group.guestNames).find((name) => name.trim());
@@ -71,13 +73,15 @@ export function BookingVoucherCard({
           requireStoredWrite
         />
       ) : null}
-      <VoucherFindCard
-        key={internetMessageId ?? 'no-email'}
-        internetMessageId={internetMessageId}
-        trpc={trpcClient}
-        syncCommitted={syncCommitted}
-        syncPending={syncPending}
-      />
+      {showVoucherFindCard ? (
+        <VoucherFindCard
+          key={internetMessageId ?? 'no-email'}
+          internetMessageId={internetMessageId}
+          trpc={trpcClient}
+          syncCommitted={syncCommitted}
+          syncPending={syncPending}
+        />
+      ) : null}
     </>
   );
 }

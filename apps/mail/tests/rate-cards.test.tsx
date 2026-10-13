@@ -179,6 +179,10 @@ function rateCards(): HTMLButtonElement[] {
   );
 }
 
+function rateCodeLabel(card: HTMLButtonElement, code: string): HTMLSpanElement | undefined {
+  return [...card.querySelectorAll('span')].find((span) => span.textContent?.trim() === code);
+}
+
 /** draftMoney uses a non-breaking space; the text matcher folds it to a plain space, so the expected text does too. */
 function rand(minor: number): string {
   return draftMoney(minor).replace(/\s/g, ' ');
@@ -188,7 +192,11 @@ describe('rate cards in the quote panel', () => {
   it('renders the options in the order HMS sent, with the quoted one marked selected', async () => {
     render(<QuoteWorkflowPanel session={await quotedSession([NCOR, BAR, BARRO])} />);
     const cards = rateCards();
-    expect(cards.map((card) => card.textContent?.split(':')[0])).toEqual(['NCOR', 'BAR', 'BARRO']);
+    expect(cards.map((card, index) => rateCodeLabel(card, ['NCOR', 'BAR', 'BARRO'][index]!)?.textContent?.trim())).toEqual([
+      'NCOR',
+      'BAR',
+      'BARRO',
+    ]);
     expect(cards.map((card) => card.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false']);
     expect(within(cards[0]!).getByText('Selected')).toBeDefined();
     // The offer card stays under the cards. It holds the select toggle and the HMS restrictions.
@@ -206,12 +214,37 @@ describe('rate cards in the quote panel', () => {
   it('uses two compact card rows so the title can wrap without squeezing the price at narrow widths', async () => {
     render(<QuoteWorkflowPanel session={await quotedSession([NCOR, BAR])} />);
     const card = rateCards()[0]!;
-    const title = within(card).getByText('NCOR: Corporate negotiated');
+    const title = card.querySelector('.line-clamp-2');
+    const titleText = title?.textContent ?? '';
+    const code = rateCodeLabel(card, 'NCOR');
     const price = within(card).getByText(`${rand(215000)} avg / room / night`);
-    expect(title.className).toMatch(/line-clamp-2/);
+    expect(titleText.indexOf('Corporate negotiated')).toBeLessThan(titleText.indexOf('NCOR'));
+    expect(code).toBeDefined();
+    expect(code?.className).toMatch(/text-\[11px\]/);
+    expect(title?.className).toMatch(/line-clamp-2/);
     expect(price.className).toMatch(/whitespace-nowrap/);
     expect(within(card).getByText('Bed & breakfast · Standard Twin')).toBeDefined();
     expect(within(card).getByText('Selected')).toBeDefined();
+  });
+
+  it('shows plain labels and omits the separator when the room label is empty', async () => {
+    const encoded = rate({
+      id: 'o-encoded-label',
+      rateCode: 'bb',
+      rateLabel: 'Bed &amp; Breakfast',
+      boardLabel: 'Bed &amp; Breakfast',
+      roomLabel: '',
+    });
+    render(<QuoteWorkflowPanel session={await quotedSession([encoded])} />);
+
+    const card = rateCards()[0]!;
+    const title = card.querySelector('.line-clamp-2');
+    const code = rateCodeLabel(card, 'bb');
+    expect(title?.textContent).toBe('Bed & Breakfast bb');
+    expect(code?.className).toMatch(/text-\[11px\]/);
+    expect(card.textContent).not.toContain('&amp;');
+    expect(card.textContent).not.toMatch(/Bed & Breakfast\s*·/);
+    expect(card.textContent).not.toMatch(/·\s*·/);
   });
 
   it('keeps a restricted rate price struck through and gives its reason', async () => {
@@ -329,8 +362,11 @@ describe('rate cards in the quote panel', () => {
     expect(select.value).toBe('all');
     expect([...select.options].map((option) => option.value)).toContain('UNSEEN9');
     const cards = rateCards();
-    expect(cards.map((card) => card.textContent?.split(':')[0])).toEqual(['BAR', 'UNSEEN9']);
-    expect(cards[1]?.textContent).toContain('UNSEEN9: UNSEEN9');
+    expect(cards.map((card, index) => rateCodeLabel(card, ['BAR', 'UNSEEN9'][index]!)?.textContent?.trim())).toEqual([
+      'BAR',
+      'UNSEEN9',
+    ]);
+    expect(cards[1]?.querySelector('.line-clamp-2')?.textContent).toBe('UNSEEN9 UNSEEN9');
   });
 
   it('tapping another option pins it and re-runs that date option with its board, room and rate', async () => {

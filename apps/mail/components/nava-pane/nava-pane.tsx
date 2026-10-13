@@ -2025,7 +2025,7 @@ export function NavaPane({
             />
 
             {/* Non-quote mail keeps its plain reply actions; quote mail's action is inside Step 5. */}
-            {!quoteOrBookingEmail ? <div className="flex flex-col gap-2.5">{replyBody}</div> : null}
+            {!quoteOrBookingEmail && !preview ? <div className="flex flex-col gap-2.5">{replyBody}</div> : null}
 
             {/* Outlook Email Draft Preview Box */}
             {showDraftPreview && draftedDetails && (

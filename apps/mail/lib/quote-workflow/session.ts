@@ -1718,7 +1718,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         ...session,
         phase: 'tools',
         runningStepId: null,
-        errorMessage: action.reason,
+        errorMessage: null,
         steps: session.steps.map((step) =>
           step.id === action.stepId
             ? { ...step, status: 'failed' as const, retryGuidance: action.reason, errorDetail: action.detail }

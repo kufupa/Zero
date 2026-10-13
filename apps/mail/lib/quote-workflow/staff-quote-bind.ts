@@ -278,6 +278,9 @@ function shortRefusalReason(raw: string): string {
 /** A rejected quote request is shown in plain language; the complete error is kept for the closed Details disclosure. */
 function searchFailure(error: unknown): { reason: string; detail?: string; noMatchingRate?: boolean } {
   const detail = rejectionReason(error);
+  const data = error && typeof error === 'object' && 'data' in error ? error.data : undefined;
+  const isServerRefusal =
+    data && typeof data === 'object' && 'code' in data && data.code === 'PRECONDITION_FAILED';
   if (detail.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX)) {
     return {
       reason: 'HMS refused the search: No rate matches this meal plan under the selected rate plan.',
@@ -290,6 +293,7 @@ function searchFailure(error: unknown): { reason: string; detail?: string; noMat
   if (/^(?:only\s+\d+\b|hms has only\s+\d+\b)/i.test(detail)) {
     return { reason: `HMS refused the search: ${shortRefusalReason(detail)}`, detail };
   }
+  if (isServerRefusal) return { reason: detail, detail };
   if (/\b(?:timed?\s*out|timeout|deadline exceeded|ETIMEDOUT)\b/i.test(detail)) {
     return { reason: "HMS didn't answer in time.", detail };
   }

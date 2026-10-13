@@ -25,7 +25,7 @@ const MATCHABLE_ROOM_WORDS = new Set(
   Object.values(ROOM_TYPE_NAMES).flatMap((name) => name.toLowerCase().split(' ')),
 );
 const ROOM_WORD_ALIASES: Record<string, readonly RoomTypeCode[]> = {
-  // Rank common room suggestions first. "Single" stays ambiguous, but does not suggest unrelated deluxe/suite types.
+  // Keep low-information occupancy terms as choices.
   double: ['STQN', 'SKNG', 'EXKNG'],
   single: ['STWN', 'SKNG'],
 };
@@ -42,6 +42,8 @@ function roomWords(raw: string): string[] {
   return raw
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
+    // Split before lowercasing so lost line breaks do not glue room-name words together.
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim()
@@ -51,25 +53,33 @@ function roomWords(raw: string): string[] {
     .filter((word) => !IGNORED_ROOM_WORDS.has(word));
 }
 
-/** Match an email/LLM room label without choosing between multiple HMS codes. */
+/**
+ * Match room labels from email/LLM text. Select confident types; leave ambiguous asks as suggestions.
+ */
 export function matchRoomType(raw: string | undefined): RoomTypeMatch {
   const code = raw?.trim().replace(/[^a-z0-9]/gi, '').toUpperCase() ?? '';
   if (Object.hasOwn(ROOM_TYPE_NAMES, code)) return { code: code as RoomTypeCode, suggestions: [] };
   if (!raw?.trim()) return { suggestions: [] };
 
   const words = roomWords(raw);
-  if (!words.length || words.some((word) => !MATCHABLE_ROOM_WORDS.has(word) && !Object.hasOwn(ROOM_WORD_ALIASES, word))) {
+  if (
+    !words.length ||
+    words.some((word) => !MATCHABLE_ROOM_WORDS.has(word) && !Object.hasOwn(ROOM_WORD_ALIASES, word))
+  ) {
     return { suggestions: [] };
   }
 
-  // Bed words ("single", "double") only rank. They never narrow a name to one code: "single twin" fits Standard and
-  // Deluxe Twin, so it stays a suggestion. An exact code needs the name words alone to fit one type.
-  const aliasWords = words.filter((word) => Object.hasOwn(ROOM_WORD_ALIASES, word));
-  const nameOnly = words.filter((word) => !Object.hasOwn(ROOM_WORD_ALIASES, word));
+  // "Single" and "double" only rank; "single twin" still fits Standard and Deluxe Twin.
+  const aliasWords = words.filter(
+    (word) => Object.hasOwn(ROOM_WORD_ALIASES, word) && !MATCHABLE_ROOM_WORDS.has(word),
+  );
+  const nameWords = words.filter((word) => MATCHABLE_ROOM_WORDS.has(word));
   const candidates = ROOM_TYPE_CODES.filter((candidate) => {
-    if (!nameOnly.length) return aliasWords.some((word) => ROOM_WORD_ALIASES[word]!.includes(candidate));
-    const nameWords = ROOM_TYPE_NAMES[candidate].toLowerCase().split(' ');
-    return nameOnly.every((word) => nameWords.includes(word));
+    if (!nameWords.length) {
+      return aliasWords.some((word) => ROOM_WORD_ALIASES[word]!.includes(candidate));
+    }
+    const candidateWords = ROOM_TYPE_NAMES[candidate].toLowerCase().split(' ');
+    return nameWords.every((word) => candidateWords.includes(word));
   });
 
   if (candidates.length === 1) return { code: candidates[0]!, suggestions: [] };

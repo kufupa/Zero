@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Blocker } from '../scripts/nava-ae4-override-proof';
+import { staffQuoteFailureMessage } from '../src/ai/staff-quote-run.js';
 import {
   chooseRoomType,
   classifyQuoteRequest,
@@ -461,7 +462,8 @@ describe('quote proof request guard', () => {
   });
 
   it('reads a queued staff quote refusal as a named refusal', () => {
-    const message = 'No qualified available rate covers every requested room-night; review the room and meal choices.';
+    const message =
+      'HMS has no rate for every night of this stay in this room and meal plan. Try another room type or meal plan, or split the dates, then search again.';
     expect(
       queuedJobRefusal({
         procedure: 'workstation.staffQuoteJob',
@@ -471,6 +473,15 @@ describe('quote proof request guard', () => {
     expect(
       queuedJobRefusal({ procedure: 'workstation.staffQuoteJob', data: { status: 'running', result: null } }),
     ).toBeNull();
+  });
+
+  it('gives staff the next steps when no rate covers every night', () => {
+    const error = Object.assign(new Error('business_selected_price_unavailable'), {
+      code: 'business_selected_price_unavailable',
+    });
+    expect(staffQuoteFailureMessage(error)).toBe(
+      'HMS has no rate for every night of this stay in this room and meal plan. Try another room type or meal plan, or split the dates, then search again.',
+    );
   });
 });
 

@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StayCard } from '../components/quote-workflow/requirement-card';
 import type { StayGroupRequirement } from '../lib/quote-workflow/types';
-import { ROOM_TYPE_CODES } from '../lib/quote-workflow/room-types';
+import { matchRoomType, ROOM_TYPE_CODES } from '../lib/quote-workflow/room-types';
 
 afterEach(cleanup);
 
@@ -113,13 +113,44 @@ describe('StayCard rooms', () => {
     expect(screen.getAllByText('Check-in')).toHaveLength(1);
   });
 
-  it('preselects exact room types and shows only a compact ranked suggestion line for an ambiguous email term', () => {
-    const { unmount } = renderStay([stay({ roomPreference: 'standard queen', roomTypeCode: 'STQN' })]);
+  it('preselects confident email rooms and shows chips only for ambiguous terms', () => {
+    const { unmount: unmountExact } = renderStay([
+      stay({ roomPreference: 'standard queen', roomTypeCode: 'STQN' }),
+    ]);
     expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('STQN');
-    unmount();
+    unmountExact();
 
-    renderStay([stay({ roomPreference: 'Single', roomTypeSuggestions: ['STWN', 'SKNG', 'EXKNG', 'SUITE'] })]);
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('Single');
+    const match = matchRoomType('Standard RoomQueen Bed');
+    const { unmount: unmountResolved } = renderStay([
+      stay({
+        roomPreference: 'Standard RoomQueen Bed',
+        roomTypeCode: match.code,
+        roomTypeSuggestions: match.suggestions,
+        fields: { roomPreference: 'extracted' },
+      }),
+    ]);
+    const selectedRoom = screen.getByLabelText('Room type') as HTMLSelectElement;
+    expect(selectedRoom.value).toBe('STQN');
+    expect(screen.getByText('from email')).toBeTruthy();
+    expect(
+      [...selectedRoom.options].some((option) => option.textContent === 'Email request'),
+    ).toBe(false);
+    expect(screen.queryByRole('group', { name: 'Room type suggestions' })).toBeNull();
+    unmountResolved();
+
+    renderStay([
+      stay({
+        roomPreference: 'Single',
+        roomTypeSuggestions: ['STWN', 'SKNG', 'EXKNG', 'SUITE'],
+        fields: { roomPreference: 'extracted' },
+      }),
+    ]);
+    const ambiguousRoom = screen.getByLabelText('Room type') as HTMLSelectElement;
+    expect(ambiguousRoom.value).toBe('Single');
+    expect(
+      [...ambiguousRoom.options].some((option) => option.textContent === 'Email request'),
+    ).toBe(true);
+    expect(screen.getByText('from email')).toBeTruthy();
     expect(screen.getByText(/Email said 'Single' →/)).toBeTruthy();
     const suggestions = screen.getByRole('group', { name: 'Room type suggestions' });
     const optionButtons = within(suggestions).getAllByRole('button').filter((button) => button.getAttribute('aria-label') !== 'Choose other room type');

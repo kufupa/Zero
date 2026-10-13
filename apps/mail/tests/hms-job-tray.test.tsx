@@ -634,6 +634,32 @@ describe('future read-tool kinds', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
   });
 
+  it('labels a failed staff-rate notice Try again and returns staff to the rates card', () => {
+    const scrollIntoView = vi.fn();
+    render(
+      <HmsJobNoticeProvider emailKey="email-1" emailSubject="Suite Availability Request">
+        <HmsJobRunningChip />
+        <HmsJobNoticeBanner />
+        <section
+          id="quote-rates"
+          ref={(node) => {
+            if (node) Object.assign(node, { scrollIntoView });
+          }}
+        />
+        <StaffQuoteNoticeHarness failureMessage="HMS has no rate for this meal plan under BAR." />
+      </HmsJobNoticeProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Start rates' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Finish rates' }));
+
+    const banner = screen.getByTestId('hms-job-notice-banner');
+    const tryAgain = within(banner).getByRole('button', { name: 'Try again' });
+    expect(banner.getAttribute('role')).toBe('alert');
+    expect(tryAgain.getAttribute('aria-controls')).toBe('quote-rates');
+    fireEvent.click(tryAgain);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
+  });
+
   // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
   it.skip('shows the staff-quote server message on failure and Retry calls the fresh-run callback', () => {
     const failureMessage = 'HMS has no rate for this meal plan under BAR.';

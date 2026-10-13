@@ -58,6 +58,7 @@ import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { PartyPicker } from './party-picker';
 import { DocumentReview } from './document-review';
+import { useFailedHmsJobNoticeMessage } from './hms-job-notices';
 import { HmsQueueStatusLine } from './hms-queue-status';
 import { ItemsForYou } from './items-for-you';
 import { NeedsAnswerList } from './needs-answer-list';
@@ -1015,6 +1016,11 @@ export function QuoteWorkflowPanel({
   /** Loads one HMS audit screenshot of a completed staff quote run. */
   onLoadRunScreenshot?: LoadRunScreenshot;
 }) {
+  const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
+  const failedRatesNotice = useFailedHmsJobNoticeMessage('quote-rates', currentEmailKey);
+  const failedRatesNoticeReason = failedRatesNotice?.startsWith('Rates failed: ')
+    ? failedRatesNotice.slice('Rates failed: '.length)
+    : null;
   // A row price or rate tapped and waiting for its pin to reach the session. The re-run starts once every pin is there, so it reads them.
   const [pinRun, setPinRun] = useState<PinRun | null>(null);
   const [queuedStayRuns, setQueuedStayRuns] = useState<QueuedStayRun[]>([]);
@@ -1499,7 +1505,7 @@ export function QuoteWorkflowPanel({
                           {step?.status === 'failed' ? 'Retry search' : 'Search availability'}
                         </PrimaryButton>
                         {queuedThisStay ? <p role="status">Search queued until the current stay finishes.</p> : null}
-                        {step?.status === 'failed' && step.retryGuidance ? (
+                        {step?.status === 'failed' && step.retryGuidance && step.retryGuidance !== failedRatesNoticeReason ? (
                           <p className="text-[13px] text-[#334155]">{step.retryGuidance}</p>
                         ) : null}
                       </>
