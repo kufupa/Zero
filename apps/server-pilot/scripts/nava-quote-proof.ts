@@ -96,6 +96,7 @@ export const QUOTE_SELECTORS = {
 
 const STAFF_QUOTE_PROCEDURE = 'workstation.executeStaffQuote';
 const QUEUED_STAFF_QUOTE_PROCEDURE = 'workstation.queueStaffQuote';
+const STAFF_QUOTE_JOB_PROCEDURE = 'workstation.staffQuoteJob';
 const STAFF_QUOTE_PROCEDURES: ReadonlySet<string> = new Set([
   STAFF_QUOTE_PROCEDURE,
   QUEUED_STAFF_QUOTE_PROCEDURE,
@@ -1180,6 +1181,16 @@ function refusalFromOutcome(outcome: TrpcOutcome | null): string | null {
   return null;
 }
 
+/** A queued staff quote HMS answered with a refusal ({ ok: false, message }); the pane shows that message as is. */
+export function queuedJobRefusal(outcome: TrpcOutcome | null): string | null {
+  if (!outcome || outcome.error || !outcome.data || typeof outcome.data !== 'object') return null;
+  const result = (outcome.data as { result?: unknown }).result;
+  if (!result || typeof result !== 'object' || (result as { ok?: unknown }).ok !== false) return null;
+  const message = (result as { message?: unknown }).message;
+  if (typeof message !== 'string' || !message.trim()) return null;
+  return 'refused: ' + redactText(message.replace(/\s+/g, ' ').trim()).slice(0, MESSAGE_LIMIT);
+}
+
 type RateSignal =
   | { kind: 'priced'; cards: number }
   | { kind: 'refused'; outcome: string }
@@ -1216,6 +1227,10 @@ async function rateSignal(
   const latest = latestOutcome(captured, STAFF_QUOTE_PROCEDURE, outcomeAfter);
   const responseRefusal = refusalFromOutcome(latest);
   if (responseRefusal) return { kind: 'refused', outcome: responseRefusal };
+  for (const procedure of [STAFF_QUOTE_JOB_PROCEDURE, QUEUED_STAFF_QUOTE_PROCEDURE]) {
+    const jobRefusal = queuedJobRefusal(latestOutcome(captured, procedure, outcomeAfter));
+    if (jobRefusal) return { kind: 'refused', outcome: jobRefusal };
+  }
 
   const alerts = rates.getByRole('alert');
   for (let index = 0; index < (await alerts.count()); index += 1) {

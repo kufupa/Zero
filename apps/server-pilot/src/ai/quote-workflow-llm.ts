@@ -129,6 +129,21 @@ export function quoteWorkflowLlmEnabled(
 
 export type QuoteTreatAs = 'quote' | 'create_booking';
 
+/**
+ * A company, agency or government party named exactly like one of the stay's guests is the guest, not the party
+ * ("book accommodation for Karen Vickers" read as the organisation). It is dropped so the pane does not quote, look
+ * up or print a person as the company.
+ */
+export function partyNotGuest(analysis: Pick<LunaAnalysis, 'party' | 'groups'>): LunaAnalysis['party'] {
+  const { party } = analysis;
+  const name = party.name?.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!name || party.kind === 'private' || party.kind === null) return party;
+  const guests = new Set(
+    analysis.groups.flatMap((group) => group.guestNames.map((guest) => guest.trim().toLowerCase().replace(/\s+/g, ' '))),
+  );
+  return guests.has(name) ? { ...party, kind: null, name: null } : party;
+}
+
 export function buildQuoteWorkflowPrompt(
   selection: SyncedQuoteSelection,
   options?: { treatAs?: QuoteTreatAs; staffNote?: string },
@@ -476,6 +491,7 @@ export async function analyseQuoteSelection(input: {
             : item,
         ),
         rateClaims: verbatim(parsed.data.rateClaims),
+        party: partyNotGuest(parsed.data),
         ...groundedAmendmentFields(parsed.data, sourceText),
       },
       telemetry: telemetryFrom(result, started),

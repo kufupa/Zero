@@ -67,7 +67,12 @@ export const lunaAnalysisSchema = z.object({
   groups: z.array(lunaGroupSchema),
   party: z.object({
     kind: z.enum(['agency', 'organization', 'government', 'private']).nullable(),
-    name: z.string().nullable(),
+    name: z
+      .string()
+      .nullable()
+      .describe(
+        "The company, agency or government body the stay is booked for or through (a 'Company name:' line, the signature's company). Never a guest's or the booker's own name; null when none is named.",
+      ),
     reference: z.string().nullable(),
   }),
   rateClaims: z.array(
