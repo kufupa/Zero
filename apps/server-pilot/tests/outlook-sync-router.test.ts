@@ -1,4 +1,4 @@
-import { activateSource, controlSource } from '../src/outlook-sync/service.js';
+import { activateSource, activeTransportStatus, controlSource } from '../src/outlook-sync/service.js';
 import { outlookSyncFixture } from './helpers/outlook-sync-fixture.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { __setDbForTests } from '../src/db/client.js';
@@ -7,6 +7,20 @@ vi.setConfig({ testTimeout: 30000 });
 import { randomUUID } from 'node:crypto';
 
 describe('native sync route authority', () => {
+  it('returns read-only sync status for the active mailbox without a device bridge', async () =>
+    withIngestionDb(async ({ db }) => {
+      const f = await outlookSyncFixture(db);
+      expect(await activeTransportStatus(db, f.auth, new Headers(), f.transportId)).toBeNull();
+
+      const activation = await activateSource(db, f.auth, new Headers(), f.transportId, f.activation, f.key);
+      expect(await activeTransportStatus(db, f.auth, new Headers(), f.transportId)).toMatchObject({
+        sourceId: activation.sourceId,
+        state: 'pending',
+        discovered: 0,
+        committed: 0,
+      });
+    }));
+
   it('isolates heartbeat controls when two authorized sources reuse an idempotency key', async () =>
     withIngestionDb(async ({ db }) => {
       const { createOutlookSyncNativeHandler } = await import('../src/http/outlook-sync-native.js');

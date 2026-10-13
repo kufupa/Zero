@@ -244,6 +244,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
                   confirmation={handoffNumber}
                   guestSurname={amendment.guestLastName}
                   arrival={amendment.arrival}
+                  handoff
                 />
               ) : null
             }
@@ -260,7 +261,13 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
               <p data-pii className={infoNoteClass}>
                 {`Booking found in HMS: ${foundNumber ?? 'Confirmation not shown'} · ${stayGuest(stay) ?? 'Name not shown'} · ${stayDateRange(stay)} · ${roomType ?? 'Room type not shown'}`}
               </p>
-              {handoffNumber ? <HmsLinkActions confirmation={handoffNumber} confirmationOnly /> : null}
+              {handoffNumber ? (
+                <HmsLinkActions
+                  confirmation={handoffNumber}
+                  guestSurname={amendment.guestLastName}
+                  arrival={amendment.arrival}
+                />
+              ) : null}
               <HmsRow field="guest" label="Guest" value={stayGuest(stay) ?? 'Not shown'} wants={diff.guest} pii />
               <HmsRow field="arrival" label="Arrival" value={shownDate(stay.arrival)} wants={diff.arrival} />
               <HmsRow field="departure" label="Departure" value={shownDate(stay.departure)} wants={diff.departure} />

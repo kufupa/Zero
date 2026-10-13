@@ -66,7 +66,7 @@ export function DiagnosticsScreen({
               </div>
               <div className="mt-0.5 text-[11px] text-[#64748b]">
                 {pingState === 'success' &&
-                  `Centurion Hotel · API server pinged at ${serverPingTimeStr} · Active`}
+                  `${detectedEmail} · API server pinged at ${serverPingTimeStr} · Active`}
                 {pingState === 'loading' && `Pinging server from ${detectedEmail}…`}
                 {pingState === 'error' && (pingErrorMessage || 'Failed to connect to server')}
                 {pingState === 'idle' && 'Waiting to initiate handshake…'}

@@ -49,9 +49,6 @@ export function ToolStepList({
               <span className="text-[12px] font-semibold text-[#1e293b]">{step.title}</span>
               <span className="text-[10px] font-bold uppercase text-[#64748b]">{STEP_STATUS_LABEL[step.status] ?? step.status}</span>
             </div>
-            {step.errorDetail ? (
-              <pre className="overflow-x-auto whitespace-pre-wrap break-words text-[11px] text-[#64748b]">{step.errorDetail}</pre>
-            ) : null}
             {wait ? <p className="text-[11px] text-amber-800">{wait}</p> : null}
             <p className="text-[11px] text-[#64748b]">{formatQuoteStepInputs(step.inputs)}</p>
             <SecondaryButton

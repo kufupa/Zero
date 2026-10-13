@@ -92,10 +92,6 @@ function requestRecord(request: HmsJobRequest): Record<string, unknown> {
   return request as unknown as Record<string, unknown>;
 }
 
-function textField(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
 function completedMessage(request: HmsJobRequest): string {
   const kind = String(requestRecord(request).kind ?? '');
   if (kind === 'party') return 'Company/agency lookup finished';
@@ -200,7 +196,7 @@ export function HmsJobNoticeProvider({
             status === 'done'
               ? completedMessage(request)
               : String(requestRecord(request).kind ?? '') === 'staff_quote'
-                ? `Rates failed: ${textField(view.result?.message) ?? safeReason}`
+                ? `Rates failed: ${safeReason}`
                 : `HMS lookup failed: ${safeReason}`,
         },
       ];

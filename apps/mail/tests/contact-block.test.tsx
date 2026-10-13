@@ -2,21 +2,15 @@
  * @vitest-environment happy-dom
  */
 import { useStoredWork, WORK_EVENT_DEBOUNCE_MS } from '@/lib/quote-workflow/use-work-item';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { StoredContact, StoredWork } from '@/lib/quote-workflow/backend-bind';
 import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SelectedEmailBlock } from '@/components/nava-pane/blocks/selected-email';
 import { unmaskedPii } from './helpers/pii-marks';
 
-function setClipboard(value: unknown) {
-  Object.defineProperty(navigator, 'clipboard', { configurable: true, value });
-}
-
 afterEach(() => {
   cleanup();
-  vi.useRealTimers();
-  setClipboard(undefined);
 });
 
 const PRIYA: StoredContact = {
@@ -29,6 +23,7 @@ const PRIYA: StoredContact = {
 
 const READY: StoredWork = {
   status: 'ready',
+  kind: 'quote',
   workItemId: 'wi-1',
   workItemStatus: 'needs_you',
   extractionId: 'ex-1',
@@ -60,59 +55,26 @@ function fakeTrpc(lookup: StoredWork) {
 }
 
 describe('ContactBlock', () => {
-  it('shows guest and company details as read-only text until Correct reveals the fields', () => {
+  it('shows only the quote contact printed on the PDF and keeps corrections request-scoped', () => {
     render(<ContactBlock contact={PRIYA} onEdit={vi.fn()} />);
-    expect(screen.getByRole('region', { name: 'Guest & contact' })).toBeDefined();
-    for (const value of ['Priya Naidoo', 'priya@example.com', '+27 11 000 0000', 'New Frontiers Tours', 'Tailormade Africa']) {
+    expect(screen.getByRole('region', { name: 'Quote contact — printed on the PDF' })).toBeDefined();
+    for (const value of ['Priya Naidoo', 'priya@example.com', '+27 11 000 0000']) {
       expect(screen.getByText(value)).toBeDefined();
     }
+    expect(screen.queryByText('New Frontiers Tours')).toBeNull();
+    expect(screen.queryByText('Tailormade Africa')).toBeNull();
     expect(screen.getByText('Corrections save to this request only. HMS is not changed.')).toBeDefined();
-    for (const label of ['Name', 'Email', 'Phone', 'Company', 'End client']) {
+    for (const label of ['Name', 'Email', 'Phone']) {
       expect(screen.queryByLabelText(label)).toBeNull();
     }
+    expect(screen.queryAllByRole('button', { name: /^Copy / })).toHaveLength(0);
 
     fireEvent.click(screen.getByRole('button', { name: 'Correct' }));
-    for (const label of ['Name', 'Email', 'Phone', 'Company', 'End client']) {
+    for (const label of ['Name', 'Email', 'Phone']) {
       expect(screen.getByLabelText(label)).toBeDefined();
     }
-  });
-
-  it('copies a company value without saving a correction', async () => {
-    const writeText = vi.fn(async () => {});
-    const onEdit = vi.fn();
-    setClipboard({ writeText });
-    render(<ContactBlock contact={PRIYA} onEdit={onEdit} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy company' }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('New Frontiers Tours'));
-    expect(onEdit).not.toHaveBeenCalled();
-  });
-
-  it('copies a populated contact value with one click', async () => {
-    const writeText = vi.fn(async () => {});
-    setClipboard({ writeText });
-    render(<ContactBlock contact={PRIYA} onEdit={vi.fn()} />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Copy email' }));
-
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('priya@example.com'));
-    expect(writeText).toHaveBeenCalledTimes(1);
-  });
-
-  it('resets successful copy feedback after two seconds', async () => {
-    vi.useFakeTimers();
-    setClipboard({ writeText: vi.fn(async () => {}) });
-    render(<ContactBlock contact={PRIYA} onEdit={vi.fn()} />);
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Copy email' }));
-      await Promise.resolve();
-    });
-    expect(screen.getByRole('button', { name: 'Copied email' })).toBeDefined();
-
-    await act(async () => {
-      vi.advanceTimersByTime(2000);
-    });
-    expect(screen.getByRole('button', { name: 'Copy email' })).toBeDefined();
+    expect(screen.queryByLabelText('Company')).toBeNull();
+    expect(screen.queryByLabelText('End client')).toBeNull();
   });
 
   it('shows a missing phone as an empty field she can type into, and reports the change with its field', () => {
@@ -137,7 +99,7 @@ describe('ContactBlock', () => {
 
   it('is blank while the mail is still being read', () => {
     render(<ContactBlock contact={null} onEdit={vi.fn()} />);
-    expect(screen.getAllByText('—').length).toBe(5);
+    expect(screen.getAllByText('—').length).toBe(3);
     expect(screen.queryByLabelText('Name')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Correct' }));
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
@@ -145,13 +107,15 @@ describe('ContactBlock', () => {
 });
 
 describe('contact edits through the stored work', () => {
-  it('does not offer a duplicate editable company field in the contact block', async () => {
+  it('keeps the stored company and end client out of the PDF contact block', async () => {
     const { trpc, mutate } = fakeTrpc(READY);
     render(<Harness trpc={trpc} />);
     await waitFor(() => {
-      expect(screen.getByText('New Frontiers Tours')).toBeDefined();
+      expect(screen.getByRole('region', { name: 'Quote contact — printed on the PDF' })).toBeDefined();
     });
     expect(screen.queryByLabelText('Company')).toBeNull();
+    expect(screen.queryByText('New Frontiers Tours')).toBeNull();
+    expect(screen.queryByText('Tailormade Africa')).toBeNull();
     expect(mutate).not.toHaveBeenCalled();
   }, 10_000);
 
@@ -172,16 +136,22 @@ describe('contact edits through the stored work', () => {
 describe('contact and selected email mark guest details for the preview gate (H6b)', () => {
   it('marks the guest contact fields, and leaves the company or agency unmarked', () => {
     const { container } = render(<ContactBlock contact={PRIYA} onEdit={vi.fn()} />);
-    expect(unmaskedPii(container, ['Priya', 'Tailormade', 'priya@example.com', '+27 11 000 0000'])).toEqual([]);
-    expect(container.querySelector('[data-contact-field="company"]')?.hasAttribute('data-pii')).toBe(false);
+    expect(unmaskedPii(container, ['Priya', 'priya@example.com', '+27 11 000 0000'])).toEqual([]);
+    expect(container.querySelector('[data-contact-field="company"]')).toBeNull();
   });
 
   it('marks the selected email subject and sender', () => {
     const { container } = render(
       <SelectedEmailBlock
-        activeEmail={{ subject: 'Booking for Mr Fixturemann', senderName: 'Priya Naidoo', senderEmail: 'priya@example.com' } as never}
+        activeEmail={{
+          subject: 'Booking for Mr Fixturemann',
+          senderName: 'Priya Naidoo',
+          senderEmail: 'priya@example.com',
+          receivedTime: '2026-10-05T09:00:00Z',
+        } as never}
       />,
     );
     expect(unmaskedPii(container, ['Fixturemann', 'Priya', 'priya@example.com'])).toEqual([]);
+    expect(container.querySelector('time')?.getAttribute('datetime')).toBe('2026-10-05T09:00:00.000Z');
   });
 });

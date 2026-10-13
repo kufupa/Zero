@@ -235,7 +235,7 @@ describe('the status line', () => {
     expect(screen.getByText(`${DETAIL} 1 min 1 s elapsed.`)).toBeTruthy();
   });
 
-  it('says “Still looking in HMS…” after thirty seconds of a running job', async () => {
+  it('says “Still working — you can keep going” after thirty seconds of a running job', async () => {
     render(
       <HmsJobStatusLine
         view={view({ runId: 'r', status: 'running', createdAt: new Date(2026, 9, 9, 12, 0).toISOString() })}
@@ -244,14 +244,14 @@ describe('the status line', () => {
         onRetry={vi.fn()}
       />,
     );
-    expect(screen.queryByText('Still looking in HMS…')).toBeNull();
+    expect(screen.queryByText('Still working — you can keep going')).toBeNull();
     await advance(29_000);
-    expect(screen.queryByText('Still looking in HMS…')).toBeNull();
+    expect(screen.queryByText('Still working — you can keep going')).toBeNull();
     await advance(1_000);
-    expect(screen.getByText('Still looking in HMS…')).toBeTruthy();
+    expect(screen.getByText('Still working — you can keep going')).toBeTruthy();
   });
 
-  it('says “Still looking in HMS…” after thirty seconds on the quote queue status', () => {
+  it('says “Still working — you can keep going” after thirty seconds on the quote queue status', () => {
     render(
       <HmsQueueStatusLine
         pending
@@ -260,7 +260,7 @@ describe('the status line', () => {
       />,
     );
     expect(screen.getByText('Nava is getting rates from HMS — you can keep working')).toBeTruthy();
-    expect(screen.getByText('Still looking in HMS…')).toBeTruthy();
+    expect(screen.getByText('Still working — you can keep going')).toBeTruthy();
   });
 
   it('shows Failed as an alert, and Retry calls onRetry', () => {
@@ -660,9 +660,8 @@ describe('future read-tool kinds', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
   });
 
-  // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
-  it.skip('shows the staff-quote server message on failure and Retry calls the fresh-run callback', () => {
-    const failureMessage = 'HMS has no rate for this meal plan under BAR.';
+  it('uses safe plain-language staff-quote failure copy, never the raw server result', () => {
+    const failureMessage = 'Sensitive database exception: HMS has no rate under BAR.';
     render(
       <HmsJobNoticeProvider emailKey="email-1" emailSubject="Suite Availability Request">
         <HmsJobRunningChip />
@@ -677,9 +676,10 @@ describe('future read-tool kinds', () => {
 
     const banner = screen.getByTestId('hms-job-notice-banner');
     expect(banner.getAttribute('role')).toBe('alert');
-    expect(banner.textContent).toContain(`Rates failed: ${failureMessage}`);
-    fireEvent.click(within(banner).getByRole('button', { name: 'Retry' }));
-    expect(screen.getByTestId('staff-quote-retry-calls').textContent).toBe('1');
+    expect(banner.textContent).toContain(
+      'Rates failed: HMS could not complete the lookup. Retry, or check the request.',
+    );
+    expect(banner.textContent).not.toContain(failureMessage);
   });
 
   it('uses an existing pane section for an unrecognized read-tool kind', async () => {

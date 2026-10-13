@@ -26,6 +26,7 @@ const NO_CONTACT = { name: null, company: null, endClient: null, email: null, ph
 
 const READY: Ready = {
   status: 'ready',
+  kind: 'quote',
   workItemId: 'wi-1',
   workItemStatus: 'needs_you',
   extractionId: 'ex-1',
@@ -71,6 +72,8 @@ describe('storedDecision', () => {
   const ready: StoredPane = {
     state: 'ready',
     analysis: ANALYSIS,
+    kind: 'quote',
+    workItemStatus: 'needs_you',
     workItemId: 'wi-1',
     contact: NO_CONTACT,
     language: null,
@@ -253,7 +256,13 @@ describe('useStoredWork', () => {
   it('shows a ready read from the server for this mail', async () => {
     const { trpc, query } = fakeTrpc(() => READY);
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
-    await waitFor(() => expect(result.current.pane.state).toBe('ready'));
+    await waitFor(() =>
+      expect(result.current.pane).toMatchObject({
+        state: 'ready',
+        kind: 'quote',
+        workItemStatus: 'needs_you',
+      }),
+    );
     expect(query).toHaveBeenCalledWith({ internetMessageId: 'm-1' });
   });
 
@@ -269,6 +278,19 @@ describe('useStoredWork', () => {
     act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 3 }]));
     unmount();
     expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'wi-1', value: 3 }));
+  });
+
+  it('can inspect a stored read without opening a new work item', async () => {
+    const { trpc } = fakeTrpc(() => ({ ...READY, workItemId: null, workItemStatus: null }));
+    const open = vi.fn(async (_input: unknown) => READY);
+    const routes = { workItems: { ...trpc.workItems, open: { mutate: open } } };
+    const { result } = renderHook(() => useStoredWork({
+      trpc: routes,
+      internetMessageId: 'm-1',
+      openMissingWorkItem: false,
+    }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
+    expect(open).not.toHaveBeenCalled();
   });
 
   it('never opens a work item for a read that has one', async () => {
