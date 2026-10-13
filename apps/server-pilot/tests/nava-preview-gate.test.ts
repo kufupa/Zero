@@ -241,7 +241,7 @@ describe('nava-preview-gate.sh --quote', () => {
     const result = gateRun(['--quote', 'thread-a,thread-b', '--dry-run'], { ENV_FILE: env });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('Quote proof on threads thread-a,thread-b');
-    expect(result.stdout).toContain('360000 ms per thread');
+    expect(result.stdout).toContain('480000 ms per thread');
     expect(result.stdout).toContain('/opt/nava/shared/nava-preview/quote-<UTC run id>/');
     expect(result.stdout).toContain('sequentially; one browser, no HMS writes');
   });

@@ -35,7 +35,7 @@ import {
   type RunConfig,
 } from './nava-preview-run';
 
-const QUOTE_TIMEOUT_MS = 360_000;
+const QUOTE_TIMEOUT_MS = 480_000;
 const PARTY_SETTLE_MS = 240_000;
 const PARTY_INDEX_START_GRACE_MS = 750;
 const PARTY_INDEX_SETTLE_MS = 5_000;
@@ -450,7 +450,7 @@ export function parseQuoteProofConfig(argv: readonly string[], env: NodeJS.Proce
   if (base.selection.kind !== 'threads') throw new Error('quote proof runs on explicit --threads only');
   if (base.selection.ids.length > 20) throw new Error('quote proof accepts 1 to 20 thread ids');
   if (new Set(base.selection.ids).size !== base.selection.ids.length) throw new Error('quote proof thread ids must be unique');
-  if (base.timeoutMs > QUOTE_TIMEOUT_MS) throw new Error('quote proof --timeout-ms must not exceed 360000');
+  if (base.timeoutMs > QUOTE_TIMEOUT_MS) throw new Error('quote proof --timeout-ms must not exceed 480000');
   return {
     ...base,
     threadIds: base.selection.ids,

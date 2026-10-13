@@ -19,7 +19,7 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
-import { privateProcedure, router as tRouter } from '../trpc.js';
+import { privateProcedure, readRequestedTransportId, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
 import {
   mailboxTransport,
@@ -88,7 +88,10 @@ export const connectionsRouter = tRouter({
   getDefault: privateProcedure.query(async ({ ctx }) => {
     const transports = await listTransportsForUser(ctx.sessionUser.id);
     if (transports.length === 0) return null;
-    const t = transports[0]!;
+    // The mailbox this request asked for (x-zero-active-transport) wins, so the pane's mailbox email matches the one
+    // mailbox procedures resolve; a header for a mailbox the user cannot open falls back to the default.
+    const requested = readRequestedTransportId(ctx.reqHeaders);
+    const t = transports.find((row) => row.id === requested) ?? transports[0]!;
     return {
       id: t.id,
       email: t.email,

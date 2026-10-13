@@ -55,7 +55,9 @@ export async function callerFor(
   const sessionUser = { id: userId, email: '', name: null };
   const ctx = {
     auth: null as never, // tests bypass auth.api.getSession
-    reqHeaders: new Headers(),
+    reqHeaders: new Headers(
+      opts.requestedTransportId ? { 'x-zero-active-transport': opts.requestedTransportId } : {},
+    ),
     sessionUser,
     ...mailbox,
   };

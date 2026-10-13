@@ -88,7 +88,7 @@ async function getSessionUser(
  * the user has selected a mailbox. Absent -> undefined -> resolver picks the
  * user's highest-role transport.
  */
-function readRequestedTransportId(headers: Headers): string | undefined {
+export function readRequestedTransportId(headers: Headers): string | undefined {
   const v = headers.get('x-zero-active-transport');
   return v && v.trim() ? v.trim() : undefined;
 }

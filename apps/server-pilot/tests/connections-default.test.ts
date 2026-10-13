@@ -66,5 +66,39 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(def?.id).toBe(SECOND_TRANSPORT);
       });
     });
+
+    it('returns the requested mailbox when the request names one the user can open', async () => {
+      await withSeededTestDb(async (db) => {
+        await db
+          .insert(mailboxTransport)
+          .values({
+            id: SECOND_TRANSPORT,
+            email: 'second@legacyhotel.com',
+            ownerHeaderValue: 'second-owner-header',
+            mailboxType: 'shared',
+            displayName: 'Second mailbox',
+            isActive: true,
+          })
+          .onConflictDoNothing({ target: mailboxTransport.id });
+        await db
+          .insert(mailboxAccess)
+          .values({
+            id: `access-user-navaai-${SECOND_TRANSPORT}`,
+            userId: 'user-navaai',
+            transportId: SECOND_TRANSPORT,
+            role: 'member',
+            isDefault: false,
+          })
+          .onConflictDoNothing({ target: [mailboxAccess.userId, mailboxAccess.transportId] });
+
+        const requested = await callerFor('user-navaai', { db, requestedTransportId: SECOND_TRANSPORT });
+        const def = await requested.connections.getDefault();
+        expect(def?.id).toBe(SECOND_TRANSPORT);
+        expect(def?.email).toBe(requested.ctx.transportEmail);
+
+        const plain = await callerFor('user-navaai', { db });
+        expect((await plain.connections.getDefault())?.id).not.toBe(SECOND_TRANSPORT);
+      });
+    });
   },
 );
