@@ -484,8 +484,11 @@ export function HmsJobRunningChip() {
   );
 }
 
-/** The oldest undismissed completion is pinned below the pane header; later notices stay queued. */
-export function HmsJobNoticeBanner() {
+/**
+ * The oldest undismissed completion is pinned below the pane header; later notices stay queued.
+ * `onReveal` opens the screen holding the result cards when the banner shows over another screen.
+ */
+export function HmsJobNoticeBanner({ onReveal }: { onReveal?: () => void } = {}) {
   const view = useContext(ViewContext);
   const reporter = useContext(HmsJobNoticeReporterContext);
   const [returnHint, setReturnHint] = useState<string | null>(null);
@@ -516,13 +519,22 @@ export function HmsJobNoticeBanner() {
       );
       return;
     }
-    const target = document.getElementById(notice.targetId);
-    if (!target) {
-      setReturnHint("That section isn't open any more");
+    const reveal = () => {
+      const target = document.getElementById(notice.targetId);
+      if (!target) {
+        setReturnHint("That section isn't open any more");
+        return;
+      }
+      target.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+      reporter.dismiss(notice.id);
+    };
+    if (!onReveal) {
+      reveal();
       return;
     }
-    target.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
-    reporter.dismiss(notice.id);
+    // Scroll and dismiss only once the result screen has rendered, so the notice is never lost on a hidden screen.
+    onReveal();
+    window.setTimeout(reveal, 0);
   };
 
   return (

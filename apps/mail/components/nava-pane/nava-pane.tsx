@@ -1863,7 +1863,7 @@ export function NavaPane({
           </div>
         </header>
 
-        <HmsJobNoticeBanner />
+        <HmsJobNoticeBanner onReveal={() => setCurrentScreen('tool')} />
         <SelectedEmailBlock activeEmail={activeEmail} />
         {readAs ? (
           <div className="mx-3 mt-2 shrink-0">

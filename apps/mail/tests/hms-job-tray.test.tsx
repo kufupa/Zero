@@ -394,6 +394,36 @@ describe('a queued lookup, polled on the 3 s clock', () => {
     expect(screen.queryByTestId('hms-job-notice-banner')).toBeNull();
   });
 
+  it('opens the result screen before Show scrolls and clears the notice', async () => {
+    const { transport } = fakeTransport([
+      view({ runId: 'run-1', request: SEARCH, status: 'done', asOf: AS_OF, result: { kind: 'search_guest' } }),
+    ]);
+    const scrollIntoView = vi.fn();
+    const onReveal = vi.fn();
+    render(
+      <HmsJobNoticeProvider emailKey="email-1" emailSubject="Suite Availability Request">
+        <HmsJobNoticeBanner onReveal={onReveal} />
+        <section
+          id="quote-rates"
+          ref={(node) => {
+            if (node) Object.assign(node, { scrollIntoView });
+          }}
+        />
+        <Harness transport={transport} request={SEARCH} />
+      </HmsJobNoticeProvider>,
+    );
+
+    await lookUp();
+    await advance(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Show' }));
+    expect(onReveal).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(screen.getByTestId('hms-job-notice-banner')).toBeTruthy();
+    await advance(20);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
+    expect(screen.queryByTestId('hms-job-notice-banner')).toBeNull();
+  });
+
   it('dismisses a done notice after twenty seconds and hints when Show has no target', async () => {
     const { transport } = fakeTransport([
       view({ runId: 'run-1', request: SEARCH, status: 'done', asOf: AS_OF, result: { kind: 'search_guest' } }),
