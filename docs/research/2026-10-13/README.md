@@ -10,7 +10,7 @@
 | Every PDF staff sent (2,162) + text | `/home/orca/nava-research/corpus/2026-10-13/pdf/`, `pdftxt/` | `pdftotext -layout`; HMS `HRCEN_Confirmation_Letter_*` (1,174 = 655 reservations), `HRCEN_offer_*` |
 | Analysis scripts per lane | `/home/orca/nava-research/scripts/<lane>/` | re-run commands in each report |
 | Owner spot-check packs (10 per action class) | `/home/orca/nava-research/reports/r3-review/*.md` | masked; owner marks right/wrong |
-| HMS answer key (reservation → company/agency/rate plan) | EC2 `/home/ubuntu/repos/zero/.private/party-truth-20261013/truth.jsonl` | read-only `find-batch.mjs` loop, 260 confs / 132 corporate/agency domains |
+| HMS answer key (reservation → company/agency/rate plan) | EC2 `/home/ubuntu/repos/zero/.private/party-truth-20261013/truth.jsonl`; copy `/home/orca/nava-research/testsets/party-truth.jsonl` | read-only one-process-per-conf `find` loop; 194 rows: 167 found (107 agency, 115 company), 26 not found, 1 failure. HMS search window reaches back only ~1 month |
 | Earlier gold sets (Sep 15, unused until now) | EC2 `/home/ubuntu/repos/zero/.private/gold-fact-backtest-100/`, `gold-proposals/`, `hms-read-100-20260915/` | 100 cases + 93 KB tool catalogue |
 
 Refresh the snapshot instead of re-querying prod: re-run the dump with a new date folder.
@@ -25,6 +25,7 @@ Refresh the snapshot instead of re-querying prod: re-run the dump with a new dat
 | R4 | [r4-architecture.md](r4-architecture.md) | Live pipeline map; 4 competing classifiers; triage default Bedrock Nova Lite; Mastra reservationist agent backtest-only; 60k prompt cap without rationale; Da Vinci blockers (HRCEN gates, rules, rates, aliases) |
 | R5 | [r5-ui-asks.md](r5-ui-asks.md) | 16 deduplicated pane asks: 3 done, 11 partial, 2 not done; proposed pane IA |
 | R6 | [r6-agent-architecture-sota.md](r6-agent-architecture-sota.md) | Workflow spine per action + one bounded read-only lookup agent; writes never LLM-chosen; HITL edits → labels → per-action autonomy; per-hotel config |
+| R7 | private: `/home/orca/nava-research/reports/r7-party-v2-score.md` (names client domains) | Party v2 offline vs HMS answer key (167 found rows): 95 emails / 27 domains, **0 wrong binds**; auto-bind 40% with no LLM pick, 76% with a perfect pick; truth in top-3 88–90%. Re-run: `tsx apps/server-pilot/scripts/party-v2-offline-score.ts` (defaults read the private testsets) |
 
 ## Session findings not in the reports (prod read-only queries, 2026-10-13)
 
