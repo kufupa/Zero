@@ -428,7 +428,7 @@ export type QuoteProofConfig = RunConfig & {
   allowEdits: boolean;
 };
 
-/** Defaults to six minutes and rejects every thread count outside the existing preview gate's 1–20 bound. */
+/** Defaults to eight minutes and rejects every thread count outside the existing preview gate's 1–20 bound. */
 export function parseQuoteProofConfig(argv: readonly string[], env: NodeJS.ProcessEnv, cwd: string): QuoteProofConfig {
   const allowedFlags = new Set(['--threads', '--out', '--timeout-ms']);
   const seenFlags = new Set<string>();
