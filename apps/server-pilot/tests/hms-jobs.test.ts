@@ -484,7 +484,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }),
   );
 
-  it('auto-start matches an older fresh request even after twenty different semantic requests', () =>
+  // Superseded (Greptile P1, 2026-10-13): only the newest staff quote on a message holds the current approval.
+  it.skip('auto-start matches an older fresh request even after twenty different semantic requests', () =>
     withSeededTestDb(async (db) => {
       expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
       const { threadId, messageId } = await seedThread(db);

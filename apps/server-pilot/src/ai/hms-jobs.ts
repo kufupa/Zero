@@ -2174,11 +2174,12 @@ async function latestStaffQuoteRunFor(
       ),
     )
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
-  const match = rows.find((row) => {
-    const parsed = hmsJobRequestSchema.safeParse(row.readRequest);
-    return parsed.success && hmsRequestKey(parsed.data) === wanted;
-  });
-  return match ? [match] : [];
+  // Only the newest staff quote on this message holds the current approval. An older job with the same inputs was
+  // superseded by a later quote, so its documents would be refused; the pane must quote again instead.
+  const [newest] = rows;
+  if (!newest) return [];
+  const parsed = hmsJobRequestSchema.safeParse(newest.readRequest);
+  return parsed.success && hmsRequestKey(parsed.data) === wanted ? [newest] : [];
 }
 
 function staffQuoteRunFreshness(now: Date) {
