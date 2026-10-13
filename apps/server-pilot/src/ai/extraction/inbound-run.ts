@@ -26,7 +26,6 @@ import {
 } from '../mail-baseline-extraction.js';
 import { resolveAdapter } from '../quote-workflow-analyse-selection.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-selection.js';
-import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
 import { resolveTriageEventClock } from '../triage-input.js';
 import { TRIAGE_REVIEWER_VERSION } from '../triage.js';
 import { ensureWorkItemForMessage, MESSAGE_ARRIVED_AT } from '../work-items.js';
@@ -40,15 +39,26 @@ import {
   type AiWorkflowRun,
 } from '../run-ledger.js';
 import {
-  attachmentReads,
+  ACTION_CLASSIFICATION_RULES,
+  createAzureExtractionAdapter,
   EXTRACTION_DEADLINE_MS,
+  EXTRACTION_MAX_IMAGES,
+  EXTRACTION_MAX_PDF_PAGES,
+  EXTRACTION_MIN_IMAGE_BYTES,
   EXTRACTION_MODEL_ID,
+  EXTRACTION_THREAD_MESSAGE_MAX_CHARS,
+  EXTRACTION_THREAD_TOTAL_MAX_CHARS,
   EXTRACTION_RULES,
   extractInboundMail,
   UNTRUSTED_NOTE,
   type ModelUsage,
 } from './extract.js';
 import { mailExtractionSchema } from './schema.js';
+import {
+  extractionPromptMaxChars,
+  extractionReasoningEffort,
+  extractionVisionEnabled,
+} from './config.js';
 import {
   TRANSLATE_DEADLINE_MS,
   TRANSLATE_RULES,
@@ -64,9 +74,17 @@ import {
 
 /** Hash of the rules, the prompt text and both output schemas. A change here means a new read for every mail. */
 export const EXTRACTION_VERSION = `extract-${createHash('sha256')
-  .update(CENTURION_HOTEL_RULES)
-  .update('\n')
   .update(EXTRACTION_RULES)
+  .update('\n')
+  .update(ACTION_CLASSIFICATION_RULES)
+  .update('\n')
+  .update(String(extractionPromptMaxChars()))
+  .update('\n')
+  .update(extractionReasoningEffort())
+  .update('\n')
+  .update(
+    `vision/${extractionVisionEnabled()}/${EXTRACTION_MAX_IMAGES}/${EXTRACTION_MAX_PDF_PAGES}/${EXTRACTION_MIN_IMAGE_BYTES}/thread/${EXTRACTION_THREAD_TOTAL_MAX_CHARS}/${EXTRACTION_THREAD_MESSAGE_MAX_CHARS}`,
+  )
   .update('\n')
   .update(UNTRUSTED_NOTE)
   .update('\n')
@@ -210,8 +228,10 @@ export type InboundExtractionOutcome =
 export type InboundExtractionDeps = {
   db?: DB;
   env?: NodeJS.ProcessEnv;
-  /** Model seam. Absent means the Azure quote route; null means no model is configured. */
+  /** Model seam. Absent means Azure GPT-6 Luna max for extraction; null means no model is configured. */
   adapter?: ModelAdapter | null;
+  /** Optional lower-effort route reserved for the separate translation call. */
+  translationAdapter?: ModelAdapter | null;
   loadSelection?: typeof loadSyncedQuoteSelectionFromMailbox;
   signal?: AbortSignal;
   now?: () => number;
@@ -259,7 +279,7 @@ export async function runInboundExtraction(
     await ensureWorkItemForMessage(db, { transportId: run.transportId, messageId: run.triggerMessageId });
     return 'exists';
   }
-  const adapter = deps.adapter === undefined ? resolveAdapter(true, null).adapter : deps.adapter;
+  const adapter = deps.adapter === undefined ? createAzureExtractionAdapter(env) : deps.adapter;
   if (!adapter) return 'unconfigured';
   const max = inboundExtractionMaxPerHour(env);
   const clock = deps.now ?? Date.now;
@@ -269,6 +289,9 @@ export async function runInboundExtraction(
   const selection = await (deps.loadSelection ?? loadSyncedQuoteSelectionFromMailbox)({
     transportId: run.transportId,
     messageId: run.triggerMessageId,
+    includeThreadState: true,
+    includeVisionImages: extractionVisionEnabled(env),
+    trackVisionImages: true,
     signal: deps.signal,
   });
   if (!selection) {
@@ -290,8 +313,9 @@ export async function runInboundExtraction(
     mailbox: trigger.mailbox,
     signal: deps.signal,
     deadlineMs: deps.extractionDeadlineMs ?? EXTRACTION_DEADLINE_MS,
+    env,
   });
-  const attachments = attachmentReads(selection.attachments);
+  const attachments = extraction.attachments;
   if (!extraction.ok) {
     await commitRead(db, deps.claim, (tx) =>
       storeRead(tx, {
@@ -311,8 +335,12 @@ export async function runInboundExtraction(
   // the extraction call, and the cap counts that call.
   if (sourceLanguage && sourceLanguage !== 'en') {
     if (!takeCallSlot(max, clock())) return 'capped';
+    const translationAdapter = deps.translationAdapter ?? (deps.adapter === undefined
+      ? resolveAdapter(true, null).adapter
+      : adapter);
+    if (!translationAdapter) return 'unconfigured';
     const done = await translateInboundBody({
-      adapter,
+      adapter: translationAdapter,
       bodyText: selection.bodyText,
       sourceLanguage,
       signal: deps.signal,

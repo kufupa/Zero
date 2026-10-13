@@ -38,7 +38,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../db/client.js';
 import { parseEnv } from '../env.js';
 
-export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
+export const DEFAULT_AI_MODEL_ID = 'global.openai.gpt-6-luna';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
 export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
 export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';

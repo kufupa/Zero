@@ -98,7 +98,7 @@ Production `.env.production` stays `MAIL_TRANSPORT_MODE=fixture` until cutover. 
 
 ## Bedrock live gate (on-demand, not daily deploy)
 
-Proves EC2 instance role can invoke `amazon.nova-lite-v1:0` in `us-east-1`. Daily `ai-gate.sh` spike stays on fake adapter.
+Proves the EC2 instance role can invoke Bedrock-backed `global.openai.gpt-6-luna` in `us-east-1`. Daily `ai-gate.sh` spike stays on the fake adapter.
 
 **IAM:** inline `NavaZeroBedrockInvoke` on worker role — see `aws-resources.md`.
 

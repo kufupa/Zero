@@ -412,6 +412,13 @@ export async function runPdfSandbox(
 
 /** One rendered page, ready for a vision model. */
 export type VisionPage = { filename: string; mediaType: 'image/jpeg'; data: Uint8Array };
+/** Bounded first pages plus source-count evidence, so callers can distinguish a complete 3-page PDF from a longer one. */
+export type VisionPageRender = {
+  pages: VisionPage[];
+  sourcePageCount: number | null;
+  /** True when source pages were omitted or the renderer could not prove the input's total page count. */
+  truncated: boolean;
+};
 
 /**
  * The first pages of a scanned PDF as JPEGs, rendered by pdftoppm inside runPdfSandbox. Null when the render fails,
@@ -421,6 +428,22 @@ export async function renderPdfPagesForVision(
   body: Buffer,
   options: { runner?: SandboxRunner; signal?: AbortSignal } = {},
 ): Promise<VisionPage[] | null> {
+  return (await renderPdfPages(body, options, false))?.pages ?? null;
+}
+
+/** Extraction variant that also proves whether the page cap left part of the source PDF unread. */
+export async function renderPdfPagesForVisionWithMetadata(
+  body: Buffer,
+  options: { runner?: SandboxRunner; signal?: AbortSignal } = {},
+): Promise<VisionPageRender | null> {
+  return renderPdfPages(body, options, true);
+}
+
+async function renderPdfPages(
+  body: Buffer,
+  options: { runner?: SandboxRunner; signal?: AbortSignal },
+  includeMetadata: boolean,
+): Promise<VisionPageRender | null> {
   if (body.byteLength > ARTIFACT_MAX_INPUT_BYTES || body.subarray(0, 5).toString('ascii') !== '%PDF-') {
     return null;
   }
@@ -442,6 +465,18 @@ export async function renderPdfPagesForVision(
       options.signal ?? new AbortController().signal,
       AbortSignal.timeout(ARTIFACT_SUBPROCESS_TIMEOUT_MS),
     ]);
+    let sourcePageCount: number | null = null;
+    if (includeMetadata) {
+      try {
+        const info = await runner('pdfinfo', inputPath, linkedSignal);
+        if (info.exitCode === 0) {
+          const pageCount = Number(/^Pages:\s+(\d+)/im.exec(info.stdout.toString('utf8'))?.[1] ?? 0);
+          if (Number.isInteger(pageCount) && pageCount > 0) sourcePageCount = pageCount;
+        }
+      } catch {
+        // Rendering may still be useful, but the page cap is conservatively considered incomplete below.
+      }
+    }
     const rendered = await runner('pdftoppm', inputPath, linkedSignal, pagesDir);
     if (rendered.exitCode !== 0) return null;
 
@@ -450,13 +485,18 @@ export async function renderPdfPagesForVision(
       .sort((a, b) => a.localeCompare(b, 'en', { numeric: true }))
       .slice(0, VISION_MAX_PAGES);
     if (names.length === 0) return null;
-    return await Promise.all(
+    const pages = await Promise.all(
       names.map(async (filename) => ({
         filename,
         mediaType: 'image/jpeg' as const,
         data: new Uint8Array(await readFile(join(pagesDir, filename))),
       })),
     );
+    return {
+      pages,
+      sourcePageCount,
+      truncated: sourcePageCount === null || sourcePageCount > pages.length,
+    };
   } catch {
     return null;
   } finally {

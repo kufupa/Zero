@@ -176,6 +176,17 @@ export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
 /** The contact block's fields. Each is one `contact.<field>` event path. `company` is the sender's organisation. */
 export type ContactField = 'name' | 'company' | 'endClient' | 'email' | 'phone';
 export type StoredContact = Record<ContactField, string | null>;
+export type StoredMailAction =
+  | 'no_action'
+  | 'quote_availability'
+  | 'new_booking'
+  | 'amend'
+  | 'cancel'
+  | 'payment_proof'
+  | 'billing'
+  | 'group_event'
+  | 'other_actionable';
+export type StoredActionConfidence = 'high' | 'medium' | 'low';
 /** The translation the pane shows: aligned segments, or failed. Null when the read has none. */
 export type StoredTranslation =
   | { status: 'succeeded'; segments: Array<{ clean: string; literal: string }>; truncated: boolean }
@@ -198,6 +209,11 @@ export type StoredWork =
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
       contact: StoredContact;
+      /** Null for older stored extractions written before action classification. */
+      needsAction: boolean | null;
+      action: StoredMailAction | null;
+      actionEvidence: string | null;
+      actionConfidence: StoredActionConfidence | null;
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
       translation: StoredTranslation;
@@ -226,6 +242,10 @@ export type NeedsYouRow = {
   sender: string | null;
   subject: string | null;
   receivedAt: Date | null;
+  needsAction: boolean | null;
+  action: StoredMailAction | null;
+  actionEvidence: string | null;
+  actionConfidence: StoredActionConfidence | null;
 };
 
 type WorkItemsClient = {

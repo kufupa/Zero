@@ -5,6 +5,7 @@ import { attachment } from '../src/db/schema/mail.js';
 import {
   loadSyncedQuoteSelectionFromMailbox,
   orderCausalPreceding,
+  orderThreadContext,
   readQuoteAttachments,
   type QuoteAttachmentRow,
 } from '../src/ai/quote-workflow-synced-selection.js';
@@ -185,6 +186,34 @@ describe('readQuoteAttachments', () => {
     expect(result[2]).toMatchObject({ id: 'boom', bytesPresent: false, readFailure: 'read failed' });
   });
 
+  it('reads eligible non-inline images only when vision is enabled and tracks them unread when disabled', async () => {
+    const bytes = new Uint8Array(25 * 1024);
+    const imageRow = row({
+      id: 'proof-image',
+      filename: 'transfer-proof.png',
+      mimeType: 'image/png',
+      sizeBytes: bytes.byteLength,
+    });
+    const reader = vi.fn(async () => ({ text: null, image: { mediaType: 'image/png' as const, data: bytes } }));
+
+    const enabled = await readQuoteAttachments([imageRow], reader, { includeVisionImages: true });
+    expect(reader).toHaveBeenCalledOnce();
+    expect(enabled).toMatchObject([
+      { id: 'proof-image', bytesPresent: true, image: { mediaType: 'image/png', data: bytes } },
+    ]);
+
+    const disabledReader = vi.fn(async () => ({ text: null, image: { mediaType: 'image/png' as const, data: bytes } }));
+    const disabled = await readQuoteAttachments([imageRow], disabledReader, { trackVisionImages: true });
+    expect(disabledReader).not.toHaveBeenCalled();
+    expect(disabled).toMatchObject([
+      {
+        id: 'proof-image',
+        bytesPresent: false,
+        readFailure: 'vision disabled by EXTRACTION_VISION',
+      },
+    ]);
+  });
+
   it('drops an unknown-type part whose bytes are an image, and lists a non-image one as not a PDF', async () => {
     const result = await readQuoteAttachments(
       [
@@ -249,7 +278,63 @@ describe('orderCausalPreceding', () => {
   });
 });
 
+describe('orderThreadContext', () => {
+  it('keeps both earlier and later neighbouring messages in chronological order', () => {
+    const base = {
+      subject: 'Subject',
+      textBody: 'Body',
+      receivedAt: null,
+      sentAt: null,
+      createdAt: new Date('2026-10-13T12:00:00.000Z'),
+    };
+    const result = orderThreadContext('target', [
+      { ...base, id: 'later', direction: 'outbound', sentAt: new Date('2026-10-13T13:00:00.000Z') },
+      { ...base, id: 'target', direction: 'inbound', receivedAt: new Date('2026-10-13T12:30:00.000Z') },
+      { ...base, id: 'earlier', direction: 'inbound', receivedAt: new Date('2026-10-13T11:00:00.000Z') },
+    ]);
+
+    expect(result.map(({ direction, timestamp }) => [direction, timestamp])).toEqual([
+      ['inbound', '2026-10-13T11:00:00.000Z'],
+      ['outbound', '2026-10-13T13:00:00.000Z'],
+    ]);
+  });
+});
+
 describe('loadSyncedQuoteSelectionFromMailbox', () => {
+  it('uses the best stored target timestamp for thread ordering when receivedAt is absent', async () => {
+    const createdAt = new Date('2026-10-13T12:00:00.000Z');
+    vi.mocked(getDb).mockReturnValue(
+      fakeMailboxDb(
+        {
+          message: [
+            {
+              id: 'm1',
+              threadId: 't1',
+              subject: 'Re: booking',
+              textBody: 'Thanks, resolved.',
+              direction: 'inbound',
+              fromAddress: 'guest@example.test',
+              receivedAt: null,
+              sentAt: null,
+              createdAt,
+            },
+          ],
+          attachment: [],
+        },
+        [],
+      ) as never,
+    );
+
+    const selection = await loadSyncedQuoteSelectionFromMailbox({
+      transportId: 'transport-1',
+      messageId: 'm1',
+      includeThreadState: true,
+    });
+
+    expect(selection?.receivedAt).toBeUndefined();
+    expect(selection?.threadReferenceAt).toBe(createdAt.toISOString());
+  });
+
   it('reads attachment rows in id order so the analyse cache key does not follow row order', async () => {
     const orderByCalls: Array<{ table: string; args: unknown[] }> = [];
     vi.mocked(getDb).mockReturnValue(

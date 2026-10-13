@@ -843,6 +843,8 @@ describe('flags, cap parsing and the rules', () => {
     expect(system).toMatch(/kind, stays, agency, endClient and contact come from the request passed on/);
     expect(system).toMatch(/The hotel and its group are never the agency/);
     expect(system).toMatch(/Only a staff mail that passes on no outside request is other/);
+    expect(system).not.toMatch(/Centurion|HRCEN|Legacy Hotels/);
+    expect(system).toMatch(/never infer needsAction or action from kind/);
     expect(user).toContain('Mailbox: centurion@legacyhotels.co.za\nFrom: hara@legacyhotels.co.za\n\n');
     // No mailbox, no line: the From address alone, as before.
     expect(buildInboundPrompt(selectionFor(AE1_TEXT), 'hara@legacyhotels.co.za').user).not.toContain('Mailbox:');
@@ -899,7 +901,7 @@ describe('flags, cap parsing and the rules', () => {
   it('the rules no longer send 10+ rooms to other, and a 30-room rooms-only group is a quote', () => {
     const { system } = buildInboundPrompt(selectionFor(AE1_TEXT));
     expect(system).not.toMatch(/10\+ rooms\/delegates or events are other/);
-    expect(system).toMatch(/quote at any size, 10\+ rooms included/);
+    expect(system).toMatch(/Conference\/function requests and rooming lists are group_event/);
   });
 });
 

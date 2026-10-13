@@ -29,7 +29,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
 export const TRANSPORT_ID = 'transport-centurion';
-export const DEFAULT_MODEL_ID = 'amazon.nova-lite-v1:0';
+export const DEFAULT_MODEL_ID = 'global.openai.gpt-6-luna';
 export const DEFAULT_PROMPT_VERSION = 'triage-v6';
 export const DEFAULT_KEY_PREFIX = 'inbound-triage-retag-v6';
 

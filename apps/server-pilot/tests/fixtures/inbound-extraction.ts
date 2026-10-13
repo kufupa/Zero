@@ -87,6 +87,10 @@ export const SPAM_TEXT = [
 ].join('\n');
 
 const EMPTY_OUTPUT = {
+  needsAction: false,
+  action: 'no_action',
+  actionEvidence: 'No new work is requested.',
+  actionConfidence: 'high',
   contact: { name: null, email: null, phone: null },
   agency: null,
   endClient: null,
@@ -104,6 +108,10 @@ const ROWS_UNSPLIT = [
 /** The correct read: the sender's organisation is the agency, the client in the subject is the end client. */
 export const AE1_OUTPUT = {
   ...EMPTY_OUTPUT,
+  needsAction: true,
+  action: 'quote_availability',
+  actionEvidence: 'Please advise availability and rates.',
+  actionConfidence: 'high',
   sourceLanguage: 'en',
   kind: 'quote',
   agency: 'Horizon Trail Tours',
@@ -134,6 +142,10 @@ export const AE1_OUTPUT = {
 
 export const AE2_OUTPUT = {
   ...EMPTY_OUTPUT,
+  needsAction: true,
+  action: 'amend',
+  actionEvidence: 'Please add the night before and arrange a later departure.',
+  actionConfidence: 'high',
   sourceLanguage: 'fr',
   kind: 'amendment',
   contact: { name: 'Marie Dupont', email: 'marie.dupont@example.fr', phone: null },
@@ -151,6 +163,10 @@ export const AE2_OUTPUT = {
 
 export const VOUCHER_OUTPUT = {
   ...EMPTY_OUTPUT,
+  needsAction: true,
+  action: 'payment_proof',
+  actionEvidence: 'The message identifies the attachment as proof of payment.',
+  actionConfidence: 'high',
   sourceLanguage: 'en',
   kind: 'voucher_pop',
   confirmationNumbers: ['57291630-2'],
@@ -176,6 +192,10 @@ export const CHANNEL_BOOKING_VOUCHER_TEXT = [
 ].join('\n');
 export const CHANNEL_BOOKING_OUTPUT = {
   ...EMPTY_OUTPUT,
+  needsAction: true,
+  action: 'new_booking',
+  actionEvidence: 'A new reservation was created and confirmed.',
+  actionConfidence: 'high',
   sourceLanguage: 'en',
   kind: 'booking',
   origin: 'system_notice',
@@ -199,6 +219,8 @@ export const CHANNEL_AMENDMENT_TEXT = [
 ].join('\n');
 export const CHANNEL_AMENDMENT_OUTPUT = {
   ...CHANNEL_BOOKING_OUTPUT,
+  action: 'amend',
+  actionEvidence: 'An existing reservation was modified.',
   kind: 'amendment',
   stays: [
     {
@@ -215,6 +237,8 @@ export const CHANNEL_CANCELLATION_TEXT = [
 ].join('\n');
 export const CHANNEL_CANCELLATION_OUTPUT = {
   ...CHANNEL_BOOKING_OUTPUT,
+  action: 'cancel',
+  actionEvidence: 'The existing reservation was cancelled.',
   kind: 'cancellation',
 };
 
@@ -234,6 +258,10 @@ export const STANDALONE_POP_TEXT = [
 ].join('\n');
 export const STANDALONE_POP_OUTPUT = {
   ...EMPTY_OUTPUT,
+  needsAction: true,
+  action: 'payment_proof',
+  actionEvidence: 'Payment has been made and proof is attached.',
+  actionConfidence: 'high',
   sourceLanguage: 'en',
   kind: 'voucher_pop',
   origin: 'person',
@@ -255,6 +283,8 @@ export const STAFF_FORWARD_BOOKING_TEXT = [
 ].join('\n');
 export const STAFF_FORWARD_BOOKING_OUTPUT = {
   ...CHANNEL_BOOKING_OUTPUT,
+  action: 'new_booking',
+  actionEvidence: 'Please process the forwarded guest booking request.',
   origin: 'person',
   contact: { name: 'Jamie Carter', email: STAFF_FORWARD_BOOKING_GUEST_EMAIL, phone: null },
   confirmationNumbers: [],
@@ -268,6 +298,10 @@ export const GROUP_RATE_ENQUIRY_TEXT = [
 ].join('\n');
 export const GROUP_RATE_ENQUIRY_OUTPUT = {
   ...EMPTY_OUTPUT,
+  needsAction: true,
+  action: 'group_event',
+  actionEvidence: 'The request is for accommodation connected to an annual conference.',
+  actionConfidence: 'high',
   sourceLanguage: 'en',
   kind: 'quote',
   origin: 'person',

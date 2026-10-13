@@ -21,12 +21,13 @@ export type HmsDraftEnrichmentMode = 'off' | 'shadow';
 const TRANSPORT_MODES: readonly MailTransportMode[] = ['fixture', 'wire', 'real'];
 const AI_WORKER_LANES: readonly AiExecutorLane[] = ['default', 'hms'];
 const AI_MODEL_ROUTES: readonly AiModelRoute[] = ['unavailable', 'approved-local'];
-export type AiTriageModelProfile = 'nova_lite' | 'gpt6_luna_max';
-export const AI_TRIAGE_MODEL_PROFILES: readonly AiTriageModelProfile[] = ['nova_lite', 'gpt6_luna_max'];
+/** `nova_lite` is a deprecated explicit compatibility route; `gpt6_luna_max` is the production default. */
+export type AiTriageModelProfile = 'gpt6_luna_max' | 'nova_lite';
+export const AI_TRIAGE_MODEL_PROFILES: readonly AiTriageModelProfile[] = ['gpt6_luna_max', 'nova_lite'];
 
-/** Missing means Nova; anything else unknown throws so no silent fallback. */
+/** Missing means Bedrock-backed Luna max; anything else unknown throws so no silent fallback. */
 export function parseAiTriageModelProfile(raw: string | undefined): AiTriageModelProfile {
-  const value = raw ?? 'nova_lite';
+  const value = raw ?? 'gpt6_luna_max';
   if (!AI_TRIAGE_MODEL_PROFILES.includes(value as AiTriageModelProfile)) {
     throw new Error(
       `env AI_TRIAGE_MODEL_PROFILE must be one of ${AI_TRIAGE_MODEL_PROFILES.join(', ')}, got: ${value}`,
@@ -160,7 +161,7 @@ const REQUIRED = [
 
 const NODE_ENVS: readonly NodeEnv[] = ['production', 'development', 'test'];
 
-const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
+const DEFAULT_AI_MODEL_ID = 'global.openai.gpt-6-luna';
 const DEFAULT_BEDROCK_REGION = 'us-east-1';
 const DEFAULT_MASTRA_STORAGE_PATH = './data/mastra';
 
@@ -412,7 +413,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     ),
     AI_ENABLED: false,
     AI_MODEL_ROUTE: 'unavailable',
-    AI_TRIAGE_MODEL_PROFILE: 'nova_lite',
+    AI_TRIAGE_MODEL_PROFILE: 'gpt6_luna_max',
     AI_WRITE_GATE_ENABLED: false,
     AI_DRAFTS_ENABLED: false,
     CATCHUP_UPLOAD_ENABLED: isCatchupUploadEnabled(input),

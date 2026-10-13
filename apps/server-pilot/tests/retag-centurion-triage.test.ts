@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import {
   AI_MANAGED_SLUGS,
+  DEFAULT_MODEL_ID,
   DEFAULT_KEY_PREFIX,
   DEFAULT_PROMPT_VERSION,
   parseArgs,
@@ -301,6 +302,7 @@ describe('retag-centurion-triage CLI args', () => {
   });
 
   it('uses v6 prompt/key defaults and manages legacy plus workflow slugs', () => {
+    expect(DEFAULT_MODEL_ID).toBe('global.openai.gpt-6-luna');
     expect(DEFAULT_PROMPT_VERSION).toBe('triage-v6');
     expect(DEFAULT_KEY_PREFIX).toBe('inbound-triage-retag-v6');
     expect(AI_MANAGED_SLUGS).toEqual(

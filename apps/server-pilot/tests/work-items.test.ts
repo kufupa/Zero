@@ -212,6 +212,49 @@ describe('stored read for the pane', () => {
       expect(await openStoredWork(db, lookup)).toMatchObject({ status: 'ready', analysis: { noReplySender: true } });
     }));
 
+  it('exposes stored action fields on the pane read and Needs-you lane, masking legacy evidence', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'action-api');
+      await insertRead(db, messageId, {
+        version: 'extract-action-api',
+        payload: {
+          ...payload(),
+          needsAction: true,
+          action: 'amend',
+          actionEvidence: 'Update card 4111 1111 1111 1111 on the reservation.',
+          actionConfidence: 'high',
+        },
+      });
+
+      const work = await storedWorkFor(db, {
+        transportId: CENTURION,
+        internetMessageId: '<action-api@example.com>',
+      });
+      expect(work).toMatchObject({
+        status: 'ready',
+        needsAction: true,
+        action: 'amend',
+        actionEvidence: 'Update card [card ••••1111] on the reservation.',
+        actionConfidence: 'high',
+      });
+
+      await openStoredWork(db, {
+        transportId: CENTURION,
+        internetMessageId: '<action-api@example.com>',
+      });
+      const rows = await listWorkItems(db, {
+        transportId: CENTURION,
+        statuses: ['needs_you'],
+        limit: 5,
+      });
+      expect(rows[0]).toMatchObject({
+        needsAction: true,
+        action: 'amend',
+        actionEvidence: 'Update card [card ••••1111] on the reservation.',
+        actionConfidence: 'high',
+      });
+    }));
+
   it('reads a stored read without writing: no work item is made or moved until the pane opens one', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'ro1');

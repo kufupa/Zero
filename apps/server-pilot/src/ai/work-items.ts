@@ -21,6 +21,8 @@ import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
+import { maskCardNumbers } from './card-mask.js';
+import { ACTION_CONFIDENCE_LEVELS, MAIL_ACTIONS, type ActionConfidence, type MailAction } from './extraction/schema.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1188,6 +1190,11 @@ export type StoredWork =
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
       analysis: StoredAnalysis & { noReplySender: boolean };
       contact: StoredContact;
+      /** Stored action classifier result; null when this is a legacy extraction without action fields. */
+      needsAction: boolean | null;
+      action: MailAction | null;
+      actionEvidence: string | null;
+      actionConfidence: ActionConfidence | null;
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
       translation: StoredTranslation;
@@ -1244,6 +1251,15 @@ async function readyView(
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
     analysis: { ...stored.analysis, noReplySender: isNoReplyAddress(msg.fromAddress) },
     contact: storedContact(read.payload, state),
+    needsAction: typeof read.payload.needsAction === 'boolean' ? read.payload.needsAction : null,
+    action: isMailAction(read.payload.action) ? read.payload.action : null,
+    actionEvidence:
+      typeof read.payload.actionEvidence === 'string'
+        ? maskCardNumbers(read.payload.actionEvidence).slice(0, 200)
+        : null,
+    actionConfidence: isActionConfidence(read.payload.actionConfidence)
+      ? read.payload.actionConfidence
+      : null,
     language: read.language,
     translation: storedTranslation(read.translation),
   };
@@ -1533,6 +1549,10 @@ export async function listWorkItems(
       sender: message.fromAddress,
       subject: message.subject,
       receivedAt: message.receivedAt,
+      needsAction: sql<boolean | null>`case ${mailExtraction.payload}->>'needsAction' when 'true' then true when 'false' then false else null end`,
+      action: sql<string | null>`${mailExtraction.payload}->>'action'`,
+      actionEvidence: sql<string | null>`${mailExtraction.payload}->>'actionEvidence'`,
+      actionConfidence: sql<string | null>`${mailExtraction.payload}->>'actionConfidence'`,
       chipRank,
     })
     .from(workItem)
@@ -1558,6 +1578,19 @@ export async function listWorkItems(
     .limit(input.limit);
   return rows.map(({ chipRank: rank, ...row }) => ({
     ...row,
+    needsAction: typeof row.needsAction === 'boolean' ? row.needsAction : null,
+    action: isMailAction(row.action) ? row.action : null,
+    actionEvidence:
+      typeof row.actionEvidence === 'string' ? maskCardNumbers(row.actionEvidence).slice(0, 200) : null,
+    actionConfidence: isActionConfidence(row.actionConfidence) ? row.actionConfidence : null,
     chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
   }));
+}
+
+function isMailAction(value: unknown): value is MailAction {
+  return typeof value === 'string' && (MAIL_ACTIONS as readonly string[]).includes(value);
+}
+
+function isActionConfidence(value: unknown): value is ActionConfidence {
+  return typeof value === 'string' && (ACTION_CONFIDENCE_LEVELS as readonly string[]).includes(value);
 }

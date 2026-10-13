@@ -78,6 +78,7 @@ function formatBedrockError(error: unknown, region: string, modelId: string): Er
   return new Error(`Bedrock ${name} for model ${modelId} in ${region}: ${message}`);
 }
 
+/** @deprecated Explicit Nova Lite compatibility path only; new triage defaults to the Luna adapter. */
 export class BedrockModelAdapter implements ModelAdapter {
   private readonly client: BedrockRuntimeClient;
   private readonly region: string;

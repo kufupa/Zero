@@ -41,6 +41,12 @@ export function resolveModelAdapter(
     return new LunaModelAdapter();
   }
 
+  // Deprecated explicit compatibility route only. New/default mail triage must never fall through to Nova Lite.
+  if (!env.AI_MODEL_ID?.startsWith('amazon.nova-lite')) {
+    throw new Error(
+      'AI_TRIAGE_MODEL_PROFILE=nova_lite is deprecated and requires an explicit Nova Lite AI_MODEL_ID',
+    );
+  }
   return createBedrockModelAdapter({
     region: env.BEDROCK_REGION,
     modelId: env.AI_MODEL_ID,

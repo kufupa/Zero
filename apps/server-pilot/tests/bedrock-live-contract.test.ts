@@ -4,10 +4,10 @@ import { createModelAdapter } from '../src/ai/bedrock/factory.js';
 const live = process.env.BEDROCK_LIVE_TEST === '1';
 
 describe.skipIf(!live)('bedrock live contract', () => {
-  it('converse returns JSON object via instance credentials', async () => {
+  it('Luna Responses returns JSON object via instance credentials', async () => {
     const adapter = createModelAdapter();
     const result = await adapter.invoke({
-      modelId: process.env.AI_MODEL_ID ?? 'amazon.nova-lite-v1:0',
+      modelId: process.env.AI_MODEL_ID ?? 'global.openai.gpt-6-luna',
       systemPrompt: 'Return JSON only.',
       userPrompt: 'Return {"ok":true}',
     });

@@ -176,6 +176,7 @@ describe('env', () => {
     expect(parseEnv(baseEnv()).AI_DRAFTS_ENABLED).toBe(false);
     expect(parseEnv(baseEnv()).AI_STALE_RUN_TIMEOUT_MS).toBe(15 * 60_000);
     expect(parseEnv(baseEnv()).AI_MODEL_ROUTE).toBe('unavailable');
+    expect(parseEnv(baseEnv()).AI_TRIAGE_MODEL_PROFILE).toBe('gpt6_luna_max');
   });
 
   it('accepts only the explicit approved-local model route marker', () => {
@@ -249,7 +250,7 @@ describe('env', () => {
     expect(env.AI_ENABLED).toBe(false);
   });
 
-  it('enables AI with default model when AI_ENABLED=true', () => {
+  it('keeps an explicitly configured model id when AI_ENABLED=true', () => {
     const env = parseEnv({
       NODE_ENV: 'production',
       PORT: '8788',
@@ -261,13 +262,19 @@ describe('env', () => {
       POP3_POLL_INTERVAL_MS: '30000',
       POP3_MAX_MESSAGES_PER_CYCLE: '500',
       AI_ENABLED: 'true',
-      AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+      AI_MODEL_ID: 'global.openai.gpt-6-luna',
     });
 
     expect(env.AI_ENABLED).toBe(true);
-    expect(env.AI_MODEL_ID).toBe('amazon.nova-lite-v1:0');
+    expect(env.AI_MODEL_ID).toBe('global.openai.gpt-6-luna');
     expect(env.BEDROCK_REGION).toBe('us-east-1');
     expect(env.MASTRA_STORAGE_PATH).toBeDefined();
+  });
+
+  it('defaults enabled triage to the Bedrock Luna profile and never to Nova Lite', () => {
+    const env = parseEnv(baseEnv({ AI_ENABLED: 'true' }));
+    expect(env.AI_TRIAGE_MODEL_PROFILE).toBe('gpt6_luna_max');
+    expect(env.AI_MODEL_ID).toBe('global.openai.gpt-6-luna');
   });
 
   it('defaults BEDROCK_REGION to us-east-1 when AI enabled and region omitted', () => {

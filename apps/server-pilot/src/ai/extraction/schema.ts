@@ -13,6 +13,20 @@ import { validIsoDate } from '../quote-workflow-llm.js';
 export type MailKind = (typeof MAIL_KINDS)[number];
 export type ExtractionBoard = 'room_only' | 'bb' | 'dbb';
 export type DateRange = { arrival: string | null; departure: string | null };
+export const MAIL_ACTIONS = [
+  'no_action',
+  'quote_availability',
+  'new_booking',
+  'amend',
+  'cancel',
+  'payment_proof',
+  'billing',
+  'group_event',
+  'other_actionable',
+] as const;
+export type MailAction = (typeof MAIL_ACTIONS)[number];
+export const ACTION_CONFIDENCE_LEVELS = ['high', 'medium', 'low'] as const;
+export type ActionConfidence = (typeof ACTION_CONFIDENCE_LEVELS)[number];
 
 const nullableText = z.string().nullable();
 const dateRange = z.object({
@@ -24,7 +38,11 @@ const dateRange = z.object({
 });
 const extractionOriginSchema = z.enum(['person', 'system_notice']);
 
-export const mailExtractionSchema = z.object({
+const mailExtractionObjectSchema = z.object({
+  needsAction: z.boolean().describe('Whether this target message represents open or newly requested work.'),
+  action: z.enum(MAIL_ACTIONS).describe('The target message action, considered with prior and next thread state.'),
+  actionEvidence: z.string().max(200).describe('Short supporting evidence, no card digits; empty when none.'),
+  actionConfidence: z.enum(ACTION_CONFIDENCE_LEVELS).describe('Confidence in needsAction and action.'),
   sourceLanguage: z
     .string()
     .nullable()
@@ -90,6 +108,16 @@ export const mailExtractionSchema = z.object({
     }),
   ),
 });
+
+export const mailExtractionSchema = mailExtractionObjectSchema.superRefine((value, context) => {
+  if (value.needsAction === (value.action === 'no_action')) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['needsAction'],
+      message: 'needsAction must be false exactly when action is no_action.',
+    });
+  }
+});
 export type MailExtractionOutput = z.infer<typeof mailExtractionSchema>;
 
 export type ExtractionRow = {
@@ -110,32 +138,40 @@ export type ExtractionStay = {
   rows: ExtractionRow[];
 };
 
-const storedExtractionRowSchema = mailExtractionSchema.shape.stays.element.shape.rows.element.extend({
+const storedExtractionRowSchema = mailExtractionObjectSchema.shape.stays.element.shape.rows.element.extend({
   id: z.string(),
 });
-const storedExtractionStaySchema = mailExtractionSchema.shape.stays.element.extend({
+const storedExtractionStaySchema = mailExtractionObjectSchema.shape.stays.element.extend({
   id: z.string(),
   rows: z.array(storedExtractionRowSchema),
 });
 
-/** Stored mail-extraction payload. Optional origin keeps pre-origin rows readable. */
+/** Stored mail-extraction payload. New action fields and origin stay optional for legacy rows. */
 export const mailExtractionPayloadSchema = z.object({
+  needsAction: z.boolean().optional(),
+  action: z.enum(MAIL_ACTIONS).optional(),
+  actionEvidence: z.string().max(200).optional(),
+  actionConfidence: z.enum(ACTION_CONFIDENCE_LEVELS).optional(),
   origin: extractionOriginSchema
     .nullable()
     .optional()
     .describe('Person-authored email or a system-generated notice; absent in older stored payloads.'),
-  contact: mailExtractionSchema.shape.contact,
-  agency: mailExtractionSchema.shape.agency,
-  endClient: mailExtractionSchema.shape.endClient,
-  confirmationNumbers: mailExtractionSchema.shape.confirmationNumbers,
+  contact: mailExtractionObjectSchema.shape.contact,
+  agency: mailExtractionObjectSchema.shape.agency,
+  endClient: mailExtractionObjectSchema.shape.endClient,
+  confirmationNumbers: mailExtractionObjectSchema.shape.confirmationNumbers,
   stays: z.array(storedExtractionStaySchema),
-  missing: mailExtractionSchema.shape.missing,
+  missing: mailExtractionObjectSchema.shape.missing,
 });
 
 /** The stored payload (mail_extraction.payload). Every string is card-masked and capped. */
 export type MailExtractionPayload = z.infer<typeof mailExtractionPayloadSchema>;
 export type SanitizedExtraction = {
   kind: MailKind;
+  needsAction: boolean;
+  action: MailAction;
+  actionEvidence: string;
+  actionConfidence: ActionConfidence;
   sourceLanguage: string | null;
   payload: MailExtractionPayload;
 };
@@ -216,12 +252,21 @@ export function sanitizeExtraction(
       question: cleanText(item.question) ?? '',
     }))
     .filter((item) => item.question);
+  const actionEvidence = cleanText(output.actionEvidence, 200) ?? '';
   return {
     kind: output.kind,
+    needsAction: output.needsAction,
+    action: output.action,
+    actionEvidence,
+    actionConfidence: output.actionConfidence,
     sourceLanguage: LANGUAGE_PATTERN.test(output.sourceLanguage ?? '')
       ? output.sourceLanguage
       : null,
     payload: {
+      needsAction: output.needsAction,
+      action: output.action,
+      actionEvidence,
+      actionConfidence: output.actionConfidence,
       origin: output.origin ?? null,
       contact: {
         name: cleanText(output.contact.name),

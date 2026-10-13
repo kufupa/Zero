@@ -6,6 +6,7 @@ import {
 } from '../src/ai/bedrock/bedrock.js';
 import { createFakeModelAdapter } from '../src/ai/bedrock/fake.js';
 import { resolveModelAdapter } from '../src/ai/bedrock/factory.js';
+import { LunaModelAdapter } from '../src/ai/bedrock/luna.js';
 import { validateStructuredJsonOutput } from '../src/ai/security/policy.js';
 
 describe('bedrock adapter contract', () => {
@@ -62,9 +63,32 @@ describe('bedrock adapter contract', () => {
       NODE_ENV: 'production',
       AI_ENABLED: true,
       AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+      AI_TRIAGE_MODEL_PROFILE: 'nova_lite',
       BEDROCK_REGION: 'us-east-1',
     });
     expect(adapter).toBeInstanceOf(BedrockModelAdapter);
+  });
+
+  it('defaults production triage to Bedrock-backed Luna max, never Nova Lite', () => {
+    const adapter = resolveModelAdapter({
+      NODE_ENV: 'production',
+      AI_ENABLED: true,
+      AI_MODEL_ID: 'global.openai.gpt-6-luna',
+      BEDROCK_REGION: 'us-east-1',
+    });
+    expect(adapter).toBeInstanceOf(LunaModelAdapter);
+  });
+
+  it('requires an explicit Nova Lite model id for the deprecated legacy profile', () => {
+    expect(() =>
+      resolveModelAdapter({
+        NODE_ENV: 'production',
+        AI_ENABLED: true,
+        AI_MODEL_ID: 'global.openai.gpt-6-luna',
+        AI_TRIAGE_MODEL_PROFILE: 'nova_lite',
+        BEDROCK_REGION: 'us-east-1',
+      }),
+    ).toThrow(/deprecated.*explicit.*AI_MODEL_ID/i);
   });
 
   it('resolveModelAdapter throws in production when AI_ENABLED is false', () => {

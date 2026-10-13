@@ -165,7 +165,7 @@ async function classifyFixtureCase(testCase: DemoFixtureCase): Promise<{
 }> {
   const adapter = createFakeModelAdapter();
   const result = await adapter.invoke({
-    modelId: 'amazon.nova-lite-v1:0',
+    modelId: 'global.openai.gpt-6-luna',
     systemPrompt: 'triage',
     userPrompt: `classify: ${testCase.body}`,
   });
@@ -201,7 +201,7 @@ export async function runSpikeEval(): Promise<SpikeEvalReport> {
       draftSchemaCases += 1;
       const adapter = createFakeModelAdapter();
       const result = await adapter.invoke({
-        modelId: 'amazon.nova-lite-v1:0',
+        modelId: 'global.openai.gpt-6-luna',
         systemPrompt: 'draft',
         userPrompt: `draft reply skeleton for guest: ${testCase.body}`,
       });
@@ -284,7 +284,7 @@ export async function runSpikeEval(): Promise<SpikeEvalReport> {
     mode: 'spike',
     passed,
     writeGateEnabled: passed,
-    modelId: 'amazon.nova-lite-v1:0',
+    modelId: 'global.openai.gpt-6-luna',
     promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
     traceIds,
     scorerIds: [...new Set(scorerIds)],

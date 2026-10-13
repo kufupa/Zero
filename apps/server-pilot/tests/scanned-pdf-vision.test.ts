@@ -13,6 +13,7 @@ import {
   extractEmbeddedPdfText,
   pdfSandboxArgv,
   renderPdfPagesForVision,
+  renderPdfPagesForVisionWithMetadata,
   VISION_LONG_EDGE_PX,
   VISION_MAX_PAGES,
   type SandboxRunner,
@@ -133,6 +134,51 @@ describe('U7 scanned PDF vision fallback', () => {
     expect(calls[0]?.outputDir).toBeTruthy();
     expect(pages?.map((page) => page.filename)).toEqual(['page-1.jpg', 'page-2.jpg', 'page-3.jpg']);
     expect(pages?.every((page) => page.mediaType === 'image/jpeg')).toBe(true);
+  });
+
+  it('reports source page count so a complete three-page PDF is not called truncated', async () => {
+    const calls: string[] = [];
+    const runner: SandboxRunner = async (tool, _inputPath, _signal, outputDir) => {
+      calls.push(tool);
+      if (tool === 'pdfinfo') {
+        return {
+          stdout: Buffer.from('Pages:           3\n'),
+          stderr: Buffer.alloc(0),
+          exitCode: 0,
+        };
+      }
+      for (let page = 1; page <= 3; page += 1) {
+        await writeFile(join(outputDir!, `page-${page}.jpg`), JPEG_STUB);
+      }
+      return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0 };
+    };
+
+    const result = await renderPdfPagesForVisionWithMetadata(PDF_STUB, { runner });
+    expect(calls).toEqual(['pdfinfo', 'pdftoppm']);
+    expect(result).toMatchObject({ sourcePageCount: 3, truncated: false });
+    expect(result?.pages).toHaveLength(3);
+  });
+
+  it('reports a longer source PDF as truncated after the three-page render cap', async () => {
+    const runner: SandboxRunner = async (tool, _inputPath, _signal, outputDir) => {
+      if (tool === 'pdfinfo') {
+        return {
+          stdout: Buffer.from('Pages:           4\n'),
+          stderr: Buffer.alloc(0),
+          exitCode: 0,
+        };
+      }
+      for (let page = 1; page <= 3; page += 1) {
+        await writeFile(join(outputDir!, `page-${page}.jpg`), JPEG_STUB);
+      }
+      return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), exitCode: 0 };
+    };
+
+    await expect(renderPdfPagesForVisionWithMetadata(PDF_STUB, { runner })).resolves.toMatchObject({
+      sourcePageCount: 4,
+      truncated: true,
+      pages: expect.arrayContaining([expect.objectContaining({ mediaType: 'image/jpeg' })]),
+    });
   });
 
   it('gives no pages, and no sandbox call, for a body that is not a PDF', async () => {

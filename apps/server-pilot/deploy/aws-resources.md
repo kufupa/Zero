@@ -42,7 +42,7 @@ Provisioned AWS resources for the mail pilot. All created via AWS CLI from lapto
 | `NavaZeroMailBucketAccess` | `s3:ListBucket` / `s3:GetBucketLocation` / `s3:ListBucketMultipartUploads` on mail bucket; `s3:GetObject` / `s3:PutObject` / `s3:DeleteObject` / `s3:AbortMultipartUpload` / `s3:ListMultipartUploadParts` on mail bucket `/*` |
 | `NavaZeroSecretsRead` | `secretsmanager:GetSecretValue` / `secretsmanager:DescribeSecret` on `nava-zero/server-pilot/database-url-*`, `nava-zero/server-pilot/infor-hms-read-*`, and `nava-zero/server-pilot/hms-evidence-hmac-*` |
 | `NavaZeroRDSConnect` | `rds-db:connect` on `dbuser:nava-zero-mail-pilot/zero_admin` (for future IAM DB auth; password auth used today via SG routing) |
-| `NavaZeroBedrockInvoke` | `bedrock:InvokeModel` on `arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0`; optional `bedrock:ApplyGuardrail` when guardrail env vars set |
+| `NavaZeroBedrockInvoke` | `bedrock:InvokeModel` on the account's `us-east-1` `global.openai.gpt-6-luna` inference profile and the exact `openai.gpt-6-luna` destination foundation model in enabled regions. Does not grant the deprecated explicit Nova Lite route; add `bedrock:ApplyGuardrail` separately only if guardrail env vars are set. |
 
 ## asm-exec digests (Phase B evidence bootstrap)
 
@@ -122,7 +122,8 @@ ROLE=nava-prod-public-ipv4-WorkerRole-bPmrMEkmdwLU
 aws iam put-role-policy --region "$AWS_REGION" --role-name "$ROLE" --policy-name NavaZeroMailBucketAccess --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket","s3:GetBucketLocation","s3:ListBucketMultipartUploads"],"Resource":"arn:aws:s3:::'"$NAVA_MAIL_BUCKET"'"},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":"arn:aws:s3:::'"$NAVA_MAIL_BUCKET"'/*"}]}'
 aws iam put-role-policy --region "$AWS_REGION" --role-name "$ROLE" --policy-name NavaZeroSecretsRead --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["secretsmanager:GetSecretValue","secretsmanager:DescribeSecret"],"Resource":["arn:aws:secretsmanager:af-south-1:845242190536:secret:nava-zero/server-pilot/database-url-*","arn:aws:secretsmanager:af-south-1:845242190536:secret:nava-zero/server-pilot/infor-hms-read-*","arn:aws:secretsmanager:af-south-1:845242190536:secret:nava-zero/server-pilot/hms-evidence-hmac-*"]}]}'
 aws iam put-role-policy --region "$AWS_REGION" --role-name "$ROLE" --policy-name NavaZeroRDSConnect --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["rds-db:connect"],"Resource":"arn:aws:rds:af-south-1:845242190536:dbuser:nava-zero-mail-pilot/zero_admin"}]}'
-aws iam put-role-policy --region "$AWS_REGION" --role-name "$ROLE" --policy-name NavaZeroBedrockInvoke --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["bedrock:InvokeModel"],"Resource":"arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0"}]}'
+# Default folder-triage route: exact global profile plus the exact destination model, with no Nova Lite grant.
+aws iam put-role-policy --region "$AWS_REGION" --role-name "$ROLE" --policy-name NavaZeroBedrockInvoke --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["bedrock:InvokeModel"],"Resource":["arn:aws:bedrock:us-east-1:845242190536:inference-profile/global.openai.gpt-6-luna","arn:aws:bedrock:*::foundation-model/openai.gpt-6-luna"]}]}'
 ```
 
 ## Mail retention and storage tiering

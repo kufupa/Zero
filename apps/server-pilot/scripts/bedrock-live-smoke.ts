@@ -1,5 +1,5 @@
 /**
- * Live Bedrock smoke: one schema-validated Converse call via instance role.
+ * Live Bedrock smoke: one schema-validated Luna Responses call via instance role.
  * Invoked by deploy/bedrock-live-gate.sh through tsx — never Vitest, never DB.
  */
 import { createModelAdapter } from '../src/ai/bedrock/factory.js';
@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   }
 
   const adapter = createModelAdapter();
-  const modelId = process.env.AI_MODEL_ID ?? 'amazon.nova-lite-v1:0';
+  const modelId = process.env.AI_MODEL_ID ?? 'global.openai.gpt-6-luna';
   const asOf = '2026-07-29T15:38:03.615Z';
   const classification = await classifyMailTriage(
     {
