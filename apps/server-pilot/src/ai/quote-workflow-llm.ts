@@ -8,6 +8,7 @@ import type { ModelAdapter, ModelInvokeResult } from './bedrock/adapter.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { maskCardNumbers } from './card-mask.js';
 import { createHash } from 'node:crypto';
+import { matchKey } from './party-match.js';
 
 const THREAD_MESSAGE_MAX = 8_000;
 const THREAD_TOTAL_MAX = 40_000;
@@ -57,6 +58,8 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   .update(LUNA_RESPONSE_JSON)
   // Bumped with the review rows a cached analysis carries, so no cache entry replays the old rows.
   .update('\nattachment-review/2')
+  // Guest-name removal changes the cached party result even though the prompt and response schema are unchanged.
+  .update('\nparty-not-guest/2')
   .digest('hex')
   .slice(0, 16);
 
@@ -163,12 +166,13 @@ export type QuoteTreatAs = 'quote' | 'create_booking';
  */
 export function partyNotGuest(analysis: Pick<LunaAnalysis, 'party' | 'groups'>): LunaAnalysis['party'] {
   const { party } = analysis;
-  const name = party.name?.trim().toLowerCase().replace(/\s+/g, ' ');
+  const name = party.name ? matchKey(party.name) : '';
   if (!name || party.kind === 'private' || party.kind === null) return party;
   const guests = new Set(
-    analysis.groups.flatMap((group) => group.guestNames.map((guest) => guest.trim().toLowerCase().replace(/\s+/g, ' '))),
+    analysis.groups.flatMap((group) => group.guestNames.map((guest) => matchKey(guest))),
   );
-  return guests.has(name) ? { ...party, kind: null, name: null } : party;
+  const containsGuest = [...guests].some((guest) => guest && ` ${name} `.includes(` ${guest} `));
+  return containsGuest ? { ...party, kind: null, name: null } : party;
 }
 
 export function buildQuoteWorkflowPrompt(

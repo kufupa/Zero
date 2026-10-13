@@ -441,18 +441,22 @@ async function findPartyOfKind(
   name: string,
   lock: PaneStayLock,
   spawn: (input: { kind: PanePartyKind; name: string }) => Promise<unknown>,
-  acquisition?: PropertyReadLockAcquisitionOptions,
+  options: {
+    acquisition?: PropertyReadLockAcquisitionOptions;
+    exactTerm?: boolean;
+    resultCap?: number;
+  } = {},
 ): Promise<PanePartyFindResult> {
-  const terms = partySearchTerms(name).slice(0, PARTY_KIND_SEARCH_TERMS);
+  const terms = options.exactTerm ? [name] : partySearchTerms(name).slice(0, PARTY_KIND_SEARCH_TERMS);
   const tries = terms.length ? terms : [name];
   let core: PanePartyLookupCore = withoutResults('no_match');
   let searchedFor = tries[0];
   for (const term of tries) {
     searchedFor = term;
-    core = await lookupKind(kind, term, lock, spawn, acquisition);
+    core = await lookupKind(kind, term, lock, spawn, options.acquisition);
     if (!ANSWERED_OUTCOMES.has(core.outcome) || core.results.length) break;
   }
-  return rankedReply(name, core, searchedFor);
+  return rankedReply(name, core, searchedFor, options.resultCap ?? PANE_PARTY_RESULT_CAP);
 }
 
 /**
@@ -462,7 +466,13 @@ async function findPartyOfKind(
  */
 export async function findParty(
   input: PanePartyFindInput,
-  options: { acquisition?: PropertyReadLockAcquisitionOptions } = {},
+  options: {
+    acquisition?: PropertyReadLockAcquisitionOptions;
+    /** V2 already owns a bounded plan and must run exactly one planned term through the existing lookup runner. */
+    exactTerm?: boolean;
+    /** Wider aggregate input for the V2 LLM (still capped before it is sent). */
+    resultCap?: number;
+  } = {},
 ): Promise<PanePartyFindResult> {
   const enabled = panePartyLookupLoaders.enabled ?? (() => quoteRateContextEnabled());
   if (!enabled()) return replyWithout('refused_flag_off');
@@ -471,7 +481,7 @@ export async function findParty(
   const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
   if (!lock) return replyWithout('refused_lock_unavailable');
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
-  if (input.kind) return findPartyOfKind(input.kind, name, lock, spawn, options.acquisition);
+  if (input.kind) return findPartyOfKind(input.kind, name, lock, spawn, options);
   const perKind: PanePartyLookupCore[] = [];
   for (const kind of PARTY_KINDS) {
     let raw: unknown;

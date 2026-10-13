@@ -35,8 +35,12 @@ import {
   HMS_JOB_PRIORITY_PREFETCH,
   HMS_JOB_PRIORITY_USER,
   hmsJobRequestSchema,
+  partyMatchV2Enabled,
   partyPrefetchIdempotencyKey,
+  partyPrefetchV2IdempotencyKey,
   selectPartyPrefetchRequest,
+  selectPartyMatchV2PrefetchRequest,
+  readHmsJobView,
 } from '../src/ai/hms-jobs.js';
 
 const reachable = await probeTestDb();
@@ -168,6 +172,9 @@ describe('HMS party job request', () => {
       hmsJobRequestSchema.safeParse({ kind: 'party', name: 'Travel Hub', partyKind: 'guest' })
         .success,
     ).toBe(false);
+    expect(hmsJobRequestSchema.safeParse({ kind: 'party', name: 'Amicis', matchVersion: 2 }).success).toBe(
+      true,
+    );
   });
 });
 
@@ -229,6 +236,27 @@ describe('party prefetch selection', () => {
         '2026-10-13',
       ),
     );
+  });
+
+  it('V2 queues the agency before the end client and marks the request version', () => {
+    expect(
+      selectPartyMatchV2PrefetchRequest({
+        kind: 'quote',
+        payload: { agency: 'Amicis Health (Pty) Ltd', endClient: 'Voerkraal Restaurant' },
+        sender: 'agent@travelagency.co.za',
+        subject: 'Quote request',
+        body: '',
+      }),
+    ).toEqual({ kind: 'party', name: 'Amicis Health (Pty) Ltd', matchVersion: 2 });
+  });
+
+  it('uses a per-message idempotency key for V2 evidence and keeps its gate default-off', () => {
+    const first = partyPrefetchV2IdempotencyKey('transport-1', 'message-1', '2026-10-13');
+    expect(first).not.toBe(partyPrefetchV2IdempotencyKey('transport-1', 'message-2', '2026-10-13'));
+    expect(first).not.toBe(partyPrefetchV2IdempotencyKey('transport-2', 'message-1', '2026-10-13'));
+    expect(partyMatchV2Enabled({})).toBe(false);
+    expect(partyMatchV2Enabled({ PARTY_MATCH_V2: '1' })).toBe(true);
+    expect(partyMatchV2Enabled({ PARTY_MATCH_V2: 'on' })).toBe(false);
   });
 });
 
@@ -317,7 +345,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(await prefetchPartyForExtraction(booking, db, env)).toBe(0);
 
         const rows = await db
-          .select({ request: aiWorkflowRun.readRequest, priority: aiWorkflowRun.priority })
+          .select({
+            id: aiWorkflowRun.id,
+            request: aiWorkflowRun.readRequest,
+            priority: aiWorkflowRun.priority,
+            triggerMessageId: aiWorkflowRun.triggerMessageId,
+          })
           .from(aiWorkflowRun)
           .where(
             and(
@@ -330,8 +363,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           expect.objectContaining({
             request: { kind: 'party', name: 'Horizon Trail Tours' },
             priority: HMS_JOB_PRIORITY_PREFETCH,
+            triggerMessageId: quote.triggerMessageId,
           }),
         ]);
+        const job = rows[0];
+        if (!job) throw new Error('party prefetch row missing');
+        await expect(
+          readHmsJobView({ transportId: TRANSPORT_ID, runId: job.id }, db),
+        ).resolves.toMatchObject({ sourceMessageId: quote.triggerMessageId });
       }));
 
     it('uses the existing hourly prefetch cap', () =>

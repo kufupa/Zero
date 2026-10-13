@@ -369,6 +369,7 @@ function StaffPartyFields({
   partyIndex,
   partyJobTransport,
   threadId,
+  sourceMessageId,
   onPartyLookupPending,
 }: {
   header: StaffQuoteHeader;
@@ -382,6 +383,7 @@ function StaffPartyFields({
   partyIndex?: PartyIndexSearcher | null;
   partyJobTransport?: HmsJobTransport | null;
   threadId?: string | null;
+  sourceMessageId?: string | null;
   /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
 }) {
@@ -397,6 +399,7 @@ function StaffPartyFields({
         find={findParty}
         jobTransport={partyJobTransport}
         threadId={threadId}
+        sourceMessageId={sourceMessageId}
         suggestions={partySuggestions}
         indexSearch={partyIndex}
         onLookupPending={(pending) => onPartyLookupPending?.(kind, pending)}
@@ -1406,6 +1409,7 @@ export function QuoteWorkflowPanel({
             partyIndex={partyIndex}
             partyJobTransport={partyJobTransport}
             threadId={session.staffSource?.threadId ?? null}
+            sourceMessageId={session.staffSource?.messageId ?? null}
             onPartyLookupPending={onPartyLookupPending}
           />
         </Section>

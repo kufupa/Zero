@@ -154,7 +154,7 @@ export type HmsJobKind = 'find' | 'search_guest' | 'party';
 export type HmsJobRequest =
   | { kind: 'find'; confirmation: string; arrival?: string }
   | { kind: 'search_guest'; lastName: string; arrival: string; departure?: string }
-  | { kind: 'party'; name: string; partyKind?: 'company' | 'agency' };
+  | { kind: 'party'; name: string; partyKind?: 'company' | 'agency'; matchVersion?: 2 };
 
 export type HmsJobQueueOptions = { autoStart?: true; retry?: true };
 
@@ -167,6 +167,8 @@ export type HmsJobStatus = 'queued' | 'running' | 'retrying' | 'done' | 'failed'
  */
 export type HmsJobView = {
   runId: string;
+  /** Message that produced the job; party prefetch read-back is scoped to the selected message. */
+  sourceMessageId?: string | null;
   request: HmsJobRequest | null;
   prefetch: boolean;
   status: HmsJobStatus;
