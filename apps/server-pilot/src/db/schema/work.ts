@@ -63,6 +63,7 @@ export const WORK_EVENT_TYPES = [
   'hms.lookup.finished',
   'item.dismissed',
   'note.staff',
+  'admin_review',
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
 /**

@@ -8,11 +8,8 @@ import {
 import { Sidebar, SidebarContent, SidebarFooter, SidebarHeader } from '@/components/ui/sidebar';
 import {
   bottomNavItems,
-  injectLiveCategoryNavSection,
   navigationConfig,
 } from '@/config/navigation';
-import { useCategorySettings } from '@/hooks/use-categories';
-import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 // import { useTRPC } from '@/providers/query-provider';
 import { useSidebar } from '@/components/ui/sidebar';
 import { CreateEmail } from '../create/create-email';
@@ -22,6 +19,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import React, { useMemo } from 'react';
 import { useSession } from '@/lib/auth-client';
 import { useUnreadCounts } from '@/hooks/use-unread-counts';
+import { useWorkflowFolderSummary } from '@/hooks/use-workflow-folder-summary';
 import { useLocation } from 'react-router';
 import { cn } from '@/lib/utils';
 import { NATIVE_VISIBLE_SCROLLBAR_CLASSES } from '@/lib/scrollbar-chrome';
@@ -34,6 +32,7 @@ import { buildLabNavItems } from '@/lib/lab/centurion-eval';
 import { NavUser } from './nav-user';
 import { NavMain } from './nav-main';
 import { useQueryState } from 'nuqs';
+import { WorkflowFolderNav } from '@/components/mail/workflow-folder-nav';
 // import { toast } from 'sonner';
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
@@ -41,12 +40,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   //   const { mutateAsync: createMeet } = useMutation(trpc.meet.create.mutationOptions());
   const { data: unreadCounts } = useUnreadCounts();
   const location = useLocation();
+  const { data: workflowSummary } = useWorkflowFolderSummary(location.pathname.startsWith('/mail'));
   const { data: session } = useSession();
   const showAdminDashboard = isAdminDashboardEnabled(session);
   const capabilities = usePilotCapabilities();
   const showCatchupUpload = Boolean(capabilities.catchupUpload);
-  const categorySettings = useCategorySettings();
-  const demoMode = isFrontendOnlyDemo();
   const labLoad = useLabIndexLoad();
 
   const { currentSection, navItems, footerItems } = useMemo(() => {
@@ -58,19 +56,6 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     const currentSection = section?.[0] || 'mail';
     if (navigationConfig[currentSection]) {
       let items = [...navigationConfig[currentSection].sections];
-
-      if (currentSection === 'mail' && !demoMode) {
-        items = injectLiveCategoryNavSection(
-          items,
-          categorySettings
-            .filter((category): category is typeof category & { slug: string } => Boolean(category.slug))
-            .map((category) => ({
-              slug: category.slug,
-              name: category.name,
-              color: category.color,
-            })),
-        );
-      }
 
       if (currentSection === 'lab' && labLoad?.source === 'live') {
         const byId = new Map(buildLabNavItems(labLoad.index).map((item) => [item.id, item]));
@@ -119,7 +104,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         footerItems: bottomNavItems,
       };
     }
-  }, [location.pathname, showAdminDashboard, showCatchupUpload, categorySettings, demoMode, labLoad]);
+  }, [location.pathname, showAdminDashboard, showCatchupUpload, labLoad]);
 
   const showComposeButton = currentSection === 'mail';
   const { state } = useSidebar();
@@ -172,7 +157,15 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         )}
       >
         <div className="flex-1 py-0">
-          <NavMain items={navItems} unreadCountsSnapshot={unreadCounts} />
+          {currentSection === 'mail' ? (
+            <WorkflowFolderNav
+              summary={workflowSummary}
+              unreadCountsSnapshot={unreadCounts}
+              collapsed={state === 'collapsed'}
+            />
+          ) : (
+            <NavMain items={navItems} unreadCountsSnapshot={unreadCounts} />
+          )}
         </div>
       </SidebarContent>
 

@@ -5,10 +5,20 @@ import { useCategorySettingsQueryState } from '@/hooks/use-categories';
 import { useLabels } from '@/hooks/use-labels';
 import { isDemoMailFolderSlug } from '@/lib/demo/folder-map';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { isWorkflowFolderNavId } from '@/config/workflow-folders';
 import { useEffect, useState } from 'react';
 import type { Route } from './+types/page';
 
-const ALLOWED_FOLDERS = new Set(['inbox', 'draft', 'sent', 'spam', 'bin', 'archive', 'snoozed']);
+const ALLOWED_FOLDERS = new Set([
+  'inbox',
+  'all',
+  'draft',
+  'sent',
+  'spam',
+  'bin',
+  'archive',
+  'snoozed',
+]);
 
 export async function clientLoader({ params, request }: Route.ClientLoaderArgs) {
   if (!params.folder) {
@@ -26,13 +36,14 @@ export default function MailPage() {
   const normalizedFolder = folder.toLowerCase();
 
   const isStandardFolder = ALLOWED_FOLDERS.has(normalizedFolder);
+  const isWorkflowFolder = isWorkflowFolderNavId(normalizedFolder);
   const isDemoMailFolder = isFrontendOnlyDemo() && isDemoMailFolderSlug(normalizedFolder);
 
   const { userLabels, isLoading: isLoadingLabels } = useLabels();
   const { categories, hasSettledLiveCategories } = useCategorySettingsQueryState();
 
   useEffect(() => {
-    if (isStandardFolder || isDemoMailFolder) {
+    if (isStandardFolder || isWorkflowFolder || isDemoMailFolder) {
       setIsLabelValid(true);
       return;
     }
@@ -78,6 +89,7 @@ export default function MailPage() {
     hasSettledLiveCategories,
     categories,
     isStandardFolder,
+    isWorkflowFolder,
     isDemoMailFolder,
     navigate,
   ]);
