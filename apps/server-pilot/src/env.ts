@@ -234,6 +234,12 @@ let warnedClassifierOffWithoutExtraction = false;
  * INBOUND_EXTRACTION is exactly `on`, because extraction then carries spam, the mail baseline, the pane warmer, the
  * prefetch and the pills. `off` without extraction keeps the classifier on and logs one warning.
  */
+/** AI_WRITE_GATE_ENABLED without parsing the full env (admission paths). Same values as parseEnv. */
+export function isAiWriteGateEnabled(input: EnvInput = process.env): boolean {
+  const raw = input.AI_WRITE_GATE_ENABLED;
+  return raw ? toBool('AI_WRITE_GATE_ENABLED', raw) : false;
+}
+
 export function isInboundTriageClassifierEnabled(input: EnvInput = process.env): boolean {
   if (input.INBOUND_TRIAGE_CLASSIFIER !== 'off') return true;
   if (input.INBOUND_EXTRACTION === 'on') return false;

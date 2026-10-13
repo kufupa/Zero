@@ -1,9 +1,12 @@
 import {
+  aiWorkflowRun,
   attachment,
   mailboxTransport,
+  mailCategory,
   mailLabel,
   mailLiveAdmission,
   mailThread,
+  mailThreadCategory,
   message,
 } from '../../db/schema/mail.js';
 import {
@@ -17,10 +20,11 @@ import {
   enqueueInboundExtraction,
   inboundExtractionEnabled,
 } from '../../ai/extraction/inbound-run.js';
-import { isInboundTriageClassifierEnabled } from '../../env.js';
+import { isAiWriteGateEnabled, isInboundTriageClassifierEnabled } from '../../env.js';
+import { classifyMailSource } from '../../ai/mail-source.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
 import { lockCanonicalMailbox } from './canonical-identity.js';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { getSenderPreference } from '../sender-preference.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { markThreadRead } from '../thread-read.js';
@@ -190,6 +194,59 @@ export async function readAdmissionSnapshot(
     throw new Error('Admission snapshot integrity mismatch');
   return receipt.snapshot as unknown as AdmissionSnapshot;
 }
+
+/**
+ * Remove only automated-channel membership still owned by a completed deterministic source route.
+ * Manual category changes replace the row, giving it a newer createdAt than the route receipt.
+ */
+export async function removeDeterministicAutomatedChannelCategory(
+  db: DB,
+  input: { transportId: string; threadId: string },
+): Promise<void> {
+  // Folder writes follow the same gate as the route that applied them.
+  if (!isAiWriteGateEnabled()) return;
+  const [route] = await db
+    .select({ finishedAt: aiWorkflowRun.finishedAt })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.transportId, input.transportId),
+        eq(aiWorkflowRun.threadId, input.threadId),
+        eq(aiWorkflowRun.runKind, 'inbound_triage'),
+        eq(aiWorkflowRun.state, 'succeeded'),
+        sql`${aiWorkflowRun.metrics}->>'deterministicMailSourceRoute' = 'true'`,
+        sql`${aiWorkflowRun.metrics}->>'applyMode' = 'full'`,
+        sql`${aiWorkflowRun.finishedAt} IS NOT NULL`,
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.finishedAt), desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+    .limit(1);
+  if (!route?.finishedAt) return;
+
+  const [category] = await db
+    .select({ id: mailCategory.id })
+    .from(mailCategory)
+    .where(
+      and(
+        eq(mailCategory.transportId, input.transportId),
+        eq(mailCategory.slug, 'automated-channel'),
+      ),
+    )
+    .limit(1);
+  if (!category) return;
+
+  await db
+    .delete(mailThreadCategory)
+    .where(
+      and(
+        eq(mailThreadCategory.threadId, input.threadId),
+        eq(mailThreadCategory.transportId, input.transportId),
+        eq(mailThreadCategory.categoryId, category.id),
+        lte(mailThreadCategory.createdAt, route.finishedAt),
+      ),
+    );
+}
+
 export async function admitLiveMessage(
   db: DB,
   input: {
@@ -253,6 +310,16 @@ export async function admitLiveMessage(
     .limit(1);
   if (!trigger) throw new Error('Live admission trigger unavailable');
   if (trigger.attention === 'AMBIGUOUS_IDENTITY') return { admitted: false, receiptId: '' };
+  const mailSourceDecision =
+    trigger.direction === 'inbound'
+      ? classifyMailSource({
+          fromAddress: trigger.fromAddress,
+          subject: trigger.subject,
+          bodyText: trigger.textBody ?? trigger.htmlBody,
+        })
+      : null;
+  const routeAsAutomatedChannel =
+    mailSourceDecision !== null && mailSourceDecision.kind !== 'direct';
   // Existing operational rows predate this admission authority. A fresh producer
   // explicitly marks its insertion under the same mailbox lock; reconciliation
   // and native retries can never replay an old row while startup seeding runs.
@@ -377,8 +444,14 @@ export async function admitLiveMessage(
       updatedAt: new Date(),
     })
     .where(eq(mailThread.id, trigger.threadId));
+  if (trigger.direction === 'inbound' && mailSourceDecision?.kind === 'direct') {
+    await removeDeterministicAutomatedChannelCategory(db, {
+      transportId: input.transportId,
+      threadId: trigger.threadId,
+    });
+  }
   // A reply that lands closes the thread's open items, and a newer request supersedes the older ones (C2, C3).
-  if (trigger.threadId)
+  if (trigger.threadId && !routeAsAutomatedChannel)
     await refreshThreadWork(db, { transportId: input.transportId, threadId: trigger.threadId });
   if (trigger.direction === 'outbound')
     await markThreadRead(db, input.transportId, [trigger.threadId]);
@@ -431,7 +504,11 @@ export async function admitLiveMessage(
     }
   }
   // The inbound folder/label classifier is retired by INBOUND_TRIAGE_CLASSIFIER=off. Sent copies keep their baseline run.
-  if (trigger.direction === 'outbound' || isInboundTriageClassifierEnabled(process.env))
+  if (
+    trigger.direction === 'outbound' ||
+    routeAsAutomatedChannel ||
+    isInboundTriageClassifierEnabled(process.env)
+  )
     await enqueueAiRun(
       {
         transportId: input.transportId,
@@ -446,10 +523,15 @@ export async function admitLiveMessage(
         promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
         admissionSnapshotId: id,
         admissionSnapshotHash: snapshotHash,
+        ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
       },
       db,
     );
-  if (trigger.direction === 'inbound' && inboundExtractionEnabled(process.env))
+  if (
+    trigger.direction === 'inbound' &&
+    !routeAsAutomatedChannel &&
+    inboundExtractionEnabled(process.env)
+  )
     await enqueueInboundExtraction(
       {
         transportId: input.transportId,
@@ -457,10 +539,11 @@ export async function admitLiveMessage(
         messageId: trigger.id,
         admissionSnapshotId: id,
         admissionSnapshotHash: snapshotHash,
+        ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
       },
       db,
     );
-  if (trigger.direction === 'inbound')
+  if (trigger.direction === 'inbound' && !routeAsAutomatedChannel)
     await enqueueShadowPrediction({
       transportId: input.transportId,
       threadId: trigger.threadId,

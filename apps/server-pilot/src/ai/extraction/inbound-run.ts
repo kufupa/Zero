@@ -125,6 +125,7 @@ export async function enqueueInboundExtraction(
     admissionSnapshotId?: string;
     admissionSnapshotHash?: string;
     nextRunAt?: Date;
+    metrics?: Record<string, unknown>;
   },
   db: DB = getDb(),
 ) {
@@ -140,6 +141,7 @@ export async function enqueueInboundExtraction(
       admissionSnapshotId: input.admissionSnapshotId,
       admissionSnapshotHash: input.admissionSnapshotHash,
       nextRunAt: input.nextRunAt,
+      metrics: input.metrics,
     },
     db,
   );

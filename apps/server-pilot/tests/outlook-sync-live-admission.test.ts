@@ -1,8 +1,61 @@
-import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import {
+  aiWorkflowRun,
+  mailCategory,
+  mailThread,
+  mailThreadCategory,
+  message,
+} from '../src/db/schema/mail.js';
+import { aiShadowAdmission } from '../src/db/schema/ai-shadow-evaluation.js';
+import { workItem } from '../src/db/schema/work.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
+import type { DB } from '../src/db/client.js';
 import { describe, expect, it } from 'vitest';
 // Each integration case creates/migrates a fresh database and compiles the worker.
 import { eq } from 'drizzle-orm';
+
+async function recordDeterministicChannelRoute(
+  db: DB,
+  input: { threadId: string; triggerMessageId: string },
+): Promise<string> {
+  const [run] = await db
+    .select()
+    .from(aiWorkflowRun)
+    .where(eq(aiWorkflowRun.triggerMessageId, input.triggerMessageId))
+    .limit(1);
+  if (!run || run.runKind !== 'inbound_triage') {
+    throw new Error('Expected inbound_triage run for deterministic channel route');
+  }
+
+  const categoryId = `test-automated-channel-${input.triggerMessageId}`;
+  const finishedAt = new Date();
+  await db.insert(mailCategory).values({
+    id: categoryId,
+    transportId: 'transport-centurion',
+    slug: 'automated-channel',
+    name: 'Automated / Channel',
+    color: '#475569',
+    sortOrder: 200,
+  });
+  await db.insert(mailThreadCategory).values({
+    threadId: input.threadId,
+    categoryId,
+    transportId: 'transport-centurion',
+    createdAt: new Date(finishedAt.getTime() - 1_000),
+  });
+  await db
+    .update(aiWorkflowRun)
+    .set({
+      state: 'succeeded',
+      finishedAt,
+      metrics: {
+        ...(run.metrics ?? {}),
+        deterministicMailSourceRoute: true,
+        applyMode: 'full',
+      },
+    })
+    .where(eq(aiWorkflowRun.id, run.id));
+  return categoryId;
+}
 
 const history = (id: string, at = '2026-10-04T10:00:00Z') => ({
   transportId: 'transport-centurion',
@@ -28,6 +81,265 @@ const history = (id: string, at = '2026-10-04T10:00:00Z') => ({
 });
 
 describe('first live admission and immutable inputs on PostgreSQL', () => {
+  it(
+    'queues triage only for channel mail when the regular classifier is retired',
+    async () => {
+      const previous = {
+        classifier: process.env.INBOUND_TRIAGE_CLASSIFIER,
+        extraction: process.env.INBOUND_EXTRACTION,
+      };
+      process.env.INBOUND_TRIAGE_CLASSIFIER = 'off';
+      process.env.INBOUND_EXTRACTION = 'on';
+      try {
+        await withIngestionDb(async ({ db }) => {
+          const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
+          const { admitLiveMessage } = await import('../src/mail/ingest/live-admission.js');
+          const saved = await persistOutlookHistory(db, {
+            ...history('expedia-live-source'),
+            fromAddress: 'notifications@m.expediapartnercentral.com',
+            subject: 'Expedia Partner Central - New reservation',
+          });
+
+          await db.transaction((tx) =>
+            admitLiveMessage(tx as typeof db, {
+              transportId: 'transport-centurion',
+              canonicalMessageId: saved.messageId,
+              evidence: { kind: 'verified-pop3', sourceReceiptId: 'uidl-expedia-source' },
+            }),
+          );
+
+          const runs = await db
+            .select()
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.triggerMessageId, saved.messageId));
+          expect(runs.map((run) => run.runKind)).toEqual(['inbound_triage']);
+          expect(runs[0]?.metrics).toMatchObject({
+            mailSourceDecision: {
+              kind: 'channel',
+              source: 'Expedia Partner Central',
+              reason: 'sender_domain:m.expediapartnercentral.com',
+            },
+          });
+          expect(await db.select().from(aiShadowAdmission)).toHaveLength(0);
+          expect(await db.select().from(workItem)).toHaveLength(0);
+        });
+      } finally {
+        if (previous.classifier === undefined) delete process.env.INBOUND_TRIAGE_CLASSIFIER;
+        else process.env.INBOUND_TRIAGE_CLASSIFIER = previous.classifier;
+        if (previous.extraction === undefined) delete process.env.INBOUND_EXTRACTION;
+        else process.env.INBOUND_EXTRACTION = previous.extraction;
+      }
+    },
+    20_000,
+  );
+
+  it.each(['admitLiveMessage', 'persistInboundMessage'] as const)(
+    'removes only route-owned automated-channel for a direct reply via %s and queues extraction',
+    async (admissionPath) => {
+      const previous = {
+        classifier: process.env.INBOUND_TRIAGE_CLASSIFIER,
+        extraction: process.env.INBOUND_EXTRACTION,
+        writeGate: process.env.AI_WRITE_GATE_ENABLED,
+      };
+      process.env.INBOUND_TRIAGE_CLASSIFIER = 'off';
+      process.env.INBOUND_EXTRACTION = 'on';
+      process.env.AI_WRITE_GATE_ENABLED = 'true';
+      try {
+        await withIngestionDb(async ({ db }) => {
+          const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
+          const { admitLiveMessage } = await import('../src/mail/ingest/live-admission.js');
+          const channelMessageId = `channel-${admissionPath}@example.test`;
+          const channel = await persistOutlookHistory(db, {
+            ...history(`channel-${admissionPath}`),
+            internetMessageId: channelMessageId,
+            fromAddress: 'noreply@synxis.com',
+            subject: 'SynXis reservation update',
+            textBody: 'Channel confirmation',
+          });
+          await db.transaction((tx) =>
+            admitLiveMessage(tx as typeof db, {
+              transportId: 'transport-centurion',
+              canonicalMessageId: channel.messageId,
+              evidence: { kind: 'verified-pop3', sourceReceiptId: `uidl-${admissionPath}-channel` },
+            }),
+          );
+          const routeCategoryId = await recordDeterministicChannelRoute(db, {
+            threadId: channel.threadId,
+            triggerMessageId: channel.messageId,
+          });
+
+          const staffCategoryId = `test-staff-folder-${admissionPath}`;
+          await db.insert(mailCategory).values({
+            id: staffCategoryId,
+            transportId: 'transport-centurion',
+            slug: `staff-folder-${admissionPath}`,
+            name: 'Staff folder',
+            color: null,
+            sortOrder: 900,
+          });
+          await db.insert(mailThreadCategory).values({
+            threadId: channel.threadId,
+            categoryId: staffCategoryId,
+            transportId: 'transport-centurion',
+          });
+          const spamUserLockedAt = new Date('2026-10-01T12:00:00Z');
+          await db
+            .update(mailThread)
+            .set({ spamUserLockedAt })
+            .where(eq(mailThread.id, channel.threadId));
+
+          let replyMessageId: string;
+          let replyThreadId: string;
+          if (admissionPath === 'admitLiveMessage') {
+            const reply = await persistOutlookHistory(db, {
+              ...history('direct-reply-live-admission'),
+              inReplyTo: channelMessageId,
+              references: [channelMessageId],
+            });
+            await db.transaction((tx) =>
+              admitLiveMessage(tx as typeof db, {
+                transportId: 'transport-centurion',
+                canonicalMessageId: reply.messageId,
+                evidence: { kind: 'verified-pop3', sourceReceiptId: 'uidl-direct-live-reply' },
+              }),
+            );
+            replyMessageId = reply.messageId;
+            replyThreadId = reply.threadId;
+          } else {
+            const { persistInboundMessage } = await import('../src/mail/ingest/store.js');
+            const { FakeS3Storage } = await import('../src/storage/s3.js');
+            const replyId = 'store-direct-reply';
+            const reply = await persistInboundMessage(
+              {
+                ownerHeaderValue: 'centurion@legacyhotels.co.za',
+                outboundCorrelation: { kind: 'absent' },
+                messageId: `${replyId}@example.test`,
+                inReplyTo: channelMessageId,
+                references: [channelMessageId],
+                fromAddress: 'guest@example.test',
+                toAddresses: ['centurion@legacyhotels.co.za'],
+                ccAddresses: [],
+                bccAddresses: [],
+                subject: 'Re: Guest amendment',
+                textBody: 'Please amend my stay.',
+                htmlBody: null,
+                receivedAt: new Date(),
+                attachments: [],
+                rawHeaderLines: [],
+              },
+              Buffer.from('raw'),
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-store-direct-reply',
+                messageId: replyId,
+              },
+              { db, storage: new FakeS3Storage() },
+            );
+            expect(reply.kind).toBe('stored');
+            if (reply.kind !== 'stored') return;
+            replyMessageId = reply.messageId;
+            replyThreadId = reply.threadId;
+          }
+
+          expect(replyThreadId).toBe(channel.threadId);
+          const categories = await db
+            .select({ slug: mailCategory.slug })
+            .from(mailThreadCategory)
+            .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+            .where(eq(mailThreadCategory.threadId, channel.threadId));
+          expect(categories.map((category) => category.slug)).not.toContain('automated-channel');
+          expect(categories.map((category) => category.slug)).toContain(
+            `staff-folder-${admissionPath}`,
+          );
+          const [thread] = await db
+            .select({ spamUserLockedAt: mailThread.spamUserLockedAt })
+            .from(mailThread)
+            .where(eq(mailThread.id, channel.threadId));
+          expect(thread?.spamUserLockedAt).toEqual(spamUserLockedAt);
+
+          const replyRuns = await db
+            .select({ runKind: aiWorkflowRun.runKind, state: aiWorkflowRun.state })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.triggerMessageId, replyMessageId));
+          expect(replyRuns).toContainEqual({ runKind: 'inbound_extraction', state: 'queued' });
+          expect(routeCategoryId).toBeTruthy();
+        });
+      } finally {
+        if (previous.classifier === undefined) delete process.env.INBOUND_TRIAGE_CLASSIFIER;
+        else process.env.INBOUND_TRIAGE_CLASSIFIER = previous.classifier;
+        if (previous.extraction === undefined) delete process.env.INBOUND_EXTRACTION;
+        else process.env.INBOUND_EXTRACTION = previous.extraction;
+        if (previous.writeGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
+        else process.env.AI_WRITE_GATE_ENABLED = previous.writeGate;
+      }
+    },
+    20_000,
+  );
+
+  it(
+    'preserves automated-channel when staff re-applies it after the deterministic route',
+    async () => {
+      const previous = process.env.INBOUND_TRIAGE_CLASSIFIER;
+      process.env.INBOUND_TRIAGE_CLASSIFIER = 'off';
+      try {
+        await withIngestionDb(async ({ db }) => {
+          const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
+          const { admitLiveMessage } = await import('../src/mail/ingest/live-admission.js');
+          const channelMessageId = 'channel-manual-reapply@example.test';
+          const channel = await persistOutlookHistory(db, {
+            ...history('channel-manual-reapply'),
+            internetMessageId: channelMessageId,
+            fromAddress: 'noreply@synxis.com',
+          });
+          await db.transaction((tx) =>
+            admitLiveMessage(tx as typeof db, {
+              transportId: 'transport-centurion',
+              canonicalMessageId: channel.messageId,
+              evidence: { kind: 'verified-pop3', sourceReceiptId: 'uidl-manual-route-channel' },
+            }),
+          );
+          const categoryId = await recordDeterministicChannelRoute(db, {
+            threadId: channel.threadId,
+            triggerMessageId: channel.messageId,
+          });
+          const [route] = await db
+            .select({ finishedAt: aiWorkflowRun.finishedAt })
+            .from(aiWorkflowRun)
+            .where(eq(aiWorkflowRun.triggerMessageId, channel.messageId))
+            .limit(1);
+          if (!route?.finishedAt) throw new Error('Expected completed deterministic channel route');
+          await db
+            .update(mailThreadCategory)
+            .set({ createdAt: new Date(route.finishedAt.getTime() + 1_000) })
+            .where(eq(mailThreadCategory.categoryId, categoryId));
+
+          const reply = await persistOutlookHistory(db, {
+            ...history('manual-reapply-reply'),
+            inReplyTo: channelMessageId,
+            references: [channelMessageId],
+          });
+          await db.transaction((tx) =>
+            admitLiveMessage(tx as typeof db, {
+              transportId: 'transport-centurion',
+              canonicalMessageId: reply.messageId,
+              evidence: { kind: 'verified-pop3', sourceReceiptId: 'uidl-manual-route-reply' },
+            }),
+          );
+
+          const [membership] = await db
+            .select({ categoryId: mailThreadCategory.categoryId })
+            .from(mailThreadCategory)
+            .where(eq(mailThreadCategory.categoryId, categoryId));
+          expect(membership).toBeDefined();
+        });
+      } finally {
+        if (previous === undefined) delete process.env.INBOUND_TRIAGE_CLASSIFIER;
+        else process.env.INBOUND_TRIAGE_CLASSIFIER = previous;
+      }
+    },
+    20_000,
+  );
+
   it(
     'admits a history-created message once and snapshots pre-admission richer context',
     async () =>

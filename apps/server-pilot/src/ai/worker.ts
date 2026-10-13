@@ -85,6 +85,10 @@ import {
   message,
 } from '../db/schema/mail.js';
 import {
+  isMailSourceClassification,
+} from './mail-source.js';
+import {
+  mailSourceTriageOutput,
   validateWorkflowTriageOutput,
   triageOutputSemanticHints,
   TRIAGE_REVIEWER_VERSION,
@@ -4445,6 +4449,66 @@ export async function executeAiRun(
       );
 
       const externalSentAnalyticsOnly = trigger?.direction === 'outbound';
+      const initialRunMetrics =
+        run.metrics && typeof run.metrics === 'object'
+          ? (run.metrics as Record<string, unknown>)
+          : {};
+      const mailSourceDecision = isMailSourceClassification(
+        initialRunMetrics.mailSourceDecision,
+      )
+        ? initialRunMetrics.mailSourceDecision
+        : null;
+      const routeAsAutomatedChannel =
+        !externalSentAnalyticsOnly &&
+        mailSourceDecision !== null &&
+        mailSourceDecision.kind !== 'direct';
+
+      if (routeAsAutomatedChannel && mailSourceDecision) {
+        const output = mailSourceTriageOutput(mailSourceDecision);
+        await db.transaction(async (tx) => {
+          const applyResult = await applyDurableTriageFromWorker({
+            db: tx as unknown as typeof db,
+            transportId: run.transportId,
+            threadId: run.threadId,
+            output,
+            writeGateEnabled: env.AI_WRITE_GATE_ENABLED,
+            // Deterministic source routing must apply automated-channel even when model-based v6 triage is off.
+            workflowTriageEnabled: true,
+            mailSourceRouteTrusted: true,
+            // A new source decision supersedes a previously settled automated folder for this thread. Manual spam
+            // locks still win inside applyDurableTriageResult.
+            forceUnsettle: true,
+            threadSignals,
+            from: trigger?.fromAddress ?? '',
+            to: trigger?.toAddresses ?? [],
+            cc: trigger?.ccAddresses ?? [],
+            bcc: trigger?.bccAddresses ?? [],
+          });
+          const marked = await markAiRunSucceeded(
+            {
+              runId,
+              claimOwner: owner,
+              claimToken,
+              expectedStates: ['running'],
+              metrics: {
+                mailSourceDecision,
+                triageRationale: output.rationale,
+                deterministicMailSourceRoute: true,
+                durableWrite: env.AI_WRITE_GATE_ENABLED,
+                workflowTriage: true,
+                applyMode: applyResult.applyMode,
+                mailBaseline: { status: 'skipped', reason: 'non_actionable_mail_source' },
+              },
+            },
+            tx as unknown as typeof db,
+          );
+          if (!marked) {
+            throw new Error(`failed to mark deterministic mail-source triage succeeded: ${runId}`);
+          }
+        });
+        return { runId, state: 'succeeded' };
+      }
+
       if (!externalSentAnalyticsOnly && !isInboundTriageClassifierEnabled(process.env)) {
         // Classifier retired (INBOUND_TRIAGE_CLASSIFIER=off with INBOUND_EXTRACTION=on): no classifier call and no
         // folder, read or spam write. Spam, the baseline and the warmer come from inbound_extraction. A run queued
@@ -4454,7 +4518,10 @@ export async function executeAiRun(
           claimOwner: owner,
           claimToken,
           expectedStates: ['running'],
-          metrics: { triageRetired: true },
+          metrics: {
+            triageRetired: true,
+            ...(mailSourceDecision ? { mailSourceDecision } : {}),
+          },
         });
         if (retired) schedulePrefetchForInbound(runWithFence);
         return { runId, state: retired ? 'succeeded' : 'retry_wait' };
@@ -4646,6 +4713,8 @@ export async function executeAiRun(
             mastraTraceId,
             metrics: {
               ...workflowMetrics,
+              ...(mailSourceDecision ? { mailSourceDecision } : {}),
+              triageRationale: output.rationale,
               durableWrite: env.AI_WRITE_GATE_ENABLED,
               workflowTriage: env.WORKFLOW_TRIAGE_V6,
               applyMode,
@@ -5379,6 +5448,7 @@ async function applyDurableTriageFromWorker(input: {
   writeGateEnabled: boolean;
   workflowTriageEnabled: boolean;
   forceUnsettle?: boolean;
+  mailSourceRouteTrusted?: boolean;
   threadSignals?: ThreadSignals;
   from?: string;
   to?: string[];
@@ -5481,6 +5551,19 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   // through executeAiRun's policy-block path without constructing any route
   // factory or model transport.
   if (claimed.runKind === 'shadow_prediction' && !resolveShadowAdmissionPolicy()) {
+    await executeAiRun(claimed.id, { shutdownSignal });
+    return true;
+  }
+  const queuedMailSourceDecision =
+    claimed.metrics && typeof claimed.metrics === 'object'
+      ? (claimed.metrics as Record<string, unknown>).mailSourceDecision
+      : undefined;
+  if (
+    claimed.runKind === 'inbound_triage' &&
+    isMailSourceClassification(queuedMailSourceDecision) &&
+    queuedMailSourceDecision.kind !== 'direct'
+  ) {
+    // Deterministic channel/system routing needs no model routes or cache warming.
     await executeAiRun(claimed.id, { shutdownSignal });
     return true;
   }

@@ -57,6 +57,7 @@ import {
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
 import { enqueueInboundExtraction } from '../../ai/extraction/inbound-run.js';
+import { classifyMailSource } from '../../ai/mail-source.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
 import { enqueueShadowPrediction, rematchShadowPredictions } from '../../ai/shadow-evaluation.js';
 import { ingestRequireOwnerHeader, isInboundTriageClassifierEnabled } from '../../env.js';
@@ -67,7 +68,10 @@ import { refreshThreadSearchVector } from '../search/search-vector.js';
 import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import { and, asc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import { getSenderPreference } from '../sender-preference.js';
-import { admitLiveMessage } from './live-admission.js';
+import {
+  admitLiveMessage,
+  removeDeterministicAutomatedChannelCategory,
+} from './live-admission.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
@@ -673,6 +677,15 @@ export async function persistInboundMessage(
       opts.directionOverride === undefined
         ? inferredHotelSent
         : opts.directionOverride === 'outbound';
+    const mailSourceDecision = !isHotelSent
+      ? classifyMailSource({
+          fromAddress: parsed.fromAddress,
+          subject: parsed.subject,
+          bodyText: parsed.textBody ?? parsed.htmlBody,
+        })
+      : null;
+    const routeAsAutomatedChannel =
+      mailSourceDecision !== null && mailSourceDecision.kind !== 'direct';
 
     const persistedHeaders = canonicalizePersistedHeaders(parsed);
     const sourceProvenance = {
@@ -766,8 +779,18 @@ export async function persistInboundMessage(
         },
       });
     } else if (!ambiguousSource && !opts.skipAiEnqueue) {
+      if (!isHotelSent && mailSourceDecision?.kind === 'direct') {
+        await removeDeterministicAutomatedChannelCategory(transactionDb, {
+          transportId: transport.id,
+          threadId,
+        });
+      }
       // INBOUND_TRIAGE_CLASSIFIER=off retires the inbound classifier run. Sent copies keep their baseline run.
-      if (isHotelSent || isInboundTriageClassifierEnabled(process.env)) {
+      if (
+        isHotelSent ||
+        routeAsAutomatedChannel ||
+        isInboundTriageClassifierEnabled(process.env)
+      ) {
         await enqueueAiRun(
           {
             transportId: transport.id,
@@ -783,15 +806,25 @@ export async function persistInboundMessage(
               : `inbound-triage:${messageId}`,
             modelId: DEFAULT_AI_MODEL_ID,
             promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
+            ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
           },
           tx as unknown as DB,
         );
       }
-      // Once the classifier is retired, the read replaces its run on this path too, so spam and the baseline keep
-      // running. Retired implies INBOUND_EXTRACTION=on. Sent copies never get one.
-      if (!isHotelSent && !isInboundTriageClassifierEnabled(process.env)) {
+      // On retired direct inbound mail, the read replaces its classifier run so spam and the baseline keep running.
+      // Channel/system mail is source-routed above and must not enter extraction. Sent copies never get one.
+      if (
+        !isHotelSent &&
+        !routeAsAutomatedChannel &&
+        !isInboundTriageClassifierEnabled(process.env)
+      ) {
         await enqueueInboundExtraction(
-          { transportId: transport.id, threadId, messageId },
+          {
+            transportId: transport.id,
+            threadId,
+            messageId,
+            ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
+          },
           tx as unknown as DB,
         );
       }
@@ -799,7 +832,7 @@ export async function persistInboundMessage(
       // U13 shadow admission is a separate private purpose. It is queued only
       // after this inbound row/attachment transaction has the same committed
       // scope and never writes a draft, label, read state, or SMTP row.
-      if (!isHotelSent) {
+      if (!isHotelSent && !routeAsAutomatedChannel) {
         await enqueueShadowPrediction({
           transportId: transport.id,
           threadId,

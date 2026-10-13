@@ -58,6 +58,8 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     // Replaces the default quote analysis for one test (an amendment email, for example).
     analysisOverride: null as null | Record<string, unknown>,
     analyseCalls: 0,
+    staffQuoteSourceCalls: 0,
+    storedWorkLookups: 0,
     // While true, the live read rejects, as a model or network failure does.
     analyseFails: false,
     // A stored read for the mail. Null leaves the workItems route out, so the pane reads live as before.
@@ -157,14 +159,17 @@ vi.mock('../providers/query-provider', () => ({
       ping: { mutate: pingMutate },
       quoteProposalPdf: { mutate: quotePdfMutate },
       staffQuoteSource: {
-        query: async ({ internetMessageId }: { internetMessageId: string }) => ({
-          status: 'ready',
-          ...(bridgeMockState.staffQuoteSources[internetMessageId] ?? {
-            messageId: 'mail-1',
-            threadId: 'thread-1',
-            sourceHash: 'ab'.repeat(32),
-          }),
-        }),
+        query: async ({ internetMessageId }: { internetMessageId: string }) => {
+          bridgeMockState.staffQuoteSourceCalls += 1;
+          return {
+            status: 'ready',
+            ...(bridgeMockState.staffQuoteSources[internetMessageId] ?? {
+              messageId: 'mail-1',
+              threadId: 'thread-1',
+              sourceHash: 'ab'.repeat(32),
+            }),
+          };
+        },
       },
       jobQueueEnabled: { query: () => bridgeMockState.jobQueueEnabledQuery() },
       queueStaffQuote: { mutate: (input: unknown) => bridgeMockState.queueStaffQuoteMutation(input) },
@@ -233,6 +238,7 @@ vi.mock('../providers/query-provider', () => ({
       return {
         getByMessage: {
           query: async () => {
+            bridgeMockState.storedWorkLookups += 1;
             await bridgeMockState.storedLookupGate;
             return stored;
           },
@@ -382,6 +388,8 @@ describe('NavaPane', () => {
     bridgeMockState.holdStaffQuote = false;
     bridgeMockState.releaseStaffQuote = null;
     bridgeMockState.lastStaffQuoteInput = null;
+    bridgeMockState.staffQuoteSourceCalls = 0;
+    bridgeMockState.storedWorkLookups = 0;
     bridgeMockState.staffQuoteJobCalls.length = 0;
     bridgeMockState.queueStaffQuoteMutation.mockReset().mockResolvedValue({ runId: null });
     bridgeMockState.staffQuoteSources = {};
@@ -1948,4 +1956,112 @@ describe('NavaPane contact and translation on both surfaces', () => {
       expect(bridgeMockState.retryTranslation).toHaveBeenCalledWith({ workItemId: 'wi-fr' });
     });
   }
+
+  it('shows only the channel no-action card and OTA chip, without reading or starting workflows', async () => {
+    const channelBridge = {
+      ...fakeBridge,
+      activeEmail: {
+        ...fakeBridge.activeEmail,
+        subject: 'Expedia Partner Central - New reservation',
+        senderEmail: 'notifications@m.expediapartnercentral.com',
+        senderName: 'Expedia Partner Central',
+        bodyText: 'Reservation created for the guest.',
+      },
+    } as unknown as PaneBridge;
+    bridgeMockState.analysisOverride = null;
+    bridgeMockState.analyseCalls = 0;
+    bridgeMockState.staffQuoteSourceCalls = 0;
+    bridgeMockState.storedWorkLookups = 0;
+    bridgeMockState.storedWork = { status: 'ready', workItemId: 'wi-channel' };
+    bridgeMockState.queueStaffQuoteMutation.mockClear();
+    voucherFindQuery.mockClear();
+
+    const { container } = render(<NavaPane bridge={channelBridge} />);
+
+    const noActionCard = await screen.findByTestId('mail-source-no-action');
+    expect(noActionCard.textContent).toContain(
+      'Expedia Partner Central message — managed in the channel/extranet. Nava takes no action.',
+    );
+    expect(screen.getByTestId('ota-booking-channel').textContent).toBe(
+      'Booked via Expedia Partner Central',
+    );
+    expect(container.querySelector('#quote-selected-message')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Draft quotation into email reply' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Find the booking' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Change to an existing booking' })).toBeNull();
+    expect(screen.queryByLabelText('Arrival')).toBeNull();
+    expect(bridgeMockState.analyseCalls).toBe(0);
+    expect(bridgeMockState.staffQuoteSourceCalls).toBe(0);
+    expect(bridgeMockState.storedWorkLookups).toBe(0);
+    expect(voucherFindQuery).not.toHaveBeenCalled();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
+  it('shows a system-mail no-action card without an OTA chip', async () => {
+    const systemBridge = {
+      ...fakeBridge,
+      activeEmail: {
+        ...fakeBridge.activeEmail,
+        subject: 'New guest review',
+        senderEmail: 'reviews@reviewpro.com',
+        senderName: 'ReviewPro',
+      },
+    } as unknown as PaneBridge;
+    bridgeMockState.analysisOverride = null;
+    bridgeMockState.analyseCalls = 0;
+    bridgeMockState.staffQuoteSourceCalls = 0;
+    bridgeMockState.storedWorkLookups = 0;
+    bridgeMockState.storedWork = null;
+    voucherFindQuery.mockClear();
+
+    render(<NavaPane bridge={systemBridge} />);
+
+    const noActionCard = await screen.findByTestId('mail-source-no-action');
+    expect(noActionCard.textContent).toContain(
+      'ReviewPro message — managed in the channel/extranet. Nava takes no action.',
+    );
+    expect(screen.queryByTestId('ota-booking-channel')).toBeNull();
+    expect(bridgeMockState.analyseCalls).toBe(0);
+    expect(bridgeMockState.staffQuoteSourceCalls).toBe(0);
+    expect(bridgeMockState.storedWorkLookups).toBe(0);
+    expect(voucherFindQuery).not.toHaveBeenCalled();
+  });
+
+  it('keeps the no-action notice visible on the onboarding screen', async () => {
+    const channelBridge = {
+      ...fakeBridge,
+      activeEmail: {
+        ...fakeBridge.activeEmail,
+        subject: 'Expedia Partner Central - New reservation',
+        senderEmail: 'notifications@m.expediapartnercentral.com',
+        senderName: 'Expedia Partner Central',
+      },
+    } as unknown as PaneBridge;
+    localStorage.removeItem('nava_onboarding_completed');
+
+    render(<NavaPane bridge={channelBridge} />);
+
+    expect(await screen.findByRole('heading', { name: 'Welcome to Nava' })).toBeDefined();
+    expect(await screen.findByTestId('mail-source-no-action')).toBeDefined();
+    expect(screen.getAllByTestId('mail-source-no-action')).toHaveLength(1);
+  });
+
+  it('keeps a single no-action notice visible while Needs you is open', async () => {
+    const channelBridge = {
+      ...fakeBridge,
+      activeEmail: {
+        ...fakeBridge.activeEmail,
+        subject: 'Expedia Partner Central - New reservation',
+        senderEmail: 'notifications@m.expediapartnercentral.com',
+        senderName: 'Expedia Partner Central',
+      },
+    } as unknown as PaneBridge;
+
+    render(<NavaPane bridge={channelBridge} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Needs you' }));
+
+    expect(await screen.findByRole('region', { name: 'Needs you' })).toBeDefined();
+    expect(await screen.findByTestId('mail-source-no-action')).toBeDefined();
+    expect(screen.getAllByTestId('mail-source-no-action')).toHaveLength(1);
+  });
 });

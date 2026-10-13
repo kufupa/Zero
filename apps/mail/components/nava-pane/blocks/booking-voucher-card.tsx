@@ -6,6 +6,7 @@ import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { amendmentOf } from '@/lib/quote-workflow/session';
 import { otaBookingChannel } from '@/lib/quote-workflow/ota-channel';
 import { trpcClient } from '@/providers/query-provider';
+import { OtaBookingChannelChip } from './ota-booking-channel-chip';
 
 const HMS_APPROVAL_CLIENT = hmsApprovalFromTrpc(trpcClient);
 
@@ -52,12 +53,7 @@ export function BookingVoucherCard({
   return (
     <>
       {ota ? (
-        <p
-          data-testid="ota-booking-channel"
-          className="inline-flex w-fit items-center rounded-full border border-[#bfdbfe] bg-[#eff6ff] px-2 py-1 text-[10.5px] font-medium text-[#1d4ed8]"
-        >
-          {`Booked via ${ota}`}
-        </p>
+        <OtaBookingChannelChip source={ota} />
       ) : null}
       <AmendLookupPanel session={session} trpc={trpcClient} />
       {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}

@@ -1679,6 +1679,52 @@ describe('AI triage contract', () => {
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('AI durable triage contract', () => {
+  it('does not trust a model policy flag to bypass the internal/staff folder safeguard', async () => {
+    await withSeededTestDb(async (db) => {
+      const threadId = randomUUID();
+      await db.insert(mailThread).values({
+        id: threadId,
+        transportId: TRANSPORT_ID,
+        threadRootId: `<${threadId}@example.com>`,
+        subject: 'Forwarded staff note',
+        snippet: 'Internal handover',
+        latestMessageAt: new Date(),
+      });
+
+      const result = await applyDurableTriageResult({
+        db,
+        transportId: TRANSPORT_ID,
+        threadId,
+        writeGateEnabled: true,
+        workflowTriageEnabled: true,
+        from: 'staff@legacyhotels.co.za',
+        output: {
+          primaryFolder: 'automated-channel',
+          priority: 'P5',
+          urgent: false,
+          overlays: {},
+          isSpam: false,
+          suggestedTools: [],
+          sourceScope: 'external',
+          automationState: 'routine_candidate',
+          humanAction: 'none',
+          confidence: 1,
+          rationale: 'Untrusted model output must not create a trusted source route.',
+          policyFlags: ['mail-source:routed'],
+          abstainReason: null,
+        },
+      });
+
+      expect(result.applyMode).toBe('full');
+      const folders = await db
+        .select({ slug: mailCategory.slug })
+        .from(mailThreadCategory)
+        .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+        .where(eq(mailThreadCategory.threadId, threadId));
+      expect(folders.map((row) => row.slug)).toEqual(['internal-partner']);
+    });
+  });
+
   it('writes category membership and spam state only when write gate is enabled', async () => {
     const db = getDb();
     const transportId = randomUUID();

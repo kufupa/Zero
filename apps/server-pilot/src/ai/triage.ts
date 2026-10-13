@@ -10,6 +10,7 @@ import {
   isAutoTriageNeverSpam,
   normalizeEmailAddress,
 } from './never-spam.js';
+import type { MailSourceClassification } from './mail-source.js';
 import { getLatestInboundFromAddress, getSenderPreference } from '../mail/sender-preference.js';
 import { mailCategory, mailLabel, mailThread, mailThreadCategory } from '../db/schema/mail.js';
 import { READ_TOOL_IDS } from '../hms/read-tools.js';
@@ -150,6 +151,30 @@ export type TriageOutput = LegacyTriageOutput;
 
 export function validateWorkflowTriageOutput(raw: unknown): WorkflowTriageOutput {
   return workflowTriageOutputSchema.parse(raw);
+}
+
+/** Deterministic non-actionable triage for source-matched channel and system mail. */
+export function mailSourceTriageOutput(source: MailSourceClassification): WorkflowTriageOutput {
+  if (source.kind === 'direct' || !source.source) {
+    throw new Error('Mail-source triage requires a channel or system classification');
+  }
+
+  return validateWorkflowTriageOutput({
+    primaryFolder: 'automated-channel',
+    priority: 'P5',
+    urgent: false,
+    overlays: {},
+    isSpam: false,
+    suggestedTools: [],
+    sourceScope: 'external',
+    automationState: 'routine_candidate',
+    humanAction: 'none',
+    confidence: 1,
+    rationale: `Mail-source rule routed ${source.source} as ${source.kind} (${source.reason}); Nava takes no reservationist action.`,
+    // Descriptive only. Durable routing trusts the server-side mailSourceRouteTrusted input, not model policy flags.
+    policyFlags: [`mail-source:${source.kind}`],
+    abstainReason: null,
+  });
 }
 
 export function validateLegacyTriageOutput(raw: unknown): LegacyTriageOutput {
@@ -1592,6 +1617,8 @@ export interface ApplyDurableTriageInput {
   workflowTriageEnabled?: boolean;
   /** Retag runs preserve prior state until worker success, then force full apply. */
   forceUnsettle?: boolean;
+  /** Trusted server-side source route; never inferred from model-controlled policy flags. */
+  mailSourceRouteTrusted?: boolean;
   threadSignals?: ThreadSignals;
   from?: string;
   to?: AddressListInput;
@@ -1790,7 +1817,7 @@ export async function applyDurableTriageResult(
   if (!effectiveIsSpam) {
     const targetPrimary =
       workflowOutput && workflowTriageEnabled
-        ? exceptionNotSpam
+        ? exceptionNotSpam && !input.mailSourceRouteTrusted
           ? workflowApplyExceptionFolder(workflowOutput.primaryFolder, latestFrom ?? '', staff)
           : workflowOutput.primaryFolder
         : exceptionNotSpam && legacyOutput.category === 'spam'
