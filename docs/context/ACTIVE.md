@@ -2,6 +2,8 @@
 
 Auto-loaded via `CLAUDE.md`. Keep under 120 lines. Update at the end of every work block: current focus, next steps, new mistakes. Task history goes in `docs/context/ledger/`, durable lessons in `docs/context/MISTAKES.md`.
 
+**Product spec:** `PRODUCT.md` (owner-edited). This file is the run, not the spec.
+
 ## Product in one paragraph
 Nava is an AI reservationist for Legacy Hotels' Centurion property. Staff work in classic Outlook. The VSTO add-in (`kufupa/nava-outlook-addin`) hosts a WebView2 side pane served from our EC2 (`apps/mail` route `/outlook-pane`). The pane analyses the selected email (Luna = the model, never shown to staff; staff-facing name is "Nava"). It pre-fills fields and runs deterministic Infor HMS tools through Playwright (`apps/server-pilot/tooling/playwright-quote/`): quote, PDF, party lookup, stay lookup, create (flagged), cancel (lab only). Human in the loop on every write.
 
@@ -9,7 +11,7 @@ Nava is an AI reservationist for Legacy Hotels' Centurion property. Staff work i
 - **Read first:** `docs/research/2026-10-13/README.md` (research library: mail mix, quote gold, party truth, architecture map, UI asks, SOTA). Do not redo that research; refresh the corpus snapshot instead.
 - **Run file:** `.worktrees/RUN-2026-10-13.md` (outside repo) — lanes, owner decisions, status log.
 - Goal: quote pilot staff can use. Party match v2 (#207, flag `PARTY_MATCH_V2`), find captures company/agency/rate plan (#208), dinner add-on + alternatives, one Luna-max action classifier (needs action + action), pane clarity (R5 IA), nava-admin workflow folders as owner review console.
-- "Done" = score on real past mail (answer key from read-only HMS find-batch), not merged/deployed.
+- "Done" = score on the golden set in `PRODUCT.md` (answer key from read-only HMS), not merged/deployed, not “3 live quote threads”.
 - Owner rules 2026-10-13: never Nova Lite (Luna max); scanned PDFs/images to Luna vision with card digits masked; OTA/channel mail skipped at the door (#206); travel-agent mail stays in scope.
 
 ## Non-negotiable rules
