@@ -42,7 +42,10 @@ import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed
 import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
 const staffQuoteRunner = vi.hoisted(() => ({ run: vi.fn() }));
-vi.mock('../src/ai/staff-quote-run.js', () => ({ runStaffQuote: staffQuoteRunner.run }));
+vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/ai/staff-quote-run.js')>()),
+  runStaffQuote: staffQuoteRunner.run,
+}));
 
 const reachable = await probeTestDb();
 const TENANT = 'tenant-centurion';
