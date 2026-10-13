@@ -320,7 +320,7 @@ export function staffQuoteFailureMessage(
     business_selected_joint_inventory_unavailable:
       'Verify combined availability for the requested rooms and dates.',
     business_selected_price_unavailable:
-      'No qualified available rate covers every requested room-night; review the room and meal choices.',
+      'HMS has no rate for every night of this stay in this room and meal plan. Try another room type or meal plan, or split the dates, then search again.',
     business_quote_source_expired: 'The price observation expired; rerun the quote.',
     native_quote_business_evidence_unavailable:
       'Verify rate eligibility and combined availability for these rooms.',

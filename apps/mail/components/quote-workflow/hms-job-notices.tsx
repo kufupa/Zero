@@ -58,6 +58,20 @@ type NoticeView = {
 
 const ViewContext = createContext<NoticeView | null>(null);
 
+function visibleNotice(notices: HmsNotice[]): HmsNotice | null {
+  return notices.find((item) => item.status === 'failed') ?? notices[0] ?? null;
+}
+
+/** The visible failure copy for one target and selected email, if that notice is still on screen. */
+export function useFailedHmsJobNoticeMessage(targetId: string, emailKey: string | null): string | null {
+  const view = useContext(ViewContext);
+  if (!emailKey) return null;
+  const notice = view ? visibleNotice(view.notices) : null;
+  return notice?.status === 'failed' && notice.targetId === targetId && notice.emailKey === emailKey
+    ? notice.message
+    : null;
+}
+
 const TARGET_BY_KIND: Record<string, string> = {
   find: 'quote-booking',
   search_guest: 'quote-rates',
@@ -479,7 +493,7 @@ export function HmsJobNoticeBanner() {
   const view = useContext(ViewContext);
   const reporter = useContext(HmsJobNoticeReporterContext);
   const [returnHint, setReturnHint] = useState<string | null>(null);
-  const notice = view?.notices.find((item) => item.status === 'failed') ?? view?.notices[0] ?? null;
+  const notice = view ? visibleNotice(view.notices) : null;
   useEffect(() => setReturnHint(null), [notice?.id]);
   useEffect(() => {
     const timers = (view?.notices ?? [])
@@ -543,7 +557,7 @@ export function HmsJobNoticeBanner() {
           onClick={show}
           className="font-semibold underline"
         >
-          {notice.status === 'done' ? 'Show' : 'Show and retry'}
+          {notice.status === 'done' ? 'Show' : 'Try again'}
         </button>
         <button
           type="button"

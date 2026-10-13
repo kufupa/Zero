@@ -295,6 +295,78 @@ function openContactCorrections() {
 
 const LOADED_BUILD = 'build-loaded-0001';
 const NEWER_BUILD = 'build-newer-0002';
+const BOOKING_LUNA = {
+  workflow: 'create_booking' as const,
+  flags: [],
+  groups: [],
+  party: { kind: null, name: null, reference: null },
+  rateClaims: [],
+  missing: [],
+  evidence: [],
+  tasks: [],
+};
+
+function intentAnalysis({
+  intent,
+  workflow,
+  amendmentKind,
+}: {
+  intent: 'quote' | 'other';
+  workflow: 'quote' | 'create_booking' | 'other';
+  amendmentKind?: 'amend' | 'cancel';
+}) {
+  return {
+    status: 'ready',
+    intent,
+    groups: [],
+    secondaryAsks: [],
+    alternatives: [],
+    sourceRevision: 1,
+    luna: {
+      workflow,
+      flags: [],
+      groups: [],
+      party: { kind: null, name: null, reference: null },
+      rateClaims: [],
+      missing: [],
+      evidence: [],
+      tasks: [],
+    },
+    ...(amendmentKind
+      ? {
+          amendment: {
+            kind: amendmentKind,
+            confirmationNumber: null,
+            guestLastName: null,
+            arrival: null,
+            departure: null,
+            requestedChange: null,
+          },
+        }
+      : {}),
+  };
+}
+
+function analysisForBookingVoucher() {
+  bridgeMockState.analysisOverride = {
+    status: 'ready',
+    intent: 'quote',
+    groups: [
+      {
+        id: 'g1',
+        childrenAges: [],
+        board: 'unknown',
+        quantity: 1,
+        specialRequests: [],
+        fields: { arrivalDate: 'missing', departureDate: 'missing', adults: 'missing' },
+      },
+    ],
+    secondaryAsks: [],
+    alternatives: [],
+    sourceRevision: 1,
+    luna: BOOKING_LUNA,
+  };
+}
 
 /** The meta the served index.html carries (root.tsx). The page reads it at load. */
 function mountBuildMeta(content: string) {
@@ -509,6 +581,7 @@ describe('NavaPane', () => {
   });
 
   it('shows the Find the booking card for a voucher email, with the guest the voucher names', async () => {
+    analysisForBookingVoucher();
     voucherFindQuery.mockResolvedValue({
       status: 'voucher',
       messageId: 'mail-1',
@@ -522,6 +595,7 @@ describe('NavaPane', () => {
   });
 
   it('keeps the Find the booking card hidden for an email that is not a voucher', async () => {
+    analysisForBookingVoucher();
     render(<NavaPane bridge={fakeBridge} />);
     await waitFor(() =>
       expect(voucherFindQuery).toHaveBeenCalledWith({ internetMessageId: '<quote-request@example.invalid>' }),
@@ -549,6 +623,7 @@ describe('NavaPane', () => {
 
   it('shows no retired assistant name on any screen, including the voucher card', async () => {
     localStorage.removeItem('nava_onboarding_completed');
+    analysisForBookingVoucher();
     // A voucher whose guest surname could not be read, with its PDF unread: the card adds no surname note of its own.
     voucherFindQuery.mockResolvedValue({
       status: 'voucher',
@@ -572,6 +647,7 @@ describe('NavaPane', () => {
     expect(screen.queryByText(/Tell Nava/i)).toBeNull();
     expect(staffVisibleText()).not.toMatch(/luna/i);
   });
+
 });
 
 /**
@@ -722,16 +798,6 @@ describe('NavaPane screen states', () => {
     },
   };
 
-  const BOOKING_LUNA = {
-    workflow: 'create_booking' as const,
-    flags: [],
-    groups: [],
-    party: { kind: null, name: null, reference: null },
-    rateClaims: [],
-    missing: [],
-    evidence: [],
-    tasks: [],
-  };
   const STAFF_QUOTE_READY = {
     status: 'ready',
     workflowRunId: 'workflow-restored',
@@ -898,6 +964,7 @@ describe('NavaPane screen states', () => {
   });
 
   it('voucher: a voucher email shows the Find the booking card with the guest it names', async () => {
+    analysisForBookingVoucher();
     voucherFindQuery.mockResolvedValue({
       status: 'voucher',
       messageId: 'mail-1',
@@ -912,6 +979,7 @@ describe('NavaPane screen states', () => {
   });
 
   it('voucher: an unreadable PDF keeps the card without a missing-guest or partial-read note of its own', async () => {
+    analysisForBookingVoucher();
     voucherFindQuery.mockResolvedValue({
       status: 'voucher',
       messageId: 'mail-1',
@@ -959,6 +1027,40 @@ describe('NavaPane screen states', () => {
     expect(container).toMatchSnapshot();
   });
 
+  it.each([
+    { name: 'quote', analysis: intentAnalysis({ intent: 'quote', workflow: 'quote' }), visible: false },
+    { name: 'other', analysis: intentAnalysis({ intent: 'other', workflow: 'other' }), visible: false },
+    { name: 'booking', analysis: intentAnalysis({ intent: 'quote', workflow: 'create_booking' }), visible: true },
+    {
+      name: 'amendment',
+      analysis: intentAnalysis({ intent: 'other', workflow: 'other', amendmentKind: 'amend' }),
+      visible: true,
+    },
+    {
+      name: 'cancellation',
+      analysis: intentAnalysis({ intent: 'other', workflow: 'other', amendmentKind: 'cancel' }),
+      visible: true,
+    },
+  ])('voucher: Find the booking visibility follows $name intent', async ({ name, analysis, visible }) => {
+    bridgeMockState.analysisOverride = analysis;
+    voucherFindQuery.mockResolvedValue({
+      status: 'voucher',
+      messageId: 'mail-1',
+      guest: { lastName: 'Smith', arrival: '2026-11-12' },
+      file: null,
+    });
+    render(<NavaPane bridge={fakeBridge} />);
+
+    if (visible) {
+      expect(await screen.findByRole('region', { name: VOUCHER_COPY.heading })).toBeDefined();
+    } else {
+      const intent = (await screen.findByLabelText('Nava reads this as')) as HTMLSelectElement;
+      expect(intent.value).toBe(name);
+      expect(voucherFindQuery).not.toHaveBeenCalled();
+      expect(screen.queryByRole('region', { name: VOUCHER_COPY.heading })).toBeNull();
+    }
+  });
+
   it('reply: an automated sender gets no Insert draft button (AE3)', async () => {
     bridgeMockState.analysisOverride = {
       status: 'ready',
@@ -995,13 +1097,28 @@ describe('NavaPane screen states', () => {
     expect(screen.getByRole('button', { name: 'Insert draft in Outlook' })).toBeDefined();
   });
 
-  it('preview: the webmail reply saves to the thread, not that the add-in is too old', async () => {
+  it('preview: hides the quote Save reply block unless analysis intent is quote', async () => {
+    bridgeMockState.analysisOverride = intentAnalysis({ intent: 'other', workflow: 'other' });
     render(<NavaPane bridge={fakeBridge} preview />);
-    // The webmail reply saves the thread's draft (U22), so it waits for sync rather than pointing at Outlook.
+
+    const intent = (await screen.findByLabelText('Nava reads this as')) as HTMLSelectElement;
+    expect(intent.value).toBe('other');
+    expect(screen.queryByRole('button', { name: 'Save reply' })).toBeNull();
+    expect(screen.queryByText('Prepare the quote PDF first')).toBeNull();
     expect(
-      await screen.findByText('Wait for this email to sync, then select it again'),
-    ).toBeDefined();
+      screen.queryByText('Saves one unsent draft for this thread with the PDF attached. Nothing is sent.'),
+    ).toBeNull();
+  });
+
+  it('preview: the webmail reply saves to the thread, not that the add-in is too old', async () => {
+    bridgeMockState.analysisOverride = intentAnalysis({ intent: 'quote', workflow: 'quote' });
+    render(<NavaPane bridge={fakeBridge} preview />);
+    const intent = (await screen.findByLabelText('Nava reads this as')) as HTMLSelectElement;
+    expect(intent.value).toBe('quote');
     expect(await screen.findByRole('button', { name: 'Draft quotation into email reply' })).toBeDefined();
+    expect(
+      await screen.findByText('Saves one unsent draft for this thread with the PDF attached. Nothing is sent.'),
+    ).toBeDefined();
     expect(screen.queryByText(/add-in is too old/)).toBeNull();
   });
 

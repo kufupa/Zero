@@ -5,9 +5,12 @@ import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
+import { HmsJobNoticeBanner, HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { resetPartyAutoLookupForTests } from '../components/quote-workflow/party-picker';
+import type { HmsJobRequest, HmsJobView } from '../lib/quote-workflow/amend-find';
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
+import { useHmsJobNoticeReporter } from '../lib/quote-workflow/hms-job-notice-context';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type { QuoteSession, RateOption, RatePlanCatalogueEntry } from '../lib/quote-workflow/types';
 import { CENTURION_RATE_PLANS } from '../../server-pilot/src/hms/rate-catalogue';
@@ -76,6 +79,72 @@ function EditableStayPanel({ initial }: { initial: QuoteSession }) {
         setSession((current) => reduceQuoteSession(current, { type: 'patch_group', groupId, patch }))
       }
     />
+  );
+}
+
+function failedRateSession(reason: string, detail: string): QuoteSession {
+  let session = sessionFromFixture('failed-run');
+  const groups = session.groups.map((group) => ({ ...group, roomPreference: 'SKNG' }));
+  session = {
+    ...session,
+    groups,
+    steps: [{
+      id: 'quote-1',
+      kind: 'quote_stay',
+      title: 'Search availability for 12–14 Nov',
+      inputs: { quoteRequestKey: '2026-11-12:2026-11-14', groupIds: ['g1'] },
+      shareKey: '2026-11-12:2026-11-14',
+      dependsOn: [],
+      status: 'running',
+    }],
+    phase: 'tools',
+  };
+  return reduceQuoteSession(session, {
+    type: 'results_unavailable',
+    stepId: 'quote-1',
+    reason,
+    detail,
+    selectionEpoch: session.binding?.selectionEpoch ?? 0,
+    inputRevision: session.inputRevision,
+  });
+}
+
+function FailedRatesNoticeTrigger({
+  failureMessage,
+  targetId = 'quote-rates',
+  label = 'Show failed rate notice',
+  jobId = 'failed-rates-test-1',
+}: {
+  failureMessage: string;
+  targetId?: string;
+  label?: string;
+  jobId?: string;
+}) {
+  const reporter = useHmsJobNoticeReporter();
+  const request = { kind: targetId === 'quote-rates' ? 'staff_quote' : 'party' } as unknown as HmsJobRequest;
+  const retry = () => undefined;
+  const observerId = `${jobId}-observer`;
+  const view: HmsJobView = {
+    runId: jobId,
+    request,
+    prefetch: false,
+    status: 'failed',
+    position: null,
+    attempts: 1,
+    failureClass: 'STAFF_QUOTE_FAILED',
+    asOf: null,
+    result: { message: failureMessage },
+  };
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        reporter.started({ observerId, jobId, request, targetId, retry, transport: null });
+        reporter.settled(observerId, jobId, view, retry);
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -270,22 +339,12 @@ describe('QuoteWorkflowPanel', () => {
   it('retries the failed stay search directly and keeps the detailed HMS steps behind Details', () => {
     const onRunNext = vi.fn();
     const onRunStep = vi.fn();
-    let session = sessionFromFixture('failed-run');
-    // The fixture's free-text room is not a room type yet, and Get rates needs one.
-    const groups = session.groups.map((group) => ({ ...group, roomPreference: 'SKNG' }));
-    session = { ...session, groups, steps: [{
-      id: 'quote-1',
-      kind: 'quote_stay',
-      title: 'Search availability for 12–14 Nov',
-      inputs: { quoteRequestKey: '2026-11-12:2026-11-14', groupIds: ['g1'] },
-      shareKey: '2026-11-12:2026-11-14',
-      dependsOn: [],
-      status: 'failed',
-      retryGuidance: "HMS didn't answer in time.",
-      errorDetail: "Cannot read properties of undefined (reading 'internetMessageId')",
-    }], phase: 'tools' };
+    const session = failedRateSession(
+      "HMS didn't answer in time.",
+      "Cannot read properties of undefined (reading 'internetMessageId')",
+    );
     render(<QuoteWorkflowPanel session={session} onRunNext={onRunNext} onRunStep={onRunStep} />);
-    expect(screen.getByText("HMS didn't answer in time.")).toBeDefined();
+    expect(screen.getAllByText("HMS didn't answer in time.")).toHaveLength(1);
     expect(screen.getByText(/Dates 2026-11-12 → 2026-11-14/i)).toBeDefined();
     const details = screen.getByText('Details').closest('details');
     expect(details).toBeTruthy();
@@ -295,6 +354,49 @@ describe('QuoteWorkflowPanel', () => {
     expect(onRunNext).not.toHaveBeenCalled();
     expect(onRunStep).toHaveBeenCalledWith('quote-1');
     expect(screen.getByRole('button', { name: /Run Search availability for 12–14 Nov/i })).toBeTruthy();
+  });
+
+  it('shows a failed rate reason in the banner once, then shows one local copy after dismissal', () => {
+    const reason = "HMS didn't answer in time.";
+    const session = failedRateSession(reason, 'The full server diagnostic stays behind Details.');
+    render(
+      <HmsJobNoticeProvider emailKey="e1" emailSubject="Suite Availability Request">
+        <HmsJobNoticeBanner />
+        <QuoteWorkflowPanel session={session} />
+        <FailedRatesNoticeTrigger failureMessage={reason} />
+      </HmsJobNoticeProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Show failed rate notice' }));
+
+    const banner = screen.getByTestId('hms-job-notice-banner');
+    expect(banner.textContent).toContain(`Rates failed: ${reason}`);
+    expect(screen.queryByText(reason, { exact: true })).toBeNull();
+
+    fireEvent.click(within(banner).getByRole('button', { name: 'Try again' }));
+    expect(screen.getAllByText(reason, { exact: true })).toHaveLength(1);
+  });
+
+  it('keeps the local rate reason visible when another failure owns the notice banner', () => {
+    const reason = "HMS didn't answer in time.";
+    const session = failedRateSession(reason, 'The full server diagnostic stays behind Details.');
+    render(
+      <HmsJobNoticeProvider emailKey="e1" emailSubject="Suite Availability Request">
+        <HmsJobNoticeBanner />
+        <QuoteWorkflowPanel session={session} />
+        <FailedRatesNoticeTrigger
+          targetId="quote-party"
+          jobId="failed-party-test-1"
+          label="Show failed party notice"
+          failureMessage="The company search failed."
+        />
+        <FailedRatesNoticeTrigger failureMessage={reason} />
+      </HmsJobNoticeProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Show failed party notice' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show failed rate notice' }));
+
+    expect(screen.getByTestId('hms-job-notice-banner').textContent).toContain('HMS lookup failed:');
+    expect(screen.getAllByText(reason, { exact: true })).toHaveLength(1);
   });
 
   it('offers Search again after results, enabled when idle and tied to the same stay', () => {
@@ -410,7 +512,7 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.click(searchButtons[1]!);
     expect(screen.getByText('Search queued until the current stay finishes.')).toBeDefined();
     expect(onRunStep).not.toHaveBeenCalled();
-    const rateCards = screen.getAllByRole('button', { name: /BAR: Best available/ }) as HTMLButtonElement[];
+    const rateCards = screen.getAllByRole('button', { name: /Best available BAR/ }) as HTMLButtonElement[];
     expect(rateCards[0]?.disabled).toBe(true);
     expect(rateCards[1]?.disabled).toBe(false);
     const priceToggles = screen.getAllByRole('button', { name: 'Special price' });
@@ -1101,12 +1203,12 @@ describe('the Find in HMS picker in the quote header', () => {
 
     render(<FilterHarness />);
     assertRatePlanVisible();
-    expect(screen.getByRole('button', { name: /BAR: Best Available Rate/ })).toBeDefined();
+    expect(screen.getByRole('button', { name: /Best Available Rate BAR/ })).toBeDefined();
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'NCOR1B' } });
 
     expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('NCOR1B');
-    expect(screen.queryByRole('button', { name: /BAR: Best Available Rate/ })).toBeNull();
-    expect(screen.getByRole('button', { name: /NCOR1B: Corporate Negotiated/ })).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Best Available Rate BAR/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /Corporate Negotiated NCOR1B/ })).toBeDefined();
   });
 
   it('a government plan asks HMS for Government pricing; a public plan goes back to BAR', () => {

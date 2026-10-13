@@ -40,7 +40,10 @@ export function RateCards({
         const restricted = option.onlyContract && !partyName;
         const mealPlanMatch = preferredBoard === 'all' || option.board === preferredBoard;
         const from = option.priced === 'summary' && !selected ? 'from ' : '';
-        const rateLabel = option.rateLabel.trim() || option.rateCode;
+        const rateLabel = displayLabel(option.rateLabel) || option.rateCode;
+        const boardLabel = displayLabel(option.boardLabel);
+        const roomLabel = displayLabel(option.roomLabel);
+        const boardRoomLabel = [boardLabel, roomLabel].filter(Boolean).join(' · ');
         return (
           <div
             key={option.id}
@@ -68,18 +71,22 @@ export function RateCards({
               } disabled:opacity-70`}
             >
               <span className="line-clamp-2 min-w-0 break-words text-[13px] font-bold leading-4 text-[#1e293b]">
-                {`${option.rateCode}: ${rateLabel}`}
+                <span>{rateLabel}</span>
+                {' '}
+                <span className="whitespace-nowrap text-[11px] font-semibold leading-4 text-[#64748b]">
+                  {option.rateCode}
+                </span>
               </span>
               <span className={`whitespace-nowrap text-right text-[12.5px] font-extrabold text-[#1e293b] ${restricted ? 'line-through' : ''}`}>
                 {`${from}${draftMoney(option.perNightMinor)} avg / room / night`}
               </span>
               <span className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-[#64748b]">
-                <span>{`${option.boardLabel} · ${option.roomLabel}`}</span>
+                {boardRoomLabel ? <span>{boardRoomLabel}</span> : null}
                 {selected ? <RateTag tone="selected">Selected</RateTag> : null}
                 {option.contract ? <RateTag>{partyName ? `${partyName} contract` : 'Contract'}</RateTag> : null}
                 {mealPlanMatch && preferredBoard !== 'all' ? <RateTag>Meal plan match</RateTag> : null}
                 {option.matchesRequest ? null : (
-                  <RateTag tone="warning">{`Not what they asked: ${option.boardLabel}`}</RateTag>
+                  <RateTag tone="warning">{`Not what they asked: ${boardLabel}`}</RateTag>
                 )}
                 {restricted ? <span className="font-semibold text-amber-800">Restricted — find a company or agency in HMS first</span> : null}
               </span>
@@ -93,6 +100,10 @@ export function RateCards({
       })}
     </div>
   );
+}
+
+function displayLabel(label: string): string {
+  return label.replace(/&amp;/gi, '&').trim();
 }
 
 function RateTag({ children, tone = 'default' }: { children: ReactNode; tone?: 'default' | 'selected' | 'warning' }) {

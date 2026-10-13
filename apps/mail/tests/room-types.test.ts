@@ -11,7 +11,17 @@ describe('room type name matching', () => {
     ['Standard Queen', { code: 'STQN', suggestions: [] }],
     ['standard queen room', { code: 'STQN', suggestions: [] }],
     ['Standard-Queens!', { code: 'STQN', suggestions: [] }],
+    ['Standard RoomQueen Bed', { code: 'STQN', suggestions: [] }],
     ['queen', { suggestions: ['STQN', 'DLXQN'] }],
+    ['suite room', { code: 'SUITE', suggestions: [] }],
+    ['standard room', { suggestions: ['STWN', 'STQN', 'SKNG'] }],
+    ['Single', { suggestions: ['STWN', 'SKNG'] }],
+    ['one bedroom', { suggestions: [] }],
+    ['Double room', { suggestions: ['STQN', 'SKNG', 'EXKNG'] }],
+    ['Twin', { suggestions: ['STWN', 'DLXTWN'] }],
+    ['Executive King room', { code: 'EXKNG', suggestions: [] }],
+    ['deluxe twin', { code: 'DLXTWN', suggestions: [] }],
+    ['luxury king', { code: 'LUXKNG', suggestions: [] }],
     ['double', { suggestions: ['STQN', 'SKNG', 'EXKNG'] }],
     ['singles', { suggestions: ['STWN', 'SKNG'] }],
     ['king', { suggestions: ['SKNG', 'EXKNG', 'DLXKNG'] }],
@@ -27,9 +37,9 @@ describe('room type name matching', () => {
 
   it('accepts unambiguous room names anywhere a native code is expected', () => {
     expect(roomTypes.knownRoomCode('Standard Queen')).toBe('STQN');
+    expect(roomTypes.knownRoomCode('queen')).toBeNull();
     expect(roomTypes.knownRoomCode('STQN')).toBe('STQN');
     expect(roomTypes.knownRoomCode('stqn!')).toBe('STQN');
-    expect(roomTypes.knownRoomCode('queen')).toBeNull();
   });
 
   it('caps ambiguous suggestions at three ranked room types', () => {

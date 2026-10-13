@@ -518,6 +518,23 @@ describe('staff quote execute/PDF header bind', () => {
     expect(result.detail).toBe(raw);
   });
 
+  it('shows an unrecognized HMS refusal as the server message and keeps its detail', async () => {
+    const raw =
+      'HMS has no rate for every night of this stay in this room and meal plan. Try another room type or meal plan, or split the dates, then search again.';
+    const refusal = Object.assign(new Error(raw), { data: { code: 'PRECONDITION_FAILED' } });
+    const result = await bindExecuteStaffQuote({
+      mutate: vi.fn(async () => {
+        throw refusal;
+      }),
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: government,
+    });
+    expect(result).toMatchObject({ status: 'unavailable', reason: raw, detail: raw });
+  });
+
   it('sends each new extra and the note as its own field, and leaves out empty ones', () => {
     expect(
       approvedExecuteHeader({

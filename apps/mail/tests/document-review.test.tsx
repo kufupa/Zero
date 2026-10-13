@@ -1,0 +1,85 @@
+/**
+ * @vitest-environment happy-dom
+ */
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DocumentReview } from '../components/quote-workflow/document-review';
+import { loadQuoteFixture } from '../lib/quote-workflow/fixtures';
+import { canCreateNativeDraft, canCreatePdf, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import type { QuoteSession } from '../lib/quote-workflow/types';
+
+afterEach(() => cleanup());
+
+const binding = {
+  transportId: 't1',
+  mailboxEmail: 'centurion@legacyhotels.co.za',
+  storeId: 'store',
+  folderEntryId: 'inbox',
+  entryId: 'e1',
+  selectionEpoch: 1,
+  scopeEpoch: 1,
+};
+const source = { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+
+function readySession(): QuoteSession {
+  const fixture = loadQuoteFixture('public-single');
+  let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding });
+  session = reduceQuoteSession(session, {
+    type: 'analysis_ready',
+    analysis: {
+      intent: 'quote',
+      groups: fixture.groups,
+      secondaryAsks: fixture.secondaryAsks,
+      alternatives: fixture.alternatives,
+    },
+  });
+  session = reduceQuoteSession(session, { type: 'staff_source_ready', source });
+  session = reduceQuoteSession(session, {
+    type: 'results_ready',
+    offers: fixture.offers,
+    selectionEpoch: binding.selectionEpoch,
+    inputRevision: session.inputRevision,
+    reviewedReplyHtml: '<p>Thank you for your enquiry.</p>',
+    provenance: {
+      kind: 'authorised',
+      selectionEpoch: binding.selectionEpoch,
+      inputRevision: session.inputRevision,
+    },
+  });
+  return { ...session, selectedOfferIds: [fixture.offers[0]!.id] };
+}
+
+describe('DocumentReview', () => {
+  it('demotes the prepared PDF action so the reply draft stays primary', () => {
+    const session = readySession();
+    const onPreparePdf = vi.fn();
+    expect(canCreatePdf(session)).toBe(true);
+    const { rerender } = render(<DocumentReview session={session} onPreparePdf={onPreparePdf} />);
+
+    const prepareBefore = screen.getByRole('button', { name: 'Prepare PDF' });
+    expect(prepareBefore.className).toContain('h-[38px]');
+    expect(prepareBefore.className).toContain('bg-[#0066cc]');
+
+    const prepared = {
+      ...session,
+      pdf: {
+        fileName: 'Quote - Standard King.pdf',
+        bytesBase64: 'JVBERi0xLjQK',
+        pdfHash: 'cd'.repeat(32),
+        revisionId: 'quotes:public-single',
+        totalMinor: 272000,
+      },
+    };
+    expect(canCreatePdf(prepared)).toBe(true);
+    expect(canCreateNativeDraft(prepared)).toBe(true);
+    rerender(<DocumentReview session={prepared} onPreparePdf={onPreparePdf} />);
+
+    const prepareAfter = screen.getByRole('button', { name: 'Prepare PDF' }) as HTMLButtonElement;
+    expect(prepareAfter.disabled).toBe(false);
+    expect(prepareAfter.className).toContain('h-8');
+    expect(prepareAfter.className).toContain('border-[#0066cc]');
+    expect(prepareAfter.className).toContain('bg-white');
+    expect(prepareAfter.className).not.toContain('h-[38px]');
+    expect(screen.getByText('Reply and PDF are ready. Next, create the Outlook draft. It is not sent.')).toBeDefined();
+  });
+});
