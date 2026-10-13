@@ -2,7 +2,7 @@ import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import { Section } from '@/components/nava-pane/pane-ui';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { existsSync, readFileSync } from 'node:fs';
-import { chromium } from '@playwright/test';
+import { chromium, type Browser } from '@playwright/test';
 import { describe, expect, it } from 'vitest';
 import { compile } from 'tailwindcss';
 import { dirname, join } from 'node:path';
@@ -48,14 +48,26 @@ function LongPane() {
           <Section title="Selected email">
             <p>Re: Accommodation request</p>
           </Section>
-          <ContactBlock contact={null} onEdit={() => undefined} />
-          <Section title="Stay details" step={1}>
+          <ContactBlock
+            contact={{
+              name: 'David Miller',
+              email: 'david.miller@example.test',
+              phone: '+27 11 555 0100',
+              company: 'A long but ordinary travel company name',
+              endClient: 'A separate client organisation',
+            }}
+            onEdit={() => undefined}
+          />
+          <Section title="Stay" step={2} id="quote-stay">
             <div style={{ height: 900 }}>Two stays, four room rows</div>
           </Section>
-          <Section title="Get rates" step={2}>
+          <Section title="Company / agency" step={3} id="quote-party">
+            <div style={{ height: 300 }}>Party fields</div>
+          </Section>
+          <Section title="Rates" step={4} id="quote-rates">
             <div style={{ height: 600 }}>Rate rows</div>
           </Section>
-          <Section title="Reply" step={4}>
+          <Section title="Quote" step={5} id="quote-quote">
             <div style={{ height: 200 }}>Reply body</div>
           </Section>
         </main>
@@ -64,44 +76,59 @@ function LongPane() {
   );
 }
 
-describe('a long pane at the Outlook pane width', () => {
-  it.skipIf(!chromiumBinary)('scrolls the body and keeps every card, Contact included, at its full height', async () => {
-    const markup = renderToStaticMarkup(<LongPane />);
-    const css = await tailwindFor(markup);
-    const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
-    try {
-      const page = await browser.newPage({ viewport: { width: 400, height: 800 } });
-      await page.setContent(`<!doctype html><html><head><style>${css}</style></head><body>${markup}</body></html>`);
-      const layout = await page.evaluate(() => {
-        const body = document.querySelector('main.nava-pane-scroll') as HTMLElement;
-        const cards = Array.from(body.children).map((card) => ({
-          title: card.getAttribute('aria-label'),
-          height: card.getBoundingClientRect().height,
-          content: (card as HTMLElement).scrollHeight,
-        }));
-        const contact = document.getElementById('quote-contact')!.getBoundingClientRect();
-        const inputs = Array.from(document.querySelectorAll('#quote-contact input')).map((input) =>
-          input.getBoundingClientRect(),
-        );
-        return {
-          overflow: body.scrollHeight - body.clientHeight,
-          cards,
-          contactBottom: contact.bottom,
-          inputs: inputs.map((box) => ({ height: box.height, bottom: box.bottom })),
-        };
-      });
-      // The pane is long: its body scrolls.
-      expect(layout.overflow).toBeGreaterThan(0);
-      // No card is squeezed below its content.
-      for (const card of layout.cards) expect(card.height, card.title ?? '').toBeGreaterThanOrEqual(card.content);
-      // Every contact input is shown inside the card. Company and End client are one read-only "Named in email" line now, so Name, Email and Phone are the inputs.
-      expect(layout.inputs).toHaveLength(3);
-      for (const input of layout.inputs) {
-        expect(input.height).toBeGreaterThan(20);
-        expect(input.bottom).toBeLessThanOrEqual(layout.contactBottom);
+describe('the shared long pane layout', () => {
+  for (const width of [360, 1280]) {
+    it(`scrolls without squeezing cards or overflowing at ${width}px`, async ({ skip }) => {
+      if (!chromiumBinary) {
+        skip('Chromium is not installed in this runner');
+        return;
       }
-    } finally {
-      await browser.close();
-    }
-  }, 30_000);
+      const markup = renderToStaticMarkup(<LongPane />);
+      const css = await tailwindFor(markup);
+      let browser: Browser;
+      try {
+        browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
+      } catch (error) {
+        if (String(error).includes('Operation not permitted')) {
+          skip('Chromium is blocked by the workspace sandbox');
+          return;
+        }
+        throw error;
+      }
+      try {
+        const page = await browser.newPage({ viewport: { width, height: 800 } });
+        await page.setContent(`<!doctype html><html><head><style>${css}</style></head><body>${markup}</body></html>`);
+        const layout = await page.evaluate(() => {
+          const body = document.querySelector('main.nava-pane-scroll') as HTMLElement;
+          const cards = Array.from(body.children).map((card) => ({
+            title: card.getAttribute('aria-label'),
+            height: card.getBoundingClientRect().height,
+            content: (card as HTMLElement).scrollHeight,
+          }));
+          const contact = document.getElementById('quote-contact')!.getBoundingClientRect();
+          const inputs = Array.from(document.querySelectorAll('#quote-contact input')).map((input) =>
+            input.getBoundingClientRect(),
+          );
+          return {
+            overflow: body.scrollHeight - body.clientHeight,
+            viewportWidth: document.documentElement.clientWidth,
+            documentWidth: document.documentElement.scrollWidth,
+            cards,
+            contactBottom: contact.bottom,
+            inputs: inputs.map((box) => ({ height: box.height, bottom: box.bottom })),
+          };
+        });
+        // The pane is long: its body scrolls.
+        expect(layout.overflow).toBeGreaterThan(0);
+        // No card is squeezed below its content.
+        for (const card of layout.cards) expect(card.height, card.title ?? '').toBeGreaterThanOrEqual(card.content);
+        // Contact is display-first; corrections stay collapsed, and the content fits both pane surfaces.
+        expect(layout.inputs).toHaveLength(0);
+        expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+        expect(layout.contactBottom).toBeGreaterThan(0);
+      } finally {
+        await browser.close();
+      }
+    }, 30_000);
+  }
 });

@@ -86,12 +86,6 @@ export function RateCards({
               {option.hint === 'event_rate' ? (
                 <span className="col-span-2 text-[12.5px] text-[#475569]">{CRICKET_RATE_HINT}</span>
               ) : null}
-              {loading && selected ? (
-                <span role="status" className="col-span-2 flex items-center gap-1.5 text-[12.5px] font-semibold text-[#0066cc]">
-                  <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-2 border-[#0066cc] border-t-transparent" />
-                  Getting rates from HMS…
-                </span>
-              ) : null}
             </button>
             {selected ? selectedControls : null}
           </div>

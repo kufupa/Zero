@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import {
   allocationTotal,
@@ -50,6 +50,7 @@ import {
   SecondaryButton,
   paneFieldClass,
   paneTextareaClass,
+  StepState,
 } from '@/components/nava-pane/pane-ui';
 import { BOARD_LABELS, BookingCards } from './booking-card';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
@@ -75,6 +76,7 @@ import {
 import { StayCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
 import { WorkflowBadge, type QuoteIntent } from './workflow-badge';
+import { rowRoomLabel, rowRoomTypeCode } from '@/lib/quote-workflow/room-types';
 
 const TELL_NAVA_ENABLED = false;
 
@@ -424,7 +426,7 @@ function StaffPartyFields({
   return (
     <div className="flex flex-col gap-2.5">
       <p className="text-[13px] text-[#64748b]">
-        Company is the end client; Agency is the travel agent. Each HMS result must be confirmed before its contract rate is used.
+        Optional if none in email. Company is the end client; Agency is the travel agent. Confirm an HMS result before using its contract rate.
       </p>
       <Field label="Agency (travel agent)" htmlFor="quote-agency">
         <input
@@ -681,7 +683,7 @@ function StayExtrasFields({
   );
 }
 
-function AdvancedFields({
+function RatePlanFields({
   ratePlans,
   ratePlan,
   onRatePlanChange,
@@ -698,7 +700,7 @@ function AdvancedFields({
   onNotesChange: (value: string) => void;
 }) {
   return (
-    <Disclosure summary={<span>Advanced</span>}>
+    <div className="flex flex-col gap-3">
       <Field label="Rate plan" htmlFor="quote-rate-plan">
         <select
           id="quote-rate-plan"
@@ -730,18 +732,20 @@ function AdvancedFields({
           All rates shows every code HMS returned. Choosing a plan filters the cards below.
         </span>
       </Field>
-      <Field label="Notes for HMS" htmlFor="quote-hms-notes">
-        <textarea
-          id="quote-hms-notes"
-          aria-label="Notes for HMS"
-          className={paneTextareaClass}
-          placeholder="Add a staff note for the HMS handoff"
-          value={notes}
-          onChange={(event) => onNotesChange(event.target.value)}
-        />
-      </Field>
-      <CopyHmsNotesButton block={notesBlock} />
-    </Disclosure>
+      <Disclosure summary={<span>HMS notes (optional)</span>}>
+        <Field label="Notes for HMS" htmlFor="quote-hms-notes">
+          <textarea
+            id="quote-hms-notes"
+            aria-label="Notes for HMS"
+            className={paneTextareaClass}
+            placeholder="Add a staff note for the HMS handoff"
+            value={notes}
+            onChange={(event) => onNotesChange(event.target.value)}
+          />
+        </Field>
+        <CopyHmsNotesButton block={notesBlock} />
+      </Disclosure>
+    </div>
   );
 }
 
@@ -849,8 +853,7 @@ function stayRatesBlockReason(
   if (rows.some((group) => !group.arrivalDate || !group.departureDate)) {
     return 'Add arrival and departure dates first.';
   }
-  const missingRoomIndex = rows.findIndex((group) => !rowRoomCode(group));
-  if (missingRoomIndex >= 0) return `Room ${missingRoomIndex + 1} needs a room type.`;
+  if (rows.some((group) => !rowRoomCode(group))) return 'Choose a room type for each room before searching.';
   if (rows.some((group) => !group.quantity)) return 'Add the number of rooms first.';
   if (!step) return 'The HMS search is not ready yet.';
   if (step.status === 'succeeded') return null;
@@ -933,6 +936,7 @@ export function QuoteWorkflowPanel({
   onRunStep,
   onSelectOffer,
   onReplyChange,
+  replyContent,
   onPreparePdf,
   onDownloadWorkbook,
   workbookPending,
@@ -981,6 +985,8 @@ export function QuoteWorkflowPanel({
   onRunStep?: (stepId: string) => void;
   onSelectOffer?: (offerId: string) => void;
   onReplyChange?: (html: string) => void;
+  /** The surface-specific reply/save action, kept inside the Quote step. */
+  replyContent?: ReactNode;
   onPreparePdf?: () => void;
   onDownloadWorkbook?: () => void;
   /** An Excel export is being made; the Excel button is disabled meanwhile. */
@@ -1173,14 +1179,37 @@ export function QuoteWorkflowPanel({
     const boards = new Set(rows.map((row) => row.board).filter((board) => board !== 'unknown'));
     return boards.size === 1 ? [...boards][0]! : 'all';
   };
-  // Row names for the price boxes: "Room 1", or "Stay 1 · Room 1" when the quote has more than one stay.
+  // Room names follow the type and count, so a rate or override always identifies the actual row.
   const rowLabels = new Map<string, string>();
   stays.forEach((stay, stayIndex) =>
-    stay.rows.forEach((row, rowIndex) =>
-      rowLabels.set(row.id, stays.length > 1 ? `Stay ${stayIndex + 1} · Room ${rowIndex + 1}` : `Room ${rowIndex + 1}`),
+    stay.rows.forEach((row) =>
+      rowLabels.set(row.id, stays.length > 1 ? `Stay ${stayIndex + 1} · ${rowRoomLabel(row)}` : rowRoomLabel(row)),
     ),
   );
   const running = Boolean(session.runningStepId) || Boolean(hmsQueue?.pending);
+  const stayReady =
+    stays.length > 0 &&
+    stays.every(
+      (stay) =>
+        stay.rows.length > 0 &&
+        stay.rows.every(
+          (row) => Boolean(row.arrivalDate && row.departureDate && rowRoomTypeCode(row) && row.quantity && row.adults),
+        ),
+    );
+  const partyState =
+    session.pendingPartyKinds?.length
+      ? 'Looking up'
+      : !header.company.trim() && !header.agency.trim()
+      ? 'Optional'
+      : header.parties?.company || header.parties?.agency
+        ? 'Done'
+        : 'Pending';
+  const rateKeys = requestedQuoteKeys(session.groups);
+  const ratesReady =
+    session.offers.length > 0 ||
+    (rateKeys.length > 0 && rateKeys.every((key) => Boolean(session.staffQuotes[key] ?? (session.selectedStayKey === key ? session.staffQuote : null))));
+  const ratesState = running ? 'Looking up' : ratesReady ? 'Done' : 'Pending';
+  const quoteState = session.pdf || session.reviewedReplyHtml.trim() ? 'Done' : 'Pending';
   const showRates = session.phase !== 'failed' && session.phase !== 'missing_source';
   /** The stay step a row belongs to. A re-run of that step prices the row. */
   const stepFor = (group: StayGroupRequirement) =>
@@ -1271,7 +1300,7 @@ export function QuoteWorkflowPanel({
         <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
       ) : null}
       {showWorkspace ? (
-        <Section step={1} title="Stay details">
+        <Section step={2} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
           {stays.map((stay, index) => (
             <StayCard
               key={stay.id}
@@ -1289,10 +1318,16 @@ export function QuoteWorkflowPanel({
               evidence={session.analysis?.luna?.evidence}
             />
           ))}
+          <div className="flex flex-col gap-1">
+            <SecondaryButton className="w-full" onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
+              + Add another date range
+            </SecondaryButton>
+            <p className="text-center text-[13px] text-[#64748b]">Each date range is searched and priced independently.</p>
+          </div>
         </Section>
       ) : null}
       {showWorkspace ? (
-        <Section title="Booked by">
+        <Section step={3} title="Company / agency" id="quote-party" action={<StepState state={partyState} />}>
           <StaffPartyFields
             header={header}
             onPatch={onPatchStaffHeader}
@@ -1307,20 +1342,19 @@ export function QuoteWorkflowPanel({
         </Section>
       ) : null}
       {showWorkspace ? (
-        <AdvancedFields
-          key={selectionEpoch}
-          ratePlans={ratePlans}
-          ratePlan={ratePlan}
-          onRatePlanChange={changeRatePlan}
-          notesBlock={quoteNotesBlock(session, rowLabels, contact)}
-          notes={header.notes ?? ''}
-          onNotesChange={(value) => onPatchStaffHeader?.({ notes: value })}
-        />
-      ) : null}
-      {showWorkspace && (showRates || session.offers.length) ? (
-        <Section step={2} title="Search availability & room rates">
+        <Section step={4} title="Rates" id="quote-rates" action={<StepState state={ratesState} />}>
+          <RatePlanFields
+            key={selectionEpoch}
+            ratePlans={ratePlans}
+            ratePlan={ratePlan}
+            onRatePlanChange={changeRatePlan}
+            notesBlock={quoteNotesBlock(session, rowLabels, contact)}
+            notes={header.notes ?? ''}
+            onNotesChange={(value) => onPatchStaffHeader?.({ notes: value })}
+          />
           {showRates ? (
             <>
+              <h4 className="text-[13px] font-semibold text-[#475569]">Search availability & room rates</h4>
               {stays.map((stay, stayIndex) => {
                 const first = stay.rows[0];
                 if (!first) return null;
@@ -1380,10 +1414,8 @@ export function QuoteWorkflowPanel({
                             if (step && onRunStep) onRunStep(step.id);
                             else onRunNext?.();
                           }}
-                          disabled={actionReason !== null}
-                          disabledReason={actionReason}
-                          loading={loadingThisStay}
-                          loadingText="Checking HMS… about 2 min"
+                          disabled={actionReason !== null || loadingThisStay}
+                          disabledReason={loadingThisStay ? 'Looking up in HMS — you can keep working.' : actionReason}
                         >
                           {step?.status === 'failed' ? 'Retry search' : 'Search availability'}
                         </PrimaryButton>
@@ -1405,7 +1437,7 @@ export function QuoteWorkflowPanel({
                         </div>
                       </details>
                     ) : null}
-                    {stay.rows.map((group, roomIndex) => {
+                    {stay.rows.map((group) => {
                       const rateGroup = rateGroups.find((item) => item.group.id === group.id);
                       const rowStep = stepFor(group);
                       const rowRate = session.staffQuotes[stayKeyForGroup(group)]?.rowRates?.find(
@@ -1425,8 +1457,8 @@ export function QuoteWorkflowPanel({
                         <div className="border-t border-[#dce8df] bg-white p-2.5">
                           <RowRateControls
                             group={group}
-                            label={rowLabels.get(group.id) ?? 'Room'}
-                            toggleLabel="Set a specific price"
+                            label={rowLabels.get(group.id) ?? 'Room type needed'}
+                            toggleLabel="Special price"
                             rowRate={rowRate}
                             saved={saved}
                             pending={priceRunning}
@@ -1439,7 +1471,7 @@ export function QuoteWorkflowPanel({
                       );
                       return (
                         <div key={group.id} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
-                          <h5 className="text-[13px] font-semibold text-[#475569]">{`Room ${roomIndex + 1} rates`}</h5>
+                          <h5 className="text-[13px] font-semibold text-[#475569]">{`${rowLabels.get(group.id) ?? 'Room type needed'} rates`}</h5>
                           {rateGroup?.options.length ? (
                             <RateCards
                               options={rateGroup.options}
@@ -1478,15 +1510,10 @@ export function QuoteWorkflowPanel({
                   </article>
                 );
               })}
-              {hmsQueue ? <HmsQueueStatusLine pending={hmsQueue.pending} status={hmsQueue.status} /> : null}
+              {running ? <HmsQueueStatusLine pending={running} status={hmsQueue?.status ?? null} /> : null}
             </>
           ) : null}
-          <div className="flex flex-col gap-1">
-            <SecondaryButton className="w-full" onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
-              + Add another date range
-            </SecondaryButton>
-            <p className="text-center text-[13px] text-[#64748b]">Each date range creates a separate HMS booking.</p>
-          </div>
+          {!showRates ? <p className="text-[13px] text-[#64748b]">Rates will appear when the email details are ready to search.</p> : null}
           {session.offers.length ? (
             <div className="flex flex-col gap-2">
               <h3 className="text-[13px] font-semibold text-[#475569]">HMS results and evidence</h3>
@@ -1562,14 +1589,6 @@ export function QuoteWorkflowPanel({
           />
         </>
       ) : null}
-      {showWorkspace && !showRates && !session.offers.length ? (
-        <div className="flex flex-col gap-1">
-          <SecondaryButton className="w-full" onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
-            + Add another date range
-          </SecondaryButton>
-          <p className="text-center text-[13px] text-[#64748b]">Each date range creates a separate HMS booking.</p>
-        </div>
-      ) : null}
       {requestedQuoteKeys(session.groups)
         .filter((key) => session.bookingDrafts[key])
         .map((key) => (
@@ -1586,16 +1605,24 @@ export function QuoteWorkflowPanel({
             />
           </Fragment>
         ))}
-      {showReply ? (
-        <Section step={3} title="Quote documents">
-          <DocumentReview
-            session={session}
-            onReplyChange={onReplyChange}
-            onPreparePdf={onPreparePdf}
-            onDownloadWorkbook={onDownloadWorkbook}
-            workbookPending={workbookPending}
-          />
+      {showWorkspace ? (
+        <Section step={5} title="Quote" id="quote-quote" action={<StepState state={quoteState} />}>
+          <p className="text-[12px] font-semibold text-[#64748b]">Reply text · PDF · Excel</p>
+          {showReply ? (
+            <DocumentReview
+              session={session}
+              onReplyChange={onReplyChange}
+              onPreparePdf={onPreparePdf}
+              onDownloadWorkbook={onDownloadWorkbook}
+              workbookPending={workbookPending}
+            />
+          ) : (
+            <p className="text-[13px] text-[#64748b]">Complete Rates first to prepare a reply, PDF or Excel file.</p>
+          )}
+          {replyContent}
         </Section>
+      ) : replyContent ? (
+        <div className="flex flex-col gap-2.5">{replyContent}</div>
       ) : null}
     </div>
   );

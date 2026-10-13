@@ -1,5 +1,11 @@
+import { useLayoutEffect } from 'react';
 import { useWebPreview, type PreviewSelection } from '@/lib/workstation/web-pane-bridge';
 import { NavaPane } from '@/components/nava-pane/nava-pane';
+import {
+  HmsJobNoticeBanner,
+  HmsJobRunningChip,
+} from '@/components/quote-workflow/hms-job-notices';
+import { useHmsJobNoticeReporter } from '@/lib/quote-workflow/hms-job-notice-context';
 
 function statusCopy(selection: PreviewSelection): string {
   if (selection.status === 'loading') return 'Loading thread…';
@@ -15,11 +21,22 @@ function statusCopy(selection: PreviewSelection): string {
 export function WebPanePanel({
   threadId,
   onOpenThread,
+  hmsNoticesManagedByParent = false,
 }: {
   threadId: string;
   onOpenThread?: (threadId: string) => void;
+  hmsNoticesManagedByParent?: boolean;
 }) {
   const { selection, bridge } = useWebPreview({ threadId });
+  const reporter = useHmsJobNoticeReporter();
+  const activeEmail = selection.status === 'ready' ? selection.email : null;
+  const emailKey = activeEmail?.internetMessageId?.trim() || activeEmail?.entryId || threadId;
+  const emailSubject = activeEmail?.subject?.trim() || null;
+
+  useLayoutEffect(() => {
+    reporter.setCurrentEmail({ emailKey, emailSubject });
+  }, [emailKey, emailSubject, reporter.setCurrentEmail]);
+
   if (selection.status !== 'ready') {
     const reason = selection.status === 'unsynced' ? selection.reason : undefined;
     return (
@@ -27,10 +44,15 @@ export function WebPanePanel({
         data-preview-status={selection.status}
         data-preview-reason={reason}
         data-preview-thread={threadId}
-        role={selection.status === 'error' ? 'alert' : 'status'}
-        className="p-4 text-sm text-slate-600"
+        className="flex h-full min-h-0 flex-col text-sm text-slate-600"
       >
-        {statusCopy(selection)}
+        <div className="flex h-11 shrink-0 items-center justify-end px-3">
+          <HmsJobRunningChip />
+        </div>
+        <HmsJobNoticeBanner />
+        <p role={selection.status === 'error' ? 'alert' : 'status'} className="p-4">
+          {statusCopy(selection)}
+        </p>
       </div>
     );
   }
@@ -40,7 +62,12 @@ export function WebPanePanel({
       data-preview-thread={threadId}
       className="h-full overflow-y-auto"
     >
-      <NavaPane bridge={bridge} preview onOpenThread={onOpenThread} />
+      <NavaPane
+        bridge={bridge}
+        preview
+        onOpenThread={onOpenThread}
+        hmsNoticesManagedByParent={hmsNoticesManagedByParent}
+      />
     </div>
   );
 }

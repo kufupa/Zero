@@ -86,9 +86,6 @@ export function DocumentReview({
         </SecondaryButton>
         {excelDisabled && excelReason ? <p className="text-center text-[12.5px] text-[#64748b]">{excelReason}</p> : null}
       </div>
-      <SecondaryButton className="w-full" disabled disabledReason="Coming soon">
-        Book in HMS
-      </SecondaryButton>
       {/* A combined reply is built from every stay's quote, so the one-stay reply box would be ignored. */}
       {isMultiStay(session) ? null : (
         <Field label="Reply to the client (you can edit it)" htmlFor="quote-reviewed-reply">

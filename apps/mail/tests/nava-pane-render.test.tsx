@@ -245,6 +245,10 @@ function openPaneMenuItem(name: string): HTMLElement {
   return screen.getByRole('menuitem', { name });
 }
 
+function openContactCorrections() {
+  fireEvent.click(screen.getByRole('button', { name: 'Correct' }));
+}
+
 const LOADED_BUILD = 'build-loaded-0001';
 const NEWER_BUILD = 'build-newer-0002';
 
@@ -724,7 +728,7 @@ describe('NavaPane screen states', () => {
     expect(panel.textContent).toContain('Find this booking in HMS');
     expect(panel.textContent).toContain('31 Oct 2026');
     expect(panel.textContent).toContain('7 Nov 2026');
-    expect(screen.getByDisplayValue('Lerato Mokoena')).toBeDefined();
+    expect(screen.getByText('Lerato Mokoena')).toBeDefined();
     await settle();
     expect(bridgeMockState.analyseCalls).toBe(0);
     expect(screen.queryByText(/Saving to HMS from this pane is off for now/)).toBeNull();
@@ -857,7 +861,7 @@ describe('NavaPane screen states', () => {
     expect(
       await screen.findByText('Wait for this email to sync, then select it again'),
     ).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Draft quotation into email reply' })).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'Draft quotation into email reply' })).toBeDefined();
     expect(screen.queryByText(/add-in is too old/)).toBeNull();
   });
 
@@ -999,6 +1003,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
 
+    openContactCorrections();
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
     expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('');
   });
@@ -1059,13 +1064,28 @@ describe('NavaPane contact and translation on both surfaces', () => {
     ['the Outlook pane', false],
     ['the webmail panel', true],
   ] as const) {
+    it(`${surface}: keeps the five quote steps in guided order`, async () => {
+      bridgeMockState.storedWork = STORED_FRENCH;
+      const { container } = render(<NavaPane bridge={fakeBridge} preview={preview} />);
+      await waitFor(() => expect(container.querySelector('#quote-quote')).not.toBeNull(), { timeout: 5000 });
+      const steps = ['quote-contact', 'quote-stay', 'quote-party', 'quote-rates', 'quote-quote'].map((id) =>
+        container.querySelector(`#${id}`),
+      );
+      expect(steps.every(Boolean)).toBe(true);
+      for (let index = 1; index < steps.length; index += 1) {
+        expect(steps[index - 1]!.compareDocumentPosition(steps[index]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+      expect(within(steps[4] as HTMLElement).getByText('Reply text · PDF · Excel')).toBeDefined();
+    });
+
     it(`${surface}: the contact block sits above the translation, which is open on Clean`, async () => {
       bridgeMockState.storedWork = STORED_FRENCH;
       const { container } = render(<NavaPane bridge={fakeBridge} preview={preview} />);
       const translation = await screen.findByRole('region', { name: 'Translation' });
       expect(screen.getByRole('tab', { name: 'Clean' }).getAttribute('aria-selected')).toBe('true');
+      openContactCorrections();
       expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('marie.dupont@example.fr');
-      const contact = screen.getByRole('region', { name: 'Contact' });
+      const contact = screen.getByRole('region', { name: 'Guest & contact' });
       const selectedEmail = container.querySelector('#quote-selected-message');
       expect(selectedEmail).not.toBeNull();
       expect(contact.compareDocumentPosition(selectedEmail!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -1075,6 +1095,8 @@ describe('NavaPane contact and translation on both surfaces', () => {
     it(surface + ': uses the external sender as a name and email fallback while the read is unavailable', async () => {
       bridgeMockState.storedWork = null;
       render(<NavaPane bridge={fakeBridge} preview={preview} />);
+      await waitFor(() => expect(screen.getByText('David Miller')).toBeDefined());
+      openContactCorrections();
       await waitFor(() => {
         expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('David Miller');
         expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('guest@example.com');
@@ -1092,6 +1114,8 @@ describe('NavaPane contact and translation on both surfaces', () => {
       } as unknown as PaneBridge;
       bridgeMockState.storedWork = null;
       render(<NavaPane bridge={forwardedBridge} preview={preview} />);
+      await waitFor(() => expect(bridgeMockState.analyseCalls).toBeGreaterThan(0));
+      openContactCorrections();
       await waitFor(() => {
         expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
         expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('');
@@ -1114,9 +1138,13 @@ describe('NavaPane contact and translation on both surfaces', () => {
       const { rerender } = render(
         <NavaPane bridge={bridgeFor('001', 'Alice Adams', 'alice@example.com')} preview={preview} />,
       );
+      await waitFor(() => expect(screen.getByText('Alice Adams')).toBeDefined());
+      openContactCorrections();
       await waitFor(() => expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Alice Adams'));
 
       rerender(<NavaPane bridge={bridgeFor('002', 'Barbara Jones', 'barbara@example.net')} preview={preview} />);
+      await waitFor(() => expect(screen.getByText('Barbara Jones')).toBeDefined());
+      openContactCorrections();
       await waitFor(() => {
         expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Barbara Jones');
         expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('barbara@example.net');
@@ -1126,6 +1154,8 @@ describe('NavaPane contact and translation on both surfaces', () => {
     it(`${surface}: an English mail shows the contact block and no translation`, async () => {
       bridgeMockState.storedWork = { ...STORED_FRENCH, language: 'en', translation: null };
       render(<NavaPane bridge={fakeBridge} preview={preview} />);
+      await waitFor(() => expect(screen.getByText('marie.dupont@example.fr')).toBeDefined());
+      openContactCorrections();
       await waitFor(() => expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('marie.dupont@example.fr'));
       expect(screen.queryByRole('region', { name: 'Translation' })).toBeNull();
     });
@@ -1133,6 +1163,8 @@ describe('NavaPane contact and translation on both surfaces', () => {
     it(`${surface}: a read whose work item could not be opened still fills the contact`, async () => {
       bridgeMockState.storedWork = { ...STORED_FRENCH, workItemId: null, workItemStatus: null };
       render(<NavaPane bridge={fakeBridge} preview={preview} />);
+      await waitFor(() => expect(screen.getByText('marie.dupont@example.fr')).toBeDefined());
+      openContactCorrections();
       await waitFor(() => expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('marie.dupont@example.fr'));
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Marie Dupont');
     });

@@ -20,7 +20,7 @@ import type { StaffQuoteParties, StaffQuoteParty } from '../../lib/quote-workflo
 import { LinkButton, Notice, SecondaryButton } from '../nava-pane/pane-ui';
 import { useHmsJob } from '../../lib/quote-workflow/use-hms-job';
 import { useEffect, useReducer, useRef, useState } from 'react';
-import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
+import { HmsAsOf, HmsJobStatusLine, HmsLookupProgress } from './hms-queue-status';
 
 export const PARTY_PICKER_HINT = 'Runs in the background. You can keep working.';
 
@@ -566,13 +566,10 @@ export function PartyPicker({
             )}
           </div>
         ) : (
-          <p role="status" className="flex items-center gap-2 text-[12.5px] text-[#0066cc]">
-            <span
-              aria-hidden
-              className="h-3 w-3 animate-spin rounded-full border-2 border-[#0066cc] border-t-transparent"
-            />
-            {`Searching HMS for "${query}"…`}
-          </p>
+          <HmsLookupProgress
+            pending
+            detail={`Searching HMS for "${query}" (${kind ? partyKindLabel(kind).toLowerCase() : 'party'})`}
+          />
         )
       ) : null}
       {jobReadBackPending ? <p role="status">Checking for a background HMS lookup…</p> : null}

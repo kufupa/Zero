@@ -74,6 +74,9 @@ export function partyNoCandidateNote(
   if (outcome === 'refused_lock_busy') return 'HMS is busy with another lookup. Nava will retry.';
   if (outcome === 'refused_flag_off') return 'Company and agency rates are switched off.';
   if (outcome === 'refused_input_invalid') return 'Type a company or agency name.';
+  if (outcome === 'external_system_unavailable') {
+    return "Nava couldn't check HMS for this name. Try again, or quote at public rates.";
+  }
   return "Couldn't reach HMS. Try again in a minute.";
 }
 

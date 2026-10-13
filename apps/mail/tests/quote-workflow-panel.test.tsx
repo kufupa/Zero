@@ -62,8 +62,8 @@ function sessionFromFixture(id: Parameters<typeof loadQuoteFixture>[0]): QuoteSe
   return session;
 }
 
-function openAdvanced() {
-  fireEvent.click(screen.getByText('Advanced'));
+function assertRatePlanVisible() {
+  expect(screen.getByLabelText('Rate plan')).toBeDefined();
 }
 
 function EditableStayPanel({ initial }: { initial: QuoteSession }) {
@@ -164,12 +164,61 @@ describe('QuoteWorkflowPanel', () => {
     expect(roomsAfterEdit[2]?.value).toBe(originalCode);
   });
 
-  it('has one Booked by block with agency and company, not a per-room organisation field', () => {
+  it('has one Company / agency step with agency and company, not a per-room organisation field', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('agency-contract')} />);
-    expect(screen.getAllByRole('heading', { name: 'Booked by' })).toHaveLength(1);
+    expect(screen.getAllByRole('heading', { name: /Company \/ agency/ })).toHaveLength(1);
     expect(screen.getByLabelText('Agency (travel agent)')).toBeTruthy();
     expect(screen.getByLabelText('Company (end client)')).toBeTruthy();
     expect(screen.queryByLabelText('Company or agency')).toBeNull();
+  });
+
+  it('presents the guided stay, party, rates and quote steps in order, with the reply action inside Quote', () => {
+    const session = { ...sessionFromFixture('mixed-same-dates'), reviewedReplyHtml: 'Reply draft' };
+    const { container } = render(
+      <QuoteWorkflowPanel
+        session={session}
+        replyContent={<button type="button">Insert into reply</button>}
+      />,
+    );
+    const steps = Array.from(container.querySelectorAll<HTMLElement>('section[id^="quote-"]'));
+    expect(steps.map((step) => step.id)).toEqual(['quote-stay', 'quote-party', 'quote-rates', 'quote-quote']);
+    expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual([
+      'Stay',
+      'Company / agency',
+      'Rates',
+      'Quote',
+    ]);
+    expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['2', '3', '4', '5']);
+    for (const step of steps) expect(within(step).getByTestId('quote-step-state')).toBeDefined();
+    expect(within(steps[1]!).getByText(/Optional if none in email/)).toBeDefined();
+    expect(within(steps[3]!).getByRole('button', { name: 'Insert into reply' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
+    expect(screen.queryByText('Coming soon')).toBeNull();
+  });
+
+  it('marks Company / agency as looking up while an HMS party search is pending', () => {
+    const session = { ...sessionFromFixture('public-single'), pendingPartyKinds: ['company' as const] };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(
+      within(screen.getByRole('region', { name: 'Company / agency' })).getByTestId('quote-step-state').textContent,
+    ).toBe('Looking up');
+  });
+
+  it('names room rows by room type and room count', () => {
+    const base = sessionFromFixture('mixed-same-dates');
+    const session = {
+      ...base,
+      groups: base.groups.map((group, index) => ({
+        ...group,
+        roomPreference: index === 0 ? 'STWN' : 'STQN',
+        roomTypeCode: index === 0 ? 'STWN' as const : 'STQN' as const,
+      })),
+    };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Standard Twin ×1')).toBeDefined();
+    expect(screen.getByText('Standard Queen ×2')).toBeDefined();
+    expect(screen.queryByText('Room 1')).toBeNull();
+    expect(screen.queryByText('Room 2')).toBeNull();
   });
 
   it('shows Find in HMS in both party fields, including an empty Company field', () => {
@@ -182,11 +231,11 @@ describe('QuoteWorkflowPanel', () => {
     expect(findCompany.disabled).toBe(true);
   });
 
-  it('keeps Book in HMS disabled with a Coming soon reason in the quote flow', () => {
+  it('does not show the unused Book in HMS action in the quote flow', () => {
     const session = { ...sessionFromFixture('mixed-same-dates'), reviewedReplyHtml: 'Reply draft' };
     render(<QuoteWorkflowPanel session={session} />);
-    expect((screen.getByRole('button', { name: 'Book in HMS' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText('Coming soon')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
+    expect(screen.queryByText('Coming soon')).toBeNull();
   });
 
   it('adds room types and explains why Search availability is disabled until all rows are matchable', () => {
@@ -201,7 +250,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(onStayAction).toHaveBeenCalledWith(expect.objectContaining({ type: 'add_row', stayId: expect.any(String) }));
     const search = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
     expect(search.disabled).toBe(true);
-    const reason = screen.getByText('Room 1 needs a room type.').closest('p');
+    const reason = screen.getByText('Choose a room type for each room before searching.').closest('p');
     expect(reason).toBeTruthy();
     expect(reason?.className).toMatch(/text-\[13px\].*text-\[#334155\]/);
     expect(reason?.previousElementSibling).toBe(search);
@@ -293,7 +342,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(toast.warning).toHaveBeenCalledWith('Search is not available in this view.');
   });
 
-  it('shows the two-minute checking state on the stay that is running', () => {
+  it('shows the non-blocking HMS lookup state on the stay that is running', () => {
     const base = sessionFromFixture('failed-run');
     const running = {
       ...base,
@@ -311,7 +360,9 @@ describe('QuoteWorkflowPanel', () => {
       phase: 'tools' as const,
     };
     render(<QuoteWorkflowPanel session={running} />);
-    expect(screen.getByRole('status').textContent).toContain('Checking HMS… about 2 min');
+    expect(screen.getByRole('status').textContent).toContain('Looking up in HMS — you can keep working');
+    expect(screen.getByRole('status').textContent).toContain('elapsed');
+    expect(screen.getByRole('status').querySelector('svg')).toBeNull();
   });
 
   it('does not sum alternatives and shows honest missing screenshots', () => {
@@ -537,20 +588,16 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.click(within(firstExtras).getByRole('checkbox', { name: 'Shuttle' }));
     expect(onPatchStayExtras).toHaveBeenCalledWith(firstStayKey, { shuttleEnabled: true });
 
-    fireEvent.click(screen.getByText('Advanced'));
-    const advanced = screen.getByText('Advanced').closest('details');
-    expect(advanced).toBeTruthy();
-    expect(within(advanced!).getByText('Rate plan')).toBeDefined();
-    expect(within(advanced!).getByText('Notes for HMS')).toBeDefined();
-    expect(within(advanced!).queryByLabelText('Shuttle amount')).toBeNull();
+    assertRatePlanVisible();
+    expect(screen.getByText('HMS notes (optional)')).toBeDefined();
   });
 
-  it('keeps an editable Notes for HMS field in Advanced', () => {
+  it('keeps an editable optional Notes for HMS field in Rates', () => {
     // The note is bound to the staff header (header.notes), so a change is handed to onPatchStaffHeader; the parent
     // stores it and passes it back. This test has no parent, so the textarea keeps its bound value.
     const onPatchStaffHeader = vi.fn();
     render(<QuoteWorkflowPanel session={sessionFromFixture('public-single')} onPatchStaffHeader={onPatchStaffHeader} />);
-    openAdvanced();
+    fireEvent.click(screen.getByText('HMS notes (optional)'));
 
     const notes = screen.getByRole('textbox', { name: 'Notes for HMS' }) as HTMLTextAreaElement;
     expect(notes.tagName).toBe('TEXTAREA');
@@ -662,7 +709,7 @@ describe('QuoteWorkflowPanel', () => {
     const firstSubtotal = screen.getAllByText('Stay subtotal')[0]!;
     const addRange = screen.getByRole('button', { name: '+ Add another date range' });
     const allStaysTotal = screen.getByRole('heading', { name: 'Quotation total (all stays)' });
-    expect(firstSubtotal.compareDocumentPosition(addRange) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(addRange.compareDocumentPosition(firstSubtotal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(addRange.compareDocumentPosition(allStaysTotal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const runB = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
     expect(runB.disabled).toBe(false);
@@ -876,7 +923,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const { unmount } = render(
       <QuoteWorkflowPanel session={session} rateCatalogue={rateCatalogue as never} />,
     );
-    openAdvanced();
+    assertRatePlanVisible();
     const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
     const values = [...planSelect.options].map((option) => option.value);
     expect(planSelect.value).toBe('all');
@@ -910,7 +957,7 @@ describe('the Find in HMS picker in the quote header', () => {
     });
     expect(governmentSession.staffHeader.salesStrategy).toBe('Government');
     render(<QuoteWorkflowPanel session={governmentSession} rateCatalogue={rateCatalogue as never} />);
-    openAdvanced();
+    assertRatePlanVisible();
     expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government');
     expect(screen.getByRole('option', { name: 'All government rates' })).toBeDefined();
   });
@@ -974,7 +1021,7 @@ describe('the Find in HMS picker in the quote header', () => {
     }
 
     render(<FilterHarness />);
-    openAdvanced();
+    assertRatePlanVisible();
     expect(screen.getByRole('button', { name: /BAR: Best Available Rate/ })).toBeDefined();
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'NCOR1B' } });
 
@@ -993,7 +1040,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const first = render(
       <QuoteWorkflowPanel session={base} rateCatalogue={rateCatalogue} onPatchStaffHeader={onPatchStaffHeader} />,
     );
-    openAdvanced();
+    assertRatePlanVisible();
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'NGOVB' } });
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
     first.unmount();
@@ -1002,7 +1049,7 @@ describe('the Find in HMS picker in the quote header', () => {
     render(
       <QuoteWorkflowPanel session={governmentSession} rateCatalogue={rateCatalogue} onPatchStaffHeader={onPatchStaffHeader} />,
     );
-    openAdvanced();
+    assertRatePlanVisible();
     expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government');
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'BAR' } });
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
@@ -1085,7 +1132,7 @@ describe('the Find in HMS picker in the quote header', () => {
       <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel', agency: 'Travel Hub' })} findParty={find} />,
     );
     await waitFor(() => expect(find).toHaveBeenCalledTimes(2), { timeout: 3000 });
-    expect(screen.getAllByRole('heading', { name: 'Booked by' })).toHaveLength(1);
+    expect(screen.getAllByRole('heading', { name: /Company \/ agency/ })).toHaveLength(1);
     expect(
       screen.getByLabelText('Agency (travel agent)').compareDocumentPosition(screen.getByLabelText('Company (end client)')) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -1099,7 +1146,7 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(screen.queryByText(/Searching HMS/)).toBeNull();
   });
 
-  it('prefills Booked by from the email once, without restoring a cleared field', async () => {
+  it('prefills Company / agency from the email once, without restoring a cleared field', async () => {
     const initial = headerSession({ company: '', agency: '' });
     const namedInEmail = {
       name: 'Asha Patel',

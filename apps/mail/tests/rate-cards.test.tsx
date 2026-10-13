@@ -222,7 +222,7 @@ describe('rate cards in the quote panel', () => {
     expect(within(card).getByText('Restricted — find a company or agency in HMS first')).toBeDefined();
   });
 
-  it('shows Set a specific price on the selected rate and saves its Authorised by note', async () => {
+  it('shows Special price on the selected rate and saves its Authorised by note', async () => {
     const onPatchGroup = vi.fn();
     render(
       <QuoteWorkflowPanel
@@ -231,11 +231,11 @@ describe('rate cards in the quote panel', () => {
       />,
     );
     expect(rateCards()).toHaveLength(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Set a specific price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Special price' }));
     fireEvent.click(screen.getByRole('button', { name: 'Discount / override' }));
     fireEvent.change(screen.getByLabelText('HMS rate code'), { target: { value: 'NCOR1B' } });
     fireEvent.change(screen.getByLabelText('Override rate per night (R)'), { target: { value: '1,250.50' } });
-    fireEvent.change(screen.getByLabelText(/Authorised by \/ why/), {
+    fireEvent.change(screen.getByLabelText(/Authorised by/), {
       target: { value: 'A. Patel approved the seasonal rate' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save override' }));
@@ -287,7 +287,7 @@ describe('rate cards in the quote panel', () => {
   it('shows a single returned rate card and its specific-price control', async () => {
     render(<QuoteWorkflowPanel session={await quotedSession([NCOR])} />);
     expect(screen.getByRole('group', { name: GROUP_LABEL })).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Set a specific price' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Special price' })).toBeDefined();
     expect(screen.getByText(/Counted in the total/)).toBeDefined();
   });
 
@@ -355,7 +355,8 @@ describe('rate cards in the quote panel', () => {
     const cards = rateCards();
     expect(cards.map((card) => card.disabled)).toEqual([true, true, true]);
     expect(cards[1]!.getAttribute('aria-pressed')).toBe('true');
-    expect(within(cards[1]!).getByText('Getting rates from HMS…')).toBeDefined();
+    expect(screen.getByText('Looking up in HMS — you can keep working').closest('[role="status"]')).not.toBeNull();
+    expect(within(cards[1]!).queryByText('Getting rates from HMS…')).toBeNull();
   });
 });
 

@@ -67,6 +67,21 @@ export function Section({
   );
 }
 
+/** Compact state shown beside each numbered quote step. */
+export function StepState({ state }: { state: 'Done' | 'Pending' | 'Optional' | 'Looking up' }) {
+  const colour =
+    state === 'Done'
+      ? 'bg-[#eaf4ee] text-[#1a4332]'
+      : state === 'Looking up'
+        ? 'bg-[#eff6ff] text-[#0066cc]'
+        : 'bg-[#f1f5f9] text-[#64748b]';
+  return (
+    <span data-testid="quote-step-state" className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${colour}`}>
+      {state}
+    </span>
+  );
+}
+
 /** "from email": marks a value Nava read from the email, so staff know to check it. */
 export function FromEmailTag() {
   return (
