@@ -173,6 +173,29 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.user).toContain('rooming.pdf');
   });
 
+  it('gives quote and availability requests precedence over booking language', () => {
+    const prompt = buildQuoteWorkflowPrompt(selection);
+    expect(prompt.system).toContain(
+      'Quote/quotation, price, rate or availability asks stay workflow=quote despite book/reserve.',
+    );
+    expect(prompt.system).toContain(
+      [
+        'Create requires explicit make/confirm and no quote/quotation, price, rate or',
+        'availability ask.',
+      ].join(' '),
+    );
+    expect(prompt.system).toContain('"Quote then book if OK" stays workflow=quote.');
+    expect(prompt.system).toContain(
+      [
+        'Use workflow=create_booking only for explicit make/confirm asks without a quote, price,',
+        'rate or availability ask.',
+      ].join(' '),
+    );
+    expect(prompt.system).not.toContain(
+      '"Quote then book if OK" becomes quote then create_booking.',
+    );
+  });
+
   it('adds a staff treat-as-quote override to the prompt', () => {
     const prompt = buildQuoteWorkflowPrompt(selection, { treatAs: 'quote' });
     expect(prompt.system).toMatch(/staff override/i);

@@ -48,6 +48,8 @@ const VIEWER_SOURCES = [
 const ACCESSOR_NAMESPACES = ['workItems', 'rates', 'paneStayLookup', 'paneStayCancel', 'hmsApproval'];
 /** Queries that write a row when they run. The runner blocks them as writes, so they are named with the writes. */
 const WRITING_QUERIES = new Set<string>();
+/** Mutation-shaped RPCs that only read stored data and return an unsaved draft. */
+const READ_ONLY_MUTATIONS = new Set(['workstation.usePriorQuoteForBooking']);
 
 const procedureTypes = new Map<string, string>(
   Object.entries(appRouter._def.procedures as Record<string, { _def: { type: string } }>).map(
@@ -86,10 +88,25 @@ const referenced = referencedProcedures();
 const classified = [...READ_PROCEDURES, ...ANALYSIS_PROCEDURES, ...KNOWN_WRITE_PROCEDURES];
 
 describe('viewer tRPC classification', () => {
-  it('every read is a query on the server router', () => {
+  it('every read is a query except the documented read-only mutation', () => {
     for (const name of READ_PROCEDURES) {
-      expect(procedureTypes.get(name), name).toBe('query');
+      expect(procedureTypes.get(name), name).toBe(
+        READ_ONLY_MUTATIONS.has(name) ? 'mutation' : 'query',
+      );
     }
+  });
+
+  it('keeps quote inspection endpoints classified as reads, not writes', () => {
+    for (const name of [
+      'workstation.listThreadQuoteRevisions',
+      'workstation.getPriorStaffQuoteRequote',
+      'workstation.usePriorQuoteForBooking',
+    ]) {
+      expect(READ_PROCEDURES.has(name), name).toBe(true);
+      expect(KNOWN_WRITE_PROCEDURES.has(name), name).toBe(false);
+      expect(procedureTypes.has(name), name).toBe(true);
+    }
+    expect(procedureTypes.get('workstation.usePriorQuoteForBooking')).toBe('mutation');
   });
 
   it('the analysis is the only allowed mutation, and it is a mutation on the router', () => {

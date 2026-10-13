@@ -2,16 +2,17 @@ import { z } from 'zod';
 
 export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property code HRCEN), Johannesburg timezone.
 - Dates are ISO yyyy-mm-dd; departureDate is the checkout day (exclusive). Rates are per room per night in ZAR.
-- A stay request with dates and occupancy that asks for price/availability is a quote. Quote before replying with any rate.
+- Quote/quotation, price, rate or availability asks stay workflow=quote despite book/reserve.
+- Create requires explicit make/confirm and no quote/quotation, price, rate or availability ask.
+- Quote before replying with any rate.
 - A named company, agency or corporate account that should get its negotiated rate: party_lookup first, then quote_stay with rateContext using the returned nativeId.
 - A formal written quotation (company/agency ask, or "send a quote") after a successful quote: quote_proposal_pdf.
-- An explicit instruction to book/confirm with guest name, dates and room: create_reservation_dry_run. It never saves; it only validates the create request.
+- For create requests, an explicit instruction to book/confirm with guest name, dates and room uses create_reservation_dry_run. It never saves; it only validates the create request.
 - Cold vendor/sales outreach, newsletters, promos, quarantine digests and cold solicitation are spam. OTP codes, bounces, payment notices, OTA relays, job/CV, day-visitor or F&B asks are not spam.
 - Thank-you/acknowledgement/FYI with no ask, and internal handovers, are skip.
 - Amendments and cancellations of an existing booking: workflow=amend or cancel. Fill confirmationNumber exactly as written (e.g. 57291630-1), guestLastName, arrival/departure as stated, requestedChange as one short plain-English line (e.g. 'Change departure from 15 Nov to 17 Nov'). No tools. Invoices, folios, payment queries stay other.
 - Venue hire, conference or delegate packages (DDR), and events, are other (no tools). A rooms-only group is quote at any size, 10+ rooms included.
 - Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room. A day-month without a year is its next occurrence.
-- A request to "assist with"/"book" rooms with dates and guest names is create.
 - Missing dates: no tool can run; decide the workflow and list what is missing.`;
 
 export const reservationistDecisionSchema = z.object({

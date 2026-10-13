@@ -6,6 +6,7 @@ import {
   configFailures,
   gateFailures,
   isPiiField,
+  KNOWN_WRITE_PROCEDURES,
   MARK_PII_JS,
   outcomeOf,
   PANE_BODY_SELECTOR,
@@ -252,6 +253,18 @@ describe('blocked requests: pane failure or configuration error', () => {
   it('reads the app shell asks for are allowed, so they never reach the block list', () => {
     for (const name of ['settings.get', 'labels.list', 'categories.list']) {
       expect(READ_PROCEDURES.has(name), name).toBe(true);
+      expect(classifyTrpcRequest(`${origin}${name}?batch=1`).allowed, name).toBe(true);
+    }
+  });
+
+  it('allows quote inspection as reads, including the mutation-shaped draft builder', () => {
+    for (const name of [
+      'workstation.listThreadQuoteRevisions',
+      'workstation.getPriorStaffQuoteRequote',
+      'workstation.usePriorQuoteForBooking',
+    ]) {
+      expect(READ_PROCEDURES.has(name), name).toBe(true);
+      expect(KNOWN_WRITE_PROCEDURES.has(name), name).toBe(false);
       expect(classifyTrpcRequest(`${origin}${name}?batch=1`).allowed, name).toBe(true);
     }
   });
