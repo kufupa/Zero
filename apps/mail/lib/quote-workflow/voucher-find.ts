@@ -63,6 +63,8 @@ export const VOUCHER_COPY = {
   conflictArrivals: 'More than one arrival date is on this voucher. Nava did not pick one:',
   waitingForSync: 'Waiting for this email to sync. Nava checks it again when the sync lands.',
   search: 'Find the booking in HMS',
+  readDetails: 'Read booking details in HMS',
+  readingDetails: 'Nava is reading booking details from HMS…',
   matchedBooking: 'Matched booking',
   searching: 'Nava is searching HMS by guest name… (about 1 minute)',
   pickRow: 'Open a booking in HMS with the buttons beside it.',

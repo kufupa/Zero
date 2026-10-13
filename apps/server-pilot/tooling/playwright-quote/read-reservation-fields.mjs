@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Read-only Guest Stay field reader: OSRESS.search + OSRESV.HDR via context.request.
+// Read-only Guest Stay field reader: OSRESS.search + OSRESV.HDR via fetch in the logged-in browser page.
 // Only allowlisted read endpoints are ever requested. Never saves, cancels or opens write flows.
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';

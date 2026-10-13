@@ -44,6 +44,23 @@ export type PaneStayFields = {
   organization: string | null;
 };
 
+export type PaneStayPartyIdentity = { name?: string; nativeId?: string };
+
+/** Optional commercial facts read from the same opened Guest Stay record. */
+export type PaneStayCommercial = {
+  company?: PaneStayPartyIdentity;
+  agency?: PaneStayPartyIdentity;
+  ratePlan?: string;
+  mealPlan?: string;
+  roomType?: string;
+  marketSegment?: string;
+  sourceOfBusiness?: string;
+  averageRate?: string;
+  status?: string;
+  arrival?: string;
+  departure?: string;
+};
+
 /** One quick-search dropdown row. Dates are ISO; departure is null when the row shows none. */
 export type PaneStayPanelRow = {
   confirmation: string;
@@ -67,6 +84,7 @@ export type PaneStayFindResult = {
     | 'refused_lock_busy';
   reason: string | null;
   stay: PaneStayFields | null;
+  commercial?: PaneStayCommercial;
   /** The arrival is a hint: a different HMS arrival is reported with both dates, never refused. */
   arrivalMismatch: boolean;
   requestedArrival: string | null;
@@ -106,6 +124,7 @@ export type PaneStayLookupSpawnResult = {
   outcome: string;
   reason: string | null;
   stay: PaneStayFields | null;
+  commercial?: PaneStayCommercial | null;
   rows: PaneStayPanelRow[];
   arrivalMismatch?: boolean;
   requestedArrival?: string | null;
@@ -226,6 +245,35 @@ function toPaneStayFields(raw: Partial<PaneStayFields> | null | undefined): Pane
   };
 }
 
+// A parser/runner can only contribute allowlisted non-empty commercial fields. A malformed optional object is ignored.
+function toPaneStayCommercial(raw: unknown): PaneStayCommercial | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const source = raw as Record<string, unknown>;
+  const text = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+  const party = (value: unknown): PaneStayPartyIdentity | undefined => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const candidate = value as Record<string, unknown>;
+    const name = text(candidate.name);
+    const nativeId = text(candidate.nativeId);
+    if (!name && !nativeId) return undefined;
+    return { ...(name ? { name } : {}), ...(nativeId ? { nativeId } : {}) };
+  };
+  const commercial: PaneStayCommercial = {};
+  const company = party(source.company);
+  const agency = party(source.agency);
+  if (company) commercial.company = company;
+  if (agency) commercial.agency = agency;
+  for (const field of [
+    'ratePlan', 'mealPlan', 'roomType', 'marketSegment', 'sourceOfBusiness', 'averageRate',
+    'status', 'arrival', 'departure',
+  ] as const) {
+    const value = text(source[field]);
+    if (value) commercial[field] = value;
+  }
+  return Object.keys(commercial).length > 0 ? commercial : undefined;
+}
+
 async function defaultSpawn(input: PaneStayLookupSpawnInput): Promise<PaneStayLookupSpawnResult> {
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-lookup-${runId}`);
@@ -255,6 +303,7 @@ async function defaultSpawn(input: PaneStayLookupSpawnInput): Promise<PaneStayLo
     outcome: result.outcome ?? 'execution_failure',
     reason: result.reason ?? null,
     stay: result.stay ?? null,
+    ...(result.commercial ? { commercial: result.commercial } : {}),
     rows: result.rows ?? [],
     arrivalMismatch: result.arrivalMismatch,
     requestedArrival: result.requestedArrival,
@@ -289,10 +338,12 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
   if (run.runId && run.runDir) deps.onRun?.({ runId: run.runId, dir: run.runDir });
   const outcome = toFindOutcome(run.outcome);
   const stay = outcome === 'found' ? toPaneStayFields(run.stay) : null;
+  const commercial = outcome === 'found' ? toPaneStayCommercial(run.commercial) : undefined;
   return {
     outcome,
     reason: run.reason,
     stay,
+    ...(commercial ? { commercial } : {}),
     arrivalMismatch: run.arrivalMismatch === true,
     requestedArrival: run.requestedArrival ?? input.arrival ?? null,
     hmsArrival: run.hmsArrival ?? stay?.arrival ?? null,
