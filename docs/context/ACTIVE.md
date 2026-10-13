@@ -5,13 +5,12 @@ Auto-loaded via `CLAUDE.md`. Keep under 120 lines. Update at the end of every wo
 ## Product in one paragraph
 Nava is an AI reservationist for Legacy Hotels' Centurion property. Staff work in classic Outlook. The VSTO add-in (`kufupa/nava-outlook-addin`) hosts a WebView2 side pane served from our EC2 (`apps/mail` route `/outlook-pane`). The pane analyses the selected email (Luna = the model, never shown to staff; staff-facing name is "Nava"). It pre-fills fields and runs deterministic Infor HMS tools through Playwright (`apps/server-pilot/tooling/playwright-quote/`): quote, PDF, party lookup, stay lookup, create (flagged), cancel (lab only). Human in the loop on every write.
 
-## Current focus (2026-10-09, pilot call today)
-- Pilot call today, 2026-10-09 (she starts ~07:45 UTC). Teaching guide: `docs/pilot/2026-10-09-teaching-script.md`. Install and checklist: `docs/pilot/2026-10-08-install-and-onboarding.md`.
-- Pilot user: one Centurion reservationist, installing add-in 1.0.17 (SHA verified on EC2 downloads). Pilot day 1 (10-08) failed: her pane never loaded the fixed bundle (last load 12:56 UTC, fix deployed 13:22).
-- Live on EC2 (run ledger): rateshop reads (03:07 UTC), Labtest create saved and cancelled (03:14), party lookups 360, Woolworths and Tourvest (04:35, fix build). Not proven yet: two full quotes with PDF and Excel (V3), and a clean viewer gate run (V1).
-- Owner flags: `RESERVATIONIST_PANE_SAVE` unset (off; `lab` or `on` is the owner's call). `HITL_LEDGER` off, migration 0046 applied, can go `on`. `QUOTE_TRACE_ASYNC` stays off until V3 passes.
-- Contract rates live (#79 + #93: Woolworths → NCOR2B R1,360). D7 (08:46): one-click party button (#96, listed Woolworths #49, Tourvest #206, 360 #113, plus the HMS index once it exists), booking card pre-fills org/agency and room type dropdown (#97). Sweep runs idle-gated on EC2 (`/home/ubuntu/party-sweep.log`). Still open: Nava picking from the index, pane PDF/Excel live proof, proving bind for "Woolworths Holdings". Handoff: `docs/plans/handoff-reports/2026-10-09-overnight-v8.md`.
-- Overnight plan: `docs/plans/2026-10-08-007-feat-overnight-v8-nava-pane-plan.md`. Earlier run ledger: `docs/context/ledger/2026-10-08-overnight.md`. Tonight's run ledger is outside the repo (not committed): `.superpowers/sdd/v8-progress.md` in the centurion-dashboard-tools worktree.
+## Current focus (2026-10-13 evening run)
+- **Read first:** `docs/research/2026-10-13/README.md` (research library: mail mix, quote gold, party truth, architecture map, UI asks, SOTA). Do not redo that research; refresh the corpus snapshot instead.
+- **Run file:** `.worktrees/RUN-2026-10-13.md` (outside repo) — lanes, owner decisions, status log.
+- Goal: quote pilot staff can use. Party match v2 (#207, flag `PARTY_MATCH_V2`), find captures company/agency/rate plan (#208), dinner add-on + alternatives, one Luna-max action classifier (needs action + action), pane clarity (R5 IA), nava-admin workflow folders as owner review console.
+- "Done" = score on real past mail (answer key from read-only HMS find-batch), not merged/deployed.
+- Owner rules 2026-10-13: never Nova Lite (Luna max); scanned PDFs/images to Luna vision with card digits masked; OTA/channel mail skipped at the door (#206); travel-agent mail stays in scope.
 
 ## Non-negotiable rules
 - Never ask client staff to run scripts, PowerShell or terminals. Fix it in the product.
@@ -28,7 +27,7 @@ Nava is an AI reservationist for Legacy Hotels' Centurion property. Staff work i
 
 ## Models
 - Opus drives: briefs, merges, deploys, live HMS steps, user-facing claims, review of write paths, migrations and auth.
-- Haiku 5.5 (effort max) implements from file:line briefs in separate worktrees, and a second Haiku reviews each PR.
+- GPT-6 Luna max implements in separate worktrees (codex exec); Haiku 5.5 max or Opus reviews critical hunks; Greptile on every PR.
 
 ## Where things are
 | Thing | Path |
