@@ -43,7 +43,7 @@ const PARTY_SEARCH_START_GRACE_MS = 5_000;
 const STEP_MS = 30_000;
 const RATE_POLL_MS = 250;
 const PARTY_SEARCH_LIMIT = 2;
-const FIELD_EDIT_LIMIT = 2;
+const FIELD_EDIT_LIMIT = 4;
 const MESSAGE_LIMIT = 220;
 
 /** Page targets use accessible names; structural locators only scope a semantic rate card or labelled field. */
@@ -307,6 +307,8 @@ export type QuoteProofThread = {
   party: QuoteParty;
   rates: { outcome: string | null; seconds: number | null; cards: number };
   docs: { pdfBytes: number | null; xlsxBytes: number | null };
+  /** Values the driver set with NAVA_PROOF_ALLOW_EDITS=1, as staff would ("stay1.room1.type=STWN (suggested)"). */
+  edits: string[];
   blocker: string | null;
 };
 type QuoteProofScore = Pick<QuoteProofThread, 'rates' | 'blocker'>;
@@ -472,6 +474,7 @@ function emptyThread(threadId: string): QuoteProofThread {
     party: emptyParty(),
     rates: { outcome: null, seconds: null, cards: 0 },
     docs: { pdfBytes: null, xlsxBytes: null },
+    edits: [],
     blocker: null,
   };
 }
@@ -640,6 +643,60 @@ export function requiredQuoteEdits(prefilled: QuotePrefilled): string[] {
   });
   if (!prefilled.stays.length) missing.push('stays');
   return missing;
+}
+
+export type RoomTypeChoice = { value: string; how: 'suggested' | 'first_listed' };
+
+/**
+ * The room type staff would pick for a row the email left open: the pane's first suggestion for what the email asked
+ * ("Single" → Standard Twin), else, when the email names no type, the first listed HMS type. Null when neither exists.
+ */
+export function chooseRoomType(
+  asked: boolean,
+  suggestions: readonly string[],
+  options: readonly { value: string; label: string }[],
+): RoomTypeChoice | null {
+  if (suggestions[0]) return { value: suggestions[0], how: 'suggested' };
+  if (asked) return null;
+  const first = options.find((option) => /\([A-Z]{2,8}\)$/.test(option.label) && option.value);
+  return first ? { value: first.value, how: 'first_listed' } : null;
+}
+
+/** With NAVA_PROOF_ALLOW_EDITS=1, sets each open room type the way staff would and names every value it set. */
+async function fillOpenRoomTypes(page: Page, prefilled: QuotePrefilled): Promise<string[]> {
+  const edits: string[] = [];
+  const stays = page.getByRole('region', { name: QUOTE_SELECTORS.stayRegion }).getByRole('article', {
+    name: QUOTE_SELECTORS.stayArticle,
+  });
+  for (const stay of prefilled.stays) {
+    for (const room of stay.rooms) {
+      const asked = Boolean(room.type && /^Email request/i.test(room.type));
+      if (room.type && !asked) continue;
+      const row = stays
+        .nth(stay.stay - 1)
+        .getByRole('table', { name: QUOTE_SELECTORS.roomTable, exact: true })
+        .getByRole('row', { name: QUOTE_SELECTORS.roomRow })
+        .nth(room.room - 1);
+      const select = row.getByRole('combobox', { name: QUOTE_SELECTORS.roomType, exact: true });
+      const options = await select
+        .locator('option')
+        .evaluateAll((nodes) =>
+          nodes.map((node) => ({ value: (node as HTMLOptionElement).value, label: (node.textContent ?? '').trim() })),
+        );
+      const chips = row.getByRole('group', { name: 'Room type suggestions', exact: true }).getByRole('button');
+      const suggestions: string[] = [];
+      for (let index = 0; index < (await chips.count()); index += 1) {
+        const label = (await chips.nth(index).innerText()).trim();
+        const option = options.find((item) => item.label.replace(/\s+\([A-Z]+\)$/, '') === label);
+        if (option) suggestions.push(option.value);
+      }
+      const choice = chooseRoomType(asked, suggestions, options);
+      if (!choice) continue;
+      await select.selectOption(choice.value);
+      edits.push(`stay${stay.stay}.room${room.room}.type=${choice.value} (${choice.how})`);
+    }
+  }
+  return edits;
 }
 
 type PartyKind = 'company' | 'agency';
@@ -1377,6 +1434,10 @@ async function proveThread(
   }
 
   proof.prefilled = await readPrefilled(page);
+  if (config.allowEdits) {
+    proof.edits = await fillOpenRoomTypes(page, proof.prefilled);
+    if (proof.edits.length) proof.prefilled = await readPrefilled(page);
+  }
   if (!guard.expectedRateKeys.size) guard.expectedRateKeys = rateKeysForDateRanges(proof.prefilled.stays);
   const missing = requiredQuoteEdits(proof.prefilled);
   if (missing.length) {

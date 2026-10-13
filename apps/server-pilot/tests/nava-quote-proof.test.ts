@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Blocker } from '../scripts/nava-ae4-override-proof';
 import {
+  chooseRoomType,
   classifyQuoteRequest,
   choosePartyCandidate,
   liveHmsCandidateFromText,
@@ -66,6 +67,7 @@ describe('quote proof scoring', () => {
       },
       rates: { outcome: 'priced', seconds: 42, cards: 2 },
       docs: { pdfBytes: null, xlsxBytes: null },
+      edits: [],
       blocker: null,
     };
 
@@ -396,8 +398,30 @@ describe('quote proof request guard', () => {
     expect(classifyQuoteRequest(procedure, null, disabled).allowed).toBe(false);
 
     const enabled = newQuoteGuardState([], true);
-    expect(classifyQuoteRequest(procedure, null, enabled).allowed).toBe(true);
-    expect(classifyQuoteRequest(procedure, null, enabled).allowed).toBe(true);
+    for (let edit = 0; edit < 4; edit += 1) {
+      expect(classifyQuoteRequest(procedure, null, enabled).allowed).toBe(true);
+    }
     expect(classifyQuoteRequest(procedure, null, enabled).allowed).toBe(false);
+  });
+
+  describe('chooseRoomType', () => {
+    const options = [
+      { value: '', label: 'Choose room type' },
+      { value: 'Single', label: 'Email request' },
+      { value: 'STWN', label: 'Standard Twin (STWN)' },
+      { value: 'STQN', label: 'Standard Queen (STQN)' },
+    ];
+
+    it("takes the pane's first suggestion for what the email asked", () => {
+      expect(chooseRoomType(true, ['STQN', 'STWN'], options)).toEqual({ value: 'STQN', how: 'suggested' });
+    });
+
+    it('leaves an asked type with no suggestion open rather than guess', () => {
+      expect(chooseRoomType(true, [], options)).toBeNull();
+    });
+
+    it('takes the first listed HMS type when the email names none', () => {
+      expect(chooseRoomType(false, [], options)).toEqual({ value: 'STWN', how: 'first_listed' });
+    });
   });
 });
