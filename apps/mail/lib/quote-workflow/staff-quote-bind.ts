@@ -301,6 +301,8 @@ export const EXPIRED_STAFF_QUOTE_COPY = 'This quote has expired. Run the quote a
 /** workstation.qualifiedQuoteProposalPdf messages for a quote run that is unrecorded or expired. */
 const EXPIRED_STAFF_QUOTE_SERVER_MESSAGES = new Set([
   'Proposal source not found',
+  // HMS rates back a PDF for 15 minutes; after that the server refuses the evidence as not ready.
+  'Proposal evidence is not ready',
   'Proposal evidence expired during conversion',
 ]);
 
