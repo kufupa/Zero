@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import * as cheerio from 'cheerio';
 import { snapshotPanel, snapshotRecordForm } from './stay-lookup-dom.mjs';
+import { parseCommercialFields, snapshotCommercialFields } from './commercial-fields.mjs';
 import {
   formPairsFromSnapshot, parseDateWindowLabel, parsePanelSnapshot, parseQuickSearchRow, parseRecordsFooter, searchGuestOutcome,
   stayFromFormPairs,
@@ -106,7 +107,11 @@ class Elem {
   }
 
   get value() {
-    return this.node.name === 'textarea' ? textOf(this.node) : (this.node.attribs.value ?? '');
+    if (this.node.name === 'textarea') return textOf(this.node);
+    if (this.node.name !== 'select') return this.node.attribs.value ?? '';
+    const selected = this.querySelector('option:checked') ?? this.querySelector('option[selected]')
+      ?? this.querySelector('option');
+    return selected?.getAttribute('value') ?? selected?.textContent ?? '';
   }
 
   get children() {
@@ -191,6 +196,10 @@ function domFromHtml(html) {
 
 async function fixture(name) {
   return readFile(new URL(`./fixtures/stay-lookup/${name}`, import.meta.url), 'utf8');
+}
+
+async function commercialFixture(name) {
+  return readFile(new URL(`./fixtures/commercial/${name}`, import.meta.url), 'utf8');
 }
 
 function stayFromHtml(html) {
@@ -408,6 +417,58 @@ test('live record form capture: every reported field pairs with its label', asyn
     firstName: 'Proof',
     arrival: '2027-10-12',
     departure: '2027-10-13',
+  });
+});
+
+test('commercial field snapshot reads selected control names, display text and native ids from an opened record', async () => {
+  const html = await commercialFixture('record-form.html');
+  assert.deepEqual(snapshotCommercialFields(domFromHtml(html)), {
+    status: { value: 'Reserved', text: 'Reserved', kind: 'input' },
+    arrivaldate: { value: '14-SEP-2027', text: '14-SEP-2027', kind: 'input' },
+    departuredate: { value: '16-SEP-2027', text: '16-SEP-2027', kind: 'input' },
+    roomtype: { value: 'STQN', text: 'STQN', kind: 'input' },
+    rateplan: { value: 'CORP10', text: 'Corporate Saver', kind: 'select' },
+    mealplan: { value: 'BB', text: 'Bed and Breakfast', kind: 'select' },
+    averagerate: { value: '1250.00', text: '1250.00', kind: 'input' },
+    track: { value: 'BUS', text: 'Business', kind: 'select' },
+    guaranteetype: { value: 'GTD', text: 'Guaranteed', kind: 'select' },
+    sourceofbusiness: { value: 'TA', text: 'TA', kind: 'input' },
+    sourceofbusinessdesc: { value: 'Travel Agency', text: 'Travel Agency', kind: 'input' },
+    marketsegment: { value: 'CORP', text: 'Corporate', kind: 'select' },
+    company: { value: 'COMP-42', text: 'Northstar Conference Group', kind: 'select' },
+    companyname: { value: 'Northstar Conference Group', text: 'Northstar Conference Group', kind: 'input' },
+    araccountname: { value: 'Northstar Accounts', text: 'Northstar Accounts', kind: 'input' },
+    bookingagency: { value: 'AG-9', text: 'Harbor Travel', kind: 'select' },
+    ta1: { value: 'AG-9', text: 'Harbor Travel', kind: 'select' },
+    bookingagencyname: { value: 'Harbor Travel', text: 'Harbor Travel', kind: 'input' },
+  });
+});
+
+test('commercial parser joins named HMS controls with the opened stay and keeps native party ids', async () => {
+  const fields = JSON.parse(await commercialFixture('commercial-controls.json'));
+  assert.deepEqual(parseCommercialFields(fields, {}), {
+    company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
+    agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+    ratePlan: 'Corporate Saver',
+    mealPlan: 'Bed and Breakfast',
+    roomType: 'STQN',
+    marketSegment: 'Corporate',
+    sourceOfBusiness: 'Travel Agency',
+    averageRate: '1250.00',
+    status: 'Reserved',
+    arrival: '2027-09-14',
+    departure: '2027-09-16',
+  });
+});
+
+test('commercial parsing tolerates missing fields and returns no empty object', () => {
+  assert.equal(parseCommercialFields({}, {}), null);
+  assert.deepEqual(parseCommercialFields({}, {
+    ratePlan: 'BAR', mealPlan: null, roomType: 'DLX', averageRate: '900.00', status: 'Checked Out',
+    arrival: '2020-01-01', departure: '2020-01-02', sourceOfBusiness: null,
+  }), {
+    ratePlan: 'BAR', roomType: 'DLX', averageRate: '900.00', status: 'Checked Out',
+    arrival: '2020-01-01', departure: '2020-01-02',
   });
 });
 

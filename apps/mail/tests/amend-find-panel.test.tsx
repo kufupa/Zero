@@ -669,6 +669,23 @@ describe('AmendLookupPanel', () => {
     expect(screen.getByText('R1 360,00')).toBeTruthy();
   });
 
+  it('shows the commercial company and booking agency when HMS provides them', async () => {
+    const findStay = vi.fn().mockResolvedValue({
+      ...found(),
+      commercial: {
+        company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
+        agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+      },
+    });
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    await pressFind();
+    await expectFoundBooking();
+    expect(screen.getByText('Company')).toBeTruthy();
+    expect(screen.getByText('Northstar Conference Group')).toBeTruthy();
+    expect(screen.getByText('Booking agency')).toBeTruthy();
+    expect(screen.getByText('Harbor Travel')).toBeTruthy();
+  });
+
   it('hides rate plan, meal plan and grand total when HMS does not show them', async () => {
     const findStay = vi.fn().mockResolvedValue(found({ ratePlan: null, mealPlan: null, grandTotal: null }));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);

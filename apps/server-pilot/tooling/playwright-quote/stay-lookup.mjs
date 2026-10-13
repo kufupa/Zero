@@ -22,7 +22,9 @@ import {
   findStay, openGuestStay, openRecord, quickActions, quickPanel, readStayFields, readWindow, setQuickWindow, shot,
 } from './cancel-stay.mjs';
 import { driveQuickSearch, windowAction } from './quick-search.mjs';
-import { snapshotPanel } from './stay-lookup-dom.mjs';
+import { snapshotPanel, snapshotRecordForm } from './stay-lookup-dom.mjs';
+import { commercialFieldsFromFormEntries, parseCommercialFields } from './commercial-fields.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 
 const QUICK_WAIT_MS = 8000;
 const PANEL_FOOTER = /Records:\s*\d+\s+of\s+\d+/i;
@@ -43,6 +45,7 @@ function newLookupResult(args) {
     requestedArrival: args.arrival ?? null,
     hmsArrival: null,
     stay: null,
+    commercial: null,
     conflicts: [],
     records: null,
     rows: [],
@@ -88,18 +91,18 @@ async function dumpPanelHtml(ctx, panel) {
   if (html) await writeFile(join(ctx.dir, 'panel.html'), html);
 }
 
-async function runFind(ctx) {
+// Reads one confirmation from the already-open Guest Stay screen. Batch callers reuse this after one login; the normal
+// CLI also calls it after navigating to Guest Stay. Commercial capture is isolated so an optional control cannot turn
+// a successful reservation find into a failed lookup.
+export async function findOnOpenGuestStay(ctx, { captureScreenshots = true } = {}) {
+  ctx.result = newLookupResult(ctx.args);
   const { page, args, result } = ctx;
-  await login(page, ctx.secret);
-  mark(ctx, 'login');
-  await openGuestStay(page);
-  await page.waitForTimeout(1500);
   const found = await findStay(ctx);
   mark(ctx, 'search');
   if (!found) {
-    await shot(ctx, 'panel.png').catch(() => {});
+    if (captureScreenshots) await shot(ctx, 'panel.png').catch(() => {});
     setOutcome(result, 'not_found');
-    return;
+    return result;
   }
   result.findMethod = found.method;
   if (found.row) {
@@ -109,19 +112,35 @@ async function runFind(ctx) {
       arrival: hmsDateToIso(found.row.arrival),
     });
     if (rowVerdict.outcome !== 'found') {
-      await shot(ctx, 'panel.png').catch(() => {});
+      if (captureScreenshots) await shot(ctx, 'panel.png').catch(() => {});
       setOutcome(result, rowVerdict.outcome, rowVerdict.reason);
-      return;
+      return result;
     }
   }
   if (found.locator) await openRecord(page, found.locator);
   result.stay = await readStayFields(ctx);
-  await shot(ctx, 'record.png');
+  try {
+    // The live ExtJS record exposes named fields through the same form snapshot readStayFields uses.
+    const form = await page.evaluate(snapshotRecordForm, false);
+    result.commercial = parseCommercialFields(commercialFieldsFromFormEntries(form.entries), result.stay);
+  } catch {
+    result.commercial = null;
+  }
+  if (captureScreenshots) await shot(ctx, 'record.png');
   mark(ctx, 'opened');
   const verdict = stayIdentityVerdict(args, result.stay);
   setOutcome(result, verdict.outcome, verdict.reason);
   // The arrival is a hint: a different arrival in HMS is reported with both dates, never treated as a mismatch to refuse.
   Object.assign(result, arrivalReport(args, result.stay?.arrival ?? null));
+  return result;
+}
+
+async function runFind(ctx) {
+  await login(ctx.page, ctx.secret);
+  mark(ctx, 'login');
+  await openGuestStay(ctx.page);
+  await ctx.page.waitForTimeout(1500);
+  await findOnOpenGuestStay(ctx);
 }
 
 async function runSearchGuest(ctx) {
@@ -182,6 +201,7 @@ async function drive(ctx) {
     ctx.secret = await readSecret();
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
+    await installReadOnlyGuard(context);
     ctx.page = await context.newPage();
     ctx.page.setDefaultTimeout(20000);
     if (ctx.args.mode === 'find') await runFind(ctx);

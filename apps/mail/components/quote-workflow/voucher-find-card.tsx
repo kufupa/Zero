@@ -4,12 +4,16 @@ import {
   AMEND_FIND_COPY,
   amendFindClientFromTrpc,
   formatStayDate,
+  findRunFromJob,
   hmsJobTransport,
   noSearchMatchCopy,
   searchRequestFor,
   searchRunFromJob,
+  stayText,
+  type HmsFindRun,
   type GuestSearchRow,
   type HmsSearchRun,
+  type HmsJobView,
 } from '@/lib/quote-workflow/amend-find';
 import {
   canSearchVoucher,
@@ -60,6 +64,8 @@ export function VoucherFindCard({
   const jobClient = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
   const [save, setSave] = useState<SaveStatus>('idle');
+  const [detailsRequested, setDetailsRequested] = useState(false);
+  const detailsStartedFor = useRef<string | null>(null);
   const mounted = useRef(false);
   const [checkRound, setCheckRound] = useState(0);
   // The sync's committed count as of the last commit this card has seen.
@@ -88,6 +94,62 @@ export function VoucherFindCard({
     autoStartIfMissing: canSearch,
     targetId: 'quote-voucher-find',
   });
+  const searchRun: HmsSearchRun | null = searchRunFromJob(searchJob.view, searchJob.queueFailed);
+  const voucherGuest = reply?.status === 'voucher' ? reply.guest : null;
+  const singleMatch =
+    searchRun?.kind === 'rows' &&
+    searchRun.rows.length === 1 &&
+    voucherGuest?.lastName !== null &&
+    voucherGuest?.lastName !== undefined &&
+    normalizedSurname(searchRun.rows[0]!.lastName) === normalizedSurname(voucherGuest.lastName)
+      ? searchRun.rows[0]!
+      : null;
+  const detailRequest = singleMatch
+    ? {
+        kind: 'find' as const,
+        confirmation: singleMatch.confirmation,
+        ...(singleMatch.arrival ? { arrival: singleMatch.arrival } : {}),
+      }
+    : null;
+  const detailRequestKey = detailRequest
+    ? [internetMessageId ?? '', detailRequest.confirmation, detailRequest.arrival ?? ''].join('\u0000')
+    : null;
+  const detailsJob = useHmsJob({
+    transport,
+    resume: detailsRequested ? detailRequest : null,
+    scope: internetMessageId,
+    targetId: 'quote-voucher-find',
+  });
+  const detailsRun: HmsFindRun | null = findRunFromJob(detailsJob.view, detailsJob.queueFailed);
+  const retryableDetails =
+    detailsRequested && detailsJob.view?.status === 'done' && detailsRun !== null && detailsRun.kind !== 'found';
+  const showReadDetails = singleMatch !== null && (!detailsRequested || retryableDetails);
+
+  useEffect(() => {
+    if (
+      !detailsRequested ||
+      !detailRequest ||
+      !detailRequestKey ||
+      !detailsJob.readBackSettled ||
+      detailsJob.view ||
+      detailsJob.queuing ||
+      detailsJob.queueFailed ||
+      detailsJob.statusFailed ||
+      detailsStartedFor.current === detailRequestKey
+    ) return;
+    detailsStartedFor.current = detailRequestKey;
+    detailsJob.start(detailRequest);
+  }, [
+    detailsRequested,
+    detailRequest,
+    detailRequestKey,
+    detailsJob.readBackSettled,
+    detailsJob.view,
+    detailsJob.queuing,
+    detailsJob.queueFailed,
+    detailsJob.statusFailed,
+    detailsJob.start,
+  ]);
 
   useEffect(() => {
     mounted.current = true;
@@ -102,6 +164,8 @@ export function VoucherFindCard({
       checkedFor.current = internetMessageId;
       setReply(null);
       setSave('idle');
+      setDetailsRequested(false);
+      detailsStartedFor.current = null;
     }
     showingUnsynced.current = false;
     if (!findClient || !internetMessageId) return;
@@ -173,15 +237,6 @@ export function VoucherFindCard({
     !searchJob.queuing &&
     !searchJob.queueFailed &&
     !searchJob.statusFailed;
-  const searchRun: HmsSearchRun | null = searchRunFromJob(searchJob.view, searchJob.queueFailed);
-  const singleMatch =
-    searchRun?.kind === 'rows' &&
-    searchRun.rows.length === 1 &&
-    guest.lastName !== null &&
-    normalizedSurname(searchRun.rows[0]!.lastName) === normalizedSurname(guest.lastName)
-      ? searchRun.rows[0]!
-      : null;
-
   const saveFile = async () => {
     if (!file) return;
     setSave('saving');
@@ -257,7 +312,30 @@ export function VoucherFindCard({
         ) : (
           <p className={captionClass}>{VOUCHER_COPY.noFile}</p>
         )}
-        {singleMatch ? <MatchedBooking key={singleMatch.confirmation} row={singleMatch} /> : null}
+        {singleMatch ? (
+          <MatchedBooking
+            key={singleMatch.confirmation}
+            row={singleMatch}
+            detailRun={detailsRun}
+            detailView={detailsJob.view}
+            detailQueuing={detailsJob.queuing}
+            detailQueueFailed={detailsJob.queueFailed}
+            detailStatusFailed={detailsJob.statusFailed}
+            checkingDetails={detailsRequested && !detailsJob.readBackSettled && !detailsJob.statusFailed}
+            showReadDetails={showReadDetails}
+            onReadDetails={() => {
+              if (!detailsRequested) {
+                setDetailsRequested(true);
+                return;
+              }
+              if (detailRequest && detailRequestKey) {
+                detailsStartedFor.current = detailRequestKey;
+                detailsJob.start(detailRequest);
+              }
+            }}
+            onRetryDetails={detailsJob.retry}
+          />
+        ) : null}
       </div>
     </Section>
   );
@@ -299,16 +377,59 @@ function SearchRow({ row }: { row: GuestSearchRow }) {
   );
 }
 
-function MatchedBooking({ row }: { row: GuestSearchRow }) {
+function MatchedBooking({
+  row,
+  detailRun,
+  detailView,
+  detailQueuing,
+  detailQueueFailed,
+  detailStatusFailed,
+  checkingDetails,
+  showReadDetails,
+  onReadDetails,
+  onRetryDetails,
+}: {
+  row: GuestSearchRow;
+  detailRun: HmsFindRun | null;
+  detailView: HmsJobView | null;
+  detailQueuing: boolean;
+  detailQueueFailed: boolean;
+  detailStatusFailed: boolean;
+  checkingDetails: boolean;
+  showReadDetails: boolean;
+  onReadDetails: () => void;
+  onRetryDetails: () => void;
+}) {
   const guest = [row.firstName, row.lastName].filter(Boolean).join(' ') || 'Name not shown';
   const dates = row.arrival
     ? `${formatStayDate(row.arrival)}${row.departure ? ` – ${formatStayDate(row.departure)}` : ''}`
     : 'Dates not shown';
+  const commercial = detailRun?.kind === 'found' ? detailRun.commercial : undefined;
+  const company = stayText(commercial?.company?.name) ?? stayText(commercial?.company?.nativeId);
+  const agency = stayText(commercial?.agency?.name) ?? stayText(commercial?.agency?.nativeId);
   return (
-    <div data-testid="voucher-matched-booking" className="rounded-xs flex flex-col gap-1 border border-[#b7d5ef] bg-[#f5faff] p-2">
+    <div
+      data-testid="voucher-matched-booking"
+      className="rounded-xs flex flex-col gap-1 border border-[#b7d5ef] bg-[#f5faff] p-2"
+    >
       <p className={captionClass}>{VOUCHER_COPY.matchedBooking}</p>
       <p data-pii className={valueClass}>{`${guest} · ${row.confirmation}`}</p>
       <p className={captionClass}>{`${dates} · ${row.status || 'status not shown'}`}</p>
+      {company ? <p className={captionClass}>{`Company: ${company}`}</p> : null}
+      {agency ? <p className={captionClass}>{`Booking agency: ${agency}`}</p> : null}
+      {checkingDetails ? <p role="status" className={captionClass}>Checking for saved HMS booking details…</p> : null}
+      {showReadDetails ? (
+        <SecondaryButton onClick={onReadDetails}>{VOUCHER_COPY.readDetails}</SecondaryButton>
+      ) : null}
+      <HmsJobStatusLine
+        view={detailView}
+        queuing={detailQueuing}
+        detail={VOUCHER_COPY.readingDetails}
+        onRetry={onRetryDetails}
+        statusFailed={detailStatusFailed}
+        queueFailed={detailQueueFailed}
+        queueFailureMessage={AMEND_FIND_COPY.lookupFailed}
+      />
       <HmsLinkActions confirmation={row.confirmation} guestSurname={row.lastName} arrival={row.arrival} />
     </div>
   );

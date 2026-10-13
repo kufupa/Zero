@@ -223,6 +223,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const ratePlan = stayText(stay?.ratePlan);
   const mealPlan = stayText(stay?.mealPlan);
   const grandTotal = stayText(stay?.grandTotal);
+  const bookedCompany = stayText(found?.commercial?.company?.name);
+  const bookingAgency = stayText(found?.commercial?.agency?.name);
 
   return (
     <section id="quote-booking" aria-labelledby="amend-lookup-title" data-testid="amend-lookup-panel" className={panelClass}>
@@ -271,6 +273,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
               <HmsRow field="room" label="Room" value={roomType ?? 'Not shown'} />
               {ratePlan ? <HmsRow field="rate-plan" label="Rate plan" value={ratePlan} /> : null}
               {mealPlan ? <HmsRow field="meal-plan" label="Meal plan" value={mealPlan} /> : null}
+              {bookedCompany ? <HmsRow field="company" label="Company" value={bookedCompany} /> : null}
+              {bookingAgency ? <HmsRow field="agency" label="Booking agency" value={bookingAgency} /> : null}
               {grandTotal ? <HmsRow field="grand-total" label="Grand total" value={grandTotal} /> : null}
               {found ? (
                 <RunScreenshot

@@ -1953,7 +1953,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       paneStayLookupLoaders.lock = lockWith(true);
-      paneStayLookupLoaders.spawn = vi.fn(async () => FOUND);
+      paneStayLookupLoaders.spawn = vi.fn(async () => ({
+        ...FOUND,
+        commercial: {
+          company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
+          agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+        },
+      }));
       const { threadId } = await seedThread(db);
       const queued = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
@@ -1972,7 +1978,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         db,
       );
       expect(remounted).toMatchObject({ runId: queued!.id, status: 'done' });
-      expect(remounted?.result).toMatchObject({ outcome: 'found' });
+      expect(remounted?.result).toMatchObject({
+        outcome: 'found',
+        commercial: {
+          company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
+          agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+        },
+      });
       // A restart of that worker while a job runs puts it back to retry_wait for the next claim.
       const again = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },

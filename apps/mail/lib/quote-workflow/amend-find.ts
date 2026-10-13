@@ -85,6 +85,23 @@ export type StayRecordWire = {
   organization: string | null;
 };
 
+export type StayPartyCommercialWire = { name?: string; nativeId?: string };
+
+/** Commercial attribution returned from the same opened HMS record. Fields are absent when HMS did not show them. */
+export type StayCommercialWire = {
+  company?: StayPartyCommercialWire;
+  agency?: StayPartyCommercialWire;
+  ratePlan?: string;
+  mealPlan?: string;
+  roomType?: string;
+  marketSegment?: string;
+  sourceOfBusiness?: string;
+  averageRate?: string;
+  status?: string;
+  arrival?: string;
+  departure?: string;
+};
+
 /** The email's arrival, when it is a real ISO day, moves HMS quick search to cover that day. */
 export type FindStayInput = { confirmation: string; arrival?: string };
 
@@ -96,6 +113,7 @@ export type FindStayReply = {
   outcome: string;
   reason: string | null;
   stay: StayRecordWire | null;
+  commercial?: StayCommercialWire | null;
   /** PNG file names. record.png is the booking itself. */
   screenshots: string[];
   runId: string | null;
@@ -369,6 +387,7 @@ export type HmsFindRun =
   | {
       kind: 'found';
       stay: StayRecordWire;
+      commercial?: StayCommercialWire;
       runId: string | null;
       screenshots: string[];
       arrivalMismatch: ArrivalMismatch | null;
@@ -415,6 +434,7 @@ export function findRunFromReply(reply: FindStayReply): HmsFindRun {
       return {
         kind: 'found',
         stay: reply.stay,
+        ...(reply.commercial ? { commercial: reply.commercial } : {}),
         runId: reply.runId,
         screenshots: reply.screenshots,
         arrivalMismatch: arrivalMismatchFrom(reply),

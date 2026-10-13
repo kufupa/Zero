@@ -12,6 +12,8 @@ import {
 import {
   formatStayDate,
   noSearchMatchCopy,
+  type FindStayInput,
+  type FindStayReply,
   type GuestSearchInput,
   type GuestSearchReply,
   type HmsJobView,
@@ -53,13 +55,21 @@ const SMITH_ROW = {
   departure: '2026-11-14',
 };
 
-type JobStatusQuery = (input: { threadId: string; kind: 'find' | 'search_guest' | 'availability'; lastName?: string; arrival?: string; departure?: string | null }) => Promise<HmsJobView | null>;
+type JobStatusQuery = (input: {
+  threadId: string;
+  kind: 'find' | 'search_guest' | 'availability';
+  confirmation?: string;
+  lastName?: string;
+  arrival?: string;
+  departure?: string | null;
+}) => Promise<HmsJobView | null>;
 
 // The trpc client the pane passes in: the voucher check and the guest-name search job routes, and nothing else.
 // Each queued search runs its mock and is stored as a finished job, so jobStatus answers on the first poll.
 function fakeTrpc(options: {
   reply: VoucherFindReply;
   search?: GuestSearchReply;
+  find?: FindStayReply;
   resumed?: HmsJobView | null;
   status?: JobStatusQuery;
   /** The server's job queue is off: queueSearchGuest queues nothing and returns no run id. */
@@ -70,6 +80,9 @@ function fakeTrpc(options: {
     async (_input: { lastName: string; arrival: string; departure?: string }) =>
       options.search ?? { outcome: 'ok', rows: [SMITH_ROW], screenshots: [], runId: null },
   );
+  const findStay = vi.fn(async (_input: FindStayInput) => options.find ?? {
+    outcome: 'not_found', reason: null, stay: null, screenshots: [], runId: null,
+  });
   const jobs = new Map<string, HmsJobView>();
   if (options.resumed) jobs.set(options.resumed.runId, options.resumed);
   let issued = 0;
@@ -94,12 +107,34 @@ function fakeTrpc(options: {
     });
     return { runId };
   });
+  const queueFind = vi.fn(async ({
+    threadId: _threadId,
+    autoStart: _autoStart,
+    ...input
+  }: FindStayInput & { threadId: string; autoStart?: true }) => {
+    if (options.queueOff) return { runId: null };
+    const reply = await findStay(input);
+    const runId = `run-${++issued}`;
+    jobs.set(runId, {
+      runId,
+      request: { kind: 'find', ...input },
+      prefetch: false,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: AS_OF,
+      result: { ...reply, kind: 'find', asOf: AS_OF },
+    });
+    return { runId };
+  });
   return {
     trpc: {
       quoteWorkflow: { voucherFind: { query: voucherFind } },
       paneStayLookup: {
-        queueFind: { mutate: vi.fn() },
+        queueFind: { mutate: queueFind },
         queueSearchGuest: { mutate: queueSearchGuest },
+        findStay: { mutate: findStay },
         searchGuest: { mutate: searchGuest },
         jobStatus: {
           query: async (
@@ -108,6 +143,7 @@ function fakeTrpc(options: {
               | {
                   threadId: string;
                   kind: 'find' | 'search_guest' | 'availability';
+                  confirmation?: string;
                   lastName?: string;
                   arrival?: string;
                   departure?: string | null;
@@ -115,6 +151,13 @@ function fakeTrpc(options: {
           ) => {
             if ('threadId' in input && options.status) return options.status(input);
             if ('runId' in input) return jobs.get(input.runId) ?? null;
+            if (input.kind === 'find') {
+              return [...jobs.values()].find((view) =>
+                view.request?.kind === 'find' &&
+                view.request.confirmation === input.confirmation &&
+                (!input.arrival || view.request.arrival === input.arrival),
+              ) ?? null;
+            }
             const found = options.resumed ?? null;
             if (found?.request?.kind !== 'search_guest') return null;
             if (input.lastName && found.request.lastName.toLowerCase() !== input.lastName.toLowerCase()) return null;
@@ -127,6 +170,8 @@ function fakeTrpc(options: {
       },
     },
     voucherFind,
+    findStay,
+    queueFind,
     searchGuest,
     queueSearchGuest,
   };
@@ -207,6 +252,57 @@ describe('voucher find card: the existing search', () => {
     });
     expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
     expect(screen.getByRole('button', { name: 'Copy for HMS' })).toBeTruthy();
+  });
+
+  it('reads commercial parties by exact confirmation only after staff requests booking details', async () => {
+    const find: FindStayReply = {
+      outcome: 'found',
+      reason: null,
+      stay: {
+        status: 'Reserved',
+        confirmation: '57291630-1',
+        lastName: 'Smith',
+        firstName: 'John',
+        arrival: '2026-11-12',
+        departure: '2026-11-14',
+        nights: 2,
+        adults: 2,
+        children: 0,
+        roomType: 'STQN',
+        ratePlan: 'CORP10',
+        mealPlan: 'BB',
+        averageRate: '1250.00',
+        grandTotal: null,
+        balance: null,
+        sourceOfBusiness: 'Travel Agency',
+        guaranteeType: null,
+        bookingAgency: null,
+        organization: null,
+      },
+      commercial: {
+        company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
+        agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+      },
+      screenshots: [],
+      runId: null,
+      arrivalMismatch: false,
+      requestedArrival: '2026-11-12',
+      hmsArrival: '2026-11-12',
+    };
+    const { trpc, queueFind } = fakeTrpc({ reply: VOUCHER, find });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(queueFind).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.readDetails }));
+
+    expect(await screen.findByText('Company: Northstar Conference Group')).toBeTruthy();
+    expect(screen.getByText('Booking agency: Harbor Travel')).toBeTruthy();
+    expect(queueFind).toHaveBeenCalledWith({
+      threadId: 'thread-1',
+      confirmation: '57291630-1',
+      arrival: '2026-11-12',
+    });
   });
 
   it('with the job queue off, opening the card runs no HMS search and the Find button runs one on click', async () => {
