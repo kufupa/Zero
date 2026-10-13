@@ -147,6 +147,8 @@ export const workItemsRouter = router({
   }),
   /** Owner/developer review of exactly the succeeded extraction shown by the workflow console. */
   adminReview: mailboxProcedure.input(adminReviewInput).mutation(async ({ input, ctx }) => {
+    // Owner console only: hotel staff with member access must not change review counts.
+    if (ctx.accessRole === 'member') throw new TRPCError({ code: 'FORBIDDEN', message: 'Owner access required' });
     const db = getDb();
     const [source] = await db
       .select({

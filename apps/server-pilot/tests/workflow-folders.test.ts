@@ -14,14 +14,14 @@ const USER = 'user-ropperman';
 const MESSAGE_ID = 'message-source-1';
 const EXTRACTION_ID = '00000000-0000-4000-8000-000000000001';
 
-function caller() {
+function caller(accessRole: 'owner' | 'admin' | 'member' = 'owner') {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
     sessionUser: { id: USER, email: 'owner@example.com', name: 'Owner' },
     activeTransportId: TRANSPORT,
     transportEmail: 'centurion@legacyhotels.co.za',
-    accessRole: 'owner',
+    accessRole,
   } as never);
 }
 
@@ -171,6 +171,16 @@ describe('workflow folder list pagination', () => {
 });
 
 describe('workItems.adminReview', () => {
+  it('refuses hotel staff with member access', async () => {
+    await expect(
+      caller('member').workItems.adminReview({
+        sourceMessageId: 'msg-1',
+        extractionId: '00000000-0000-4000-8000-000000000000',
+        decision: 'right',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
   it('records a masked append-only admin_review event for the shown extraction', async () => {
     const fake = fakeReviewDb({});
     const result = await withFakeDb(fake.db, () =>
