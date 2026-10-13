@@ -250,7 +250,7 @@ function consistencyLabel(
     .join(' + ')}`;
 }
 
-function buildDomainTruth(
+export function buildDomainTruth(
   truthRows: readonly JsonRecord[],
   confDomains: ReadonlyMap<string, string>,
 ): { domains: DomainTruth[]; foundRows: number; foundRowsMissingDomain: number } {
@@ -292,8 +292,11 @@ function buildDomainTruth(
         n: value.n,
         agencies,
         companies,
-        dominantAgency: agencies[0] ?? null,
-        dominantCompany: companies[0] ?? null,
+        // Below the consistency bar the domain has no single answer; leave it unscored.
+        dominantAgency:
+          agencies[0] && share(agencies[0].count, value.n) >= DOMAIN_CONSISTENCY_THRESHOLD ? agencies[0] : null,
+        dominantCompany:
+          companies[0] && share(companies[0].count, value.n) >= DOMAIN_CONSISTENCY_THRESHOLD ? companies[0] : null,
         consistency: consistencyLabel(value.n, agencies, companies),
       };
     })
@@ -429,7 +432,7 @@ function selectTestEmails(input: {
       return right.receivedAt.localeCompare(left.receivedAt);
     return left.extractionKind.localeCompare(right.extractionKind);
   };
-  for (const [domain, rows] of [...grouped.entries()].sort(([left], [right]) =>
+  for (const [, rows] of [...grouped.entries()].sort(([left], [right]) =>
     left.localeCompare(right),
   )) {
     const preferred = rows.filter((row) => PREFERRED_EXTRACTION_KINDS.has(row.extractionKind));

@@ -1,4 +1,5 @@
 import {
+  buildDomainTruth,
   selectPartyV2FailureExamples,
   simulateHmsContains,
 } from '../scripts/party-v2-offline-score.js';
@@ -57,5 +58,18 @@ describe('offline party-v2 failure examples', () => {
         truthName: 'Truth Travel',
       },
     ]);
+  });
+});
+
+describe('offline domain truth', () => {
+  it('leaves a domain unscored when no party reaches the consistency bar', () => {
+    const row = (conf: string, agency: string) => ({ conf, outcome: 'found', commercial: { agency: { name: agency } } });
+    const truth = buildDomainTruth(
+      [row('1', 'Alpha Travel'), row('2', 'Beta Tours'), row('3', 'Gamma Trips'), row('4', 'Gamma Trips')],
+      new Map([['1', 'split.example'], ['2', 'split.example'], ['3', 'one.example'], ['4', 'one.example']]),
+    );
+    const byDomain = new Map(truth.domains.map((domain) => [domain.domain, domain]));
+    expect(byDomain.get('split.example')?.dominantAgency).toBeNull();
+    expect(byDomain.get('one.example')?.dominantAgency?.name).toBe('Gamma Trips');
   });
 });
