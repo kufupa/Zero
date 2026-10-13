@@ -25,6 +25,7 @@ import {
   hmsNumberFor,
   isSettled,
   noSearchMatchCopy,
+  notFoundConfirmationCopy,
   notHmsNumberNote,
   searchRequestFor,
   searchRunFromJob,
@@ -39,6 +40,7 @@ import {
   type StayRecordWire,
 } from '@/lib/quote-workflow/amend-find';
 import { amendmentOf } from '@/lib/quote-workflow/session';
+import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { HmsLinkActions } from './hms-link-actions';
@@ -83,14 +85,29 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   // find goes by confirmation number alone: the requested arrival never stands in (AE2). findRequestFor drops a non-date.
   const findArrival = amendment?.arrival ?? null;
   const bookedMissing = !findArrival;
+  const searchIdentity =
+    amendment?.guestLastName?.trim() && amendment.arrival
+      ? searchRequestFor({ lastName: amendment.guestLastName, arrival: amendment.arrival })
+      : null;
+  const searchResume =
+    searchIdentity && 'request' in searchIdentity && searchIdentity.request.kind === 'search_guest'
+      ? {
+          kind: 'search_guest' as const,
+          lastName: searchIdentity.request.lastName,
+          arrival: searchIdentity.request.arrival,
+          departure: null,
+        }
+      : null;
 
   // The find reads back the email's own number after a remount. A booking picked from a search is queued in this session.
   const find = useHmsJob({
     transport,
     resume: hmsNumber ? { kind: 'find', confirmation: hmsNumber } : null,
     scope: key,
+    autoStartIfMissing: Boolean(key && transport && hmsNumber),
+    targetId: 'quote-booking',
   });
-  const search = useHmsJob({ transport, resume: { kind: 'search_guest' }, scope: key });
+  const search = useHmsJob({ transport, resume: searchResume, scope: key, targetId: 'quote-booking' });
   // A search the form refused before queueing. It shows in place of a run, for the scope it was made in.
   const [refusedSearch, setRefusedSearch] = useState<{ scope: string; message: string } | null>(null);
   // Cancel views are kept per booking on an email (see cancelScope), so a reply for one booking never shows on another.
@@ -103,8 +120,12 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const running = find.queuing || (findView !== null && !isSettled(findView));
   const found = findRun?.kind === 'found' ? findRun : null;
   const stay: StayRecordWire | null = found?.stay ?? null;
+  const hmsStatus = stay ? displayedStatus(stay.status) : null;
+  const roomType = stay ? displayedRoomType(stay.roomType) : null;
   // The number the stay on screen was found under: the email's own, or a row picked from a search.
-  const foundNumber = found && findView?.request?.kind === 'find' ? findView.request.confirmation : null;
+  const foundNumber = found
+    ? stayText(stay?.confirmation) ?? (findView?.request?.kind === 'find' ? findView.request.confirmation : null)
+    : null;
   // The one HMS handoff row copies the number HMS holds the booking under, else the number in the email.
   const handoffNumber = foundNumber ?? confirmationNumber;
   const diff: AmendDiff = stay ? amendDiffs(amendment, stay) : {};
@@ -119,13 +140,21 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const findBusy = find.queuing || (findView !== null && !isSettled(findView) && !findView.prefetch);
   const busy = findBusy || searching;
   const findNotFound = findRun?.kind === 'not_found';
-  // The name search opens when there is no usable number, when a find came back not found, or once a search has run.
-  const searchOpen = !lookupable || findNotFound || searchView !== null || search.queuing;
+  const findAmbiguous = findRun?.kind === 'ambiguous';
+  const searchedConfirmation = findView?.request?.kind === 'find' ? findView.request.confirmation : null;
+  // The name search opens when there is no usable number, when a find needs a guest-name fallback, or until a booking is chosen.
+  const searchOpen = !stay && (!lookupable || findNotFound || findAmbiguous || searchView !== null || search.queuing);
 
   // pii: the note quotes the guest's booking number.
   let note: { tone: 'info' | 'warn'; text: string; pii?: boolean } | null = null;
   if (findRun?.kind === 'error') note = { tone: 'warn', text: findRun.message };
-  else if (findRun?.kind === 'not_found') note = { tone: 'warn', text: AMEND_FIND_COPY.notFound };
+  else if (findRun?.kind === 'not_found') {
+    note = {
+      tone: 'warn',
+      text: notFoundConfirmationCopy(searchedConfirmation ?? hmsNumber ?? confirmationNumber ?? ''),
+      pii: true,
+    };
+  }
   else if (findRun?.kind === 'ambiguous') note = { tone: 'warn', text: AMEND_FIND_COPY.ambiguous };
   else if (!confirmationNumber) note = { tone: 'info', text: AMEND_FIND_COPY.noNumber };
   else if (!lookupable) note = { tone: 'warn', text: notHmsNumberNote(confirmationNumber), pii: true };
@@ -191,7 +220,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const grandTotal = stayText(stay?.grandTotal);
 
   return (
-    <section aria-labelledby="amend-lookup-title" data-testid="amend-lookup-panel" className={panelClass}>
+    <section id="quote-booking" aria-labelledby="amend-lookup-title" data-testid="amend-lookup-panel" className={panelClass}>
       <h3 id="amend-lookup-title" className="text-[13px] font-semibold text-[#1e293b]">
         {amendment.kind === 'cancel' ? 'Cancellation request' : 'Change to an existing booking'}
       </h3>
@@ -203,7 +232,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
             label="Confirmation"
             value={amendment.confirmationNumber ?? 'Not in the email'}
             actions={
-              handoffNumber ? (
+              handoffNumber && !stay ? (
                 <HmsLinkActions
                   confirmation={handoffNumber}
                   guestSurname={amendment.guestLastName}
@@ -217,10 +246,14 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           <AskRow label="Arrival" value={asked.arrival ? formatStayDate(asked.arrival) : 'Not stated'} />
           <AskRow label="Departure" value={asked.departure ? formatStayDate(asked.departure) : 'Not stated'} />
         </div>
-        <div className="flex flex-col gap-2">
+        <div data-testid={stay ? 'amend-hms-result-card' : undefined} className="flex flex-col gap-2">
           <p className={headingClass}>Booking in HMS now</p>
           {stay ? (
             <>
+              <p data-pii className={infoNoteClass}>
+                {`Booking found in HMS: ${foundNumber ?? 'Confirmation not shown'} · ${stayGuest(stay) ?? 'Name not shown'} · ${stayDateRange(stay)} · ${roomType ?? 'Room type not shown'}`}
+              </p>
+              {handoffNumber ? <HmsLinkActions confirmation={handoffNumber} confirmationOnly /> : null}
               <HmsRow field="guest" label="Guest" value={stayGuest(stay) ?? 'Not shown'} wants={diff.guest} pii />
               <HmsRow field="arrival" label="Arrival" value={shownDate(stay.arrival)} wants={diff.arrival} />
               <HmsRow field="departure" label="Departure" value={shownDate(stay.departure)} wants={diff.departure} />
@@ -229,8 +262,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
                   {arrivalMismatchNote(found.arrivalMismatch)}
                 </p>
               ) : null}
-              <HmsRow field="status" label="Status" value={stayText(stay.status) ?? 'Not shown'} />
-              <HmsRow field="room" label="Room" value={stayText(stay.roomType) ?? 'Not shown'} />
+              {hmsStatus ? <HmsRow field="status" label="Status" value={hmsStatus} /> : null}
+              <HmsRow field="room" label="Room" value={roomType ?? 'Not shown'} />
               {ratePlan ? <HmsRow field="rate-plan" label="Rate plan" value={ratePlan} /> : null}
               {mealPlan ? <HmsRow field="meal-plan" label="Meal plan" value={mealPlan} /> : null}
               {grandTotal ? <HmsRow field="grand-total" label="Grand total" value={grandTotal} /> : null}
@@ -256,19 +289,19 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
         </p>
       ) : null}
       <div className="flex flex-col gap-2">
-        {found ? null : (
+        {found || findNotFound || findAmbiguous ? null : (
           <>
             <button
               type="button"
               className={buttonClass}
-              disabled={!canLookUp || busy}
+              disabled={!canLookUp || busy || !find.readBackSettled}
               onClick={() => {
                 if (!key || !hmsNumber) return;
                 const next = findRequestFor(hmsNumber, findArrival);
                 if ('request' in next) find.start(next.request);
               }}
             >
-              Find this booking in HMS
+              {findRun?.kind === 'error' ? 'Try the lookup again' : 'Find this booking in HMS'}
             </button>
             {lookupable ? null : (
               <p className="text-[10.5px] font-semibold text-amber-900">
@@ -302,6 +335,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
             departure: amendment.departure ?? '',
           }}
           canSearch={Boolean(key && transport)}
+          readBackSettled={searchResume === null || search.readBackSettled}
           hint={searchHint}
           busy={busy}
           searching={searching}
@@ -351,6 +385,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
 function GuestSearchSection({
   initial,
   canSearch,
+  readBackSettled,
   hint,
   busy,
   searching,
@@ -364,6 +399,7 @@ function GuestSearchSection({
 }: {
   initial: SearchForm;
   canSearch: boolean;
+  readBackSettled: boolean;
   hint: string | null;
   busy: boolean;
   searching: boolean;
@@ -423,7 +459,7 @@ function GuestSearchSection({
       <button
         type="button"
         className={buttonClass}
-        disabled={!canSearch || busy}
+        disabled={!canSearch || busy || !readBackSettled}
         onClick={() => onSearch(form)}
       >
         {AMEND_FIND_COPY.searchButton}
@@ -454,28 +490,36 @@ function SearchResult({
   onPick: (row: GuestSearchRow) => void;
 }) {
   if (run.kind === 'rows') {
+    const rows = run.rows.slice(0, 5);
     return (
       <div className="flex flex-col gap-2">
         <ul aria-label="Bookings found in HMS" className="flex flex-col gap-1.5">
-          {run.rows.map((row) => (
+          {rows.map((row) => (
             <li key={row.confirmation}>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => onPick(row)}
-                className="flex w-full flex-wrap items-baseline gap-x-3 gap-y-0.5 rounded-xs border border-[#e2e8f0] bg-white px-2.5 py-2 text-left text-[12px] text-[#1e293b] hover:border-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
-              >
-                <span data-pii className="font-semibold text-[#0066cc]">
-                  {row.confirmation}
-                </span>
-                <span data-pii>{rowGuest(row)}</span>
-                <span className="text-[#64748b]">{stayText(row.status) ?? 'Status not shown'}</span>
-                <span className="text-[#64748b]">{rowDates(row)}</span>
-              </button>
+              <div className="flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white px-2.5 py-2">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[12px] text-[#1e293b]">
+                  <span data-pii className="font-semibold text-[#0066cc]">
+                    {row.confirmation}
+                  </span>
+                  <span data-pii>{rowGuest(row)}</span>
+                  <span className="text-[#64748b]">{displayedStatus(row.status) ?? 'Status not shown'}</span>
+                  <span className="text-[#64748b]">{rowDates(row)}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" disabled={busy} onClick={() => onPick(row)} className={buttonClass}>
+                    Show booking in HMS
+                  </button>
+                  <HmsLinkActions confirmation={row.confirmation} confirmationOnly />
+                </div>
+              </div>
             </li>
           ))}
         </ul>
-        <p className={captionClass}>{AMEND_FIND_COPY.searchPick}</p>
+        <p className={captionClass}>
+          {run.rows.length > 5
+            ? 'Showing the first 5 matches. Add the departure date to narrow the search.'
+            : AMEND_FIND_COPY.searchPick}
+        </p>
       </div>
     );
   }
@@ -505,6 +549,30 @@ function rowDates(row: GuestSearchRow): string {
 function shownDate(value: string | null): string {
   const text = stayText(value);
   return text ? formatStayDate(text) : 'Not shown';
+}
+
+function stayDateRange(stay: StayRecordWire): string {
+  const arrival = stayText(stay.arrival);
+  const departure = stayText(stay.departure);
+  if (arrival && departure) return `${formatStayDate(arrival)}–${formatStayDate(departure)}`;
+  const onlyDate = arrival ?? departure;
+  if (onlyDate) return formatStayDate(onlyDate);
+  return 'Dates not shown';
+}
+
+function displayedRoomType(value: string | null): string | null {
+  const roomType = stayText(value);
+  if (!roomType) return null;
+  const code = knownRoomCode(roomType);
+  return code ? ROOM_TYPE_NAMES[code] : roomType;
+}
+
+function displayedStatus(value: string | null): string | null {
+  const status = stayText(value);
+  if (!status) return null;
+  if (/cancel/i.test(status)) return 'Cancelled';
+  if (/\b(reserv|confirm|booked)\w*\b/i.test(status)) return 'Confirmed';
+  return status;
 }
 
 /** `pii`: the value names the guest or their booking, so the preview gate masks it (data-pii). */
@@ -631,15 +699,18 @@ function CancelSection({
         <p data-pii className={warnNoteClass}>
           {cancelConfirmLine({ confirmation, guest: guestName, penaltyText: run.penaltyText })}
         </p>
-        <button
-          type="button"
-          className={buttonClass}
-          disabled={!canPreview || !reason || committing}
-          onClick={onCommit}
-        >
-          {AMEND_CANCEL_COPY.commit}
-        </button>
-        {!canPreview ? <p className={infoNoteClass}>Coming soon</p> : null}
+        {canPreview ? (
+          <button
+            type="button"
+            className={buttonClass}
+            disabled={!reason || committing}
+            onClick={onCommit}
+          >
+            {AMEND_CANCEL_COPY.commit}
+          </button>
+        ) : (
+          <p className={infoNoteClass}>{offNote}</p>
+        )}
         {committing ? <p className={infoNoteClass}>{AMEND_CANCEL_COPY.committing}</p> : null}
         {current.kind === 'ready' && current.note ? <p className={warnNoteClass}>{current.note}</p> : null}
       </div>
@@ -650,15 +721,16 @@ function CancelSection({
   return (
     <div aria-live="polite" className="flex flex-col gap-2">
       <p className={headingClass}>Cancel in HMS</p>
-      <button
-        type="button"
-        className={buttonClass}
-        disabled={!canPreview || previewing}
-        onClick={onPreview}
-      >
-        {AMEND_CANCEL_COPY.preview}
-      </button>
-      {!canPreview ? <p className={infoNoteClass}>Coming soon</p> : null}
+      {canPreview ? (
+        <button
+          type="button"
+          className={buttonClass}
+          disabled={previewing}
+          onClick={onPreview}
+        >
+          {AMEND_CANCEL_COPY.preview}
+        </button>
+      ) : null}
       {canPreview ? (
         <>
           <p className={captionClass}>{AMEND_CANCEL_COPY.previewHint}</p>

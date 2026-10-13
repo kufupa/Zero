@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
 import { HmsLinkActions } from '../components/quote-workflow/hms-link-actions';
@@ -189,10 +189,11 @@ describe('pane telemetry wiring', () => {
       </>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Copy email' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied email' })).toBeDefined());
-    fireEvent.click(screen.getByRole('button', { name: 'Copy named in email' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied named in email' })).toBeDefined());
+    const contact = within(screen.getByRole('region', { name: 'Guest & contact' }));
+    fireEvent.click(contact.getByRole('button', { name: 'Copy email' }));
+    await waitFor(() => expect(contact.getByRole('button', { name: 'Copied email' })).toBeDefined());
+    fireEvent.click(contact.getByRole('button', { name: 'Copy company' }));
+    await waitFor(() => expect(contact.getByRole('button', { name: 'Copied company' })).toBeDefined());
     expect(writeText).toHaveBeenCalledWith('Example Agency');
     fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeDefined());

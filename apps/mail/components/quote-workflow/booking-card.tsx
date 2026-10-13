@@ -10,6 +10,7 @@ import type {
 } from '@/lib/quote-workflow/types';
 import { HmsLinkActions } from './hms-link-actions';
 import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
+import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import {
@@ -145,7 +146,7 @@ function RateCheckChip({ check }: { check: BookingRateCheck }) {
 
 type CopyStatus = 'idle' | 'copied' | 'failed';
 
-function CopyButton({ label, roomIndex, value }: { label: string; roomIndex: number; value: string }) {
+function CopyButton({ label, roomLabel, value }: { label: string; roomLabel: string; value: string }) {
   const [status, setStatus] = useState<CopyStatus>('idle');
   useEffect(() => {
     if (status === 'idle') return;
@@ -161,7 +162,7 @@ function CopyButton({ label, roomIndex, value }: { label: string; roomIndex: num
       <button
         type="button"
         disabled={!value}
-        aria-label={`${copied ? 'Copied' : 'Copy'} ${label} for room ${roomIndex}`}
+        aria-label={`${copied ? 'Copied' : 'Copy'} ${label} for ${roomLabel}`}
         onClick={() => {
           void writeClipboard(value).then((ok) => {
             setStatus(ok ? 'copied' : 'failed');
@@ -184,12 +185,12 @@ function CopyButton({ label, roomIndex, value }: { label: string; roomIndex: num
 /** `pii`: the value names the guest, so the preview gate masks it (data-pii). */
 function CopyRow({
   label,
-  roomIndex,
+  roomLabel,
   value,
   pii = false,
 }: {
   label: string;
-  roomIndex: number;
+  roomLabel: string;
   value: string;
   pii?: boolean;
 }) {
@@ -199,7 +200,7 @@ function CopyRow({
       <span data-pii={pii || undefined} className="min-w-0 flex-1 break-words text-[#1e293b]">
         {value || 'Not set'}
       </span>
-      <CopyButton label={label} roomIndex={roomIndex} value={value} />
+      <CopyButton label={label} roomLabel={roomLabel} value={value} />
     </div>
   );
 }
@@ -440,7 +441,7 @@ function RoomSave({
 // Editable party and note field for one room, with Copy beside it for pasting into HMS by hand.
 function RoomTextField({
   label,
-  roomIndex,
+  roomLabel,
   value,
   disabled,
   maxLength,
@@ -448,7 +449,7 @@ function RoomTextField({
   onChange,
 }: {
   label: string;
-  roomIndex: number;
+  roomLabel: string;
   value: string;
   disabled: boolean;
   maxLength: number;
@@ -481,7 +482,7 @@ function RoomTextField({
           />
         )}
       </label>
-      <CopyButton label={label} roomIndex={roomIndex} value={value} />
+      <CopyButton label={label} roomLabel={roomLabel} value={value} />
     </div>
   );
 }
@@ -658,18 +659,25 @@ export function BookingCards({
         const arrival = textValue(request.arrival);
         const departure = textValue(request.departure);
         const childCount = Array.isArray(request.childAges) ? request.childAges.length : 0;
-        const roomIndex = room.roomIndex;
+        const roomCount = group?.quantity ?? Math.max(
+          1,
+          draft.draft.rooms.filter((candidate) => candidate.groupId === room.groupId).length,
+        );
+        const roomLabel = rowRoomLabel({
+          roomPreference: choice.roomType || group?.roomPreference || textValue(request.roomType),
+          quantity: roomCount,
+        });
         return (
           <article
             key={key}
             className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3"
           >
-            <h4 className="text-[12.5px] font-bold text-[#1e293b]">Room {roomIndex}</h4>
-            <CopyRow roomIndex={roomIndex} label="Arrival" value={arrival} />
-            <CopyRow roomIndex={roomIndex} label="Departure" value={departure} />
-            <CopyRow roomIndex={roomIndex} label="Nights" value={nightsBetween(arrival, departure)} />
-            <CopyRow roomIndex={roomIndex} label="Adults" value={countValue(request.adults)} />
-            <CopyRow roomIndex={roomIndex} label="Children" value={String(childCount)} />
+            <h4 className="text-[12.5px] font-bold text-[#1e293b]">{roomLabel}</h4>
+            <CopyRow roomLabel={roomLabel} label="Arrival" value={arrival} />
+            <CopyRow roomLabel={roomLabel} label="Departure" value={departure} />
+            <CopyRow roomLabel={roomLabel} label="Nights" value={nightsBetween(arrival, departure)} />
+            <CopyRow roomLabel={roomLabel} label="Adults" value={countValue(request.adults)} />
+            <CopyRow roomLabel={roomLabel} label="Children" value={String(childCount)} />
             <div className="flex items-end gap-2">
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
                 Room type
@@ -688,14 +696,14 @@ export function BookingCards({
                   ))}
                 </select>
               </label>
-              <CopyButton label="Room type" roomIndex={roomIndex} value={choice.roomType} />
+              <CopyButton label="Room type" roomLabel={roomLabel} value={choice.roomType} />
             </div>
-            <CopyRow roomIndex={roomIndex} label="Rate code" value={textValue(request.ratePlan)} />
-            <CopyRow roomIndex={roomIndex} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
-            <CopyRow roomIndex={roomIndex} label="Last name" value={textValue(request.lastName)} pii />
-            <CopyRow roomIndex={roomIndex} label="First name" value={textValue(request.firstName)} pii />
+            <CopyRow roomLabel={roomLabel} label="Rate code" value={textValue(request.ratePlan)} />
+            <CopyRow roomLabel={roomLabel} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
+            <CopyRow roomLabel={roomLabel} label="Last name" value={textValue(request.lastName)} pii />
+            <CopyRow roomLabel={roomLabel} label="First name" value={textValue(request.firstName)} pii />
             <RoomTextField
-              roomIndex={roomIndex}
+              roomLabel={roomLabel}
               label="Booking agency"
               value={choice.bookingAgency}
               disabled={locked}
@@ -703,7 +711,7 @@ export function BookingCards({
               onChange={(value) => setChoice({ bookingAgency: value })}
             />
             <RoomTextField
-              roomIndex={roomIndex}
+              roomLabel={roomLabel}
               label="Organization"
               value={choice.organization}
               disabled={locked}
@@ -728,7 +736,7 @@ export function BookingCards({
                   ))}
                 </select>
               </label>
-              <CopyButton label="Source of business" roomIndex={roomIndex} value={choice.sourceOfBusiness} />
+              <CopyButton label="Source of business" roomLabel={roomLabel} value={choice.sourceOfBusiness} />
             </div>
             <div className="flex items-end gap-2">
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
@@ -748,7 +756,7 @@ export function BookingCards({
                   ))}
                 </select>
               </label>
-              <CopyButton label="Track" roomIndex={roomIndex} value={choice.track} />
+              <CopyButton label="Track" roomLabel={roomLabel} value={choice.track} />
             </div>
             <div className="flex items-end gap-2">
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
@@ -768,16 +776,16 @@ export function BookingCards({
                   ))}
                 </select>
               </label>
-              <CopyButton label="Guarantee" roomIndex={roomIndex} value={choice.guaranteeType} />
+              <CopyButton label="Guarantee" roomLabel={roomLabel} value={choice.guaranteeType} />
             </div>
             <CopyRow
-              roomIndex={roomIndex}
+              roomLabel={roomLabel}
               label="Special requests"
               value={(group?.specialRequests ?? []).join('; ')}
             />
             <RoomTextField
               multiline
-              roomIndex={roomIndex}
+              roomLabel={roomLabel}
               label="Reservation note"
               value={choice.reservationNote}
               disabled={locked}
@@ -785,7 +793,7 @@ export function BookingCards({
               onChange={(value) => setChoice({ reservationNote: value })}
             />
             <RoomTextField
-              roomIndex={roomIndex}
+              roomLabel={roomLabel}
               label="Booker name"
               value={choice.bookerName}
               disabled={locked}
@@ -793,7 +801,7 @@ export function BookingCards({
               onChange={(value) => setChoice({ bookerName: value })}
             />
             <RoomTextField
-              roomIndex={roomIndex}
+              roomLabel={roomLabel}
               label="Booker contact (email)"
               value={choice.bookerEmail}
               disabled={locked}
@@ -807,7 +815,7 @@ export function BookingCards({
                 confirmations: bookedCommit ? [bookedCommit.confirmationNumber] : [],
                 rooms: [
                   {
-                    label: `Room ${roomIndex}`,
+                    label: roomLabel,
                     specialRequests: group?.specialRequests,
                     authorisedBy: override?.note,
                     rate: {
@@ -829,22 +837,16 @@ export function BookingCards({
                 {PANE_CHILDREN_COPY}
               </p>
             ) : null}
-            {childCount === 0 ? (
-              client && savesOn ? (
-                <RoomSave
-                  stay={built.stay}
-                  missing={built.missing}
-                  save={saves[key] ?? {}}
-                  screenshot={client.screenshot}
-                  bookLabel={mode === 'on' ? BOOK_LABEL.on : BOOK_LABEL.lab}
-                  onPreview={(stay) => void previewRoom(key, client, stay)}
-                  onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
-                />
-              ) : (
-                <PrimaryButton disabled disabledReason="Coming soon">
-                  {BOOK_LABEL.on}
-                </PrimaryButton>
-              )
+            {childCount === 0 && client && savesOn ? (
+              <RoomSave
+                stay={built.stay}
+                missing={built.missing}
+                save={saves[key] ?? {}}
+                screenshot={client.screenshot}
+                bookLabel={mode === 'on' ? BOOK_LABEL.on : BOOK_LABEL.lab}
+                onPreview={(stay) => void previewRoom(key, client, stay)}
+                onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
+              />
             ) : null}
           </article>
         );

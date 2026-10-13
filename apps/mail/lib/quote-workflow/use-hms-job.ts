@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useHmsJobNoticeReporter } from './hms-job-notice-context';
 import {
   isSettled,
   pendingJobView,
@@ -40,16 +41,36 @@ function sameSurname(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
-/** True when a read-back job was queued for the resume's surname and arrival, each only when given. */
+function samePartyName(a: string, b: string): boolean {
+  const norm = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/** True when read-back found the requested party name or guest/date constraints, when given. */
 function resumedFor(
   request: HmsJobRequest | null,
+  prefetch: boolean,
+  confirmation: string | null,
   lastName: string | null,
+  partyName: string | null,
+  partyKind: 'company' | 'agency' | null,
   arrival: string | null,
   departure: string | null | undefined,
 ): boolean {
-  if (lastName && !(request?.kind === 'search_guest' && sameSurname(request.lastName, lastName))) return false;
-  if (arrival && request?.arrival !== arrival) return false;
-  if (departure !== undefined && (request?.kind !== 'search_guest' || (request.departure ?? null) !== departure))
+  if (confirmation && !(request?.kind === 'find' && request.confirmation === confirmation)) return false;
+  if (lastName && !(request?.kind === 'search_guest' && sameSurname(request.lastName, lastName)))
+    return false;
+  if (partyName && !(request?.kind === 'party' && samePartyName(request.name, partyName)))
+    return false;
+  if (
+    partyKind &&
+    !(request?.kind === 'party' && (request.partyKind === partyKind || (prefetch && !request.partyKind)))
+  ) return false;
+  if (arrival && (!request || !('arrival' in request) || request.arrival !== arrival)) return false;
+  if (
+    departure !== undefined &&
+    (request?.kind !== 'search_guest' || (request.departure ?? null) !== departure)
+  )
     return false;
   return true;
 }
@@ -60,20 +81,47 @@ export function useHmsJob(input: {
    * The job to read back after a remount. Null reads nothing back. A surname or arrival limits the read-back to a job
    * queued for them, so a thread with mail about two guests never shows one guest's job under the other.
    */
-  resume: { kind: HmsJobKind; confirmation?: string; lastName?: string; arrival?: string; departure?: string | null } | null;
+  resume: {
+    kind: HmsJobKind;
+    confirmation?: string;
+    lastName?: string;
+    name?: string;
+    partyKind?: 'company' | 'agency';
+    arrival?: string;
+    departure?: string | null;
+  } | null;
   /** Changes with the email or booking selection. The shown job is cleared and the read-back runs again. */
   scope: string | null;
-  /** Starts a search_guest request after read-back confirms that no matching job exists. */
+  /** Starts a missing request after read-back confirms that no matching job exists. */
   autoStartIfMissing?: boolean;
+  /** Wait after a miss, so changing inputs don't enqueue per-prefix jobs. */
+  autoStartDelayMs?: number;
+  /** Stop polling and show a local failure after this long; the persisted job remains read-only and may finish later. */
+  deadlineMs?: number;
+  /** Queue options used when Retry starts a fresh job after a terminal failure. */
+  retryOptions?: HmsJobQueueOptions;
+  /** Pane section to return to from the completion notice. Defaults by request kind. */
+  targetId?: string;
 }): HmsJobState {
   const { transport, resume, scope } = input;
   const autoStartIfMissing = input.autoStartIfMissing ?? false;
+  const autoStartDelayMs = Math.max(0, input.autoStartDelayMs ?? 0);
+  const deadlineMs = Math.max(0, input.deadlineMs ?? 0);
+  const retryOptions = input.retryOptions;
+  const targetId = input.targetId;
+  const noticeReporter = useHmsJobNoticeReporter();
+  const noticeObserverId = useId();
+  const nextNoticeJobId = useRef(0);
+  const activeNoticeJobId = useRef<string | null>(null);
+  const retryRef = useRef<() => void>(() => undefined);
   const resumeKind = resume?.kind ?? null;
   const resumeConfirmation = resume?.confirmation ?? null;
   const resumeLastName = resume?.lastName ?? null;
+  const resumeName = resume?.name ?? null;
+  const resumePartyKind = resume?.partyKind ?? null;
   const resumeArrival = resume?.arrival ?? null;
   const resumeHasDeparture = resume !== null && Object.hasOwn(resume, 'departure');
-  const resumeDeparture = resumeHasDeparture ? resume?.departure ?? null : undefined;
+  const resumeDeparture = resumeHasDeparture ? (resume?.departure ?? null) : undefined;
   const [runId, setRunId] = useState<string | null>(null);
   const [view, setView] = useState<HmsJobView | null>(null);
   const [queuing, setQueuing] = useState(false);
@@ -87,14 +135,28 @@ export function useHmsJob(input: {
   const generation = useRef(0);
   const lastRequest = useRef<HmsJobRequest | null>(null);
   const lastRequestOptions = useRef<HmsJobQueueOptions | undefined>(undefined);
+  const requestStartedAt = useRef<number | null>(null);
   const autoStartedKey = useRef<string | null>(null);
 
   const start = useCallback(
     (request: HmsJobRequest, options?: HmsJobQueueOptions) => {
       if (!transport) return;
       const mine = ++generation.current;
+      const jobId = `${noticeObserverId}:${++nextNoticeJobId.current}`;
+      activeNoticeJobId.current = jobId;
+      noticeReporter.started({
+        observerId: noticeObserverId,
+        jobId,
+        request,
+        options,
+        retryOptions,
+        targetId,
+        retry: () => retryRef.current(),
+        transport,
+      });
       lastRequest.current = request;
       lastRequestOptions.current = options;
+      requestStartedAt.current = Date.now();
       setRunId(null);
       setView(null);
       setQueueFailed(false);
@@ -102,25 +164,68 @@ export function useHmsJob(input: {
       setQueuing(true);
       (options ? transport.queue(request, options) : transport.queue(request)).then(
         (started) => {
-          if (generation.current !== mine) return;
+          if (generation.current !== mine) {
+            if (started.view) {
+              if (isSettled(started.view)) {
+                noticeReporter.settled(noticeObserverId, jobId, started.view, () => retryRef.current());
+              } else {
+                noticeReporter.pending({
+                  observerId: noticeObserverId,
+                  jobId,
+                  request: started.view.request ?? request,
+                  options,
+                  retryOptions,
+                  targetId,
+                  retry: () => retryRef.current(),
+                  transport,
+                  runId: started.runId,
+                });
+              }
+            } else if (started.runId !== null) {
+              noticeReporter.pending({
+                observerId: noticeObserverId,
+                jobId,
+                request,
+                options,
+                retryOptions,
+                targetId,
+                retry: () => retryRef.current(),
+                transport,
+                runId: started.runId,
+              });
+            } else {
+              noticeReporter.cancel(noticeObserverId, jobId);
+            }
+            return;
+          }
           setQueuing(false);
           // Job queue off: the lookup ran synchronously and its answer is already settled.
-          if (started.view) setView(started.view);
+          if (started.view) {
+            setView(started.view);
+            if (isSettled(started.view)) {
+              noticeReporter.settled(noticeObserverId, jobId, started.view, () => retryRef.current());
+            }
+          }
           else if (started.runId !== null) {
             // Queued until the first status read lands, so the panel never looks idle while the job exists.
             setView(pendingJobView(started.runId, request));
             setRunId(started.runId);
+          } else {
+            // An auto-start with the queue off queues nothing: the card stays idle until staff search by hand.
+            noticeReporter.cancel(noticeObserverId, jobId);
           }
-          // An auto-start with the queue off queues nothing: the card stays idle until staff search by hand.
         },
         () => {
-          if (generation.current !== mine) return;
+          if (generation.current !== mine) {
+            noticeReporter.queueFailed(noticeObserverId, jobId, () => retryRef.current());
+            return;
+          }
           setQueuing(false);
           setQueueFailed(true);
         },
       );
     },
-    [transport],
+    [noticeReporter, noticeObserverId, targetId, transport],
   );
 
   const retry = useCallback(() => {
@@ -138,13 +243,17 @@ export function useHmsJob(input: {
     // A persisted terminal failure can be retried as a fresh user job; keeping autoStart would reuse its failed key.
     // POLL_LOST with no known run keeps the stable key, so the server can reattach to a job that may be running.
     const options =
-      view?.status === 'failed' && view.failureClass !== 'POLL_LOST' ? undefined : lastRequestOptions.current;
+      view?.status === 'failed' && view.failureClass !== 'POLL_LOST'
+        ? retryOptions
+        : lastRequestOptions.current;
     start(last, options);
-  }, [runId, start, statusFailed, view]);
+  }, [retryOptions, runId, start, statusFailed, view]);
+  retryRef.current = retry;
 
   // Scope change or remount: clear, then read back the latest job of this kind on the thread.
   useEffect(() => {
     const mine = ++generation.current;
+    let autoStartTimer: ReturnType<typeof setTimeout> | null = null;
     lastRequest.current = null;
     setRunId(null);
     setView(null);
@@ -158,25 +267,68 @@ export function useHmsJob(input: {
       kind: resumeKind,
       ...(resumeConfirmation ? { confirmation: resumeConfirmation } : {}),
       ...(resumeLastName ? { lastName: resumeLastName } : {}),
+      ...(resumeName ? { name: resumeName } : {}),
+      ...(resumePartyKind ? { partyKind: resumePartyKind } : {}),
       ...(resumeArrival ? { arrival: resumeArrival } : {}),
       ...(resumeHasDeparture ? { departure: resumeDeparture } : {}),
     };
+    activeNoticeJobId.current = `${noticeObserverId}:${++nextNoticeJobId.current}`;
     transport.status(query).then(
       (found) => {
         if (!live || generation.current !== mine) return;
         setReadBackSettled(true);
-        if (found && resumedFor(found.request, resumeLastName, resumeArrival, resumeDeparture)) {
+        if (
+          found &&
+          resumedFor(
+            found.request,
+            found.prefetch,
+            resumeConfirmation,
+            resumeLastName,
+            resumeName,
+            resumePartyKind,
+            resumeArrival,
+            resumeDeparture,
+          )
+        ) {
           lastRequest.current = found.request;
           lastRequestOptions.current = undefined;
+          const foundAt = found.createdAt ? Date.parse(found.createdAt) : Number.NaN;
+          requestStartedAt.current = Number.isNaN(foundAt) ? Date.now() : foundAt;
           setView(found);
           if (!isSettled(found)) setRunId(found.runId);
           return;
         }
-        if (!autoStartIfMissing || resumeKind !== 'search_guest' || !resumeLastName || !resumeArrival) return;
-        const key = `${scope ?? ''}\u0000${resumeLastName.trim().replace(/\s+/g, ' ').toLowerCase()}\u0000${resumeArrival}`;
+        if (!autoStartIfMissing) return;
+        const autoRequest: HmsJobRequest | null =
+          resumeKind === 'find' && resumeConfirmation
+            ? { kind: 'find', confirmation: resumeConfirmation }
+            : resumeKind === 'search_guest' && resumeLastName && resumeArrival
+              ? { kind: 'search_guest', lastName: resumeLastName, arrival: resumeArrival }
+              : null;
+        if (!autoRequest) return;
+        const key =
+          autoRequest.kind === 'find'
+            ? [scope ?? '', 'find', autoRequest.confirmation].join('\u0000')
+            : autoRequest.kind === 'search_guest'
+              ? [
+                  scope ?? '',
+                  autoRequest.lastName.trim().replace(/\s+/g, ' ').toLowerCase(),
+                  autoRequest.arrival,
+                ].join('\u0000')
+              : [
+                  scope ?? '',
+                  'party',
+                  autoRequest.name.trim().replace(/\s+/g, ' ').toLowerCase(),
+                  autoRequest.partyKind ?? '',
+                ].join('\u0000');
         if (autoStartedKey.current === key) return;
-        autoStartedKey.current = key;
-        start({ kind: 'search_guest', lastName: resumeLastName, arrival: resumeArrival }, { autoStart: true });
+        const startMissing = () => {
+          if (!live || generation.current !== mine || autoStartedKey.current === key) return;
+          autoStartedKey.current = key;
+          start(autoRequest, { autoStart: true });
+        };
+        if (autoStartDelayMs > 0) autoStartTimer = setTimeout(startMissing, autoStartDelayMs);
+        else startMissing();
       },
       () => {
         if (!live || generation.current !== mine) return;
@@ -186,20 +338,43 @@ export function useHmsJob(input: {
     );
     return () => {
       live = false;
+      if (autoStartTimer !== null) clearTimeout(autoStartTimer);
     };
   }, [
     transport,
+    noticeObserverId,
     scope,
     resumeKind,
     resumeConfirmation,
     resumeLastName,
+    resumeName,
+    resumePartyKind,
     resumeArrival,
     resumeHasDeparture,
     resumeDeparture,
     autoStartIfMissing,
+    autoStartDelayMs,
     statusRetryRound,
     start,
   ]);
+
+  // A four-minute party deadline releases the rate hold even if a queue row keeps moving in the background.
+  useEffect(() => {
+    if (!deadlineMs || !runId || view?.prefetch || (view !== null && isSettled(view))) return;
+    const createdAt = view?.createdAt ? Date.parse(view.createdAt) : Number.NaN;
+    const startedAt = Number.isNaN(createdAt)
+      ? (requestStartedAt.current ?? Date.now())
+      : createdAt;
+    const timer = window.setTimeout(() => {
+      setView((current) =>
+        current?.runId === runId
+          ? { ...current, status: 'failed', failureClass: 'PARTY_SEARCH_TIMEOUT' }
+          : current,
+      );
+      setRunId((current) => (current === runId ? null : current));
+    }, Math.max(0, deadlineMs - (Date.now() - startedAt)));
+    return () => window.clearTimeout(timer);
+  }, [deadlineMs, runId, view?.createdAt, view?.status]);
 
   // Polls the current run id until it settles. A new run id, a new scope or an unmount ends the old loop.
   useEffect(() => {
@@ -214,6 +389,55 @@ export function useHmsJob(input: {
       live = false;
     };
   }, [transport, runId, pollRound]);
+
+  const lastNoticeScope = useRef(scope);
+  useEffect(() => {
+    if (lastNoticeScope.current !== scope) {
+      lastNoticeScope.current = scope;
+      noticeReporter.detached(noticeObserverId);
+      return;
+    }
+    const request = view?.request ?? lastRequest.current;
+    if (!request) return;
+    const jobId = activeNoticeJobId.current;
+    if (!jobId) return;
+    const input = {
+      observerId: noticeObserverId,
+      jobId,
+      request,
+      options: lastRequestOptions.current,
+      ...(retryOptions ? { retryOptions } : {}),
+      targetId,
+      retry: () => retryRef.current(),
+      transport,
+      runId: view?.runId ?? runId,
+    };
+    if (queuing || (view !== null && !isSettled(view))) {
+      noticeReporter.pending(input);
+      return;
+    }
+    if (view && isSettled(view)) noticeReporter.settled(noticeObserverId, jobId, view, () => retryRef.current());
+    else if (queueFailed) noticeReporter.queueFailed(noticeObserverId, jobId, () => retryRef.current());
+  }, [
+    noticeReporter,
+    noticeObserverId,
+    queueFailed,
+    queuing,
+    runId,
+    scope,
+    targetId,
+    transport,
+    view,
+    retryOptions,
+  ]);
+
+  useEffect(
+    () => () => {
+      generation.current += 1;
+      noticeReporter.detached(noticeObserverId);
+    },
+    [noticeReporter, noticeObserverId],
+  );
 
   return { view, queuing, queueFailed, statusFailed, readBackSettled, start, retry };
 }

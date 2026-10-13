@@ -88,6 +88,7 @@ import {
   openProofPage,
   openThread,
   rateSegments,
+  stayKeyOfRatesInput,
   STEP_MS,
   SETTLE_MS,
   unexpectedBlocks,
@@ -97,6 +98,7 @@ import {
   type GuardDecision,
   type MailboxRecord,
 } from './nava-proof-kit';
+export { stayKeyOfRatesInput } from './nava-proof-kit';
 import {
   ANALYSIS_PROCEDURES,
   classifyTrpcRequest,
@@ -211,22 +213,6 @@ export function newAe1GuardState(): Ae1GuardState {
     pdfStays: null,
     workbookStays: null,
   };
-}
-
-/** The stay a rates run is for: its groups' one arrival:departure. Null when the groups are missing or span dates. */
-export function stayKeyOfRatesInput(input: unknown): string | null {
-  const groups = (input as { groups?: unknown } | null)?.groups;
-  if (!Array.isArray(groups) || groups.length === 0) return null;
-  const keys = new Set(
-    groups.map((group) => {
-      const row = (group ?? {}) as { arrivalDate?: unknown; departureDate?: unknown };
-      return typeof row.arrivalDate === 'string' && typeof row.departureDate === 'string'
-        ? `${row.arrivalDate}:${row.departureDate}`
-        : '';
-    }),
-  );
-  const [key] = keys;
-  return keys.size === 1 && key ? key : null;
 }
 
 function partyCount(input: unknown): number {

@@ -1,16 +1,12 @@
-import { TRPCError } from '@trpc/server';
-import {
-  findStay,
-  GUEST_SURNAME_PATTERN,
-  paneStayLookupLoaders,
-  searchGuest,
-} from '../../ai/pane-stay-lookup.js';
 import {
   cancelHmsBatch,
   enqueueHmsBatch,
   HmsBatchInputError,
+  HmsPartyQueueLimitError,
   hmsJobQueueEnabled,
+  confirmationPrefetchIdempotencyKey,
   guestSearchPrefetchIdempotencyKey,
+  queueUserPartyHmsJob,
   queueUserHmsJob,
   readHmsBatchView,
   readHmsJobView,
@@ -24,6 +20,12 @@ import {
   registerPaneRun,
 } from '../../ai/pane-stay-save.js';
 import {
+  findStay,
+  GUEST_SURNAME_PATTERN,
+  paneStayLookupLoaders,
+  searchGuest,
+} from '../../ai/pane-stay-lookup.js';
+import {
   classifyFind,
   classifySearch,
   recordToolOutcome,
@@ -31,6 +33,7 @@ import {
 } from '../../ai/hitl-tool-run.js';
 import { availabilityRequestSchema } from '../../ai/hms-availability.js';
 import { mailboxProcedure, router } from '../trpc.js';
+import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
 const confirmation = z.string().regex(/^\d+-\d+$/);
@@ -51,7 +54,7 @@ const searchGuestInput = z
 // Queued variants: the same lookups as read_tool jobs on the hms lane. The thread anchors the job to mail.
 const threadIdInput = z.string().min(1);
 const queueFindInput = z
-  .object({ threadId: threadIdInput, confirmation, arrival: arrival.optional() })
+  .object({ threadId: threadIdInput, confirmation, arrival: arrival.optional(), autoStart: z.literal(true).optional() })
   .strict();
 const queueSearchGuestInput = z
   .object({
@@ -65,6 +68,14 @@ const queueSearchGuestInput = z
   .refine((input) => !input.autoStart || !input.departure, {
     message: 'Auto-started guest searches must not include departure',
   });
+const queuePartyInput = z
+  .object({
+    threadId: threadIdInput,
+    name: z.string().min(1).max(256),
+    partyKind: z.enum(['company', 'agency']).optional(),
+    retry: z.literal(true).optional(),
+  })
+  .strict();
 const hmsBatchIdInput = z.object({ batchId: z.string().uuid() }).strict();
 const hmsBatchQueueInput = z
   .object({
@@ -82,10 +93,12 @@ const jobStatusInput = z.union([
   z
     .object({
       threadId: threadIdInput,
-      kind: z.enum(['find', 'search_guest', 'availability']),
+      kind: z.enum(['find', 'search_guest', 'party', 'availability']),
       confirmation: confirmation.optional(),
       // A guest search is picked by its surname too: one thread can carry vouchers for different guests.
       lastName: searchGuestInput.shape.lastName.optional(),
+      name: z.string().min(1).max(256).optional(),
+      partyKind: z.enum(['company', 'agency']).optional(),
       // An availability snapshot is picked by its stay's dates, and by its rooms when two stays share the dates.
       arrival: arrival.optional(),
       departure: arrival.nullable().optional(),
@@ -103,6 +116,7 @@ const paneStayLookupScreenshotInput = z
   .strict();
 
 export const paneStayLookupRouter = router({
+  jobQueueEnabled: mailboxProcedure.query(() => hmsJobQueueEnabled()),
   findStay: mailboxProcedure
     .input(findStayInput)
     .use(({ input, ctx, next }) =>
@@ -119,12 +133,12 @@ export const paneStayLookupRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-    const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-    return findStay(input, {
-      lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
-      onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
-    });
-  }),
+      const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
+      return findStay(input, {
+        lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
+        onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
+      });
+    }),
   searchGuest: mailboxProcedure
     .input(searchGuestInput)
     .use(({ input, ctx, next }) =>
@@ -141,12 +155,12 @@ export const paneStayLookupRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-    const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-    return searchGuest(input, {
-      lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
-      onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
-    });
-  }),
+      const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
+      return searchGuest(input, {
+        lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
+        onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
+      });
+    }),
   // HMS_JOB_QUEUE off (the default): nothing is queued. runId null tells the pane to run findStay or searchGuest above.
   queueFind: mailboxProcedure.input(queueFindInput).mutation(async ({ input, ctx }) => {
     if (!hmsJobQueueEnabled()) return { runId: null };
@@ -155,6 +169,9 @@ export const paneStayLookupRouter = router({
       userId: ctx.sessionUser.id,
       threadId: input.threadId,
       request: { kind: 'find', confirmation: input.confirmation, arrival: input.arrival },
+      ...(input.autoStart
+        ? { idempotencyKey: confirmationPrefetchIdempotencyKey(ctx.activeTransportId, input.confirmation) }
+        : {}),
     });
     if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'thread has no inbound mail' });
     return { runId: run.id };
@@ -187,6 +204,29 @@ export const paneStayLookupRouter = router({
       if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'thread has no inbound mail' });
       return { runId: run.id };
     }),
+  queueParty: mailboxProcedure.input(queuePartyInput).mutation(async ({ input, ctx }) => {
+    if (!hmsJobQueueEnabled()) return { runId: null };
+    try {
+      const run = await queueUserPartyHmsJob({
+        transportId: ctx.activeTransportId,
+        userId: ctx.sessionUser.id,
+        threadId: input.threadId,
+        request: {
+          kind: 'party',
+          name: input.name,
+          ...(input.partyKind ? { partyKind: input.partyKind } : {}),
+        },
+        ...(input.retry ? { retry: true } : {}),
+      });
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'thread has no inbound mail' });
+      return { runId: run.id };
+    } catch (error) {
+      if (error instanceof HmsPartyQueueLimitError) {
+        throw new TRPCError({ code: 'TOO_MANY_REQUESTS', message: error.message });
+      }
+      throw error;
+    }
+  }),
   // Work-item IDs are validated as one batch; disabled queue remains a no-op like queueFind.
   queueBatch: mailboxProcedure.input(hmsBatchQueueInput).mutation(async ({ input, ctx }) => {
     if (!hmsJobQueueEnabled()) return null;
@@ -204,31 +244,46 @@ export const paneStayLookupRouter = router({
       throw error;
     }
   }),
-  batchStatus: mailboxProcedure.input(hmsBatchIdInput).query(({ input, ctx }) =>
-    hmsJobQueueEnabled()
-      ? readHmsBatchView({ batchId: input.batchId, transportId: ctx.activeTransportId })
-      : null,
-  ),
-  cancelBatch: mailboxProcedure.input(hmsBatchIdInput).mutation(({ input, ctx }) =>
-    hmsJobQueueEnabled()
-      ? cancelHmsBatch({ batchId: input.batchId, transportId: ctx.activeTransportId })
-      : null,
-  ),
-  jobStatus: mailboxProcedure.input(jobStatusInput).query(({ input, ctx }) =>
-    hmsJobQueueEnabled() ? readHmsJobView({ transportId: ctx.activeTransportId, ...input }) : null,
-  ),
+  batchStatus: mailboxProcedure
+    .input(hmsBatchIdInput)
+    .query(({ input, ctx }) =>
+      hmsJobQueueEnabled()
+        ? readHmsBatchView({ batchId: input.batchId, transportId: ctx.activeTransportId })
+        : null,
+    ),
+  cancelBatch: mailboxProcedure
+    .input(hmsBatchIdInput)
+    .mutation(({ input, ctx }) =>
+      hmsJobQueueEnabled()
+        ? cancelHmsBatch({ batchId: input.batchId, transportId: ctx.activeTransportId })
+        : null,
+    ),
+  jobStatus: mailboxProcedure.input(jobStatusInput).query(({ input, ctx }) => {
+    if (!hmsJobQueueEnabled()) return null;
+    const jobInput =
+      'runId' in input
+        ? {
+            transportId: ctx.activeTransportId,
+            runId: input.runId,
+            staffQuoteOwnerId: ctx.sessionUser.id,
+          }
+        : { transportId: ctx.activeTransportId, ...input };
+    return readHmsJobView(jobInput);
+  }),
   // Same reader as paneStayCancel.paneStayScreenshot. A lookup the hms worker ran is not in this process's registry,
   // so on a miss its job record registers the directory, and the read is tried once more.
-  screenshot: mailboxProcedure.input(paneStayLookupScreenshotInput).query(async ({ input, ctx }) => {
-    const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-    const read = () => readPaneStayScreenshot({ runId: input.runId, name: input.name, owner });
-    const first = await read();
-    if (first.status === 'ok') return first;
-    await registerJobScreenshotRun({
-      transportId: ctx.activeTransportId,
-      owner,
-      cliRunId: input.runId,
-    }).catch(() => undefined);
-    return read();
-  }),
+  screenshot: mailboxProcedure
+    .input(paneStayLookupScreenshotInput)
+    .query(async ({ input, ctx }) => {
+      const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
+      const read = () => readPaneStayScreenshot({ runId: input.runId, name: input.name, owner });
+      const first = await read();
+      if (first.status === 'ok') return first;
+      await registerJobScreenshotRun({
+        transportId: ctx.activeTransportId,
+        owner,
+        cliRunId: input.runId,
+      }).catch(() => undefined);
+      return read();
+    }),
 });

@@ -55,14 +55,18 @@ describe('partyFinderFromTrpc', () => {
 describe('party copy', () => {
   it('shows the picked name with the HMS mark, and says why a search found nothing', () => {
     expect(partyChipText(ABC)).toBe('✓ ABC Travel (Pty) Ltd (HMS)');
-    expect(partyNoCandidateNote('no_match')).toBe(
-      'Not found in HMS — quote uses public rates',
+    expect(partyNoCandidateNote('no_match', 'company', 'ABC Travel')).toBe(
+      'No company in HMS matches “ABC Travel”. Check the spelling or search a shorter name.',
     );
-    expect(partyNoCandidateNote('refused_lock_busy')).toContain('busy');
+    expect(partyNoCandidateNote('refused_lock_busy')).toBe(
+      'HMS is busy with another lookup. Nava will retry.',
+    );
     expect(partyNoCandidateNote('refused_flag_off')).toBe(
-      'HMS rate lookup is turned off here, so company and agency rates are not checked.',
+      'Company and agency rates are switched off.',
     );
-    expect(partyNoCandidateNote('execution_failure')).toBe("HMS search didn't apply — try again");
+    expect(partyNoCandidateNote('execution_failure')).toBe(
+      "Couldn't reach HMS. Try again in a minute.",
+    );
     expect(PARTY_TRUNCATED_NOTE).toBe('50+ matches — type more of the name');
   });
 });
@@ -70,9 +74,7 @@ describe('party copy', () => {
 describe('PartyPicker', () => {
   it('shows the hint, and keeps Find in HMS disabled until a name is typed', () => {
     const find = vi.fn();
-    render(
-      <PartyPicker name="  " parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
-    );
+    render(<PartyPicker name="  " parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />);
     expect(screen.getByText(PARTY_PICKER_HINT)).toBeTruthy();
     expect(
       (screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement).disabled,
@@ -92,11 +94,9 @@ describe('PartyPicker', () => {
       }),
     );
     const onPick = vi.fn();
-    render(
-      <PartyPicker name="ABC" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />,
-    );
+    render(<PartyPicker name="ABC" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    expect(screen.getByRole('status').textContent).toContain('about a minute');
+    expect(screen.getByRole('status').textContent).toContain('Searching HMS');
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'ABC Travel Holdings' })).toBeTruthy(),
     );
@@ -116,11 +116,18 @@ describe('PartyPicker', () => {
       <PartyPicker name="Nobody" parties={{}} find={find} onPick={onPick} onClear={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    await waitFor(() => expect(screen.getByText(/Not found in HMS/)).toBeTruthy());
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          'No company or agency in HMS matches “Nobody”. Check the spelling or ' +
+            'search a shorter name.',
+        ),
+      ).toBeTruthy(),
+    );
     expect(onPick).not.toHaveBeenCalled();
   });
 
-  it('says the search did not apply when the search itself failed, and never says no match', async () => {
+  it('names HMS failure without saying no match', async () => {
     const find = vi.fn(
       async (): Promise<PartyFindReply> => ({
         outcome: 'execution_failure',
@@ -128,11 +135,11 @@ describe('PartyPicker', () => {
         truncated: false,
       }),
     );
-    render(
-      <PartyPicker name="360" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
-    );
+    render(<PartyPicker name="360" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    await waitFor(() => expect(screen.getByText("HMS search didn't apply — try again")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText("Couldn't reach HMS. Try again in a minute.")).toBeTruthy(),
+    );
     expect(screen.queryByText(/Not found in HMS/)).toBeNull();
   });
 
@@ -144,9 +151,7 @@ describe('PartyPicker', () => {
         truncated: true,
       }),
     );
-    render(
-      <PartyPicker name="Tour" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
-    );
+    render(<PartyPicker name="Tour" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByText(PARTY_TRUNCATED_NOTE)).toBeTruthy());
     expect(screen.getByRole('button', { name: 'Tourvest Branch One' })).toBeTruthy();
@@ -160,7 +165,9 @@ describe('PartyPicker', () => {
       <PartyPicker name="Safari" parties={{}} find={find} onPick={vi.fn()} onClear={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
-    await waitFor(() => expect(screen.getByText(/didn't apply/)).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText("Couldn't reach HMS. Try again in a minute.")).toBeTruthy(),
+    );
   });
 
   it('shows the chip with Clear once a party is picked, whichever kind it is, and Clear calls back', () => {

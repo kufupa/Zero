@@ -255,7 +255,9 @@ describe('Outlook pane quote proposal PDF', () => {
     fireEvent.change(await findReadStayArrival(), { target: { value: '2026-11-13' } });
     // Get rates waits for a room type on every row; the email gave none.
     fireEvent.change(await screen.findByLabelText('Room type'), { target: { value: 'STQN' } });
-    fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
+    const search = screen.getByRole('button', { name: /^Search availability$/i });
+    await waitFor(() => expect((search as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(search);
     await waitFor(() => expect(prepareDraftMutateMock).toHaveBeenCalledTimes(1));
     const sent = prepareDraftMutateMock.mock.calls[0]?.[0] as {
       analysis: { groups: Array<{ arrival: string | null; departure: string | null }> };
@@ -534,9 +536,7 @@ describe('Outlook pane quote proposal PDF', () => {
     await prepareReviewedQuote();
     const button = screen.getByRole('button', { name: /Draft quotation into email reply/i });
     fireEvent.click(button);
-    await waitFor(() =>
-      expect(screen.getByRole('status').textContent).toMatch(/Check Outlook Drafts/i),
-    );
+    await waitFor(() => expect(screen.getByText(/Check Outlook Drafts/i)).toBeDefined());
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
     fireEvent.click(button);
     await waitFor(() =>

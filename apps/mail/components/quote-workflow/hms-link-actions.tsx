@@ -67,10 +67,13 @@ export function HmsLinkActions({
   confirmation,
   guestSurname,
   arrival,
+  confirmationOnly = false,
 }: {
   confirmation: string;
   guestSurname?: string | null;
   arrival?: string | null;
+  /** A result/candidate card needs only the number copied from HMS. */
+  confirmationOnly?: boolean;
 }) {
   const landing = hmsLandingUrl();
   const number = confirmation.trim();
@@ -136,7 +139,7 @@ export function HmsLinkActions({
 
   return (
     <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
-      {landing ? (
+      {!confirmationOnly && landing ? (
         <button type="button" className={buttonClass} onClick={() => void copy('link', landing)}>
           {label('link', 'Copy link')}
         </button>
@@ -144,10 +147,12 @@ export function HmsLinkActions({
       <button type="button" className={buttonClass} onClick={() => void copy('number', number)}>
         {label('number', 'Copy confirmation')}
       </button>
-      <button type="button" className={buttonClass} onClick={() => void copy('hms', hmsCopy)}>
-        {label('hms', 'Copy for HMS')}
-      </button>
-      {landing ? (
+      {!confirmationOnly ? (
+        <button type="button" className={buttonClass} onClick={() => void copy('hms', hmsCopy)}>
+          {label('hms', 'Copy for HMS')}
+        </button>
+      ) : null}
+      {!confirmationOnly && landing ? (
         <a href={landing} className={linkClass}>
           Open HMS
         </a>

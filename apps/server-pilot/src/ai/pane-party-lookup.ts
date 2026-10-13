@@ -2,12 +2,17 @@ import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
   PANE_PROPERTY_LOCK_WAIT_MS,
+  type PropertyReadLockAcquisitionOptions,
 } from '../hms/property-read-lock.js';
+import { matchKey, partyNameParts, partySearchTerms, type PartyNameParts } from './party-match.js';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { paneStayPropertyLock, type PaneStayLock } from './pane-stay-save.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
-import { matchKey, partyNameParts, partySearchTerms, type PartyNameParts } from './party-match.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { HMS_JOB_PROMPT_VERSION } from './run-ledger.js';
+import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { aiWorkflowRun } from '../db/schema/mail.js';
+import { getDb, type DB } from '../db/client.js';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -139,7 +144,10 @@ function matchRank(query: string, name: string): number {
 }
 
 /** One kind's candidates: one row per HMS id, the best matches first, capped. `more` says there were further rows. */
-function rankKindCandidates(query: string, candidates: readonly PanePartyCandidate[]): { kept: PanePartyCandidate[]; more: boolean } {
+function rankKindCandidates(
+  query: string,
+  candidates: readonly PanePartyCandidate[],
+): { kept: PanePartyCandidate[]; more: boolean } {
   const seen = new Set<string>();
   const ranked = candidates
     .filter((candidate) => {
@@ -151,7 +159,10 @@ function rankKindCandidates(query: string, candidates: readonly PanePartyCandida
     .map((candidate, index) => ({ candidate, index, rank: matchRank(query, candidate.name) }))
     .sort((left, right) => left.rank - right.rank || left.index - right.index)
     .map((row) => row.candidate);
-  return { kept: ranked.slice(0, PANE_PARTY_PER_KIND_CAP), more: ranked.length > PANE_PARTY_PER_KIND_CAP };
+  return {
+    kept: ranked.slice(0, PANE_PARTY_PER_KIND_CAP),
+    more: ranked.length > PANE_PARTY_PER_KIND_CAP,
+  };
 }
 
 /**
@@ -171,7 +182,10 @@ export function mergePartyKindResults(
   const results: PanePartyCandidate[] = [];
   let truncated = perKind.some((result) => result.truncated);
   for (const kind of PARTY_KINDS) {
-    const ranked = rankKindCandidates(query, candidates.filter((candidate) => candidate.kind === kind));
+    const ranked = rankKindCandidates(
+      query,
+      candidates.filter((candidate) => candidate.kind === kind),
+    );
     results.push(...ranked.kept);
     truncated = truncated || ranked.more;
   }
@@ -184,7 +198,10 @@ export function mergePartyKindResults(
 }
 
 /** One runner run for one kind and name. The sweep and the pane both call it, so both use the fail-closed runner. */
-export async function spawnPartyLookup(input: { kind: PanePartyKind; name: string }): Promise<unknown> {
+export async function spawnPartyLookup(input: {
+  kind: PanePartyKind;
+  name: string;
+}): Promise<unknown> {
   // mkdtemp makes the directory 0700. The request holds only the typed name, and the directory goes after the run.
   const dir = await mkdtemp(join(tmpdir(), 'pane-party-'));
   try {
@@ -204,7 +221,12 @@ export async function spawnPartyLookup(input: { kind: PanePartyKind; name: strin
         [PARTY_LOOKUP, '--request', requestPath],
         // The same borrowed browser and credential file the stay lookups use.
         // SIGKILL: a runner stuck on HMS is stopped outright, not asked politely. Its temp request goes in the finally.
-        { timeout: PARTY_LOOKUP_KIND_TIMEOUT_MS, killSignal: 'SIGKILL', env: paneStaySpawnEnv(), maxBuffer: 1024 * 1024 },
+        {
+          timeout: PARTY_LOOKUP_KIND_TIMEOUT_MS,
+          killSignal: 'SIGKILL',
+          env: paneStaySpawnEnv(),
+          maxBuffer: 1024 * 1024,
+        },
       ));
     } catch (error) {
       // The CLI exits 2 on failures but still prints its result line. Without one, the run failed.
@@ -233,11 +255,15 @@ function rememberPartyRows(rows: readonly PanePartyCandidate[]): void {
   for (const [key, entry] of partyRowCache) {
     if (now - entry.at >= PARTY_ROW_CACHE_TTL_MS) partyRowCache.delete(key);
   }
-  for (const row of rows) partyRowCache.set(`${row.kind}:${row.nativeId}`, { name: row.name, at: now });
+  for (const row of rows)
+    partyRowCache.set(`${row.kind}:${row.nativeId}`, { name: row.name, at: now });
 }
 
 /** The name HMS gave this id, when it was remembered within the TTL and still matches the name asked for. */
-function rememberedPartyName(pick: { kind: PanePartyKind; nativeId: string }, name: string): string | null {
+function rememberedPartyName(
+  pick: { kind: PanePartyKind; nativeId: string },
+  name: string,
+): string | null {
   const key = `${pick.kind}:${pick.nativeId}`;
   const entry = partyRowCache.get(key);
   if (!entry) return null;
@@ -246,6 +272,79 @@ function rememberedPartyName(pick: { kind: PanePartyKind; nativeId: string }, na
     return null;
   }
   return sameHmsName(entry.name, name) ? entry.name : null;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/** Recent successful party-job snapshots are shared across processes
+ * for the same mailbox transport.
+ */
+async function rememberedPartyJobName(
+  pick: { kind: PanePartyKind; nativeId: string },
+  name: string,
+  transportId: string,
+  db: DB = getDb(),
+): Promise<string | null> {
+  const normalized = name.replace(/\s+/g, ' ').trim().toLowerCase();
+  const rows = await db
+    .select({ readRequest: aiWorkflowRun.readRequest, readResult: aiWorkflowRun.readResult })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.transportId, transportId),
+        eq(aiWorkflowRun.runKind, 'read_tool'),
+        eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+        eq(aiWorkflowRun.state, 'succeeded'),
+        gte(aiWorkflowRun.finishedAt, new Date(Date.now() - PARTY_ROW_CACHE_TTL_MS)),
+        sql`${aiWorkflowRun.readRequest}->>'kind' = 'party'`,
+        sql`exists (
+          select 1
+          from jsonb_array_elements(
+            case
+              when jsonb_typeof(${aiWorkflowRun.readResult}->'results') = 'array'
+                then ${aiWorkflowRun.readResult}->'results'
+              else '[]'::jsonb
+            end
+          ) as candidate(value)
+          where candidate.value->>'kind' = ${pick.kind}
+            and candidate.value->>'nativeId' = ${pick.nativeId}
+            and lower(
+              btrim(
+                regexp_replace(
+                  candidate.value->>'name',
+                  '[[:space:]]+',
+                  ' ',
+                  'g'
+                )
+              )
+            ) = ${normalized}
+        )`,
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.finishedAt), desc(aiWorkflowRun.createdAt))
+    .limit(1);
+  for (const row of rows) {
+    const request = objectRecord(row.readRequest);
+    if (request.partyKind && request.partyKind !== pick.kind) continue;
+    const result = objectRecord(row.readResult);
+    if (!Array.isArray(result.results)) continue;
+    for (const candidateValue of result.results) {
+      const candidate = objectRecord(candidateValue);
+      if (
+        candidate.kind === pick.kind &&
+        candidate.nativeId === pick.nativeId &&
+        typeof candidate.name === 'string' &&
+        sameHmsName(candidate.name, name)
+      ) {
+        return candidate.name;
+      }
+    }
+  }
+  return null;
 }
 
 /** Test seam: forgets every remembered row. */
@@ -267,7 +366,10 @@ function rowScore(name: string, parts: PartyNameParts, row: string): number {
 }
 
 /** The rows best first, one per HMS id. Equal scores keep HMS's order. */
-function rankRows(name: string, rows: readonly PanePartyCandidate[]): Array<{ row: PanePartyCandidate; score: number }> {
+function rankRows(
+  name: string,
+  rows: readonly PanePartyCandidate[],
+): Array<{ row: PanePartyCandidate; score: number }> {
   const parts = partyNameParts(name);
   const seen = new Set<string>();
   return rows
@@ -314,10 +416,14 @@ async function lookupKind(
   term: string,
   lock: PaneStayLock,
   spawn: (input: { kind: PanePartyKind; name: string }) => Promise<unknown>,
+  acquisition?: PropertyReadLockAcquisitionOptions,
 ): Promise<PanePartyLookupCore> {
   let raw: unknown;
   try {
-    raw = await lock.withLock(() => spawn({ kind, name: term }), acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    raw = await lock.withLock(
+      () => spawn({ kind, name: term }),
+      acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+    );
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return withoutResults('refused_lock_busy');
     warnPaneStaySpawnFailed('party', error);
@@ -335,6 +441,7 @@ async function findPartyOfKind(
   name: string,
   lock: PaneStayLock,
   spawn: (input: { kind: PanePartyKind; name: string }) => Promise<unknown>,
+  acquisition?: PropertyReadLockAcquisitionOptions,
 ): Promise<PanePartyFindResult> {
   const terms = partySearchTerms(name).slice(0, PARTY_KIND_SEARCH_TERMS);
   const tries = terms.length ? terms : [name];
@@ -342,7 +449,7 @@ async function findPartyOfKind(
   let searchedFor = tries[0];
   for (const term of tries) {
     searchedFor = term;
-    core = await lookupKind(kind, term, lock, spawn);
+    core = await lookupKind(kind, term, lock, spawn, acquisition);
     if (!ANSWERED_OUTCOMES.has(core.outcome) || core.results.length) break;
   }
   return rankedReply(name, core, searchedFor);
@@ -353,7 +460,10 @@ async function findPartyOfKind(
  * that kind is searched, and its HMS texts are tried in turn. Without one, it runs one lookup per kind. It links nothing:
  * every candidate goes back to staff, who pick one. The kill switch QUOTE_RATE_CONTEXT=off refuses it.
  */
-export async function findParty(input: PanePartyFindInput): Promise<PanePartyFindResult> {
+export async function findParty(
+  input: PanePartyFindInput,
+  options: { acquisition?: PropertyReadLockAcquisitionOptions } = {},
+): Promise<PanePartyFindResult> {
   const enabled = panePartyLookupLoaders.enabled ?? (() => quoteRateContextEnabled());
   if (!enabled()) return replyWithout('refused_flag_off');
   const name = typeof input.name === 'string' ? input.name.trim() : '';
@@ -361,14 +471,14 @@ export async function findParty(input: PanePartyFindInput): Promise<PanePartyFin
   const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
   if (!lock) return replyWithout('refused_lock_unavailable');
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
-  if (input.kind) return findPartyOfKind(input.kind, name, lock, spawn);
+  if (input.kind) return findPartyOfKind(input.kind, name, lock, spawn, options.acquisition);
   const perKind: PanePartyLookupCore[] = [];
   for (const kind of PARTY_KINDS) {
     let raw: unknown;
     try {
       raw = await lock.withLock(
         () => spawn({ kind, name }),
-        acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+        options.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
       );
     } catch (error) {
       if (isPropertyReadLockDeadline(error)) {
@@ -382,7 +492,11 @@ export async function findParty(input: PanePartyFindInput): Promise<PanePartyFin
     const result = panePartyFindResultFromCli(kind, raw);
     perKind.push(result);
     // A refusal or failure already decides the search, so the other kind is not run.
-    if (result.outcome !== 'resolved' && result.outcome !== 'ambiguous' && result.outcome !== 'no_match') {
+    if (
+      result.outcome !== 'resolved' &&
+      result.outcome !== 'ambiguous' &&
+      result.outcome !== 'no_match'
+    ) {
       break;
     }
   }
@@ -394,7 +508,12 @@ export type VerifiedPartyResult =
   | { ok: true; party: { kind: PanePartyKind; nativeId: string; name: string } }
   | {
       ok: false;
-      reason: 'refused_flag_off' | 'refused_lock_busy' | 'refused_lock_unavailable' | 'not_found' | 'unverified';
+      reason:
+        | 'refused_flag_off'
+        | 'refused_lock_busy'
+        | 'refused_lock_unavailable'
+        | 'not_found'
+        | 'unverified';
     };
 
 function sameHmsName(left: string, right: string): boolean {
@@ -407,24 +526,41 @@ function sameHmsName(left: string, right: string): boolean {
  * the same kind, and binds only a row with the same HMS id and the same name. The name bound is HMS's own, so the quote
  * validator sees the name HMS reports. A client-sent id that HMS does not return is refused.
  */
-export async function verifyPartyPick(pick: {
-  kind: PanePartyKind;
-  nativeId: string;
-  name: string;
-}): Promise<VerifiedPartyResult> {
+export async function verifyPartyPick(
+  pick: {
+    kind: PanePartyKind;
+    nativeId: string;
+    name: string;
+    transportId?: string;
+  },
+  db?: DB,
+): Promise<VerifiedPartyResult> {
   const enabled = panePartyLookupLoaders.enabled ?? (() => quoteRateContextEnabled());
   if (!enabled()) return { ok: false, reason: 'refused_flag_off' };
   const name = typeof pick.name === 'string' ? pick.name.trim() : '';
   if (!name || name.length > 256 || !pick.nativeId) return { ok: false, reason: 'not_found' };
   // A row HMS returned within the TTL, with the same name, binds with no HMS run and no lock wait.
   const remembered = rememberedPartyName(pick, name);
-  if (remembered !== null) return { ok: true, party: { kind: pick.kind, nativeId: pick.nativeId, name: remembered } };
+  if (remembered !== null)
+    return { ok: true, party: { kind: pick.kind, nativeId: pick.nativeId, name: remembered } };
+  if (pick.transportId) {
+    try {
+      const fromJob = await rememberedPartyJobName(pick, name, pick.transportId, db);
+      if (fromJob !== null)
+        return { ok: true, party: { kind: pick.kind, nativeId: pick.nativeId, name: fromJob } };
+    } catch {
+      // A missed shared cache is not verification; continue through the existing live lookup.
+    }
+  }
   const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
   if (!lock) return { ok: false, reason: 'refused_lock_unavailable' };
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
   let raw: unknown;
   try {
-    raw = await lock.withLock(() => spawn({ kind: pick.kind, name }), acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    raw = await lock.withLock(
+      () => spawn({ kind: pick.kind, name }),
+      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+    );
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { ok: false, reason: 'refused_lock_busy' };
     warnPaneStaySpawnFailed('party', error);
@@ -433,8 +569,15 @@ export async function verifyPartyPick(pick: {
   const found = panePartyFindResultFromCli(pick.kind, raw);
   if (ANSWERED_OUTCOMES.has(found.outcome)) rememberPartyRows(found.results);
   const row = found.results.find(
-    (candidate) => candidate.kind === pick.kind && candidate.nativeId === pick.nativeId && sameHmsName(candidate.name, name),
+    (candidate) =>
+      candidate.kind === pick.kind &&
+      candidate.nativeId === pick.nativeId &&
+      sameHmsName(candidate.name, name),
   );
-  if (!row) return { ok: false, reason: found.outcome === 'execution_failure' ? 'unverified' : 'not_found' };
+  if (!row)
+    return {
+      ok: false,
+      reason: found.outcome === 'execution_failure' ? 'unverified' : 'not_found',
+    };
   return { ok: true, party: { kind: row.kind, nativeId: row.nativeId, name: row.name } };
 }

@@ -101,6 +101,19 @@ describe.skipIf(!TEST_DB_AVAILABLE)('approved root read policy', () => {
     expect(await devicePolicy.getApprovedReadRoots(db, f.approval.deviceId, f.approval.userId, f.approval.transportId, storeId)).toEqual([{ storeId, rootEntryId: 'retained-root', policyVersion: 1, policyGeneration: 3 }]);
     expect(await devicePolicy.getApprovedReadRoots(db, f.approval.deviceId, randomUUID(), f.approval.transportId, storeId)).toEqual([]);
   }));
+  it('accepts a signed store-root report but never reactivates an operator-revoked root', async () => withTestDb(async db => {
+    const f = await fixture(db);
+    const device = { deviceId: f.approval.deviceId, storeId } as Parameters<typeof devicePolicy.acceptDeviceStoreRoot>[1];
+    expect(await devicePolicy.acceptDeviceStoreRoot(db, device, { storeId, rootEntryId: f.approval.rootEntryId }))
+      .toMatchObject({ accepted: true });
+    await devicePolicy.revokeReadRoot(db, f.approval);
+    expect(await devicePolicy.acceptDeviceStoreRoot(db, device, { storeId, rootEntryId: f.approval.rootEntryId }))
+      .toEqual({ accepted: false, reason: 'root_revoked' });
+    expect(await devicePolicy.getApprovedReadRoots(db, f.approval.deviceId, f.approval.userId, f.approval.transportId, storeId)).toEqual([]);
+    await devicePolicy.approveReadRoot(db, f.approval);
+    expect(await devicePolicy.getApprovedReadRoots(db, f.approval.deviceId, f.approval.userId, f.approval.transportId, storeId)).toHaveLength(1);
+  }));
+
   it('allows only one active read root per device store across root entry ids', async () =>
     withTestDb(async (db) => {
       const f = await fixture(db);

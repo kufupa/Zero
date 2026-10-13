@@ -103,6 +103,22 @@ export function rowRoomTypeCode(row: {
   );
 }
 
+/** A staff-facing row name: the room type and the number of rooms, never an ordinal room number. */
+export function rowRoomLabel(row: {
+  roomTypeCode?: RoomTypeCode;
+  roomCodes?: string[];
+  roomPreference?: string;
+  quantity?: number | null;
+}): string {
+  const code = rowRoomTypeCode(row);
+  const raw = code ? ROOM_TYPE_NAMES[code] : row.roomPreference?.trim();
+  const type = raw && !/^room\s+\d+$/i.test(raw)
+    ? raw.replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
+    : 'Room type needed';
+  const count = typeof row.quantity === 'number' && row.quantity > 0 ? row.quantity : '?';
+  return `${type} ×${count}`;
+}
+
 /** "Standard Queen (STQN)" for a known code. An unknown code comes back unchanged. */
 export function roomTypeLabel(code: string): string {
   const known = knownRoomCode(code);

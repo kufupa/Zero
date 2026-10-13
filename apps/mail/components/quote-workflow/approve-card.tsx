@@ -27,8 +27,8 @@ const divider = 'flex flex-col gap-2 border-t border-[#e2e8f0] pt-3';
 
 /**
  * The approve and review card for the HMS write on this mail's stored work item (U18). It shows each value as before →
- * after, the write's state in words, and only the actions that state allows. With writesEnabled off, those actions
- * remain visible but disabled. The server independently refuses writes while off.
+ * after, the write's state in words, and only the actions that state allows. With writesEnabled off, write controls are
+ * hidden and the server independently refuses writes.
  */
 export function ApproveCard({
   client,
@@ -342,26 +342,26 @@ function ApproveSection({
       {status.reread ? (
         <p className="text-[12px] text-amber-900">{HMS_WRITE_COPY.rereadFirst}</p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        {status.reread ? (
-          <SecondaryButton
-            className={writeClasses.secondary}
-            disabled={busy || !writesEnabled}
-            disabledReason={writesEnabled ? null : 'Coming soon'}
-            onClick={reread}
+      {writesEnabled ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {status.reread ? (
+            <SecondaryButton
+              className={writeClasses.secondary}
+              disabled={busy}
+              onClick={reread}
+            >
+              {HMS_WRITE_COPY.reread}
+            </SecondaryButton>
+          ) : null}
+          <PrimaryButton
+            className={writeClasses.primary}
+            disabled={busy || blocked}
+            onClick={approve}
           >
-            {HMS_WRITE_COPY.reread}
-          </SecondaryButton>
-        ) : null}
-        <PrimaryButton
-          className={writeClasses.primary}
-          disabled={busy || blocked || !writesEnabled}
-          disabledReason={writesEnabled ? null : 'Coming soon'}
-          onClick={approve}
-        >
-          {again ? HMS_WRITE_COPY.approveAgain : HMS_WRITE_COPY.approve}
-        </PrimaryButton>
-      </div>
+            {again ? HMS_WRITE_COPY.approveAgain : HMS_WRITE_COPY.approve}
+          </PrimaryButton>
+        </div>
+      ) : null}
       {error ? (
         <p role="alert" className={writeClasses.alert}>
           {error}
@@ -408,6 +408,8 @@ function NeedsCheckSection({
       .finally(() => setBusy(false));
   };
 
+  if (!writesEnabled) return null;
+
   return (
     <form onSubmit={submit} className={divider}>
       <p className={writeClasses.note}>{HMS_WRITE_COPY.needsCheckIntro}</p>
@@ -421,15 +423,13 @@ function NeedsCheckSection({
         maxLength={HMS_NOTE_MAX}
         rows={2}
         aria-required="true"
-        disabled={!writesEnabled}
         className={writeClasses.textarea}
       />
       <div>
         <PrimaryButton
           type="submit"
           className={writeClasses.primary}
-          disabled={busy || !writesEnabled}
-          disabledReason={writesEnabled ? null : 'Coming soon'}
+          disabled={busy}
         >
           {HMS_WRITE_COPY.checkButton}
         </PrimaryButton>

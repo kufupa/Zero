@@ -20,11 +20,18 @@ import { type PaneStayLock, paneStaySaveLoaders } from '../src/ai/pane-stay-save
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import { appRouter } from '../src/trpc/router.js';
 
+const jobMocks = vi.hoisted(() => ({ readHmsJobView: vi.fn() }));
+
 vi.mock('../src/db/client.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/db/client.js')>()),
   getDb: () => {
     throw new Error('getDb must not run in pane-stay-lookup tests');
   },
+}));
+
+vi.mock('../src/ai/hms-jobs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/ai/hms-jobs.js')>()),
+  readHmsJobView: jobMocks.readHmsJobView,
 }));
 
 const STAY: PaneStayFields = {
@@ -97,6 +104,7 @@ function mailboxCaller() {
 const cleanupDirs: string[] = [];
 
 afterEach(async () => {
+  jobMocks.readHmsJobView.mockReset().mockResolvedValue(null);
   paneStayLookupLoaders.spawn = null;
   paneStayLookupLoaders.lock = null;
   paneStayLookupLoaders.enabled = null;
@@ -440,14 +448,31 @@ describe('save path wiring', () => {
 });
 
 describe('paneStayLookup router', () => {
+  it('threads the authenticated user into run-id job status reads for staff-quote ownership checks', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    const runId = '3f2b9c1e-6a4d-4b8e-9f00-1234567890ab';
+
+    await expect(mailboxCaller().paneStayLookup.jobStatus({ runId })).resolves.toBeNull();
+
+    expect(jobMocks.readHmsJobView).toHaveBeenCalledWith({
+      transportId: 'transport-1',
+      runId,
+      staffQuoteOwnerId: 'user-ropperman',
+    });
+  });
+
   it('with HMS_JOB_QUEUE unset, the queue routes queue nothing and jobStatus reads nothing', async () => {
     vi.stubEnv('HMS_JOB_QUEUE', '');
     const spawn = vi.fn(async () => lookupResult());
     paneStayLookupLoaders.spawn = spawn;
     const caller = mailboxCaller();
+    await expect(caller.paneStayLookup.jobQueueEnabled()).resolves.toBe(false);
     await expect(caller.paneStayLookup.queueFind({ threadId: 'thread-1', confirmation: '57291630-1' })).resolves.toEqual({
       runId: null,
     });
+    await expect(
+      caller.paneStayLookup.queueFind({ threadId: 'thread-1', confirmation: '57291630-1', autoStart: true }),
+    ).resolves.toEqual({ runId: null });
     await expect(
       caller.paneStayLookup.queueSearchGuest({ threadId: 'thread-1', lastName: 'Mokoena', arrival: '2027-09-14' }),
     ).resolves.toEqual({ runId: null });
@@ -457,6 +482,13 @@ describe('paneStayLookup router', () => {
         lastName: 'Mokoena',
         arrival: '2027-09-14',
         autoStart: true,
+      }),
+    ).resolves.toEqual({ runId: null });
+    await expect(
+      caller.paneStayLookup.queueParty({
+        threadId: 'thread-1',
+        name: 'Acme Travel',
+        partyKind: 'company',
       }),
     ).resolves.toEqual({ runId: null });
     await expect(
@@ -478,6 +510,14 @@ describe('paneStayLookup router', () => {
         lastName: 'Mokoena',
         arrival: '2027-09-14',
         departure: null,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      caller.paneStayLookup.jobStatus({
+        threadId: 'thread-1',
+        kind: 'party',
+        name: 'Acme Travel',
+        partyKind: 'company',
       }),
     ).resolves.toBeNull();
     expect(spawn).not.toHaveBeenCalled();

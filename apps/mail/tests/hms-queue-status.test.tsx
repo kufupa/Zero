@@ -108,29 +108,33 @@ describe('useHmsQueueStatus polling', () => {
     await advance(HMS_QUEUE_POLL_MS);
     expect(screen.getByText(/Luna is working in HMS/)).toBeDefined();
     await advance(HMS_QUEUE_POLL_MS);
-    expect(screen.getByText('1 quote ahead of yours – about 6 minutes.')).toBeDefined();
+    expect(screen.getByRole('status').textContent).toContain('1 quote ahead of yours – about 6 minutes.');
   });
 });
 
 describe('HmsQueueStatusLine messages', () => {
-  it('shows Starting the HMS run while the first read is idle, then the live message', async () => {
+  it('keeps the wait visible with elapsed time while status detail changes, without a spinner', async () => {
     const fetchStatus = vi.fn<() => Promise<QueueStatus | null>>()
       .mockResolvedValueOnce(IDLE)
       .mockResolvedValue(RUNNING);
     render(<Harness pending fetchStatus={fetchStatus} />);
     await advance(0);
-    expect(screen.getByText('Starting the HMS run…')).toBeDefined();
+    const first = screen.getByRole('status');
+    expect(first.textContent).toContain('Looking up in HMS — you can keep working');
+    expect(first.textContent).toContain('0 s elapsed');
+    expect(first.querySelector('svg')).toBeNull();
     expect(screen.queryByText(/idle/i)).toBeNull();
     await advance(HMS_QUEUE_POLL_MS);
-    expect(
-      screen.getByText('Luna is working in HMS – step 2 of 3: Checking the quote rules. 1 min 20 s so far.'),
-    ).toBeDefined();
+    const live = screen.getByRole('status');
+    expect(live.textContent).toContain('Looking up in HMS — you can keep working');
+    expect(live.textContent).toContain('1 min 20 s elapsed');
+    expect(live.textContent).toContain('Luna is working in HMS – step 2 of 3: Checking the quote rules.');
   });
 
   it('shows the waiting message with the number of quotes ahead', async () => {
     render(<Harness pending fetchStatus={async () => WAITING} />);
     await advance(0);
-    expect(screen.getByText('1 quote ahead of yours – about 6 minutes.')).toBeDefined();
+    expect(screen.getByRole('status').textContent).toContain('1 quote ahead of yours – about 6 minutes.');
   });
 
   it('shows the unavailable message as a red alert', async () => {
@@ -139,6 +143,11 @@ describe('HmsQueueStatusLine messages', () => {
     const alert = screen.getByRole('alert');
     expect(alert.textContent).toBe('HMS is not responding. Try again in a few minutes.');
     expect(alert.className).toContain('text-red-700');
+  });
+
+  it('uses rates-specific progress copy for the main staff quote run', () => {
+    render(<HmsQueueStatusLine pending status={RUNNING} staffQuote />);
+    expect(screen.getByRole('status').textContent).toContain('Nava is getting rates from HMS — you can keep working');
   });
 
   it('formats elapsed time as seconds, then minutes and seconds', () => {
@@ -180,13 +189,14 @@ describe('HMS queue line in the quote workflow panel', () => {
         hmsQueue={{ pending: true, status: RUNNING }}
       />,
     );
-    const line = screen.getByText(/Luna is working in HMS – step 2 of 3/);
-    const steps = screen.getByText('HMS steps');
-    expect(steps.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const line = screen.getByRole('status');
+    expect(line.textContent).toContain('Nava is getting rates from HMS — you can keep working');
+    expect(line.textContent).toContain('Luna is working in HMS – step 2 of 3');
+    expect(line.querySelector('svg')).toBeNull();
   });
 
-  it('shows Starting the HMS run in the panel before the first read lands', () => {
+  it('shows the non-blocking HMS wait message before the first read lands', () => {
     render(<QuoteWorkflowPanel session={sessionWithRunningStep()} hmsQueue={{ pending: true, status: null }} />);
-    expect(screen.getByText('Starting the HMS run…')).toBeDefined();
+    expect(screen.getByRole('status').textContent).toContain('Nava is getting rates from HMS — you can keep working');
   });
 });

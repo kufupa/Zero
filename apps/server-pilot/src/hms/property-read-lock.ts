@@ -62,8 +62,13 @@ export function acquisitionWithin(
 export function isPropertyReadLockDeadline(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
-    if (current instanceof Error && current.message === PROPERTY_READ_LOCK_DEADLINE_MESSAGE) return true;
-    current = (current as { cause?: unknown }).cause;
+    if (typeof current === 'object') {
+      const record = current as { message?: unknown; cause?: unknown };
+      if (record.message === PROPERTY_READ_LOCK_DEADLINE_MESSAGE) return true;
+      current = record.cause;
+    } else {
+      current = null;
+    }
   }
   return false;
 }

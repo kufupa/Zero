@@ -86,6 +86,7 @@ export function VoucherFindCard({
         : null,
     scope: internetMessageId,
     autoStartIfMissing: canSearch,
+    targetId: 'quote-voucher-find',
   });
 
   useEffect(() => {

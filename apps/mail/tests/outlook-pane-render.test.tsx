@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import path from 'node:path';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 
 const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.hoisted(() => ({
   pairDeviceMock: vi.fn(async () => {}),
@@ -280,7 +281,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
   it('renders active email card with subject and sender', () => {
     render(<OutlookPanePage />);
     expect(screen.getByText(/Suite Availability Request/i)).toBeDefined();
-    expect(screen.getByText(/David Miller/i)).toBeDefined();
+    expect(screen.getByText('David Miller <guest@example.com>')).toBeDefined();
   });
 
   it('keeps manual Outlook Send instructions and does not show the sample RATE_TABLE screenshot', () => {
@@ -332,31 +333,28 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     render(<OutlookPanePage />);
     await fillStayFactsMatchingAuthorisedOffer();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
-    expect(
-      await screen.findByText(
-        'Luna is working in HMS – step 2 of 3: Checking the quote rules. 1 min 20 s so far.',
-      ),
-    ).toBeDefined();
-    expect(bridgeMockState.hmsQueueReads).toBeGreaterThan(0);
+    expect((await screen.findByTestId('hms-running-count')).textContent).toBe('HMS: 1 pending');
+    await waitFor(() => expect(bridgeMockState.hmsQueueReads).toBeGreaterThan(0));
     await act(async () => {
       bridgeMockState.releaseStaffQuote?.();
     });
-    await waitFor(() => expect(screen.queryByText(/Luna is working in HMS/)).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId('hms-running-count')).toBeNull());
     expect(
       screen.getAllByRole('button').some((element) => (element.textContent ?? '').includes('Counted in the total')),
     ).toBe(true);
   });
 
-  it('shows Starting the HMS run while the staff quote is pending and the first read is idle', async () => {
+  it('shows a non-blocking HMS lookup message while the staff quote is pending and the first read is idle', async () => {
     bridgeMockState.holdStaffQuote = true;
     render(<OutlookPanePage />);
     await fillStayFactsMatchingAuthorisedOffer();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
-    expect(await screen.findByText('Starting the HMS run…')).toBeDefined();
+    expect((await screen.findByTestId('hms-running-count')).textContent).toBe('HMS: 1 pending');
+    await waitFor(() => expect(bridgeMockState.hmsQueueReads).toBeGreaterThan(0));
     await act(async () => {
       bridgeMockState.releaseStaffQuote?.();
     });
-    await waitFor(() => expect(screen.queryByText('Starting the HMS run…')).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId('hms-running-count')).toBeNull());
   });
 
   it('offers the system check in the ⋯ menu', async () => {
@@ -385,6 +383,29 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
           entryId: '001',
           storeId: 'store-1',
           operationId: expect.any(String),
+        }),
+      );
+    });
+  });
+
+  it('prefills the reviewed reply and inserts its PDF through the Outlook bridge', async () => {
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote(null);
+
+    const expectedHtml = quoteWrapperHtml('David Miller', 'R Opperman');
+    expect((screen.getByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(expectedHtml);
+    fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
+
+    await waitFor(() => {
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'CREATE_REPLY_DRAFT',
+        expect.objectContaining({ htmlBody: expectedHtml.trim() }),
+      );
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'ADD_ATTACHMENT_TO_DRAFT',
+        expect.objectContaining({
+          fileName: AUTHORISED_QUOTE_PDF.fileName,
+          base64Data: AUTHORISED_QUOTE_PDF.pdfBase64,
         }),
       );
     });
@@ -514,9 +535,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(1));
     await waitFor(() => expect(button.hasAttribute('disabled')).toBe(false));
-    expect(screen.getByRole('status').textContent).toMatch(
-      /Outlook may have created the draft.*Check Outlook Drafts before retrying/i,
-    );
+    expect(screen.getByText(/Outlook may have created the draft.*Check Outlook Drafts before retrying/i)).toBeDefined();
     fireEvent.click(button);
     await waitFor(() => expect(createReplyCalls()).toHaveLength(2));
 
@@ -779,10 +798,10 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole('status').textContent).toMatch(/saved.*did not open/i);
-      expect(screen.getByRole('status').textContent).toMatch(/Outlook blocked the composer/);
-      expect(screen.getByRole('status').textContent).toMatch(/original Drafts folder/);
-      expect(screen.getByRole('status').textContent).toMatch(/confirm which folder/i);
+      const status = screen.getByText(/saved.*did not open/i).textContent;
+      expect(status).toMatch(/Outlook blocked the composer/);
+      expect(status).toMatch(/original Drafts folder/);
+      expect(status).toMatch(/confirm which folder/i);
     });
     expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/opened/i));
   });
@@ -820,9 +839,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
 
     await waitFor(() =>
-      expect(screen.getByRole('status').textContent).toContain(
-        'Outlook placed the reply outside the requested folder',
-      ),
+      expect(screen.getByText(/Outlook placed the reply outside the requested folder/i)).toBeDefined(),
     );
     expect(toast.warning).toHaveBeenCalledWith(
       expect.stringContaining('Outlook placed the reply outside the requested folder'),
@@ -846,7 +863,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     pane.rerender(<OutlookPanePage />);
     await act(async () => finish({ ...draftFolder, entryId: 'draft-for-001', displayed: true }));
 
-    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByText(/Draft (?:opened|saved in Outlook)|Outlook may have created the draft/i)).toBeNull();
   });
 
   it('identifies the original message in a late reply success toast', async () => {
@@ -868,7 +885,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     expect(toast.success).not.toHaveBeenCalledWith(
       expect.stringContaining('Different Guest Request'),
     );
-    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByText(/Draft (?:opened|saved in Outlook)|Outlook may have created the draft/i)).toBeNull();
   });
 
   it('preserves warnings and identifies the original message in a late reply warning toast', async () => {
@@ -897,7 +914,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     expect(toast.warning).toHaveBeenCalledWith(
       expect.stringContaining('Outlook blocked the composer'),
     );
-    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByText(/Draft (?:opened|saved in Outlook)|Outlook may have created the draft/i)).toBeNull();
   });
 
   it('identifies the original message in a late reply error toast', async () => {
@@ -915,7 +932,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
 
     expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Suite Availability Request'));
     expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Bridge unavailable'));
-    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByText(/Draft (?:opened|saved in Outlook)|Outlook may have created the draft|Could not create the draft/i)).toBeNull();
   });
 
   it('warns when connected but bridge capabilities and protocol version are unknown', () => {

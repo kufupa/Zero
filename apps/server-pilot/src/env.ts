@@ -6,6 +6,8 @@
  * only validated when provided.
  */
 
+import { z } from 'zod';
+
 export type NodeEnv = 'production' | 'development' | 'test';
 
 /** `fixture` (default) in-memory fake; `wire` TCP to Mailpit; `real` Exchange. */
@@ -131,9 +133,21 @@ export interface MailEnv {
   HMS_CIRCUIT_COOLDOWN_MS: number;
   HMS_READ_SECRET_ARN?: string;
   HMS_CHROMIUM_EXECUTABLE_PATH?: string;
+  /** Optional cutoff for the pilot Needs-you view. Unset keeps the full current queue. */
+  NEEDS_YOU_SINCE?: string;
 }
 
 export type EnvInput = Record<string, string | undefined>;
+
+const needsYouSinceSchema = z.string().datetime({ offset: true });
+
+/** The pilot cutoff, or undefined to keep the existing Needs-you view. */
+export function parseNeedsYouSince(raw: string | undefined): Date | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  const parsed = needsYouSinceSchema.safeParse(raw);
+  if (!parsed.success) throw new Error(`env NEEDS_YOU_SINCE must be an ISO timestamp, got: ${raw}`);
+  return new Date(parsed.data);
+}
 
 const REQUIRED = [
   'PORT',
@@ -410,6 +424,12 @@ export function parseEnv(input: EnvInput): MailEnv {
     HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
     HMS_CIRCUIT_COOLDOWN_MS: 30_000,
   };
+
+  const needsYouSince = input.NEEDS_YOU_SINCE;
+  if (needsYouSince !== undefined && needsYouSince !== '') {
+    parseNeedsYouSince(needsYouSince);
+    env.NEEDS_YOU_SINCE = needsYouSince;
+  }
 
   if (input.MAIL_MEASUREMENT_CONFIG_JSON !== undefined) {
     // Keep this raw and optional here: malformed measurement config must not

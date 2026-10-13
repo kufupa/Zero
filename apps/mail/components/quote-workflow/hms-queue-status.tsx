@@ -1,4 +1,3 @@
-import { Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { HmsJobView } from '@/lib/quote-workflow/amend-find';
 import type { QueueStatus } from '@/lib/quote-workflow/types';
@@ -10,33 +9,72 @@ export function formatQueueElapsed(ms: number): string {
   return minutes > 0 ? `${minutes} min ${seconds % 60} s` : `${seconds} s`;
 }
 
+function usePendingElapsed(pending: boolean, startedAt?: string | null): number {
+  const [elapsedMs, setElapsedMs] = useState(0);
+  useEffect(() => {
+    if (!pending) {
+      setElapsedMs(0);
+      return;
+    }
+    const parsedStart = startedAt ? new Date(startedAt).getTime() : Date.now();
+    const started = Number.isNaN(parsedStart) ? Date.now() : parsedStart;
+    const update = () => setElapsedMs(Math.max(0, Date.now() - started));
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [pending, startedAt]);
+  return elapsedMs;
+}
+
+/** A non-blocking HMS read notice for a pending lookup outside the quote queue line. */
+export function HmsLookupProgress({ pending, detail }: { pending: boolean; detail?: string }) {
+  const elapsedMs = usePendingElapsed(pending);
+  if (!pending) return null;
+  return (
+    <p role="status" className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[12.5px] text-[#475569]">
+      <span className="font-semibold text-[#1e293b]">Looking up in HMS — you can keep working</span>
+      <span>{`· ${formatQueueElapsed(elapsedMs)} elapsed`}</span>
+      {elapsedMs >= 30_000 ? <span>Still looking in HMS…</span> : null}
+      {detail ? <span>{`· ${detail}`}</span> : null}
+    </p>
+  );
+}
+
 /** Status line under the quote steps while a staff quote run is pending. */
 export function HmsQueueStatusLine({
   pending,
   status,
+  staffQuote = false,
 }: {
   pending: boolean;
   status: QueueStatus | null;
+  staffQuote?: boolean;
 }) {
+  const elapsedMs = usePendingElapsed(pending);
   if (!pending) return null;
   if (status?.state === 'unavailable') {
     return (
-      <p role="alert" className="rounded-xs border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+      <p
+        role="alert"
+        className="rounded-xs border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+      >
         {status.message}
       </p>
     );
   }
   // The first read can say idle before the run registers. Ignore it while pending.
-  const text =
-    !status || status.state === 'idle'
-      ? 'Starting the HMS run…'
-      : status.state === 'running' && status.runningForMs !== undefined
-        ? `${status.message} ${formatQueueElapsed(status.runningForMs)} so far.`
-        : status.message;
+  const elapsed =
+    status?.state === 'running' && status.runningForMs !== undefined
+      ? Math.max(elapsedMs, status.runningForMs)
+      : elapsedMs;
   return (
-    <p role="status" className="flex items-center gap-2 rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]">
-      <Loader2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin text-[#0066cc]" />
-      <span>{text}</span>
+    <p role="status" className="rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]">
+      <span className="font-semibold text-[#1e293b]">
+        {staffQuote ? 'Nava is getting rates from HMS — you can keep working' : 'Looking up in HMS — you can keep working'}
+      </span>
+      <span>{` · ${formatQueueElapsed(elapsed)} elapsed`}</span>
+      {status && status.state !== 'idle' && status.message ? <span>{` · ${status.message}`}</span> : null}
+      {status?.state === 'running' && elapsed >= 30_000 ? <span>Still looking in HMS…</span> : null}
     </p>
   );
 }
@@ -90,6 +128,7 @@ export function HmsJobStatusLine({
   statusFailed = false,
   queueFailed = false,
   failureMessage = 'Could not check for an existing HMS lookup.',
+  failedMessage = 'Failed',
   queueFailureMessage = 'Could not queue the HMS lookup.',
 }: {
   view: HmsJobView | null;
@@ -100,15 +139,18 @@ export function HmsJobStatusLine({
   statusFailed?: boolean;
   queueFailed?: boolean;
   failureMessage?: string;
+  failedMessage?: string;
   queueFailureMessage?: string;
 }) {
+  const label = hmsJobLabel(view, queuing);
+  const elapsedMs = usePendingElapsed(Boolean(label && label !== 'Failed'), view?.createdAt);
   if (statusFailed || queueFailed) {
     return (
       <div
         role="alert"
         data-testid="hms-job-status"
         data-state="failed"
-        className="flex items-center justify-between gap-2 rounded-xs border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+        className="rounded-xs flex items-center justify-between gap-2 border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
       >
         <span>{queueFailed ? queueFailureMessage : failureMessage}</span>
         <button
@@ -121,7 +163,6 @@ export function HmsJobStatusLine({
       </div>
     );
   }
-  const label = hmsJobLabel(view, queuing);
   if (!label) return null;
   if (label === 'Failed') {
     return (
@@ -129,9 +170,9 @@ export function HmsJobStatusLine({
         role="alert"
         data-testid="hms-job-status"
         data-state="failed"
-        className="flex items-center justify-between gap-2 rounded-xs border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+        className="rounded-xs flex items-center justify-between gap-2 border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
       >
-        <span className="font-semibold">Failed</span>
+        <span>{failedMessage}</span>
         <button
           type="button"
           onClick={onRetry}
@@ -142,16 +183,25 @@ export function HmsJobStatusLine({
       </div>
     );
   }
+  const elapsed = formatQueueElapsed(elapsedMs);
   return (
     <p
       role="status"
       data-testid="hms-job-status"
       data-state={view?.status ?? 'running'}
-      className="flex items-center gap-2 rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]"
+      className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]"
     >
-      <Loader2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin text-[#0066cc]" />
-      <span className="font-semibold text-[#1e293b]">{label}</span>
-      <span>{detail}</span>
+      <span className="font-semibold text-[#1e293b]">Looking up in HMS — you can keep working</span>
+      <span className="font-semibold text-[#475569]">{label}</span>
+      {view?.createdAt ? (
+        <span>{`${detail} ${elapsed} elapsed.`}</span>
+      ) : (
+        <>
+          <span>{detail}</span>
+          <span>{`${elapsed} elapsed`}</span>
+        </>
+      )}
+      {view?.status === 'running' && elapsedMs >= 30_000 ? <span>Still looking in HMS…</span> : null}
     </p>
   );
 }

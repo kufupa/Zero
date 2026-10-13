@@ -2,7 +2,6 @@ import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
 import { PaneMenu } from './pane-menu';
-import { Section } from './pane-ui';
 import {
   createPaneVersionWatch,
   fetchPaneVersion,
@@ -16,10 +15,17 @@ import {
 } from '@/lib/workstation/pane-release-watch';
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
+import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import {
+  HmsJobNoticeBanner,
+  HmsJobNoticeProvider,
+  HmsJobRunningChip,
+} from '@/components/quote-workflow/hms-job-notices';
+import type { HmsJobNoticeReporter } from '@/lib/quote-workflow/hms-job-notice-context';
 import { savedRatesFromTrpc } from '@/components/quote-workflow/rate-controls';
 import {
   fixtureReplyHtml,
@@ -51,14 +57,20 @@ import {
 } from '@/lib/quote-workflow/booking-draft-bind';
 import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
 import { partyFinderFromTrpc, partyIndexFromTrpc } from '@/lib/quote-workflow/party-lookup';
+import { amendFindClientFromTrpc, hmsJobTransport, type HmsJobRequest, type HmsJobView } from '@/lib/quote-workflow/amend-find';
 import {
+  bindAutoStartStaffQuote,
   bindExecuteStaffQuote,
   bindHmsQueueStatus,
+  bindReadBackStaffQuote,
   bindQuoteRunScreenshot,
   bindQualifiedStaffProposalPdf,
   bindStaffActions,
   bindStaffQuoteSource,
   staffQuoteFromTrpc,
+  canBuildStaffQuoteRequest,
+  type BoundExecuteStaffQuote,
+  type StaffQuoteJobQuery,
 } from '@/lib/quote-workflow/staff-quote-bind';
 import { useHmsQueueStatus } from '@/lib/quote-workflow/use-hms-queue-status';
 import {
@@ -137,6 +149,7 @@ function externalSenderFallback(
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
 // One HMS party search for the quote header's Find in HMS picker. Null when the panePartyLookup route is missing.
 const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
+const PANE_HMS_JOB_CLIENT = amendFindClientFromTrpc(trpcClient);
 // The same picker's typeahead: the HMS list and the listed parties, as staff type. Null when the route is missing.
 const PANE_PARTY_INDEX = partyIndexFromTrpc(trpcClient);
 // The saved rates for each row's price (R7). Null when the rates route is missing, so only one-off and override show.
@@ -144,21 +157,81 @@ const PANE_SAVED_RATES = savedRatesFromTrpc(trpcClient);
 // Pane action telemetry goes out through this client (v5 B1). Until it is bound, actions are dropped.
 bindPaneTelemetry(trpcClient);
 
+const STAFF_QUOTE_NOTICE_REQUEST = { kind: 'staff_quote' } as unknown as HmsJobRequest;
+const STAFF_QUOTE_POLL_LOST_REASON =
+  'The queued quote is still running, but Nava could not read its status. Try again in a minute.';
+const STAFF_QUOTE_AUTO_SUPPRESSED_PREFIX = 'nava.staff-quote-auto-suppressed:';
+let nextStaffQuoteNoticeScope = 0;
+
+function autoStaffQuoteSuppressed(emailKey: string): boolean {
+  try {
+    return sessionStorage.getItem(`${STAFF_QUOTE_AUTO_SUPPRESSED_PREFIX}${emailKey}`) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function rememberAutoStaffQuoteSuppression(emailKey: string): void {
+  try {
+    sessionStorage.setItem(`${STAFF_QUOTE_AUTO_SUPPRESSED_PREFIX}${emailKey}`, '1');
+  } catch {
+    // The pane still suppresses this mount through its in-memory set when storage is unavailable.
+  }
+}
+
+function staffQuoteAttemptKey(transportId: string, messageId: string, sourceHash: string, stayKey: string): string {
+  return JSON.stringify([transportId, messageId, sourceHash, stayKey]);
+}
+
+function staffQuoteNoticeView(jobId: string, result: BoundExecuteStaffQuote): HmsJobView {
+  const asOf = new Date().toISOString();
+  return {
+    runId: result.status === 'ok' ? result.staffQuote.runId ?? jobId : jobId,
+    request: STAFF_QUOTE_NOTICE_REQUEST,
+    prefetch: false,
+    status: result.status === 'ok' ? 'done' : 'failed',
+    position: null,
+    attempts: 1,
+    failureClass: result.status === 'ok' ? null : 'STAFF_QUOTE_FAILED',
+    asOf,
+    createdAt: asOf,
+    outcome: result.status === 'ok' ? 'ready' : 'failed',
+    result: result.status === 'ok' ? { status: 'ready' } : { message: result.reason },
+  };
+}
+
 /**
  * Pane body. The route calls useOutlookBridge() once and passes the result in as `bridge`.
  * `preview` (the /nava-preview viewer) starts on the quoting tool, skipping the welcome, connection
  * and tour screens and their automatic ping. Analysis does not wait on the ping. Outlook passes nothing.
  */
-export function NavaPane({
-  bridge,
-  preview = false,
-  onOpenThread,
-}: {
+type NavaPaneProps = {
   bridge: PaneBridge;
   preview?: boolean;
   /** Webmail only: opens a Needs-you row's thread in the webmail. Outlook passes nothing. */
   onOpenThread?: (threadId: string) => void;
-}) {
+  /** Webmail keeps notice state above its keyed thread panel so lookups survive email switches. */
+  hmsNoticesManagedByParent?: boolean;
+};
+
+export function NavaPane({
+  bridge,
+  preview = false,
+  onOpenThread,
+  hmsNoticesManagedByParent = false,
+}: NavaPaneProps) {
+  const noticeReporterRef = useRef<HmsJobNoticeReporter | null>(null);
+  const setNoticeReporter = useCallback((reporter: HmsJobNoticeReporter) => {
+    noticeReporterRef.current = reporter;
+  }, []);
+  const [staffQuoteNoticeScope] = useState(() => `main-rates-${++nextStaffQuoteNoticeScope}`);
+  const staffQuoteNoticeSequence = useRef(0);
+  const staffQuoteAutoAttempted = useRef(new Set<string>());
+  const staffQuoteAutoSuppressed = useRef(new Set<string>());
+  const staffQuoteRunCount = useRef(0);
+  const staffQuoteReadBackInFlight = useRef(false);
+  const staffQuoteReadBackGeneration = useRef(0);
+  const autoStartStaffQuoteStepRef = useRef<() => void>(() => undefined);
   const {
     isConnected,
     activeEmail,
@@ -175,6 +248,11 @@ export function NavaPane({
     activateMailboxSync,
   } = bridge;
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
+  const partyJobThreadId = quoteSession.staffSource?.threadId ?? null;
+  const partyJobTransport = useMemo(
+    () => hmsJobTransport(PANE_HMS_JOB_CLIENT, partyJobThreadId),
+    [partyJobThreadId],
+  );
   const [rateCatalogue, setRateCatalogue] = useState<RatePlanCatalogueEntry[]>([]);
   // Preview/Book in HMS show only when the server flag is on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
@@ -193,27 +271,89 @@ export function NavaPane({
   quoteSessionRef.current = quoteSession;
   // True from the executeStaffQuote call until it settles. Drives the HMS queue poller.
   const [quoteRunPending, setQuoteRunPending] = useState(false);
+  const [staffQuoteQueueMode, setStaffQuoteQueueMode] = useState<'checking' | 'on' | 'off'>(() =>
+    PANE_HMS_JOB_CLIENT?.jobQueueEnabled ? 'checking' : 'off',
+  );
+  useEffect(() => {
+    const readQueueMode = PANE_HMS_JOB_CLIENT?.jobQueueEnabled;
+    if (!readQueueMode) {
+      setStaffQuoteQueueMode('off');
+      return;
+    }
+    let live = true;
+    void readQueueMode().then(
+      (enabled) => live && setStaffQuoteQueueMode(enabled ? 'on' : 'off'),
+      () => live && setStaffQuoteQueueMode('on'),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
   const hmsQueue = useHmsQueueStatus({
     pending: quoteRunPending,
     fetchStatus: () =>
       bindHmsQueueStatus(staffQuoteFromTrpc(trpcClient).workstation.hmsQueueStatus?.query),
   });
   const trackStaffQuoteRun = <T,>(run: Promise<T>): Promise<T> => {
+    staffQuoteRunCount.current += 1;
     setQuoteRunPending(true);
     const startedAt = Date.now();
     // The lookup belongs to the item it started on. Staff may open another mail before it finishes.
     const owner = currentPaneOwner();
     trackPaneAction({ type: 'hms.lookup.started' }, owner);
     return run.finally(() => {
-      setQuoteRunPending(false);
+      staffQuoteRunCount.current -= 1;
+      setQuoteRunPending(staffQuoteRunCount.current > 0);
       trackPaneAction({ type: 'hms.lookup.finished', ms: Math.max(0, Date.now() - startedAt) }, owner);
     });
+  };
+  const trackMainStaffQuoteRun = (
+    run: Promise<BoundExecuteStaffQuote | null>,
+    retry: () => void,
+    email = {
+      emailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
+      emailSubject: activeEmail?.subject?.trim() || null,
+    },
+  ): Promise<BoundExecuteStaffQuote | null> => {
+    const observerId = `${staffQuoteNoticeScope}:${++staffQuoteNoticeSequence.current}`;
+    const jobId = 'main-rates';
+    noticeReporterRef.current?.started({
+      observerId,
+      jobId,
+      request: STAFF_QUOTE_NOTICE_REQUEST,
+      targetId: 'quote-rates',
+      retry,
+      transport: null,
+      email,
+    });
+    return trackStaffQuoteRun(run).then(
+      (result) => {
+        if (result === null) {
+          noticeReporterRef.current?.cancel(observerId, jobId);
+          return null;
+        }
+        noticeReporterRef.current?.settled(observerId, jobId, staffQuoteNoticeView(jobId, result), retry);
+        return result;
+      },
+      (error: unknown) => {
+        const failed: BoundExecuteStaffQuote = {
+          status: 'unavailable',
+          reason:
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : 'Nava could not finish getting rates from HMS. Try again.',
+        };
+        noticeReporterRef.current?.settled(observerId, jobId, staffQuoteNoticeView(jobId, failed), retry);
+        return failed;
+      },
+    );
   };
   const requoteSameStayRef = useRef<(row: PriorStaffQuoteRequoteRow) => void>(() => {});
   const selectedKey = activeEmail?.entryId
     ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
     : null;
   const { data: session, isLoading } = useSession();
+  const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
   useEffect(() => {
     let alive = true;
@@ -356,6 +496,11 @@ export function NavaPane({
     storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
+  const suppressAutoStaffQuoteForCurrentEmail = () => {
+    if (!contactMessageKey) return;
+    staffQuoteAutoSuppressed.current.add(contactMessageKey);
+    rememberAutoStaffQuoteSuppression(contactMessageKey);
+  };
   const storedOverridden = Boolean(quoteSession.treatAs || quoteSession.staffNote);
   // The pane's work item for telemetry (v5 B1). Opening a stored read with a work item is the pane.opened action.
   const surface = onOpenThread ? 'web' : 'outlook';
@@ -368,6 +513,7 @@ export function NavaPane({
   }, [paneWorkItemId, paneTransportId, surface]);
   /** A staff edit to the stay rows. On a stored read it is logged against the work item, so it is there on reopen. */
   const editStayRows = (action: QuoteSessionAction) => {
+    suppressAutoStaffQuoteForCurrentEmail();
     const before = quoteSessionRef.current;
     dispatchQuote(action);
     storedWork.recordGroups(before.groups, reduceQuoteSession(before, action).groups);
@@ -475,6 +621,7 @@ export function NavaPane({
     quoteSession.analysis?.luna?.workflow ?? '',
     quoteSession.staffSource?.threadId ?? '',
     String(quoteSession.inputRevision),
+    String(quoteSession.stayRevision),
     String(quoteSession.binding?.selectionEpoch ?? 0),
     quoteSession.groups
       .map((group) => `${group.arrivalDate ?? ''}:${group.departureDate ?? ''}:${group.quantity ?? ''}:${group.adults ?? ''}`)
@@ -497,111 +644,213 @@ export function NavaPane({
     if (luna?.workflow !== 'create_booking' || !source || !binding || waiting.length === 0) {
       return;
     }
+    const generation = ++staffQuoteReadBackGeneration.current;
+    staffQuoteReadBackInFlight.current = true;
     const staff = staffQuoteFromTrpc(trpcClient);
     const selectionEpoch = binding.selectionEpoch;
     const inputRevision = quoteSession.inputRevision;
     // A stay edit does not always move inputRevision, so the result is also tied to the rows it read.
     const stayRevision = quoteSession.stayRevision;
     const header = quoteSession.staffHeader;
-    // The earlier quote's run and draft belong to the stay it was made for, so its rows are that stay's rows.
-    const bindPrior = (prior: UsePriorQuoteForBookingReady, stayKey: string) => {
-      const stayRow = quoteSession.groups.find((group) => stayKeyForGroup(group) === stayKey);
-      const groupId = stayRow?.id;
-      const quantity = stayRow?.quantity;
-      dispatchQuote({
-        type: 'staff_quote_ready',
-        offer: {
-          id: prior.revisionRef,
-          kind: 'allocation',
-          roomCode: prior.roomCode,
-          roomLabel: 'Selected allocation',
-          board: offerBoardFromRevision(prior.board),
-          rateCode: prior.rateCode,
-          currency: 'ZAR',
-          nightly: [],
-          stayTotalMinor: prior.totalMinor,
-          observedAt: '',
-          sourceRef: prior.revisionRef,
-          restrictions: [],
-          combinable: true,
-          quoteRequestKey: stayKey,
-          coversGroupIds: groupId ? [groupId] : [],
-          quantity,
-        },
-        staffQuote: {
-          workflowRunId: prior.workflowRunId,
-          revisionRef: prior.revisionRef,
-          factRefs: [],
-          messageId: source.messageId,
-          threadId: source.threadId,
-          sourceHash: source.sourceHash,
-          selectionEpoch,
-          inputRevision,
-          inputDigest: prior.revisionRef,
-          totalMinor: prior.totalMinor,
-          currency: prior.currency,
-          quoteRequestKey: stayKey,
-          approvedHeader: header,
-          // What the earlier run charged, not what the header asks now: a combined quote checks it on each stay.
-          onceExtras: prior.onceExtras,
-        },
-        selectionEpoch,
-        inputRevision,
-        stayRevision,
-      });
-      dispatchQuote({
-        type: 'booking_draft_ready',
-        payload: {
-          draft: prior.draft,
-          options: prior.options,
-          messageId: prior.messageId,
-          selectionEpoch: prior.selectionEpoch,
-          inputRevision: prior.inputRevision,
-          revisionRef: prior.revisionRef,
-        },
-        sourceHash: source.sourceHash,
-      });
-    };
     let cancelled = false;
-    void bindListThreadQuoteRevisions({
-      query: staff.workstation.listThreadQuoteRevisions?.query,
-      threadId: source.threadId,
-    }).then(async (revisions) => {
-      if (cancelled || !revisions[0]) return;
+    const pollController = new AbortController();
+    const readBack = (async () => {
+      const readBacks = await trackStaffQuoteRun(
+        Promise.all(
+          waiting.map(async (stayKey) => {
+            const groups = quoteSession.groups.filter(
+              (group) => stayKeyForGroup(group) === stayKey,
+            );
+            const result = await bindReadBackStaffQuote({
+              query: staff.workstation.staffQuoteJob?.query,
+              signal: pollController.signal,
+              source,
+              selectionEpoch,
+              inputRevision,
+              groups,
+              header,
+              stayKey,
+            });
+            return { stayKey, result };
+          }),
+        ),
+      );
+      if (
+        cancelled ||
+        !quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })
+      ) return;
+
+      const unbound = new Set(waiting);
+      type RestoredStaffQuote = Extract<
+        Awaited<ReturnType<typeof bindReadBackStaffQuote>>,
+        { status: 'ok' }
+      >;
+      const restored: Array<{ stayKey: string; result: RestoredStaffQuote }> = [];
+      for (const row of readBacks) {
+        if (!row.result) continue;
+        if (row.result.status === 'ok') {
+          unbound.delete(row.stayKey);
+          restored.push({ stayKey: row.stayKey, result: row.result });
+        } else if (row.result.detail) {
+          // Business refusals are persisted as completed jobs; don't replace that exact answer with an older quote.
+          unbound.delete(row.stayKey);
+          toast.warning(row.result.reason);
+        }
+      }
+
+      const reused: Array<{ stayKey: string; prior: UsePriorQuoteForBookingReady }> = [];
       const reasons: string[] = [];
       let expiredPrior: PriorStaffQuoteRequoteRow | null = null;
-      const unbound = new Set(waiting);
-      for (const row of revisions) {
-        if (cancelled || unbound.size === 0) break;
-        const candidate = await bindUsePriorQuoteForBooking({
-          mutate: staff.workstation.usePriorQuoteForBooking?.mutate,
-          source,
-          workflowRunId: row.workflowRunId,
-          revisionRef: row.revisionRef,
+      if (unbound.size > 0) {
+        const revisions = await bindListThreadQuoteRevisions({
+          query: staff.workstation.listThreadQuoteRevisions?.query,
           threadId: source.threadId,
-          messageId: source.messageId,
+        });
+        for (const row of revisions) {
+          if (cancelled || unbound.size === 0) break;
+          const candidate = await bindUsePriorQuoteForBooking({
+            mutate: staff.workstation.usePriorQuoteForBooking?.mutate,
+            source,
+            workflowRunId: row.workflowRunId,
+            revisionRef: row.revisionRef,
+            threadId: source.threadId,
+            messageId: source.messageId,
+            selectionEpoch,
+            inputRevision,
+            analysis: {
+              ...luna,
+              groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
+            },
+          });
+          if (cancelled) return;
+          if (candidate.status !== 'ok') {
+            reasons.push(candidate.reason);
+            if (candidate.reason === 'expired' && !expiredPrior) {
+              expiredPrior = { workflowRunId: row.workflowRunId, revisionRef: row.revisionRef };
+            }
+            continue;
+          }
+          // A candidate binds only to a stay that is still waiting for one. Other rows of that stay are skipped.
+          const stayKey =
+            singleStayKey ?? `${candidate.payload.arrivalDate}:${candidate.payload.departureDate}`;
+          if (!unbound.has(stayKey)) continue;
+          unbound.delete(stayKey);
+          reused.push({ stayKey, prior: candidate.payload });
+        }
+      }
+      if (
+        cancelled ||
+        !quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })
+      ) return;
+
+      for (const row of restored) {
+        if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+          toast.warning('Details changed while HMS was searching — search availability again.');
+          return;
+        }
+        dispatchQuote({
+          type: 'staff_quote_ready',
+          offer: row.result.offer,
+          staffQuote: row.result.staffQuote,
           selectionEpoch,
           inputRevision,
-          analysis: {
-            ...luna,
-            groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
-          },
+          stayRevision,
+          extrasReviewItems: row.result.extrasReviewItems,
+          approvedHeader: header,
         });
-        if (cancelled) return;
-        if (candidate.status !== 'ok') {
-          reasons.push(candidate.reason);
-          if (candidate.reason === 'expired' && !expiredPrior) {
-            expiredPrior = { workflowRunId: row.workflowRunId, revisionRef: row.revisionRef };
+        for (const item of row.result.extrasReviewItems) toast.warning(item);
+        if (luna.workflow === 'create_booking') {
+          if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+            toast.warning('Details changed while HMS was searching — search availability again.');
+            return;
           }
-          continue;
+          void bindPrepareBookingDraft({
+            mutate: staff.workstation.prepareBookingDraft?.mutate,
+            source,
+            workflowRunId: row.result.staffQuote.workflowRunId,
+            revisionRef: row.result.staffQuote.revisionRef,
+            messageId: source.messageId,
+            selectionEpoch,
+            inputRevision,
+            analysis: {
+              ...luna,
+              groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
+            },
+          }).then((draftRemote) => {
+            if (draftRemote.status !== 'ok') {
+              toast.warning(draftRemote.reason);
+              return;
+            }
+            if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+              toast.warning('Details changed while HMS was searching — search availability again.');
+              return;
+            }
+            dispatchQuote({
+              type: 'booking_draft_ready',
+              payload: draftRemote.payload,
+              sourceHash: source.sourceHash,
+            });
+          });
         }
-        // A candidate binds only to a stay that is still waiting for one. Other rows of that stay are skipped.
-        const stayKey = singleStayKey ?? `${candidate.payload.arrivalDate}:${candidate.payload.departureDate}`;
-        if (!unbound.has(stayKey)) continue;
-        unbound.delete(stayKey);
-        bindPrior(candidate.payload, stayKey);
       }
-      if (cancelled) return;
+
+      for (const { stayKey, prior } of reused) {
+        const stayRow = quoteSession.groups.find((group) => stayKeyForGroup(group) === stayKey);
+        dispatchQuote({
+          type: 'staff_quote_ready',
+          offer: {
+            id: prior.revisionRef,
+            kind: 'allocation',
+            roomCode: prior.roomCode,
+            roomLabel: 'Selected allocation',
+            board: offerBoardFromRevision(prior.board),
+            rateCode: prior.rateCode,
+            currency: 'ZAR',
+            nightly: [],
+            stayTotalMinor: prior.totalMinor,
+            observedAt: '',
+            sourceRef: prior.revisionRef,
+            restrictions: [],
+            combinable: true,
+            quoteRequestKey: stayKey,
+            coversGroupIds: stayRow ? [stayRow.id] : [],
+            quantity: stayRow?.quantity,
+          },
+          staffQuote: {
+            workflowRunId: prior.workflowRunId,
+            revisionRef: prior.revisionRef,
+            factRefs: [],
+            messageId: source.messageId,
+            threadId: source.threadId,
+            sourceHash: source.sourceHash,
+            selectionEpoch,
+            inputRevision,
+            inputDigest: prior.revisionRef,
+            totalMinor: prior.totalMinor,
+            currency: prior.currency,
+            quoteRequestKey: stayKey,
+            approvedHeader: header,
+            // What the earlier run charged, not what the header asks now: a combined quote checks it on each stay.
+            onceExtras: prior.onceExtras,
+          },
+          selectionEpoch,
+          inputRevision,
+          stayRevision,
+        });
+        dispatchQuote({
+          type: 'booking_draft_ready',
+          payload: {
+            draft: prior.draft,
+            options: prior.options,
+            messageId: prior.messageId,
+            selectionEpoch: prior.selectionEpoch,
+            inputRevision: prior.inputRevision,
+            revisionRef: prior.revisionRef,
+          },
+          sourceHash: source.sourceHash,
+        });
+      }
+
       if (unbound.size > 0) {
         const notice = expiredPriorQuoteNotice(reasons, expiredPrior);
         if (notice === 'requote' && expiredPrior) {
@@ -617,11 +866,41 @@ export function NavaPane({
           toast.warning('The dates no longer match the earlier quote. Run the search again.');
         }
       }
-    });
+    })();
+    void readBack.then(
+      () => {
+        if (staffQuoteReadBackGeneration.current === generation) {
+          staffQuoteReadBackInFlight.current = false;
+        }
+      },
+      () => {
+        if (staffQuoteReadBackGeneration.current === generation) {
+          staffQuoteReadBackInFlight.current = false;
+        }
+      },
+    );
     return () => {
       cancelled = true;
+      pollController.abort();
+      if (staffQuoteReadBackGeneration.current === generation) {
+        staffQuoteReadBackGeneration.current += 1;
+        staffQuoteReadBackInFlight.current = false;
+      }
     };
   }, [priorQuoteKey]);
+
+  useEffect(() => {
+    if (staffQuoteQueueMode !== 'on') return;
+    autoStartStaffQuoteStepRef.current();
+  }, [
+    quoteSession,
+    quoteRunPending,
+    staffQuoteQueueMode,
+    contactMessageKey,
+    isLoading,
+    session?.user?.id,
+    requiresRelogin,
+  ]);
 
   // Onboarding & Screen State
   const [currentScreen, setCurrentScreen] = useState<PaneScreen>(() => {
@@ -852,6 +1131,8 @@ export function NavaPane({
       }
       const run = bindExecuteStaffQuote({
         mutate: staff.workstation.executeStaffQuote?.mutate,
+        queue: staff.workstation.queueStaffQuote?.mutate,
+        staffQuoteJob: staff.workstation.staffQuoteJob?.query,
         source,
         selectionEpoch,
         inputRevision,
@@ -928,7 +1209,8 @@ export function NavaPane({
       return current;
     });
 
-  const runQuoteStep = (stepId: string) => {
+  const runQuoteStep = (stepId: string, autoStart = false, readBack = false) => {
+    if ((autoStart || readBack) && (staffQuoteQueueMode !== 'on' || isQuoteFixturePreview())) return;
     const step = quoteSession.steps.find((item) => item.id === stepId);
     const maySearchAgain = step?.kind === 'quote_stay' && step.status === 'succeeded' && !quoteSession.runningStepId;
     if (!step || (!maySearchAgain && !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId))) return;
@@ -980,20 +1262,118 @@ export function NavaPane({
       toast.warning('The selected email is not ready yet. Wait a moment, then select it again.');
       return;
     }
+    if (!autoStart && !readBack) {
+      if (step.kind === 'quote_stay' && step.shareKey && quoteSession.binding) {
+        staffQuoteAutoAttempted.current.add(
+          staffQuoteAttemptKey(
+            quoteSession.binding.transportId,
+            source.messageId,
+            source.sourceHash,
+            step.shareKey,
+          ),
+        );
+      }
+      suppressAutoStaffQuoteForCurrentEmail();
+    }
     const stayGroups = groupsForQuoteStep(quoteSession, step);
     const staff = staffQuoteFromTrpc(trpcClient);
+    const originalStaffQuoteJob = staff.workstation.staffQuoteJob?.query;
+    let lastStaffQuoteRunId: string | null = null;
+    let pollLostRunId: string | null = null;
+    const observedStaffQuoteJob: StaffQuoteJobQuery | undefined = originalStaffQuoteJob
+      ? async (input, options) => {
+          if ('runId' in input) lastStaffQuoteRunId = input.runId;
+          return originalStaffQuoteJob(input, options);
+        }
+      : undefined;
+    const runHeader = autoStart || readBack
+      ? { ...quoteSession.staffHeader, salesStrategy: 'BAR' as const }
+      : quoteSession.staffHeader;
     // Get rates is where she proceeds with the read as shown, so unedited AI fields are accepted (v5 B2).
-    if (!storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
-    const run = bindExecuteStaffQuote({
-      mutate: staff.workstation.executeStaffQuote?.mutate,
-      source,
-      selectionEpoch,
-      inputRevision,
-      groups: stayGroups,
-      header: quoteSession.staffHeader,
-      stayKey: step.shareKey,
-    });
-    void trackStaffQuoteRun(run).then((remote) => {
+    if (!autoStart && !readBack && !storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
+    const run = readBack
+      ? bindReadBackStaffQuote({
+          query: observedStaffQuoteJob,
+          source,
+          selectionEpoch,
+          inputRevision,
+          groups: stayGroups,
+          header: runHeader,
+          stayKey: step.shareKey,
+        })
+      : autoStart
+        ? bindAutoStartStaffQuote({
+          queue: staff.workstation.queueStaffQuote?.mutate,
+          staffQuoteJob: observedStaffQuoteJob,
+          source,
+          selectionEpoch,
+          inputRevision,
+          groups: stayGroups,
+          header: runHeader,
+          stayKey: step.shareKey,
+        })
+        : bindExecuteStaffQuote({
+          mutate: staff.workstation.executeStaffQuote?.mutate,
+          queue: staff.workstation.queueStaffQuote?.mutate,
+          staffQuoteJob: observedStaffQuoteJob,
+          source,
+          selectionEpoch,
+          inputRevision,
+          groups: stayGroups,
+          header: runHeader,
+          stayKey: step.shareKey,
+        });
+    const noticeEmail = {
+      emailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
+      emailSubject: activeEmail?.subject?.trim() || null,
+    };
+    const staffQuoteStep = step;
+    const staffQuoteSource = source;
+    const retry = () => {
+      const lostRunId = pollLostRunId;
+      const retryRun = lostRunId && originalStaffQuoteJob
+        ? bindReadBackStaffQuote({
+            query: (input, options) =>
+              originalStaffQuoteJob('input' in input ? { runId: lostRunId } : input, options),
+            source,
+            selectionEpoch,
+            inputRevision,
+            groups: stayGroups,
+            header: runHeader,
+            stayKey: step.shareKey,
+          })
+        : bindExecuteStaffQuote({
+            mutate: staff.workstation.executeStaffQuote?.mutate,
+            queue: staff.workstation.queueStaffQuote?.mutate,
+            staffQuoteJob: observedStaffQuoteJob,
+            source,
+            selectionEpoch,
+            inputRevision,
+            groups: stayGroups,
+            header: runHeader,
+            stayKey: step.shareKey,
+          });
+      void runNoticed(retryRun).then(applyStaffQuoteResult);
+    };
+    const runNoticed = (pendingRun: Promise<BoundExecuteStaffQuote | null>) =>
+      trackMainStaffQuoteRun(pendingRun, retry, noticeEmail).then((remote) => {
+        pollLostRunId =
+          remote?.status === 'unavailable' && remote.reason === STAFF_QUOTE_POLL_LOST_REASON
+            ? lastStaffQuoteRunId
+            : null;
+        return remote;
+      });
+    function applyStaffQuoteResult(remote: BoundExecuteStaffQuote | null) {
+      if (remote === null) {
+        dispatchQuote({
+          type: 'results_unavailable',
+          stepId: staffQuoteStep.id,
+          reason: 'The background HMS quote did not start. Run Get rates to try again.',
+          selectionEpoch,
+          inputRevision,
+        });
+        return;
+      }
       // The reducer drops a result whose selection or input moved on while HMS searched. Say so, rather than let it vanish.
       if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision })) {
         toast.warning('Details changed while HMS was searching — search availability again.');
@@ -1002,7 +1382,7 @@ export function NavaPane({
       if (remote.status !== 'ok') {
         dispatchQuote({
           type: 'results_unavailable',
-          stepId: step.id,
+          stepId: staffQuoteStep.id,
           reason: remote.reason,
           detail: remote.detail,
           selectionEpoch,
@@ -1023,7 +1403,7 @@ export function NavaPane({
                   toast.warning('That quote has changed. Run the quote again to quote as B&B.');
                   return;
                 }
-                quoteAsBbWithDinnerAllowance(step.id, dinnerGroupIds);
+                quoteAsBbWithDinnerAllowance(staffQuoteStep.id, dinnerGroupIds);
               },
             },
           });
@@ -1039,17 +1419,17 @@ export function NavaPane({
         selectionEpoch,
         inputRevision,
         extrasReviewItems: remote.extrasReviewItems,
-        approvedHeader: quoteSession.staffHeader,
+        approvedHeader: runHeader,
       });
       for (const item of remote.extrasReviewItems) toast.warning(item);
       const luna = quoteSession.analysis?.luna;
       if (luna?.workflow === 'create_booking') {
         void bindPrepareBookingDraft({
           mutate: staff.workstation.prepareBookingDraft?.mutate,
-          source,
+          source: staffQuoteSource,
           workflowRunId: remote.staffQuote.workflowRunId,
           revisionRef: remote.staffQuote.revisionRef,
-          messageId: source.messageId,
+          messageId: staffQuoteSource.messageId,
           selectionEpoch,
           inputRevision,
           analysis: { ...luna, groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups) },
@@ -1061,12 +1441,74 @@ export function NavaPane({
           dispatchQuote({
             type: 'booking_draft_ready',
             payload: draftRemote.payload,
-            sourceHash: source.sourceHash,
+            sourceHash: staffQuoteSource.sourceHash,
           });
         });
       }
-    });
+    }
+    void runNoticed(run).then(applyStaffQuoteResult);
   };
+
+  const autoStartStaffQuoteStep = () => {
+    if (
+      staffQuoteQueueMode !== 'on' ||
+      isLoading ||
+      !session?.user ||
+      requiresRelogin ||
+      !activeEmail ||
+      !contactMessageKey ||
+      isQuoteFixturePreview() ||
+      quoteRunPending ||
+      staffQuoteReadBackInFlight.current ||
+      quoteSession.runningStepId ||
+      quoteSession.analysis?.intent !== 'quote' ||
+      !quoteSession.binding ||
+      (quoteSession.binding.internetMessageId ?? null) !== (activeEmail.internetMessageId ?? null) ||
+      !staffSourceReady(quoteSession) ||
+      partyLookupWaitReason(quoteSession) ||
+      staffQuoteAutoSuppressed.current.has(contactMessageKey) ||
+      autoStaffQuoteSuppressed(contactMessageKey)
+    ) {
+      return;
+    }
+    const source = quoteSession.staffSource;
+    const binding = quoteSession.binding;
+    if (!source || !binding) return;
+    const staff = staffQuoteFromTrpc(trpcClient);
+    if (!staff.workstation.queueStaffQuote?.mutate || !staff.workstation.staffQuoteJob?.query) return;
+    const header = { ...quoteSession.staffHeader, salesStrategy: 'BAR' as const };
+    const step = quoteSession.steps.find((candidate) => {
+      if (
+        candidate.kind !== 'quote_stay' ||
+        candidate.status !== 'ready' ||
+        !candidate.shareKey ||
+        !canRunQuoteStep(candidate, quoteSession.steps, quoteSession.runningStepId) ||
+        quoteSession.staffQuotes[candidate.shareKey] ||
+        quoteRunBlockReason(quoteSession, candidate)
+      ) {
+        return false;
+      }
+      return canBuildStaffQuoteRequest({
+        source,
+        selectionEpoch: binding.selectionEpoch,
+        inputRevision: quoteSession.inputRevision,
+        groups: groupsForQuoteStep(quoteSession, candidate),
+        header,
+        stayKey: candidate.shareKey,
+      });
+    });
+    if (!step?.shareKey) return;
+    const attemptKey = staffQuoteAttemptKey(
+      binding.transportId,
+      source.messageId,
+      source.sourceHash,
+      step.shareKey,
+    );
+    const readBack = staffQuoteAutoAttempted.current.has(attemptKey);
+    staffQuoteAutoAttempted.current.add(attemptKey);
+    runQuoteStep(step.id, true, readBack);
+  };
+  autoStartStaffQuoteStepRef.current = autoStartStaffQuoteStep;
 
   /**
    * One-click dinner fallback after a clean HMS no-match: switch the dinner groups to B&B, mark the
@@ -1170,6 +1612,12 @@ export function NavaPane({
     const selectionEpoch = session.binding?.selectionEpoch ?? 0;
     const inputRevision = session.inputRevision;
     const selectedOfferIds = [quote.revisionRef];
+    const senderName = activeEmail?.senderName.trim() ?? '';
+    const senderEmail = activeEmail?.senderEmail.trim().toLowerCase() ?? '';
+    const greetingName = senderName.toLowerCase() === senderEmail ? '' : senderName;
+    const reviewedReplyHtml = session.analysis?.intent === 'quote'
+      ? quoteWrapperHtml(greetingName, staffSignerName)
+      : undefined;
     const staff = staffQuoteFromTrpc(trpcClient);
     void bindQualifiedStaffProposalPdf({
       mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
@@ -1203,6 +1651,7 @@ export function NavaPane({
         selectionEpoch,
         inputRevision,
         selectedOfferIds,
+        reviewedReplyHtml,
       });
       trackPaneAction({ type: 'pdf.created', kind: 'option' }, owner);
     });
@@ -1229,12 +1678,18 @@ export function NavaPane({
   );
 
   return (
-    <div
-      onKeyDownCapture={markInput}
-      onInputCapture={markInput}
-      onPointerDownCapture={markInput}
-      className="flex h-screen w-full justify-center overflow-hidden bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
+    <HmsJobNoticeProvider
+      emailKey={activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null}
+      emailSubject={activeEmail?.subject?.trim() || null}
+      passthrough={hmsNoticesManagedByParent}
+      onReporterReady={setNoticeReporter}
     >
+      <div
+        onKeyDownCapture={markInput}
+        onInputCapture={markInput}
+        onPointerDownCapture={markInput}
+        className="flex h-screen w-full justify-center overflow-hidden bg-[#f1f3f6] font-['Segoe_UI',system-ui,sans-serif] text-sm"
+      >
       {/* Fills the Outlook pane height, so the body below scrolls with a visible bar; never narrower than 320px. */}
       <div className="shadow-xs relative flex h-full w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
         {/* Outlook 2016 Header */}
@@ -1257,6 +1712,7 @@ export function NavaPane({
             ) : null}
           </div>
           <div className="flex min-w-0 shrink items-center gap-1.5 text-[11.5px] font-medium text-[#475569] [&_button]:whitespace-nowrap">
+            <HmsJobRunningChip />
             <span
               className={`h-2 w-2 rounded-full ${
                 isConnected ? 'animate-pulse bg-emerald-600' : 'bg-rose-500'
@@ -1270,6 +1726,8 @@ export function NavaPane({
             </span>
           </div>
         </header>
+
+        <HmsJobNoticeBanner />
 
         {isConnected && capabilities && capabilities.mailboxSync !== 1 && <p className="mx-3 mt-2 text-[11px] text-slate-600">Update the Outlook add-in to enable automatic email copying.</p>}
         {/* An old installer cannot perform even read-only COM actions. */}
@@ -1451,6 +1909,9 @@ export function NavaPane({
             <BookingVoucherCard
               session={quoteSession}
               internetMessageId={activeEmail?.internetMessageId ?? null}
+              senderEmail={activeEmail?.senderEmail ?? null}
+              subject={activeEmail?.subject ?? null}
+              bodyText={activeEmail?.bodyText ?? null}
               syncCommitted={sync.status?.committed ?? null}
               syncPending={
                 sync.status
@@ -1485,6 +1946,7 @@ export function NavaPane({
               findParty={PANE_PARTY_FINDER}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
               partyIndex={PANE_PARTY_INDEX}
+              partyJobTransport={partyJobTransport}
               rates={PANE_SAVED_RATES}
               onPatchGroup={(groupId, patch) => editStayRows({ type: 'patch_group', groupId, patch })}
               // Shown only on a failed-read item, which stays listed after she starts typing in the form.
@@ -1513,13 +1975,21 @@ export function NavaPane({
               onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html })}
               onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
-              onPatchStaffHeader={(header) => dispatchQuote({ type: 'patch_staff_header', header })}
-              onPatchStayExtras={(stayKey, extras) =>
-                dispatchQuote({ type: 'patch_staff_stay_extras', stayKey, extras })
-              }
+              onPatchStaffHeader={(header, options) => {
+                if (options?.staffEdit) suppressAutoStaffQuoteForCurrentEmail();
+                dispatchQuote({ type: 'patch_staff_header', header });
+              }}
+              onPatchStayExtras={(stayKey, extras) => {
+                suppressAutoStaffQuoteForCurrentEmail();
+                dispatchQuote({ type: 'patch_staff_stay_extras', stayKey, extras });
+              }}
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
-              onTreatAs={(treatAs) => dispatchQuote({ type: 'treat_as', treatAs })}
+              onTreatAs={(treatAs) => {
+                suppressAutoStaffQuoteForCurrentEmail();
+                dispatchQuote({ type: 'treat_as', treatAs });
+              }}
               onStaffNote={(staffNote) => {
+                suppressAutoStaffQuoteForCurrentEmail();
                 setStaffNoteSent(staffNote);
                 dispatchQuote({ type: 'staff_note', staffNote });
               }}
@@ -1544,16 +2014,11 @@ export function NavaPane({
               onPreparePdf={() => preparePdfFor(null)}
               onDownloadWorkbook={downloadWorkbook}
               workbookPending={workbookPending}
+              replyContent={quoteOrBookingEmail ? replyBody : undefined}
             />
 
-            {/* Step 4: the reply. Quote and booking mail shows it as the numbered step; other mail keeps a plain button. */}
-            {quoteOrBookingEmail ? (
-              <Section step={4} title="Reply">
-                {replyBody}
-              </Section>
-            ) : (
-              <div className="flex flex-col gap-2.5">{replyBody}</div>
-            )}
+            {/* Non-quote mail keeps its plain reply actions; quote mail's action is inside Step 5. */}
+            {!quoteOrBookingEmail ? <div className="flex flex-col gap-2.5">{replyBody}</div> : null}
 
             {/* Outlook Email Draft Preview Box */}
             {showDraftPreview && draftedDetails && (
@@ -1587,6 +2052,7 @@ export function NavaPane({
           />
         </footer>
       </div>
-    </div>
+      </div>
+    </HmsJobNoticeProvider>
   );
 }
