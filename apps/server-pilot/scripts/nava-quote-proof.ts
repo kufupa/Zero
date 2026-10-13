@@ -42,6 +42,7 @@ const PARTY_INDEX_SETTLE_MS = 5_000;
 const PARTY_SEARCH_START_GRACE_MS = 5_000;
 const STEP_MS = 30_000;
 const RATE_POLL_MS = 250;
+const RATE_SEARCH_IDLE_GRACE_MS = 10_000;
 const PARTY_SEARCH_LIMIT = 2;
 const FIELD_EDIT_LIMIT = 4;
 const MESSAGE_LIMIT = 220;
@@ -378,6 +379,25 @@ export function rateKeysForDateRanges(
 
 export function rateSearchAction(key: string, requestedRateKeys: readonly string[]): 'observe' | 'search' {
   return requestedRateKeys.includes(key) ? 'observe' : 'search';
+}
+
+export function shouldRetryObservedRateSearch(state: {
+  buttonEnabled: boolean;
+  pending: boolean;
+  hasPricedCards: boolean;
+  refusalShown: boolean;
+  idleSinceMs: number | null;
+  nowMs: number;
+  graceMs: number;
+}): boolean {
+  return (
+    state.buttonEnabled &&
+    !state.pending &&
+    !state.hasPricedCards &&
+    !state.refusalShown &&
+    state.idleSinceMs !== null &&
+    state.nowMs - state.idleSinceMs >= state.graceMs
+  );
 }
 
 export async function withPiiMask<T>(markPii: () => Promise<unknown>, capture: () => Promise<T>): Promise<T> {
@@ -1140,6 +1160,19 @@ async function pricedCardCount(scope: Locator): Promise<number> {
   return count;
 }
 
+async function rateSearchButtonEnabled(article: Locator | null, rates: Locator): Promise<boolean> {
+  const searchButton = article?.getByRole('button', { name: QUOTE_SELECTORS.searchButton });
+  if (
+    searchButton &&
+    (await searchButton.count()) > 0 &&
+    (await searchButton.first().isEnabled())
+  ) {
+    return true;
+  }
+  const getRatesButton = rates.getByRole('button', { name: QUOTE_SELECTORS.getRatesButton });
+  return (await getRatesButton.count()) > 0 && (await getRatesButton.first().isEnabled());
+}
+
 async function ratePending(region: Locator, deadline: number): Promise<boolean> {
   const groups = region.getByRole('group', { name: QUOTE_SELECTORS.rateCardsGroup, exact: true });
   for (let index = 0; index < (await groups.count()); index += 1) {
@@ -1305,7 +1338,56 @@ async function runRates(
   for (const item of keys) {
     const article = articles[item.stayIndex] ?? null;
     let outcomeAfter = Number.MAX_SAFE_INTEGER;
-    if (rateSearchAction(item.key, guard.ratedRateKeys) === 'search') {
+    let shouldSearch = rateSearchAction(item.key, guard.ratedRateKeys) === 'search';
+    let observedSignal: RateSignal | null = null;
+    const details = { opened: false };
+    if (!shouldSearch) {
+      // Party edits can invalidate the on-open read too; retry after the idle button stays visible.
+      let idleSinceMs: number | null = null;
+      try {
+        const observation = await waitForRate(
+          'priced room-rate cards, a named refusal, or an idle availability search',
+          deadline,
+          async () => {
+            const signal = await rateSignal(article, rates, captured, outcomeAfter, details, deadline);
+            if (signal) return { kind: 'signal' as const, signal };
+
+            const buttonEnabled = await rateSearchButtonEnabled(article, rates);
+            const pending = await ratePending(rates, deadline);
+            const cards = await pricedCardCount(article ?? rates);
+            const refusalShown = (await rates.getByRole('alert').count()) > 0;
+            const nowMs = Date.now();
+            const idle = buttonEnabled && !pending && cards === 0 && !refusalShown;
+            idleSinceMs = idle ? (idleSinceMs ?? nowMs) : null;
+            if (
+              shouldRetryObservedRateSearch({
+                buttonEnabled,
+                pending,
+                hasPricedCards: cards > 0,
+                refusalShown,
+                idleSinceMs,
+                nowMs,
+                graceMs: RATE_SEARCH_IDLE_GRACE_MS,
+              })
+            ) {
+              return { kind: 'retry' as const };
+            }
+            return null;
+          },
+        );
+        if (observation.kind === 'retry') {
+          guard.ratedRateKeys = guard.ratedRateKeys.filter((key) => key !== item.key);
+          shouldSearch = true;
+        } else {
+          observedSignal = observation.signal;
+        }
+      } catch (error) {
+        if (Date.now() >= deadline) return timedOut();
+        throw error;
+      }
+    }
+
+    if (shouldSearch) {
       try {
         await waitForRate('the previous availability search to settle', deadline, async () =>
           (await ratePending(rates, deadline)) ? null : true,
@@ -1343,17 +1425,18 @@ async function runRates(
       }
     }
 
-    const details = { opened: false };
-    try {
-      outcomes.push(
-        await waitForRate('priced room-rate cards or a named refusal', deadline, () =>
+    let signal = observedSignal;
+    if (!signal) {
+      try {
+        signal = await waitForRate('priced room-rate cards or a named refusal', deadline, () =>
           rateSignal(article, rates, captured, outcomeAfter, details, deadline),
-        ),
-      );
-    } catch (error) {
-      if (Date.now() >= deadline) return timedOut();
-      throw error;
+        );
+      } catch (error) {
+        if (Date.now() >= deadline) return timedOut();
+        throw error;
+      }
     }
+    outcomes.push(signal);
     const latestSignal = outcomes[outcomes.length - 1]!;
     if (latestSignal.kind === 'failed') {
       return {

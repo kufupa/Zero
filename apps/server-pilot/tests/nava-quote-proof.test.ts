@@ -15,6 +15,7 @@ import {
   QUOTE_SELECTORS,
   rateKeysForDateRanges,
   rateSearchAction,
+  shouldRetryObservedRateSearch,
   rateWaitBudget,
   quoteThreadFailure,
   quoteProofPass,
@@ -391,6 +392,39 @@ describe('quote proof request guard', () => {
     ])]).toEqual(['2026-11-02:2026-11-04']);
     expect(rateSearchAction(key!, [key!])).toBe('observe');
     expect(rateSearchAction(key!, [])).toBe('search');
+  });
+
+  it('waits through a continuous idle grace before retrying an observed rate search', () => {
+    const idle = {
+      buttonEnabled: true,
+      pending: false,
+      hasPricedCards: false,
+      refusalShown: false,
+      idleSinceMs: 1_000,
+      nowMs: 10_999,
+      graceMs: 10_000,
+    };
+
+    expect(shouldRetryObservedRateSearch({ ...idle, idleSinceMs: null })).toBe(false);
+    expect(shouldRetryObservedRateSearch(idle)).toBe(false);
+    expect(shouldRetryObservedRateSearch({ ...idle, nowMs: 11_000 })).toBe(true);
+  });
+
+  it('does not retry while rates are pending, priced, refused, or search is disabled', () => {
+    const idle = {
+      buttonEnabled: true,
+      pending: false,
+      hasPricedCards: false,
+      refusalShown: false,
+      idleSinceMs: 1_000,
+      nowMs: 11_000,
+      graceMs: 10_000,
+    };
+
+    expect(shouldRetryObservedRateSearch({ ...idle, buttonEnabled: false })).toBe(false);
+    expect(shouldRetryObservedRateSearch({ ...idle, pending: true })).toBe(false);
+    expect(shouldRetryObservedRateSearch({ ...idle, hasPricedCards: true })).toBe(false);
+    expect(shouldRetryObservedRateSearch({ ...idle, refusalShown: true })).toBe(false);
   });
 
   it('only allows pane field events when NAVA_PROOF_ALLOW_EDITS is enabled', () => {
