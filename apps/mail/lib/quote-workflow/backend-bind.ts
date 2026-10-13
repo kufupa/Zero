@@ -250,7 +250,9 @@ type WorkItemsClient = {
   list?: {
     query: (input: { limit?: number; statuses?: NeedsYouRow['status'][] }) => Promise<NeedsYouRow[]>;
   };
-  dismiss?: { mutate: (input: { workItemId: string }) => Promise<unknown> };
+  dismiss?: {
+    mutate: (input: { workItemId: string }, opts?: ReturnType<typeof inMailbox>) => Promise<unknown>;
+  };
 };
 
 export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {

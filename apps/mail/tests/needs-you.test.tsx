@@ -12,10 +12,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import type { NeedsYouRow } from '../lib/quote-workflow/backend-bind';
+import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import { trpcClient } from '../providers/query-provider';
 
-const { listQuery, dismissMutate, pingMutate, toastMock, silent } = vi.hoisted(() => {
+const { listQuery, dismissMutate, pingMutate, toastMock, toastDismissMock, silent } = vi.hoisted(() => {
   // A route this file does not exercise never answers, so the pane waits on it instead of failing.
   const silent = (): unknown =>
     new Proxy(() => new Promise<never>(() => {}), { get: () => silent() });
@@ -24,6 +25,7 @@ const { listQuery, dismissMutate, pingMutate, toastMock, silent } = vi.hoisted((
     dismissMutate: vi.fn(),
     pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
     toastMock: vi.fn(),
+    toastDismissMock: vi.fn(),
     silent,
   };
 });
@@ -44,7 +46,12 @@ vi.mock('../providers/query-provider', () => {
 });
 
 vi.mock('sonner', () => ({
-  toast: Object.assign(toastMock, { success: vi.fn(), error: vi.fn(), warning: vi.fn() }),
+  toast: Object.assign(toastMock, {
+    dismiss: toastDismissMock,
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+  }),
 }));
 
 vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
@@ -162,16 +169,20 @@ const fakeBridge = {
 
 beforeEach(() => {
   localStorage.setItem('nava_onboarding_completed', 'true');
+  setMailCacheScope({ userId: null, activeTransportId: null });
   listQuery.mockReset();
   listQuery.mockResolvedValue(TWO_OPEN);
   dismissMutate.mockReset();
   dismissMutate.mockResolvedValue({ status: 'dismissed' });
-  toastMock.mockClear();
+  toastMock.mockReset();
+  toastMock.mockReturnValue('needs-you-dismissal');
+  toastDismissMock.mockReset();
 });
 
 afterEach(() => {
   localStorage.clear();
   cleanup();
+  setMailCacheScope({ userId: null, activeTransportId: null });
   vi.useRealTimers();
 });
 
@@ -276,6 +287,45 @@ describe('Needs-you list', () => {
     expect(await screen.findByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'Dismiss Rooms request' })).toBeDefined();
     expect(dismissMutate).not.toHaveBeenCalled();
+  });
+
+  it('flushes pending dismissal on unmount before thread switch', async () => {
+    const { unmount } = render(<Harness host="web" onOpenThread={() => {}} />);
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+    vi.useFakeTimers();
+    fireEvent.click(dismiss);
+    const options = toastMock.mock.calls.at(-1)?.[1] as {
+      action?: { onClick: () => void };
+    };
+
+    act(() => unmount());
+
+    expect(dismissMutate).toHaveBeenCalledTimes(1);
+    expect(toastDismissMock).toHaveBeenCalledWith('needs-you-dismissal');
+    act(() => options.action?.onClick());
+    expect(dismissMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a delayed dismissal under the mailbox active when it was dismissed', async () => {
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' });
+    try {
+      render(<Harness host="web" onOpenThread={() => {}} />);
+      const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+      vi.useFakeTimers();
+      fireEvent.click(dismiss);
+      setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-b' });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS);
+      });
+
+      expect(dismissMutate).toHaveBeenCalledWith(
+        { workItemId: 'wi-1' },
+        { context: { activeTransportId: 'transport-a' } },
+      );
+    } finally {
+      setMailCacheScope({ userId: null, activeTransportId: null });
+    }
   });
 
   it('saves the dismissal after the Undo window and refreshes both filters', async () => {

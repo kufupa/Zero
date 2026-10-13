@@ -1,7 +1,13 @@
-import { activateSource, activeTransportStatus, controlSource } from '../src/outlook-sync/service.js';
+import {
+  activateSource,
+  activeTransportStatus,
+  controlSource,
+  redeemActivation,
+} from '../src/outlook-sync/service.js';
 import { outlookSyncFixture } from './helpers/outlook-sync-fixture.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { __setDbForTests } from '../src/db/client.js';
+import { session } from '../src/db/schema/auth.js';
 import { describe, expect, it, vi } from 'vitest';
 vi.setConfig({ testTimeout: 30000 });
 import { randomUUID } from 'node:crypto';
@@ -18,6 +24,67 @@ describe('native sync route authority', () => {
         state: 'pending',
         discovered: 0,
         committed: 0,
+      });
+    }));
+
+  it('reports the source session health instead of comparing it to the webmail session', async () =>
+    withIngestionDb(async ({ db }) => {
+      const f = await outlookSyncFixture(db);
+      const activation = await activateSource(
+        db,
+        f.auth,
+        new Headers(),
+        f.transportId,
+        f.activation,
+        f.key,
+      );
+      await redeemActivation(
+        db,
+        f.deviceId,
+        {
+          version: 1,
+          sourceId: activation.sourceId,
+          activationTicket: activation.activationTicket,
+          idempotencyKey: f.activation.idempotencyKey,
+          storeId: f.storeId,
+          rootEntryId: f.rootEntryId,
+        },
+        f.key,
+      );
+
+      const webmailSessionId = randomUUID();
+      await db.insert(session).values({
+        id: webmailSessionId,
+        token: randomUUID(),
+        userId: f.userId,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      });
+      const webmailAuth = {
+        api: {
+          getSession: async () => ({
+            user: { id: f.userId },
+            session: { id: webmailSessionId },
+          }),
+        },
+      };
+
+      expect(
+        await activeTransportStatus(db, webmailAuth, new Headers(), f.transportId),
+      ).toMatchObject({
+        sourceId: activation.sourceId,
+        state: 'running',
+      });
+
+      await controlSource(db, webmailAuth, new Headers(), f.transportId, {
+        sourceId: activation.sourceId,
+        operation: 'resume',
+        idempotencyKey: randomUUID(),
+      });
+      expect(
+        await activeTransportStatus(db, webmailAuth, new Headers(), f.transportId),
+      ).toMatchObject({
+        sourceId: activation.sourceId,
+        state: 'sign-in-required',
       });
     }));
 

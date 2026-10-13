@@ -35,9 +35,15 @@ export function WorkflowBadge({
   if (!current) return null;
 
   const label = NAVA_READ_AS_LABEL[current];
-  const changeable = Boolean(onIntentChange) && ['quote', 'new_booking', 'not_for_nava'].includes(current);
+  const changeable =
+    Boolean(onIntentChange) && ['quote', 'new_booking', 'group', 'not_for_nava'].includes(current);
   const selectorValue =
-    treatAs ?? (current === 'quote' ? 'quote' : current === 'new_booking' ? 'create_booking' : 'other');
+    treatAs ??
+    (current === 'quote' || current === 'group'
+      ? 'quote'
+      : current === 'new_booking'
+        ? 'create_booking'
+        : 'other');
   return (
     <section
       role="status"

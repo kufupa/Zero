@@ -8,7 +8,7 @@ import {
   type NavaWorkState,
 } from '@/lib/quote-workflow/workflow-vocabulary';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getMailCacheScope } from '@/lib/mail/mail-cache-scope';
+import { getMailCacheScope, inMailbox } from '@/lib/mail/mail-cache-scope';
 import { toast } from 'sonner';
 import { Notice, SecondaryButton } from '../pane-ui';
 import { Button } from '@/components/ui/button';
@@ -68,6 +68,8 @@ type PendingDismissal = {
   row: NeedsYouRow;
   index: number;
   timer: ReturnType<typeof setTimeout>;
+  flush: () => void;
+  toastId: ReturnType<typeof toast>;
 };
 
 function restoreAt(rows: NeedsYouRow[], row: NeedsYouRow, index: number): NeedsYouRow[] {
@@ -151,10 +153,14 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
 
   useEffect(() => {
     mounted.current = true;
+    const pendingDismissalsOnUnmount = pendingDismissals.current;
     return () => {
       mounted.current = false;
-      for (const pending of pendingDismissals.current.values()) clearTimeout(pending.timer);
-      pendingDismissals.current.clear();
+      for (const pending of pendingDismissalsOnUnmount.values()) {
+        clearTimeout(pending.timer);
+        toast.dismiss(pending.toastId);
+        pending.flush();
+      }
     };
   }, []);
 
@@ -185,7 +191,8 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
         notice: null,
       }));
 
-      const owner = { workItemId, transportId: getMailCacheScope().activeTransportId };
+      const transportId = getMailCacheScope().activeTransportId;
+      const owner = { workItemId, transportId };
       const undo = () => {
         const pending = pendingDismissals.current.get(workItemId);
         if (!pending) return;
@@ -198,9 +205,10 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
           notice: null,
         }));
       };
-      const timer = setTimeout(() => {
+      const flush = () => {
         pendingDismissals.current.delete(workItemId);
-        mutate({ workItemId })
+        const mailbox = inMailbox(transportId);
+        (mailbox ? mutate({ workItemId }, mailbox) : mutate({ workItemId }))
           .then(() => {
             trackPaneAction({ type: 'item.dismissed' }, owner);
             return Promise.all([load('open'), load('finished')]);
@@ -216,12 +224,13 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
             }
             void load('open', true);
           });
-      }, NEEDS_YOU_UNDO_MS);
-      pendingDismissals.current.set(workItemId, { row, index, timer });
-      toast('Email dismissed', {
+      };
+      const timer = setTimeout(flush, NEEDS_YOU_UNDO_MS);
+      const toastId = toast('Email dismissed', {
         duration: NEEDS_YOU_UNDO_MS,
         action: { label: 'Undo', onClick: undo },
       });
+      pendingDismissals.current.set(workItemId, { row, index, timer, flush, toastId });
     },
     [load, view.openRows],
   );

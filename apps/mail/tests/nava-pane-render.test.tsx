@@ -1797,12 +1797,12 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.lastStaffQuoteInput).not.toHaveProperty('autoStart');
   });
 
-  it('reports the inline Get rates run and keeps its running chip until the read settles', async () => {
+  it('keeps the completed rate notice global across Needs you and channel mail', async () => {
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.holdStaffQuote = true;
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);
 
-    render(<NavaPane bridge={fakeBridge} />);
+    const { rerender } = render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await settle();
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
@@ -1820,6 +1820,29 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledWith(
       expect.objectContaining({ messageId: 'mail-1' }),
     );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (0)' }));
+    const needsYouNotice = screen.getByTestId('hms-job-notice-banner');
+    expect(needsYouNotice.textContent).toContain('Rates ready');
+    expect(needsYouNotice.closest('main')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to quotes' }));
+    const channelBridge = {
+      ...fakeBridge,
+      activeEmail: {
+        ...fakeBridge.activeEmail,
+        subject: 'Expedia Partner Central - New reservation',
+        senderEmail: 'notifications@m.expediapartnercentral.com',
+        senderName: 'Expedia Partner Central',
+        bodyText: 'Reservation created for the guest.',
+      },
+    } as unknown as PaneBridge;
+    rerender(<NavaPane bridge={channelBridge} />);
+
+    expect(await screen.findByTestId('mail-source-no-action')).toBeDefined();
+    const channelNotice = screen.getByTestId('hms-job-notice-banner');
+    expect(channelNotice.textContent).toContain('Rates ready');
+    expect(channelNotice.closest('main')).toBeNull();
   });
 });
 

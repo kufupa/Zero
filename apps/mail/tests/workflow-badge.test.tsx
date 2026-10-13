@@ -110,6 +110,18 @@ describe('WorkflowBadge', () => {
     expect(Array.from(picker.options).map((option) => option.text)).toEqual(['Quote', 'New booking']);
   });
 
+  it('lets staff correct a rooms-only group, defaulting its quote picker to Quote', () => {
+    const grouped = analysis('quote');
+    grouped.luna!.flags.push('rooms_only_group');
+    const onIntentChange = vi.fn();
+    render(<WorkflowBadge analysis={grouped} onIntentChange={onIntentChange} />);
+
+    const picker = screen.getByLabelText('Change how Nava reads this email') as HTMLSelectElement;
+    expect(picker.value).toBe('quote');
+    fireEvent.change(picker, { target: { value: 'create_booking' } });
+    expect(onIntentChange).toHaveBeenCalledWith('create_booking');
+  });
+
   it('reports a supported change of reading to its owner', () => {
     const onIntentChange = vi.fn();
     render(

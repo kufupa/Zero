@@ -388,7 +388,7 @@ export async function sourceStatus(
       [s] = await t.select().from(outlookSyncSource).where(eq(outlookSyncSource.id, sourceId));
     if (!s || s.userId !== staff.userId || s.transportId !== transportId)
       throw new SyncDeniedError();
-    return statusForSource(t, staff, s);
+    return statusForSource(t, staff.sessionId, s);
   });
 }
 
@@ -408,13 +408,13 @@ export async function activeTransportStatus(
       .where(and(eq(outlookSyncSource.userId, staff.userId), eq(outlookSyncSource.transportId, transportId)))
       .orderBy(desc(outlookSyncSource.updatedAt), desc(outlookSyncSource.createdAt))
       .limit(1);
-    return source ? statusForSource(t, staff, source) : null;
+    return source ? statusForSource(t, source.sessionId, source) : null;
   });
 }
 
 async function statusForSource(
   db: DB,
-  staff: Awaited<ReturnType<typeof authenticatedStaff>>,
+  sessionId: string,
   source: typeof outlookSyncSource.$inferSelect,
 ): Promise<SyncStatusV1> {
   await requireRoot(db, source);
@@ -425,8 +425,9 @@ async function statusForSource(
     sourceId: source.id,
     state: source.userPaused
       ? 'paused'
-      : (!source.handleHash && source.captureStartedAt) ||
-          source.sessionId !== staff.sessionId ||
+      : source.status === 'sign-in-required' ||
+          (!source.handleHash && source.captureStartedAt) ||
+          source.sessionId !== sessionId ||
           source.authorityExpiresAt <= now
         ? 'sign-in-required'
         : source.resourcePauseReason || gap

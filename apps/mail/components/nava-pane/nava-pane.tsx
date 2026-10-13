@@ -1863,6 +1863,7 @@ export function NavaPane({
           </div>
         </header>
 
+        <HmsJobNoticeBanner />
         <SelectedEmailBlock activeEmail={activeEmail} />
         {readAs ? (
           <div className="mx-3 mt-2 shrink-0">
@@ -2005,7 +2006,6 @@ export function NavaPane({
                 onEdit={storedWork.recordContact}
               />
             ) : null}
-            <HmsJobNoticeBanner />
             <div className="flex flex-col gap-2">{mailboxWarnings}</div>
 
             {storedWork.saveFailed ? (
