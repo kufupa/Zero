@@ -5,6 +5,8 @@ export type HmsJobNoticeInput = {
   observerId: string;
   jobId: string;
   request: HmsJobRequest;
+  /** The original pane item when a retry is started after the selection changed. */
+  email?: HmsJobNoticeEmail;
   options?: HmsJobQueueOptions;
   retryOptions?: HmsJobQueueOptions;
   targetId?: string;

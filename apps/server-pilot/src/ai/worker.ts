@@ -4242,7 +4242,7 @@ export async function executeAiRun(
 
     // Pane HMS jobs run through the CLI under the property lock, so they do not need the read service.
     if (run.runKind === 'read_tool' && run.promptVersion === HMS_JOB_PROMPT_VERSION) {
-      return { runId, state: await executeHmsJob({ run, fence }) };
+      return { runId, state: await executeHmsJob({ run, fence, signal }) };
     }
 
     if (run.runKind === 'read_tool') {

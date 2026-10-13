@@ -8,8 +8,8 @@
  *   - how many other staff quote runs are in flight (aiDraftGeneration rows).
  * It never changes lock acquisition.
  */
-import { aiDraftGeneration } from '../db/schema/mail.js';
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { aiDraftGeneration, aiWorkflowRun } from '../db/schema/mail.js';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 
 export const STAFF_QUOTE_GENERATION_MODEL = 'staff-approved-native';
@@ -221,7 +221,22 @@ export async function staffQuoteInFlight(db: DB): Promise<boolean> {
       ),
     )
     .limit(1);
-  return row !== undefined;
+  if (row) return true;
+  const [job] = await db
+    .select({ id: aiWorkflowRun.id })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.runKind, 'read_tool'),
+        eq(aiWorkflowRun.executorLane, 'hms'),
+        eq(aiWorkflowRun.promptVersion, 'hms-job/1'),
+        inArray(aiWorkflowRun.state, ['claimed', 'running']),
+        sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+        sql`${aiWorkflowRun.updatedAt} > clock_timestamp() - interval '20 minutes'`,
+      ),
+    )
+    .limit(1);
+  return job !== undefined;
 }
 
 /** In-flight staff quote runs across mailboxes, excluding one generation. Counts only. */

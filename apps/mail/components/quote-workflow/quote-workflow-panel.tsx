@@ -998,7 +998,7 @@ export function QuoteWorkflowPanel({
   onRetryRead?: () => void;
   onViewSource?: (item: QuoteReviewItem) => void;
   onEditReply?: () => void;
-  onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>) => void;
+  onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>, options?: { staffEdit?: boolean }) => void;
   onPatchStayExtras?: (stayKey: string, extras: Partial<StaffStayExtras>) => void;
   /** HMS company and agency search for the quote header's Find in HMS picker. Null or absent: no picker. */
   findParty?: PartyFinder | null;
@@ -1214,7 +1214,7 @@ export function QuoteWorkflowPanel({
         ? governmentParty
         : value === 'government' || ratePlans.some((plan) => plan.code === value && plan.category === 'government');
     const salesStrategy = government ? 'Government' : 'BAR';
-    if (salesStrategy !== header.salesStrategy) onPatchStaffHeader?.({ salesStrategy });
+    if (salesStrategy !== header.salesStrategy) onPatchStaffHeader?.({ salesStrategy }, { staffEdit: true });
   };
   const stays = groupStays(formGroups);
   const roomTotals = stayTotals(session.groups);
@@ -1393,7 +1393,7 @@ export function QuoteWorkflowPanel({
         <Section step={3} title="Company / agency" id="quote-party" action={<StepState state={partyState} />}>
           <StaffPartyFields
             header={header}
-            onPatch={onPatchStaffHeader}
+            onPatch={(header) => onPatchStaffHeader?.(header, { staffEdit: true })}
             onFieldEdit={markPartyFieldEdited}
             findParty={findParty}
             partySuggestions={partySuggestions}
@@ -1413,7 +1413,7 @@ export function QuoteWorkflowPanel({
             onRatePlanChange={changeRatePlan}
             notesBlock={quoteNotesBlock(session, rowLabels, contact)}
             notes={header.notes ?? ''}
-            onNotesChange={(value) => onPatchStaffHeader?.({ notes: value })}
+            onNotesChange={(value) => onPatchStaffHeader?.({ notes: value }, { staffEdit: true })}
           />
           {showRates ? (
             <>
@@ -1590,7 +1590,13 @@ export function QuoteWorkflowPanel({
                   </article>
                 );
               })}
-              {running ? <HmsQueueStatusLine pending={running} status={hmsQueue?.status ?? null} /> : null}
+              {running ? (
+                <HmsQueueStatusLine
+                  pending={running}
+                  status={hmsQueue?.status ?? null}
+                  staffQuote={Boolean(hmsQueue?.pending)}
+                />
+              ) : null}
             </>
           ) : null}
           {!showRates ? <p className="text-[13px] text-[#64748b]">Rates will appear when the email details are ready to search.</p> : null}

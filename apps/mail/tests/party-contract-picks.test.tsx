@@ -228,10 +228,13 @@ describe('the quote workflow header: each field finds in HMS with its own text',
     fireEvent.click(confirm);
     await waitFor(
       () =>
-        expect(onPatchStaffHeader).toHaveBeenCalledWith({
-          parties: { company: woolworths },
-          company: 'Woolworths Holdings',
-        }),
+        expect(onPatchStaffHeader).toHaveBeenCalledWith(
+          {
+            parties: { company: woolworths },
+            company: 'Woolworths Holdings',
+          },
+          { staffEdit: true },
+        ),
       { timeout: 3000 },
     );
     expect(find).toHaveBeenCalledWith('Woolworths', 'company');

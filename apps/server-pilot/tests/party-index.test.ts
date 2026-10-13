@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TRPCError } from '@trpc/server';
+import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import {
   indexRank,
   loadPartyIndex,
@@ -206,6 +207,24 @@ describe('a pick from the list is still checked live before a rate is bound', ()
     );
     expect(refused).toBeInstanceOf(TRPCError);
     expect((refused as TRPCError).code).toBe('PRECONDITION_FAILED');
+  });
+
+  it('preserves party verification lock busy as a retryable HMS lock marker', async () => {
+    vi.stubEnv('QUOTE_RATE_CONTEXT', 'on');
+    panePartyLookupLoaders.lock = {
+      withLock: async () => {
+        throw Object.assign(new Error('lock wait'), {
+          cause: new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE),
+        });
+      },
+    };
+
+    const refused = await verifyStaffParties({
+      company: { kind: 'company', nativeId: 'busy-206', name: 'Busy Test Profile' },
+    }).catch((error: unknown) => error);
+
+    expect(refused).toBeInstanceOf(TRPCError);
+    expect((refused as TRPCError).cause).toMatchObject({ code: 'HMS_LOCK_BUSY' });
   });
 
   it('an index id HMS confirms under the same name binds HMS’s own name', async () => {

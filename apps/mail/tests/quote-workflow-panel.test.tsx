@@ -679,7 +679,10 @@ describe('QuoteWorkflowPanel', () => {
     expect(notes.tagName).toBe('TEXTAREA');
     expect(notes.placeholder).toBe('Add a staff note for the HMS handoff');
     fireEvent.change(notes, { target: { value: 'Please confirm the booking reference.' } });
-    expect(onPatchStaffHeader).toHaveBeenCalledWith({ notes: 'Please confirm the booking reference.' });
+    expect(onPatchStaffHeader).toHaveBeenCalledWith(
+      { notes: 'Please confirm the booking reference.' },
+      { staffEdit: true },
+    );
   });
 
   it('keeps email extras checked and their amounts prefilled for each stay', () => {
@@ -1118,7 +1121,7 @@ describe('the Find in HMS picker in the quote header', () => {
     );
     assertRatePlanVisible();
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'NGOVB' } });
-    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'Government' }, { staffEdit: true });
     first.unmount();
 
     const governmentSession = { ...base, staffHeader: { ...base.staffHeader, salesStrategy: 'Government' } } as never;
@@ -1128,7 +1131,7 @@ describe('the Find in HMS picker in the quote header', () => {
     assertRatePlanVisible();
     expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government');
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'BAR' } });
-    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
+    expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' }, { staffEdit: true });
   });
 
   // Greptile P1 (PR #187): the Rate plan select must always be able to restore BAR.

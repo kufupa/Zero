@@ -4,6 +4,8 @@ import type {
   UsePriorQuoteForBookingInput,
   UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
+import { HMS_JOB_MAX_MISSES, HMS_JOB_POLL_MS } from './amend-find';
+import { getMailCacheScope, inMailbox } from '../mail/mail-cache-scope';
 import type {
   QueueStatus,
   QuoteOffer,
@@ -36,6 +38,8 @@ export const STAFF_QUOTE_BIND_TARGETS = {
   staffActions: 'drafts.toDraftWire reviewSummary.staffActions',
   staffQuoteSource: 'workstation.staffQuoteSource',
   executeStaffQuote: 'workstation.executeStaffQuote',
+  queueStaffQuote: 'workstation.queueStaffQuote',
+  staffQuoteJob: 'workstation.staffQuoteJob',
   qualifiedPdf: 'workstation.qualifiedQuoteProposalPdf',
   snapshot: 'backend scoped snapshot after focused verification',
 } as const;
@@ -113,6 +117,56 @@ export type ExecuteStaffQuoteResult = {
   /** Optional: an older server sends none. */
   rowRates?: StaffRowRate[];
 };
+
+export type StaffQuoteJobView = {
+  runId: string;
+  status: 'queued' | 'running' | 'retrying' | 'done' | 'failed';
+  result: Record<string, unknown> | null;
+  failureClass: string | null;
+  asOf?: string | null;
+};
+
+type StaffQuoteCallOptions = {
+  signal?: AbortSignal;
+  context?: { activeTransportId: string };
+};
+
+export type StaffQuoteJobQuery = (
+  input: { runId: string } | { input: ExecuteStaffQuoteInput },
+  options?: StaffQuoteCallOptions,
+) => Promise<StaffQuoteJobView | null>;
+
+export type StaffQuoteJobQueue = (
+  input: ExecuteStaffQuoteInput & { autoStart?: true },
+  options?: StaffQuoteCallOptions,
+) => Promise<{ runId: string | null }>;
+
+function isExecuteStaffQuoteResult(
+  value: Record<string, unknown>,
+): value is Record<string, unknown> & ExecuteStaffQuoteResult {
+  const nonEmptyString = (field: unknown): field is string =>
+    typeof field === 'string' && field.trim().length > 0;
+  return (
+    value.status === 'ready' &&
+    nonEmptyString(value.workflowRunId) &&
+    nonEmptyString(value.revisionRef) &&
+    nonEmptyString(value.messageId) &&
+    nonEmptyString(value.threadId) &&
+    Array.isArray(value.factRefs) &&
+    value.factRefs.every((ref) => typeof ref === 'string') &&
+    typeof value.selectionEpoch === 'number' &&
+    Number.isSafeInteger(value.selectionEpoch) &&
+    typeof value.inputRevision === 'number' &&
+    Number.isSafeInteger(value.inputRevision) &&
+    nonEmptyString(value.inputDigest) &&
+    typeof value.totalMinor === 'number' &&
+    Number.isSafeInteger(value.totalMinor) &&
+    typeof value.currency === 'string' &&
+    nonEmptyString(value.arrivalDate) &&
+    nonEmptyString(value.departureDate) &&
+    typeof value.description === 'string'
+  );
+}
 
 export type StaffQuoteSourceResult =
   | { status: 'ready'; messageId: string; threadId: string; sourceHash: string }
@@ -726,8 +780,7 @@ function validPick(party: StaffQuoteParty | undefined, kind: 'company' | 'agency
   return { kind, nativeId: party.nativeId, name: party.name };
 }
 
-export async function bindExecuteStaffQuote(args: {
-  mutate?: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult | { status?: string; alternatives?: unknown }>;
+type StaffQuoteRequestArgs = {
   source: StaffQuoteSource;
   selectionEpoch: number;
   inputRevision: number;
@@ -735,103 +788,390 @@ export async function bindExecuteStaffQuote(args: {
   header: StaffQuoteHeader;
   /** Prefer an explicit stay key when the request is built from a reconstructed stay. */
   stayKey?: string;
-}): Promise<BoundExecuteStaffQuote> {
+};
+
+type BuiltStaffQuoteRequest = {
+  input: ExecuteStaffQuoteInput;
+  sent: StaffQuoteHeader;
+  header: ReturnType<typeof approvedExecuteHeader>;
+};
+
+function staffQuoteRequest(
+  args: StaffQuoteRequestArgs,
+): BuiltStaffQuoteRequest | { error: string } {
   const prepared = staffQuoteGroupsFromStay(args.groups);
-  if ('error' in prepared) return { status: 'unavailable', reason: prepared.error };
+  if ('error' in prepared) return { error: prepared.error };
   const first = prepared.ok[0];
-  const stayKey = args.stayKey ?? `${first?.arrivalDate ?? 'unknown'}:${first?.departureDate ?? 'unknown'}`;
+  const stayKey =
+    args.stayKey ?? `${first?.arrivalDate ?? 'unknown'}:${first?.departureDate ?? 'unknown'}`;
   const sent = staffHeaderForStay(args.header, stayKey);
   // A typed amount that cannot be read is never priced from the older saved amount.
   const fieldProblem = staffHeaderFieldProblem(sent);
-  if (fieldProblem) {
-    return { status: 'unavailable', reason: `Fix the amounts before running this search. ${fieldProblem}` };
-  }
-  if (!args.mutate) {
-    return {
-      status: 'unavailable',
-      reason:
-        'Quoting is not connected to this pane yet. Refresh the pane and try again.',
-    };
-  }
+  if (fieldProblem) return { error: `Fix the amounts before running this search. ${fieldProblem}` };
   try {
     const header = approvedExecuteHeader(
       sent,
       prepared.ok.map((group) => group.id),
     );
     const rowPrices = rowPricesFor(args.groups);
-    const result = await args.mutate({
-      messageId: args.source.messageId,
-      sourceHash: args.source.sourceHash,
-      selectionEpoch: args.selectionEpoch,
-      inputRevision: args.inputRevision,
-      groups: prepared.ok,
-      ...header,
-      ...(pickedParties(sent.parties) ? { parties: pickedParties(sent.parties) } : {}),
-      ...(rowPrices.length ? { rowPrices } : {}),
-    });
-    if (!result || typeof result !== 'object') {
-      return { status: 'unavailable', reason: 'HMS returned no result for this quote. Try again.' };
-    }
-    if ('alternatives' in result && Array.isArray(result.alternatives) && result.alternatives.length) {
-      return { status: 'unavailable', reason: 'HMS returned several room options. Pick one, then try again.' };
-    }
-    if (result.status !== 'ready' || !('workflowRunId' in result)) {
-      return { status: 'unavailable', reason: 'HMS did not return a room option that can be booked. Try again.' };
-    }
-    if (result.selectionEpoch !== args.selectionEpoch || result.inputRevision !== args.inputRevision) {
-      return { status: 'unavailable', reason: 'The quote is out of date because the stay details changed. Run it again.' };
-    }
-    if (result.messageId !== args.source.messageId) {
-      return { status: 'unavailable', reason: 'The quote does not match the selected email. Select the email again, then run it again.' };
-    }
-    if (typeof result.workflowRunId !== 'string' || !result.workflowRunId.trim()) {
-      return { status: 'unavailable', reason: 'HMS did not return a quote reference. Try again.' };
-    }
-    if (typeof result.revisionRef !== 'string' || !result.revisionRef.trim()) {
-      return { status: 'unavailable', reason: 'HMS did not return a quote revision. Try again.' };
-    }
-    if (result.currency !== 'ZAR' || !Number.isSafeInteger(result.totalMinor) || result.totalMinor <= 0) {
-      return { status: 'unavailable', reason: 'HMS returned a total that cannot be used. Try again, or check the rate in HMS.' };
-    }
-    const rateOptions = readRateOptions(result.rateOptions);
-    const rowRates = readRowRates(result.rowRates);
-    const staffQuote: StaffQuoteAllocation = {
-      workflowRunId: result.workflowRunId,
-      revisionRef: result.revisionRef,
-      factRefs: Array.isArray(result.factRefs) ? result.factRefs.filter((ref): ref is string => typeof ref === 'string') : [],
-      messageId: result.messageId,
-      threadId: result.threadId,
-      sourceHash: args.source.sourceHash,
-      selectionEpoch: result.selectionEpoch,
-      inputRevision: result.inputRevision,
-      inputDigest: result.inputDigest,
-      totalMinor: result.totalMinor,
-      currency: result.currency,
-      quoteRequestKey: `${result.arrivalDate}:${result.departureDate}`,
-      approvedHeader: {
-        salesStrategy: header.salesStrategy,
-        company: header.company,
-        agency: header.agency,
-        attention: header.attention,
-        clientEmail: header.clientEmail,
-        clientTelephone: header.clientTelephone,
-      },
-      onceExtras: hasPerStaySingleChargeExtras(sent),
-      runId: typeof result.runId === 'string' && result.runId.trim() ? result.runId : null,
-      screenshots: Array.isArray(result.screenshots)
-        ? result.screenshots.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
-        : [],
-      ...(rateOptions.length ? { rateOptions } : {}),
-      ...(rowRates.length ? { rowRates } : {}),
-    };
     return {
-      status: 'ok',
-      offer: allocationFromStaffQuote(result, args.groups),
-      staffQuote,
-      extrasReviewItems: Array.isArray(result.extrasReviewItems)
-        ? result.extrasReviewItems.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-        : [],
+      input: {
+        messageId: args.source.messageId,
+        sourceHash: args.source.sourceHash,
+        selectionEpoch: args.selectionEpoch,
+        inputRevision: args.inputRevision,
+        groups: prepared.ok,
+        ...header,
+        ...(pickedParties(sent.parties) ? { parties: pickedParties(sent.parties) } : {}),
+        ...(rowPrices.length ? { rowPrices } : {}),
+      },
+      sent,
+      header,
     };
+  } catch (error) {
+    return { error: rejectionReason(error) };
+  }
+}
+
+/** True when the existing Get rates request builder has all of its required inputs. */
+export function canBuildStaffQuoteRequest(args: StaffQuoteRequestArgs): boolean {
+  return !('error' in staffQuoteRequest(args));
+}
+
+function boundStaffQuoteResult(
+  rawResult: unknown,
+  args: StaffQuoteRequestArgs,
+  built: BuiltStaffQuoteRequest,
+): BoundExecuteStaffQuote {
+  if (!rawResult || typeof rawResult !== 'object' || Array.isArray(rawResult)) {
+    return { status: 'unavailable', reason: 'HMS returned no result for this quote. Try again.' };
+  }
+  const raw = rawResult as Record<string, unknown>;
+  if ('alternatives' in raw && Array.isArray(raw.alternatives) && raw.alternatives.length) {
+    return {
+      status: 'unavailable',
+      reason: 'HMS returned several room options. Pick one, then try again.',
+    };
+  }
+  if (!isExecuteStaffQuoteResult(raw)) {
+    return {
+      status: 'unavailable',
+      reason: 'HMS did not return a room option that can be booked. Try again.',
+    };
+  }
+  const result = raw;
+  if (
+    result.selectionEpoch !== args.selectionEpoch ||
+    result.inputRevision !== args.inputRevision
+  ) {
+    return {
+      status: 'unavailable',
+      reason: 'The quote is out of date because the stay details changed. Run it again.',
+    };
+  }
+  if (result.messageId !== args.source.messageId) {
+    return {
+      status: 'unavailable',
+      reason:
+        'The quote does not match the selected email. Select the email again, then run it again.',
+    };
+  }
+  if (
+    result.currency !== 'ZAR' ||
+    !Number.isSafeInteger(result.totalMinor) ||
+    result.totalMinor <= 0
+  ) {
+    return {
+      status: 'unavailable',
+      reason: 'HMS returned a total that cannot be used. Try again, or check the rate in HMS.',
+    };
+  }
+  const rateOptions = readRateOptions(result.rateOptions);
+  const rowRates = readRowRates(result.rowRates);
+  const staffQuote: StaffQuoteAllocation = {
+    workflowRunId: result.workflowRunId,
+    revisionRef: result.revisionRef,
+    factRefs: Array.isArray(result.factRefs)
+      ? result.factRefs.filter((ref): ref is string => typeof ref === 'string')
+      : [],
+    messageId: result.messageId,
+    threadId: result.threadId,
+    sourceHash: args.source.sourceHash,
+    selectionEpoch: result.selectionEpoch,
+    inputRevision: result.inputRevision,
+    inputDigest: result.inputDigest,
+    totalMinor: result.totalMinor,
+    currency: result.currency,
+    quoteRequestKey: `${result.arrivalDate}:${result.departureDate}`,
+    approvedHeader: {
+      salesStrategy: built.header.salesStrategy,
+      company: built.header.company,
+      agency: built.header.agency,
+      attention: built.header.attention,
+      clientEmail: built.header.clientEmail,
+      clientTelephone: built.header.clientTelephone,
+    },
+    onceExtras: hasPerStaySingleChargeExtras(built.sent),
+    runId: typeof result.runId === 'string' && result.runId.trim() ? result.runId : null,
+    screenshots: Array.isArray(result.screenshots)
+      ? result.screenshots.filter(
+          (name): name is string => typeof name === 'string' && name.trim().length > 0,
+        )
+      : [],
+    ...(rateOptions.length ? { rateOptions } : {}),
+    ...(rowRates.length ? { rowRates } : {}),
+  };
+  return {
+    status: 'ok',
+    offer: allocationFromStaffQuote(result, args.groups),
+    staffQuote,
+    extrasReviewItems: Array.isArray(result.extrasReviewItems)
+      ? result.extrasReviewItems.filter(
+          (item): item is string => typeof item === 'string' && item.trim().length > 0,
+        )
+      : [],
+  };
+}
+
+function settledStaffQuoteJob(view: StaffQuoteJobView): boolean {
+  return view.status === 'done' || view.status === 'failed';
+}
+
+const STAFF_QUOTE_POLL_MAX_MS = 9 * 60_000;
+const STAFF_QUOTE_RESULT_MAX_AGE_MS = 6 * 60 * 60_000;
+
+function waitForStaffQuotePoll(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const finish = (elapsed: boolean) => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      resolve(elapsed);
+    };
+    const timer = setTimeout(() => finish(true), ms);
+    const abort = () => finish(false);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
+async function pollStaffQuoteJob(
+  query: StaffQuoteJobQuery,
+  initial: StaffQuoteJobView,
+  signal?: AbortSignal,
+): Promise<StaffQuoteJobView> {
+  let view = initial;
+  let misses = 0;
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', abort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ kind: 'timeout' }>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve({ kind: 'timeout' });
+    }, STAFF_QUOTE_POLL_MAX_MS);
+  });
+  const poll = async (): Promise<{ kind: 'settled'; view: StaffQuoteJobView }> => {
+    while (!settledStaffQuoteJob(view) && !controller.signal.aborted) {
+      const elapsed = await waitForStaffQuotePoll(HMS_JOB_POLL_MS, controller.signal);
+      if (!elapsed || controller.signal.aborted) break;
+      if (Date.now() - startedAt >= STAFF_QUOTE_POLL_MAX_MS) {
+        return { kind: 'settled', view: { ...view, status: 'failed', failureClass: 'POLL_LOST' } };
+      }
+      const next = await query({ runId: view.runId }, { signal: controller.signal }).catch(() => null);
+      if (controller.signal.aborted) break;
+      if (Date.now() - startedAt >= STAFF_QUOTE_POLL_MAX_MS) {
+        return { kind: 'settled', view: { ...view, status: 'failed', failureClass: 'POLL_LOST' } };
+      }
+      if (next) {
+        view = next;
+        misses = 0;
+        continue;
+      }
+      misses += 1;
+      if (misses >= HMS_JOB_MAX_MISSES) {
+        return { kind: 'settled', view: { ...view, status: 'failed', failureClass: 'POLL_LOST' } };
+      }
+    }
+    return { kind: 'settled', view };
+  };
+  try {
+    const result = await Promise.race([poll(), timeout]);
+    return result.kind === 'timeout'
+      ? { ...view, status: 'failed', failureClass: 'POLL_LOST' }
+      : result.view;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+    controller.abort();
+  }
+}
+
+function boundStaffQuoteJob(
+  view: StaffQuoteJobView,
+  args: StaffQuoteRequestArgs,
+  built: BuiltStaffQuoteRequest,
+): BoundExecuteStaffQuote {
+  const result = view.result;
+  if (result?.ok === false) {
+    const code = typeof result.code === 'string' ? result.code : 'staff_quote_failed';
+    const message =
+      typeof result.message === 'string' && result.message.trim()
+        ? result.message
+        : 'The requested quote could not be qualified; review the stay inputs and try again.';
+    return {
+      status: 'unavailable',
+      reason: message,
+      detail: code,
+      ...(message.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX) ? { noMatchingRate: true } : {}),
+    };
+  }
+  if (view.status === 'failed') {
+    if (view.failureClass === 'POLL_LOST') {
+      return {
+        status: 'unavailable',
+        reason:
+          'The queued quote is still running, but Nava could not read its status. Try again in a minute.',
+      };
+    }
+    if (view.failureClass === 'HMS_LOCK_BUSY') {
+      return {
+        status: 'unavailable',
+        reason: 'HMS is busy with another quote or lookup. Try again in a minute.',
+      };
+    }
+    if (view.failureClass === 'TRANSIENT_NETWORK') {
+      return { status: 'unavailable', reason: "HMS didn't answer in time." };
+    }
+    return { status: 'unavailable', reason: 'The background quote could not be completed. Try again.' };
+  }
+  if (view.status !== 'done' || !result) {
+    return { status: 'unavailable', reason: 'The queued quote did not return a result. Try again.' };
+  }
+  return boundStaffQuoteResult(result, args, built);
+}
+
+export async function bindExecuteStaffQuote(
+  args: StaffQuoteRequestArgs & {
+    mutate?: (
+      input: ExecuteStaffQuoteInput,
+    ) => Promise<ExecuteStaffQuoteResult | { status?: string; alternatives?: unknown }>;
+    queue?: StaffQuoteJobQueue;
+    staffQuoteJob?: StaffQuoteJobQuery;
+  },
+): Promise<BoundExecuteStaffQuote> {
+  const built = staffQuoteRequest(args);
+  if ('error' in built) return { status: 'unavailable', reason: built.error };
+  if (!args.queue && !args.mutate) {
+    return {
+      status: 'unavailable',
+      reason: 'Quoting is not connected to this pane yet. Refresh the pane and try again.',
+    };
+  }
+  try {
+    if (args.queue) {
+      const queued = await args.queue(built.input);
+      if (typeof queued?.runId === 'string' && queued.runId.trim()) {
+        if (!args.staffQuoteJob) {
+          return {
+            status: 'unavailable',
+            reason:
+              'The queued quote status is not connected to this pane. Refresh the pane and try again.',
+          };
+        }
+        const first = await args.staffQuoteJob({ runId: queued.runId });
+        if (!first)
+          return {
+            status: 'unavailable',
+            reason: 'Nava could not read the queued quote. Try again in a minute.',
+          };
+        return boundStaffQuoteJob(await pollStaffQuoteJob(args.staffQuoteJob, first), args, built);
+      }
+      if (queued?.runId !== null) {
+        return { status: 'unavailable', reason: 'Nava did not return a queued quote. Try again.' };
+      }
+    }
+    if (!args.mutate) {
+      return {
+        status: 'unavailable',
+        reason: 'Quoting is not connected to this pane yet. Refresh the pane and try again.',
+      };
+    }
+    return boundStaffQuoteResult(await args.mutate(built.input), args, built);
+  } catch (error) {
+    return { status: 'unavailable', ...searchFailure(error) };
+  }
+}
+
+/** Starts and polls a staff quote only through the persisted job queue; it never falls back to inline HMS. */
+export async function bindAutoStartStaffQuote(
+  args: StaffQuoteRequestArgs & {
+    queue?: StaffQuoteJobQueue;
+    staffQuoteJob?: StaffQuoteJobQuery;
+  },
+): Promise<BoundExecuteStaffQuote | null> {
+  const built = staffQuoteRequest(args);
+  if ('error' in built || !args.queue) return null;
+  try {
+    const queued = await args.queue({ ...built.input, autoStart: true });
+    if (queued?.runId === null) return null;
+    if (typeof queued?.runId !== 'string' || !queued.runId.trim()) {
+      return { status: 'unavailable', reason: 'Nava did not return a queued quote. Try again.' };
+    }
+    if (!args.staffQuoteJob) {
+      return {
+        status: 'unavailable',
+        reason: 'The queued quote status is not connected to this pane. Refresh the pane and try again.',
+      };
+    }
+    const first = await args.staffQuoteJob({ runId: queued.runId });
+    if (!first) {
+      return { status: 'unavailable', reason: 'Nava could not read the queued quote. Try again in a minute.' };
+    }
+    return boundStaffQuoteJob(await pollStaffQuoteJob(args.staffQuoteJob, first), args, built);
+  } catch (error) {
+    return { status: 'unavailable', ...searchFailure(error) };
+  }
+}
+
+/** Finds the latest persisted quote for the same semantic request after a pane remount, then polls it if still running. */
+export async function bindReadBackStaffQuote(
+  args: StaffQuoteRequestArgs & {
+    query?: StaffQuoteJobQuery;
+    signal?: AbortSignal;
+  },
+): Promise<BoundExecuteStaffQuote | null> {
+  if (!args.query) return null;
+  const built = staffQuoteRequest(args);
+  if ('error' in built) return null;
+  try {
+    const first = args.signal
+      ? await args.query({ input: built.input }, { signal: args.signal })
+      : await args.query({ input: built.input });
+    if (!first || args.signal?.aborted) return null;
+    if (
+      first.status === 'done' &&
+      (!first.asOf ||
+        !Number.isFinite(Date.parse(first.asOf)) ||
+        Date.now() - Date.parse(first.asOf) >= STAFF_QUOTE_RESULT_MAX_AGE_MS)
+    ) {
+      return null;
+    }
+    const settled = await pollStaffQuoteJob(args.query, first, args.signal);
+    if (args.signal?.aborted) return null;
+    const rebased = settled.result
+      ? {
+          ...settled,
+          result: {
+            ...settled.result,
+            selectionEpoch: args.selectionEpoch,
+            inputRevision: args.inputRevision,
+          },
+        }
+      : settled;
+    return boundStaffQuoteJob(rebased, args, built);
   } catch (error) {
     return { status: 'unavailable', ...searchFailure(error) };
   }
@@ -957,7 +1297,11 @@ export async function bindHmsQueueStatus(query?: () => Promise<QueueStatus>): Pr
 
 type StaffQuoteClient = {
   staffQuoteSource?: { query: (input: { internetMessageId: string }) => Promise<StaffQuoteSourceResult> };
-  executeStaffQuote?: { mutate: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult> };
+  executeStaffQuote?: {
+    mutate: (input: ExecuteStaffQuoteInput, options?: StaffQuoteCallOptions) => Promise<ExecuteStaffQuoteResult>;
+  };
+  queueStaffQuote?: { mutate: StaffQuoteJobQueue };
+  staffQuoteJob?: { query: StaffQuoteJobQuery };
   hmsQueueStatus?: { query: () => Promise<QueueStatus> };
   quoteRunScreenshot?: {
     query: (input: { runId: string; name: string }) => Promise<QuoteRunScreenshotResult>;
@@ -999,11 +1343,63 @@ type DraftsClient = {
   get?: { query: (input: { id: string }) => Promise<unknown> };
 };
 
+function staffQuoteCallOptions(
+  options: StaffQuoteCallOptions | undefined,
+  mailbox: ReturnType<typeof inMailbox>,
+): StaffQuoteCallOptions | undefined {
+  if (!mailbox) return options;
+  return {
+    ...options,
+    context: { ...options?.context, ...mailbox.context },
+  };
+}
+
+function mailboxStaffQuoteMutation<Input, Result>(
+  route: { mutate: (input: Input, options?: StaffQuoteCallOptions) => Promise<Result> } | undefined,
+  mailbox: ReturnType<typeof inMailbox>,
+): { mutate: (input: Input, options?: StaffQuoteCallOptions) => Promise<Result> } | undefined {
+  if (!route) return undefined;
+  return {
+    mutate: (input, options) => {
+      const scoped = staffQuoteCallOptions(options, mailbox);
+      return scoped ? route.mutate(input, scoped) : route.mutate(input);
+    },
+  };
+}
+
+function mailboxStaffQuoteQuery<Input, Result>(
+  route: { query: (input: Input, options?: StaffQuoteCallOptions) => Promise<Result> } | undefined,
+  mailbox: ReturnType<typeof inMailbox>,
+): { query: (input: Input, options?: StaffQuoteCallOptions) => Promise<Result> } | undefined {
+  if (!route) return undefined;
+  return {
+    query: (input, options) => {
+      const scoped = staffQuoteCallOptions(options, mailbox);
+      return scoped ? route.query(input, scoped) : route.query(input);
+    },
+  };
+}
+
 export function staffQuoteFromTrpc(trpc: unknown): {
   workstation: StaffQuoteClient;
   drafts: DraftsClient;
 } {
   if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return { workstation: {}, drafts: {} };
   const row = trpc as { workstation?: StaffQuoteClient; drafts?: DraftsClient };
-  return { workstation: row.workstation ?? {}, drafts: row.drafts ?? {} };
+  const routes = row.workstation ?? {};
+  // A bound route may outlive the active mailbox, so every call through it stays on its starting transport.
+  const mailbox = inMailbox(getMailCacheScope().activeTransportId);
+  return {
+    workstation: {
+      ...routes,
+      ...(routes.executeStaffQuote
+        ? { executeStaffQuote: mailboxStaffQuoteMutation(routes.executeStaffQuote, mailbox) }
+        : {}),
+      ...(routes.queueStaffQuote
+        ? { queueStaffQuote: mailboxStaffQuoteMutation(routes.queueStaffQuote, mailbox) }
+        : {}),
+      ...(routes.staffQuoteJob ? { staffQuoteJob: mailboxStaffQuoteQuery(routes.staffQuoteJob, mailbox) } : {}),
+    },
+    drafts: row.drafts ?? {},
+  };
 }

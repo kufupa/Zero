@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { useLayoutEffect, useState } from 'react';
+import { useCallback, useLayoutEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   HmsAsOf,
@@ -60,6 +60,47 @@ function view(overrides: Partial<HmsJobView> & Pick<HmsJobView, 'runId' | 'statu
     result: null,
     ...overrides,
   };
+}
+
+function StaffQuoteNoticeHarness({ failureMessage }: { failureMessage?: string }) {
+  const reporter = useHmsJobNoticeReporter();
+  const [retryCalls, setRetryCalls] = useState(0);
+  const retry = useCallback(() => setRetryCalls((count) => count + 1), []);
+  const notice = {
+    observerId: 'main-rate-run',
+    jobId: 'staff-quote-run-1',
+    request: STAFF_QUOTE,
+    targetId: 'quote-rates',
+    retry,
+    transport: null,
+  };
+  return (
+    <>
+      <button type="button" onClick={() => reporter.started(notice)}>
+        Start rates
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          reporter.settled(
+            notice.observerId,
+            notice.jobId,
+            view({
+              runId: 'staff-quote-run-1',
+              request: STAFF_QUOTE,
+              status: failureMessage ? 'failed' : 'done',
+              failureClass: failureMessage ? 'PRECONDITION_FAILED' : null,
+              result: failureMessage ? { ok: false, message: failureMessage } : { ok: true },
+            }),
+            retry,
+          )
+        }
+      >
+        Finish rates
+      </button>
+      <span data-testid="staff-quote-retry-calls">{retryCalls}</span>
+    </>
+  );
 }
 
 /**
@@ -215,8 +256,10 @@ describe('the status line', () => {
       <HmsQueueStatusLine
         pending
         status={{ state: 'running', runningForMs: 30_000, message: 'HMS search running' }}
+        staffQuote
       />,
     );
+    expect(screen.getByText('Nava is getting rates from HMS — you can keep working')).toBeTruthy();
     expect(screen.getByText('Still looking in HMS…')).toBeTruthy();
   });
 
@@ -561,8 +604,53 @@ describe('future read-tool kinds', () => {
     await expectGenericNotice(PARTY, 'Company/agency lookup finished', 'quote-party');
   });
 
-  it('names the guest on staff quote completion and routes to Rates', async () => {
-    await expectGenericNotice(STAFF_QUOTE, 'Rates ready for Asha Patel', 'quote-rates');
+  it('shows main rates in the running count and reports Rates ready to Rates', async () => {
+    const scrollIntoView = vi.fn();
+    render(
+      <HmsJobNoticeProvider emailKey="email-1" emailSubject="Suite Availability Request">
+        <HmsJobRunningChip />
+        <HmsJobNoticeBanner />
+        <section
+          id="quote-rates"
+          ref={(node) => {
+            if (node) Object.assign(node, { scrollIntoView });
+          }}
+        />
+        <StaffQuoteNoticeHarness />
+      </HmsJobNoticeProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Start rates' }));
+    expect(screen.getByText('HMS: 1 pending')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Finish rates' }));
+    const banner = screen.getByTestId('hms-job-notice-banner');
+    expect(screen.queryByText('HMS: 1 pending')).toBeNull();
+    expect(banner.textContent).toContain('Rates ready');
+    expect(banner.textContent).not.toContain('Asha Patel');
+    expect(within(banner).getByRole('button', { name: 'Show' }).getAttribute('aria-controls')).toBe('quote-rates');
+    fireEvent.click(within(banner).getByRole('button', { name: 'Show' }));
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
+  });
+
+  it('shows the staff-quote server message on failure and Retry calls the fresh-run callback', () => {
+    const failureMessage = 'HMS has no rate for this meal plan under BAR.';
+    render(
+      <HmsJobNoticeProvider emailKey="email-1" emailSubject="Suite Availability Request">
+        <HmsJobRunningChip />
+        <HmsJobNoticeBanner />
+        <section id="quote-rates" />
+        <StaffQuoteNoticeHarness failureMessage={failureMessage} />
+      </HmsJobNoticeProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Start rates' }));
+    expect(screen.getByText('HMS: 1 pending')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Finish rates' }));
+
+    const banner = screen.getByTestId('hms-job-notice-banner');
+    expect(banner.getAttribute('role')).toBe('alert');
+    expect(banner.textContent).toContain(`Rates failed: ${failureMessage}`);
+    fireEvent.click(within(banner).getByRole('button', { name: 'Retry' }));
+    expect(screen.getByTestId('staff-quote-retry-calls').textContent).toBe('1');
   });
 
   it('uses an existing pane section for an unrecognized read-tool kind', async () => {

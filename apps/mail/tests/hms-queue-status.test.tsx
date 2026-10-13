@@ -145,6 +145,11 @@ describe('HmsQueueStatusLine messages', () => {
     expect(alert.className).toContain('text-red-700');
   });
 
+  it('uses rates-specific progress copy for the main staff quote run', () => {
+    render(<HmsQueueStatusLine pending status={RUNNING} staffQuote />);
+    expect(screen.getByRole('status').textContent).toContain('Nava is getting rates from HMS — you can keep working');
+  });
+
   it('formats elapsed time as seconds, then minutes and seconds', () => {
     expect(formatQueueElapsed(0)).toBe('0 s');
     expect(formatQueueElapsed(45_000)).toBe('45 s');
@@ -185,13 +190,13 @@ describe('HMS queue line in the quote workflow panel', () => {
       />,
     );
     const line = screen.getByRole('status');
-    expect(line.textContent).toContain('Looking up in HMS — you can keep working');
+    expect(line.textContent).toContain('Nava is getting rates from HMS — you can keep working');
     expect(line.textContent).toContain('Luna is working in HMS – step 2 of 3');
     expect(line.querySelector('svg')).toBeNull();
   });
 
   it('shows the non-blocking HMS wait message before the first read lands', () => {
     render(<QuoteWorkflowPanel session={sessionWithRunningStep()} hmsQueue={{ pending: true, status: null }} />);
-    expect(screen.getByRole('status').textContent).toContain('Looking up in HMS — you can keep working');
+    expect(screen.getByRole('status').textContent).toContain('Nava is getting rates from HMS — you can keep working');
   });
 });

@@ -45,6 +45,10 @@ export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';
 export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
 /** Pane HMS lookups queued as read_tool runs on the hms lane (CLI-backed; no read-service admission). */
 export const HMS_JOB_PROMPT_VERSION = 'hms-job/1';
+/** Staff quote jobs get a 7-minute claim budget for their measured ~5-minute native rate read. */
+const HMS_STAFF_QUOTE_RUN_DEADLINE_MS = 7 * 60_000;
+/** An unclaimed staff quote that waited this long is stale and must be queued again explicitly. */
+const HMS_STAFF_QUOTE_QUEUE_TTL_MS = 10 * 60_000;
 export const READ_TOOL_RUN_KIND = 'read_tool' as const;
 /**
  * Approved HMS write. Only an explicit hms_write claim takes these runs, once, from queued. The generic worker
@@ -645,6 +649,35 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
 
       if (!candidate) return null;
 
+      const request =
+        candidate.readRequest && typeof candidate.readRequest === 'object' && !Array.isArray(candidate.readRequest)
+          ? (candidate.readRequest as Record<string, unknown>)
+          : null;
+      if (
+        candidate.runKind === READ_TOOL_RUN_KIND &&
+        candidate.executorLane === 'hms' &&
+        candidate.promptVersion === HMS_JOB_PROMPT_VERSION &&
+        request?.kind === 'staff_quote' &&
+        candidate.state === 'queued' &&
+        candidate.claimedAt === null &&
+        candidate.attempts === 0 &&
+        candidate.createdAt.getTime() <= now.getTime() - HMS_STAFF_QUOTE_QUEUE_TTL_MS
+      ) {
+        await tx
+          .update(aiWorkflowRun)
+          .set({
+            state: 'superseded',
+            failureClass: 'RUN_DEADLINE',
+            lastError: 'staff_quote_queue_expired',
+            claimOwner: null,
+            claimToken: null,
+            finishedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(aiWorkflowRun.id, candidate.id));
+        continue;
+      }
+
       if (candidate.deadlineAt && candidate.deadlineAt.getTime() <= now.getTime()) {
         await tx
           .update(aiWorkflowRun)
@@ -669,7 +702,14 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             ? 1
             : undefined;
 
-      const deadlineAt = candidate.deadlineAt ?? new Date(now.getTime() + runDeadlineMs);
+      const requestDeadlineMs =
+        candidate.runKind === 'read_tool' &&
+        candidate.executorLane === 'hms' &&
+        candidate.promptVersion === HMS_JOB_PROMPT_VERSION &&
+        request?.kind === 'staff_quote'
+          ? Math.max(runDeadlineMs, HMS_STAFF_QUOTE_RUN_DEADLINE_MS)
+          : runDeadlineMs;
+      const deadlineAt = candidate.deadlineAt ?? new Date(now.getTime() + requestDeadlineMs);
       const claimToken = randomUUID();
 
       const [claimed] = await tx

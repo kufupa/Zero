@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
+import * as hmsJobs from '../src/ai/hms-jobs.js';
+import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import {
   canClaimReadToolRun,
   claimNextAiRun,
@@ -28,6 +31,7 @@ import {
 import { paneStayLookupLoaders, type PaneStayLookupSpawnResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { aiDraftGeneration, aiWorkflowRun, mailboxTransport, message, mailThread } from '../src/db/schema/mail.js';
+import { hitlToolRun } from '../src/db/schema/hitl.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { runHmsJobOnce } from '../src/ai/worker.js';
 import type { DB } from '../src/db/client.js';
@@ -36,14 +40,43 @@ import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../
 import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
 import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
+const staffQuoteRunner = vi.hoisted(() => ({ run: vi.fn() }));
+vi.mock('../src/ai/staff-quote-run.js', () => ({ runStaffQuote: staffQuoteRunner.run }));
+
 const reachable = await probeTestDb();
 const TENANT = 'tenant-centurion';
 const CONFIRMATION = '1234567-1';
 const LANE_OWNER = 'hms-ai-worker-111';
 
+const STAFF_QUOTE_INPUT = {
+  messageId: 'staff-quote-message',
+  sourceHash: 'a'.repeat(64),
+  selectionEpoch: 3,
+  inputRevision: 5,
+  groups: [
+    {
+      id: 'single',
+      arrivalDate: '2026-10-12',
+      departureDate: '2026-10-14',
+      quantity: 1,
+      adults: 2,
+      childrenAges: [],
+      board: 'room_only',
+      roomCodes: ['SKNG'],
+    },
+  ],
+  salesStrategy: 'BAR',
+  company: '',
+  agency: '',
+  attention: '',
+  clientEmail: '',
+  clientTelephone: '',
+} as const;
+
 afterEach(() => {
   paneStayLookupLoaders.lock = null;
   paneStayLookupLoaders.spawn = null;
+  staffQuoteRunner.run.mockReset();
   vi.unstubAllEnvs();
 });
 
@@ -140,6 +173,44 @@ async function runClaimedJob(db: DB, run: AiWorkflowRun) {
   });
 }
 
+async function enqueueStaffQuoteJob(
+  db: DB,
+  threadId: string,
+  messageId: string,
+  staffQuoteUser = { id: CENTURION_USER_ID, name: 'Synthetic Staff', email: 'staff@example.test' },
+) {
+  const input = { ...STAFF_QUOTE_INPUT, messageId };
+  return enqueueHmsJob(
+    {
+      transportId: TRANSPORT_ID,
+      threadId,
+      triggerMessageId: messageId,
+      workItemId: null,
+      userId: staffQuoteUser.id,
+      request: { kind: 'staff_quote', input },
+      priority: HMS_JOB_PRIORITY_USER,
+      idempotencyKey: `hms-job:staff-quote:${randomUUID()}`,
+      extraMetrics: { staffQuoteUser },
+    },
+    db,
+  );
+}
+
+function autoStaffQuoteRequest(threadId: string, messageId: string) {
+  return {
+    transportId: TRANSPORT_ID,
+    threadId,
+    triggerMessageId: messageId,
+    workItemId: null,
+    userId: CENTURION_USER_ID,
+    request: { kind: 'staff_quote' as const, input: staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId }) },
+    priority: HMS_JOB_PRIORITY_USER,
+    extraMetrics: {
+      staffQuoteUser: { id: CENTURION_USER_ID, name: 'Synthetic Staff', email: 'staff@example.test' },
+    },
+  };
+}
+
 describe('U23 HMS job queue (pure)', () => {
   it('takes validated confirmation numbers from mail text and ignores dates and short numbers', () => {
     expect(
@@ -150,7 +221,7 @@ describe('U23 HMS job queue (pure)', () => {
     );
   });
 
-  it('accepts only closed find and guest-search requests', () => {
+  it('accepts only closed find, guest-search, and staff-quote requests', () => {
     expect(hmsJobRequestSchema.safeParse({ kind: 'find', confirmation: CONFIRMATION }).success).toBe(true);
     expect(
       hmsJobRequestSchema.safeParse({ kind: 'find', confirmation: CONFIRMATION, propertyCode: 'X' }).success,
@@ -160,6 +231,13 @@ describe('U23 HMS job queue (pure)', () => {
         kind: 'search_guest',
         lastName: 'D',
         arrival: '2026-10-12',
+      }).success,
+    ).toBe(false);
+    expect(hmsJobRequestSchema.safeParse({ kind: 'staff_quote', input: STAFF_QUOTE_INPUT }).success).toBe(true);
+    expect(
+      hmsJobRequestSchema.safeParse({
+        kind: 'staff_quote',
+        input: { ...STAFF_QUOTE_INPUT, customerOverride: true },
       }).success,
     ).toBe(false);
   });
@@ -282,6 +360,202 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     vi.stubEnv('S3_BUCKET', 'u23-synthetic-bucket');
   });
 
+  it.each(['queued', 'claimed', 'running', 'retry_wait'] as const)(
+    'auto-start reuses a matching %s staff quote regardless of age and selection counters',
+    (state) => withSeededTestDb(async (db) => {
+      expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
+      const { threadId, messageId } = await seedThread(db);
+      const request = autoStaffQuoteRequest(threadId, messageId);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      await db.update(aiWorkflowRun).set({
+        state,
+        createdAt: new Date(Date.now() - 24 * 60 * 60_000),
+      }).where(eq(aiWorkflowRun.id, run.id));
+
+      const reused = await hmsJobs.queueAutoStaffQuoteHmsJob({
+        ...request,
+        request: { ...request.request, input: { ...request.request.input, selectionEpoch: 99, inputRevision: 100 } },
+      }, db);
+
+      expect(reused).toMatchObject({ created: false, run: { id: run.id } });
+      expect(reused.run.readRequest).toEqual(run.readRequest);
+      const rows = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      expect(rows).toHaveLength(1);
+    }),
+  );
+
+  it.each([true, false])('auto-start reuses a fresh succeeded staff quote with ok=%s', (ok) =>
+    withSeededTestDb(async (db) => {
+      expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      await db.update(aiWorkflowRun).set({
+        state: 'succeeded',
+        createdAt: new Date(Date.now() - 24 * 60 * 60_000),
+        finishedAt: new Date(Date.now() - 60_000),
+        readResult: { kind: 'staff_quote', ok, asOf: new Date().toISOString() },
+        readResultExpiresAt: new Date(Date.now() + 60_000),
+      }).where(eq(aiWorkflowRun.id, run.id));
+
+      const reused = await hmsJobs.queueAutoStaffQuoteHmsJob(autoStaffQuoteRequest(threadId, messageId), db);
+      expect(reused).toMatchObject({ created: false, run: { id: run.id, readResult: { ok } } });
+    }));
+
+  it.each(['dead_letter', 'superseded'] as const)(
+    'auto-start reuses a %s staff quote until six hours after it finishes',
+    (state) => withSeededTestDb(async (db) => {
+      expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      await db.update(aiWorkflowRun).set({
+        state,
+        createdAt: new Date(Date.now() - 24 * 60 * 60_000),
+        finishedAt: new Date(Date.now() - 5 * 60 * 60_000),
+        updatedAt: new Date(Date.now() - 5 * 60 * 60_000),
+      }).where(eq(aiWorkflowRun.id, run.id));
+
+      const reused = await hmsJobs.queueAutoStaffQuoteHmsJob(autoStaffQuoteRequest(threadId, messageId), db);
+      expect(reused).toMatchObject({ created: false, run: { id: run.id } });
+    }),
+  );
+
+  it.each(['succeeded', 'dead_letter', 'superseded'] as const)(
+    'auto-start creates a new run after a %s staff quote expires',
+    (state) => withSeededTestDb(async (db) => {
+      expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const expiredAt = new Date(Date.now() - 7 * 60 * 60_000);
+      await db.update(aiWorkflowRun).set({
+        state,
+        finishedAt: expiredAt,
+        updatedAt: expiredAt,
+        readResult: state === 'succeeded' ? { kind: 'staff_quote', ok: true } : null,
+        readResultExpiresAt: new Date(Date.now() - 1),
+      }).where(eq(aiWorkflowRun.id, run.id));
+
+      await expect(readHmsJobView({
+        transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, messageId, kind: 'staff_quote',
+        input: staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId }),
+      }, db)).resolves.toBeNull();
+      const queued = await hmsJobs.queueAutoStaffQuoteHmsJob(autoStaffQuoteRequest(threadId, messageId), db);
+      expect(queued.created).toBe(true);
+      expect(queued.run.id).not.toBe(run.id);
+      const rows = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      expect(rows).toHaveLength(2);
+    }),
+  );
+
+  it('auto-start uses updatedAt when a terminal failure has no finishedAt', () =>
+    withSeededTestDb(async (db) => {
+      expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      await db.update(aiWorkflowRun).set({
+        state: 'dead_letter', finishedAt: null,
+        createdAt: new Date(Date.now() - 24 * 60 * 60_000),
+        updatedAt: new Date(Date.now() - 60_000),
+      }).where(eq(aiWorkflowRun.id, run.id));
+
+      const reused = await hmsJobs.queueAutoStaffQuoteHmsJob(autoStaffQuoteRequest(threadId, messageId), db);
+      expect(reused).toMatchObject({ created: false, run: { id: run.id } });
+    }));
+
+  it.each(['dead_letter', 'superseded'] as const)(
+    'remount readback expires a %s staff quote after six hours',
+    (state) => withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const expiredAt = new Date(Date.now() - 7 * 60 * 60_000);
+      await db.update(aiWorkflowRun).set({ state, finishedAt: expiredAt, updatedAt: expiredAt })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      await expect(readHmsJobView({
+        transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, messageId, kind: 'staff_quote',
+        input: staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId }),
+      }, db)).resolves.toBeNull();
+    }),
+  );
+
+  it('auto-start matches an older fresh request even after twenty different semantic requests', () =>
+    withSeededTestDb(async (db) => {
+      expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      await db.update(aiWorkflowRun).set({ createdAt: new Date(Date.now() - 60_000) }).where(eq(aiWorkflowRun.id, run.id));
+      for (let index = 0; index < 21; index++) {
+        const request = autoStaffQuoteRequest(threadId, messageId);
+        await enqueueHmsJob({
+          ...request, idempotencyKey: `hms-job:staff-quote:${randomUUID()}`,
+          request: { ...request.request, input: { ...request.request.input, company: `Company ${index}` } },
+        }, db);
+      }
+
+      const reused = await hmsJobs.queueAutoStaffQuoteHmsJob(autoStaffQuoteRequest(threadId, messageId), db);
+      expect(reused).toMatchObject({ created: false, run: { id: run.id } });
+    }));
+
+  it.each(['user', 'transport', 'message', 'input'] as const)(
+    'auto-start does not reuse a staff quote with different %s scope',
+    (scope) => withSeededTestDb(async (db) => {
+      expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
+      const { threadId, messageId } = await seedThread(db);
+      const request = autoStaffQuoteRequest(threadId, messageId);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      if (scope === 'user') {
+        await db.update(aiWorkflowRun).set({ metrics: { userId: 'other-staff' } }).where(eq(aiWorkflowRun.id, run.id));
+      } else if (scope === 'transport') {
+        await db.update(aiWorkflowRun).set({ transportId: 'transport-nava' }).where(eq(aiWorkflowRun.id, run.id));
+      } else if (scope === 'message') {
+        const other = await seedThread(db);
+        await db.update(aiWorkflowRun).set({ triggerMessageId: other.messageId }).where(eq(aiWorkflowRun.id, run.id));
+      } else {
+        request.request.input = { ...request.request.input, company: 'Different Company' };
+      }
+
+      const queued = await hmsJobs.queueAutoStaffQuoteHmsJob(request, db);
+      expect(queued.created).toBe(true);
+      expect(queued.run.id).not.toBe(run.id);
+    }),
+  );
+
+  it('two concurrent staff quote auto-starts create one run across separate DB sessions', async () => {
+    expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
+    const setup = openTestDbSession(), left = openTestDbSession(), right = openTestDbSession();
+    const suffix = randomUUID(), transportId = `quote-auto-${suffix}`, threadId = `thread-${suffix}`, messageId = `msg-${suffix}`;
+    try {
+      await setup.db.insert(mailboxTransport).values({
+        id: transportId, email: `${suffix}@zero.test`, ownerHeaderValue: `${suffix}@zero.test`, isActive: true,
+      });
+      await setup.db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
+      await setup.db.insert(message).values({
+        id: messageId, transportId, threadId, direction: 'inbound', fromAddress: 'guest@example.test',
+      });
+      const request = { ...autoStaffQuoteRequest(threadId, messageId), transportId };
+      const results = await Promise.all([
+        hmsJobs.queueAutoStaffQuoteHmsJob(request, left.db),
+        hmsJobs.queueAutoStaffQuoteHmsJob({
+          ...request,
+          request: { ...request.request, input: { ...request.request.input, selectionEpoch: 40, inputRevision: 50 } },
+        }, right.db),
+      ]);
+
+      expect(new Set(results.map(({ run }) => run.id)).size).toBe(1);
+      expect(results.filter(({ created }) => created)).toHaveLength(1);
+      const rows = await setup.db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.transportId, transportId));
+      expect(rows).toHaveLength(1);
+    } finally {
+      try {
+        await setup.db.delete(aiWorkflowRun).where(eq(aiWorkflowRun.transportId, transportId));
+        await setup.db.delete(message).where(eq(message.transportId, transportId));
+        await setup.db.delete(mailThread).where(eq(mailThread.transportId, transportId));
+        await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+      } finally {
+        await Promise.all([setup.close(), left.close(), right.close()]);
+      }
+    }
+  });
+
   it('AE5: a queued find completes and its status and result come back from the database after remount', () =>
     withSeededTestDb(async (db) => {
       paneStayLookupLoaders.lock = lockWith(true);
@@ -306,6 +580,301 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(remounted).toMatchObject({ runId: queued!.id, status: 'done', position: null });
       expect(remounted?.result).toMatchObject({ outcome: 'found', screenshots: ['stay.png'] });
       expect(remounted?.asOf).toEqual(expect.any(String));
+    }));
+
+  it('runs a queued staff quote as a user-priority job and stores the complete quote result', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HITL_LEDGER', 'on');
+      const { threadId, messageId } = await seedThread(db);
+      const staffQuoteUser = {
+        id: CENTURION_USER_ID,
+        name: 'Trusted Staff',
+        email: 'trusted@example.test',
+      };
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId, staffQuoteUser);
+      const quoteResult = {
+        status: 'ready',
+        workflowRunId: 'staff-quote-workflow-1',
+        revisionRef: 'revision-1',
+        messageId,
+        threadId,
+        factRefs: ['extras'],
+        selectionEpoch: STAFF_QUOTE_INPUT.selectionEpoch,
+        inputRevision: STAFF_QUOTE_INPUT.inputRevision,
+        inputDigest: 'd'.repeat(64),
+        totalMinor: 240_000,
+        currency: 'ZAR',
+        arrivalDate: '2026-10-12',
+        departureDate: '2026-10-14',
+        description: 'Standard King; Room Only',
+        rateOptions: [{ id: 'rate-1', rateCode: 'BARRO' }],
+        rowRates: [{ groupId: 'single', amountMinor: 120_000 }],
+        screenshots: ['quote.png'],
+      };
+      staffQuoteRunner.run.mockImplementation(async (...args: unknown[]) => {
+        const transaction = args[2] as DB;
+        const options = args[3] as {
+          commitQueuedResult?: (result: Record<string, unknown>, transaction: DB) => Promise<boolean>;
+        };
+        await options.commitQueuedResult?.(quoteResult, transaction);
+        return quoteResult;
+      });
+
+      const claimed = await claimJob(db);
+      expect(claimed.id).toBe(run.id);
+      expect(claimed.priority).toBe(HMS_JOB_PRIORITY_USER);
+      expect(await runClaimedJob(db, claimed)).toBe('succeeded');
+      expect(staffQuoteRunner.run).toHaveBeenCalledWith(
+        { ...STAFF_QUOTE_INPUT, messageId },
+        { transportId: TRANSPORT_ID, user: staffQuoteUser },
+        db,
+        expect.objectContaining({
+          signal: undefined,
+          deadlineAt: claimed.deadlineAt!.getTime(),
+          commitQueuedResult: expect.any(Function),
+        }),
+      );
+      const view = await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id, staffQuoteOwnerId: CENTURION_USER_ID }, db);
+      expect(view?.result).toMatchObject({
+        ...quoteResult,
+        kind: 'staff_quote',
+        asOf: expect.any(String),
+      });
+      expect(view?.asOf).toEqual(expect.any(String));
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(stored?.readResultExpiresAt?.getTime()).toBeGreaterThan(Date.now() + 6 * 60 * 60_000 - 1_000);
+      expect(stored?.readResultExpiresAt?.getTime()).toBeLessThan(Date.now() + 6 * 60 * 60_000 + 1_000);
+      const [toolRun] = await db
+        .select()
+        .from(hitlToolRun)
+        .where(
+          and(
+            eq(hitlToolRun.transportId, TRANSPORT_ID),
+            eq(hitlToolRun.messageId, messageId),
+            eq(hitlToolRun.userId, staffQuoteUser.id),
+            eq(hitlToolRun.kind, 'quote'),
+          ),
+        );
+      expect(toolRun).toMatchObject({
+        status: 'ok',
+        workflowRunId: quoteResult.workflowRunId,
+        result: { revisionRef: 'revision-1', totalMinor: 240_000, currency: 'ZAR' },
+      });
+    }));
+
+  it('does not read back an expired staff quote result for matching inputs', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const expiredAt = new Date(Date.now() - 1);
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: { kind: 'staff_quote', asOf: new Date(expiredAt.getTime() - 6 * 60 * 60_000).toISOString() },
+          readResultExpiresAt: expiredAt,
+          finishedAt: expiredAt,
+          updatedAt: expiredAt,
+        })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      await expect(
+        readHmsJobView(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            messageId,
+            kind: 'staff_quote',
+            input: { ...STAFF_QUOTE_INPUT, messageId },
+          },
+          db,
+        ),
+      ).resolves.toBeNull();
+    }));
+
+  it('does not read back an expired staff quote result by owner-scoped run id', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const expiredAt = new Date(Date.now() - 1);
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: { kind: 'staff_quote', totalMinor: 240_000 },
+          readResultExpiresAt: expiredAt,
+          finishedAt: expiredAt,
+          updatedAt: expiredAt,
+        })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      await expect(
+        readHmsJobView(
+          {
+            transportId: TRANSPORT_ID,
+            runId: run.id,
+            staffQuoteOwnerId: CENTURION_USER_ID,
+          },
+          db,
+        ),
+      ).resolves.toBeNull();
+    }));
+
+  it('anchors staff quote matching readback to the indexed trigger message', () =>
+    withSeededTestDb(async (db) => {
+      const wanted = await seedThread(db);
+      const other = await seedThread(db);
+      const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId: wanted.messageId });
+      const { run } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId: other.threadId,
+          triggerMessageId: other.messageId,
+          workItemId: null,
+          userId: CENTURION_USER_ID,
+          request: { kind: 'staff_quote', input },
+          priority: HMS_JOB_PRIORITY_USER,
+          idempotencyKey: `hms-job:staff-quote:${randomUUID()}`,
+          extraMetrics: {
+            staffQuoteUser: {
+              id: CENTURION_USER_ID,
+              name: 'Synthetic Staff',
+              email: 'staff@example.test',
+            },
+          },
+        },
+        db,
+      );
+
+      await expect(
+        readHmsJobView(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            messageId: wanted.messageId,
+            kind: 'staff_quote',
+            input,
+          },
+          db,
+        ),
+      ).resolves.toBeNull();
+      expect(run.triggerMessageId).toBe(other.messageId);
+    }));
+
+  it('supersedes a staff quote that stayed queued for more than ten minutes without being claimed', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const now = new Date(Date.now() + 1_000);
+      const createdAt = new Date(now.getTime() - 10 * 60_000 - 1);
+      await db
+        .update(aiWorkflowRun)
+        .set({ createdAt, updatedAt: createdAt })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      const claimed = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        now,
+        db,
+      });
+      const [expired] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+
+      expect(claimed).toBeNull();
+      expect(expired).toMatchObject({ state: 'superseded', lastError: 'staff_quote_queue_expired' });
+      expect(expired?.claimedAt).toBeNull();
+    }));
+
+  it('stores a staff quote business refusal as a successful job with its real message', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      staffQuoteRunner.run.mockRejectedValue(
+        new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'HMS has no rate for this meal plan under BAR.',
+        }),
+      );
+
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('succeeded');
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id, staffQuoteOwnerId: CENTURION_USER_ID }, db)).toMatchObject({
+        status: 'done',
+        failureClass: null,
+        result: {
+          ok: false,
+          code: 'PRECONDITION_FAILED',
+          message: 'HMS has no rate for this meal plan under BAR.',
+        },
+      });
+    }));
+
+  it('retries only a staff quote whose failure chain proves the property lock was busy', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      staffQuoteRunner.run.mockRejectedValue(
+        Object.assign(new Error('staff_quote_failed'), {
+          code: 'PRECONDITION_FAILED',
+          cause: new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE),
+        }),
+      );
+
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('retry_wait');
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id, staffQuoteOwnerId: CENTURION_USER_ID }, db)).toMatchObject({
+        status: 'retrying',
+        failureClass: 'HMS_LOCK_BUSY',
+        attempts: 1,
+      });
+    }));
+
+  it('retries transient native staff quote failures', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      staffQuoteRunner.run.mockRejectedValueOnce(new Error('native session ECONNRESET'));
+
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('retry_wait');
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id, staffQuoteOwnerId: CENTURION_USER_ID }, db)).toMatchObject({
+        status: 'retrying',
+        failureClass: 'TRANSIENT_NETWORK',
+        attempts: 1,
+      });
+    }));
+
+  it('gives staff_quote five-minute work budget without widening ordinary HMS read deadlines', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');
+      const { threadId, messageId } = await seedThread(db);
+      const { run: staffQuoteRun } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const staffQuoteClaim = await claimJob(db);
+      expect(staffQuoteClaim.id).toBe(staffQuoteRun.id);
+      expect(staffQuoteClaim.deadlineAt!.getTime() - Date.now()).toBeGreaterThan(6 * 60_000);
+
+      const { run: findRun } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: CENTURION_USER_ID,
+          request: { kind: 'find', confirmation: CONFIRMATION },
+          priority: HMS_JOB_PRIORITY_USER,
+          idempotencyKey: `hms-job:user:${randomUUID()}`,
+        },
+        db,
+      );
+      const findClaim = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        idempotencyPrefix: findRun.idempotencyKey,
+        db,
+      });
+      expect(findClaim?.id).toBe(findRun.id);
+      expect(findClaim!.deadlineAt!.getTime() - Date.now()).toBeLessThan(3 * 60_000);
     }));
 
   it('a remount on a thread with two guests reads back the search for the asked surname, whatever its case', () =>
@@ -598,6 +1167,42 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(takeLock).not.toHaveBeenCalled();
       const view = await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id }, db);
       expect(view).toMatchObject({ status: 'retrying', failureClass: 'STAFF_QUOTE_ACTIVE', attempts: 0 });
+    }));
+
+  it('prefetch yields to an active staff_quote job before the staff generation row exists', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      await enqueueStaffQuoteJob(db, threadId, messageId);
+      const staffClaim = await claimJob(db);
+      await markAiRunRunning(
+        {
+          runId: staffClaim.id,
+          claimOwner: staffClaim.claimOwner!,
+          claimToken: staffClaim.claimToken!,
+          deadlineAt: staffClaim.deadlineAt!,
+        },
+        db,
+      );
+      const { run: prefetch } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'find', confirmation: CONFIRMATION },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: `hms-job:prefetch:${TRANSPORT_ID}:${CONFIRMATION}:active-staff-quote`,
+        },
+        db,
+      );
+
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('retry_wait');
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: prefetch.id }, db)).toMatchObject({
+        status: 'retrying',
+        failureClass: 'STAFF_QUOTE_ACTIVE',
+        attempts: 0,
+      });
     }));
 
   it('a background run that finds the property lock busy requeues without using an attempt', () =>

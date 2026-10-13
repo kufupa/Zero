@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -81,14 +82,10 @@ function textField(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function completedMessage(request: HmsJobRequest, emailSubject: string | null): string {
+function completedMessage(request: HmsJobRequest): string {
   const kind = String(requestRecord(request).kind ?? '');
   if (kind === 'party') return 'Company/agency lookup finished';
-  if (kind === 'staff_quote') {
-    const fields = requestRecord(request);
-    const guest = textField(fields.guestName) ?? emailSubject;
-    if (guest) return `Rates ready for ${guest}`;
-  }
+  if (kind === 'staff_quote') return 'Rates ready';
   return 'HMS lookup finished';
 }
 
@@ -118,14 +115,17 @@ export function HmsJobNoticeProvider({
   emailKey,
   emailSubject,
   passthrough = false,
+  onReporterReady,
   children,
 }: {
   emailKey: string | null;
   emailSubject: string | null;
   /** Keep the parent notice state when NavaPane is embedded in a keyed surface. */
   passthrough?: boolean;
+  onReporterReady?: (reporter: HmsJobNoticeReporter) => void;
   children: ReactNode;
 }) {
+  const parentReporter = useContext(HmsJobNoticeReporterContext);
   const [snapshot, setSnapshot] = useState<{ activeCount: number; notices: HmsNotice[] }>({
     activeCount: 0,
     notices: [],
@@ -184,8 +184,10 @@ export function HmsJobNoticeProvider({
           failureReason: safeReason,
           message:
             status === 'done'
-              ? completedMessage(request, current.emailSubject)
-              : `HMS lookup failed: ${safeReason}`,
+              ? completedMessage(request)
+              : String(requestRecord(request).kind ?? '') === 'staff_quote'
+                ? `Rates failed: ${textField(view.result?.message) ?? safeReason}`
+                : `HMS lookup failed: ${safeReason}`,
         },
       ];
       publish();
@@ -268,8 +270,8 @@ export function HmsJobNoticeProvider({
         options: input.options,
         retryOptions: input.retryOptions,
         targetId: input.targetId ?? targetFor(input.request),
-        emailKey: currentEmail.current.emailKey,
-        emailSubject: currentEmail.current.emailSubject,
+        emailKey: input.email?.emailKey ?? currentEmail.current.emailKey,
+        emailSubject: input.email?.emailSubject ?? currentEmail.current.emailSubject,
         retry: input.retry,
         transport: input.transport,
         detached: false,
@@ -293,8 +295,8 @@ export function HmsJobNoticeProvider({
           options: input.options,
           retryOptions: input.retryOptions,
           targetId: input.targetId ?? targetFor(input.request),
-          emailKey: currentEmail.current.emailKey,
-          emailSubject: currentEmail.current.emailSubject,
+          emailKey: input.email?.emailKey ?? currentEmail.current.emailKey,
+          emailSubject: input.email?.emailSubject ?? currentEmail.current.emailSubject,
           retry: input.retry,
           transport: input.transport,
           detached: false,
@@ -446,6 +448,9 @@ export function HmsJobNoticeProvider({
       retryNotice,
     ],
   );
+  useLayoutEffect(() => {
+    onReporterReady?.(passthrough ? parentReporter : reporter);
+  }, [onReporterReady, parentReporter, passthrough, reporter]);
   const view = { ...snapshot, ...(overriddenEmail.current ?? { emailKey, emailSubject }) };
   if (passthrough) return <>{children}</>;
   return (

@@ -44,9 +44,11 @@ export function HmsLookupProgress({ pending, detail }: { pending: boolean; detai
 export function HmsQueueStatusLine({
   pending,
   status,
+  staffQuote = false,
 }: {
   pending: boolean;
   status: QueueStatus | null;
+  staffQuote?: boolean;
 }) {
   const elapsedMs = usePendingElapsed(pending);
   if (!pending) return null;
@@ -67,7 +69,9 @@ export function HmsQueueStatusLine({
       : elapsedMs;
   return (
     <p role="status" className="rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]">
-      <span className="font-semibold text-[#1e293b]">Looking up in HMS — you can keep working</span>
+      <span className="font-semibold text-[#1e293b]">
+        {staffQuote ? 'Nava is getting rates from HMS — you can keep working' : 'Looking up in HMS — you can keep working'}
+      </span>
       <span>{` · ${formatQueueElapsed(elapsed)} elapsed`}</span>
       {status && status.state !== 'idle' && status.message ? <span>{` · ${status.message}`}</span> : null}
       {status?.state === 'running' && elapsed >= 30_000 ? <span>Still looking in HMS…</span> : null}

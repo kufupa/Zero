@@ -10,6 +10,61 @@
  * requeue on contention. Availability probes (U10) are a third kind, enqueued
  * from a stored quote extraction behind HMS_AVAILABILITY_PREFETCH=on.
  */
+import { createHash, randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
+import { TRPCError } from '@trpc/server';
+import { and, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
+import { z } from 'zod';
+import { getDb, type DB } from '../db/client.js';
+import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { mailExtraction, workItem } from '../db/schema/work.js';
+import { parseEnv } from '../env.js';
+import { staffQuoteInFlight } from '../hms/property-queue-state.js';
+import {
+  acquisitionWithin,
+  isPropertyReadLockDeadline,
+  PANE_PROPERTY_LOCK_WAIT_MS,
+} from '../hms/property-read-lock.js';
+import {
+  availabilityRequestSchema,
+  availabilityRequestsFor,
+  probeAvailability,
+  type AvailabilityRequest,
+} from './hms-availability.js';
+import {
+  classifyFind,
+  classifySearch,
+  classifyStaffQuote,
+  createToolRunRecorder,
+  ledgerQuoteInput,
+  recordedToolRun,
+  toolInputDigest,
+} from './hitl-tool-run.js';
+import {
+  findStay,
+  GUEST_SURNAME_PATTERN,
+  paneStayLookupLoaders,
+  searchGuest,
+} from './pane-stay-lookup.js';
+import { findParty, type PanePartyKind } from './pane-party-lookup.js';
+import { suggestPartiesFor } from './party-aliases.js';
+import {
+  PANE_RUN_ID_PATTERN,
+  paneStayPropertyLock,
+  pruneExpiredPaneRuns,
+  registerPaneRun,
+} from './pane-stay-save.js';
+import { normalizeEmailAddress } from './never-spam.js';
+import { extractVoucherGuest } from './voucher-find.js';
+import { isStaffSender, knownSenders } from './work-items.js';
+import { staffQuoteInput, type StaffQuoteInput } from './staff-quote-workflow.js';
+import {
+  runStaffQuote,
+  staffQuoteFailureCode,
+  staffQuoteFailureMessage,
+  type StaffQuoteRunIdentity,
+} from './staff-quote-run.js';
+import { quoteDigest } from '../quote-proposal/quote-revision.js';
 import {
   type AiFailureClass,
   type AiRunFence,
@@ -21,40 +76,6 @@ import {
   markAiRunSucceeded,
   NOT_APPLICABLE_MODEL_ID,
 } from './run-ledger.js';
-import {
-  availabilityRequestSchema,
-  availabilityRequestsFor,
-  probeAvailability,
-  type AvailabilityRequest,
-} from './hms-availability.js';
-import {
-  PANE_RUN_ID_PATTERN,
-  paneStayPropertyLock,
-  pruneExpiredPaneRuns,
-  registerPaneRun,
-} from './pane-stay-save.js';
-import {
-  findStay,
-  GUEST_SURNAME_PATTERN,
-  paneStayLookupLoaders,
-  searchGuest,
-} from './pane-stay-lookup.js';
-import { classifyFind, classifySearch, recordedToolRun, toolInputDigest } from './hitl-tool-run.js';
-import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
-import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
-import { and, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
-import { findParty, type PanePartyKind } from './pane-party-lookup.js';
-import { staffQuoteInFlight } from '../hms/property-queue-state.js';
-import { mailExtraction, workItem } from '../db/schema/work.js';
-import { isStaffSender, knownSenders } from './work-items.js';
-import { extractVoucherGuest } from './voucher-find.js';
-import { normalizeEmailAddress } from './never-spam.js';
-import { suggestPartiesFor } from './party-aliases.js';
-import { createHash, randomUUID } from 'node:crypto';
-import { getDb, type DB } from '../db/client.js';
-import { basename } from 'node:path';
-import { parseEnv } from '../env.js';
-import { z } from 'zod';
 
 /**
  * The queued pane path. Only the exact value `on` enables it. Off (the default), pane finds and searches run
@@ -86,6 +107,7 @@ export const HMS_JOB_PRIORITY_PREFETCH = 0;
 const JOB_MAX_ATTEMPTS = 3;
 const JOB_RETRY_MS = 30_000;
 const JOB_YIELD_MS = 30_000;
+const STAFF_QUOTE_RESULT_TTL_MS = 6 * 60 * 60_000;
 const PREFETCH_PER_MAIL_MAX = 3;
 const PREFETCH_WINDOW_MS = 60 * 60_000;
 const PARTY_USER_PER_HOUR = 12;
@@ -117,6 +139,12 @@ export const hmsJobRequestSchema = z.discriminatedUnion('kind', [
       kind: z.literal('party'),
       name: z.string().min(1).max(256),
       partyKind: z.enum(['company', 'agency']).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('staff_quote'),
+      input: staffQuoteInput,
     })
     .strict(),
   availabilityRequestSchema,
@@ -463,6 +491,39 @@ export async function enqueueHmsJob(
         .limit(1);
   if (!existing) throw new Error(`failed to enqueue or load HMS job for ${input.idempotencyKey}`);
   return { run: existing, created: false };
+}
+
+/** Auto-starts serialize one actor/mail/input request so simultaneous pane mounts share a fresh run. */
+export async function queueAutoStaffQuoteHmsJob(
+  input: Omit<HmsJobEnqueueInput, 'idempotencyKey' | 'request'> & {
+    userId: string;
+    request: Extract<HmsJobRequest, { kind: 'staff_quote' }>;
+  },
+  db: DB = getDb(),
+): Promise<{ run: AiWorkflowRun; created: boolean }> {
+  const lockKey = JSON.stringify([
+    'hms-auto-staff-quote', input.transportId, input.userId, input.triggerMessageId,
+    hmsRequestKey(input.request),
+  ]);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    const scoped = tx as unknown as DB;
+    const [existing] = await latestStaffQuoteRunFor(
+      scoped,
+      and(
+        eq(aiWorkflowRun.transportId, input.transportId),
+        eq(aiWorkflowRun.runKind, 'read_tool'),
+        eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+        eq(aiWorkflowRun.executorLane, 'hms'),
+        eq(aiWorkflowRun.triggerMessageId, input.triggerMessageId),
+        sql`${aiWorkflowRun.metrics}->>'userId' = ${input.userId}`,
+      ),
+      input.request.input.messageId,
+      input.request.input,
+    );
+    if (existing) return { run: existing, created: false };
+    return enqueueHmsJob({ ...input, idempotencyKey: `hms-job:staff-quote:${randomUUID()}` }, scoped);
+  });
 }
 
 /** A pane lookup from the signed-in user. Null when the thread has no inbound mail to anchor the run to. */
@@ -829,6 +890,15 @@ async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise
   }));
 }
 
+function stableStaffQuoteInput(
+  input: StaffQuoteInput,
+): Omit<StaffQuoteInput, 'selectionEpoch' | 'inputRevision'> {
+  const stable: Partial<StaffQuoteInput> = { ...input };
+  delete stable.selectionEpoch;
+  delete stable.inputRevision;
+  return stable as Omit<StaffQuoteInput, 'selectionEpoch' | 'inputRevision'>;
+}
+
 function hmsRequestKey(request: HmsJobRequest): string {
   if (request.kind === 'find') {
     return JSON.stringify({
@@ -844,6 +914,9 @@ function hmsRequestKey(request: HmsJobRequest): string {
       arrival: request.arrival,
       departure: request.departure ?? null,
     });
+  }
+  if (request.kind === 'staff_quote') {
+    return JSON.stringify({ kind: request.kind, input: stableStaffQuoteInput(request.input) });
   }
   return JSON.stringify(request);
 }
@@ -1617,6 +1690,166 @@ async function retryOrFail(
   return 'retry_wait';
 }
 
+const STAFF_QUOTE_TRANSIENT_CODES = new Set([
+  'TRANSIENT_NETWORK',
+  'EXECUTION_FAILURE',
+  'AUTHENTICATED_SHELL_TIMEOUT',
+  'staff_quote_native_unavailable',
+  'staff_quote_native_capture_unavailable',
+  'native_quote_capture_unavailable',
+  'native_quote_read_unavailable',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'TIMEOUT',
+  'TARGET_CLOSED',
+  '40001',
+  '40P01',
+]);
+
+const STAFF_QUOTE_BUSINESS_CODES = new Set([
+  'staff_quote_failed',
+  'native_quote_no_matching_rate',
+  'native_quote_business_evidence_unavailable',
+  'native_quote_insufficient_inventory',
+  'native_quote_restricted_nights',
+  'native_quote_capture_scope_or_completeness_invalid',
+  'native_quote_capture_oversized',
+  'business_quote_policy_unavailable',
+  'business_party_identity_unavailable',
+  'business_party_lookup_unavailable',
+  'business_selected_joint_inventory_unavailable',
+  'business_selected_price_unavailable',
+  'business_quote_source_expired',
+  'staff_quote_party_unavailable',
+  'staff_quote_party_invalid',
+  'staff_quote_party_changed',
+  'staff_quote_source_changed',
+]);
+const STAFF_QUOTE_PARTY_LOOKUP_UNAVAILABLE_MESSAGE =
+  "Nava couldn't check the picked company or agency in HMS. Try again.";
+
+function staffQuoteErrorCode(error: unknown): string {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  return typeof code === 'string' ? code : staffQuoteFailureCode(error);
+}
+
+function staffQuoteTransientFailure(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    if (current && typeof current === 'object') {
+      const record = current as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown };
+      const code = record.code;
+      const message = typeof record.message === 'string' ? record.message : '';
+      if (
+        record.name === 'TimeoutError' ||
+        record.name === 'AbortError' ||
+        /timeout|ECONNRESET|ECONNREFUSED|EPIPE|ENOTFOUND|network|socket hang up/i.test(message) ||
+        /Target\b.*\bclosed\b/i.test(message)
+      ) {
+        return true;
+      }
+      if (
+        current instanceof TRPCError &&
+        current.code === 'PRECONDITION_FAILED' &&
+        message === STAFF_QUOTE_PARTY_LOOKUP_UNAVAILABLE_MESSAGE
+      ) {
+        return true;
+      }
+      if (typeof code === 'string' && STAFF_QUOTE_TRANSIENT_CODES.has(code)) return true;
+      if (current instanceof TRPCError && current.code === 'INTERNAL_SERVER_ERROR') return true;
+      if (
+        depth > 0 &&
+        !(current instanceof TRPCError) &&
+        !STAFF_QUOTE_BUSINESS_CODES.has(staffQuoteErrorCode(current))
+      ) {
+        return true;
+      }
+      current = record.cause ?? null;
+    } else {
+      current = null;
+    }
+  }
+  return !(error instanceof TRPCError) && !STAFF_QUOTE_BUSINESS_CODES.has(staffQuoteErrorCode(error));
+}
+
+function staffQuoteAbortError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    if (typeof current !== 'object') return false;
+    const record = current as { name?: unknown; cause?: unknown };
+    if (record.name === 'AbortError') return true;
+    current = record.cause ?? null;
+  }
+  return false;
+}
+
+function staffQuoteLockBusy(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    if (typeof current === 'object') {
+      const code = 'code' in current ? current.code : undefined;
+      if (code === 'HMS_LOCK_BUSY') return true;
+      current = 'cause' in current ? current.cause : null;
+    } else {
+      current = null;
+    }
+  }
+  return false;
+}
+
+function staffQuoteUserFromMetrics(metrics: Record<string, unknown>): StaffQuoteRunIdentity['user'] | null {
+  const user = objectRecord(metrics.staffQuoteUser);
+  if (
+    typeof user.id !== 'string' ||
+    user.id !== metrics.userId ||
+    !(user.name === null || typeof user.name === 'string') ||
+    typeof user.email !== 'string'
+  ) {
+    return null;
+  }
+  return { id: user.id, name: user.name, email: user.email };
+}
+
+async function storeStaffQuoteResult(input: {
+  db: DB;
+  mark: Mark;
+  result: Record<string, unknown>;
+  outcome: string;
+}): Promise<'succeeded' | 'retry_wait'> {
+  const now = new Date();
+  const marked = await markAiRunSucceeded(
+    {
+      ...input.mark,
+      readResult: {
+        ...input.result,
+        kind: 'staff_quote',
+        asOf: now.toISOString(),
+      },
+      readResultExpiresAt: new Date(now.getTime() + STAFF_QUOTE_RESULT_TTL_MS),
+      metrics: { hmsJob: true, kind: 'staff_quote', outcome: input.outcome },
+    },
+    input.db,
+  );
+  return marked ? 'succeeded' : 'retry_wait';
+}
+
+function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): { code: string; message: string } {
+  const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  const code = typeof rawCode === 'string' ? rawCode : staffQuoteFailureCode(error);
+  const directMessage = error instanceof Error ? error.message : '';
+  const businessTrpcError = error instanceof TRPCError && error.code !== 'INTERNAL_SERVER_ERROR';
+  const message = businessTrpcError
+    ? directMessage
+    : staffQuoteFailureMessage(error, {
+        salesStrategy: request.salesStrategy,
+        dinnerRequested: request.groups.some((group) => group.board === 'dinner_bb'),
+      });
+  return { code, message: message || 'The requested quote could not be qualified; review the stay inputs and try again.' };
+}
+
 /**
  * Runs one claimed job. Called from executeAiRun after markAiRunRunning, so
  * the fence is already live. Returns the state the run should end in.
@@ -1624,6 +1857,7 @@ async function retryOrFail(
 export async function executeHmsJob(input: {
   run: AiWorkflowRun;
   fence: AiRunFence;
+  signal?: AbortSignal;
   db?: DB;
 }): Promise<'succeeded' | 'retry_wait' | 'dead_letter'> {
   const db = input.db ?? getDb();
@@ -1654,7 +1888,86 @@ export async function executeHmsJob(input: {
     });
   }
 
-  const metrics = (run.metrics ?? {}) as { userId?: string | null; owner?: string | null };
+  const metrics = objectRecord(run.metrics) as {
+    userId?: string | null;
+    owner?: string | null;
+    staffQuoteUser?: unknown;
+  };
+  if (request.kind === 'staff_quote') {
+    const user = staffQuoteUserFromMetrics(metrics);
+    if (!user) {
+      await markAiRunDeadLetter(
+        { ...mark, lastError: 'staff_quote_identity_unavailable', failureClass: 'SCHEMA_DRIFT' },
+        db,
+      );
+      return 'dead_letter';
+    }
+    try {
+      const result = await recordedToolRun(
+        {
+          kind: 'quote',
+          transportId: run.transportId,
+          messageId: request.input.messageId,
+          userId: user.id,
+          input: ledgerQuoteInput(request.input),
+          inputDigest: quoteDigest(request.input),
+        },
+        () =>
+          runStaffQuote(
+            request.input,
+            { transportId: run.transportId, user },
+            db,
+            {
+              signal: input.signal,
+              deadlineAt: fence.deadlineAt.getTime(),
+              commitQueuedResult: async (quoteResult, transaction) =>
+                (await storeStaffQuoteResult({
+                  db: transaction,
+                  mark,
+                  result: quoteResult,
+                  outcome: 'ready',
+                })) === 'succeeded',
+            },
+          ),
+        classifyStaffQuote,
+        undefined,
+        { recorder: createToolRunRecorder(db, { enabled: true }) ?? undefined },
+      );
+      return 'succeeded';
+    } catch (error) {
+      if (
+        input.signal?.aborted &&
+        input.signal.reason &&
+        typeof input.signal.reason === 'object' &&
+        'name' in input.signal.reason &&
+        input.signal.reason.name === 'AbortError' &&
+        staffQuoteAbortError(error)
+      ) {
+        return requeueRun(db, mark, {
+          attempts: run.attempts,
+          delayMs: 0,
+          failureClass: 'WORKER_SHUTDOWN',
+          lastError: 'worker shutdown',
+        });
+      }
+      if (isPropertyReadLockDeadline(error)) {
+        return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'property lock busy');
+      }
+      if (staffQuoteLockBusy(error)) {
+        return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'party verification lock busy');
+      }
+      if (staffQuoteTransientFailure(error)) {
+        return retryOrFail(db, run, mark, 'TRANSIENT_NETWORK', 'staff quote execution failed');
+      }
+      const refusal = staffQuoteRefusal(error, request.input);
+      return storeStaffQuoteResult({
+        db,
+        mark,
+        result: { ok: false, ...refusal },
+        outcome: 'refused',
+      });
+    }
+  }
   const ownerKey = metrics.owner ?? `hms-job-prefetch:${run.transportId}`;
   const screenshotDir: { value: string | null } = { value: null };
   const deps = {
@@ -1830,14 +2143,59 @@ async function toView(
   };
 }
 
+/** The newest staff quote job on this message whose stay inputs match, ignoring the pane's selection counters. */
+async function latestStaffQuoteRunFor(
+  db: DB,
+  scope: ReturnType<typeof and>,
+  messageId: string,
+  quoteInput: StaffQuoteInput,
+): Promise<AiWorkflowRun[]> {
+  const wanted = hmsRequestKey({ kind: 'staff_quote', input: quoteInput });
+  const rows = await db
+    .select()
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        scope,
+        eq(aiWorkflowRun.triggerMessageId, messageId),
+        sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+        sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${messageId}`,
+        staffQuoteRunFreshness(new Date()),
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
+  const match = rows.find((row) => {
+    const parsed = hmsJobRequestSchema.safeParse(row.readRequest);
+    return parsed.success && hmsRequestKey(parsed.data) === wanted;
+  });
+  return match ? [match] : [];
+}
+
+function staffQuoteRunFreshness(now: Date) {
+  return or(
+    inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
+    and(eq(aiWorkflowRun.state, 'succeeded'), gt(aiWorkflowRun.readResultExpiresAt, now)),
+    and(
+      inArray(aiWorkflowRun.state, ['dead_letter', 'superseded']),
+      sql`coalesce(${aiWorkflowRun.finishedAt}, ${aiWorkflowRun.updatedAt}, ${aiWorkflowRun.createdAt}) > ${new Date(now.getTime() - STAFF_QUOTE_RESULT_TTL_MS).toISOString()}::timestamp`,
+    ),
+  );
+}
+
 /**
  * The job's status and snapshot from the database. By run id for polling, or
- * the latest job of one kind on a thread (and confirmation, for finds) to
- * resume after the pane remounts. Null when nothing matches.
+ * the latest matching request to resume after the pane remounts. Null when nothing matches.
  */
 export async function readHmsJobView(
   input:
-    | { transportId: string; runId: string }
+    | { transportId: string; runId: string; userId?: string; staffQuoteOwnerId?: string }
+    | {
+        transportId: string;
+        userId: string;
+        messageId: string;
+        kind: 'staff_quote';
+        input: StaffQuoteInput;
+      }
     | {
         transportId: string;
         threadId: string;
@@ -1863,15 +2221,36 @@ export async function readHmsJobView(
     eq(aiWorkflowRun.transportId, input.transportId),
     eq(aiWorkflowRun.runKind, 'read_tool'),
     eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+    ...('userId' in input && input.userId
+      ? [sql`${aiWorkflowRun.metrics}->>'userId' = ${input.userId}`]
+      : []),
   );
   const [run] =
     'runId' in input
       ? await db
           .select()
           .from(aiWorkflowRun)
-          .where(and(eq(aiWorkflowRun.id, input.runId), scope))
+          .where(
+            and(
+              eq(aiWorkflowRun.id, input.runId),
+              scope,
+              ...(input.staffQuoteOwnerId
+                ? [
+                    or(
+                      sql`${aiWorkflowRun.readRequest}->>'kind' IS DISTINCT FROM 'staff_quote'`,
+                      and(
+                        sql`${aiWorkflowRun.metrics}->>'userId' = ${input.staffQuoteOwnerId}`,
+                        staffQuoteRunFreshness(new Date()),
+                      ),
+                    ),
+                  ]
+                : [sql`${aiWorkflowRun.readRequest}->>'kind' IS DISTINCT FROM 'staff_quote'`]),
+            ),
+          )
           .limit(1)
-      : await db
+      : input.kind === 'staff_quote'
+        ? await latestStaffQuoteRunFor(db, scope, input.messageId, input.input)
+        : await db
           .select()
           .from(aiWorkflowRun)
           .where(

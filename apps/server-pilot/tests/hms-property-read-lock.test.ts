@@ -1,6 +1,7 @@
 import {
   createPropertyReadLock,
   isPropertyReadLockDeadline,
+  PROPERTY_READ_LOCK_DEADLINE_MESSAGE,
   propertyReadLockKey,
   type PropertyReadConnection,
 } from '../src/hms/property-read-lock.js';
@@ -33,6 +34,18 @@ describe('U8 property-scoped read lock', () => {
     expect(isPropertyReadLockDeadline(failure)).toBe(true);
     expect(isPropertyReadLockDeadline(new Error('some other failure'))).toBe(false);
     expect(handle.close).toHaveBeenCalledOnce();
+  });
+
+  it('recognizes the sanitized deadline cause used by staff quote jobs', () => {
+    expect(
+      isPropertyReadLockDeadline({
+        cause: {
+          name: 'Error',
+          code: 'HMS_LOCK_BUSY',
+          message: PROPERTY_READ_LOCK_DEADLINE_MESSAGE,
+        },
+      }),
+    ).toBe(true);
   });
 
   it('derives a stable tenant/property advisory key without raw identifiers in output', () => {

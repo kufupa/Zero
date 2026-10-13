@@ -556,7 +556,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r5i»"
+          id="radix-«r6m»"
           type="button"
         >
           <svg
@@ -861,7 +861,7 @@ exports[`NavaPane screen states > diagnostics: the connection step after a succe
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r83»"
+          id="radix-«r9n»"
           type="button"
         >
           <svg
@@ -1501,7 +1501,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r7r»-arrival"
+                                for="«r9d»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -1511,7 +1511,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r7r»-arrival"
+                              id="«r9d»-arrival"
                               type="date"
                               value=""
                             />
@@ -1524,7 +1524,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r7r»-departure"
+                                for="«r9d»-departure"
                               >
                                 <span>
                                   Departure
@@ -1534,7 +1534,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r7r»-departure"
+                              id="«r9d»-departure"
                               type="date"
                               value=""
                             />
@@ -1551,7 +1551,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r7q»-meal-plan"
+                        for="«r9c»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -1564,7 +1564,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r7q»-meal-plan"
+                      id="«r9c»-meal-plan"
                     >
                       <option
                         value="all"
@@ -1661,7 +1661,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                                 >
                                   <label
                                     class="flex items-center gap-1.5"
-                                    for="«r82»-room"
+                                    for="«r9m»-room"
                                   >
                                     <span>
                                       Room type
@@ -1681,7 +1681,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                                   aria-invalid="true"
                                   aria-label="Room type"
                                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]"
-                                  id="«r82»-room"
+                                  id="«r9m»-room"
                                 >
                                   <option
                                     value=""
@@ -1912,6 +1912,26 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                     id="quote-agency"
                     value=""
                   />
+                  <div
+                    aria-label="Agency lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div
                   class="flex flex-col gap-1"
@@ -1934,6 +1954,26 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                     id="quote-company"
                     value=""
                   />
+                  <div
+                    aria-label="Company lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div
                   class="flex flex-col gap-1"
@@ -2899,7 +2939,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r7o»"
+          id="radix-«r9a»"
           type="button"
         >
           <svg
@@ -3539,7 +3579,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r4s»-arrival"
+                                for="«r5q»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -3549,7 +3589,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r4s»-arrival"
+                              id="«r5q»-arrival"
                               type="date"
                               value=""
                             />
@@ -3562,7 +3602,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r4s»-departure"
+                                for="«r5q»-departure"
                               >
                                 <span>
                                   Departure
@@ -3572,7 +3612,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r4s»-departure"
+                              id="«r5q»-departure"
                               type="date"
                               value=""
                             />
@@ -3589,7 +3629,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r4r»-meal-plan"
+                        for="«r5p»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -3602,7 +3642,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r4r»-meal-plan"
+                      id="«r5p»-meal-plan"
                     >
                       <option
                         value="all"
@@ -3699,7 +3739,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                                 >
                                   <label
                                     class="flex items-center gap-1.5"
-                                    for="«r4u»-room"
+                                    for="«r5u»-room"
                                   >
                                     <span>
                                       Room type
@@ -3719,7 +3759,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                                   aria-invalid="true"
                                   aria-label="Room type"
                                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]"
-                                  id="«r4u»-room"
+                                  id="«r5u»-room"
                                 >
                                   <option
                                     value=""
@@ -3950,6 +3990,26 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                     id="quote-agency"
                     value=""
                   />
+                  <div
+                    aria-label="Agency lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div
                   class="flex flex-col gap-1"
@@ -3972,6 +4032,26 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                     id="quote-company"
                     value=""
                   />
+                  <div
+                    aria-label="Company lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div
                   class="flex flex-col gap-1"
@@ -4797,7 +4877,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r4p»"
+          id="radix-«r5n»"
           type="button"
         >
           <svg
@@ -5130,7 +5210,7 @@ exports[`NavaPane screen states > tour: the first slide of the feature tour, ope
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r85»"
+          id="radix-«r9p»"
           type="button"
         >
           <svg
@@ -5810,7 +5890,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r79»-arrival"
+                                for="«r8n»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -5820,7 +5900,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r79»-arrival"
+                              id="«r8n»-arrival"
                               type="date"
                               value=""
                             />
@@ -5833,7 +5913,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r79»-departure"
+                                for="«r8n»-departure"
                               >
                                 <span>
                                   Departure
@@ -5843,7 +5923,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r79»-departure"
+                              id="«r8n»-departure"
                               type="date"
                               value=""
                             />
@@ -5860,7 +5940,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r78»-meal-plan"
+                        for="«r8m»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -5873,7 +5953,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r78»-meal-plan"
+                      id="«r8m»-meal-plan"
                     >
                       <option
                         value="all"
@@ -5970,7 +6050,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                                 >
                                   <label
                                     class="flex items-center gap-1.5"
-                                    for="«r7b»-room"
+                                    for="«r8r»-room"
                                   >
                                     <span>
                                       Room type
@@ -5990,7 +6070,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                                   aria-invalid="true"
                                   aria-label="Room type"
                                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]"
-                                  id="«r7b»-room"
+                                  id="«r8r»-room"
                                 >
                                   <option
                                     value=""
@@ -6221,6 +6301,26 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                     id="quote-agency"
                     value=""
                   />
+                  <div
+                    aria-label="Agency lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div
                   class="flex flex-col gap-1"
@@ -6243,6 +6343,26 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                     id="quote-company"
                     value=""
                   />
+                  <div
+                    aria-label="Company lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div
                   class="flex flex-col gap-1"
@@ -7068,7 +7188,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r76»"
+          id="radix-«r8k»"
           type="button"
         >
           <svg
@@ -7748,7 +7868,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r7i»-arrival"
+                                for="«r92»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -7758,7 +7878,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r7i»-arrival"
+                              id="«r92»-arrival"
                               type="date"
                               value=""
                             />
@@ -7771,7 +7891,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r7i»-departure"
+                                for="«r92»-departure"
                               >
                                 <span>
                                   Departure
@@ -7781,7 +7901,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r7i»-departure"
+                              id="«r92»-departure"
                               type="date"
                               value=""
                             />
@@ -7798,7 +7918,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r7h»-meal-plan"
+                        for="«r91»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -7811,7 +7931,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r7h»-meal-plan"
+                      id="«r91»-meal-plan"
                     >
                       <option
                         value="all"
@@ -7908,7 +8028,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                                 >
                                   <label
                                     class="flex items-center gap-1.5"
-                                    for="«r7k»-room"
+                                    for="«r96»-room"
                                   >
                                     <span>
                                       Room type
@@ -7928,7 +8048,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                                   aria-invalid="true"
                                   aria-label="Room type"
                                   class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] border-[#c01823] focus:border-[#c01823] focus:ring-1 focus:ring-[#c01823]"
-                                  id="«r7k»-room"
+                                  id="«r96»-room"
                                 >
                                   <option
                                     value=""
@@ -8159,6 +8279,26 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                     id="quote-agency"
                     value=""
                   />
+                  <div
+                    aria-label="Agency lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div
                   class="flex flex-col gap-1"
@@ -8181,6 +8321,26 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                     id="quote-company"
                     value=""
                   />
+                  <div
+                    aria-label="Company lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <div
                   class="flex flex-col gap-1"
@@ -9006,7 +9166,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r7f»"
+          id="radix-«r8v»"
           type="button"
         >
           <svg
@@ -9268,7 +9428,7 @@ exports[`NavaPane screen states > welcome: a first run shows the account step an
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r4k»"
+          id="radix-«r5i»"
           type="button"
         >
           <svg
