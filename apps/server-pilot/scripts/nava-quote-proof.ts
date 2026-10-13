@@ -36,9 +36,10 @@ import {
 } from './nava-preview-run';
 
 const QUOTE_TIMEOUT_MS = 360_000;
-const PARTY_SETTLE_MS = 90_000;
+const PARTY_SETTLE_MS = 240_000;
 const PARTY_INDEX_START_GRACE_MS = 750;
 const PARTY_INDEX_SETTLE_MS = 5_000;
+const PARTY_SEARCH_START_GRACE_MS = 5_000;
 const STEP_MS = 30_000;
 const RATE_POLL_MS = 250;
 const PARTY_SEARCH_LIMIT = 2;
@@ -71,6 +72,7 @@ export const QUOTE_SELECTORS = {
   hmsListRegion: 'Matches from the HMS list',
   liveMatchLabels: ['Found in HMS:', 'Also in HMS:'] as const,
   liveMatchContainer: 'xpath=..',
+  confirmParty: /^Confirm .+$/,
   emailSuggestion: /^.+\((?:Company|Agency)\), not confirmed in HMS$/,
   selectedParty: /✓\s*(.+?)\s+\(#([^)]+)\)(?:\s+— picked by Nava)?/,
   advanced: 'Advanced',
@@ -84,6 +86,7 @@ export const QUOTE_SELECTORS = {
   pricedCard: /avg\s*\/\s*room\s*\/\s*night/i,
   detailsButton: 'Details',
   pendingParty: /Searching HMS for|Queued(?:\s|\(|$)|Running(?:\s|\(|\.|$)|Retrying/i,
+  pendingPartyReadBack: /Checking for a background HMS lookup/i,
   pendingRate: /Starting the HMS run|Getting rates from HMS|Queued(?:\s|\(|$)|Running(?:\s|\(|\.|$)|Retrying/i,
   docsRegion: 'Quote',
   prepareButton: /^Prepare (?:quote|PDF)$/,
@@ -130,6 +133,7 @@ export type QuoteGuardState = {
   expectedRateKeys: Set<string>;
   ratedRateKeys: string[];
   partyLookups: number;
+  partyLookupRoutes: Map<string, Set<string>>;
   fieldEdits: number;
   pdfs: number;
   workbooks: number;
@@ -144,6 +148,7 @@ export function newQuoteGuardState(
     expectedRateKeys: new Set(expectedRateKeys),
     ratedRateKeys: [],
     partyLookups: 0,
+    partyLookupRoutes: new Map(),
     fieldEdits: 0,
     pdfs: 0,
     workbooks: 0,
@@ -167,7 +172,14 @@ export function classifyQuoteRequest(
     return { allowed: false, procedures, blocked: [{ procedure: '(none)', reason: 'unknown' }] };
   }
   const blocked: GuardDecision<QuoteGuardReason>['blocked'] = [];
-  const pending = { rates: [] as string[], parties: 0, edits: 0, pdfs: 0, workbooks: 0 };
+  const pending = {
+    rates: [] as string[],
+    parties: 0,
+    partyLookupRoutes: new Map<string, Set<string>>(),
+    edits: 0,
+    pdfs: 0,
+    workbooks: 0,
+  };
   procedures.forEach((procedure, index) => {
     const refuse = (reason: QuoteGuardReason) => blocked.push({ procedure, reason });
     if (READ_PROCEDURES.has(procedure) || ANALYSIS_PROCEDURES.has(procedure) || QUEUED_JOB_READS.has(procedure)) return;
@@ -175,8 +187,42 @@ export function classifyQuoteRequest(
       (procedure === PARTY_LOOKUP_PROCEDURE && HMS_READ_PROCEDURES.has(procedure)) ||
       procedure === QUEUED_PARTY_LOOKUP_PROCEDURE
     ) {
-      if (state.partyLookups + pending.parties >= PARTY_SEARCH_LIMIT) refuse('party_lookup_limit');
-      else pending.parties += 1;
+      const input = batchInput(postData, index) as
+        | { name?: unknown; kind?: unknown; partyKind?: unknown }
+        | undefined;
+      const name = typeof input?.name === 'string' ? normalizedName(input.name) : '';
+      const kind = procedure === PARTY_LOOKUP_PROCEDURE ? input?.kind : input?.partyKind;
+      const key = name ? `${typeof kind === 'string' ? kind : ''}:${name}` : null;
+      if (!key) {
+        if (state.partyLookups + pending.parties >= PARTY_SEARCH_LIMIT) refuse('party_lookup_limit');
+        else pending.parties += 1;
+        return;
+      }
+      const used = state.partyLookupRoutes.get(key);
+      const inBatch = pending.partyLookupRoutes.get(key);
+      const alreadyCalled = used?.has(procedure) || inBatch?.has(procedure);
+      const reversedFallback =
+        procedure === QUEUED_PARTY_LOOKUP_PROCEDURE &&
+        (used?.has(PARTY_LOOKUP_PROCEDURE) || inBatch?.has(PARTY_LOOKUP_PROCEDURE));
+      if (alreadyCalled || reversedFallback) {
+        refuse('party_lookup_limit');
+        return;
+      }
+      const hasPreviousQueueCall = used?.has(QUEUED_PARTY_LOOKUP_PROCEDURE) || inBatch?.has(QUEUED_PARTY_LOOKUP_PROCEDURE);
+      const hasPreviousCall = Boolean(used?.size || inBatch?.size);
+      if (!hasPreviousCall) {
+        if (state.partyLookups + pending.parties >= PARTY_SEARCH_LIMIT) {
+          refuse('party_lookup_limit');
+          return;
+        }
+        pending.parties += 1;
+      } else if (!(procedure === PARTY_LOOKUP_PROCEDURE && hasPreviousQueueCall)) {
+        refuse('party_lookup_limit');
+        return;
+      }
+      const routes = inBatch ?? new Set<string>();
+      routes.add(procedure);
+      pending.partyLookupRoutes.set(key, routes);
       return;
     }
     if (STAFF_QUOTE_PROCEDURES.has(procedure)) {
@@ -211,6 +257,11 @@ export function classifyQuoteRequest(
   if (allowed) {
     state.ratedRateKeys.push(...pending.rates);
     state.partyLookups += pending.parties;
+    for (const [key, routes] of pending.partyLookupRoutes) {
+      const priorRoutes = state.partyLookupRoutes.get(key) ?? new Set<string>();
+      for (const procedure of routes) priorRoutes.add(procedure);
+      state.partyLookupRoutes.set(key, priorRoutes);
+    }
     state.fieldEdits += pending.edits;
     state.pdfs += pending.pdfs;
     state.workbooks += pending.workbooks;
@@ -262,8 +313,11 @@ type QuoteProofScore = Pick<QuoteProofThread, 'rates' | 'blocker'>;
 
 export type PartyLookupReadiness = {
   pending: boolean;
+  readBackPending: boolean;
   autoLookupExpected: boolean;
+  autoLookupStarted: boolean;
   autoLookupComplete: boolean;
+  autoStartGraceElapsed: boolean;
   indexLookupExpected: boolean;
   indexRequestStarted: boolean;
   indexResponseComplete: boolean;
@@ -273,13 +327,54 @@ export type PartyLookupReadiness = {
 export function partyLookupsReady(state: PartyLookupReadiness): boolean {
   return (
     !state.pending &&
-    (!state.autoLookupExpected || state.autoLookupComplete) &&
+    !state.readBackPending &&
+    (!state.autoLookupExpected ||
+      state.autoLookupComplete ||
+      (!state.autoLookupStarted && state.autoStartGraceElapsed)) &&
     (!state.indexLookupExpected || state.indexResponseComplete || (!state.indexRequestStarted && state.indexStartGraceElapsed))
   );
 }
 
+export type PartyLookupActionState = {
+  query: string | null;
+  selected: boolean;
+  pending: boolean;
+  readBackPending: boolean;
+  hasConfirm: boolean;
+  hasResults: boolean;
+  searchStarted: boolean;
+  searchComplete: boolean;
+  startGraceElapsed: boolean;
+  attempted: boolean;
+  findEnabled: boolean;
+};
+
+export function partyLookupAction(state: PartyLookupActionState): 'wait' | 'search' | 'ready' {
+  if (state.pending || state.readBackPending) return 'wait';
+  if (state.selected || !state.query || state.query.trim().length < 2) return 'ready';
+  if (state.hasConfirm || state.hasResults || state.searchComplete) return 'ready';
+  if (state.searchStarted) return 'wait';
+  if (!state.startGraceElapsed) return 'wait';
+  if (state.attempted) return 'ready';
+  return state.findEnabled ? 'search' : 'ready';
+}
+
 export function rateWaitBudget(deadline: number, now = Date.now(), stepLimit = STEP_MS): number {
   return Math.max(0, Math.min(stepLimit, deadline - now));
+}
+
+export function rateKeysForDateRanges(
+  stays: readonly Pick<QuotePrefilledStay, 'arrival' | 'departure'>[],
+): Set<string> {
+  const keys = new Set<string>();
+  stays.forEach((stay) => {
+    if (stay.arrival && stay.departure) keys.add(stay.arrival + ':' + stay.departure);
+  });
+  return keys;
+}
+
+export function rateSearchAction(key: string, requestedRateKeys: readonly string[]): 'observe' | 'search' {
+  return requestedRateKeys.includes(key) ? 'observe' : 'search';
 }
 
 export async function withPiiMask<T>(markPii: () => Promise<unknown>, capture: () => Promise<T>): Promise<T> {
@@ -493,6 +588,30 @@ async function readPrefilled(page: Page): Promise<QuotePrefilled> {
   return prefilled;
 }
 
+async function readPaneRateKeys(page: Page): Promise<Set<string>> {
+  const stays = page.getByRole('region', { name: QUOTE_SELECTORS.stayRegion }).getByRole('article', {
+    name: QUOTE_SELECTORS.stayArticle,
+  });
+  const dateRanges: Array<{ arrival: string | null; departure: string | null }> = [];
+  for (let stayIndex = 0; stayIndex < (await stays.count()); stayIndex += 1) {
+    const dateInputs = await openStayDateInputs(stays.nth(stayIndex));
+    dateRanges.push({
+      arrival: await controlValue(dateInputs.arrival),
+      departure: await controlValue(dateInputs.departure),
+    });
+  }
+  return rateKeysForDateRanges(dateRanges);
+}
+
+async function initializeExpectedRateKeysFromPane(page: Page, guard: QuoteGuardState): Promise<void> {
+  if (guard.expectedRateKeys.size) return;
+  const keys = await waitFor('stay dates for the queued rate read', STEP_MS, async () => {
+    const shown = await readPaneRateKeys(page);
+    return shown.size ? shown : null;
+  }).catch(() => new Set<string>());
+  if (keys.size) guard.expectedRateKeys = keys;
+}
+
 function validDate(value: string | null): boolean {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(value + 'T00:00:00Z');
@@ -547,6 +666,9 @@ type PartyIndexSignals = {
   requestedAt: Map<string, number>;
   inFlight: Map<string, number>;
   completed: Set<string>;
+  partyRequestedAt: Map<string, number>;
+  partyInFlight: Map<string, number>;
+  partyCompleted: Set<string>;
 };
 
 function partyIndexQuery(request: Request): string | null {
@@ -559,25 +681,77 @@ function partyIndexQuery(request: Request): string | null {
   return null;
 }
 
+type PartySearchRequest = { key: string; completesSearch: boolean };
+
+function partyLookupKey(kind: PartyKind, name: string): string {
+  return kind + ':' + normalizedName(name);
+}
+
+function partySearchRequests(request: Request): PartySearchRequest[] {
+  const procedures = trpcProcedures(request.url());
+  const found: PartySearchRequest[] = [];
+  for (const [index, procedure] of procedures.entries()) {
+    if (procedure !== PARTY_LOOKUP_PROCEDURE && procedure !== QUEUED_PARTY_LOOKUP_PROCEDURE) continue;
+    const input = batchInput(request.postData(), index) as
+      | { name?: unknown; kind?: unknown; partyKind?: unknown }
+      | undefined;
+    if (typeof input?.name !== 'string' || !input.name.trim()) continue;
+    const kind = procedure === PARTY_LOOKUP_PROCEDURE ? input.kind : input.partyKind;
+    if (kind !== 'company' && kind !== 'agency') continue;
+    found.push({
+      key: partyLookupKey(kind, input.name),
+      completesSearch: procedure === PARTY_LOOKUP_PROCEDURE,
+    });
+  }
+  return found;
+}
+
 function watchPartyIndex(page: Page): { signals: PartyIndexSignals; stop: () => void; reset: () => void } {
-  const signals: PartyIndexSignals = { requestedAt: new Map(), inFlight: new Map(), completed: new Set() };
+  const signals: PartyIndexSignals = {
+    requestedAt: new Map(),
+    inFlight: new Map(),
+    completed: new Set(),
+    partyRequestedAt: new Map(),
+    partyInFlight: new Map(),
+    partyCompleted: new Set(),
+  };
   const queries = new WeakMap<Request, { query: string; epoch: number }>();
+  const partySearches = new WeakMap<Request, { searches: PartySearchRequest[]; epoch: number }>();
   let epoch = 0;
   const onRequest = (request: Request) => {
     const query = partyIndexQuery(request);
-    if (!query) return;
-    queries.set(request, { query, epoch });
-    if (!signals.requestedAt.has(query)) signals.requestedAt.set(query, Date.now());
-    signals.inFlight.set(query, (signals.inFlight.get(query) ?? 0) + 1);
-    signals.completed.delete(query);
+    if (query) {
+      queries.set(request, { query, epoch });
+      if (!signals.requestedAt.has(query)) signals.requestedAt.set(query, Date.now());
+      signals.inFlight.set(query, (signals.inFlight.get(query) ?? 0) + 1);
+      signals.completed.delete(query);
+    }
+    const searches = partySearchRequests(request);
+    if (searches.length) {
+      partySearches.set(request, { searches, epoch });
+      for (const search of searches) {
+        if (!signals.partyRequestedAt.has(search.key)) signals.partyRequestedAt.set(search.key, Date.now());
+        signals.partyInFlight.set(search.key, (signals.partyInFlight.get(search.key) ?? 0) + 1);
+        signals.partyCompleted.delete(search.key);
+      }
+    }
   };
   const onFinished = (request: Request) => {
     const requestState = queries.get(request);
-    if (!requestState || requestState.epoch !== epoch) return;
-    const { query } = requestState;
-    const inFlight = Math.max(0, (signals.inFlight.get(query) ?? 1) - 1);
-    signals.inFlight.set(query, inFlight);
-    if (inFlight === 0) signals.completed.add(query);
+    if (requestState?.epoch === epoch) {
+      const { query } = requestState;
+      const inFlight = Math.max(0, (signals.inFlight.get(query) ?? 1) - 1);
+      signals.inFlight.set(query, inFlight);
+      if (inFlight === 0) signals.completed.add(query);
+    }
+    const partyRequestState = partySearches.get(request);
+    if (partyRequestState?.epoch === epoch) {
+      for (const search of partyRequestState.searches) {
+        const inFlight = Math.max(0, (signals.partyInFlight.get(search.key) ?? 1) - 1);
+        signals.partyInFlight.set(search.key, inFlight);
+        if (search.completesSearch) signals.partyCompleted.add(search.key);
+      }
+    }
   };
   page.on('request', onRequest);
   page.on('requestfinished', onFinished);
@@ -594,35 +768,56 @@ function watchPartyIndex(page: Page): { signals: PartyIndexSignals; stop: () => 
       signals.requestedAt.clear();
       signals.inFlight.clear();
       signals.completed.clear();
+      signals.partyRequestedAt.clear();
+      signals.partyInFlight.clear();
+      signals.partyCompleted.clear();
     },
   };
 }
 
 async function settlePartyLookups(page: Page, signals: PartyIndexSignals): Promise<void> {
-  const started = Date.now();
+  const fieldStartedAt = new Map<PartyKind, number>();
+  const manualSearchAttempted = new Set<PartyKind>();
+  const manualSearchAttemptedAt = new Map<PartyKind, number>();
   await waitFor('company and agency lookups in HMS to settle', PARTY_SETTLE_MS, async () => {
     for (const kind of ['company', 'agency'] as const) {
       const group = partyGroup(page, kind);
       if (!(await group.count())) continue;
+      if (!fieldStartedAt.has(kind)) fieldStartedAt.set(kind, Date.now());
       const fieldName = kind === 'company' ? QUOTE_SELECTORS.companyField : QUOTE_SELECTORS.agencyField;
       const query = await controlValue(page.getByRole('textbox', { name: fieldName, exact: true }));
       const selected = selectedParty(await group.innerText().catch(() => ''));
       const statuses = group.getByRole('status');
       let pending = false;
+      let readBackPending = false;
       let completedStatus = false;
       for (let index = 0; index < (await statuses.count()); index += 1) {
         const text = await statuses.nth(index).innerText().catch(() => '');
-        if (QUOTE_SELECTORS.pendingParty.test(text)) pending = true;
+        if (QUOTE_SELECTORS.pendingPartyReadBack.test(text)) readBackPending = true;
+        else if (QUOTE_SELECTORS.pendingParty.test(text)) pending = true;
         else if (text.trim()) completedStatus = true;
       }
-      if (pending) return null;
 
       let hasLiveRows = false;
       for (const label of QUOTE_SELECTORS.liveMatchLabels) {
         if ((await group.getByText(label, { exact: true }).count()) > 0) hasLiveRows = true;
       }
+      const hasConfirm = (await group.getByRole('button', { name: QUOTE_SELECTORS.confirmParty }).count()) > 0;
+      const queuedRows = group.getByRole('list', {
+        name: 'Companies and agencies found in HMS',
+        exact: true,
+      });
+      const hasQueuedResults =
+        (await queuedRows.count()) > 0 && (await queuedRows.getByRole('button').count()) > 0;
+      const hasResults = Boolean(selected?.byNava || hasLiveRows || hasConfirm || hasQueuedResults);
+      const searchKey = query ? partyLookupKey(kind, query) : null;
+      const searchRequested = Boolean(searchKey && signals.partyRequestedAt.has(searchKey));
+      const searchInFlight = Boolean(searchKey && (signals.partyInFlight.get(searchKey) ?? 0) > 0);
+      const searchComplete = Boolean(searchKey && signals.partyCompleted.has(searchKey));
+      pending ||= searchInFlight;
       const autoLookupExpected = Boolean(query && query.length >= 3 && !selected);
-      const autoLookupComplete = !autoLookupExpected || Boolean(selected?.byNava || hasLiveRows || completedStatus);
+      const autoLookupStarted = Boolean(searchRequested || pending || hasResults || completedStatus || searchComplete);
+      const autoLookupComplete = Boolean(hasResults || completedStatus || searchComplete);
       const indexLookupExpected = Boolean(query && !selected);
       const requestedAt = query ? signals.requestedAt.get(query) : undefined;
       const indexRequestStarted = requestedAt !== undefined;
@@ -630,18 +825,55 @@ async function settlePartyLookups(page: Page, signals: PartyIndexSignals): Promi
       if (requestedAt !== undefined && !indexResponseComplete && Date.now() - requestedAt > PARTY_INDEX_SETTLE_MS) {
         throw new Blocker('party_index_timeout');
       }
-      const indexStartGraceElapsed = Date.now() - started >= PARTY_INDEX_START_GRACE_MS;
+      const now = Date.now();
+      const startGraceElapsed = now - fieldStartedAt.get(kind)! >= PARTY_INDEX_START_GRACE_MS;
+      const manualSearchAttemptedForKind = manualSearchAttempted.has(kind);
+      const manualSearchStartGraceElapsed =
+        manualSearchAttemptedForKind &&
+        now - (manualSearchAttemptedAt.get(kind) ?? now) >= PARTY_SEARCH_START_GRACE_MS;
+      const indexStartGraceElapsed = startGraceElapsed;
       if (
         !partyLookupsReady({
           pending,
+          readBackPending,
           autoLookupExpected,
+          autoLookupStarted,
           autoLookupComplete,
+          autoStartGraceElapsed: startGraceElapsed,
           indexLookupExpected,
           indexRequestStarted,
           indexResponseComplete,
           indexStartGraceElapsed,
         })
       ) {
+        return null;
+      }
+
+      const findButton = group.getByRole('button', { name: 'Find in HMS', exact: true });
+      const findEnabled =
+        (await findButton.count()) > 0 && (await findButton.first().isEnabled().catch(() => false));
+      const action = partyLookupAction({
+        query,
+        selected: Boolean(selected),
+        pending,
+        readBackPending,
+        hasConfirm,
+        hasResults,
+        searchStarted: searchRequested,
+        searchComplete: Boolean(searchComplete || completedStatus),
+        startGraceElapsed: manualSearchAttemptedForKind ? manualSearchStartGraceElapsed : startGraceElapsed,
+        attempted: manualSearchAttemptedForKind,
+        findEnabled,
+      });
+      if (action === 'wait') return null;
+      if (action === 'search') {
+        manualSearchAttempted.add(kind);
+        manualSearchAttemptedAt.set(kind, now);
+        try {
+          await findButton.first().click({ timeout: STEP_MS });
+        } catch {
+          throw new Blocker('Find in HMS could not be started');
+        }
         return null;
       }
     }
@@ -690,6 +922,32 @@ async function readLiveHmsCandidates(group: Locator, kind: PartyKind): Promise<P
   return output;
 }
 
+async function readQueuedHmsCandidates(group: Locator, kind: PartyKind): Promise<PartyCandidateOption[]> {
+  const output: PartyCandidateOption[] = [];
+  const lists = group.getByRole('list', { name: 'Companies and agencies found in HMS', exact: true });
+  for (let listIndex = 0; listIndex < (await lists.count()); listIndex += 1) {
+    const buttons = lists.nth(listIndex).getByRole('button');
+    for (let buttonIndex = 0; buttonIndex < (await buttons.count()); buttonIndex += 1) {
+      const button = buttons.nth(buttonIndex);
+      const name = (await button.innerText().catch(() => '')).trim();
+      if (name) output.push({ kind, name, source: 'live_hms', button });
+    }
+  }
+  return output;
+}
+
+async function readConfirmCandidates(group: Locator, kind: PartyKind): Promise<PartyCandidateOption[]> {
+  const output: PartyCandidateOption[] = [];
+  const buttons = group.getByRole('button', { name: QUOTE_SELECTORS.confirmParty });
+  for (let index = 0; index < (await buttons.count()); index += 1) {
+    const button = buttons.nth(index);
+    const label = (await button.innerText().catch(() => '')).trim();
+    const name = /^Confirm\s+(.+)$/i.exec(label)?.[1]?.trim();
+    if (name) output.push({ kind, name, source: 'live_hms', button });
+  }
+  return output;
+}
+
 async function acceptPartyMatches(
   page: Page,
   allowEdits: boolean,
@@ -713,8 +971,12 @@ async function acceptPartyMatches(
     }
     if (listCandidates.length) party.prefetched = true;
 
-    const liveCandidates = await readLiveHmsCandidates(group, kind);
-    for (const candidate of liveCandidates) {
+    const candidatesFromHms = [
+      ...(await readConfirmCandidates(group, kind)),
+      ...(await readQueuedHmsCandidates(group, kind)),
+      ...(await readLiveHmsCandidates(group, kind)),
+    ];
+    for (const candidate of candidatesFromHms) {
       recordPartySuggestion(party, {
         kind,
         name: candidate.name,
@@ -728,7 +990,7 @@ async function acceptPartyMatches(
       continue;
     }
 
-    const candidates: PartyCandidateOption[] = [...liveCandidates, ...listCandidates];
+    const candidates: PartyCandidateOption[] = [...candidatesFromHms, ...listCandidates];
     if (existing?.byNava) {
       const selected = { kind, name: existing.name, source: 'live_hms' as const, nativeId: existing.nativeId, button: null };
       recordPartySuggestion(party, {
@@ -776,11 +1038,12 @@ async function acceptPartyMatches(
       const selected = selectedParty(await group.innerText().catch(() => ''));
       return selected && normalizedName(selected.name) === normalizedName(chosen.name) ? true : null;
     });
+    const accepted = selectedParty(await group.innerText().catch(() => ''));
     party.accepted.push({
       kind,
-      name: chosen.name,
+      name: accepted?.name ?? chosen.name,
       source: chosen.source,
-      ...(chosen.nativeId ? { nativeId: chosen.nativeId } : {}),
+      ...(accepted?.nativeId ? { nativeId: accepted.nativeId } : chosen.nativeId ? { nativeId: chosen.nativeId } : {}),
     });
   }
   return { missingEdits };
@@ -964,46 +1227,48 @@ async function runRates(
   }
   const articles = await rateArticles(rates);
   const keys = uniqueRateKeys(stays);
-  guard.expectedRateKeys = new Set(keys.map((item) => item.key));
+  if (!guard.expectedRateKeys.size) guard.expectedRateKeys = rateKeysForDateRanges(stays);
   if (!keys.length) throw new Blocker('needs_edits:stay_dates');
 
   for (const item of keys) {
     const article = articles[item.stayIndex] ?? null;
-    try {
-      await waitForRate('the previous availability search to settle', deadline, async () =>
-        (await ratePending(rates, deadline)) ? null : true,
-      );
-    } catch (error) {
-      if (Date.now() >= deadline) return timedOut();
-      throw error;
-    }
-    let button = article?.getByRole('button', { name: QUOTE_SELECTORS.searchButton });
-    if (!button || !(await button.count())) button = rates.getByRole('button', { name: QUOTE_SELECTORS.getRatesButton });
-    try {
-      await waitForRate('the availability search to be enabled', deadline, async () => {
-        return button && (await button.count()) > 0 && (await button.first().isEnabled()) ? true : null;
-      }, STEP_MS);
-    } catch {
-      if (Date.now() >= deadline) return timedOut();
-      throw new Blocker('needs_edits:rate_search');
-    }
-    const before = guard.ratedRateKeys.length;
-    const outcomeAfter = captured.outcomes.length;
-    const clickTimeout = rateWaitBudget(deadline);
-    if (!clickTimeout) return timedOut();
-    try {
-      await button.first().click({ timeout: clickTimeout });
-    } catch {
-      if (Date.now() >= deadline) return timedOut();
-      throw new Blocker('the availability search could not be clicked');
-    }
-    try {
-      await waitForRate('the quote rates read to start', deadline, async () =>
-        guard.ratedRateKeys.length > before ? true : null,
-      STEP_MS);
-    } catch {
-      if (Date.now() >= deadline) return timedOut();
-      throw new Blocker('the quote rates request did not start');
+    let outcomeAfter = Number.MAX_SAFE_INTEGER;
+    if (rateSearchAction(item.key, guard.ratedRateKeys) === 'search') {
+      try {
+        await waitForRate('the previous availability search to settle', deadline, async () =>
+          (await ratePending(rates, deadline)) ? null : true,
+        );
+      } catch (error) {
+        if (Date.now() >= deadline) return timedOut();
+        throw error;
+      }
+      let button = article?.getByRole('button', { name: QUOTE_SELECTORS.searchButton });
+      if (!button || !(await button.count())) button = rates.getByRole('button', { name: QUOTE_SELECTORS.getRatesButton });
+      try {
+        await waitForRate('the availability search to be enabled', deadline, async () => {
+          return button && (await button.count()) > 0 && (await button.first().isEnabled()) ? true : null;
+        }, STEP_MS);
+      } catch {
+        if (Date.now() >= deadline) return timedOut();
+        throw new Blocker('needs_edits:rate_search');
+      }
+      outcomeAfter = captured.outcomes.length;
+      const clickTimeout = rateWaitBudget(deadline);
+      if (!clickTimeout) return timedOut();
+      try {
+        await button.first().click({ timeout: clickTimeout });
+      } catch {
+        if (Date.now() >= deadline) return timedOut();
+        throw new Blocker('the availability search could not be clicked');
+      }
+      try {
+        await waitForRate('the quote rates read to start', deadline, async () =>
+          guard.ratedRateKeys.includes(item.key) ? true : null,
+        STEP_MS);
+      } catch {
+        if (Date.now() >= deadline) return timedOut();
+        throw new Blocker('the quote rates request did not start');
+      }
     }
 
     const details = { opened: false };
@@ -1112,7 +1377,7 @@ async function proveThread(
   }
 
   proof.prefilled = await readPrefilled(page);
-  guard.expectedRateKeys = new Set(uniqueRateKeys(proof.prefilled.stays).map((item) => item.key));
+  if (!guard.expectedRateKeys.size) guard.expectedRateKeys = rateKeysForDateRanges(proof.prefilled.stays);
   const missing = requiredQuoteEdits(proof.prefilled);
   if (missing.length) {
     proof.blocker = 'needs_edits:' + missing.join(',');
@@ -1194,7 +1459,18 @@ export async function runQuoteProof(config: QuoteProofConfig, log: (line: string
   let partyIndexObserver: ReturnType<typeof watchPartyIndex> | null = null;
   let captured: Captured = { outcomes: [], blocked: [] };
   try {
-    const proofPage = await openProofPage(config, (url, postData) => classifyQuoteRequest(url, postData, guard));
+    const proofPage = await openProofPage(config, async (url, postData) => {
+      let procedures: string[] = [];
+      try {
+        procedures = trpcProcedures(url);
+      } catch {
+        // The request classifier below reports an unknown route.
+      }
+      if (page && !guard.expectedRateKeys.size && procedures.some((procedure) => STAFF_QUOTE_PROCEDURES.has(procedure))) {
+        await initializeExpectedRateKeysFromPane(page, guard);
+      }
+      return classifyQuoteRequest(url, postData, guard);
+    });
     browser = proofPage.browser;
     context = proofPage.context;
     page = proofPage.page;
