@@ -77,8 +77,11 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'panePartyLookup.suggest',
   'panePartyLookup.typeahead',
   'paneStayCancel.paneStayScreenshot',
+  'paneStayLookup.batchStatus',
+  'paneStayLookup.jobQueueEnabled',
   'paneStayLookup.jobStatus',
   'paneStayLookup.screenshot',
+  'quoteWorkflow.rateCatalogue',
   'quoteWorkflow.voucherFind',
   'rates.list',
   'settings.get',
@@ -90,6 +93,7 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.listThreadQuoteRevisions',
   'workstation.outlookSync.status',
   'workstation.quoteRunScreenshot',
+  'workstation.staffQuoteJob',
   'workstation.staffQuoteSource',
 ]);
 /** The one mutation the viewer may call: a read-only analysis (cache and ledger rows, no HMS, no mail). */
@@ -104,6 +108,13 @@ export const HMS_READ_PROCEDURES: ReadonlySet<string> = new Set(['panePartyLooku
  * workItems.open makes the work item for a stored read that has none; workItems.getByMessage only reads.
  */
 export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
+  // Queue or record calls from the guided pane: blocked in the viewer; the quote proof allows only its own queued reads.
+  'paneStayLookup.cancelBatch',
+  'paneStayLookup.queueBatch',
+  'paneStayLookup.queueParty',
+  'workItems.acceptFields',
+  'workItems.recordActions',
+  'workstation.queueStaffQuote',
   'drafts.saveReply',
   'hmsApproval.approve',
   'hmsApproval.resolveNeedsCheck',
