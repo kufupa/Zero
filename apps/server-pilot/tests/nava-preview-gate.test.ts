@@ -236,12 +236,12 @@ describe('nava-preview-gate.sh --ae1-rates and --ae2-find', () => {
 });
 
 describe('nava-preview-gate.sh --quote', () => {
-  it('plans a sequential quote proof for the requested threads with the six-minute rates bound', () => {
+  it('plans a sequential quote proof for the requested threads with the eight-minute rates bound', () => {
     const env = envFile(['S3_BUCKET=test-bucket-xyz', 'BETTER_AUTH_URL=https://nava.legacyhotels.co.za']);
     const result = gateRun(['--quote', 'thread-a,thread-b', '--dry-run'], { ENV_FILE: env });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('Quote proof on threads thread-a,thread-b');
-    expect(result.stdout).toContain('360000 ms per thread');
+    expect(result.stdout).toContain('480000 ms per thread');
     expect(result.stdout).toContain('/opt/nava/shared/nava-preview/quote-<UTC run id>/');
     expect(result.stdout).toContain('sequentially; one browser, no HMS writes');
   });

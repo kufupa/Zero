@@ -78,7 +78,7 @@ SUMMARIZE_TARGET=""
 AE4_THREAD=""
 AE4_DRY=0
 QUOTE_THREADS=""
-QUOTE_TIMEOUT_MS=360000
+QUOTE_TIMEOUT_MS=480000
 QUOTE_DRY=0
 PROOF_USAGE="--ae4 | --ae1-rates | --ae2-find <thread-id> [--dry-run] | --quote <thread-id>[,<thread-id>...] [--dry-run]"
 case "${1:-}" in
