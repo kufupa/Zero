@@ -32,7 +32,8 @@ const quoteLineMocks = vi.hoisted(() => ({
   rowRatesFor: vi.fn(),
 }));
 
-vi.mock('../src/ai/staff-quote-run.js', () => ({
+vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => ({
+  staffQuoteRoomAlternatives: (await importOriginal<typeof import('../src/ai/staff-quote-run.js')>()).staffQuoteRoomAlternatives,
   runStaffQuote: jobMocks.runStaffQuote,
   staffQuoteFailureCode: (error: unknown) => {
     const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;

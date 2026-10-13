@@ -62,7 +62,7 @@ describe('staffQuoteFailureMessage', () => {
         dinnerRequested: true,
       }),
     ).toBe(
-      'HMS has no rate for this meal plan under BAR. For dinner, quote Bed & Breakfast and add a dinner allowance (button below), or use the Government rate if the guest is entitled.',
+      'HMS has no rate for this meal plan under BAR. Nava retries dinner requests on Bed & Breakfast with a separate dinner add-on. If no B&B rate is available, choose an available room option below or check the Government rate only if the guest is entitled.',
     );
     expect(
       staffQuoteFailureMessage(new Error('native_quote_no_matching_rate'), {
@@ -70,7 +70,7 @@ describe('staffQuoteFailureMessage', () => {
         dinnerRequested: true,
       }),
     ).toBe(
-      'HMS has no rate for this meal plan under Government. For dinner, quote Bed & Breakfast and add a dinner allowance (button below), or use the Government rate if the guest is entitled.',
+      'HMS has no rate for this meal plan under Government. Nava retries dinner requests on Bed & Breakfast with a separate dinner add-on. If no B&B rate is available, choose an available room option below or check the Government rate only if the guest is entitled.',
     );
   });
 
