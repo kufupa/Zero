@@ -1,4 +1,5 @@
 import { triggerBlobDownload } from '../attachment-access';
+import { withContactLines } from './document-contact';
 import {
   canCreatePdf,
   combinedStayRuns,
@@ -171,6 +172,8 @@ export async function bindQualifiedStaffWorkbook(args: {
  */
 export async function downloadStaffQuoteWorkbook(args: {
   session: QuoteSession;
+  /** The email's contact; fills blank attention, email and telephone lines. */
+  contact?: Parameters<typeof withContactLines>[1];
   mutate?: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffWorkbookResult>;
   notify?: (message: string) => void;
   download?: (blob: Blob, fileName: string) => void;
@@ -182,7 +185,7 @@ export async function downloadStaffQuoteWorkbook(args: {
   }
   const bound = await bindQualifiedStaffWorkbook({
     mutate: args.mutate,
-    input: request.input,
+    input: withContactLines(request.input, args.contact),
     expectedTotalMinor: request.expectedTotalMinor,
     download: args.download,
   });
