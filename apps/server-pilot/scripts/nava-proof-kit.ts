@@ -71,7 +71,7 @@ export function stayKeyOfRatesInput(input: unknown): string | null {
  */
 export async function openProofPage(
   config: RunConfig,
-  classify: (url: string, postData: string | null) => GuardDecision,
+  classify: (url: string, postData: string | null) => GuardDecision | Promise<GuardDecision>,
 ): Promise<ProofPage> {
   const host = new URL(config.baseUrl).hostname;
   const browser = await chromium.launch({
@@ -90,7 +90,7 @@ export async function openProofPage(
     });
     await context.route('**/api/trpc/**', async (route: Route) => {
       const request: Request = route.request();
-      const decision = classify(request.url(), request.postData());
+      const decision = await classify(request.url(), request.postData());
       if (decision.allowed) {
         await route.continue();
         return;

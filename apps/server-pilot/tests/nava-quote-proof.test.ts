@@ -8,8 +8,11 @@ import {
   isNamedRefusal,
   namedRateRefusal,
   newQuoteGuardState,
+  partyLookupAction,
   partyLookupsReady,
   QUOTE_SELECTORS,
+  rateKeysForDateRanges,
+  rateSearchAction,
   rateWaitBudget,
   quoteThreadFailure,
   quoteProofPass,
@@ -191,8 +194,11 @@ describe('quote proof interaction helpers', () => {
     expect(
       partyLookupsReady({
         pending: false,
+        readBackPending: false,
         autoLookupExpected: true,
+        autoLookupStarted: false,
         autoLookupComplete: false,
+        autoStartGraceElapsed: false,
         indexLookupExpected: true,
         indexRequestStarted: false,
         indexResponseComplete: false,
@@ -202,8 +208,11 @@ describe('quote proof interaction helpers', () => {
     expect(
       partyLookupsReady({
         pending: false,
+        readBackPending: false,
         autoLookupExpected: true,
+        autoLookupStarted: true,
         autoLookupComplete: true,
+        autoStartGraceElapsed: true,
         indexLookupExpected: true,
         indexRequestStarted: true,
         indexResponseComplete: false,
@@ -213,14 +222,85 @@ describe('quote proof interaction helpers', () => {
     expect(
       partyLookupsReady({
         pending: false,
+        readBackPending: false,
         autoLookupExpected: true,
+        autoLookupStarted: true,
         autoLookupComplete: true,
+        autoStartGraceElapsed: true,
         indexLookupExpected: true,
         indexRequestStarted: false,
         indexResponseComplete: false,
         indexStartGraceElapsed: true,
       }),
     ).toBe(true);
+
+    expect(
+      partyLookupsReady({
+        pending: false,
+        readBackPending: false,
+        autoLookupExpected: true,
+        autoLookupStarted: false,
+        autoLookupComplete: false,
+        autoStartGraceElapsed: true,
+        indexLookupExpected: true,
+        indexRequestStarted: false,
+        indexResponseComplete: false,
+        indexStartGraceElapsed: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      partyLookupsReady({
+        pending: false,
+        readBackPending: true,
+        autoLookupExpected: true,
+        autoLookupComplete: false,
+        autoLookupStarted: false,
+        autoStartGraceElapsed: true,
+        indexLookupExpected: false,
+        indexRequestStarted: false,
+        indexResponseComplete: false,
+        indexStartGraceElapsed: true,
+      }),
+    ).toBe(false);
+
+    expect(
+      partyLookupsReady({
+        pending: false,
+        readBackPending: false,
+        autoLookupExpected: true,
+        autoLookupComplete: false,
+        autoLookupStarted: true,
+        autoStartGraceElapsed: true,
+        indexLookupExpected: false,
+        indexRequestStarted: false,
+        indexResponseComplete: false,
+        indexStartGraceElapsed: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('uses Confirm when offered, otherwise searches once after empty read-back settles', () => {
+    const idle = {
+      query: 'Centurion Travel',
+      selected: false,
+      pending: false,
+      readBackPending: false,
+      hasConfirm: false,
+      hasResults: false,
+      searchStarted: false,
+      searchComplete: false,
+      attempted: false,
+      findEnabled: true,
+    };
+
+    expect(partyLookupAction({ ...idle, readBackPending: true, startGraceElapsed: true })).toBe('wait');
+    expect(partyLookupAction({ ...idle, startGraceElapsed: false })).toBe('wait');
+    expect(partyLookupAction({ ...idle, startGraceElapsed: true })).toBe('search');
+    expect(partyLookupAction({ ...idle, hasConfirm: true, startGraceElapsed: true })).toBe('ready');
+    expect(partyLookupAction({ ...idle, searchStarted: true, startGraceElapsed: true })).toBe('wait');
+    expect(partyLookupAction({ ...idle, searchComplete: true, startGraceElapsed: true })).toBe('ready');
+    expect(partyLookupAction({ ...idle, attempted: true, startGraceElapsed: true })).toBe('ready');
   });
 
   it('caps each rate wait by the shared deadline', () => {
@@ -277,6 +357,37 @@ describe('quote proof request guard', () => {
     expect(classifyQuoteRequest(tRPC('paneStayLookup.queueParty'), null, state).allowed).toBe(false);
     expect(classifyQuoteRequest(tRPC('paneStayLookup.queueFind'), null, state).allowed).toBe(false);
     expect(classifyQuoteRequest(tRPC('workstation.prepareBookingDraft'), null, state).allowed).toBe(false);
+  });
+
+  it('allows the queue-off Find fallback once per field without counting it as a second party search', () => {
+    const state = newQuoteGuardState();
+    const companyJob = batch({ threadId: 'thread-a', name: 'Centurion Travel', partyKind: 'company' });
+    const companyInline = batch({ name: 'Centurion Travel', kind: 'company' });
+    const agencyJob = batch({ threadId: 'thread-a', name: 'North Star', partyKind: 'agency' });
+    const agencyInline = batch({ name: 'North Star', kind: 'agency' });
+
+    expect(classifyQuoteRequest(tRPC('paneStayLookup.queueParty'), companyJob, state).allowed).toBe(true);
+    expect(classifyQuoteRequest(tRPC('panePartyLookup.findParty'), companyInline, state).allowed).toBe(true);
+    expect(classifyQuoteRequest(tRPC('paneStayLookup.queueParty'), agencyJob, state).allowed).toBe(true);
+    expect(classifyQuoteRequest(tRPC('panePartyLookup.findParty'), agencyInline, state).allowed).toBe(true);
+    expect(classifyQuoteRequest(tRPC('paneStayLookup.queueParty'), companyJob, state).allowed).toBe(false);
+    expect(state.partyLookups).toBe(2);
+  });
+
+  it('builds the rate allowlist from complete shown dates and observes already-started reads', () => {
+    const [key] = rateKeysForDateRanges([
+      { arrival: '2026-11-02', departure: '2026-11-04' },
+      { arrival: '2026-11-02', departure: '2026-11-04' },
+      { arrival: '2026-11-05', departure: null },
+    ]);
+
+    expect([...rateKeysForDateRanges([
+      { arrival: '2026-11-02', departure: '2026-11-04' },
+      { arrival: '2026-11-02', departure: '2026-11-04' },
+      { arrival: '2026-11-05', departure: null },
+    ])]).toEqual(['2026-11-02:2026-11-04']);
+    expect(rateSearchAction(key!, [key!])).toBe('observe');
+    expect(rateSearchAction(key!, [])).toBe('search');
   });
 
   it('only allows pane field events when NAVA_PROOF_ALLOW_EDITS is enabled', () => {
