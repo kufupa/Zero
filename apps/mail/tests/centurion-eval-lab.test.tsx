@@ -10,7 +10,7 @@ vi.mock('virtua', async () => {
   const { createElement, forwardRef } = await import('react');
   return {
     VList: forwardRef(
-      (props: { count: number; children: (index: number) => unknown }, _ref) =>
+      (props: { count: number; children: (index: number) => import('react').ReactNode }, _ref) =>
         createElement(
           'div',
           { 'data-testid': 'lab-vlist' },

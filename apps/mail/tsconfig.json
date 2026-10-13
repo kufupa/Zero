@@ -19,6 +19,7 @@
     "hooks/use-notes.tsx",
     "components/ui/prompts-dialog.tsx",
     "providers/voice-provider.tsx",
-    "components/create/template-button.tsx"
+    "components/create/template-button.tsx",
+    "components/ai-toggle-button.tsx"
   ]
 }

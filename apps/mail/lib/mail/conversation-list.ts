@@ -16,7 +16,9 @@ export type LinkedThreadStub = {
   latestMessageAt?: string | Date | null;
 };
 
-export type PrimaryConversationListRow = ConversationAwareListThread & {
+export type PrimaryConversationListRow<
+  T extends ConversationAwareListThread = ConversationAwareListThread,
+> = T & {
   linkedStubs: LinkedThreadStub[];
 };
 
@@ -29,11 +31,11 @@ function stubLabel(thread: ConversationAwareListThread | undefined): string {
 }
 
 /** Hide non-primary linked threads; attach stub metadata from the full page set. */
-export function buildConversationPrimaryListRows(
-  threads: readonly ConversationAwareListThread[],
-): PrimaryConversationListRow[] {
+export function buildConversationPrimaryListRows<T extends ConversationAwareListThread>(
+  threads: readonly T[],
+): PrimaryConversationListRow<T>[] {
   const byId = new Map(threads.map((thread) => [thread.id, thread]));
-  const primaryRows: PrimaryConversationListRow[] = [];
+  const primaryRows: PrimaryConversationListRow<T>[] = [];
 
   for (const thread of threads) {
     const primaryId = thread.primaryThreadId ?? thread.id;

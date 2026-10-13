@@ -90,7 +90,7 @@ export function constructOutlookReplyHtml(
     const opts = input as OutlookReplyHeaderOptions;
     formattedMessage = opts.formattedMessage;
     originalDate = opts.originalDate;
-    originalSender = opts.originalSender;
+    originalSender = opts.originalSender ?? undefined;
     toRecipients = opts.toRecipients || [];
     ccRecipients = opts.ccRecipients || [];
     subject = opts.subject || '';

@@ -42,6 +42,15 @@ This is a pnpm workspace monorepo with the following structure:
 - `pnpm db:migrate` - Apply database migrations
 - `pnpm db:studio` - Open Drizzle Studio
 
+### Typecheck (shared VPS memory budget)
+- Typecheck only the packages you changed:
+  - `apps/server-pilot`: `pnpm --dir apps/server-pilot exec tsc --noEmit -p .` (~10 s, ~0.7 GB)
+  - `apps/mail`: `pnpm --dir apps/mail run typecheck` (~90 s, ~2.6 GB). It generates Paraglide and route types and raises the Node heap. Bare `tsc -p apps/mail` misses generated types and aborts with SIGABRT at Node's default ~2 GB heap.
+- `apps/mail` also needs a typecheck when you change server-pilot code it imports types from (`@zero/server/trpc`, `driver/types`, `schemas`, `auth`, `src/trpc/wire-compat.ts`).
+- `apps/mail` typechecks with 0 errors on `main`; do not run a baseline first. A failure is yours to fix or report.
+- Parallel workers: run the `apps/mail` typecheck only in workers that touched `apps/mail` or those shared types; orchestrators run it once after merging. SIGABRT/SIGKILL from `tsc` means memory pressure, not a code error.
+- Iterate with targeted Vitest files (`pnpm --dir apps/server-pilot exec vitest run tests/<file>.test.ts`), not whole suites.
+
 ### Testing & Evaluation
 - `pnpm test:ai` - Run AI tests
 - `pnpm eval` - Run evaluation suite

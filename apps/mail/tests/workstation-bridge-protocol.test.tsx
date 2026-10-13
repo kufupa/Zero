@@ -449,7 +449,7 @@ function BridgeProbe() {
 
 const listeners = new Map<string, Array<(event: { data: unknown }) => void>>();
 
-type TestBridgeRequest = { requestId: string; action: string };
+type TestBridgeRequest = { requestId: string; action: string; payload?: unknown };
 
 async function waitForBridgeRequest(
   action: string,
