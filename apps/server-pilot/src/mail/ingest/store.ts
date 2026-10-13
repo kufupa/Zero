@@ -68,7 +68,10 @@ import { refreshThreadSearchVector } from '../search/search-vector.js';
 import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import { and, asc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import { getSenderPreference } from '../sender-preference.js';
-import { admitLiveMessage } from './live-admission.js';
+import {
+  admitLiveMessage,
+  removeDeterministicAutomatedChannelCategory,
+} from './live-admission.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
@@ -776,6 +779,12 @@ export async function persistInboundMessage(
         },
       });
     } else if (!ambiguousSource && !opts.skipAiEnqueue) {
+      if (!isHotelSent && mailSourceDecision?.kind === 'direct') {
+        await removeDeterministicAutomatedChannelCategory(transactionDb, {
+          transportId: transport.id,
+          threadId,
+        });
+      }
       // INBOUND_TRIAGE_CLASSIFIER=off retires the inbound classifier run. Sent copies keep their baseline run.
       if (
         isHotelSent ||

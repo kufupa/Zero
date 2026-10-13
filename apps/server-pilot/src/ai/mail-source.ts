@@ -177,6 +177,9 @@ const INTERNAL_FORWARD_DOMAINS = ['legacyhotels.co.za'] as const;
 const FORWARD_SUBJECT_PREFIX = /^(?:(?:fw|fwd|forwarded)\s*:\s*)+/i;
 const FORWARDED_HEADER_LINE = /^\s*(?:>\s*)*(?:from|sender)\s*:\s*(.*?)\s*$/i;
 const EMAIL_ADDRESS = /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z0-9-]{2,63}/i;
+const HTML_TAG = /<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*)?\s*\/?>/i;
+const HTML_BLOCK_TAG = /<\/?(?:address|article|aside|blockquote|body|br|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|html|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)(?:\s+[^<>]*)?\s*\/?>/gi;
+const HTML_ENTITY = /&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;/gi;
 const MAX_FORWARD_HEADER_CHARS = 5_000;
 
 function extractDomain(rawAddress: string | null | undefined): string {
@@ -209,14 +212,39 @@ function matchedSource(
   return { kind: rule.kind, source: rule.source, reason };
 }
 
+function plainTextBody(bodyText: string): string {
+  if (!HTML_TAG.test(bodyText)) return bodyText;
+  return bodyText
+    .replace(HTML_BLOCK_TAG, '\n')
+    .replace(/<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*)?\s*\/?>/gi, '')
+    .replace(HTML_ENTITY, (entity) => {
+      switch (entity.toLowerCase()) {
+        case '&nbsp;':
+          return ' ';
+        case '&amp;':
+          return '&';
+        case '&lt;':
+          return '<';
+        case '&gt;':
+          return '>';
+        case '&quot;':
+          return '"';
+        case '&#39;':
+          return "'";
+        default:
+          return entity;
+      }
+    });
+}
+
 function originalForwardSender(bodyText: string): { rule: MailSourceRule; domain: string } | null {
   const firstPart = bodyText.slice(0, MAX_FORWARD_HEADER_CHARS);
   for (const line of firstPart.split(/\r?\n/)) {
     const header = FORWARDED_HEADER_LINE.exec(line);
-    if (!header?.[1]) continue;
+    if (!header) continue;
     const domain = extractDomain(header[1]);
     const match = ruleForDomain(domain);
-    if (match) return { rule: match.rule, domain: match.registeredDomain };
+    return match ? { rule: match.rule, domain: match.registeredDomain } : null;
   }
   return null;
 }
@@ -243,7 +271,7 @@ export function classifyMailSource(input: {
   }
 
   if (isInternalForwardSender(senderDomain)) {
-    const forwardedSender = originalForwardSender(input.bodyText ?? '');
+    const forwardedSender = originalForwardSender(plainTextBody(input.bodyText ?? ''));
     if (forwardedSender) {
       return matchedSource(forwardedSender.rule, `forwarded_sender:${forwardedSender.domain}`);
     }

@@ -218,6 +218,48 @@ describe('classifyMailSource', () => {
       reason: 'no_matching_sender_or_forward_header',
     });
   });
+
+  it('uses only the first forwarded sender header, not an older quoted channel notice', () => {
+    expect(
+      classifyMailSource({
+        fromAddress: 'staff@legacyhotels.co.za',
+        subject: 'FW: Guest amendment',
+        bodyText: [
+          'Please amend the guest dates.',
+          '',
+          'From: guest@gmail.com',
+          'Date: Mon, 12 Oct 2026 10:00:00 +0000',
+          'Subject: Request to amend my stay',
+          '',
+          '---------- Forwarded message ----------',
+          '> From: Booking.com <noreply@messages.booking.com>',
+          '> Subject: Booking confirmation',
+        ].join('\n'),
+      }),
+    ).toEqual({
+      kind: 'direct',
+      source: null,
+      reason: 'no_matching_sender_or_forward_header',
+    });
+  });
+
+  it('reads the first forwarded sender from an HTML-only body', () => {
+    expect(
+      classifyMailSource({
+        fromAddress: 'staff@legacyhotels.co.za',
+        subject: 'FW: Guest message',
+        bodyText: [
+          '<div>Forwarded message</div>',
+          '<div>From: SynXis&nbsp;&amp; &quot;Reservations&quot; &#39;desk&#39; ',
+          '&lt;noreply@synxis.com&gt;</div>',
+        ].join(''),
+      }),
+    ).toEqual({
+      kind: 'channel',
+      source: 'SynXis',
+      reason: 'forwarded_sender:synxis.com',
+    });
+  });
 });
 
 describe('mailSourceTriageOutput', () => {
