@@ -5730,6 +5730,18 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         });
         expect(validResult.status).toBe(0);
 
+        // The pane queue flag and the Needs-you cutoff are the only non-secret pane switches webmail needs.
+        writeFileSync(
+          commonEnv,
+          `${valid}HMS_JOB_QUEUE='on'\nNEEDS_YOU_SINCE='2026-10-12T15:00:00Z'\n`,
+          'utf8',
+        );
+        const flagsResult = spawnSync(process.execPath, ['-', commonEnv, 'common'], {
+          input: validator!,
+          encoding: 'utf8',
+        });
+        expect(flagsResult.status).toBe(0);
+
         for (const [label, replacement] of [
           ['blank DATABASE_URL', "DATABASE_URL=' \t '"],
           ['blank AWS_REGION', "AWS_REGION='\t'"],
