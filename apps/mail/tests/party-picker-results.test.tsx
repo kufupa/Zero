@@ -47,6 +47,35 @@ function prefetchedPartyView(): HmsJobView {
   };
 }
 
+function v2PartyView(matchStatus: 'bound' | 'needs_pick', requestName = 'ABC Travel'): HmsJobView {
+  const boundParty = matchStatus === 'bound' ? ABC_TRAVEL : null;
+  return {
+    runId: `party-v2-${matchStatus}`,
+    request: { kind: 'party', name: requestName, matchVersion: 2 },
+    prefetch: true,
+    status: 'done',
+    position: null,
+    attempts: 1,
+    failureClass: null,
+    asOf: '2026-10-13T12:00:00.000Z',
+    createdAt: '2026-10-13T11:59:00.000Z',
+    result: {
+      kind: 'party',
+      outcome: matchStatus === 'bound' ? 'resolved' : 'ambiguous',
+      results: [ABC_TRAVEL, ABCD_TRAVEL, ABC_TRAVEL_AGENCY],
+      best: boundParty,
+      truncated: false,
+      searchedFor: 'ABC Travel',
+      matchVersion: 2,
+      matchStatus,
+      boundParty,
+      suggestions: [ABC_TRAVEL, ABCD_TRAVEL, ABC_TRAVEL_AGENCY],
+      reason: matchStatus === 'bound' ? 'Unique exact name.' : 'Two rows have an equal claim.',
+      searchesTried: [{ term: 'ABC Travel', candidateName: 'ABC Travel', kind: 'company', outcome: 'ambiguous', returned: 3 }],
+    },
+  };
+}
+
 
 function listed(...results: Array<typeof ABC_TRAVEL>): PartyFindReply {
   return { outcome: 'ambiguous', results, truncated: false };
@@ -329,6 +358,77 @@ describe('PartyPicker prefetched party jobs', () => {
       await screen.findByText("Couldn't reach HMS. Try again in a minute."),
     ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Confirm ABCD Travel' })).toBeNull();
+  });
+
+  it('auto-binds a V2 high-precision job result and does not ask for confirmation', async () => {
+    const onPick = vi.fn();
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(),
+      status: vi.fn(async () => v2PartyView('bound')),
+    };
+    render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-1"
+        onPick={onPick}
+        onClear={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL));
+    expect(screen.queryByRole('button', { name: 'Confirm ABC Travel' })).toBeNull();
+  });
+
+  it('shows stored V2 suggestions with Pick the company/agency when it cannot bind', async () => {
+    const onPick = vi.fn();
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(),
+      status: vi.fn(async () => v2PartyView('needs_pick')),
+    };
+    render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-1"
+        onPick={onPick}
+        onClear={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText('Pick the company/agency')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'ABCD Travel (#4412)' }));
+    expect(onPick).toHaveBeenCalledWith(ABCD_TRAVEL);
+    expect(screen.getByRole('button', { name: 'Find in HMS' })).toBeTruthy();
+  });
+
+  it('reads a V2 prefetch by thread and kind even when its primary search name differs from this field', async () => {
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(),
+      jobQueueEnabled: vi.fn(async () => true),
+      status: vi.fn(async () => v2PartyView('needs_pick', 'Amicis Health (Pty) Ltd')),
+    };
+    render(
+      <PartyPicker
+        autoLookup
+        name="Voerkraal Restaurant"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-1"
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+      />,
+    );
+    await screen.findByText('Pick the company/agency');
+    await waitFor(() =>
+      expect(jobTransport.status).toHaveBeenCalledWith({ kind: 'party', partyKind: 'company' }),
+    );
   });
 });
 

@@ -157,13 +157,21 @@ function sameJobName(left: string, right: string): boolean {
   return normalize(left) === normalize(right);
 }
 
+function partyJobIsV2(view: HmsJobView | null): boolean {
+  return Boolean(
+    view?.request?.kind === 'party' &&
+      (view.request.matchVersion === 2 || view.result?.matchVersion === 2),
+  );
+}
+
 /** The stored read receipt is the same party-search reply the inline route returns. */
 function partyReplyFromJob(
   view: HmsJobView | null,
   name: string,
   kind?: StaffQuoteParty['kind'],
 ): PartyFindReply | null {
-  if (!view || view.request?.kind !== 'party' || (name && !sameJobName(view.request.name, name)))
+  const v2 = partyJobIsV2(view);
+  if (!view || view.request?.kind !== 'party' || (!v2 && name && !sameJobName(view.request.name, name)))
     return null;
   if (kind && view.request.partyKind !== kind && !(view.prefetch && !view.request.partyKind)) return null;
   if (view.status === 'failed' || view.status === 'retrying') {
@@ -310,6 +318,8 @@ export function PartyPicker({
   const indexToken = useRef(0);
   // Each manual search takes the next number, and only the latest number may write a reply. A name change takes one too.
   const latest = useRef(0);
+  // A stored high-confidence V2 binding is applied once per run. Clearing/changing it must not silently reapply it.
+  const appliedV2Bindings = useRef(new Set<string>());
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   // A field that already holds its pick asks the list and HMS nothing more.
   const pickedHere = Boolean(kind ? parties[kind] : parties.company || parties.agency);
@@ -340,7 +350,7 @@ export function PartyPicker({
     jobTransport && !pickedHere && (query.length >= MANUAL_LOOKUP_MIN_CHARS || kind)
       ? {
           kind: 'party' as const,
-          ...(query ? { name: query } : {}),
+          ...(query && !(autoLookup && queueMode === 'on') ? { name: query } : {}),
           ...(kind ? { partyKind: kind } : {}),
         }
       : null;
@@ -352,9 +362,10 @@ export function PartyPicker({
     retryOptions: PARTY_RETRY_OPTIONS,
   });
   const viewRequest = partyJob.view?.request;
+  const v2Readback = partyJobIsV2(partyJob.view);
   const currentJobView =
     viewRequest?.kind === 'party' &&
-    (!query || sameJobName(viewRequest.name, query)) &&
+    (!query || v2Readback || sameJobName(viewRequest.name, query)) &&
     (!kind || viewRequest.partyKind === kind || (partyJob.view?.prefetch && !viewRequest.partyKind))
       ? partyJob.view
       : null;
@@ -452,6 +463,38 @@ export function PartyPicker({
   // With a kind, only that kind is in scope. Without one, every kind is.
   const inScope = (party: { kind: StaffQuoteParty['kind'] }) => !kind || party.kind === kind;
   const indexResults = (indexMatches?.results ?? []).filter(inScope);
+  const v2PartyJob = Boolean(
+    currentJobView?.prefetch && currentJobView.status === 'done' && partyJobIsV2(currentJobView),
+  );
+  const v2Result = v2PartyJob ? currentJobView?.result : null;
+  const v2MatchStatus = v2Result?.matchStatus === 'bound' || v2Result?.matchStatus === 'needs_pick'
+    ? v2Result.matchStatus
+    : null;
+  const v2BoundParty = isPartyCandidate(v2Result?.boundParty) ? v2Result.boundParty : null;
+  const v2Suggestions = uniqueCandidates(partyCandidatesFrom(v2Result?.suggestions) ?? [])
+    .filter(inScope)
+    .slice(0, 3);
+  const v2Reason = typeof v2Result?.reason === 'string' ? v2Result.reason : '';
+  const v2BoundForField =
+    !pickedHere && v2MatchStatus === 'bound' && v2BoundParty && inScope(v2BoundParty)
+      ? v2BoundParty
+      : null;
+  const v2NeedsPick = Boolean(
+    v2PartyJob && !pickedHere &&
+      (v2MatchStatus === 'needs_pick' || (v2MatchStatus === 'bound' && v2BoundParty && kind && !inScope(v2BoundParty))),
+  );
+
+  useEffect(() => {
+    if (!v2BoundForField || !currentJobView?.runId || pickedHere) return;
+    const key = `${currentJobView.runId}:${v2BoundForField.kind}:${v2BoundForField.nativeId}`;
+    if (appliedV2Bindings.current.has(key)) return;
+    appliedV2Bindings.current.add(key);
+    onPick({
+      kind: v2BoundForField.kind,
+      nativeId: v2BoundForField.nativeId,
+      name: v2BoundForField.name,
+    });
+  }, [currentJobView?.runId, onPick, pickedHere, v2BoundForField]);
 
   const picked: StaffQuoteParty[] = [];
   for (const party of [parties.company, parties.agency])
@@ -473,7 +516,7 @@ export function PartyPicker({
     (row) => !autoBest || row.kind !== autoBest.kind || row.nativeId !== autoBest.nativeId,
   );
   const prefetchedBest =
-    !pickedHere && currentJobView?.prefetch && jobReply?.best && inScope(jobReply.best)
+    !v2PartyJob && !pickedHere && currentJobView?.prefetch && jobReply?.best && inScope(jobReply.best)
       ? jobReply.best
       : null;
   const otherJobResults = jobResults.filter(
@@ -592,7 +635,19 @@ export function PartyPicker({
           queueFailureMessage={partyNoCandidateNote('execution_failure', kind, query)}
         />
       ) : null}
+      {v2NeedsPick ? (
+        <div className="flex flex-col gap-1" aria-label="Party match needs a pick">
+          {v2Suggestions.length ? (
+            <ResultChips label="Pick the company/agency" rows={v2Suggestions} onPick={pickRow} />
+          ) : (
+            <p className="text-[10.5px] font-semibold text-[#334155]">Pick the company/agency</p>
+          )}
+          {v2Reason ? <p role="status">{v2Reason}</p> : null}
+          <HmsAsOf asOf={currentJobView?.asOf ?? null} />
+        </div>
+      ) : null}
       {jobTransport &&
+      !v2PartyJob &&
       jobReply &&
       !jobReply.results.length &&
       currentJobView?.status !== 'failed' ? (
@@ -668,7 +723,7 @@ export function PartyPicker({
       ) : null}
       {shown.status === 'busy' ? <p role="status">{PARTY_PICKER_BUSY}</p> : null}
       {shown.status === 'none' ? <p role="status">{shown.note}</p> : null}
-      {jobTransport && currentJobView?.status === 'done' && jobResults.length && !prefetchedBest ? (
+      {jobTransport && !v2PartyJob && currentJobView?.status === 'done' && jobResults.length && !prefetchedBest ? (
         <>
           <ul className="flex flex-col gap-1" aria-label="Companies and agencies found in HMS">
             {jobResults.map((candidate) => (

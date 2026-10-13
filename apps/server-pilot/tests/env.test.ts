@@ -189,6 +189,13 @@ describe('env', () => {
     expect(parseEnv(baseEnv()).WORKFLOW_TRIAGE_V6).toBe(false);
   });
 
+  it('keeps PARTY_MATCH_V2 off by default and parses its explicit boolean gate', () => {
+    expect(parseEnv(baseEnv()).PARTY_MATCH_V2).toBe(false);
+    expect(parseEnv(baseEnv({ PARTY_MATCH_V2: 'true' })).PARTY_MATCH_V2).toBe(true);
+    expect(parseEnv(baseEnv({ PARTY_MATCH_V2: '0' })).PARTY_MATCH_V2).toBe(false);
+    expect(() => parseEnv(baseEnv({ PARTY_MATCH_V2: 'on' }))).toThrow(/PARTY_MATCH_V2/);
+  });
+
   it.each(['1', 'true', '0', 'false'])('parses durable workflow triage value %s', (value) => {
     expect(parseEnv(baseEnv({ WORKFLOW_TRIAGE_V6: value })).WORKFLOW_TRIAGE_V6).toBe(
       value === '1' || value === 'true',

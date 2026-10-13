@@ -220,7 +220,7 @@ describe('QUOTE_WORKFLOW_PROMPT_VERSION', () => {
       .update(K2_MAPPING)
       .update('\n')
       .update(JSON.stringify(zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' })))
-      .update('\nattachment-review/2')
+      .update('\nattachment-review/2\nparty-not-guest/2')
       .digest('hex')
       .slice(0, 16);
     const promptOnly = createHash('sha256')
@@ -891,6 +891,15 @@ describe('partyNotGuest', () => {
     expect(partyNotGuest({ groups: [{ ...group, guestNames: ['Karen Vickers'] }], party: company })).toEqual(company);
     const person = { kind: 'private' as const, name: 'Ann Example', reference: null };
     expect(partyNotGuest({ groups: [group], party: person })).toEqual(person);
+  });
+
+  it('rejects an organisation candidate that embeds a guest full name', () => {
+    expect(
+      partyNotGuest({
+        groups: [{ ...group, guestNames: ['Karen Vickers'] }],
+        party: { kind: 'organization', name: 'Karen Vickers Travel', reference: null },
+      }),
+    ).toMatchObject({ kind: null, name: null });
   });
 });
 

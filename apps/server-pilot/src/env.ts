@@ -124,6 +124,8 @@ export interface MailEnv {
   HMS_LANE_PAUSED: boolean;
   /** Confirmation-number prefetch of inbound mail into the hms lane. Defaults off. */
   HMS_PREFETCH_ENABLED: boolean;
+  /** New precision-first party search/pick on quote prefetch. Defaults off until live HMS validation. */
+  PARTY_MATCH_V2: boolean;
   /** Prefetch runs enqueued per transport in a rolling hour. */
   HMS_PREFETCH_PER_HOUR: number;
   /** Guest-name search prefetches enqueued per transport in a rolling hour. */
@@ -424,6 +426,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     HMS_READ_SERVICE_ENABLED: false,
     HMS_LANE_PAUSED: false,
     HMS_PREFETCH_ENABLED: false,
+    PARTY_MATCH_V2: false,
     HMS_PREFETCH_PER_HOUR: 30,
     HMS_GUEST_PREFETCH_PER_HOUR: 12,
     HMS_RUN_DEADLINE_MS: 150_000,
@@ -520,6 +523,7 @@ export function parseEnv(input: EnvInput): MailEnv {
   env.HMS_PREFETCH_ENABLED = input.HMS_PREFETCH_ENABLED
     ? toBool('HMS_PREFETCH_ENABLED', input.HMS_PREFETCH_ENABLED)
     : false;
+  env.PARTY_MATCH_V2 = input.PARTY_MATCH_V2 ? toBool('PARTY_MATCH_V2', input.PARTY_MATCH_V2) : false;
   env.HMS_PREFETCH_PER_HOUR = input.HMS_PREFETCH_PER_HOUR
     ? toInt('HMS_PREFETCH_PER_HOUR', input.HMS_PREFETCH_PER_HOUR)
     : 30;

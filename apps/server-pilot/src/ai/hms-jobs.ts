@@ -17,6 +17,7 @@ import { and, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { aiAgentRun } from '../db/schema/hitl.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
@@ -46,8 +47,21 @@ import {
   paneStayLookupLoaders,
   searchGuest,
 } from './pane-stay-lookup.js';
-import { findParty, type PanePartyKind } from './pane-party-lookup.js';
+import { findParty, type PanePartyFindResult, type PanePartyKind } from './pane-party-lookup.js';
 import { suggestPartiesFor } from './party-aliases.js';
+import { QUOTE_WORKFLOW_PROMPT_VERSION, quoteWorkflowLlmEnabled } from './quote-workflow-llm.js';
+import { resolveAdapter } from './quote-workflow-analyse-selection.js';
+import {
+  applyPartyBindRule,
+  buildPartyMatchCandidates,
+  partyMatchEmailContext,
+  PARTY_MATCH_V2_ROW_CAP,
+  PARTY_MATCH_V2_SEARCH_CAP,
+  pickPartyMatch,
+  planPartySearches,
+  type PartyMatchEmailContext,
+  type PartyMatchRow,
+} from './party-match-v2.js';
 import {
   PANE_RUN_ID_PATTERN,
   paneStayPropertyLock,
@@ -88,6 +102,11 @@ export function hmsJobQueueEnabled(env: NodeJS.Dict<string> = process.env): bool
 /** Availability probes for quote stays (U10). Off (the default) unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on. */
 export function availabilityPrefetchEnabled(env: NodeJS.Dict<string> = process.env): boolean {
   return env.HMS_AVAILABILITY_PREFETCH === 'on' && hmsJobQueueEnabled(env);
+}
+
+/** Default-off so the V2 prefetch cannot run until a deployment explicitly enables it. */
+export function partyMatchV2Enabled(env: NodeJS.Dict<string> = process.env): boolean {
+  return env.PARTY_MATCH_V2 === 'true' || env.PARTY_MATCH_V2 === '1';
 }
 
 const AVAILABILITY_PROBES_PER_HOUR_DEFAULT = 6;
@@ -139,6 +158,8 @@ export const hmsJobRequestSchema = z.discriminatedUnion('kind', [
       kind: z.literal('party'),
       name: z.string().min(1).max(256),
       partyKind: z.enum(['company', 'agency']).optional(),
+      /** Only inbound prefetch can opt into the experimental V2 worker path. */
+      matchVersion: z.literal(2).optional(),
     })
     .strict(),
   z
@@ -307,6 +328,19 @@ export function partyPrefetchIdempotencyKey(
   return `hms-job:prefetch-party:${transportId}:${digest}`;
 }
 
+/** V2 decisions use email-specific evidence, so they must never reuse another email's party pick. */
+export function partyPrefetchV2IdempotencyKey(
+  transportId: string,
+  messageId: string,
+  day: string,
+): string {
+  const digest = createHash('sha256')
+    .update(`${messageId}\n${day}`)
+    .digest('hex')
+    .slice(0, 24);
+  return `hms-job:prefetch-party-v2:${transportId}:${digest}`;
+}
+
 /** A quote's extracted agency wins; otherwise use the first unverified email hint.
  * Never infer a party id.
  */
@@ -324,6 +358,26 @@ export function selectPartyPrefetchRequest(input: {
   const suggestion = suggestPartiesFor({ sender: input.sender ?? '', body: input.body ?? '' })[0];
   if (!suggestion || !suggestion.name.trim() || suggestion.name.trim().length > 256) return null;
   return { kind: 'party', name: suggestion.name.trim() };
+}
+
+/** V2 keeps every useful extracted agency/client name; no HMS id is guessed during enqueue. */
+export function selectPartyMatchV2PrefetchRequest(input: {
+  kind: string | null;
+  payload: unknown;
+  sender: string | null;
+  subject?: string | null;
+  body: string | null;
+}): Extract<HmsJobRequest, { kind: 'party' }> | null {
+  if (input.kind !== 'quote') return null;
+  const candidates = buildPartyMatchCandidates({
+    payload: input.payload,
+    fromAddress: input.sender,
+    subject: input.subject,
+    body: input.body,
+  });
+  const first = planPartySearches(candidates)[0];
+  if (!first || !first.candidateName.trim() || first.candidateName.length > 256) return null;
+  return { kind: 'party', name: first.candidateName, matchVersion: 2 };
 }
 
 function prefetchConfirmations(
@@ -1622,12 +1676,20 @@ export async function prefetchPartyForExtraction(
     if (sentFrom.has(from)) return 0;
   }
 
-  const request = selectPartyPrefetchRequest({
-    kind: source.kind,
-    payload: source.payload,
-    sender: source.fromAddress,
-    body: source.textBody,
-  });
+  const request = env.PARTY_MATCH_V2
+    ? selectPartyMatchV2PrefetchRequest({
+        kind: source.kind,
+        payload: source.payload,
+        sender: source.fromAddress,
+        subject: source.subject,
+        body: source.textBody,
+      })
+    : selectPartyPrefetchRequest({
+        kind: source.kind,
+        payload: source.payload,
+        sender: source.fromAddress,
+        body: source.textBody,
+      });
   if (!request || env.HMS_PREFETCH_PER_HOUR <= 0) return 0;
   const queued = await enqueuePartyPrefetchWithinCap(
     db,
@@ -1639,11 +1701,18 @@ export async function prefetchPartyForExtraction(
       userId: null,
       request,
       priority: HMS_JOB_PRIORITY_PREFETCH,
-      idempotencyKey: partyPrefetchIdempotencyKey(
-        run.transportId,
-        request.name,
-        new Date().toISOString().slice(0, 10),
-      ),
+      idempotencyKey:
+        request.matchVersion === 2
+          ? partyPrefetchV2IdempotencyKey(
+              run.transportId,
+              run.triggerMessageId,
+              new Date().toISOString().slice(0, 10),
+            )
+          : partyPrefetchIdempotencyKey(
+              run.transportId,
+              request.name,
+              new Date().toISOString().slice(0, 10),
+            ),
     },
     env.HMS_PREFETCH_PER_HOUR,
   );
@@ -1657,6 +1726,224 @@ export function schedulePartyPrefetch(
   run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
 ): void {
   void prefetchPartyForExtraction(run).catch(() => undefined);
+}
+
+type PartyMatchV2JobResult = PanePartyFindResult & {
+  matchVersion: 2;
+  matchStatus: 'bound' | 'needs_pick';
+  boundParty: PartyMatchRow | null;
+  suggestions: PartyMatchRow[];
+  reason: string;
+  searchesTried: Array<{
+    term: string;
+    candidateName: string;
+    kind: PanePartyKind;
+    outcome: string;
+    returned: number;
+  }>;
+  confidence: 'high' | 'medium' | 'low';
+  pickSource: 'llm' | 'fallback';
+};
+
+function partyMatchV2NoMatch(reason: string): PartyMatchV2JobResult {
+  return {
+    outcome: 'no_match',
+    results: [],
+    truncated: false,
+    best: null,
+    searchedFor: null,
+    matchVersion: 2,
+    matchStatus: 'needs_pick',
+    boundParty: null,
+    suggestions: [],
+    reason,
+    searchesTried: [],
+    confidence: 'low',
+    pickSource: 'fallback',
+  };
+}
+
+/** Reads an already-recorded quote-workflow answer only; V2 does not invoke the quote extraction model a second time. */
+async function existingQuoteWorkflowParty(
+  db: DB,
+  transportId: string,
+  messageId: string,
+): Promise<unknown> {
+  const [run] = await db
+    .select({ output: aiAgentRun.output })
+    .from(aiAgentRun)
+    .where(
+      and(
+        eq(aiAgentRun.transportId, transportId),
+        eq(aiAgentRun.messageId, messageId),
+        eq(aiAgentRun.agent, 'luna'),
+        eq(aiAgentRun.promptVersion, QUOTE_WORKFLOW_PROMPT_VERSION),
+        eq(aiAgentRun.source, 'luna'),
+        // Cache-hit ledger rows store JSON null; read the original persisted Luna answer instead.
+        sql`${aiAgentRun.output} <> 'null'::jsonb`,
+        gt(aiAgentRun.retentionExpiresAt, new Date()),
+      ),
+    )
+    .orderBy(desc(aiAgentRun.createdAt))
+    .limit(1);
+  return run?.output ?? null;
+}
+
+/** Executes a V2 plan as bounded, single-term reads through the normal party runner and HMS job lock. */
+async function executePartyMatchV2(input: {
+  run: AiWorkflowRun;
+  db: DB;
+  signal?: AbortSignal;
+  deadlineAt: number;
+  acquisition: ReturnType<typeof acquisitionWithin>;
+}): Promise<PartyMatchV2JobResult | PanePartyFindResult> {
+  const [source] = await input.db
+    .select({
+      payload: mailExtraction.payload,
+      extractionStatus: mailExtraction.status,
+      extractionKind: mailExtraction.kind,
+      fromAddress: message.fromAddress,
+      subject: message.subject,
+      textBody: message.textBody,
+      direction: message.direction,
+      historyOnly: message.historyOnly,
+      threadHistoryOnly: mailThread.historyOnly,
+      spamAt: mailThread.spamAt,
+    })
+    .from(mailExtraction)
+    .innerJoin(message, eq(message.id, mailExtraction.messageId))
+    .innerJoin(mailThread, eq(mailThread.id, message.threadId))
+    .where(
+      and(
+        eq(mailExtraction.messageId, input.run.triggerMessageId),
+        eq(message.transportId, input.run.transportId),
+        eq(mailExtraction.status, 'succeeded'),
+        eq(mailExtraction.kind, 'quote'),
+      ),
+    )
+    .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
+    .limit(1);
+  if (
+    !source ||
+    source.extractionStatus !== 'succeeded' ||
+    source.extractionKind !== 'quote' ||
+    source.direction !== 'inbound' ||
+    source.historyOnly ||
+    source.threadHistoryOnly ||
+    source.spamAt
+  ) {
+    return partyMatchV2NoMatch('The source email is no longer eligible for party prefetch.');
+  }
+
+  const quoteLlmParty = await existingQuoteWorkflowParty(
+    input.db,
+    input.run.transportId,
+    input.run.triggerMessageId,
+  );
+  const emailInput = {
+    payload: source.payload,
+    fromAddress: source.fromAddress,
+    subject: source.subject,
+    body: source.textBody,
+    quoteLlmParty,
+  };
+  const candidates = buildPartyMatchCandidates(emailInput);
+  const context: PartyMatchEmailContext = partyMatchEmailContext(emailInput);
+  const plan = planPartySearches(candidates).slice(0, PARTY_MATCH_V2_SEARCH_CAP);
+  const searchesTried: PartyMatchV2JobResult['searchesTried'] = [];
+  const rowsById = new Map<string, PartyMatchRow>();
+  let truncated = false;
+  let failure: PanePartyFindResult | null = null;
+
+  for (const search of plan) {
+    const result = await findParty(
+      { name: search.term, kind: search.kind },
+      { acquisition: input.acquisition, exactTerm: true, resultCap: PARTY_MATCH_V2_ROW_CAP },
+    );
+    searchesTried.push({
+      term: search.term,
+      candidateName: search.candidateName,
+      kind: search.kind,
+      outcome: result.outcome,
+      returned: result.results.length,
+    });
+    truncated ||= result.truncated;
+    for (const row of result.results) rowsById.set(`${row.kind}:${row.nativeId}`, row);
+    if (!['resolved', 'ambiguous', 'no_match'].includes(result.outcome)) {
+      failure = result;
+      break;
+    }
+  }
+  if (failure) {
+    const partialRows = [...rowsById.values()];
+    const failedRows = partialRows.slice(0, PARTY_MATCH_V2_ROW_CAP);
+    const failureTruncated =
+      truncated || failure.truncated || partialRows.length > PARTY_MATCH_V2_ROW_CAP;
+    const partialDecision = applyPartyBindRule({
+      candidates,
+      rows: failedRows,
+      pick: {
+        pickNativeId: null,
+        kind: null,
+        confidence: 'low',
+        reason: 'HMS could not complete every planned party search.',
+        alternatives: [],
+        source: 'fallback',
+      },
+      truncated: failureTruncated,
+    });
+    return {
+      ...failure,
+      results: failedRows,
+      truncated: failureTruncated,
+      best: null,
+      searchedFor: searchesTried.at(-1)?.term ?? failure.searchedFor,
+      matchVersion: 2,
+      matchStatus: 'needs_pick',
+      boundParty: null,
+      suggestions: partialDecision.suggestions,
+      reason: `HMS could not complete every planned party search (${failure.outcome}); choose a suggestion or use Find in HMS.`,
+      searchesTried,
+      confidence: 'low',
+      pickSource: 'fallback',
+    };
+  }
+
+  const unboundedRows = [...rowsById.values()];
+  if (unboundedRows.length > PARTY_MATCH_V2_ROW_CAP) truncated = true;
+  const rows = unboundedRows.slice(0, PARTY_MATCH_V2_ROW_CAP);
+  let adapter: ReturnType<typeof resolveAdapter>['adapter'] = null;
+  try {
+    const route = resolveAdapter(quoteWorkflowLlmEnabled(process.env), null);
+    if (route.enabled) adapter = route.adapter;
+  } catch {
+    // Invalid/unavailable route settings are a closed-model case; exact-name fallback remains safe.
+  }
+  const pick = await pickPartyMatch({
+    adapter: rows.length ? adapter : null,
+    candidates,
+    rows,
+    context,
+    signal: input.signal,
+    deadlineAt: input.deadlineAt,
+  });
+  const decision = applyPartyBindRule({ candidates, rows, pick, truncated });
+  const outcome = decision.matchStatus === 'bound' ? 'resolved' : rows.length ? 'ambiguous' : 'no_match';
+  return {
+    outcome,
+    results: rows,
+    truncated,
+    best: decision.boundParty,
+    searchedFor: searchesTried.at(-1)?.term ?? null,
+    matchVersion: 2,
+    matchStatus: decision.matchStatus,
+    boundParty: decision.boundParty,
+    suggestions: decision.suggestions,
+    reason: decision.reason,
+    searchesTried,
+    confidence: pick.confidence,
+    pickSource: pick.source,
+  };
 }
 
 async function requeueRun(
@@ -2030,7 +2317,18 @@ export async function executeHmsJob(input: {
               ),
             classifyFind,
           )
-        : request.kind === 'party'
+        : request.kind === 'party' &&
+            background &&
+            request.matchVersion === 2 &&
+            partyMatchV2Enabled()
+          ? await executePartyMatchV2({
+              run,
+              db,
+              signal: input.signal,
+              deadlineAt: fence.deadlineAt.getTime(),
+              acquisition: deps.acquisition,
+            })
+          : request.kind === 'party'
           ? await findParty(
               { name: request.name, ...(request.partyKind ? { kind: request.partyKind } : {}) },
               { acquisition: deps.acquisition },

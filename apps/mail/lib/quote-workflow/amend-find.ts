@@ -136,7 +136,7 @@ export type HmsJobKind = 'find' | 'search_guest' | 'party';
 export type HmsJobRequest =
   | { kind: 'find'; confirmation: string; arrival?: string }
   | { kind: 'search_guest'; lastName: string; arrival: string; departure?: string }
-  | { kind: 'party'; name: string; partyKind?: 'company' | 'agency' };
+  | { kind: 'party'; name: string; partyKind?: 'company' | 'agency'; matchVersion?: 2 };
 
 export type HmsJobQueueOptions = { autoStart?: true; retry?: true };
 
