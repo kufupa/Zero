@@ -1,17 +1,9 @@
+import { ROOM_TYPE_NAMES } from '../quote-workflow/room-types';
+
 export const QUOTE_MEALS = ['dinner_bb', 'bb', 'room_only'] as const;
 export type QuoteMeal = (typeof QUOTE_MEALS)[number];
 
-const CLASS_BY_CODE: Record<string, string> = {
-  DLXKNG: 'Deluxe',
-  DLXQN: 'Deluxe',
-  DLXTWN: 'Deluxe',
-  LUXKNG: 'Luxury',
-  SUITE: 'Suite',
-  SKNG: 'Suite',
-  EXKNG: 'Single',
-  STQN: 'Single',
-  STWN: 'Twin',
-};
+const CLASS_BY_CODE: Record<string, string> = { ...ROOM_TYPE_NAMES };
 
 const MEAL_LABEL: Record<QuoteMeal, string> = {
   dinner_bb: 'Dinner Bed & Breakfast',

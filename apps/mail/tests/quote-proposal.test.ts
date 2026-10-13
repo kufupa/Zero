@@ -12,12 +12,22 @@ describe('quote proposal helpers', () => {
   });
 
   it('maps HMS codes and quoted meals onto staff DESCRIPTION text', () => {
-    expect(proposalDescription('DLXKNG', 'bb')).toBe('Deluxe room Bed & Breakfast');
-    expect(proposalDescription('STQN', 'dinner_bb')).toBe('Single room Dinner Bed & Breakfast');
-    expect(proposalDescription('STWN', 'room_only')).toBe('Twin room Room Only');
-    expect(proposalDescription('LUXKNG', 'bb')).toBe('Luxury room Bed & Breakfast');
-    expect(proposalDescription('SUITE', 'bb')).toBe('Suite room Bed & Breakfast');
-    expect(proposalDescription('EXKNG', 'bb')).toBe('Single room Bed & Breakfast');
+    const rooms = [
+      ['STWN', 'Standard Twin'],
+      ['STQN', 'Standard Queen'],
+      ['SKNG', 'Standard King'],
+      ['EXKNG', 'Executive King'],
+      ['DLXTWN', 'Deluxe Twin'],
+      ['DLXQN', 'Deluxe Queen'],
+      ['DLXKNG', 'Deluxe King'],
+      ['LUXKNG', 'Luxury King'],
+      ['SUITE', 'Suite'],
+    ] as const;
+    for (const [code, name] of rooms) {
+      expect(proposalDescription(code, 'bb')).toBe(`${name} room Bed & Breakfast`);
+    }
+    expect(proposalDescription('STQN', 'dinner_bb')).toBe('Standard Queen room Dinner Bed & Breakfast');
+    expect(proposalDescription('STWN', 'room_only')).toBe('Standard Twin room Room Only');
     expect(occupancyRoomCode('single')).toBe('STQN');
     expect(occupancyRoomCode('twin')).toBe('STWN');
   });
@@ -29,13 +39,23 @@ describe('quote proposal helpers', () => {
 
   it('uses gold wrapper copy and hotel telephone', () => {
     expect(HOTEL_TELEPHONE).toBe('0126433600');
-    const html = quoteWrapperHtml('David');
-    expect(html).toContain('Good day David,');
-    expect(html).toContain('Thank you for Choosing The Centurion Hotel.');
+    const html = quoteWrapperHtml('David Miller', 'R Opperman');
+    expect(html).toContain('Good day David Miller,');
+    expect(html).toContain('Thank you for choosing The Centurion Hotel.');
     expect(html).toContain('Please see attached quotation.');
-    expect(html).toContain('no rooms are currently being held');
+    expect(html).toContain(
+      'Kindly sign and return the quotation to confirm. Please note that no rooms are currently being held.',
+    );
     expect(html).toContain('Kind regards,');
+    expect(html).toContain('R Opperman<br />Reservations<br />The Centurion Hotel');
     expect(html).not.toMatch(/ZAR/i);
     expect(html).not.toContain('<table');
+  });
+
+  it('uses a safe fallback greeting when the email has no sender name', () => {
+    const html = quoteWrapperHtml('', 'R Opperman');
+
+    expect(html).toContain('Good day Guest,');
+    expect(html).toContain('R Opperman<br />Reservations<br />The Centurion Hotel');
   });
 });

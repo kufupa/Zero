@@ -29,7 +29,7 @@ export async function fillStayFactsMatchingAuthorisedOffer(): Promise<void> {
 }
 
 /** Drive an authorised HITL path. Production unavailable path must not reach here. */
-export async function prepareReviewedQuote(): Promise<void> {
+export async function prepareReviewedQuote(replyHtml: string | null = AUTHORISED_REPLY_HTML): Promise<void> {
   await fillStayFactsMatchingAuthorisedOffer();
   fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
   const allocation = await waitFor(() => {
@@ -41,8 +41,10 @@ export async function prepareReviewedQuote(): Promise<void> {
     return match;
   });
   if (allocation.getAttribute('aria-pressed') !== 'true') fireEvent.click(allocation);
-  const reply = screen.getByLabelText('Reviewed reply');
-  fireEvent.change(reply, { target: { value: AUTHORISED_REPLY_HTML } });
+  if (replyHtml !== null) {
+    const reply = screen.getByLabelText('Reviewed reply');
+    fireEvent.change(reply, { target: { value: replyHtml } });
+  }
   fireEvent.click(screen.getByRole('button', { name: /^Prepare PDF$/i }));
   await waitFor(() => {
     expectPreparedPdf();

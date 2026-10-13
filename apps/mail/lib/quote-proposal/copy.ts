@@ -1,15 +1,16 @@
 export const HOTEL_TELEPHONE = '0126433600';
 
-export function quoteWrapperHtml(guestFirstName: string): string {
-  const name = escapeHtml(guestFirstName.trim() || 'Guest');
+export function quoteWrapperHtml(guestName: string, signerName = ''): string {
+  const name = escapeHtml(guestName.trim() || 'Guest');
+  const signer = signerName.trim() ? `${escapeHtml(signerName.trim())}<br />` : '';
   return `
       <div style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1e293b; line-height: 1.5;">
         <p>Good day ${name},</p>
-        <p>Thank you for Choosing The Centurion Hotel.</p>
+        <p>Thank you for choosing The Centurion Hotel.</p>
         <p>Please see attached quotation.</p>
-        <p>Should you wish to proceed, please sign and return the attached quotation so that we can confirm and secure your reservation. Please note that no rooms are currently being held, and bookings will only be confirmed once we have received the signed quotation.</p>
-        <p>Please feel free to contact me should you require any further information</p>
+        <p>Kindly sign and return the quotation to confirm. Please note that no rooms are currently being held.</p>
         <p>Kind regards,</p>
+        <p>${signer}Reservations<br />The Centurion Hotel</p>
       </div>
     `;
 }

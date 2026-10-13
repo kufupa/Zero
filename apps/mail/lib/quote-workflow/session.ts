@@ -1757,10 +1757,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         return session;
       }
       const stayKey = session.selectedStayKey;
+      const reviewedReplyHtml = !isMultiStay(session) && !session.reviewedReplyHtml.trim()
+        ? action.reviewedReplyHtml ?? session.reviewedReplyHtml
+        : session.reviewedReplyHtml;
       return {
         ...session,
         pdf: action.pdf,
         phase: 'review',
+        reviewedReplyHtml,
         // A combined PDF is one document for all stays, so it is not kept under any one of them.
         stayPdfs: stayKey && !isMultiStay(session) ? { ...session.stayPdfs, [stayKey]: action.pdf } : session.stayPdfs,
       };

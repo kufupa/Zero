@@ -16,6 +16,7 @@ import {
 } from '@/lib/workstation/pane-release-watch';
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
+import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
@@ -221,6 +222,7 @@ export function NavaPane({
     ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`
     : null;
   const { data: session, isLoading } = useSession();
+  const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
   useEffect(() => {
     let alive = true;
@@ -1177,6 +1179,12 @@ export function NavaPane({
     const selectionEpoch = session.binding?.selectionEpoch ?? 0;
     const inputRevision = session.inputRevision;
     const selectedOfferIds = [quote.revisionRef];
+    const senderName = activeEmail?.senderName.trim() ?? '';
+    const senderEmail = activeEmail?.senderEmail.trim().toLowerCase() ?? '';
+    const greetingName = senderName.toLowerCase() === senderEmail ? '' : senderName;
+    const reviewedReplyHtml = session.analysis?.intent === 'quote'
+      ? quoteWrapperHtml(greetingName, staffSignerName)
+      : undefined;
     const staff = staffQuoteFromTrpc(trpcClient);
     void bindQualifiedStaffProposalPdf({
       mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
@@ -1210,6 +1218,7 @@ export function NavaPane({
         selectionEpoch,
         inputRevision,
         selectedOfferIds,
+        reviewedReplyHtml,
       });
       trackPaneAction({ type: 'pdf.created', kind: 'option' }, owner);
     });

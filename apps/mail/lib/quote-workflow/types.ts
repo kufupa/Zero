@@ -760,6 +760,7 @@ export type QuoteSessionAction =
       selectionEpoch: number;
       inputRevision: number;
       selectedOfferIds: string[];
+      reviewedReplyHtml?: string;
     }
   | { type: 'set_reviewed_reply'; html: string }
   | { type: 'select_offers'; offerIds: string[] }
