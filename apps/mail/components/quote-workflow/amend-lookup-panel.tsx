@@ -27,6 +27,7 @@ import {
   noSearchMatchCopy,
   notFoundConfirmationCopy,
   notHmsNumberNote,
+  prefetchedNotFoundConfirmationCopy,
   searchRequestFor,
   searchRunFromJob,
   stayGuest,
@@ -142,6 +143,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const findNotFound = findRun?.kind === 'not_found';
   const findAmbiguous = findRun?.kind === 'ambiguous';
   const searchedConfirmation = findView?.request?.kind === 'find' ? findView.request.confirmation : null;
+  const prefetchedNotFound = Boolean(findView?.prefetch && findNotFound);
   // The name search opens when there is no usable number, when a find needs a guest-name fallback, or until a booking is chosen.
   const searchOpen = !stay && (!lookupable || findNotFound || findAmbiguous || searchView !== null || search.queuing);
 
@@ -151,7 +153,10 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   else if (findRun?.kind === 'not_found') {
     note = {
       tone: 'warn',
-      text: notFoundConfirmationCopy(searchedConfirmation ?? hmsNumber ?? confirmationNumber ?? ''),
+      text:
+        prefetchedNotFound && searchedConfirmation !== null
+          ? prefetchedNotFoundConfirmationCopy(searchedConfirmation)
+          : notFoundConfirmationCopy(searchedConfirmation ?? hmsNumber ?? confirmationNumber ?? ''),
       pii: true,
     };
   }
@@ -289,7 +294,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
         </p>
       ) : null}
       <div className="flex flex-col gap-2">
-        {found || findNotFound || findAmbiguous ? null : (
+        {found || (findNotFound && !prefetchedNotFound) || findAmbiguous ? null : (
           <>
             <button
               type="button"

@@ -138,6 +138,20 @@ function refusal(outcome: string): FindStayReply {
 
 const AS_OF = '2026-10-09T08:05:00.000Z';
 
+function notFoundPrefetch(): HmsJobView {
+  return {
+    runId: 'prefetch-find-not-found',
+    request: { kind: 'find', confirmation: CONFIRMATION },
+    prefetch: true,
+    status: 'done',
+    position: null,
+    attempts: 1,
+    failureClass: null,
+    asOf: AS_OF,
+    result: { ...NOT_FOUND, kind: 'find', asOf: AS_OF },
+  };
+}
+
 type FindMock = { findStay: ReturnType<typeof vi.fn>; screenshot?: ReturnType<typeof vi.fn> };
 type SearchMock = { searchGuest: ReturnType<typeof vi.fn> };
 type LookupStatusInput =
@@ -494,6 +508,62 @@ describe('AmendLookupPanel', () => {
     });
     expect(trpc.queueFind).not.toHaveBeenCalled();
     expect(findStay).not.toHaveBeenCalled();
+  });
+
+  it('shows when a prefetched confirmation was not found without queueing another lookup', async () => {
+    const findStay = vi.fn();
+    const trpc = lookupTrpc(findStay, undefined, undefined, { readback: notFoundPrefetch() });
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
+
+    expect(
+      await screen.findByText(
+        `Not found in HMS by Nava's earlier lookup (confirmation number ${CONFIRMATION}). Find again to check now.`,
+      ),
+    ).toBeTruthy();
+    expect(trpc.jobStatus).toHaveBeenCalledWith({
+      threadId: THREAD,
+      kind: 'find',
+      confirmation: CONFIRMATION,
+    });
+    expect(trpc.queueFind).not.toHaveBeenCalled();
+    expect(findStay).not.toHaveBeenCalled();
+  });
+
+  it('shows a prefetched not-found result for cancellation mail without queueing another lookup', async () => {
+    const findStay = vi.fn();
+    const trpc = lookupTrpc(findStay, undefined, undefined, { readback: notFoundPrefetch() });
+    render(<AmendLookupPanel session={sessionWith(CANCEL)} trpc={trpc} />);
+
+    expect(
+      await screen.findByText(
+        `Not found in HMS by Nava's earlier lookup (confirmation number ${CONFIRMATION}). Find again to check now.`,
+      ),
+    ).toBeTruthy();
+    expect(trpc.queueFind).not.toHaveBeenCalled();
+    expect(findStay).not.toHaveBeenCalled();
+  });
+
+  it('lets staff retry a not-found prefetch only after they click Find', async () => {
+    const findStay = vi.fn().mockResolvedValue(found());
+    const trpc = lookupTrpc(findStay, undefined, undefined, { readback: notFoundPrefetch() });
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
+
+    await screen.findByTestId('amend-guest-search');
+    expect(trpc.queueFind).not.toHaveBeenCalled();
+    expect(findStay).not.toHaveBeenCalled();
+
+    const button = screen.getByRole('button', { name: 'Find this booking in HMS' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    await pressFind();
+
+    await expectFoundBooking();
+    expect(trpc.queueFind).toHaveBeenCalledTimes(1);
+    expect(trpc.queueFind).toHaveBeenCalledWith({
+      threadId: THREAD,
+      confirmation: CONFIRMATION,
+      arrival: AMEND.arrival,
+    });
+    expect(findStay).toHaveBeenCalledTimes(1);
   });
 
   it('reports a running prefetch to the HMS notice system and shows the elapsed status', async () => {

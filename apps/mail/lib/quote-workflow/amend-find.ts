@@ -578,6 +578,11 @@ export function notFoundConfirmationCopy(confirmation: string): string {
   return `Not found in HMS by confirmation number ${confirmation}. Use the surname and arrival search below.`;
 }
 
+/** The background lookup's result shown on a later open. It may have run after the email arrived, so it claims no time. */
+export function prefetchedNotFoundConfirmationCopy(confirmation: string): string {
+  return `Not found in HMS by Nava's earlier lookup (confirmation number ${confirmation}). Find again to check now.`;
+}
+
 /**
  * The panel's search run for a stored search reply. Only an ok read with rows is a list. A capped read has no list to
  * pick from, so it says to add the departure.

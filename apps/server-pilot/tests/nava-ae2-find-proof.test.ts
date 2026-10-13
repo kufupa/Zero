@@ -74,8 +74,9 @@ describe('request guard', () => {
     expect(state.syncFinds).toBe(1);
   });
 
-  it('blocks guest-name searches, cancels, every other write and unknown calls', () => {
-    const allowed = new Set(['paneStayLookup.queueFind', 'paneStayLookup.findStay']);
+  it('allows the action-ledger support write and blocks every other write and unknown call', () => {
+    const allowed = new Set(['paneStayLookup.queueFind', 'paneStayLookup.findStay', 'workItems.recordActions']);
+    expect(classifyAe2Request(url('workItems.recordActions'), null, newAe2GuardState()).allowed).toBe(true);
     const writes = [...KNOWN_WRITE_PROCEDURES].filter((name) => !allowed.has(name));
     expect(writes).toEqual(
       expect.arrayContaining([
@@ -86,6 +87,7 @@ describe('request guard', () => {
         'quoteWorkflow.commitStay',
         'drafts.saveReply',
         'workItems.open',
+        'workItems.recordEvent',
         'workstation.executeStaffQuote',
       ]),
     );

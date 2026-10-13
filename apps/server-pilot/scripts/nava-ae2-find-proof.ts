@@ -21,12 +21,12 @@
  * the analysis pass. Exactly one find passes: paneStayLookup.queueFind (HMS_JOB_QUEUE=on: the hms worker reads HMS), or,
  * only after a queueFind that returned no run id (queue off), paneStayLookup.findStay. Every HMS write (cancel preview and
  * commit, quote and booking writes), every guest-name search, every mailbox write, workItems.open/recordEvent and every
- * unknown call is aborted.
+ * unknown call is aborted. workItems.recordActions is the only pane support write that passes.
  *
  * HMS calls: one read-only find (Guest Stay quick search and the booking record). No HMS write.
  * Rows written: one ai_workflow_run (the queued find job, priority user), which the hms worker updates with its status and
- * snapshot; with the HITL ledger on, the worker may add its hitl_tool_run kind stay_lookup. With the queue off, findStay
- * adds that hitl_tool_run row only.
+ * snapshot; the pane may also write local workItems.recordActions entries. With the HITL ledger on, the worker may add
+ * its hitl_tool_run kind stay_lookup. With the queue off, findStay adds that hitl_tool_run row only.
  *
  * The summary never holds a guest name or the booking number: only dates, statuses and counts.
  *
@@ -72,6 +72,8 @@ import { ANALYSIS_PROCEDURES, KNOWN_WRITE_PROCEDURES, parseRunConfig, READ_PROCE
 export const QUEUE_FIND_PROCEDURE = 'paneStayLookup.queueFind';
 export const SYNC_FIND_PROCEDURE = 'paneStayLookup.findStay';
 export const JOB_STATUS_PROCEDURE = 'paneStayLookup.jobStatus';
+/** The only pane support write AE2 lets through in addition to its one HMS find. */
+const AE2_PANE_SUPPORT_WRITES: ReadonlySet<string> = new Set(['workItems.recordActions']);
 
 export type Ae2Config = RunConfig & { threadId: string };
 
@@ -135,6 +137,7 @@ export function classifyAe2Request(
       else syncFinds += 1;
       return;
     }
+    if (AE2_PANE_SUPPORT_WRITES.has(procedure)) return;
     blocked.push({ procedure, reason: KNOWN_WRITE_PROCEDURES.has(procedure) ? 'write' : 'unknown' });
   });
   const allowed = blocked.length === 0;
