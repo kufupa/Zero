@@ -35,14 +35,43 @@ import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../
 import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
 import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
+const staffQuoteRunner = vi.hoisted(() => ({ run: vi.fn() }));
+vi.mock('../src/ai/staff-quote-run.js', () => ({ runStaffQuote: staffQuoteRunner.run }));
+
 const reachable = await probeTestDb();
 const TENANT = 'tenant-centurion';
 const CONFIRMATION = '1234567-1';
 const LANE_OWNER = 'hms-ai-worker-111';
 
+const STAFF_QUOTE_INPUT = {
+  messageId: 'staff-quote-message',
+  sourceHash: 'a'.repeat(64),
+  selectionEpoch: 3,
+  inputRevision: 5,
+  groups: [
+    {
+      id: 'single',
+      arrivalDate: '2026-10-12',
+      departureDate: '2026-10-14',
+      quantity: 1,
+      adults: 2,
+      childrenAges: [],
+      board: 'room_only',
+      roomCodes: ['SKNG'],
+    },
+  ],
+  salesStrategy: 'BAR',
+  company: '',
+  agency: '',
+  attention: '',
+  clientEmail: '',
+  clientTelephone: '',
+} as const;
+
 afterEach(() => {
   paneStayLookupLoaders.lock = null;
   paneStayLookupLoaders.spawn = null;
+  staffQuoteRunner.run.mockReset();
   vi.unstubAllEnvs();
 });
 
@@ -139,6 +168,29 @@ async function runClaimedJob(db: DB, run: AiWorkflowRun) {
   });
 }
 
+async function enqueueStaffQuoteJob(
+  db: DB,
+  threadId: string,
+  messageId: string,
+  staffQuoteUser = { id: CENTURION_USER_ID, name: 'Synthetic Staff', email: 'staff@example.test' },
+) {
+  const input = { ...STAFF_QUOTE_INPUT, messageId };
+  return enqueueHmsJob(
+    {
+      transportId: TRANSPORT_ID,
+      threadId,
+      triggerMessageId: messageId,
+      workItemId: null,
+      userId: staffQuoteUser.id,
+      request: { kind: 'staff_quote', input },
+      priority: HMS_JOB_PRIORITY_USER,
+      idempotencyKey: `hms-job:staff-quote:${randomUUID()}`,
+      extraMetrics: { staffQuoteUser },
+    },
+    db,
+  );
+}
+
 describe('U23 HMS job queue (pure)', () => {
   it('takes validated confirmation numbers from mail text and ignores dates and short numbers', () => {
     expect(
@@ -149,7 +201,7 @@ describe('U23 HMS job queue (pure)', () => {
     );
   });
 
-  it('accepts only closed find and guest-search requests', () => {
+  it('accepts only closed find, guest-search, and staff-quote requests', () => {
     expect(hmsJobRequestSchema.safeParse({ kind: 'find', confirmation: CONFIRMATION }).success).toBe(true);
     expect(
       hmsJobRequestSchema.safeParse({ kind: 'find', confirmation: CONFIRMATION, propertyCode: 'X' }).success,
@@ -159,6 +211,13 @@ describe('U23 HMS job queue (pure)', () => {
         kind: 'search_guest',
         lastName: 'D',
         arrival: '2026-10-12',
+      }).success,
+    ).toBe(false);
+    expect(hmsJobRequestSchema.safeParse({ kind: 'staff_quote', input: STAFF_QUOTE_INPUT }).success).toBe(true);
+    expect(
+      hmsJobRequestSchema.safeParse({
+        kind: 'staff_quote',
+        input: { ...STAFF_QUOTE_INPUT, customerOverride: true },
       }).success,
     ).toBe(false);
   });
@@ -305,6 +364,144 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(remounted).toMatchObject({ runId: queued!.id, status: 'done', position: null });
       expect(remounted?.result).toMatchObject({ outcome: 'found', screenshots: ['stay.png'] });
       expect(remounted?.asOf).toEqual(expect.any(String));
+    }));
+
+  it('runs a queued staff quote as a user-priority job and stores the complete quote result', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const staffQuoteUser = {
+        id: CENTURION_USER_ID,
+        name: 'Trusted Staff',
+        email: 'trusted@example.test',
+      };
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId, staffQuoteUser);
+      const quoteResult = {
+        status: 'ready',
+        workflowRunId: 'staff-quote-workflow-1',
+        revisionRef: 'revision-1',
+        messageId,
+        threadId,
+        factRefs: ['extras'],
+        selectionEpoch: STAFF_QUOTE_INPUT.selectionEpoch,
+        inputRevision: STAFF_QUOTE_INPUT.inputRevision,
+        inputDigest: 'd'.repeat(64),
+        totalMinor: 240_000,
+        currency: 'ZAR',
+        arrivalDate: '2026-10-12',
+        departureDate: '2026-10-14',
+        description: 'Standard King; Room Only',
+        rateOptions: [{ id: 'rate-1', rateCode: 'BARRO' }],
+        rowRates: [{ groupId: 'single', amountMinor: 120_000 }],
+        screenshots: ['quote.png'],
+      };
+      staffQuoteRunner.run.mockResolvedValue(quoteResult);
+
+      const claimed = await claimJob(db);
+      expect(claimed.id).toBe(run.id);
+      expect(claimed.priority).toBe(HMS_JOB_PRIORITY_USER);
+      expect(await runClaimedJob(db, claimed)).toBe('succeeded');
+      expect(staffQuoteRunner.run).toHaveBeenCalledWith(
+        { ...STAFF_QUOTE_INPUT, messageId },
+        { transportId: TRANSPORT_ID, user: staffQuoteUser },
+        db,
+        { signal: undefined, deadlineAt: claimed.deadlineAt!.getTime() },
+      );
+      const view = await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id }, db);
+      expect(view?.result).toMatchObject({
+        ...quoteResult,
+        kind: 'staff_quote',
+        asOf: expect.any(String),
+      });
+      expect(view?.asOf).toEqual(expect.any(String));
+    }));
+
+  it('stores a staff quote business refusal as a successful job with its real message', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      staffQuoteRunner.run.mockRejectedValue(
+        Object.assign(new Error('HMS has no rate for this meal plan under BAR.'), {
+          code: 'PRECONDITION_FAILED',
+        }),
+      );
+
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('succeeded');
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id }, db)).toMatchObject({
+        status: 'done',
+        failureClass: null,
+        result: {
+          ok: false,
+          code: 'PRECONDITION_FAILED',
+          message: 'HMS has no rate for this meal plan under BAR.',
+        },
+      });
+    }));
+
+  it('retries only a staff quote whose failure chain proves the property lock was busy', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      staffQuoteRunner.run.mockRejectedValue(
+        Object.assign(new Error('staff_quote_failed'), {
+          code: 'PRECONDITION_FAILED',
+          cause: new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE),
+        }),
+      );
+
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('retry_wait');
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id }, db)).toMatchObject({
+        status: 'retrying',
+        failureClass: 'HMS_LOCK_BUSY',
+        attempts: 1,
+      });
+    }));
+
+  it('retries transient native staff quote failures but dead-letters other unknown failures', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      staffQuoteRunner.run.mockRejectedValueOnce(new Error('native session ECONNRESET'));
+
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('retry_wait');
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id }, db)).toMatchObject({
+        status: 'retrying',
+        failureClass: 'TRANSIENT_NETWORK',
+        attempts: 1,
+      });
+    }));
+
+  it('gives staff_quote five-minute work budget without widening ordinary HMS read deadlines', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');
+      const { threadId, messageId } = await seedThread(db);
+      const { run: staffQuoteRun } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const staffQuoteClaim = await claimJob(db);
+      expect(staffQuoteClaim.id).toBe(staffQuoteRun.id);
+      expect(staffQuoteClaim.deadlineAt!.getTime() - Date.now()).toBeGreaterThan(6 * 60_000);
+
+      const { run: findRun } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: CENTURION_USER_ID,
+          request: { kind: 'find', confirmation: CONFIRMATION },
+          priority: HMS_JOB_PRIORITY_USER,
+          idempotencyKey: `hms-job:user:${randomUUID()}`,
+        },
+        db,
+      );
+      const findClaim = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        idempotencyPrefix: findRun.idempotencyKey,
+        db,
+      });
+      expect(findClaim?.id).toBe(findRun.id);
+      expect(findClaim!.deadlineAt!.getTime() - Date.now()).toBeLessThan(3 * 60_000);
     }));
 
   it('a remount on a thread with two guests reads back the search for the asked surname, whatever its case', () =>
@@ -464,6 +661,42 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(takeLock).not.toHaveBeenCalled();
       const view = await readHmsJobView({ transportId: TRANSPORT_ID, runId: run.id }, db);
       expect(view).toMatchObject({ status: 'retrying', failureClass: 'STAFF_QUOTE_ACTIVE', attempts: 0 });
+    }));
+
+  it('prefetch yields to an active staff_quote job before the staff generation row exists', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      await enqueueStaffQuoteJob(db, threadId, messageId);
+      const staffClaim = await claimJob(db);
+      await markAiRunRunning(
+        {
+          runId: staffClaim.id,
+          claimOwner: staffClaim.claimOwner!,
+          claimToken: staffClaim.claimToken!,
+          deadlineAt: staffClaim.deadlineAt!,
+        },
+        db,
+      );
+      const { run: prefetch } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'find', confirmation: CONFIRMATION },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: `hms-job:prefetch:${TRANSPORT_ID}:${CONFIRMATION}:active-staff-quote`,
+        },
+        db,
+      );
+
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('retry_wait');
+      expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: prefetch.id }, db)).toMatchObject({
+        status: 'retrying',
+        failureClass: 'STAFF_QUOTE_ACTIVE',
+        attempts: 0,
+      });
     }));
 
   it('a background run that finds the property lock busy requeues without using an attempt', () =>

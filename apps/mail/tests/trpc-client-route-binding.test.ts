@@ -25,6 +25,8 @@ describe('pane tRPC helpers bind routes off the real client', () => {
   it('reaches workstation quote, PDF and drafts routes', () => {
     const staff = staffQuoteFromTrpc(client);
     expect(typeof staff.workstation.executeStaffQuote?.mutate).toBe('function');
+    expect(typeof staff.workstation.queueStaffQuote?.mutate).toBe('function');
+    expect(typeof staff.workstation.staffQuoteJob?.query).toBe('function');
     expect(staff.drafts).toBeTruthy();
   });
 

@@ -54,6 +54,7 @@ import { partyFinderFromTrpc, partyIndexFromTrpc } from '@/lib/quote-workflow/pa
 import {
   bindExecuteStaffQuote,
   bindHmsQueueStatus,
+  bindReadBackStaffQuote,
   bindQuoteRunScreenshot,
   bindQualifiedStaffProposalPdf,
   bindStaffActions,
@@ -475,6 +476,7 @@ export function NavaPane({
     quoteSession.analysis?.luna?.workflow ?? '',
     quoteSession.staffSource?.threadId ?? '',
     String(quoteSession.inputRevision),
+    String(quoteSession.stayRevision),
     String(quoteSession.binding?.selectionEpoch ?? 0),
     quoteSession.groups
       .map((group) => `${group.arrivalDate ?? ''}:${group.departureDate ?? ''}:${group.quantity ?? ''}:${group.adults ?? ''}`)
@@ -503,105 +505,203 @@ export function NavaPane({
     // A stay edit does not always move inputRevision, so the result is also tied to the rows it read.
     const stayRevision = quoteSession.stayRevision;
     const header = quoteSession.staffHeader;
-    // The earlier quote's run and draft belong to the stay it was made for, so its rows are that stay's rows.
-    const bindPrior = (prior: UsePriorQuoteForBookingReady, stayKey: string) => {
-      const stayRow = quoteSession.groups.find((group) => stayKeyForGroup(group) === stayKey);
-      const groupId = stayRow?.id;
-      const quantity = stayRow?.quantity;
-      dispatchQuote({
-        type: 'staff_quote_ready',
-        offer: {
-          id: prior.revisionRef,
-          kind: 'allocation',
-          roomCode: prior.roomCode,
-          roomLabel: 'Selected allocation',
-          board: offerBoardFromRevision(prior.board),
-          rateCode: prior.rateCode,
-          currency: 'ZAR',
-          nightly: [],
-          stayTotalMinor: prior.totalMinor,
-          observedAt: '',
-          sourceRef: prior.revisionRef,
-          restrictions: [],
-          combinable: true,
-          quoteRequestKey: stayKey,
-          coversGroupIds: groupId ? [groupId] : [],
-          quantity,
-        },
-        staffQuote: {
-          workflowRunId: prior.workflowRunId,
-          revisionRef: prior.revisionRef,
-          factRefs: [],
-          messageId: source.messageId,
-          threadId: source.threadId,
-          sourceHash: source.sourceHash,
-          selectionEpoch,
-          inputRevision,
-          inputDigest: prior.revisionRef,
-          totalMinor: prior.totalMinor,
-          currency: prior.currency,
-          quoteRequestKey: stayKey,
-          approvedHeader: header,
-          // What the earlier run charged, not what the header asks now: a combined quote checks it on each stay.
-          onceExtras: prior.onceExtras,
-        },
-        selectionEpoch,
-        inputRevision,
-        stayRevision,
-      });
-      dispatchQuote({
-        type: 'booking_draft_ready',
-        payload: {
-          draft: prior.draft,
-          options: prior.options,
-          messageId: prior.messageId,
-          selectionEpoch: prior.selectionEpoch,
-          inputRevision: prior.inputRevision,
-          revisionRef: prior.revisionRef,
-        },
-        sourceHash: source.sourceHash,
-      });
-    };
     let cancelled = false;
-    void bindListThreadQuoteRevisions({
-      query: staff.workstation.listThreadQuoteRevisions?.query,
-      threadId: source.threadId,
-    }).then(async (revisions) => {
-      if (cancelled || !revisions[0]) return;
+    void (async () => {
+      const readBacks = await trackStaffQuoteRun(
+        Promise.all(
+          waiting.map(async (stayKey) => {
+            const groups = quoteSession.groups.filter(
+              (group) => stayKeyForGroup(group) === stayKey,
+            );
+            const result = await bindReadBackStaffQuote({
+              query: staff.workstation.staffQuoteJob?.query,
+              source,
+              selectionEpoch,
+              inputRevision,
+              groups,
+              header,
+              stayKey,
+            });
+            return { stayKey, result };
+          }),
+        ),
+      );
+      if (
+        cancelled ||
+        !quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })
+      ) return;
+
+      const unbound = new Set(waiting);
+      type RestoredStaffQuote = Extract<
+        Awaited<ReturnType<typeof bindReadBackStaffQuote>>,
+        { status: 'ok' }
+      >;
+      const restored: Array<{ stayKey: string; result: RestoredStaffQuote }> = [];
+      for (const row of readBacks) {
+        if (!row.result) continue;
+        if (row.result.status === 'ok') {
+          unbound.delete(row.stayKey);
+          restored.push({ stayKey: row.stayKey, result: row.result });
+        } else if (row.result.detail) {
+          // Business refusals are persisted as completed jobs; don't replace that exact answer with an older quote.
+          unbound.delete(row.stayKey);
+          toast.warning(row.result.reason);
+        }
+      }
+
+      const reused: Array<{ stayKey: string; prior: UsePriorQuoteForBookingReady }> = [];
       const reasons: string[] = [];
       let expiredPrior: PriorStaffQuoteRequoteRow | null = null;
-      const unbound = new Set(waiting);
-      for (const row of revisions) {
-        if (cancelled || unbound.size === 0) break;
-        const candidate = await bindUsePriorQuoteForBooking({
-          mutate: staff.workstation.usePriorQuoteForBooking?.mutate,
-          source,
-          workflowRunId: row.workflowRunId,
-          revisionRef: row.revisionRef,
+      if (unbound.size > 0) {
+        const revisions = await bindListThreadQuoteRevisions({
+          query: staff.workstation.listThreadQuoteRevisions?.query,
           threadId: source.threadId,
-          messageId: source.messageId,
+        });
+        for (const row of revisions) {
+          if (cancelled || unbound.size === 0) break;
+          const candidate = await bindUsePriorQuoteForBooking({
+            mutate: staff.workstation.usePriorQuoteForBooking?.mutate,
+            source,
+            workflowRunId: row.workflowRunId,
+            revisionRef: row.revisionRef,
+            threadId: source.threadId,
+            messageId: source.messageId,
+            selectionEpoch,
+            inputRevision,
+            analysis: {
+              ...luna,
+              groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
+            },
+          });
+          if (cancelled) return;
+          if (candidate.status !== 'ok') {
+            reasons.push(candidate.reason);
+            if (candidate.reason === 'expired' && !expiredPrior) {
+              expiredPrior = { workflowRunId: row.workflowRunId, revisionRef: row.revisionRef };
+            }
+            continue;
+          }
+          // A candidate binds only to a stay that is still waiting for one. Other rows of that stay are skipped.
+          const stayKey =
+            singleStayKey ?? `${candidate.payload.arrivalDate}:${candidate.payload.departureDate}`;
+          if (!unbound.has(stayKey)) continue;
+          unbound.delete(stayKey);
+          reused.push({ stayKey, prior: candidate.payload });
+        }
+      }
+      if (
+        cancelled ||
+        !quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })
+      ) return;
+
+      for (const row of restored) {
+        if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+          toast.warning('Details changed while HMS was searching — search availability again.');
+          return;
+        }
+        dispatchQuote({
+          type: 'staff_quote_ready',
+          offer: row.result.offer,
+          staffQuote: row.result.staffQuote,
           selectionEpoch,
           inputRevision,
-          analysis: {
-            ...luna,
-            groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
-          },
+          stayRevision,
+          extrasReviewItems: row.result.extrasReviewItems,
+          approvedHeader: header,
         });
-        if (cancelled) return;
-        if (candidate.status !== 'ok') {
-          reasons.push(candidate.reason);
-          if (candidate.reason === 'expired' && !expiredPrior) {
-            expiredPrior = { workflowRunId: row.workflowRunId, revisionRef: row.revisionRef };
+        for (const item of row.result.extrasReviewItems) toast.warning(item);
+        if (luna.workflow === 'create_booking') {
+          if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+            toast.warning('Details changed while HMS was searching — search availability again.');
+            return;
           }
-          continue;
+          void bindPrepareBookingDraft({
+            mutate: staff.workstation.prepareBookingDraft?.mutate,
+            source,
+            workflowRunId: row.result.staffQuote.workflowRunId,
+            revisionRef: row.result.staffQuote.revisionRef,
+            messageId: source.messageId,
+            selectionEpoch,
+            inputRevision,
+            analysis: {
+              ...luna,
+              groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
+            },
+          }).then((draftRemote) => {
+            if (draftRemote.status !== 'ok') {
+              toast.warning(draftRemote.reason);
+              return;
+            }
+            if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+              toast.warning('Details changed while HMS was searching — search availability again.');
+              return;
+            }
+            dispatchQuote({
+              type: 'booking_draft_ready',
+              payload: draftRemote.payload,
+              sourceHash: source.sourceHash,
+            });
+          });
         }
-        // A candidate binds only to a stay that is still waiting for one. Other rows of that stay are skipped.
-        const stayKey = singleStayKey ?? `${candidate.payload.arrivalDate}:${candidate.payload.departureDate}`;
-        if (!unbound.has(stayKey)) continue;
-        unbound.delete(stayKey);
-        bindPrior(candidate.payload, stayKey);
       }
-      if (cancelled) return;
+
+      for (const { stayKey, prior } of reused) {
+        const stayRow = quoteSession.groups.find((group) => stayKeyForGroup(group) === stayKey);
+        dispatchQuote({
+          type: 'staff_quote_ready',
+          offer: {
+            id: prior.revisionRef,
+            kind: 'allocation',
+            roomCode: prior.roomCode,
+            roomLabel: 'Selected allocation',
+            board: offerBoardFromRevision(prior.board),
+            rateCode: prior.rateCode,
+            currency: 'ZAR',
+            nightly: [],
+            stayTotalMinor: prior.totalMinor,
+            observedAt: '',
+            sourceRef: prior.revisionRef,
+            restrictions: [],
+            combinable: true,
+            quoteRequestKey: stayKey,
+            coversGroupIds: stayRow ? [stayRow.id] : [],
+            quantity: stayRow?.quantity,
+          },
+          staffQuote: {
+            workflowRunId: prior.workflowRunId,
+            revisionRef: prior.revisionRef,
+            factRefs: [],
+            messageId: source.messageId,
+            threadId: source.threadId,
+            sourceHash: source.sourceHash,
+            selectionEpoch,
+            inputRevision,
+            inputDigest: prior.revisionRef,
+            totalMinor: prior.totalMinor,
+            currency: prior.currency,
+            quoteRequestKey: stayKey,
+            approvedHeader: header,
+            // What the earlier run charged, not what the header asks now: a combined quote checks it on each stay.
+            onceExtras: prior.onceExtras,
+          },
+          selectionEpoch,
+          inputRevision,
+          stayRevision,
+        });
+        dispatchQuote({
+          type: 'booking_draft_ready',
+          payload: {
+            draft: prior.draft,
+            options: prior.options,
+            messageId: prior.messageId,
+            selectionEpoch: prior.selectionEpoch,
+            inputRevision: prior.inputRevision,
+            revisionRef: prior.revisionRef,
+          },
+          sourceHash: source.sourceHash,
+        });
+      }
+
       if (unbound.size > 0) {
         const notice = expiredPriorQuoteNotice(reasons, expiredPrior);
         if (notice === 'requote' && expiredPrior) {
@@ -617,7 +717,7 @@ export function NavaPane({
           toast.warning('The dates no longer match the earlier quote. Run the search again.');
         }
       }
-    });
+    })();
     return () => {
       cancelled = true;
     };
@@ -852,6 +952,8 @@ export function NavaPane({
       }
       const run = bindExecuteStaffQuote({
         mutate: staff.workstation.executeStaffQuote?.mutate,
+        queue: staff.workstation.queueStaffQuote?.mutate,
+        staffQuoteJob: staff.workstation.staffQuoteJob?.query,
         source,
         selectionEpoch,
         inputRevision,
@@ -986,6 +1088,8 @@ export function NavaPane({
     if (!storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
     const run = bindExecuteStaffQuote({
       mutate: staff.workstation.executeStaffQuote?.mutate,
+      queue: staff.workstation.queueStaffQuote?.mutate,
+      staffQuoteJob: staff.workstation.staffQuoteJob?.query,
       source,
       selectionEpoch,
       inputRevision,

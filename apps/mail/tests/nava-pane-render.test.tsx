@@ -6,6 +6,7 @@ import { observable } from '@trpc/server/observable';
 import { countMutationsLink } from '../lib/workstation/mutations-in-flight';
 import { reloadPane } from '../lib/workstation/pane-release-watch';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { toast } from 'sonner';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
@@ -56,6 +57,10 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     storedWork: null as null | Record<string, unknown>,
     // While set, the stored-read lookup waits for it, as a slow lookup does.
     storedLookupGate: null as null | Promise<void>,
+    staffQuoteJobQuery: vi.fn().mockResolvedValue(null),
+    listThreadQuoteRevisionsQuery: vi.fn().mockResolvedValue([]),
+    usePriorQuoteForBookingMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No prior quote.' }),
+    prepareBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
     retryTranslation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'capped', translation: null })),
   },
@@ -137,6 +142,10 @@ vi.mock('../providers/query-provider', () => ({
       staffQuoteSource: {
         query: async () => ({ status: 'ready', messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) }),
       },
+      staffQuoteJob: { query: (input: unknown) => bridgeMockState.staffQuoteJobQuery(input) },
+      listThreadQuoteRevisions: { query: (input: unknown) => bridgeMockState.listThreadQuoteRevisionsQuery(input) },
+      usePriorQuoteForBooking: { mutate: (input: unknown) => bridgeMockState.usePriorQuoteForBookingMutation(input) },
+      prepareBookingDraft: { mutate: (input: unknown) => bridgeMockState.prepareBookingDraftMutation(input) },
       executeStaffQuote: {
         mutate: async (input: { selectionEpoch: number; inputRevision: number; groups: Array<{ arrivalDate: string; departureDate: string }> }) => {
           if (bridgeMockState.holdStaffQuote) {
@@ -257,6 +266,15 @@ describe('NavaPane', () => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     voucherFindQuery.mockReset();
     voucherFindQuery.mockResolvedValue({ status: 'not_voucher' });
+    bridgeMockState.staffQuoteJobQuery.mockReset().mockResolvedValue(null);
+    bridgeMockState.listThreadQuoteRevisionsQuery.mockReset().mockResolvedValue([]);
+    bridgeMockState.usePriorQuoteForBookingMutation
+      .mockReset()
+      .mockResolvedValue({ status: 'unavailable', reason: 'No prior quote.' });
+    bridgeMockState.prepareBookingDraftMutation
+      .mockReset()
+      .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
+    vi.mocked(toast.warning).mockClear();
   });
 
   afterEach(() => {
@@ -505,6 +523,15 @@ describe('NavaPane screen states', () => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     voucherFindQuery.mockReset();
     voucherFindQuery.mockResolvedValue({ status: 'not_voucher' });
+    bridgeMockState.staffQuoteJobQuery.mockReset().mockResolvedValue(null);
+    bridgeMockState.listThreadQuoteRevisionsQuery.mockReset().mockResolvedValue([]);
+    bridgeMockState.usePriorQuoteForBookingMutation
+      .mockReset()
+      .mockResolvedValue({ status: 'unavailable', reason: 'No prior quote.' });
+    bridgeMockState.prepareBookingDraftMutation
+      .mockReset()
+      .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
+    vi.mocked(toast.warning).mockClear();
   });
 
   afterEach(() => {
@@ -626,6 +653,49 @@ describe('NavaPane screen states', () => {
       aiUnavailable: false,
     },
   };
+
+  const BOOKING_LUNA = {
+    workflow: 'create_booking' as const,
+    flags: [],
+    groups: [],
+    party: { kind: null, name: null, reference: null },
+    rateClaims: [],
+    missing: [],
+    evidence: [],
+    tasks: [],
+  };
+  const STAFF_QUOTE_READY = {
+    status: 'ready',
+    workflowRunId: 'workflow-restored',
+    revisionRef: 'revision-restored',
+    messageId: 'mail-1',
+    threadId: 'thread-1',
+    factRefs: [],
+    selectionEpoch: 1,
+    inputRevision: 1,
+    inputDigest: 'restored-digest',
+    totalMinor: 245_000,
+    currency: 'ZAR',
+    arrivalDate: '2026-11-03',
+    departureDate: '2026-11-05',
+    description: 'Restored HMS allocation',
+  };
+
+  function bookingStoredWork() {
+    return {
+      ...STORED_READY,
+      analysis: { ...STORED_READY.analysis, luna: BOOKING_LUNA },
+    };
+  }
+
+  function completedStaffQuoteJob(result: Record<string, unknown>) {
+    return {
+      runId: 'staff-job-restored',
+      status: 'done' as const,
+      result,
+      failureClass: null,
+    };
+  }
 
   // The stored API shape produced for this human-written extraction carries the extracted booking and guest details
   // into analysis.amendment; the pane must use that stored result rather than re-reading it live.
@@ -946,6 +1016,67 @@ describe('NavaPane screen states', () => {
 
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
     expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('');
+  });
+
+  it('restores a finished staff rate from the persisted job after pane mount', async () => {
+    bridgeMockState.storedWork = bookingStoredWork();
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(completedStaffQuoteJob(STAFF_QUOTE_READY));
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+
+    expect(await screen.findByText('Available')).toBeDefined();
+    expect(screen.getByRole('button', { name: /Restored HMS allocation/ })).toBeDefined();
+    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
+      input: expect.objectContaining({ messageId: 'mail-1', selectionEpoch: expect.any(Number) }),
+    });
+    await waitFor(() =>
+      expect(bridgeMockState.prepareBookingDraftMutation).toHaveBeenCalledWith(
+        expect.objectContaining({ workflowRunId: 'workflow-restored', revisionRef: 'revision-restored' }),
+      ),
+    );
+  });
+
+  it('keeps a persisted staff-quote refusal instead of falling back to an older quote', async () => {
+    const refusal = 'HMS has no rate for this meal plan under BAR. Try another meal plan.';
+    bridgeMockState.storedWork = bookingStoredWork();
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(
+      completedStaffQuoteJob({ ok: false, code: 'PRECONDITION_FAILED', message: refusal }),
+    );
+    bridgeMockState.listThreadQuoteRevisionsQuery.mockResolvedValue([
+      { workflowRunId: 'older-workflow', revisionRef: 'older-revision' },
+    ]);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith(refusal));
+    expect(bridgeMockState.listThreadQuoteRevisionsQuery).not.toHaveBeenCalled();
+    expect(bridgeMockState.usePriorQuoteForBookingMutation).not.toHaveBeenCalled();
+    expect(screen.queryByText('Available')).toBeNull();
+  });
+
+  it('drops a restored rate when the stay changes while its persisted job is being read', async () => {
+    let resolveReadback!: (view: ReturnType<typeof completedStaffQuoteJob>) => void;
+    let readbackCalls = 0;
+    bridgeMockState.storedWork = bookingStoredWork();
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(
+      () => {
+        if (readbackCalls++ > 0) return Promise.resolve(null);
+        return new Promise((resolve) => { resolveReadback = resolve; });
+      },
+    );
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalled());
+    const roomType = await screen.findByLabelText('Room type');
+    fireEvent.change(roomType, { target: { value: 'SKNG' } });
+
+    await act(async () => resolveReadback(completedStaffQuoteJob(STAFF_QUOTE_READY)));
+    await settle();
+
+    expect(screen.queryByText('Available')).toBeNull();
+    expect(bridgeMockState.prepareBookingDraftMutation).not.toHaveBeenCalled();
   });
 });
 

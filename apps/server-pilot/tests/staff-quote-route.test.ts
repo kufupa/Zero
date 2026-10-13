@@ -185,6 +185,74 @@ afterEach(() => {
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'staff quote route approval ledger (disposable DB, no HMS)',
   () => {
+    it('queues staff quotes without reading HMS configuration and exposes the request result by input', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const request = await seedRequest(db),
+          api = caller();
+        installation.configure.mockImplementation(() => {
+          throw new Error('no borrowed CDP in this process');
+        });
+        installation.configure.mockClear();
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+
+        const queued = await api.workstation.queueStaffQuote(request.input);
+        expect(queued.runId).toEqual(expect.any(String));
+        expect(installation.configure).not.toHaveBeenCalled();
+        expect(nativeRead).not.toHaveBeenCalled();
+        const [run] = await db
+          .select()
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, queued.runId!));
+        expect(run).toMatchObject({
+          runKind: 'read_tool',
+          executorLane: 'hms',
+          priority: 10,
+          readRequest: { kind: 'staff_quote', input: request.input },
+          metrics: {
+            hmsJob: true,
+            prefetch: false,
+            userId: 'user-ropperman',
+            staffQuoteUser: {
+              id: 'user-ropperman',
+              name: 'Synthetic Staff',
+              email: 'staff@example.invalid',
+            },
+          },
+        });
+        expect(await api.workstation.staffQuoteJob({ input: request.input })).toMatchObject({
+          runId: queued.runId,
+          status: 'queued',
+          request: { kind: 'staff_quote', input: request.input },
+        });
+        const other = caller('transport-centurion', 'user-navaai');
+        await expect(other.workstation.staffQuoteJob({ input: request.input })).resolves.toBeNull();
+        await expect(other.workstation.staffQuoteJob({ runId: queued.runId! })).resolves.toBeNull();
+        await expect(other.paneStayLookup.jobStatus({ runId: queued.runId! })).resolves.toBeNull();
+      });
+    });
+
+    it('returns a null run id with the queue off and leaves inline execution available', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const request = await seedRequest(db),
+          api = caller();
+        vi.stubEnv('HMS_JOB_QUEUE', 'off');
+
+        await expect(api.workstation.queueStaffQuote(request.input)).resolves.toEqual({ runId: null });
+        const rows = await db
+          .select({ id: aiWorkflowRun.id })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.runKind, 'read_tool'));
+        expect(rows).toEqual([]);
+        expect(nativeRead).not.toHaveBeenCalled();
+        await expect(api.workstation.executeStaffQuote(request.input)).resolves.toMatchObject({
+          status: 'ready',
+          inputRevision: 1,
+        });
+      });
+    });
+
     it('rejects ambiguous Message-IDs instead of loading another selected request', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db);

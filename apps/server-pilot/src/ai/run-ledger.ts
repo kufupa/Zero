@@ -45,6 +45,8 @@ export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';
 export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
 /** Pane HMS lookups queued as read_tool runs on the hms lane (CLI-backed; no read-service admission). */
 export const HMS_JOB_PROMPT_VERSION = 'hms-job/1';
+/** Staff quote jobs get a 7-minute claim budget for their measured ~5-minute native rate read. */
+const HMS_STAFF_QUOTE_RUN_DEADLINE_MS = 7 * 60_000;
 export const READ_TOOL_RUN_KIND = 'read_tool' as const;
 /**
  * Approved HMS write. Only an explicit hms_write claim takes these runs, once, from queued. The generic worker
@@ -669,7 +671,18 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             ? 1
             : undefined;
 
-      const deadlineAt = candidate.deadlineAt ?? new Date(now.getTime() + runDeadlineMs);
+      const request =
+        candidate.readRequest && typeof candidate.readRequest === 'object' && !Array.isArray(candidate.readRequest)
+          ? (candidate.readRequest as Record<string, unknown>)
+          : null;
+      const requestDeadlineMs =
+        candidate.runKind === 'read_tool' &&
+        candidate.executorLane === 'hms' &&
+        candidate.promptVersion === HMS_JOB_PROMPT_VERSION &&
+        request?.kind === 'staff_quote'
+          ? Math.max(runDeadlineMs, HMS_STAFF_QUOTE_RUN_DEADLINE_MS)
+          : runDeadlineMs;
+      const deadlineAt = candidate.deadlineAt ?? new Date(now.getTime() + requestDeadlineMs);
       const claimToken = randomUUID();
 
       const [claimed] = await tx

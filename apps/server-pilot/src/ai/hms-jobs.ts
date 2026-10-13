@@ -19,7 +19,11 @@ import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/sche
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
-import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
+import {
+  acquisitionWithin,
+  isPropertyReadLockDeadline,
+  PANE_PROPERTY_LOCK_WAIT_MS,
+} from '../hms/property-read-lock.js';
 import {
   availabilityRequestSchema,
   availabilityRequestsFor,
@@ -42,6 +46,14 @@ import {
 import { normalizeEmailAddress } from './never-spam.js';
 import { extractVoucherGuest } from './voucher-find.js';
 import { isStaffSender, knownSenders } from './work-items.js';
+import { staffQuoteInput, type StaffQuoteInput } from './staff-quote-workflow.js';
+import {
+  runStaffQuote,
+  staffQuoteFailureCode,
+  staffQuoteFailureMessage,
+  type StaffQuoteRunIdentity,
+} from './staff-quote-run.js';
+import { TRPCError } from '@trpc/server';
 import {
   type AiFailureClass,
   type AiRunFence,
@@ -106,6 +118,12 @@ export const hmsJobRequestSchema = z.discriminatedUnion('kind', [
       lastName: z.string().min(2).max(40).regex(GUEST_SURNAME_PATTERN),
       arrival: ISO_DAY,
       departure: ISO_DAY.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('staff_quote'),
+      input: staffQuoteInput,
     })
     .strict(),
   availabilityRequestSchema,
@@ -614,6 +632,15 @@ async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise
   }));
 }
 
+function stableStaffQuoteInput(
+  input: StaffQuoteInput,
+): Omit<StaffQuoteInput, 'selectionEpoch' | 'inputRevision'> {
+  const stable: Partial<StaffQuoteInput> = { ...input };
+  delete stable.selectionEpoch;
+  delete stable.inputRevision;
+  return stable as Omit<StaffQuoteInput, 'selectionEpoch' | 'inputRevision'>;
+}
+
 function hmsRequestKey(request: HmsJobRequest): string {
   if (request.kind === 'find') {
     return JSON.stringify({ kind: request.kind, confirmation: request.confirmation, arrival: request.arrival ?? null });
@@ -625,6 +652,9 @@ function hmsRequestKey(request: HmsJobRequest): string {
       arrival: request.arrival,
       departure: request.departure ?? null,
     });
+  }
+  if (request.kind === 'staff_quote') {
+    return JSON.stringify({ kind: request.kind, input: stableStaffQuoteInput(request.input) });
   }
   return JSON.stringify(request);
 }
@@ -1226,6 +1256,106 @@ async function retryOrFail(
   return 'retry_wait';
 }
 
+const STAFF_QUOTE_TRANSIENT_CODES = new Set([
+  'TRANSIENT_NETWORK',
+  'EXECUTION_FAILURE',
+  'AUTHENTICATED_SHELL_TIMEOUT',
+  'staff_quote_native_unavailable',
+  'staff_quote_native_capture_unavailable',
+  'native_quote_capture_unavailable',
+  'native_quote_read_unavailable',
+]);
+
+function staffQuoteTransientFailure(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    if (current instanceof Error) {
+      if (current.name === 'TimeoutError' || current.name === 'AbortError') return true;
+      if (/timeout|ECONNRESET|ENOTFOUND|network/i.test(current.message)) return true;
+    }
+    if (current && typeof current === 'object') {
+      const code = 'code' in current ? current.code : undefined;
+      if (typeof code === 'string' && STAFF_QUOTE_TRANSIENT_CODES.has(code)) return true;
+      current = 'cause' in current ? current.cause : null;
+    } else {
+      current = null;
+    }
+  }
+  return false;
+}
+
+function staffQuoteLockBusy(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    if (typeof current === 'object') {
+      const code = 'code' in current ? current.code : undefined;
+      if (code === 'HMS_LOCK_BUSY') return true;
+      current = 'cause' in current ? current.cause : null;
+    } else {
+      current = null;
+    }
+  }
+  return false;
+}
+
+function staffQuoteUserFromMetrics(metrics: Record<string, unknown>): StaffQuoteRunIdentity['user'] | null {
+  const user = objectRecord(metrics.staffQuoteUser);
+  if (
+    typeof user.id !== 'string' ||
+    user.id !== metrics.userId ||
+    !(user.name === null || typeof user.name === 'string') ||
+    typeof user.email !== 'string'
+  ) {
+    return null;
+  }
+  return { id: user.id, name: user.name, email: user.email };
+}
+
+async function storeStaffQuoteResult(input: {
+  db: DB;
+  mark: Mark;
+  result: Record<string, unknown>;
+  outcome: string;
+}): Promise<'succeeded' | 'retry_wait'> {
+  const marked = await markAiRunSucceeded(
+    {
+      ...input.mark,
+      readResult: {
+        ...input.result,
+        kind: 'staff_quote',
+        asOf: new Date().toISOString(),
+      },
+      metrics: { hmsJob: true, kind: 'staff_quote', outcome: input.outcome },
+    },
+    input.db,
+  );
+  return marked ? 'succeeded' : 'retry_wait';
+}
+
+function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): { code: string; message: string } {
+  const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  const code = typeof rawCode === 'string' ? rawCode : staffQuoteFailureCode(error);
+  const businessCodes = new Set([
+    'BAD_REQUEST',
+    'NOT_FOUND',
+    'PRECONDITION_FAILED',
+    'CONFLICT',
+    'FORBIDDEN',
+    'UNAUTHORIZED',
+    'staff_quote_failed',
+  ]);
+  const directMessage = error instanceof Error ? error.message : '';
+  const message =
+    (error instanceof TRPCError && error.code !== 'INTERNAL_SERVER_ERROR') ||
+    businessCodes.has(code)
+      ? directMessage
+      : staffQuoteFailureMessage(error, {
+          salesStrategy: request.salesStrategy,
+          dinnerRequested: request.groups.some((group) => group.board === 'dinner_bb'),
+        });
+  return { code, message: message || 'The requested quote could not be qualified; review the stay inputs and try again.' };
+}
+
 /**
  * Runs one claimed job. Called from executeAiRun after markAiRunRunning, so
  * the fence is already live. Returns the state the run should end in.
@@ -1233,6 +1363,7 @@ async function retryOrFail(
 export async function executeHmsJob(input: {
   run: AiWorkflowRun;
   fence: AiRunFence;
+  signal?: AbortSignal;
   db?: DB;
 }): Promise<'succeeded' | 'retry_wait' | 'dead_letter'> {
   const db = input.db ?? getDb();
@@ -1263,7 +1394,57 @@ export async function executeHmsJob(input: {
     });
   }
 
-  const metrics = (run.metrics ?? {}) as { userId?: string | null; owner?: string | null };
+  const metrics = objectRecord(run.metrics) as {
+    userId?: string | null;
+    owner?: string | null;
+    staffQuoteUser?: unknown;
+  };
+  if (request.kind === 'staff_quote') {
+    const user = staffQuoteUserFromMetrics(metrics);
+    if (!user) {
+      return storeStaffQuoteResult({
+        db,
+        mark,
+        outcome: 'refused',
+        result: {
+          ok: false,
+          code: 'STAFF_QUOTE_SCOPE_INVALID',
+          message: 'Staff quotation identity is unavailable. Run the quote again.',
+        },
+      });
+    }
+    try {
+      const result = await runStaffQuote(
+        request.input,
+        { transportId: run.transportId, user },
+        db,
+        { signal: input.signal, deadlineAt: fence.deadlineAt.getTime() },
+      );
+      return storeStaffQuoteResult({
+        db,
+        mark,
+        result: result as unknown as Record<string, unknown>,
+        outcome: 'ready',
+      });
+    } catch (error) {
+      if (isPropertyReadLockDeadline(error)) {
+        return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'property lock busy');
+      }
+      if (staffQuoteLockBusy(error)) {
+        return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'party verification lock busy');
+      }
+      if (staffQuoteTransientFailure(error)) {
+        return retryOrFail(db, run, mark, 'TRANSIENT_NETWORK', 'staff quote execution failed');
+      }
+      const refusal = staffQuoteRefusal(error, request.input);
+      return storeStaffQuoteResult({
+        db,
+        mark,
+        result: { ok: false, ...refusal },
+        outcome: 'refused',
+      });
+    }
+  }
   const ownerKey = metrics.owner ?? `hms-job-prefetch:${run.transportId}`;
   const screenshotDir: { value: string | null } = { value: null };
   const deps = {
@@ -1406,12 +1587,18 @@ async function toView(
 
 /**
  * The job's status and snapshot from the database. By run id for polling, or
- * the latest job of one kind on a thread (and confirmation, for finds) to
- * resume after the pane remounts. Null when nothing matches.
+ * the latest matching request to resume after the pane remounts. Null when nothing matches.
  */
 export async function readHmsJobView(
   input:
-    | { transportId: string; runId: string }
+    | { transportId: string; runId: string; userId?: string; staffQuoteOwnerId?: string }
+    | {
+        transportId: string;
+        userId: string;
+        messageId: string;
+        kind: 'staff_quote';
+        input: StaffQuoteInput;
+      }
     | {
         transportId: string;
         threadId: string;
@@ -1431,15 +1618,42 @@ export async function readHmsJobView(
     eq(aiWorkflowRun.transportId, input.transportId),
     eq(aiWorkflowRun.runKind, 'read_tool'),
     eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+    ...('userId' in input && input.userId
+      ? [sql`${aiWorkflowRun.metrics}->>'userId' = ${input.userId}`]
+      : []),
   );
   const [run] =
     'runId' in input
       ? await db
           .select()
           .from(aiWorkflowRun)
-          .where(and(eq(aiWorkflowRun.id, input.runId), scope))
+          .where(
+            and(
+              eq(aiWorkflowRun.id, input.runId),
+              scope,
+              ...(input.staffQuoteOwnerId
+                ? [
+                    sql`(${aiWorkflowRun.readRequest}->>'kind' IS DISTINCT FROM 'staff_quote' OR ${aiWorkflowRun.metrics}->>'userId' = ${input.staffQuoteOwnerId})`,
+                  ]
+                : [sql`${aiWorkflowRun.readRequest}->>'kind' IS DISTINCT FROM 'staff_quote'`]),
+            ),
+          )
           .limit(1)
-      : await db
+      : input.kind === 'staff_quote'
+        ? await db
+            .select()
+            .from(aiWorkflowRun)
+            .where(
+              and(
+                scope,
+                sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+                sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${input.messageId}`,
+                sql`(${aiWorkflowRun.readRequest}->'input' - 'selectionEpoch' - 'inputRevision') = ${JSON.stringify(stableStaffQuoteInput(input.input))}::jsonb`,
+              ),
+            )
+            .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+            .limit(1)
+        : await db
           .select()
           .from(aiWorkflowRun)
           .where(

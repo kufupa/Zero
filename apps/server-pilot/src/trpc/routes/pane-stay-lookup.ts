@@ -214,9 +214,18 @@ export const paneStayLookupRouter = router({
       ? cancelHmsBatch({ batchId: input.batchId, transportId: ctx.activeTransportId })
       : null,
   ),
-  jobStatus: mailboxProcedure.input(jobStatusInput).query(({ input, ctx }) =>
-    hmsJobQueueEnabled() ? readHmsJobView({ transportId: ctx.activeTransportId, ...input }) : null,
-  ),
+  jobStatus: mailboxProcedure.input(jobStatusInput).query(({ input, ctx }) => {
+    if (!hmsJobQueueEnabled()) return null;
+    const jobInput =
+      'runId' in input
+        ? {
+            transportId: ctx.activeTransportId,
+            runId: input.runId,
+            staffQuoteOwnerId: ctx.sessionUser.id,
+          }
+        : { transportId: ctx.activeTransportId, ...input };
+    return readHmsJobView(jobInput);
+  }),
   // Same reader as paneStayCancel.paneStayScreenshot. A lookup the hms worker ran is not in this process's registry,
   // so on a miss its job record registers the directory, and the read is tried once more.
   screenshot: mailboxProcedure.input(paneStayLookupScreenshotInput).query(async ({ input, ctx }) => {

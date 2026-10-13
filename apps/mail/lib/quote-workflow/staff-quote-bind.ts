@@ -4,6 +4,7 @@ import type {
   UsePriorQuoteForBookingInput,
   UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
+import { HMS_JOB_MAX_MISSES, HMS_JOB_POLL_MS } from './amend-find';
 import type {
   QueueStatus,
   QuoteOffer,
@@ -36,6 +37,8 @@ export const STAFF_QUOTE_BIND_TARGETS = {
   staffActions: 'drafts.toDraftWire reviewSummary.staffActions',
   staffQuoteSource: 'workstation.staffQuoteSource',
   executeStaffQuote: 'workstation.executeStaffQuote',
+  queueStaffQuote: 'workstation.queueStaffQuote',
+  staffQuoteJob: 'workstation.staffQuoteJob',
   qualifiedPdf: 'workstation.qualifiedQuoteProposalPdf',
   snapshot: 'backend scoped snapshot after focused verification',
 } as const;
@@ -113,6 +116,46 @@ export type ExecuteStaffQuoteResult = {
   /** Optional: an older server sends none. */
   rowRates?: StaffRowRate[];
 };
+
+export type StaffQuoteJobView = {
+  runId: string;
+  status: 'queued' | 'running' | 'retrying' | 'done' | 'failed';
+  result: Record<string, unknown> | null;
+  failureClass: string | null;
+};
+
+export type StaffQuoteJobQuery = (
+  input: { runId: string } | { input: ExecuteStaffQuoteInput },
+) => Promise<StaffQuoteJobView | null>;
+
+export type StaffQuoteJobQueue = (input: ExecuteStaffQuoteInput) => Promise<{ runId: string | null }>;
+
+function isExecuteStaffQuoteResult(
+  value: Record<string, unknown>,
+): value is Record<string, unknown> & ExecuteStaffQuoteResult {
+  const nonEmptyString = (field: unknown): field is string =>
+    typeof field === 'string' && field.trim().length > 0;
+  return (
+    value.status === 'ready' &&
+    nonEmptyString(value.workflowRunId) &&
+    nonEmptyString(value.revisionRef) &&
+    nonEmptyString(value.messageId) &&
+    nonEmptyString(value.threadId) &&
+    Array.isArray(value.factRefs) &&
+    value.factRefs.every((ref) => typeof ref === 'string') &&
+    typeof value.selectionEpoch === 'number' &&
+    Number.isSafeInteger(value.selectionEpoch) &&
+    typeof value.inputRevision === 'number' &&
+    Number.isSafeInteger(value.inputRevision) &&
+    nonEmptyString(value.inputDigest) &&
+    typeof value.totalMinor === 'number' &&
+    Number.isSafeInteger(value.totalMinor) &&
+    typeof value.currency === 'string' &&
+    nonEmptyString(value.arrivalDate) &&
+    nonEmptyString(value.departureDate) &&
+    typeof value.description === 'string'
+  );
+}
 
 export type StaffQuoteSourceResult =
   | { status: 'ready'; messageId: string; threadId: string; sourceHash: string }
@@ -726,8 +769,7 @@ function validPick(party: StaffQuoteParty | undefined, kind: 'company' | 'agency
   return { kind, nativeId: party.nativeId, name: party.name };
 }
 
-export async function bindExecuteStaffQuote(args: {
-  mutate?: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult | { status?: string; alternatives?: unknown }>;
+type StaffQuoteRequestArgs = {
   source: StaffQuoteSource;
   selectionEpoch: number;
   inputRevision: number;
@@ -735,103 +777,292 @@ export async function bindExecuteStaffQuote(args: {
   header: StaffQuoteHeader;
   /** Prefer an explicit stay key when the request is built from a reconstructed stay. */
   stayKey?: string;
-}): Promise<BoundExecuteStaffQuote> {
+};
+
+type BuiltStaffQuoteRequest = {
+  input: ExecuteStaffQuoteInput;
+  sent: StaffQuoteHeader;
+  header: ReturnType<typeof approvedExecuteHeader>;
+};
+
+function staffQuoteRequest(
+  args: StaffQuoteRequestArgs,
+): BuiltStaffQuoteRequest | { error: string } {
   const prepared = staffQuoteGroupsFromStay(args.groups);
-  if ('error' in prepared) return { status: 'unavailable', reason: prepared.error };
+  if ('error' in prepared) return { error: prepared.error };
   const first = prepared.ok[0];
-  const stayKey = args.stayKey ?? `${first?.arrivalDate ?? 'unknown'}:${first?.departureDate ?? 'unknown'}`;
+  const stayKey =
+    args.stayKey ?? `${first?.arrivalDate ?? 'unknown'}:${first?.departureDate ?? 'unknown'}`;
   const sent = staffHeaderForStay(args.header, stayKey);
   // A typed amount that cannot be read is never priced from the older saved amount.
   const fieldProblem = staffHeaderFieldProblem(sent);
-  if (fieldProblem) {
-    return { status: 'unavailable', reason: `Fix the amounts before running this search. ${fieldProblem}` };
-  }
-  if (!args.mutate) {
-    return {
-      status: 'unavailable',
-      reason:
-        'Quoting is not connected to this pane yet. Refresh the pane and try again.',
-    };
-  }
+  if (fieldProblem) return { error: `Fix the amounts before running this search. ${fieldProblem}` };
   try {
     const header = approvedExecuteHeader(
       sent,
       prepared.ok.map((group) => group.id),
     );
     const rowPrices = rowPricesFor(args.groups);
-    const result = await args.mutate({
-      messageId: args.source.messageId,
-      sourceHash: args.source.sourceHash,
-      selectionEpoch: args.selectionEpoch,
-      inputRevision: args.inputRevision,
-      groups: prepared.ok,
-      ...header,
-      ...(pickedParties(sent.parties) ? { parties: pickedParties(sent.parties) } : {}),
-      ...(rowPrices.length ? { rowPrices } : {}),
-    });
-    if (!result || typeof result !== 'object') {
-      return { status: 'unavailable', reason: 'HMS returned no result for this quote. Try again.' };
-    }
-    if ('alternatives' in result && Array.isArray(result.alternatives) && result.alternatives.length) {
-      return { status: 'unavailable', reason: 'HMS returned several room options. Pick one, then try again.' };
-    }
-    if (result.status !== 'ready' || !('workflowRunId' in result)) {
-      return { status: 'unavailable', reason: 'HMS did not return a room option that can be booked. Try again.' };
-    }
-    if (result.selectionEpoch !== args.selectionEpoch || result.inputRevision !== args.inputRevision) {
-      return { status: 'unavailable', reason: 'The quote is out of date because the stay details changed. Run it again.' };
-    }
-    if (result.messageId !== args.source.messageId) {
-      return { status: 'unavailable', reason: 'The quote does not match the selected email. Select the email again, then run it again.' };
-    }
-    if (typeof result.workflowRunId !== 'string' || !result.workflowRunId.trim()) {
-      return { status: 'unavailable', reason: 'HMS did not return a quote reference. Try again.' };
-    }
-    if (typeof result.revisionRef !== 'string' || !result.revisionRef.trim()) {
-      return { status: 'unavailable', reason: 'HMS did not return a quote revision. Try again.' };
-    }
-    if (result.currency !== 'ZAR' || !Number.isSafeInteger(result.totalMinor) || result.totalMinor <= 0) {
-      return { status: 'unavailable', reason: 'HMS returned a total that cannot be used. Try again, or check the rate in HMS.' };
-    }
-    const rateOptions = readRateOptions(result.rateOptions);
-    const rowRates = readRowRates(result.rowRates);
-    const staffQuote: StaffQuoteAllocation = {
-      workflowRunId: result.workflowRunId,
-      revisionRef: result.revisionRef,
-      factRefs: Array.isArray(result.factRefs) ? result.factRefs.filter((ref): ref is string => typeof ref === 'string') : [],
-      messageId: result.messageId,
-      threadId: result.threadId,
-      sourceHash: args.source.sourceHash,
-      selectionEpoch: result.selectionEpoch,
-      inputRevision: result.inputRevision,
-      inputDigest: result.inputDigest,
-      totalMinor: result.totalMinor,
-      currency: result.currency,
-      quoteRequestKey: `${result.arrivalDate}:${result.departureDate}`,
-      approvedHeader: {
-        salesStrategy: header.salesStrategy,
-        company: header.company,
-        agency: header.agency,
-        attention: header.attention,
-        clientEmail: header.clientEmail,
-        clientTelephone: header.clientTelephone,
-      },
-      onceExtras: hasPerStaySingleChargeExtras(sent),
-      runId: typeof result.runId === 'string' && result.runId.trim() ? result.runId : null,
-      screenshots: Array.isArray(result.screenshots)
-        ? result.screenshots.filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
-        : [],
-      ...(rateOptions.length ? { rateOptions } : {}),
-      ...(rowRates.length ? { rowRates } : {}),
-    };
     return {
-      status: 'ok',
-      offer: allocationFromStaffQuote(result, args.groups),
-      staffQuote,
-      extrasReviewItems: Array.isArray(result.extrasReviewItems)
-        ? result.extrasReviewItems.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-        : [],
+      input: {
+        messageId: args.source.messageId,
+        sourceHash: args.source.sourceHash,
+        selectionEpoch: args.selectionEpoch,
+        inputRevision: args.inputRevision,
+        groups: prepared.ok,
+        ...header,
+        ...(pickedParties(sent.parties) ? { parties: pickedParties(sent.parties) } : {}),
+        ...(rowPrices.length ? { rowPrices } : {}),
+      },
+      sent,
+      header,
     };
+  } catch (error) {
+    return { error: rejectionReason(error) };
+  }
+}
+
+function boundStaffQuoteResult(
+  rawResult: unknown,
+  args: StaffQuoteRequestArgs,
+  built: BuiltStaffQuoteRequest,
+): BoundExecuteStaffQuote {
+  if (!rawResult || typeof rawResult !== 'object' || Array.isArray(rawResult)) {
+    return { status: 'unavailable', reason: 'HMS returned no result for this quote. Try again.' };
+  }
+  const raw = rawResult as Record<string, unknown>;
+  if ('alternatives' in raw && Array.isArray(raw.alternatives) && raw.alternatives.length) {
+    return {
+      status: 'unavailable',
+      reason: 'HMS returned several room options. Pick one, then try again.',
+    };
+  }
+  if (!isExecuteStaffQuoteResult(raw)) {
+    return {
+      status: 'unavailable',
+      reason: 'HMS did not return a room option that can be booked. Try again.',
+    };
+  }
+  const result = raw;
+  if (
+    result.selectionEpoch !== args.selectionEpoch ||
+    result.inputRevision !== args.inputRevision
+  ) {
+    return {
+      status: 'unavailable',
+      reason: 'The quote is out of date because the stay details changed. Run it again.',
+    };
+  }
+  if (result.messageId !== args.source.messageId) {
+    return {
+      status: 'unavailable',
+      reason:
+        'The quote does not match the selected email. Select the email again, then run it again.',
+    };
+  }
+  if (
+    result.currency !== 'ZAR' ||
+    !Number.isSafeInteger(result.totalMinor) ||
+    result.totalMinor <= 0
+  ) {
+    return {
+      status: 'unavailable',
+      reason: 'HMS returned a total that cannot be used. Try again, or check the rate in HMS.',
+    };
+  }
+  const rateOptions = readRateOptions(result.rateOptions);
+  const rowRates = readRowRates(result.rowRates);
+  const staffQuote: StaffQuoteAllocation = {
+    workflowRunId: result.workflowRunId,
+    revisionRef: result.revisionRef,
+    factRefs: Array.isArray(result.factRefs)
+      ? result.factRefs.filter((ref): ref is string => typeof ref === 'string')
+      : [],
+    messageId: result.messageId,
+    threadId: result.threadId,
+    sourceHash: args.source.sourceHash,
+    selectionEpoch: result.selectionEpoch,
+    inputRevision: result.inputRevision,
+    inputDigest: result.inputDigest,
+    totalMinor: result.totalMinor,
+    currency: result.currency,
+    quoteRequestKey: `${result.arrivalDate}:${result.departureDate}`,
+    approvedHeader: {
+      salesStrategy: built.header.salesStrategy,
+      company: built.header.company,
+      agency: built.header.agency,
+      attention: built.header.attention,
+      clientEmail: built.header.clientEmail,
+      clientTelephone: built.header.clientTelephone,
+    },
+    onceExtras: hasPerStaySingleChargeExtras(built.sent),
+    runId: typeof result.runId === 'string' && result.runId.trim() ? result.runId : null,
+    screenshots: Array.isArray(result.screenshots)
+      ? result.screenshots.filter(
+          (name): name is string => typeof name === 'string' && name.trim().length > 0,
+        )
+      : [],
+    ...(rateOptions.length ? { rateOptions } : {}),
+    ...(rowRates.length ? { rowRates } : {}),
+  };
+  return {
+    status: 'ok',
+    offer: allocationFromStaffQuote(result, args.groups),
+    staffQuote,
+    extrasReviewItems: Array.isArray(result.extrasReviewItems)
+      ? result.extrasReviewItems.filter(
+          (item): item is string => typeof item === 'string' && item.trim().length > 0,
+        )
+      : [],
+  };
+}
+
+function settledStaffQuoteJob(view: StaffQuoteJobView): boolean {
+  return view.status === 'done' || view.status === 'failed';
+}
+
+async function pollStaffQuoteJob(
+  query: StaffQuoteJobQuery,
+  initial: StaffQuoteJobView,
+): Promise<StaffQuoteJobView> {
+  let view = initial;
+  let misses = 0;
+  while (!settledStaffQuoteJob(view)) {
+    await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
+    const next = await query({ runId: view.runId }).catch(() => null);
+    if (next) {
+      view = next;
+      misses = 0;
+      continue;
+    }
+    misses += 1;
+    if (misses >= HMS_JOB_MAX_MISSES) {
+      return { ...view, status: 'failed', failureClass: 'POLL_LOST' };
+    }
+  }
+  return view;
+}
+
+function boundStaffQuoteJob(
+  view: StaffQuoteJobView,
+  args: StaffQuoteRequestArgs,
+  built: BuiltStaffQuoteRequest,
+): BoundExecuteStaffQuote {
+  const result = view.result;
+  if (result?.ok === false) {
+    const code = typeof result.code === 'string' ? result.code : 'staff_quote_failed';
+    const message =
+      typeof result.message === 'string' && result.message.trim()
+        ? result.message
+        : 'The requested quote could not be qualified; review the stay inputs and try again.';
+    return {
+      status: 'unavailable',
+      reason: message,
+      detail: code,
+      ...(message.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX) ? { noMatchingRate: true } : {}),
+    };
+  }
+  if (view.status === 'failed') {
+    if (view.failureClass === 'POLL_LOST') {
+      return {
+        status: 'unavailable',
+        reason:
+          'The queued quote is still running, but Nava could not read its status. Try again in a minute.',
+      };
+    }
+    if (view.failureClass === 'HMS_LOCK_BUSY') {
+      return {
+        status: 'unavailable',
+        reason: 'HMS is busy with another quote or lookup. Try again in a minute.',
+      };
+    }
+    if (view.failureClass === 'TRANSIENT_NETWORK') {
+      return { status: 'unavailable', reason: "HMS didn't answer in time." };
+    }
+    return { status: 'unavailable', reason: 'The background quote could not be completed. Try again.' };
+  }
+  if (view.status !== 'done' || !result) {
+    return { status: 'unavailable', reason: 'The queued quote did not return a result. Try again.' };
+  }
+  return boundStaffQuoteResult(result, args, built);
+}
+
+export async function bindExecuteStaffQuote(
+  args: StaffQuoteRequestArgs & {
+    mutate?: (
+      input: ExecuteStaffQuoteInput,
+    ) => Promise<ExecuteStaffQuoteResult | { status?: string; alternatives?: unknown }>;
+    queue?: StaffQuoteJobQueue;
+    staffQuoteJob?: StaffQuoteJobQuery;
+  },
+): Promise<BoundExecuteStaffQuote> {
+  const built = staffQuoteRequest(args);
+  if ('error' in built) return { status: 'unavailable', reason: built.error };
+  if (!args.queue && !args.mutate) {
+    return {
+      status: 'unavailable',
+      reason: 'Quoting is not connected to this pane yet. Refresh the pane and try again.',
+    };
+  }
+  try {
+    if (args.queue) {
+      const queued = await args.queue(built.input);
+      if (typeof queued?.runId === 'string' && queued.runId.trim()) {
+        if (!args.staffQuoteJob) {
+          return {
+            status: 'unavailable',
+            reason:
+              'The queued quote status is not connected to this pane. Refresh the pane and try again.',
+          };
+        }
+        const first = await args.staffQuoteJob({ runId: queued.runId });
+        if (!first)
+          return {
+            status: 'unavailable',
+            reason: 'Nava could not read the queued quote. Try again in a minute.',
+          };
+        return boundStaffQuoteJob(await pollStaffQuoteJob(args.staffQuoteJob, first), args, built);
+      }
+      if (queued?.runId !== null) {
+        return { status: 'unavailable', reason: 'Nava did not return a queued quote. Try again.' };
+      }
+    }
+    if (!args.mutate) {
+      return {
+        status: 'unavailable',
+        reason: 'Quoting is not connected to this pane yet. Refresh the pane and try again.',
+      };
+    }
+    return boundStaffQuoteResult(await args.mutate(built.input), args, built);
+  } catch (error) {
+    return { status: 'unavailable', ...searchFailure(error) };
+  }
+}
+
+/** Finds the latest persisted quote for the same semantic request after a pane remount, then polls it if still running. */
+export async function bindReadBackStaffQuote(
+  args: StaffQuoteRequestArgs & {
+    query?: StaffQuoteJobQuery;
+  },
+): Promise<BoundExecuteStaffQuote | null> {
+  if (!args.query) return null;
+  const built = staffQuoteRequest(args);
+  if ('error' in built) return null;
+  try {
+    const first = await args.query({ input: built.input });
+    if (!first) return null;
+    const settled = await pollStaffQuoteJob(args.query, first);
+    const rebased = settled.result
+      ? {
+          ...settled,
+          result: {
+            ...settled.result,
+            selectionEpoch: args.selectionEpoch,
+            inputRevision: args.inputRevision,
+          },
+        }
+      : settled;
+    return boundStaffQuoteJob(rebased, args, built);
   } catch (error) {
     return { status: 'unavailable', ...searchFailure(error) };
   }
@@ -958,6 +1189,8 @@ export async function bindHmsQueueStatus(query?: () => Promise<QueueStatus>): Pr
 type StaffQuoteClient = {
   staffQuoteSource?: { query: (input: { internetMessageId: string }) => Promise<StaffQuoteSourceResult> };
   executeStaffQuote?: { mutate: (input: ExecuteStaffQuoteInput) => Promise<ExecuteStaffQuoteResult> };
+  queueStaffQuote?: { mutate: StaffQuoteJobQueue };
+  staffQuoteJob?: { query: StaffQuoteJobQuery };
   hmsQueueStatus?: { query: () => Promise<QueueStatus> };
   quoteRunScreenshot?: {
     query: (input: { runId: string; name: string }) => Promise<QuoteRunScreenshotResult>;
