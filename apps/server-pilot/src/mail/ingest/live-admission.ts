@@ -20,7 +20,7 @@ import {
   enqueueInboundExtraction,
   inboundExtractionEnabled,
 } from '../../ai/extraction/inbound-run.js';
-import { isInboundTriageClassifierEnabled } from '../../env.js';
+import { isAiWriteGateEnabled, isInboundTriageClassifierEnabled } from '../../env.js';
 import { classifyMailSource } from '../../ai/mail-source.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
 import { lockCanonicalMailbox } from './canonical-identity.js';
@@ -203,6 +203,8 @@ export async function removeDeterministicAutomatedChannelCategory(
   db: DB,
   input: { transportId: string; threadId: string },
 ): Promise<void> {
+  // Folder writes follow the same gate as the route that applied them.
+  if (!isAiWriteGateEnabled()) return;
   const [route] = await db
     .select({ finishedAt: aiWorkflowRun.finishedAt })
     .from(aiWorkflowRun)

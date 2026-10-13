@@ -139,9 +139,11 @@ describe('first live admission and immutable inputs on PostgreSQL', () => {
       const previous = {
         classifier: process.env.INBOUND_TRIAGE_CLASSIFIER,
         extraction: process.env.INBOUND_EXTRACTION,
+        writeGate: process.env.AI_WRITE_GATE_ENABLED,
       };
       process.env.INBOUND_TRIAGE_CLASSIFIER = 'off';
       process.env.INBOUND_EXTRACTION = 'on';
+      process.env.AI_WRITE_GATE_ENABLED = 'true';
       try {
         await withIngestionDb(async ({ db }) => {
           const { persistOutlookHistory } = await import('../src/mail/ingest/outlook-history.js');
@@ -267,6 +269,8 @@ describe('first live admission and immutable inputs on PostgreSQL', () => {
         else process.env.INBOUND_TRIAGE_CLASSIFIER = previous.classifier;
         if (previous.extraction === undefined) delete process.env.INBOUND_EXTRACTION;
         else process.env.INBOUND_EXTRACTION = previous.extraction;
+        if (previous.writeGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
+        else process.env.AI_WRITE_GATE_ENABLED = previous.writeGate;
       }
     },
     20_000,
