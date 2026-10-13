@@ -578,9 +578,9 @@ export function notFoundConfirmationCopy(confirmation: string): string {
   return `Not found in HMS by confirmation number ${confirmation}. Use the surname and arrival search below.`;
 }
 
-/** The prefetch result shown on a later open, with the exact confirmation number it searched. */
+/** The background lookup's result shown on a later open. It may have run after the email arrived, so it claims no time. */
 export function prefetchedNotFoundConfirmationCopy(confirmation: string): string {
-  return `Not found in HMS when this email arrived — searched by confirmation number ${confirmation}.`;
+  return `Not found in HMS by Nava's earlier lookup (confirmation number ${confirmation}). Find again to check now.`;
 }
 
 /**

@@ -517,7 +517,7 @@ describe('AmendLookupPanel', () => {
 
     expect(
       await screen.findByText(
-        `Not found in HMS when this email arrived — searched by confirmation number ${CONFIRMATION}.`,
+        `Not found in HMS by Nava's earlier lookup (confirmation number ${CONFIRMATION}). Find again to check now.`,
       ),
     ).toBeTruthy();
     expect(trpc.jobStatus).toHaveBeenCalledWith({
@@ -536,7 +536,7 @@ describe('AmendLookupPanel', () => {
 
     expect(
       await screen.findByText(
-        `Not found in HMS when this email arrived — searched by confirmation number ${CONFIRMATION}.`,
+        `Not found in HMS by Nava's earlier lookup (confirmation number ${CONFIRMATION}). Find again to check now.`,
       ),
     ).toBeTruthy();
     expect(trpc.queueFind).not.toHaveBeenCalled();
