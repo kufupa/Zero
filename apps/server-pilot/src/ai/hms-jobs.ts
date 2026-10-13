@@ -2181,6 +2181,7 @@ async function latestStaffQuoteRunFor(
   quoteInput: StaffQuoteInput,
 ): Promise<AiWorkflowRun[]> {
   const wanted = hmsRequestKey({ kind: 'staff_quote', input: quoteInput });
+  const now = new Date();
   const rows = await db
     .select()
     .from(aiWorkflowRun)
@@ -2190,7 +2191,8 @@ async function latestStaffQuoteRunFor(
         eq(aiWorkflowRun.triggerMessageId, messageId),
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
         sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${messageId}`,
-        staffQuoteRunFreshness(new Date()),
+        // Every success counts when picking the newest: an expired price must not let an older refusal answer.
+        or(eq(aiWorkflowRun.state, 'succeeded'), staffQuoteRunFreshness(now)),
       ),
     )
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
@@ -2198,7 +2200,13 @@ async function latestStaffQuoteRunFor(
   // superseded by a later quote, so its documents would be refused; the pane must quote again instead.
   const [newest] = rows;
   if (!newest) return [];
-  if (newest.state === 'succeeded' && !staffQuoteResultReusable(newest.readResult, new Date())) return [];
+  if (
+    newest.state === 'succeeded' &&
+    (!newest.readResultExpiresAt ||
+      newest.readResultExpiresAt <= now ||
+      !staffQuoteResultReusable(newest.readResult, now))
+  )
+    return [];
   const parsed = hmsJobRequestSchema.safeParse(newest.readRequest);
   return parsed.success && hmsRequestKey(parsed.data) === wanted ? [newest] : [];
 }

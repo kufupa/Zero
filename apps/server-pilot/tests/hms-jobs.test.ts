@@ -700,6 +700,45 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       ).resolves.toBeNull();
     }));
 
+  it('does not let an older refusal answer once a newer price has expired', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run: refused } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const { run: priced } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const now = Date.now();
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: { kind: 'staff_quote', status: 'unavailable', reason: 'No rate' },
+          readResultExpiresAt: new Date(now + 6 * 60 * 60_000),
+          createdAt: new Date(now - 30 * 60_000),
+        })
+        .where(eq(aiWorkflowRun.id, refused.id));
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: { kind: 'staff_quote', status: 'ready', freshUntil: new Date(now - 60_000).toISOString() },
+          readResultExpiresAt: new Date(now - 60_000),
+          createdAt: new Date(now - 20 * 60_000),
+        })
+        .where(eq(aiWorkflowRun.id, priced.id));
+
+      await expect(
+        readHmsJobView(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            messageId,
+            kind: 'staff_quote',
+            input: { ...STAFF_QUOTE_INPUT, messageId },
+          },
+          db,
+        ),
+      ).resolves.toBeNull();
+    }));
+
   it('does not read back an expired staff quote result by owner-scoped run id', () =>
     withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
