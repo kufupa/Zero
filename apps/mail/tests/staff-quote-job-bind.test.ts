@@ -4,6 +4,7 @@ import {
   type ExecuteStaffQuoteInput,
   type ExecuteStaffQuoteResult,
 } from '../lib/quote-workflow/staff-quote-bind';
+import { HMS_JOB_POLL_MS } from '../lib/quote-workflow/amend-find';
 import { emptyStaffQuoteHeader, type StayGroupRequirement } from '../lib/quote-workflow/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -39,7 +40,7 @@ const READY: ExecuteStaffQuoteResult = {
   description: 'Standard King; Room Only',
 };
 
-function view(status: 'running' | 'done' | 'failed', result: unknown = null) {
+function view(status: 'running' | 'done' | 'failed', result: unknown = null, asOf?: string) {
   return {
     runId: 'staff-job-1',
     request: null,
@@ -48,7 +49,7 @@ function view(status: 'running' | 'done' | 'failed', result: unknown = null) {
     position: null,
     attempts: 0,
     failureClass: null,
-    asOf: status === 'done' ? '2026-10-12T12:00:00.000Z' : null,
+    asOf: status === 'done' ? (asOf ?? new Date().toISOString()) : null,
     result: result as Record<string, unknown> | null,
   };
 }
@@ -90,9 +91,9 @@ describe('staff quote HMS job binding', () => {
       inputRevision: 4,
       groups: [{ id: 'single', arrivalDate: '2026-11-12', roomCodes: ['SKNG'] }],
     });
-    expect(staffQuoteJob.mock.calls).toEqual([
-      [{ runId: 'staff-job-1' }],
-      [{ runId: 'staff-job-1' }],
+    expect(staffQuoteJob.mock.calls.map(([input]) => input)).toEqual([
+      { runId: 'staff-job-1' },
+      { runId: 'staff-job-1' },
     ]);
     expect(mutate).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'ok', staffQuote: { workflowRunId: 'workflow-1' } });
@@ -261,21 +262,96 @@ describe('staff quote HMS job binding', () => {
     await vi.runAllTimersAsync();
     const result = await pending;
 
-    expect(query.mock.calls).toEqual([
-      [
-        {
-          input: expect.objectContaining({
-            messageId: source.messageId,
-            selectionEpoch: 3,
-            inputRevision: 4,
-          }),
-        },
-      ],
-      [{ runId: 'staff-job-1' }],
+    expect(query.mock.calls.map(([input]) => input)).toEqual([
+      {
+        input: expect.objectContaining({
+          messageId: source.messageId,
+          selectionEpoch: 3,
+          inputRevision: 4,
+        }),
+      },
+      { runId: 'staff-job-1' },
     ]);
     expect(result).toMatchObject({
       status: 'ok',
       staffQuote: { selectionEpoch: 3, inputRevision: 4, workflowRunId: 'workflow-1' },
     });
+  });
+
+  it('does not restore a finished quote older than six hours after remount', async () => {
+    const expiredAsOf = new Date(Date.now() - 6 * 60 * 60_000 - 1).toISOString();
+    const query = vi.fn(async () => view('done', READY, expiredAsOf));
+
+    const result = await bindReadBackStaffQuote({
+      query,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toBeNull();
+    expect(query).toHaveBeenCalledOnce();
+  });
+
+  it('stops a quote poll after nine minutes as POLL_LOST so the pane can retry', async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const staffQuoteJob = vi.fn(async () =>
+      Date.now() - startedAt > 9 * 60_000 ? view('done', READY) : view('running'),
+    );
+    const pending = bindExecuteStaffQuote({
+      queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
+      staffQuoteJob,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    const result = await pending;
+
+    expect(result).toEqual({
+      status: 'unavailable',
+      reason: 'The queued quote is still running, but Nava could not read its status. Try again in a minute.',
+    });
+  });
+
+  it('aborts the prior read-back poll on cleanup before a rerun can stack another poller', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    let reads = 0;
+    const query = vi.fn(async () => (++reads === 1 ? view('running') : view('done', READY)));
+    const pending = bindReadBackStaffQuote({
+      query,
+      signal: controller.signal,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(HMS_JOB_POLL_MS * 2);
+    await pending;
+
+    expect(query).toHaveBeenCalledOnce();
+    const rerun = vi.fn(async () => view('done', READY));
+    await expect(
+      bindReadBackStaffQuote({
+        query: rerun,
+        source,
+        selectionEpoch: 3,
+        inputRevision: 4,
+        groups,
+        header: emptyStaffQuoteHeader(),
+      }),
+    ).resolves.toMatchObject({ status: 'ok' });
+    expect(rerun).toHaveBeenCalledOnce();
   });
 });

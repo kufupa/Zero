@@ -506,6 +506,7 @@ export function NavaPane({
     const stayRevision = quoteSession.stayRevision;
     const header = quoteSession.staffHeader;
     let cancelled = false;
+    const pollController = new AbortController();
     void (async () => {
       const readBacks = await trackStaffQuoteRun(
         Promise.all(
@@ -515,6 +516,7 @@ export function NavaPane({
             );
             const result = await bindReadBackStaffQuote({
               query: staff.workstation.staffQuoteJob?.query,
+              signal: pollController.signal,
               source,
               selectionEpoch,
               inputRevision,
@@ -720,6 +722,7 @@ export function NavaPane({
     })();
     return () => {
       cancelled = true;
+      pollController.abort();
     };
   }, [priorQuoteKey]);
 

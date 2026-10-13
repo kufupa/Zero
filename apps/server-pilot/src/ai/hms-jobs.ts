@@ -30,7 +30,15 @@ import {
   probeAvailability,
   type AvailabilityRequest,
 } from './hms-availability.js';
-import { classifyFind, classifySearch, recordedToolRun, toolInputDigest } from './hitl-tool-run.js';
+import {
+  classifyFind,
+  classifySearch,
+  classifyStaffQuote,
+  createToolRunRecorder,
+  ledgerQuoteInput,
+  recordedToolRun,
+  toolInputDigest,
+} from './hitl-tool-run.js';
 import {
   findStay,
   GUEST_SURNAME_PATTERN,
@@ -54,6 +62,7 @@ import {
   type StaffQuoteRunIdentity,
 } from './staff-quote-run.js';
 import { TRPCError } from '@trpc/server';
+import { quoteDigest } from '../quote-proposal/quote-revision.js';
 import {
   type AiFailureClass,
   type AiRunFence,
@@ -96,6 +105,7 @@ export const HMS_JOB_PRIORITY_PREFETCH = 0;
 const JOB_MAX_ATTEMPTS = 3;
 const JOB_RETRY_MS = 30_000;
 const JOB_YIELD_MS = 30_000;
+const STAFF_QUOTE_RESULT_TTL_MS = 6 * 60 * 60_000;
 const PREFETCH_PER_MAIL_MAX = 3;
 const PREFETCH_WINDOW_MS = 60 * 60_000;
 const ISO_DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -1264,24 +1274,72 @@ const STAFF_QUOTE_TRANSIENT_CODES = new Set([
   'staff_quote_native_capture_unavailable',
   'native_quote_capture_unavailable',
   'native_quote_read_unavailable',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'TIMEOUT',
+  'TARGET_CLOSED',
+  '40001',
+  '40P01',
 ]);
+
+const STAFF_QUOTE_BUSINESS_CODES = new Set([
+  'staff_quote_failed',
+  'native_quote_no_matching_rate',
+  'native_quote_business_evidence_unavailable',
+  'native_quote_insufficient_inventory',
+  'native_quote_restricted_nights',
+  'native_quote_capture_scope_or_completeness_invalid',
+  'native_quote_capture_oversized',
+  'business_quote_policy_unavailable',
+  'business_party_identity_unavailable',
+  'business_party_lookup_unavailable',
+  'business_selected_joint_inventory_unavailable',
+  'business_selected_price_unavailable',
+  'business_quote_source_expired',
+  'staff_quote_party_unavailable',
+  'staff_quote_party_invalid',
+  'staff_quote_party_changed',
+  'staff_quote_source_changed',
+]);
+
+function staffQuoteErrorCode(error: unknown): string {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  return typeof code === 'string' ? code : staffQuoteFailureCode(error);
+}
 
 function staffQuoteTransientFailure(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
-    if (current instanceof Error) {
-      if (current.name === 'TimeoutError' || current.name === 'AbortError') return true;
-      if (/timeout|ECONNRESET|ENOTFOUND|network/i.test(current.message)) return true;
-    }
     if (current && typeof current === 'object') {
-      const code = 'code' in current ? current.code : undefined;
+      const record = current as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown };
+      const code = record.code;
+      const message = typeof record.message === 'string' ? record.message : '';
+      if (
+        record.name === 'TimeoutError' ||
+        record.name === 'AbortError' ||
+        /timeout|ECONNRESET|ECONNREFUSED|EPIPE|ENOTFOUND|network|socket hang up/i.test(message) ||
+        /Target\b.*\bclosed\b/i.test(message)
+      ) {
+        return true;
+      }
       if (typeof code === 'string' && STAFF_QUOTE_TRANSIENT_CODES.has(code)) return true;
-      current = 'cause' in current ? current.cause : null;
+      if (current instanceof TRPCError && current.code === 'INTERNAL_SERVER_ERROR') return true;
+      if (
+        depth > 0 &&
+        !(current instanceof TRPCError) &&
+        !STAFF_QUOTE_BUSINESS_CODES.has(staffQuoteErrorCode(current))
+      ) {
+        return true;
+      }
+      current = record.cause ?? null;
     } else {
       current = null;
     }
   }
-  return false;
+  return !(error instanceof TRPCError) && !STAFF_QUOTE_BUSINESS_CODES.has(staffQuoteErrorCode(error));
 }
 
 function staffQuoteLockBusy(error: unknown): boolean {
@@ -1317,14 +1375,16 @@ async function storeStaffQuoteResult(input: {
   result: Record<string, unknown>;
   outcome: string;
 }): Promise<'succeeded' | 'retry_wait'> {
+  const now = new Date();
   const marked = await markAiRunSucceeded(
     {
       ...input.mark,
       readResult: {
         ...input.result,
         kind: 'staff_quote',
-        asOf: new Date().toISOString(),
+        asOf: now.toISOString(),
       },
+      readResultExpiresAt: new Date(now.getTime() + STAFF_QUOTE_RESULT_TTL_MS),
       metrics: { hmsJob: true, kind: 'staff_quote', outcome: input.outcome },
     },
     input.db,
@@ -1335,24 +1395,14 @@ async function storeStaffQuoteResult(input: {
 function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): { code: string; message: string } {
   const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
   const code = typeof rawCode === 'string' ? rawCode : staffQuoteFailureCode(error);
-  const businessCodes = new Set([
-    'BAD_REQUEST',
-    'NOT_FOUND',
-    'PRECONDITION_FAILED',
-    'CONFLICT',
-    'FORBIDDEN',
-    'UNAUTHORIZED',
-    'staff_quote_failed',
-  ]);
   const directMessage = error instanceof Error ? error.message : '';
-  const message =
-    (error instanceof TRPCError && error.code !== 'INTERNAL_SERVER_ERROR') ||
-    businessCodes.has(code)
-      ? directMessage
-      : staffQuoteFailureMessage(error, {
-          salesStrategy: request.salesStrategy,
-          dinnerRequested: request.groups.some((group) => group.board === 'dinner_bb'),
-        });
+  const businessTrpcError = error instanceof TRPCError && error.code !== 'INTERNAL_SERVER_ERROR';
+  const message = businessTrpcError
+    ? directMessage
+    : staffQuoteFailureMessage(error, {
+        salesStrategy: request.salesStrategy,
+        dinnerRequested: request.groups.some((group) => group.board === 'dinner_bb'),
+      });
   return { code, message: message || 'The requested quote could not be qualified; review the stay inputs and try again.' };
 }
 
@@ -1402,23 +1452,32 @@ export async function executeHmsJob(input: {
   if (request.kind === 'staff_quote') {
     const user = staffQuoteUserFromMetrics(metrics);
     if (!user) {
-      return storeStaffQuoteResult({
+      await markAiRunDeadLetter(
+        { ...mark, lastError: 'staff_quote_identity_unavailable', failureClass: 'SCHEMA_DRIFT' },
         db,
-        mark,
-        outcome: 'refused',
-        result: {
-          ok: false,
-          code: 'STAFF_QUOTE_SCOPE_INVALID',
-          message: 'Staff quotation identity is unavailable. Run the quote again.',
-        },
-      });
+      );
+      return 'dead_letter';
     }
     try {
-      const result = await runStaffQuote(
-        request.input,
-        { transportId: run.transportId, user },
-        db,
-        { signal: input.signal, deadlineAt: fence.deadlineAt.getTime() },
+      const result = await recordedToolRun(
+        {
+          kind: 'quote',
+          transportId: run.transportId,
+          messageId: request.input.messageId,
+          userId: user.id,
+          input: ledgerQuoteInput(request.input),
+          inputDigest: quoteDigest(request.input),
+        },
+        () =>
+          runStaffQuote(
+            request.input,
+            { transportId: run.transportId, user },
+            db,
+            { signal: input.signal, deadlineAt: fence.deadlineAt.getTime() },
+          ),
+        classifyStaffQuote,
+        undefined,
+        { recorder: createToolRunRecorder(db, { enabled: true }) ?? undefined },
       );
       return storeStaffQuoteResult({
         db,
@@ -1601,6 +1660,7 @@ async function latestStaffQuoteRunFor(
         scope,
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
         sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${messageId}`,
+      or(ne(aiWorkflowRun.state, 'succeeded'), gt(aiWorkflowRun.readResultExpiresAt, new Date())),
       ),
     )
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))

@@ -122,10 +122,12 @@ export type StaffQuoteJobView = {
   status: 'queued' | 'running' | 'retrying' | 'done' | 'failed';
   result: Record<string, unknown> | null;
   failureClass: string | null;
+  asOf?: string | null;
 };
 
 export type StaffQuoteJobQuery = (
   input: { runId: string } | { input: ExecuteStaffQuoteInput },
+  options?: { signal?: AbortSignal },
 ) => Promise<StaffQuoteJobView | null>;
 
 export type StaffQuoteJobQueue = (input: ExecuteStaffQuoteInput) => Promise<{ runId: string | null }>;
@@ -921,26 +923,76 @@ function settledStaffQuoteJob(view: StaffQuoteJobView): boolean {
   return view.status === 'done' || view.status === 'failed';
 }
 
+const STAFF_QUOTE_POLL_MAX_MS = 9 * 60_000;
+const STAFF_QUOTE_RESULT_MAX_AGE_MS = 6 * 60 * 60_000;
+
+function waitForStaffQuotePoll(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const finish = (elapsed: boolean) => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      resolve(elapsed);
+    };
+    const timer = setTimeout(() => finish(true), ms);
+    const abort = () => finish(false);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
 async function pollStaffQuoteJob(
   query: StaffQuoteJobQuery,
   initial: StaffQuoteJobView,
+  signal?: AbortSignal,
 ): Promise<StaffQuoteJobView> {
   let view = initial;
   let misses = 0;
-  while (!settledStaffQuoteJob(view)) {
-    await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
-    const next = await query({ runId: view.runId }).catch(() => null);
-    if (next) {
-      view = next;
-      misses = 0;
-      continue;
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', abort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ kind: 'timeout' }>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve({ kind: 'timeout' });
+    }, STAFF_QUOTE_POLL_MAX_MS);
+  });
+  const poll = async (): Promise<{ kind: 'settled'; view: StaffQuoteJobView }> => {
+    while (!settledStaffQuoteJob(view) && !controller.signal.aborted) {
+      const elapsed = await waitForStaffQuotePoll(HMS_JOB_POLL_MS, controller.signal);
+      if (!elapsed || controller.signal.aborted) break;
+      if (Date.now() - startedAt >= STAFF_QUOTE_POLL_MAX_MS) {
+        return { kind: 'settled', view: { ...view, status: 'failed', failureClass: 'POLL_LOST' } };
+      }
+      const next = await query({ runId: view.runId }, { signal: controller.signal }).catch(() => null);
+      if (controller.signal.aborted) break;
+      if (Date.now() - startedAt >= STAFF_QUOTE_POLL_MAX_MS) {
+        return { kind: 'settled', view: { ...view, status: 'failed', failureClass: 'POLL_LOST' } };
+      }
+      if (next) {
+        view = next;
+        misses = 0;
+        continue;
+      }
+      misses += 1;
+      if (misses >= HMS_JOB_MAX_MISSES) {
+        return { kind: 'settled', view: { ...view, status: 'failed', failureClass: 'POLL_LOST' } };
+      }
     }
-    misses += 1;
-    if (misses >= HMS_JOB_MAX_MISSES) {
-      return { ...view, status: 'failed', failureClass: 'POLL_LOST' };
-    }
+    return { kind: 'settled', view };
+  };
+  try {
+    const result = await Promise.race([poll(), timeout]);
+    return result.kind === 'timeout'
+      ? { ...view, status: 'failed', failureClass: 'POLL_LOST' }
+      : result.view;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+    controller.abort();
   }
-  return view;
 }
 
 function boundStaffQuoteJob(
@@ -1043,15 +1095,27 @@ export async function bindExecuteStaffQuote(
 export async function bindReadBackStaffQuote(
   args: StaffQuoteRequestArgs & {
     query?: StaffQuoteJobQuery;
+    signal?: AbortSignal;
   },
 ): Promise<BoundExecuteStaffQuote | null> {
   if (!args.query) return null;
   const built = staffQuoteRequest(args);
   if ('error' in built) return null;
   try {
-    const first = await args.query({ input: built.input });
-    if (!first) return null;
-    const settled = await pollStaffQuoteJob(args.query, first);
+    const first = args.signal
+      ? await args.query({ input: built.input }, { signal: args.signal })
+      : await args.query({ input: built.input });
+    if (!first || args.signal?.aborted) return null;
+    if (
+      first.status === 'done' &&
+      (!first.asOf ||
+        !Number.isFinite(Date.parse(first.asOf)) ||
+        Date.now() - Date.parse(first.asOf) >= STAFF_QUOTE_RESULT_MAX_AGE_MS)
+    ) {
+      return null;
+    }
+    const settled = await pollStaffQuoteJob(args.query, first, args.signal);
+    if (args.signal?.aborted) return null;
     const rebased = settled.result
       ? {
           ...settled,

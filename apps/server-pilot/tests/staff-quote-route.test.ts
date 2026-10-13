@@ -225,6 +225,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           status: 'queued',
           request: { kind: 'staff_quote', input: request.input },
         });
+        await expect(api.workstation.staffQuoteJob({ runId: queued.runId! })).resolves.toMatchObject({
+          runId: queued.runId,
+          status: 'queued',
+        });
         const other = caller('transport-centurion', 'user-navaai');
         await expect(other.workstation.staffQuoteJob({ input: request.input })).resolves.toBeNull();
         await expect(other.workstation.staffQuoteJob({ runId: queued.runId! })).resolves.toBeNull();

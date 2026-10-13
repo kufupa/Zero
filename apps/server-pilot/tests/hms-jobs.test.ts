@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 import {
   canClaimReadToolRun,
@@ -27,6 +28,7 @@ import {
 import { paneStayLookupLoaders, type PaneStayLookupSpawnResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { aiDraftGeneration, aiWorkflowRun, mailboxTransport, message, mailThread } from '../src/db/schema/mail.js';
+import { hitlToolRun } from '../src/db/schema/hitl.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { runHmsJobOnce } from '../src/ai/worker.js';
 import type { DB } from '../src/db/client.js';
@@ -368,6 +370,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it('runs a queued staff quote as a user-priority job and stores the complete quote result', () =>
     withSeededTestDb(async (db) => {
+      vi.stubEnv('HITL_LEDGER', 'on');
       const { threadId, messageId } = await seedThread(db);
       const staffQuoteUser = {
         id: CENTURION_USER_ID,
@@ -413,6 +416,81 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         asOf: expect.any(String),
       });
       expect(view?.asOf).toEqual(expect.any(String));
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(stored?.readResultExpiresAt?.getTime()).toBeGreaterThan(Date.now() + 6 * 60 * 60_000 - 1_000);
+      expect(stored?.readResultExpiresAt?.getTime()).toBeLessThan(Date.now() + 6 * 60 * 60_000 + 1_000);
+      const [toolRun] = await db
+        .select()
+        .from(hitlToolRun)
+        .where(
+          and(
+            eq(hitlToolRun.transportId, TRANSPORT_ID),
+            eq(hitlToolRun.messageId, messageId),
+            eq(hitlToolRun.userId, staffQuoteUser.id),
+            eq(hitlToolRun.kind, 'quote'),
+          ),
+        );
+      expect(toolRun).toMatchObject({
+        status: 'ok',
+        workflowRunId: quoteResult.workflowRunId,
+        result: { revisionRef: 'revision-1', totalMinor: 240_000, currency: 'ZAR' },
+      });
+    }));
+
+  it('does not read back an expired staff quote result for matching inputs', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const expiredAt = new Date(Date.now() - 1);
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: { kind: 'staff_quote', asOf: new Date(expiredAt.getTime() - 6 * 60 * 60_000).toISOString() },
+          readResultExpiresAt: expiredAt,
+          finishedAt: expiredAt,
+          updatedAt: expiredAt,
+        })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      await expect(
+        readHmsJobView(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            messageId,
+            kind: 'staff_quote',
+            input: { ...STAFF_QUOTE_INPUT, messageId },
+          },
+          db,
+        ),
+      ).resolves.toBeNull();
+    }));
+
+  it('supersedes a staff quote that stayed queued for more than ten minutes without being claimed', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const now = new Date(Date.now() + 1_000);
+      const createdAt = new Date(now.getTime() - 10 * 60_000 - 1);
+      await db
+        .update(aiWorkflowRun)
+        .set({ createdAt, updatedAt: createdAt })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      const claimed = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        now,
+        db,
+      });
+      const [expired] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+
+      expect(claimed).toBeNull();
+      expect(expired).toMatchObject({ state: 'superseded', lastError: 'staff_quote_queue_expired' });
+      expect(expired?.claimedAt).toBeNull();
     }));
 
   it('stores a staff quote business refusal as a successful job with its real message', () =>
@@ -420,8 +498,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
       staffQuoteRunner.run.mockRejectedValue(
-        Object.assign(new Error('HMS has no rate for this meal plan under BAR.'), {
+        new TRPCError({
           code: 'PRECONDITION_FAILED',
+          message: 'HMS has no rate for this meal plan under BAR.',
         }),
       );
 
@@ -456,7 +535,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       });
     }));
 
-  it('retries transient native staff quote failures but dead-letters other unknown failures', () =>
+  it('retries transient native staff quote failures', () =>
     withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);

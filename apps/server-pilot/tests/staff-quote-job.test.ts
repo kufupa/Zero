@@ -30,7 +30,11 @@ const quoteLineMocks = vi.hoisted(() => ({
 
 vi.mock('../src/ai/staff-quote-run.js', () => ({
   runStaffQuote: jobMocks.runStaffQuote,
-  staffQuoteFailureCode: () => 'staff_quote_failed',
+  staffQuoteFailureCode: (error: unknown) => {
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    const candidate = typeof code === 'string' ? code : error instanceof Error ? error.message : '';
+    return /^[A-Za-z0-9_.:-]{1,120}$/.test(candidate) ? candidate : 'unknown';
+  },
   staffQuoteFailureMessage: () => 'Staff quote could not be completed.',
 }));
 
@@ -203,11 +207,18 @@ function staffQuoteRunDb(mail: Record<string, unknown>) {
   return { db: db as unknown as DB, inserted, updated };
 }
 
-async function provisionalWorkerQuote(finished: Promise<void>) {
+async function provisionalWorkerQuote(finished: Promise<void>, onError?: (error: unknown) => void) {
   const actualRun = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
     '../src/ai/staff-quote-run.js',
   );
-  jobMocks.runStaffQuote.mockImplementation(actualRun.runStaffQuote);
+  jobMocks.runStaffQuote.mockImplementation(async (...args: Parameters<typeof actualRun.runStaffQuote>) => {
+    try {
+      return await actualRun.runStaffQuote(...args);
+    } catch (error) {
+      onError?.(error);
+      throw error;
+    }
+  });
   const mail = {
     id: STAFF_QUOTE_INPUT.messageId,
     transportId: 'transport-1',
@@ -261,19 +272,21 @@ describe('staff_quote HMS job execution', () => {
     ['missing userId', { staffQuoteUser: user }],
     ['mismatched userId', { userId: 'staff-2', staffQuoteUser: user }],
     ['mismatched staffQuoteUser id', { userId: user.id, staffQuoteUser: { ...user, id: 'staff-2' } }],
-  ])('%s refuses the run without invoking the quote runner', async (_label, metrics) => {
+  ])('%s dead-letters the run without invoking the quote runner', async (_label, metrics) => {
     const { run, fence } = fixture(metrics);
 
-    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('succeeded');
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
 
     expect(jobMocks.runStaffQuote).not.toHaveBeenCalled();
-    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(
+    expect(jobMocks.markDeadLetter).toHaveBeenCalledWith(
       expect.objectContaining({
-        readResult: expect.objectContaining({ ok: false, code: 'STAFF_QUOTE_SCOPE_INVALID' }),
+        failureClass: 'SCHEMA_DRIFT',
+        lastError: 'staff_quote_identity_unavailable',
       }),
       db,
     );
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
+    expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
   });
 
   it('validates the job request and persists the complete read result under the trusted actor', async () => {
@@ -320,7 +333,7 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 
-  it('keeps the worker deadline-bounded approval context valid', async () => {
+  it('keeps the worker deadline-bounded approval context and retries an unknown reader failure', async () => {
     const mail = {
       id: STAFF_QUOTE_INPUT.messageId,
       transportId: 'transport-1',
@@ -339,13 +352,21 @@ describe('staff_quote HMS job execution', () => {
     const { db } = staffQuoteRunDb(mail);
     const authorizeContext = vi.fn();
     let approvalContext: unknown;
+    let thrown: unknown;
     const readQuote = vi.fn(async () => {
       throw new Error('synthetic_native_reader_reached');
     });
     const actualRun = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
       '../src/ai/staff-quote-run.js',
     );
-    jobMocks.runStaffQuote.mockImplementation(actualRun.runStaffQuote);
+    jobMocks.runStaffQuote.mockImplementation(async (...args: Parameters<typeof actualRun.runStaffQuote>) => {
+      try {
+        return await actualRun.runStaffQuote(...args);
+      } catch (error) {
+        thrown = error;
+        throw error;
+      }
+    });
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
       owner: { propertyCode: 'HRCEN' },
@@ -374,7 +395,7 @@ describe('staff_quote HMS job execution', () => {
     vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
     vi.stubEnv('QUOTE_TRACE_ASYNC', 'off');
 
-    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('succeeded');
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('retry_wait');
 
     expect(jobMocks.runStaffQuote).toHaveBeenCalledWith(
       input,
@@ -385,6 +406,24 @@ describe('staff_quote HMS job execution', () => {
     expect(authorizeContext).toHaveBeenCalledOnce();
     expect(authorizeContext.mock.calls[0]?.[0]).toBe(approvalContext);
     expect(readQuote).toHaveBeenCalledOnce();
+    expect(thrown).toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      cause: {
+        name: 'Error',
+        code: 'synthetic_native_reader_reached',
+        message: 'Staff quote execution failed.',
+      },
+    });
+    expect(Object.keys((thrown as Error & { cause: Record<string, unknown> }).cause)).toEqual([
+      'name',
+      'code',
+      'message',
+    ]);
+    expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
+    expect(jobMocks.markRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ failureClass: 'TRANSIENT_NETWORK' }),
+      db,
+    );
   });
 
   it('waits for provisional trace persistence before marking the queued quote ready', async () => {
@@ -409,8 +448,11 @@ describe('staff_quote HMS job execution', () => {
 
   it('retries a provisional trace failure instead of marking a ready result', async () => {
     let fail!: (error: Error) => void;
+    let thrown: unknown;
     const finished = new Promise<void>((_resolve, reject) => (fail = reject));
-    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(finished);
+    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(finished, (error) => {
+      thrown = error;
+    });
 
     const job = executeHmsJob({ run, fence, db: quoteDb });
     await delay(15);
@@ -420,6 +462,19 @@ describe('staff_quote HMS job execution', () => {
     await expect(job).resolves.toBe('retry_wait');
     expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
     expect(inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
+    expect(thrown).toMatchObject({
+      code: 'staff_quote_native_unavailable',
+      cause: {
+        name: 'Error',
+        code: 'staff_quote_trace_finish_failed',
+        message: 'Staff quote execution failed.',
+      },
+    });
+    expect(Object.keys((thrown as Error & { cause: Record<string, unknown> }).cause)).toEqual([
+      'name',
+      'code',
+      'message',
+    ]);
     expect(jobMocks.markRetry).toHaveBeenCalledWith(
       expect.objectContaining({ failureClass: 'TRANSIENT_NETWORK' }),
       quoteDb,
@@ -453,7 +508,11 @@ describe('staff_quote HMS job execution', () => {
     const { run, fence } = fixture();
     const error = Object.assign(new Error('staff quote failed'), {
       code: 'PRECONDITION_FAILED',
-      cause: new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE),
+      cause: {
+        name: 'Error',
+        code: 'HMS_LOCK_BUSY',
+        message: PROPERTY_READ_LOCK_DEADLINE_MESSAGE,
+      },
     });
     jobMocks.runStaffQuote.mockRejectedValue(error);
 
@@ -471,7 +530,7 @@ describe('staff_quote HMS job execution', () => {
     const error = new TRPCError({
       code: 'PRECONDITION_FAILED',
       message: 'HMS is busy with another run. Try again in a minute.',
-      cause: Object.assign(new Error('HMS party lookup lock busy'), { code: 'HMS_LOCK_BUSY' }),
+      cause: { name: 'Error', code: 'HMS_LOCK_BUSY', message: 'HMS party lookup lock busy' },
     });
     jobMocks.runStaffQuote.mockRejectedValue(error);
 
@@ -484,9 +543,33 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
   });
 
-  it('retries known transient native read errors', async () => {
+  it.each([
+    ['closed Playwright target', new Error('Target page, context or browser has been closed')],
+    ['socket hang up', new Error('socket hang up')],
+    ['ECONNREFUSED', Object.assign(new Error('native connection failed'), { code: 'ECONNREFUSED' })],
+    ['EPIPE', Object.assign(new Error('native pipe failed'), { code: 'EPIPE' })],
+    ['Postgres serialization failure', { code: '40001' }],
+    ['Postgres deadlock', { code: '40P01' }],
+    ['sanitized closed target cause', new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quote failed.',
+      cause: { name: 'Error', code: 'TARGET_CLOSED', message: 'Staff quote execution failed.' },
+    })],
+    ['sanitized timeout cause', new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quote failed.',
+      cause: { name: 'Error', code: 'TIMEOUT', message: 'Staff quote execution failed.' },
+    })],
+    ['sanitized transient cause', new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quote failed.',
+      cause: { name: 'Error', code: 'EPIPE', message: 'Staff quote execution failed.' },
+    })],
+    ['unknown error', new Error('unexpected_native_quote_error')],
+    ['internal tRPC error', new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Internal failure.' })],
+  ])('retries transient staff quote failures: %s', async (_label, error) => {
     const { run, fence } = fixture();
-    jobMocks.runStaffQuote.mockRejectedValue(new Error('native browser ECONNRESET'));
+    jobMocks.runStaffQuote.mockRejectedValue(error);
 
     await expect(executeHmsJob({ run, fence, db })).resolves.toBe('retry_wait');
 
@@ -495,5 +578,24 @@ describe('staff_quote HMS job execution', () => {
       db,
     );
     expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['staff_quote_failed', new Error('staff_quote_failed')],
+    ['native no-match', new Error('native_quote_no_matching_rate')],
+  ])('stores a recognized staff quote business code as a refusal: %s', async (_label, error) => {
+    const { run, fence } = fixture();
+    jobMocks.runStaffQuote.mockRejectedValue(error);
+    const code = error.message;
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('succeeded');
+
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        readResult: expect.objectContaining({ ok: false, code }),
+      }),
+      db,
+    );
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 });

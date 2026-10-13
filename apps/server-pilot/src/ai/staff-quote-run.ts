@@ -25,7 +25,12 @@ import {
   listQuoteRunScreenshots,
   quoteRunIdFromEvidenceDirectory,
 } from './staff-quote-evidence.js';
-import { createPostgresPropertyReadLock, propertyReadLockKey } from '../hms/property-read-lock.js';
+import {
+  createPostgresPropertyReadLock,
+  isPropertyReadLockDeadline,
+  PROPERTY_READ_LOCK_DEADLINE_MESSAGE,
+  propertyReadLockKey,
+} from '../hms/property-read-lock.js';
 import { quoteTraceAsyncEnabled, registerPendingStaffQuote } from './staff-quote-trace-async.js';
 import type { NativeQuoteGapDetail } from './reservationist-evaluation-composition.js';
 import { type QuoteRevision } from '../quote-proposal/quote-revision.js';
@@ -88,6 +93,71 @@ export function staffQuoteFailureCode(error: unknown): string {
   const raw = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
   const candidate = typeof raw === 'string' ? raw : error instanceof Error ? error.message : '';
   return /^[A-Za-z0-9_.:-]{1,120}$/.test(candidate) ? candidate : 'unknown';
+}
+
+const STAFF_QUOTE_CAUSE_TRANSIENT_CODES = new Set([
+  'TRANSIENT_NETWORK',
+  'EXECUTION_FAILURE',
+  'AUTHENTICATED_SHELL_TIMEOUT',
+  'staff_quote_native_unavailable',
+  'staff_quote_native_capture_unavailable',
+  'native_quote_capture_unavailable',
+  'native_quote_read_unavailable',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EPIPE',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'TIMEOUT',
+  'TARGET_CLOSED',
+  '40001',
+  '40P01',
+]);
+
+/** Cause metadata is safe for tRPC logging and retains only codes needed for queue classification. */
+function staffQuoteCauseSummary(error: unknown): { name: string; code: string; message: string } {
+  if (isPropertyReadLockDeadline(error)) {
+    return {
+      name: 'Error',
+      code: 'HMS_LOCK_BUSY',
+      message: PROPERTY_READ_LOCK_DEADLINE_MESSAGE,
+    };
+  }
+
+  let current: unknown = error;
+  let leaf: unknown = error;
+  let transientCode: string | undefined;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    if (typeof current !== 'object') break;
+    leaf = current;
+    const record = current as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown };
+    const code = typeof record.code === 'string' ? record.code : undefined;
+    const message = typeof record.message === 'string' ? record.message : '';
+    if (code && STAFF_QUOTE_CAUSE_TRANSIENT_CODES.has(code)) {
+      transientCode = code;
+    } else if (/socket hang up/i.test(message)) {
+      transientCode = 'ECONNRESET';
+    } else if (/Target\b.*\bclosed\b/i.test(message)) {
+      transientCode = 'TARGET_CLOSED';
+    } else if (/\b(?:ECONNRESET|ECONNREFUSED|EPIPE|ENOTFOUND|ETIMEDOUT)\b/i.test(message)) {
+      const matched = message.match(/\b(?:ECONNRESET|ECONNREFUSED|EPIPE|ENOTFOUND|ETIMEDOUT)\b/i)?.[0];
+      transientCode = matched?.toUpperCase();
+    } else if (/timeout/i.test(message)) {
+      transientCode = 'TIMEOUT';
+    } else if (/network/i.test(message)) {
+      transientCode = 'TRANSIENT_NETWORK';
+    }
+    current = record.cause ?? null;
+  }
+
+  const record = leaf && typeof leaf === 'object' ? (leaf as { name?: unknown; code?: unknown }) : {};
+  const rawName = typeof record.name === 'string' ? record.name : 'Error';
+  const rawCode = typeof record.code === 'string' ? record.code : staffQuoteFailureCode(leaf);
+  return {
+    name: /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(rawName) ? rawName : 'Error',
+    code: transientCode ?? (/^[A-Za-z0-9_.:-]{1,120}$/.test(rawCode) ? rawCode : 'unknown'),
+    message: 'Staff quote execution failed.',
+  };
 }
 
 /**
@@ -613,7 +683,7 @@ export async function runStaffQuote(
           salesStrategy: input.salesStrategy,
           dinnerRequested: input.groups.some((group) => group.board === 'dinner_bb'),
         }),
-        cause: error,
+        cause: staffQuoteCauseSummary(error),
       });
     }
     queued.setPhase(3);
@@ -735,7 +805,10 @@ export async function runStaffQuote(
           ).catch(() => undefined);
           if (waitForTracePersistence && !(error instanceof Error && error.message === 'staff_quote_superseded')) {
             const failure = new Error('staff_quote_native_unavailable');
-            Object.assign(failure, { code: 'staff_quote_native_unavailable', cause: error });
+            Object.assign(failure, {
+              code: 'staff_quote_native_unavailable',
+              cause: staffQuoteCauseSummary(error),
+            });
             throw failure;
           }
           if (waitForTracePersistence) throw error;

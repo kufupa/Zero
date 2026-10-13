@@ -643,7 +643,12 @@ export const workstationRouter = router({
     if (!hmsJobQueueEnabled()) return null;
     return readHmsJobView(
       'runId' in input
-        ? { transportId: ctx.activeTransportId, userId: ctx.sessionUser.id, runId: input.runId }
+        ? {
+            transportId: ctx.activeTransportId,
+            userId: ctx.sessionUser.id,
+            runId: input.runId,
+            staffQuoteOwnerId: ctx.sessionUser.id,
+          }
         : {
             transportId: ctx.activeTransportId,
             userId: ctx.sessionUser.id,
