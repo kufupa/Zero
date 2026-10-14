@@ -173,6 +173,17 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.user).toContain('rooming.pdf');
   });
 
+  it('keeps requested dinner boards for the server-side B&B retry', () => {
+    const prompt = buildQuoteWorkflowPrompt(selection).system;
+
+    expect(prompt).toContain(
+      'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
+    );
+    expect(prompt).not.toContain(
+      'Half-board, half board, DBB or dinner with breakfast means quote Bed & Breakfast and show dinner as a separate staff-priced add-on.',
+    );
+  });
+
   it('gives quote and availability requests precedence over booking language', () => {
     const prompt = buildQuoteWorkflowPrompt(selection);
     expect(prompt.system).toContain(

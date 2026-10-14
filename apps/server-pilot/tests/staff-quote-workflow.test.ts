@@ -7,6 +7,8 @@ import {
   staffQuoteDinnerGroupIdsToRetryAsBb,
   buildStaffProposalFacts,
 } from '../src/ai/staff-quote-workflow.js';
+import { mapLlmDecision } from '../src/ai/quote-workflow-llm.js';
+import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
 import { occupiedDates, type Board } from '../src/quote-proposal/quote-revision.js';
 import { deriveAuthorizedExtraLines } from '../src/quote-proposal/quote-lines.js';
@@ -42,6 +44,32 @@ const input = () =>
       },
     ],
   });
+
+function modelDinnerBoard(board: 'dbb' | 'half_board'): Board {
+  const decision = mapLlmDecision(
+    lunaAnalysisSchema.parse({
+      workflow: 'quote',
+      flags: [],
+      groups: [{
+        arrival: '2026-10-12',
+        departure: '2026-10-15',
+        rooms: 2,
+        adultsPerRoom: 1,
+        childAges: [],
+        board,
+        roomPreference: null,
+        guestNames: [],
+      }],
+      party: { kind: 'private', name: null, reference: null },
+      rateClaims: [],
+      missing: [],
+      evidence: [],
+      tasks: [{ kind: 'quote', groupIndexes: [0], note: 'Quote the requested stay' }],
+    }),
+  );
+  return decision.groups[0]!.board;
+}
+
 async function fixture(confirmed = input()) {
   const prepared = prepareStaffQuote(
     confirmed,
@@ -274,34 +302,40 @@ describe('staff-approved quotation beneath native guards', () => {
     ]);
   });
 
-  it('keeps a dinner-board retry blocked when no dinner price was approved', async () => {
-    const source = input();
-    source.groups[0]!.board = 'dinner_bb';
-    const retry = staffQuoteDinnerFallback(source)!;
-    const retryInput = { ...retry.input };
-    delete retryInput.dinnerAllowanceGroupIds;
-    const f = await fixture(retryInput);
-    const revision = await executeStaffQuote(
-      f.prepared,
-      createReservationistBusinessServices(f.options, f.prepared.approval),
-      async () => true,
-    );
-    const proposalOptions = {
-      dinnerGroupIds: undefined,
-      dinnerFallbackGroupIds: retry.groupIds,
-    };
-    const proposal = buildStaffProposalFacts(
-      retryInput,
-      scope,
-      f.prepared,
-      revision,
-      proposalOptions,
-    );
+  it.each(['dbb', 'half_board'] as const)(
+    'requires a dinner price after retry when model board is %s',
+    async (modelBoard) => {
+      const source = input();
+      source.groups[0]!.board = modelDinnerBoard(modelBoard);
+      expect(source.groups[0]!.board).toBe('dinner_bb');
 
-    expect(proposal.facts).toBeNull();
-    expect(proposal.dinnerAddOnRequired).toBe(true);
-    expect(proposal.extrasReviewItems).toContain('Dinner price — enter amount');
-  });
+      const retry = staffQuoteDinnerFallback(source)!;
+      const retryInput = { ...retry.input };
+      delete retryInput.dinnerAllowanceGroupIds;
+      const f = await fixture(retryInput);
+      const revision = await executeStaffQuote(
+        f.prepared,
+        createReservationistBusinessServices(f.options, f.prepared.approval),
+        async () => true,
+      );
+      const proposalOptions = {
+        dinnerGroupIds: undefined,
+        dinnerFallbackGroupIds: retry.groupIds,
+      };
+      const proposal = buildStaffProposalFacts(
+        retryInput,
+        scope,
+        f.prepared,
+        revision,
+        proposalOptions,
+      );
+
+      expect(retry.input.groups[0]).toMatchObject({ id: 'single', board: 'bb' });
+      expect(proposal.facts).toBeNull();
+      expect(proposal.dinnerAddOnRequired).toBe(true);
+      expect(proposal.extrasReviewItems).toContain('Dinner price — enter amount');
+    },
+  );
 
   it('keeps a dinner add-on unpriced until a staff amount and unit, or installed hotel config, supply them', async () => {
     const f = await fixture();

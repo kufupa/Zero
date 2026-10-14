@@ -670,6 +670,9 @@ export function canCreateNativeDraft(session: QuoteSession): boolean {
 function clearDownstream(session: QuoteSession): QuoteSession {
   return {
     ...session,
+    ...(session.reviewedReplySource === 'quote_decline'
+      ? { reviewedReplyHtml: '', reviewedReplySource: undefined }
+      : {}),
     offers: [],
     selectedOfferIds: [],
     pdf: null,

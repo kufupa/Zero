@@ -22,6 +22,7 @@ import {
   dinnerAddOnInputProblem,
   dinnerAllowanceStillRequired,
   missingQuoteDetailsReplyOnly,
+  quoteDeclineReplyOnly,
   missingQuoteReplyFieldsForGroups,
   groupStays,
   removedStayFor,
@@ -1042,6 +1043,40 @@ function twoDateAnalysis(): QuoteAnalysis {
 function twoDateSession() {
   return withStaffSource(analysisReady(twoDateAnalysis()));
 }
+
+function declinedQuoteSession() {
+  const session = withStaffSource(analysisReady());
+  return reduceQuoteSession(session, {
+    type: 'results_unavailable',
+    stepId: stepFor(session, STAY_A).id,
+    reason: 'No supported rate was returned',
+    declineReplyHtml: '<p>Unfortunately, we are fully booked.</p>',
+    selectionEpoch: session.binding!.selectionEpoch,
+    inputRevision: session.inputRevision,
+  });
+}
+
+const quoteDeclineInputEdits: Array<[string, QuoteSessionAction]> = [
+  ['company', { type: 'patch_staff_header', header: { company: 'Another company' } }],
+  ['agency', { type: 'patch_staff_header', header: { agency: 'Another agency' } }],
+  ['rate strategy', { type: 'patch_staff_header', header: { salesStrategy: 'Government' } }],
+  ['dates', { type: 'patch_group', groupId: 'g1', patch: { arrivalDate: '2026-11-13' } }],
+  ['room count', { type: 'patch_group', groupId: 'g1', patch: { quantity: 2 } }],
+  ['board', { type: 'patch_group', groupId: 'g1', patch: { board: 'room_only' } }],
+];
+
+describe('generated quote-decline freshness', () => {
+  it.each(quoteDeclineInputEdits)('clears the decline when %s changes', (_input, action) => {
+    const declined = declinedQuoteSession();
+    expect(quoteDeclineReplyOnly(declined)).toBe(true);
+
+    const edited = reduceQuoteSession(declined, action);
+
+    expect(edited.reviewedReplyHtml).toBe('');
+    expect(edited.reviewedReplySource).toBeUndefined();
+    expect(quoteDeclineReplyOnly(edited)).toBe(false);
+  });
+});
 
 function stepFor(session: { steps: QuoteToolStep[] }, stayKey: string): QuoteToolStep {
   return session.steps.find((step) => step.shareKey === stayKey)!;

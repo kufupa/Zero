@@ -29,7 +29,7 @@ export const K2_MAPPING = [
   'text; if no exact span exists, omit the claim.',
   'Never paraphrase, tidy, complete, or invent a quoted amount.',
   'Extras (shuttle, dinner, transfers) become missing questions, not invented prices.',
-  'Half-board, half board, DBB or dinner with breakfast means quote Bed & Breakfast and show dinner as a separate staff-priced add-on.',
+  'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
   'adultsPerRoom is adults in EACH room; "6 adults in 3 rooms" is 2.',
   '"single room" means 1 adult per room.',
   'A double or twin room with no headcount means 2 adults.',
