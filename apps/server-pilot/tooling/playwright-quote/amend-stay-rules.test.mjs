@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   amendPreviewDigest,
+  compareChangedFields,
   dangerousDialogKind,
   parseAmendArgs,
-  readbackMatches,
   unsupportedFieldReason,
   validateAmendCurrent,
   validateAmendRequest,
@@ -145,9 +145,15 @@ test('rate, penalty, or charge dialog text is a refusal signal', () => {
   assert.equal(dangerousDialogKind('Guest Stay'), null);
 });
 
-test('readbackMatches requires exact values for every changed field', () => {
-  const fields = { arrival: '2027-09-15', adults: 2, roomType: 'SUITE' };
-  assert.equal(readbackMatches(fields, { arrival: '2027-09-15', adults: 2, roomType: 'SUITE' }), true);
-  assert.equal(readbackMatches(fields, { arrival: '2027-09-15', adults: 1, roomType: 'SUITE' }), false);
-  assert.equal(readbackMatches(fields, { arrival: '2027-09-15', adults: 2 }), false);
+test('compareChangedFields reports exact fresh matches and per-field mismatches', () => {
+  const fields = { arrival: '2027-09-15', adults: 2 };
+  assert.deepEqual(compareChangedFields(fields, { arrival: '2027-09-15', adults: 2 }), { matches: true, diff: {} });
+  assert.deepEqual(compareChangedFields(fields, { arrival: '2027-09-14', adults: 1 }), {
+    matches: false,
+    diff: { arrival: { expected: '2027-09-15', actual: '2027-09-14' }, adults: { expected: 2, actual: 1 } },
+  });
+  assert.deepEqual(compareChangedFields(fields, {}), {
+    matches: false,
+    diff: { arrival: { expected: '2027-09-15', actual: null }, adults: { expected: 2, actual: null } },
+  });
 });

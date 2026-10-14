@@ -89,5 +89,10 @@ export const unsupportedFieldReason = (state) =>
   state?.count === 1 && state.disabled === false && state.readOnly === false ? null : 'unsupported_field';
 export const dangerousDialogKind = (text) =>
   /\bpenalt(?:y|ies)\b/i.test(text) ? 'penalty' : /\bcharge(?:s)?\b/i.test(text) ? 'charge' : /\brate\b/i.test(text) ? 'rate' : null;
-export const readbackMatches = (fields, readback) => plainObject(readback) &&
-  Object.entries(fields).every(([field, expected]) => Object.hasOwn(readback, field) && readback[field] === expected);
+export function compareChangedFields(fields, readback) {
+  const actual = plainObject(readback) ? readback : {};
+  const diff = Object.fromEntries(Object.entries(fields).filter(([field, value]) =>
+    !Object.hasOwn(actual, field) || actual[field] !== value).map(([field, expected]) =>
+    [field, { expected, actual: actual[field] ?? null }]));
+  return { matches: Object.keys(diff).length === 0, diff };
+}

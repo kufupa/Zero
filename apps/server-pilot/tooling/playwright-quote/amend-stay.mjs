@@ -4,15 +4,15 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkCdpEnv } from './cancel-stay-rules.mjs';
-import { openGuestStay, readStayFields, shot } from './cancel-stay.mjs';
+import { openGuestStay, shot } from './cancel-stay.mjs';
 import { login, playwright, readSecret, displayDate } from './fetch-quote.mjs';
 import { findOnOpenGuestStay } from './stay-lookup.mjs';
 import { readSaveSnapshot, SAVE_POLL_MS, SAVE_WAIT_MS } from './save-wait.mjs';
 import {
   amendPreviewDigest,
+  compareChangedFields,
   dangerousDialogKind,
   parseAmendArgs,
-  readbackMatches,
   unsupportedFieldReason,
   validateAmendCurrent,
   validateAmendRequest,
@@ -25,7 +25,7 @@ const SELECTOR_BY_FIELD = {
 
 function newResult() {
   return { outcome: 'execution_failure', reason: null, confirmation: null, statusBefore: null, statusAfter: null,
-    previewDigest: null, saveAttempted: false, changedFieldsReadback: null, readbackMatches: null, fieldRefusals: {},
+    previewDigest: null, saveAttempted: false, changedFieldsReadback: null, fieldDiff: null, fieldRefusals: {},
     refusal: null, todoLiveProbe: ['Existing-stay edit state and Save behavior'], screenshots: [], error: null };
 }
 
@@ -106,12 +106,23 @@ async function captureAfter(ctx) {
   }
 }
 
-async function readBackChangedFields(ctx, fields) {
-  const stay = await readStayFields(ctx);
-  ctx.result.changedFieldsReadback = Object.fromEntries(Object.keys(fields).map((field) => [field, stay[field] ?? null]));
-  ctx.result.readbackMatches = readbackMatches(fields, ctx.result.changedFieldsReadback);
-  ctx.result.statusAfter = stay.status;
-  return stay;
+function recordReadback(ctx, fields, stay) {
+  const values = Object.fromEntries(Object.keys(fields).map((field) => [field, stay?.[field] ?? null]));
+  const comparison = compareChangedFields(fields, values);
+  Object.assign(ctx.result, { changedFieldsReadback: values, fieldDiff: comparison.diff, statusAfter: stay?.status ?? null });
+}
+
+async function findByConfirmation(ctx, request, secret) {
+  const args = { mode: 'find', confirmation: request.confirmation, arrival: null, lastName: request.expectedLastName, debugHtml: false };
+  return findOnOpenGuestStay({ args, dir: ctx.dir, result: {}, started: Date.now(), page: ctx.page, secret }, { captureScreenshots: false });
+}
+
+async function reopenByConfirmation(ctx, context, request, secret) {
+  await ctx.page.close();
+  ctx.page = await context.newPage();
+  ctx.page.setDefaultTimeout(20000); await login(ctx.page, secret);
+  await openGuestStay(ctx.page); await ctx.page.waitForTimeout(1500);
+  return findByConfirmation(ctx, request, secret);
 }
 
 async function run(ctx, request) {
@@ -129,10 +140,7 @@ async function run(ctx, request) {
     await openGuestStay(ctx.page);
     await ctx.page.waitForTimeout(1500);
 
-    const lookup = await findOnOpenGuestStay({
-      args: { mode: 'find', confirmation: request.confirmation, arrival: null, lastName: request.expectedLastName, debugHtml: false },
-      dir: ctx.dir, result: {}, started: Date.now(), page: ctx.page, secret,
-    }, { captureScreenshots: false });
+    const lookup = await findByConfirmation(ctx, request, secret);
     ctx.result.findMethod = lookup.findMethod;
     if (lookup.outcome !== 'found' || !lookup.stay) {
       ctx.result.outcome = `refused_${lookup.outcome}`;
@@ -198,38 +206,38 @@ async function run(ctx, request) {
 
     const settled = await waitForSaveToSettle(ctx.page);
     const afterSaveDialog = await dangerousDialog(ctx.page);
-    const readback = await readBackChangedFields(ctx, request.fields);
+    const refreshed = await reopenByConfirmation(ctx, context, request, secret);
+    const freshStay = refreshed.outcome === 'found' ? refreshed.stay : null;
+    ctx.result.freshLookupOutcome = refreshed.outcome;
+    recordReadback(ctx, request.fields, freshStay);
     await captureAfter(ctx);
     if (afterSaveDialog) {
       ctx.result.outcome = 'refused_dangerous_dialog_after_save';
       ctx.result.reason = 'dangerous_dialog_after_save';
       ctx.result.refusal = afterSaveDialog;
     } else if (!settled.settled) {
-      ctx.result.outcome = 'save_unconfirmed';
+      ctx.result.outcome = 'save_not_confirmed';
       ctx.result.reason = 'save_still_processing';
-    } else if (readback.status !== 'Reserved' && readback.status !== 'Confirmed') {
-      ctx.result.outcome = 'save_unconfirmed';
+    } else if (!freshStay) {
+      ctx.result.outcome = 'save_not_confirmed';
+      ctx.result.reason = 'fresh_readback_unavailable';
+    } else if (freshStay.status !== 'Reserved' && freshStay.status !== 'Confirmed') {
+      ctx.result.outcome = 'save_not_confirmed';
       ctx.result.reason = 'status_readback_unsupported';
-    } else if (!ctx.result.readbackMatches) {
-      ctx.result.outcome = 'save_unconfirmed';
+    } else if (Object.keys(ctx.result.fieldDiff).length > 0) {
+      ctx.result.outcome = 'save_not_confirmed';
       ctx.result.reason = 'changed_field_readback_mismatch';
     } else if (ctx.result.afterScreenshotError) {
-      ctx.result.outcome = 'save_unconfirmed';
+      ctx.result.outcome = 'save_not_confirmed';
       ctx.result.reason = 'after_screenshot_unavailable';
     } else {
       ctx.result.outcome = 'amended';
     }
   } catch (error) {
     ctx.result.error = errorText(error);
-    ctx.result.outcome = ctx.result.saveAttempted ? 'save_unconfirmed' : 'execution_failure';
-    ctx.result.reason = ctx.result.saveAttempted ? 'post_save_uncertain' : 'execution_failure';
-    if (ctx.result.saveAttempted && ctx.page && ctx.result.changedFieldsReadback === null) {
-      try {
-        await readBackChangedFields(ctx, request.fields);
-      } catch (readError) {
-        ctx.result.readbackError = errorText(readError);
-      }
-    }
+    ctx.result.outcome = ctx.result.saveAttempted ? 'save_not_confirmed' : 'execution_failure';
+    ctx.result.reason = ctx.result.saveAttempted ? 'fresh_readback_failed' : 'execution_failure';
+    if (ctx.result.saveAttempted && ctx.result.changedFieldsReadback === null) recordReadback(ctx, request.fields, null);
   } finally {
     if (ctx.page && ctx.result.screenshots.some((path) => path.endsWith('/before.png')) &&
       !ctx.result.screenshots.some((path) => path.endsWith('/after.png'))) await captureAfter(ctx);
@@ -249,7 +257,7 @@ async function main() {
   }
   const args = { ...parsed.args, out: resolve(parsed.args.out) };
   const result = newResult();
-  const ctx = { args, dir: args.out, result, page: null, request: null };
+  const ctx = { args, dir: args.out, result, page: null };
   await mkdir(ctx.dir, { recursive: true, mode: 0o700 });
   try {
     const validated = validateAmendRequest(JSON.parse(await readFile(args.request, 'utf8')));
@@ -257,7 +265,6 @@ async function main() {
       result.outcome = `refused_${validated.reason}`;
       result.reason = validated.reason;
     } else {
-      ctx.request = validated.request;
       result.confirmation = validated.request.confirmation;
       await run(ctx, validated.request);
     }
