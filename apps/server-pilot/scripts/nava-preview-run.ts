@@ -92,6 +92,7 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.hmsQueueStatus',
   'workstation.listThreadQuoteRevisions',
   'workstation.outlookSync.status',
+  'workstation.outlookSync.statusForActiveMailbox',
   'workstation.quoteRunScreenshot',
   'workstation.staffQuoteJob',
   'workstation.staffQuoteSource',
@@ -115,6 +116,8 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'paneStayLookup.queueBatch',
   'paneStayLookup.queueParty',
   'workItems.acceptFields',
+  // Owner console review mark (admin only); never from the staff pane.
+  'workItems.adminReview',
   'workItems.recordActions',
   'workstation.queueStaffQuote',
   'drafts.saveReply',
@@ -356,6 +359,8 @@ export const VOUCHER_CARD_SELECTOR = '#quote-voucher-find';
  * a page from before the rename still counts as reading. While it shows, the thread has not settled.
  */
 export const ANALYSING_TEXT = /(Luna|Nava) is (reading the email|re-reading with your note)/;
+/** The pane's own note when the selected email is not in Nava yet (quote-workflow-panel.tsx, phase 'unsynced'). */
+export const PANE_UNSYNCED_TEXT = /This email has not finished syncing yet/;
 
 /** Browser-side: reads the pane and the list row for one thread. Plain JS, no DOM types. */
 export const READ_PANE_JS = `(threadId) => {
@@ -364,6 +369,8 @@ export const READ_PANE_JS = `(threadId) => {
   const status = panel ? panel.querySelector('[data-preview-status]') : null;
   const row = document.querySelector('aside a[data-thread-id="' + CSS.escape(threadId) + '"]');
   const text = panel ? clean(panel.innerText) : '';
+  const statusValue = status ? status.getAttribute('data-preview-status') : 'missing';
+  const paneUnsynced = statusValue === 'ready' && new RegExp(${JSON.stringify(PANE_UNSYNCED_TEXT.source)}).test(text);
   // The read-as chip (workflow-badge.tsx). Its label is the intent; amendments and cancellations are its kind.
   const readAs = panel ? panel.querySelector('[data-read-as]') : null;
   const readAsKind = readAs ? clean(readAs.getAttribute('data-read-as')) : '';
@@ -383,8 +390,8 @@ export const READ_PANE_JS = `(threadId) => {
     : [];
   return {
     subject: row ? clean(row.querySelector('.font-medium') ? row.querySelector('.font-medium').textContent : row.textContent) : null,
-    paneStatus: status ? status.getAttribute('data-preview-status') : 'missing',
-    unsyncedReason: status ? status.getAttribute('data-preview-reason') : null,
+    paneStatus: paneUnsynced ? 'unsynced' : statusValue,
+    unsyncedReason: paneUnsynced ? 'pane_not_synced' : status ? status.getAttribute('data-preview-reason') : null,
     analysing: new RegExp(${JSON.stringify(ANALYSING_TEXT.source)}).test(text),
     intent: readAs ? clean(readAs.textContent) || null : null,
     amendment: readAsKind === 'amendment' || readAsKind === 'cancellation' ? readAsKind : null,
