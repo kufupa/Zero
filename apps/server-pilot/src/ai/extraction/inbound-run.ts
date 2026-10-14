@@ -41,7 +41,6 @@ import {
 import {
   ACTION_CLASSIFICATION_RULES,
   createAzureExtractionAdapter,
-  EXTRACTION_DEADLINE_MS,
   EXTRACTION_MAX_IMAGES,
   EXTRACTION_MAX_PDF_PAGES,
   EXTRACTION_MIN_IMAGE_BYTES,
@@ -59,6 +58,7 @@ import {
   extractionReasoningEffort,
   extractionVisionEnabled,
 } from './config.js';
+import { lunaCallBudget } from '../bedrock/luna.js';
 import {
   TRANSLATE_DEADLINE_MS,
   TRANSLATE_RULES,
@@ -312,7 +312,8 @@ export async function runInboundExtraction(
     from: trigger.fromAddress,
     mailbox: trigger.mailbox,
     signal: deps.signal,
-    deadlineMs: deps.extractionDeadlineMs ?? EXTRACTION_DEADLINE_MS,
+    deadlineMs:
+      deps.extractionDeadlineMs ?? lunaCallBudget(extractionReasoningEffort(env)).deadlineMs,
     env,
   });
   const attachments = extraction.attachments;

@@ -8,6 +8,8 @@ import { parseModelJson } from './bedrock.js';
 /** Global CRIS profile; bedrock-runtime rejects the base model id in-Region. */
 export const LUNA_MODEL_ID = 'global.openai.gpt-6-luna';
 export const LUNA_REASONING_EFFORT = 'max';
+/** Documented GPT-6 Luna output ceiling; reasoning tokens count toward this cap. */
+export const LUNA_MAX_OUTPUT_TOKENS = 128_000;
 const DEFAULT_LUNA_REGION = 'us-east-1';
 
 /**
@@ -16,6 +18,28 @@ const DEFAULT_LUNA_REGION = 'us-east-1';
  * does not keep stored responses, so reasoning state travels encrypted.
  */
 export type LunaReasoningEffort = 'low' | 'medium' | 'high' | 'max';
+
+export type LunaCallBudget = {
+  deadlineMs: number;
+  maxOutputTokens: number;
+  /** Outer worker budget including downstream work and persistence. */
+  minimumWorkerDeadlineMs: number;
+};
+
+export function lunaCallBudget(reasoningEffort: LunaReasoningEffort): LunaCallBudget {
+  if (reasoningEffort === 'low' || reasoningEffort === 'medium') {
+    return {
+      deadlineMs: 60_000,
+      maxOutputTokens: 16_000,
+      minimumWorkerDeadlineMs: 150_000,
+    };
+  }
+  return {
+    deadlineMs: 180_000,
+    maxOutputTokens: 48_000,
+    minimumWorkerDeadlineMs: 300_000,
+  };
+}
 
 export function lunaProviderOptions(reasoningEffort: LunaReasoningEffort = LUNA_REASONING_EFFORT) {
   return {
@@ -136,7 +160,7 @@ export class LunaModelAdapter implements ModelAdapter {
   async invoke(input: ModelInvokeInput): Promise<ModelInvokeResult> {
     const files = input.files ?? [];
     const images = input.images ?? [];
-    if(input.maxOutputTokens!==undefined&&(!Number.isSafeInteger(input.maxOutputTokens)||input.maxOutputTokens<1||input.maxOutputTokens>32768))throw new Error('model_output_limit_invalid');
+    if(input.maxOutputTokens!==undefined&&(!Number.isSafeInteger(input.maxOutputTokens)||input.maxOutputTokens<1||input.maxOutputTokens>LUNA_MAX_OUTPUT_TOKENS))throw new Error('model_output_limit_invalid');
     const requestBytes=Buffer.byteLength(input.systemPrompt)+Buffer.byteLength(input.userPrompt)+Buffer.byteLength(JSON.stringify(input.responseSchema??{}))+[...files,...images].reduce((sum,file)=>sum+file.data.byteLength,0);
     if(input.maxInputBytes!==undefined&&(!Number.isSafeInteger(input.maxInputBytes)||input.maxInputBytes<1||requestBytes>input.maxInputBytes))throw new Error('model_input_limit_exceeded');
     if (files.length > 8 || files.some(file => file.mediaType !== 'application/pdf' || file.data.byteLength > 20 * 1024 * 1024 || file.data.byteLength <= 5 || new TextDecoder().decode(file.data.subarray(0, 5)) !== '%PDF-')) throw new Error('invalid_model_file_input');

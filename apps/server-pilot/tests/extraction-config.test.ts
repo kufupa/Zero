@@ -5,6 +5,7 @@ import {
   extractionReasoningEffort,
   extractionVisionEnabled,
 } from '../src/ai/extraction/config.js';
+import { lunaCallBudget } from '../src/ai/bedrock/luna.js';
 
 describe('inbound extraction env', () => {
   it('defaults Azure Luna reasoning to max and accepts explicit supported effort values', () => {
@@ -15,6 +16,29 @@ describe('inbound extraction env', () => {
     expect(() => extractionReasoningEffort({ EXTRACTION_REASONING_EFFORT: 'none' })).toThrow(
       /EXTRACTION_REASONING_EFFORT/,
     );
+  });
+
+  it('keeps medium-effort call limits and budgets more room for high-effort reasoning', () => {
+    expect(lunaCallBudget('low')).toEqual({
+      deadlineMs: 60_000,
+      maxOutputTokens: 16_000,
+      minimumWorkerDeadlineMs: 150_000,
+    });
+    expect(lunaCallBudget('medium')).toEqual({
+      deadlineMs: 60_000,
+      maxOutputTokens: 16_000,
+      minimumWorkerDeadlineMs: 150_000,
+    });
+    expect(lunaCallBudget('high')).toEqual({
+      deadlineMs: 180_000,
+      maxOutputTokens: 48_000,
+      minimumWorkerDeadlineMs: 300_000,
+    });
+    expect(lunaCallBudget('max')).toEqual({
+      deadlineMs: 180_000,
+      maxOutputTokens: 48_000,
+      minimumWorkerDeadlineMs: 300_000,
+    });
   });
 
   it('defaults the user-prompt cap to 200,000 characters and validates an override', () => {

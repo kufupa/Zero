@@ -17,8 +17,9 @@ Self-hosted AI mail pipeline for async triage, candidate drafts, HITL feedback, 
 | `AI_WRITE_GATE_ENABLED` | `false` | Shadow-only triage when false; durable category/spam writes when true |
 | `AI_DRAFTS_ENABLED` | `false` | Enqueues `candidate_draft` runs after successful triage when true |
 | `AI_STALE_RUN_TIMEOUT_MS` | `900000` | Reclaim stale `claimed`/`running` AI runs after this many ms |
-| `AI_MODEL_ID` | `amazon.nova-lite-v1:0` | Bedrock/default model id |
-| `BEDROCK_REGION` | `us-east-1` | Bedrock runtime region (Nova Lite; cross-region from `af-south-1` EC2) |
+| `AI_MODEL_ID` | `global.openai.gpt-6-luna` | Bedrock-backed Luna model id |
+| `AI_TRIAGE_MODEL_PROFILE` | `gpt6_luna_max` | Folder-triage model profile; deprecated `nova_lite` requires an explicit Nova Lite model id |
+| `BEDROCK_REGION` | `us-east-1` | Bedrock runtime region for the global Luna profile |
 | `BEDROCK_PIPELINE_LIVE_TEST` | unset | Opt-in Playwright live pipeline proof only |
 | `BEDROCK_GUARDRAIL_ID` | optional | Bedrock guardrail id |
 | `BEDROCK_GUARDRAIL_VERSION` | optional | Bedrock guardrail version |
@@ -151,9 +152,9 @@ bash apps/server-pilot/deploy/ssm-run-command.sh 'cd /home/ubuntu/repos/zero && 
 | Runtime | Adapter |
 |---------|---------|
 | `NODE_ENV=test` (gates, vitest) | `FakeModelAdapter` |
-| `ai-worker` PM2 (`AI_ENABLED=true`) | `BedrockModelAdapter` → `us-east-1` Nova Lite |
+| `ai-worker` PM2 (`AI_ENABLED=true`) | `LunaModelAdapter` → Bedrock `global.openai.gpt-6-luna` at max reasoning effort |
 | `ai-gate.sh` spike eval | fake only (deterministic) |
-| `bedrock-live-gate.sh` | one live Converse via instance role |
+| `bedrock-live-gate.sh` | one live Luna Responses call via instance role |
 | `ai-mail-pipeline-live-gate.sh` | opt-in Mailpit → triage → category → draft → Playwright proof |
 
 IAM: inline policy `NavaZeroBedrockInvoke` on worker role — see `apps/server-pilot/deploy/aws-resources.md`.

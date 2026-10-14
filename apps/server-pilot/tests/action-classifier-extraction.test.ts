@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ACTION_CLASSIFICATION_RULES,
   buildInboundPrompt,
+  extractInboundMail,
   EXTRACTION_MIN_IMAGE_BYTES,
   prepareExtractionVisionImages,
   type AttachmentRead,
 } from '../src/ai/extraction/extract.js';
+import type { ModelAdapter, ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
 import type { SyncedQuoteAttachment } from '../src/ai/quote-workflow-synced-selection.js';
 import { selectionFor } from './fixtures/inbound-extraction.js';
 
@@ -116,6 +118,48 @@ describe('generic action-classifier prompt', () => {
     const omittedByPromptCap = buildInboundPrompt(selection, undefined, undefined, { maxChars: 100 });
     expect(omittedByPromptCap.threadContextTruncated).toBe(true);
     expect(omittedByPromptCap.system).toMatch(/thread context status: incomplete/i);
+  });
+});
+
+describe('extraction call budget', () => {
+  it('uses the configured effort for both the request token cap and deadline', async () => {
+    for (const budget of [
+      { effort: 'medium', deadlineMs: 60_000, maxOutputTokens: 16_000 },
+      { effort: 'max', deadlineMs: 180_000, maxOutputTokens: 48_000 },
+    ] as const) {
+      const calls: ModelInvokeInput[] = [];
+      const adapter: ModelAdapter = {
+        invoke: async (input) => {
+          calls.push(input);
+          return {
+            modelId: input.modelId,
+            output: {},
+            usage: {
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+              latencyMs: 0,
+              estimatedCostUsd: 0,
+              rateTableVersion: 'test',
+            },
+          };
+        },
+      };
+      const startedAt = Date.now();
+
+      const result = await extractInboundMail({
+        adapter,
+        selection: selectionFor('Synthetic extraction request.'),
+        messageId: 'synthetic-message',
+        env: { EXTRACTION_REASONING_EFFORT: budget.effort, EXTRACTION_VISION: 'off' },
+      });
+
+      expect(result.ok).toBe(false);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.maxOutputTokens).toBe(budget.maxOutputTokens);
+      expect(calls[0]?.deadlineAt).toBeGreaterThanOrEqual(startedAt + budget.deadlineMs - 1_000);
+      expect(calls[0]?.deadlineAt).toBeLessThanOrEqual(startedAt + budget.deadlineMs + 1_000);
+    }
   });
 });
 

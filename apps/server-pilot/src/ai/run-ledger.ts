@@ -37,6 +37,8 @@ import { aiWorkflowRun } from '../db/schema/mail.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../db/client.js';
 import { parseEnv } from '../env.js';
+import { extractionReasoningEffort } from './extraction/config.js';
+import { resolveAiRunDeadlineMs } from './run-deadline.js';
 
 export const DEFAULT_AI_MODEL_ID = 'global.openai.gpt-6-luna';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
@@ -615,7 +617,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
     lte(aiWorkflowRun.updatedAt, staleBefore),
     ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
   );
-  const runDeadlineMs = env.HMS_RUN_DEADLINE_MS;
+  const configuredRunDeadlineMs = env.HMS_RUN_DEADLINE_MS;
   const scope = scopePredicates({
     transportId: input.transportId,
     runKind: input.runKind,
@@ -705,13 +707,19 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             ? 1
             : undefined;
 
-      const requestDeadlineMs =
+      const configuredRequestDeadlineMs =
         candidate.runKind === 'read_tool' &&
         candidate.executorLane === 'hms' &&
         candidate.promptVersion === HMS_JOB_PROMPT_VERSION &&
         request?.kind === 'staff_quote'
-          ? Math.max(runDeadlineMs, HMS_STAFF_QUOTE_RUN_DEADLINE_MS)
-          : runDeadlineMs;
+          ? Math.max(configuredRunDeadlineMs, HMS_STAFF_QUOTE_RUN_DEADLINE_MS)
+          : configuredRunDeadlineMs;
+      const requestDeadlineMs = resolveAiRunDeadlineMs({
+        runKind: candidate.runKind,
+        configuredDeadlineMs: configuredRequestDeadlineMs,
+        extractionEffort:
+          candidate.runKind === 'inbound_extraction' ? extractionReasoningEffort() : 'max',
+      });
       const deadlineAt = candidate.deadlineAt ?? new Date(now.getTime() + requestDeadlineMs);
       const claimToken = randomUUID();
 

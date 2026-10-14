@@ -21,7 +21,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_LABELS_PATH = resolve(here, '../eval/action-labels-r3.tsv');
 
 type Label = { messageId: string; expected: ActionPrediction };
-type CliOptions = { limit?: number; concurrency: number; repeat: number; labelsPath: string };
+type CliOptions = { limit?: number; concurrency: number; repeat: number; labelsPath: string; deadlineMs?: number };
 
 function positiveInteger(name: string, raw: string, maximum = Number.MAX_SAFE_INTEGER): number {
   const value = Number(raw);
@@ -32,22 +32,23 @@ function positiveInteger(name: string, raw: string, maximum = Number.MAX_SAFE_IN
 }
 
 function parseArgs(args: string[]): CliOptions | 'help' {
-  let options: CliOptions = { concurrency: 4, repeat: 2, labelsPath: DEFAULT_LABELS_PATH };
+  const options: CliOptions = { concurrency: 4, repeat: 2, labelsPath: DEFAULT_LABELS_PATH };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (arg === '--help' || arg === '-h') return 'help';
     const [rawName, inlineValue] = arg.startsWith('--') ? arg.slice(2).split('=', 2) : ['', undefined];
-    if (!['limit', 'concurrency', 'repeat', 'labels'].includes(rawName)) {
+    if (!['limit', 'concurrency', 'repeat', 'labels', 'deadline-ms'].includes(rawName)) {
       throw new Error(`unknown option: ${arg}`);
     }
     const value = inlineValue ?? args[++index];
     if (!value || value.startsWith('--')) throw new Error(`--${rawName} requires a value`);
-    if (rawName === 'limit') options = { ...options, limit: positiveInteger(rawName, value) };
+    if (rawName === 'limit') options.limit = positiveInteger(rawName, value);
     if (rawName === 'concurrency') {
-      options = { ...options, concurrency: positiveInteger(rawName, value, 16) };
+      options.concurrency = positiveInteger(rawName, value, 16);
     }
-    if (rawName === 'repeat') options = { ...options, repeat: positiveInteger(rawName, value, 10) };
-    if (rawName === 'labels') options = { ...options, labelsPath: resolve(value) };
+    if (rawName === 'repeat') options.repeat = positiveInteger(rawName, value, 10);
+    if (rawName === 'labels') options.labelsPath = resolve(value);
+    if (rawName === 'deadline-ms') options.deadlineMs = positiveInteger(rawName, value, 600_000);
   }
   return options;
 }
@@ -83,7 +84,7 @@ async function mapConcurrent<T, R>(
   concurrency: number,
   mapper: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
-  const results = new Array<R>(items.length);
+  const results: R[] = Array.from({ length: items.length });
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(concurrency, items.length) }, async () => {
@@ -97,6 +98,13 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
+function latencySummary(values: number[]): { p50: number; p90: number; max: number } | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const at = (quantile: number) => sorted[Math.min(sorted.length - 1, Math.floor(quantile * sorted.length))]!;
+  return { p50: at(0.5), p90: at(0.9), max: sorted.at(-1)! };
+}
+
 function percent(value: number | null): number | null {
   return value === null ? null : Number((value * 100).toFixed(2));
 }
@@ -105,7 +113,7 @@ function help(): void {
   console.log(
     [
       'Read-only action-classifier eval. Run from apps/server-pilot on EC2 with the production mailbox read env.',
-      '  pnpm exec tsx scripts/action-classifier-eval.ts [--limit N] [--concurrency N] [--repeat N] [--labels PATH]',
+      '  pnpm exec tsx scripts/action-classifier-eval.ts [--limit N] [--concurrency N] [--repeat N] [--labels PATH] [--deadline-ms N]',
       'Defaults: --concurrency 4, --repeat 2. No extraction or work-item rows are written.',
     ].join('\n'),
   );
@@ -133,11 +141,18 @@ export async function runActionClassifierEval(options: CliOptions): Promise<void
       .where(inArray(message.id, labels.map((label) => label.messageId)));
     const rowById = new Map(rows.map((row) => [row.id, row]));
     const visionEnabled = extractionVisionEnabled(process.env);
+    // Reason codes and latencies only: never mail, model output, or provider error bodies.
+    const failureReasons: Record<string, number> = {};
+    const countFailure = (reason: string) => {
+      failureReasons[reason] = (failureReasons[reason] ?? 0) + 1;
+    };
+    const latenciesMs: number[] = [];
 
     const scored = await mapConcurrent(labels, options.concurrency, async (label): Promise<ActionEvalCase> => {
       const row = rowById.get(label.messageId);
       const predictions: Array<ActionPrediction | null> = [];
       if (!row || row.direction !== 'inbound') {
+        countFailure(row ? 'not_inbound' : 'message_missing');
         return { expected: label.expected, predictions: Array(options.repeat).fill(null) };
       }
       let selection: Awaited<ReturnType<typeof loadSyncedQuoteSelectionFromMailbox>> = null;
@@ -151,11 +166,16 @@ export async function runActionClassifierEval(options: CliOptions): Promise<void
         });
       } catch {
         // Keep one unreadable DB/storage record from suppressing metrics for every other label.
+        countFailure('selection_load_error');
         return { expected: label.expected, predictions: Array(options.repeat).fill(null) };
       }
-      if (!selection) return { expected: label.expected, predictions: Array(options.repeat).fill(null) };
+      if (!selection) {
+        countFailure('selection_missing');
+        return { expected: label.expected, predictions: Array(options.repeat).fill(null) };
+      }
 
       for (let repeat = 0; repeat < options.repeat; repeat += 1) {
+        const startedAt = Date.now();
         try {
           const result = await extractInboundMail({
             adapter,
@@ -164,12 +184,16 @@ export async function runActionClassifierEval(options: CliOptions): Promise<void
             from: row.fromAddress,
             mailbox: row.mailbox,
             env: process.env,
+            deadlineMs: options.deadlineMs,
           });
+          latenciesMs.push(Date.now() - startedAt);
+          if (!result.ok) countFailure(`extract_${result.reason}`);
           predictions.push(
             result.ok ? { needsAction: result.needsAction, action: result.action } : null,
           );
         } catch {
           // Never print mail, attachments, model outputs, or provider error bodies from the eval process.
+          countFailure('extract_threw');
           predictions.push(null);
         }
       }
@@ -183,6 +207,8 @@ export async function runActionClassifierEval(options: CliOptions): Promise<void
       repeat: options.repeat,
       concurrency: options.concurrency,
       unclassifiedFirstRun: failedFirstRun,
+      failureReasons,
+      latencyMs: latencySummary(latenciesMs),
       needsActionAccuracy: { ...metrics.needsActionAccuracy, percent: percent(metrics.needsActionAccuracy.accuracy) },
       actionAccuracy: { ...metrics.actionAccuracy, percent: percent(metrics.actionAccuracy.accuracy) },
       confusionMatrix: metrics.confusionMatrix,

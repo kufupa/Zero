@@ -29,6 +29,7 @@ import { validateStructuredJsonOutput } from '../security/policy.js';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
 import { AI_WORKFLOW_PRIMARY_SLUGS } from '../categories.js';
 import { createModelAdapter } from '../bedrock/factory.js';
+import { lunaCallBudget } from '../bedrock/luna.js';
 import { suggestReadTools } from '../suggested-tools.js';
 import { normalizeEmailAddress } from '../never-spam.js';
 import { READ_TOOL_IDS } from '../../hms/read-tools.js';
@@ -787,6 +788,7 @@ export async function classifyWorkflowMailTriage(
   input: MailTriageInput,
   adapter: ModelAdapter,
   promptVersion: string = TRIAGE_PROMPT_VERSION,
+  callOptions: { signal?: AbortSignal; deadlineAt?: number } = {},
 ): Promise<WorkflowTriageClassification> {
   assertTriageAsOf(input.asOf);
   const causalMessages = causalPromptMessages(input);
@@ -814,11 +816,19 @@ export async function classifyWorkflowMailTriage(
   });
   const promptHash = hashTriagePrompt(systemPrompt, userPrompt, promptVersion);
   const inputHash = hashTriageInput(causalInput);
+  const callBudget = lunaCallBudget('max');
+  const deadlineAt = Math.min(
+    callOptions.deadlineAt ?? Number.POSITIVE_INFINITY,
+    Date.now() + callBudget.deadlineMs,
+  );
   const model = await adapter.invoke({
     modelId: causalInput.modelId,
     systemPrompt,
     userPrompt,
     responseSchema: triageResponseSchema,
+    maxOutputTokens: callBudget.maxOutputTokens,
+    signal: callOptions.signal,
+    deadlineAt,
   });
   const triggerMessage =
     causalMessages.find((message) => message.id === causalInput.triggerMessageId) ??
@@ -898,7 +908,7 @@ const classifyStep = createStep({
   id: 'classify-mail',
   inputSchema: triageInputSchema,
   outputSchema: mailTriageWorkflowOutputSchema,
-  execute: async ({ inputData, runId }) => {
+  execute: async ({ inputData, runId, abortSignal }) => {
     const adapter = createModelAdapter();
     const rows = toTriageMessageRows(inputData);
     const classification = await classifyWorkflowMailTriage(
@@ -921,6 +931,8 @@ const classifyStep = createStep({
         promptVersion: TRIAGE_PROMPT_VERSION,
       },
       adapter,
+      TRIAGE_PROMPT_VERSION,
+      { signal: abortSignal },
     );
     const output = validateWorkflowTriageOutput(classification.output);
     return {

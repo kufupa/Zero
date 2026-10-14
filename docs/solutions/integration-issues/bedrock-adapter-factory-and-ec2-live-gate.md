@@ -26,6 +26,8 @@ related_components:
 
 # Bedrock real adapter with fake/real factory and EC2 live gate
 
+> Superseded for current folder triage (2026-10-13): the default is Bedrock-backed global GPT-6 Luna at max effort. The Nova Lite policy and route below describe the historical rollout only; current provisioning is in [aws-resources.md](../../../apps/server-pilot/deploy/aws-resources.md).
+
 ## Context
 
 The AI mail pipeline shipped with `FakeModelAdapter` only. Overnight work on branch `EC2-pilot` (commit `2533cc0e`) wired real Amazon Bedrock inference for the `ai-worker` PM2 process while preserving deterministic `ai-gate.sh` spike eval on every deploy. A separate on-demand `bedrock-live-gate.sh` proves EC2 instance credentials can invoke Nova Lite in `us-east-1` without mixing live LLM calls into daily gates.

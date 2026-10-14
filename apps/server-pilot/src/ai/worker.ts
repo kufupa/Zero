@@ -24,6 +24,8 @@ import {
   type AiWorkflowRunKind,
   type CandidateReadPlanKind,
 } from './run-ledger.js';
+import { extractionReasoningEffort } from './extraction/config.js';
+import { resolveAiRunDeadlineMs } from './run-deadline.js';
 import { sweepLostHmsWriteLeases } from './hms-approval.js';
 import {
   createFailedShadowPredictionSeal,
@@ -4164,7 +4166,13 @@ export async function executeAiRun(
     return { runId: run.id, state: 'dead_letter' };
   }
   const claimToken = run.claimToken;
-  const deadlineAt = run.deadlineAt ?? new Date(now.getTime() + env.HMS_RUN_DEADLINE_MS);
+  const fallbackDeadlineMs = resolveAiRunDeadlineMs({
+    runKind: run.runKind,
+    configuredDeadlineMs: env.HMS_RUN_DEADLINE_MS,
+    extractionEffort:
+      run.runKind === 'inbound_extraction' ? extractionReasoningEffort() : 'max',
+  });
+  const deadlineAt = run.deadlineAt ?? new Date(now.getTime() + fallbackDeadlineMs);
   const fence: AiRunFence = {
     runId: run.id,
     claimOwner: owner,

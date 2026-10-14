@@ -79,6 +79,25 @@ describe('bedrock adapter contract', () => {
     expect(adapter).toBeInstanceOf(LunaModelAdapter);
   });
 
+  it('forwards a 48k output budget to the Luna Responses adapter', async () => {
+    const doGenerate = vi.fn().mockResolvedValue({
+      finishReason: { unified: 'stop' },
+      content: [{ type: 'text', text: '{"result":"ok"}' }],
+      usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
+    });
+    const adapter = new LunaModelAdapter({ model: { doGenerate } as never, reasoningEffort: 'max' });
+
+    await adapter.invoke({
+      modelId: 'global.openai.gpt-6-luna',
+      systemPrompt: 'system',
+      userPrompt: 'synthetic input',
+      maxOutputTokens: 48_000,
+    });
+
+    expect(doGenerate).toHaveBeenCalledOnce();
+    expect(doGenerate.mock.calls[0]?.[0]?.maxOutputTokens).toBe(48_000);
+  });
+
   it('requires an explicit Nova Lite model id for the deprecated legacy profile', () => {
     expect(() =>
       resolveModelAdapter({

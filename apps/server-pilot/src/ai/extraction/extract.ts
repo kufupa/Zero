@@ -1,6 +1,6 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from '../bedrock/adapter.js';
-import { createAzureLunaModel, LunaModelAdapter } from '../bedrock/luna.js';
+import { createAzureLunaModel, lunaCallBudget, LunaModelAdapter } from '../bedrock/luna.js';
 import { maskCardNumbers } from '../card-mask.js';
 import {
   renderPdfPagesForVisionWithMetadata,
@@ -29,8 +29,7 @@ import {
 
 /** The model every inbound read requests from the Azure Foundry deployment. */
 export const EXTRACTION_MODEL_ID = 'gpt-6-luna';
-export const EXTRACTION_DEADLINE_MS = 60_000;
-const MAX_EXTRACTION_OUTPUT_TOKENS = 16_000;
+export const EXTRACTION_DEADLINE_MS = lunaCallBudget('max').deadlineMs;
 export const EXTRACTION_MAX_IMAGES = 4;
 export const EXTRACTION_MAX_PDF_PAGES = 3;
 export const EXTRACTION_MIN_IMAGE_BYTES = 20 * 1024;
@@ -590,6 +589,7 @@ export async function extractInboundMail(input: {
   env?: NodeJS.ProcessEnv;
 }): Promise<ExtractionAttempt> {
   const env = input.env ?? process.env;
+  const callBudget = lunaCallBudget(extractionReasoningEffort(env));
   const vision = await prepareExtractionVisionImages(input.selection.attachments, {
     enabled: extractionVisionEnabled(env),
     signal: input.signal,
@@ -612,8 +612,8 @@ export async function extractInboundMail(input: {
       string,
       unknown
     >,
-    maxOutputTokens: MAX_EXTRACTION_OUTPUT_TOKENS,
-    deadlineMs: input.deadlineMs ?? EXTRACTION_DEADLINE_MS,
+    maxOutputTokens: callBudget.maxOutputTokens,
+    deadlineMs: input.deadlineMs ?? callBudget.deadlineMs,
     signal: input.signal,
   });
   if (!called.ok) {
