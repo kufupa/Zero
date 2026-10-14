@@ -19,6 +19,10 @@
 #   5-cancel-commit   cancel-stay --mode commit --reason "Test Reservations"  expect cancelled
 #   6-readback        cancel-stay --mode preview                         expect already_cancelled
 #
+# Optional, not part of this script and not run by default:
+#   amend-stay.mjs --request <lab-amend.json> --mode preview --out <new-proof-dir>
+#   Review result.json, then repeat with --mode commit --digest <previewDigest> and a fresh output directory.
+#
 # Deliberate choices, from the CLIs themselves:
 # - Step 1 uses --stop-before save. --stop-before availability stops before Check Availability.
 # - Step 3 uses preview: cancel-stay has no find mode (--mode is preview or commit only).
