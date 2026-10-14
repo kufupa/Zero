@@ -18,7 +18,7 @@ Status key: ✅ done · 🟡 partial · ⬜ open · ⏸ parked (owner OK'd waiti
 | 8 | Latest Claude Code features, `/goal` vs `/loop` | ✅ | retro §9; `RUN-CONTRACT.md` | — |
 | 9 | How do I become a 10x / 100x dev? | 🟡 | retro §10 was generic | §4 below is owner-specific |
 | 10 | Use Exa + cheap subagents | ✅ | retro lanes (Luna max, Haiku max) | — |
-| 11 | Update PRODUCT.md / AGENTS.md | 🟡 | PR #225, not merged | Merge after Greptile triage |
+| 11 | Update PRODUCT.md / AGENTS.md | ✅ | PR #225 merged | — |
 | 12 | `/95-exa-agent` on that message | 🟡 | Missed at first; ran later on the memory question | Treat any `/95…` as "run it now" (memory saved) |
 | 13 | Another LLM's cache table | ✅ | retro §9: 1 h cache, no 4.5-min ping needed | — |
 | 14 | Hindsight vs gbrain / mem0 / Zep / Tencent | 🟡 | Researched (`plan-20261014/r-meta.out`) but **never put to you as a decision** | §5 below: decision proposed |
@@ -30,7 +30,7 @@ Status key: ✅ done · 🟡 partial · ⬜ open · ⏸ parked (owner OK'd waiti
 | 20 | Teach me AI coding: sessions, handoffs, parallelism, agent teams, Sol, Wayfinder | 🟡 | Sol price and Wayfinder (skip) noted in chat only | §4 below |
 | 21 | "Who says cap of 3 Luna writes?" | ✅ | It was a mistranscription; there's no cap | — |
 | 22 | Run more lanes, but be careful with full mail typechecks | ✅ | Lanes run targeted tests only | I1 serializes heavy checks |
-| 23 | Local CI/CD with shared state, no GitHub Actions | 🟡 | Lane I1 building `scripts/ci/` | PR ~12:15Z |
+| 23 | Local CI/CD with shared state, no GitHub Actions | 🟡 | PR #230 (Greptile P1s fixed) | Merge; status posting needs owner OK (#25) |
 | 24 | Is "use exa and research" enough? What access can I give you? | 🟡 | r-meta: a prompt alone isn't enforcement | §4 habit 8 |
 | 25 | Why is the merge gate slow? Speed it up | 🟡 | r-meta: local status + `gate.sh` → auto-merge | **Decision needed:** required status `local-ci/presubmit` (it's a GitHub check) |
 | 26 | Save the research for future sessions | 🟡 | Private: `/home/orca/nava-research/reports/plan-20261014/`. Repo: this file | — |
@@ -41,8 +41,8 @@ Status key: ✅ done · 🟡 partial · ⬜ open · ⏸ parked (owner OK'd waiti
 | 31 | Doc: research, what went well/bad, how to become 10x, which skills/research to prompt for | ✅ | This file | — |
 | 32 | Merge PRs freely | ✅ | §2 decision | Merge after local tests + Greptile triage |
 | 33 | Don't deploy every PR; batch, unless it can run in parallel | ✅ | §2 decision | One batch after HMS returns (~13:05Z) |
-| 34 | Is the case-card order right? Do product research; don't just assume | ⬜ | — | Staff review of the 12:05Z demo + 2 questions on the order |
-| 35 | Find + install forward-deployed / product-design / UX skills (proven, high stars) | ⬜ | §6 | **Your OK** to install the top 2 |
+| 34 | Is the case-card order right? Do product research; don't just assume | ✅ | Staff liked Party → Stay → Rates → Quote → Reply in the demo | Carry into C1 (#236) / C5 |
+| 35 | Find + install forward-deployed / product-design / UX skills (proven, high stars) | 🟡 | Impeccable installed 2026-10-14; gstack + superpowers already installed; no proven FDE skill exists | Optional: ui-ux-pro-max (135k★) |
 | 36 | Which skills are installed vs actually used? | 🟡 | §6 | — |
 | 37 | Research bar: proven, open source or very cheap, tens of thousands of stars; Exa credits OK | ✅ | §4 habit 8 | — |
 | 38 | C7 decision (grouped create, partial failure) | ⏸ | §2 | Deferred: low ROI now |
@@ -50,10 +50,21 @@ Status key: ✅ done · 🟡 partial · ⬜ open · ⏸ parked (owner OK'd waiti
 | 40 | Cancellation questions for staff, pre- and post-research | ✅ | §3 | You email the pre-research list |
 | 41 | Highest ROI: classifier coverage + quote UI | ⬜ | — | After the demo: classifier labels (F3) + C1/C5 |
 | 42 | Use the ~2 h HMS-down window well | 🟡 | Offline slices C1, C3, I1 running | — |
-| 43 | Staff demo on hermes with real Centurion mail, questions under the mail, by 12:05–12:10 | 🟡 | Main session building | Link at ~12:05Z |
+| 43 | Staff demo on hermes with real Centurion mail, questions under the mail, by 12:05–12:10 | ✅ | hermes `outlook-side-pane-demo.html`; shown to staff | Staff feedback → #48 |
 | 44 | Explain the C-questions with context | ✅ | §2 | — |
 | 45 | What is `-70`? | ✅ | The other Claude Code window, named `centurion-dashboard-tools-70`, which runs its own Luna lanes | — |
 | 46 | Use Stagehand to diagnose failed creates | ⏸ | Parked with C7 | Revisit when C7 is unparked |
+| 47 | Recap the last 7–8 prompts and answers | ✅ | Chat 2026-10-14 ~13:00Z | — |
+| 48 | Staff feedback: less repetition (quote documents), merge Stay + Rates, raw availability not "Free", full room-type dropdown, make clickable things obvious | 🟡 | Demo v8 on hermes | Build into the live pane (C5 + C1 follow-up) |
+| 49 | Never remove options staff have in Infor; pre-fill, don't restrict | ⬜ | Principle | Add to PRODUCT.md hard rules |
+| 50 | Owner unsure the party lookup actually ran | 🟡 | Demo shows the HMS search trace | Show the lookup trace (query, matches, pick) in the live pane |
+| 51 | nava-admin = production version of the hermes demo design | ⬜ | — | Plan slices after the retro |
+| 52 | Agent teams: pros and cons | ✅ | Chat 2026-10-14 (Exa run `agent_run_388d…`) | Trial on research/review only |
+| 53 | Put GPT-6 Luna inside Claude Code via Azure Foundry | ✅ | Unsupported by Anthropic; translation gateway possible but fragile | Keep Codex lanes for Luna |
+| 54 | Retro + push back on how the owner runs agents | ✅ | Chat 2026-10-14 | — |
+| 55 | Voice dumps: parse into tasks first, flag mis-transcriptions | ✅ | Memory `feedback-voice-dump-prompts` | Every long message starts with a parsed task list |
+| 56 | Owner will share the client-call recording | ⬜ | — | Waiting on owner (transcript or audio file) |
+| 57 | Owner can give classification feedback now | ⬜ | Review set live in nava-admin (#233/#234) | Owner labels; agent scores classifier on labels |
 
 ## 2. Owner decisions recorded today
 
