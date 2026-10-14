@@ -9,7 +9,9 @@ import {
 import type { NavItem } from '@/config/navigation';
 
 type WorkflowCounts = Partial<Record<WorkflowFolderNavId, number>>;
-type WorkflowSummary = Partial<Record<WorkflowFolderNavId, { threads: number }>>;
+type WorkflowSummary = Partial<
+  Record<WorkflowFolderNavId, { threads?: number; total?: number; marked?: number }>
+>;
 
 export function WorkflowFolderNav({
   counts,
@@ -23,6 +25,7 @@ export function WorkflowFolderNav({
   collapsed?: boolean;
 }) {
   const location = useLocation();
+  const reviewSet = new URLSearchParams(location.search).get('set') === 'eval';
   return (
     <nav aria-label="Mail navigation" className="flex flex-col gap-3 px-2 py-1">
       <div className="flex flex-col gap-1" aria-label="Primary mail folders">
@@ -43,16 +46,30 @@ export function WorkflowFolderNav({
             Workflows
           </h2>
         ) : null}
-        {WORKFLOW_FOLDER_NAV_ITEMS.map((item) => (
-          <WorkflowNavLink
-            key={item.id}
-            item={item}
-            active={location.pathname.replace(/\/$/, '') === item.url}
-            collapsed={collapsed}
-            count={counts?.[item.id] ?? summary?.[item.id]?.threads}
-            showZero
-          />
-        ))}
+        {WORKFLOW_FOLDER_NAV_ITEMS.map((item) => {
+          const folderSummary = summary?.[item.id];
+          const count = reviewSet
+            ? typeof folderSummary?.total === 'number'
+              ? `${folderSummary.marked ?? 0} / ${folderSummary.total}`
+              : undefined
+            : counts?.[item.id] ?? folderSummary?.threads;
+          const countLabel =
+            reviewSet && typeof folderSummary?.total === 'number'
+              ? `${folderSummary.marked ?? 0} of ${folderSummary.total} marked`
+              : undefined;
+          return (
+            <WorkflowNavLink
+              key={item.id}
+              item={item}
+              to={`${item.url}${reviewSet ? '?set=eval' : ''}`}
+              active={location.pathname.replace(/\/$/, '') === item.url}
+              collapsed={collapsed}
+              count={count}
+              countLabel={countLabel}
+              showZero
+            />
+          );
+        })}
       </section>
     </nav>
   );
@@ -60,22 +77,29 @@ export function WorkflowFolderNav({
 
 function WorkflowNavLink({
   item,
+  to,
   active,
   collapsed,
   count,
+  countLabel,
   showZero = false,
 }: {
   item: NavItem;
+  to?: string;
   active: boolean;
   collapsed: boolean;
-  count?: number;
+  count?: number | string;
+  countLabel?: string;
   showZero?: boolean;
 }) {
   const Icon = item.icon;
-  const showCount = typeof count === 'number' && (showZero || count > 0) && !collapsed;
+  const showCount =
+    (typeof count === 'string' ||
+      (typeof count === 'number' && (showZero || count > 0))) &&
+    !collapsed;
   return (
     <Link
-      to={item.url}
+      to={to ?? item.url}
       aria-label={collapsed ? item.title : undefined}
       aria-current={active ? 'page' : undefined}
       title={collapsed ? item.title : undefined}
@@ -87,10 +111,10 @@ function WorkflowNavLink({
       {!collapsed ? <span className="min-w-0 flex-1 truncate">{item.title}</span> : null}
       {showCount ? (
         <span
-          aria-label={`${count} threads`}
+          aria-label={countLabel ?? (typeof count === 'number' ? `${count} threads` : undefined)}
           className="text-muted-foreground ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[11px] tabular-nums"
         >
-          {count!.toLocaleString()}
+          {typeof count === 'number' ? count.toLocaleString() : count}
         </span>
       ) : null}
     </Link>
