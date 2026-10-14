@@ -143,7 +143,8 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     });
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.queryByText(/Not a quote or booking/)).toBeNull();
-    expect(screen.getByText('Nava can find the booking; make the change in HMS yourself.')).toBeDefined();
+    expect(screen.queryByText('Changing or cancelling a booking is not supported yet. Handle it by hand in HMS.')).toBeNull();
+    expect(screen.queryByRole('alert', { name: 'Not supported' })).toBeNull();
   });
 
   it('leaves the single read-as banner to the pane shell instead of duplicating it in the workflow', () => {
