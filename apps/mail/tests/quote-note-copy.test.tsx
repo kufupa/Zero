@@ -51,7 +51,7 @@ describe('NotSupportedList', () => {
 
   it('sends staff to the Extras section for extras, not to add them by hand', () => {
     render(<NotSupportedList flags={['extras']} />);
-    expect(screen.getByText(/set them under Extras in Stay details before you make the PDF/)).toBeDefined();
+    expect(screen.getByText(/Check each stay's amounts in Extras & alternatives before making the PDF/)).toBeDefined();
     expect(screen.queryByText(/add these by hand/)).toBeNull();
   });
 });
@@ -86,7 +86,7 @@ describe('quote panel notes', () => {
     session = reduceQuoteSession(session, fixtureResultsReady(fixture.offers) as never);
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.queryByText(/combined PDF is blocked/)).toBeNull();
-    expect(screen.getByText(/Every date option goes into one quote/)).toBeDefined();
+    expect(screen.getByText(/Every date range is quoted separately, then included in one quotation/)).toBeDefined();
   });
 
   it('says a single stay draft attaches its own PDF, not one per option', () => {
