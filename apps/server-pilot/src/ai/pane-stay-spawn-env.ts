@@ -4,9 +4,9 @@ import {
 } from './staff-quote-installation.js';
 
 /**
- * The only variables a pane HMS CLI inherits: the process basics, the CDP endpoint and ownership, and the credential
- * source the CLIs read (readSecret in fetch-quote.mjs). Everything else is dropped, so a flag set for one lab run
- * (LAB_CANCEL_CONFIRMATION) or a database URL never reaches a live HMS run.
+ * The only variables a pane HMS CLI inherits: process basics, CDP endpoint and ownership, credential source, and the
+ * shared save gate used by amend-stay.mjs. Everything else is dropped, so one-off lab flags or database URLs do not
+ * reach a live HMS run.
  */
 export const PANE_CLI_ENV_ALLOWLIST = [
   'PATH',
@@ -16,6 +16,7 @@ export const PANE_CLI_ENV_ALLOWLIST = [
   'TZ',
   'TMPDIR',
   'PLAYWRIGHT_BROWSERS_PATH',
+  'RESERVATIONIST_PANE_SAVE',
   'AWS_REGION',
   'HMS_READ_SECRET_ARN',
   'HMS_QUOTE_SECRET_PATH',

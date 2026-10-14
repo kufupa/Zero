@@ -11,6 +11,10 @@ const plainObject = (value) => value !== null && typeof value === 'object' && !A
   [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const refused = (error) => ({ ok: false, exitCode: 2, error });
 
+export function amendCommitAllowed(mode, env = process.env) {
+  return mode !== 'commit' || env.RESERVATIONIST_PANE_SAVE === 'lab';
+}
+
 export function parseAmendArgs(argv) {
   const values = new Map();
   for (let i = 0; i < argv.length; i += 1) {

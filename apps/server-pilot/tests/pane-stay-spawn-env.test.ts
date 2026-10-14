@@ -23,12 +23,13 @@ afterEach(() => vi.restoreAllMocks());
 describe('paneStaySpawnEnv', () => {
   it('passes the installed borrowed browser and credential file, like the staff quote spawner', () => {
     const env = paneStaySpawnEnv(
-      { PATH: '/usr/bin', HMS_READ_SECRET_ARN: 'arn' },
+      { PATH: '/usr/bin', HMS_READ_SECRET_ARN: 'arn', RESERVATIONIST_PANE_SAVE: 'lab' },
       () => configuration,
     );
     expect(env).toMatchObject({
       PATH: '/usr/bin',
       HMS_READ_SECRET_ARN: 'arn',
+      RESERVATIONIST_PANE_SAVE: 'lab',
       HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
       HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
       HMS_QUOTE_SECRET_PATH: '/repo/.private/owner/secret.json',
@@ -70,7 +71,8 @@ describe('paneStaySpawnEnv', () => {
     ]);
   });
 
-  it('the allowlist names no lab, cancel, or write switch', () => {
+  it('passes only the shared save gate, not ad-hoc lab or cancel flags', () => {
+    expect(PANE_CLI_ENV_ALLOWLIST).toContain('RESERVATIONIST_PANE_SAVE');
     expect(PANE_CLI_ENV_ALLOWLIST).not.toContain('LAB_CANCEL_CONFIRMATION');
     expect(PANE_CLI_ENV_ALLOWLIST.filter((name) => /CANCEL|CONFIRM|WRITE|LAB|DATABASE/.test(name))).toEqual([]);
   });
