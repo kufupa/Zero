@@ -14,6 +14,7 @@ import {
   PII_SELECTOR,
   piiValuesOf,
   READ_PANE_JS,
+  PANE_UNSYNCED_TEXT,
   READ_PROCEDURES,
   redactText,
   safeSegment,
@@ -679,6 +680,10 @@ describe('the pane read in a browser (H6b outcome labels)', () => {
         expect(ae3).toMatchObject({ intent: null, voucher: true, alerting: false });
         expect(outcomeOf(ae3)).toBe('intent');
 
+        const notSynced = await read('<p>This email has not finished syncing yet. Wait a moment, then select it again.</p>');
+        expect(notSynced).toMatchObject({ paneStatus: 'unsynced', unsyncedReason: 'pane_not_synced' });
+        expect(outcomeOf(notSynced)).toBe('unsynced');
+
         const loading = await read('<p role="status">Searching HMS…</p>');
         expect(outcomeOf(loading)).toBeNull();
 
@@ -701,6 +706,8 @@ describe('the pane read in a browser (H6b outcome labels)', () => {
     expect(copies).toEqual(['Nava is re-reading with your note…', 'Nava is reading the email…']);
     for (const copy of copies) expect(ANALYSING_TEXT.test(copy), copy).toBe(true);
     expect(READ_PANE_JS).toContain(JSON.stringify(ANALYSING_TEXT.source));
+    expect(PANE_UNSYNCED_TEXT.test(panel)).toBe(true);
+    expect(READ_PANE_JS).toContain(JSON.stringify(PANE_UNSYNCED_TEXT.source));
   });
 
   it('the probes match the pane markup in the mail code', () => {
