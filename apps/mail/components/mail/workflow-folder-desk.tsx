@@ -148,7 +148,9 @@ export function WorkflowFolderDesk() {
             {listQuery.isLoading ? (
               <p className="text-muted-foreground p-4 text-sm">Loading workflows…</p>
             ) : listQuery.isError ? (
-              <Notice tone="error" role="alert">Could not load this workflow folder.</Notice>
+              <Notice tone="error" role="alert">
+                Could not load this workflow folder: {folderErrorReason(listQuery.error?.message)}
+              </Notice>
             ) : rows.length === 0 ? (
               <p className="text-muted-foreground p-4 text-sm">No extracted emails in this folder yet.</p>
             ) : (
@@ -691,6 +693,14 @@ function displayValue(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value === null || value === undefined) return '—';
   return String(value);
+}
+
+// Owner console: show why the list failed, but keep raw SQL and parameters out of the page.
+function folderErrorReason(message: string | undefined): string {
+  const firstLine = message?.split('\n')[0]?.trim();
+  if (!firstLine) return 'unknown error';
+  if (firstLine.startsWith('Failed query')) return 'database query failed (see server logs)';
+  return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
 }
 
 function formatMailTime(value: string): string {

@@ -350,22 +350,22 @@ function latestWorkflowThreads(db: DB, transportId: string) {
     db
       .selectDistinctOn([message.threadId], {
         threadId: message.threadId,
-        sourceMessageId: message.id,
+        sourceMessageId: sql<string>`${message.id}`.as('latest_source_message_id'),
         sender: message.fromAddress,
         subject: message.subject,
         receivedAt: message.receivedAt,
-        messageCreatedAt: message.createdAt,
+        messageCreatedAt: sql<Date>`${message.createdAt}`.mapWith(message.createdAt).as('message_created_at'),
         sortTime: sql<Date>`coalesce(${message.receivedAt}, ${message.createdAt})`.as('sort_time'),
-        isMessageRead: message.isRead,
-        isThreadRead: mailThread.isRead,
-        extractionId: mailExtraction.id,
+        isMessageRead: sql<boolean>`${message.isRead}`.as('message_is_read'),
+        isThreadRead: sql<boolean>`${mailThread.isRead}`.as('thread_is_read'),
+        extractionId: sql<string>`${mailExtraction.id}`.as('latest_extraction_id'),
         kind: mailExtraction.kind,
-        action: actionColumn,
+        action: actionColumn.as('action'),
         payload: mailExtraction.payload,
         extractorVersion: mailExtraction.extractorVersion,
-        extractionCreatedAt: mailExtraction.createdAt,
-        origin: payloadOrigin,
-        automatedChannel,
+        extractionCreatedAt: sql<Date>`${mailExtraction.createdAt}`.mapWith(mailExtraction.createdAt).as('extraction_created_at'),
+        origin: payloadOrigin.as('origin'),
+        automatedChannel: automatedChannel.as('automated_channel'),
         folder: mapWorkflowFolderSql().as('folder'),
         prefilled: hasPrefilledDataSql().as('prefilled'),
       })
@@ -623,7 +623,8 @@ export async function getWorkflowFolderSummary(
       reviews,
       and(
         eq(reviews.sourceMessageId, latest.sourceMessageId),
-        eq(reviews.extractionId, latest.extractionId),
+        // Review evidence stores the extraction id as JSON text; the extraction id is a uuid.
+        sql`${reviews.extractionId} = ${latest.extractionId}::text`,
       ),
     )
     .groupBy(latest.folder);
