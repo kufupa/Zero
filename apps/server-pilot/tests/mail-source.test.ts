@@ -67,6 +67,20 @@ const channelExamples = [
     source: 'Get-e',
     reason: 'sender_domain:get-e.com',
   },
+  {
+    name: 'Tiket.com sender',
+    input: { fromAddress: 'noreply@tiket.com', subject: 'New reservation', bodyText: '' },
+    kind: 'channel',
+    source: 'Tiket.com',
+    reason: 'sender_domain:tiket.com',
+  },
+  {
+    name: 'Profitroom booking engine sender',
+    input: { fromAddress: 'Profitroom <booking@profitroom.com>', subject: 'New booking', bodyText: '' },
+    kind: 'channel',
+    source: 'Profitroom',
+    reason: 'sender_domain:profitroom.com',
+  },
 ] as const;
 
 const systemExamples = [
@@ -104,6 +118,13 @@ const systemExamples = [
     kind: 'system',
     source: 'Tripadvisor',
     reason: 'sender_domain:tripadvisor.com',
+  },
+  {
+    name: 'H-Pay payment notice sender',
+    input: { fromAddress: 'notifications@hospitality.cloud', subject: 'Payment received', bodyText: '' },
+    kind: 'system',
+    source: 'H-Pay',
+    reason: 'sender_domain:hospitality.cloud',
   },
 ] as const;
 
@@ -195,6 +216,22 @@ const directExamples = [
       subject: 'A question',
       bodyText: 'I saw reviews on ReviewPro and Tripadvisor.',
     },
+  },
+  {
+    name: 'travel agent Travelit stays in scope',
+    input: { fromAddress: 'reservations@travelit.co.za', subject: 'Booking request', bodyText: '' },
+  },
+  {
+    name: 'travel agent TBO stays in scope',
+    input: { fromAddress: 'hotels@tbo.com', subject: 'Booking request', bodyText: '' },
+  },
+  {
+    name: 'TBO helpdesk stays in scope',
+    input: { fromAddress: 'support@tbohelp.zendesk.com', subject: 'Booking query', bodyText: '' },
+  },
+  {
+    name: 'look-alike host is not Tiket.com',
+    input: { fromAddress: 'sales@mytiket.com', subject: 'Rates', bodyText: '' },
   },
 ] as const;
 
