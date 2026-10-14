@@ -1,5 +1,5 @@
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
-import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
+import { outlookSyncLabel, OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { reportBridgeFailure } from '@/lib/workstation/use-outlook-bridge';
 import { PaneMenu } from './pane-menu';
 import {
@@ -21,6 +21,7 @@ import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { WorkflowBadge } from '@/components/quote-workflow/workflow-badge';
 import {
   HmsJobNoticeBanner,
   HmsJobNoticeProvider,
@@ -111,6 +112,7 @@ import { SelectedEmailBlock } from './blocks/selected-email';
 import { ContactBlock } from './blocks/contact-block';
 import { TranslationBox } from './blocks/translation-box';
 import { BookingVoucherCard } from './blocks/booking-voucher-card';
+import { VoucherFindCard } from '@/components/quote-workflow/voucher-find-card';
 import { MailSourceNoActionCard } from './blocks/mail-source-no-action';
 import { FollowUpCard } from './blocks/follow-up-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
@@ -120,6 +122,7 @@ import { useInsertAiDraft } from './use-insert-ai-draft';
 import { useSavedReply } from './use-saved-reply';
 import { useSystemCheck } from './use-system-check';
 import { classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
+import { readAsForAnalysis, workStateForStatus } from '@/lib/quote-workflow/workflow-vocabulary';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
 type SenderFallback = Pick<StoredContact, 'name' | 'email'>;
@@ -392,7 +395,19 @@ export function NavaPane({
       alive = false;
     };
   }, [session?.user?.id]);
-  const sync = useOutlookSync({userId:session?.user?.id??null,sessionId:session?.session?.id??null,transportId:activeConnection?.id??null,mailbox:activeConnection?.email??'',deviceId:workstationInfo?.deviceId??null,capabilityVersion:capabilities?.mailboxSync,readRoots:capabilities?.readRoots??[],authorized:Boolean(isConnected&&!requiresRelogin&&!authorizationUnavailable),activateNative:activateMailboxSync});
+  const readOnlySyncStatus = Boolean(preview || onOpenThread);
+  const sync = useOutlookSync({
+    userId: session?.user?.id ?? null,
+    sessionId: session?.session?.id ?? null,
+    transportId: activeConnection?.id ?? null,
+    mailbox: activeConnection?.email ?? '',
+    deviceId: workstationInfo?.deviceId ?? null,
+    capabilityVersion: capabilities?.mailboxSync,
+    readRoots: capabilities?.readRoots ?? [],
+    authorized: Boolean(isConnected && !requiresRelogin && !authorizationUnavailable),
+    readOnlyStatus: readOnlySyncStatus,
+    activateNative: activateMailboxSync,
+  });
   const currentScope =
     !requiresRelogin && session?.user?.id && activeConnection?.id
       ? `${session.user.id}:${session.session?.id ?? ''}:${activeConnection.id}`
@@ -501,7 +516,8 @@ export function NavaPane({
   // note asks for a fresh read, so the stored read is not used then, and it does not re-trigger the effect below.
   const storedWork = useStoredWork({
     trpc: trpcClient,
-    internetMessageId: isNonActionableMailSource ? null : activeEmail?.internetMessageId ?? null,
+    internetMessageId: activeEmail?.internetMessageId ?? null,
+    openMissingWorkItem: !isNonActionableMailSource,
     scope: currentScope,
   });
   const senderFallback =
@@ -935,20 +951,41 @@ export function NavaPane({
   });
   // Preview starts on the quoting tool; the welcome, connection and tour screens never show there.
   const shownScreen: PaneScreen = preview && currentScreen !== 'needs-you' ? 'tool' : currentScreen;
+  // One list for the header entry and the screen, so a dismiss on the screen moves the entry count at once.
+  const needsYou = useNeedsYou(trpcClient);
+  const selectedReadKind = storedWork.pane.state === 'ready' ? storedWork.pane.kind : null;
+  const classifiedReadAs = readAsForAnalysis(quoteSession.analysis, {
+    kind: selectedReadKind,
+    treatAs: quoteSession.treatAs,
+  });
+  // Channel/system mail never opens the quote flow. A stored payment kind may still show its read-only voucher lookup.
+  const readAs = isNonActionableMailSource
+    ? (classifiedReadAs === 'payment' ? 'payment' : 'not_for_nava')
+    : classifiedReadAs;
   const mailSourceNoActionNotice = nonActionableMailSource ? (
     <MailSourceNoActionCard
       kind={nonActionableMailSource.kind}
       source={nonActionableMailSource.source}
+      voucherLookupOnly={readAs === 'payment'}
     />
   ) : null;
-  // One list for the header entry and the screen, so a dismiss on the screen moves the entry count at once.
-  const needsYou = useNeedsYou(trpcClient);
+  const currentNeedsYouRow = needsYou.rows.find((row) => row.id === paneWorkItemId);
+  const workState =
+    currentNeedsYouRow
+      ? currentNeedsYouRow.status === 'done' || currentNeedsYouRow.status === 'dismissed'
+        ? null
+        : currentNeedsYouRow.chip
+      : workStateForStatus(storedWork.pane.state === 'ready' ? storedWork.pane.workItemStatus : null);
   const [tourSlideIndex, setTourSlideIndex] = useState(0);
   const [pingState, setPingState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
   const [pingErrorMessage, setPingErrorMessage] = useState<string | null>(null);
 
-  const detectedProperty = 'The Centurion Hotel';
+  const mailboxLabel = activeConnection?.email || 'No mailbox connected';
+  const mailboxDescription =
+    activeConnection?.name && activeConnection.name !== activeConnection.email
+      ? `${activeConnection.name} — ${activeConnection.email}`
+      : mailboxLabel;
 
   const executeServerPing = async () => {
     setPingState('loading');
@@ -1703,7 +1740,56 @@ export function NavaPane({
       onSaveReply={preview ? trackedSave : undefined}
       onInsertSaved={savedReply.available ? insertSavedReply : null}
       preview={preview}
+      primaryAction={false}
     />
+  );
+  const mailboxWarnings = (
+    <>
+      {isConnected && capabilities && capabilities.mailboxSync !== 1 ? (
+        <p className="text-[11px] text-slate-600">Update the Outlook add-in to enable automatic email copying.</p>
+      ) : null}
+      {isConnected && (updateRequired || workstationInfo?.bridgeProtocolVersion !== 4) ? (
+        <div role="alert" className="rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
+          Update the Outlook add-in to protocol v4. This installer cannot access mail.
+        </div>
+      ) : null}
+      {isConnected && !updateRequired && workstationInfo?.paired === false ? (
+        <div className="rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
+          <p>Outlook device pairing requires a supervised operator code entered in a Windows-only dialog.</p>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => {
+              void pairDevice?.().catch((error: unknown) => {
+                toast.error(error instanceof Error ? error.message : 'Could not pair Outlook device');
+              });
+            }}
+          >
+            Pair Outlook Device
+          </Button>
+        </div>
+      ) : null}
+      {isConnected && workstationInfo?.paired && authorizationUnavailable && !requiresRelogin ? (
+        <div role="status" className="rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
+          <p>Nava is connecting to this mailbox. If this stays, open an email in your Inbox.</p>
+          <Button type="button" size="sm" onClick={refreshAuthorization}>Try again</Button>
+        </div>
+      ) : null}
+      {pendingBuild !== null ? (
+        <div role="status" className="rounded-sm border border-sky-300 bg-sky-50 p-2.5 text-xs text-sky-800">
+          <p>New version available — it will load when you open the next email.</p>
+        </div>
+      ) : null}
+      {selectionOutsideMailbox ? (
+        <div role="status" className="rounded-sm border border-slate-300 bg-slate-50 p-2.5 text-xs text-slate-700">
+          <p>
+            {activeConnection?.email
+              ? `This email isn't in ${activeConnection.email}. Pick an email from the ${activeConnection.email} inbox.`
+              : "This email isn't in the connected mailbox. Pick an email from its inbox."}
+          </p>
+        </div>
+      ) : null}
+    </>
   );
 
   return (
@@ -1721,33 +1807,54 @@ export function NavaPane({
       >
       {/* Fills the Outlook pane height, so the body below scrolls with a visible bar; never narrower than 320px. */}
       <div className="shadow-xs relative flex h-full w-full min-w-[320px] flex-col border-x border-[#cbd5e1] bg-white text-[#1e293b]">
-        {/* Outlook 2016 Header */}
-        <header className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-[#e2e8f0] bg-white px-3.5">
-          {/* The title and the Needs you count keep their width; the connection status gives way first at 320-380 px. */}
-          <div className="flex min-w-0 shrink-0 items-center gap-2">
-            <span className="flex h-5 w-5 items-center justify-center rounded-[3px] bg-[#1a4332] text-[11px] font-extrabold text-white">
-              N
-            </span>
-            <h1 className="min-w-0 truncate whitespace-nowrap text-[13px] font-bold text-[#1e293b]">Nava Reservationist</h1>
-            {shownScreen === 'tool' || shownScreen === 'needs-you' ? (
-              <NeedsYouEntry
-                list={needsYou}
-                compact
-                onOpen={() => {
-                  needsYou.reload();
-                  setCurrentScreen('needs-you');
-                }}
-              />
-            ) : null}
-          </div>
-          <div className="flex min-w-0 shrink items-center gap-1.5 text-[11.5px] font-medium text-[#475569] [&_button]:whitespace-nowrap">
-            <HmsJobRunningChip />
-            <span
-              className={`h-2 w-2 rounded-full ${
-                isConnected ? 'animate-pulse bg-emerald-600' : 'bg-rose-500'
-              }`}
+        {/* Mailbox identity and copy progress are visible above the selected email, without a property-name fallback. */}
+        <header aria-label="Nava mailbox" className="shrink-0 border-b border-[#e2e8f0] bg-white">
+          <div className="flex h-10 min-w-0 items-center justify-between gap-2 px-3.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[3px] bg-[#1a4332] text-[11px] font-extrabold text-white">
+                N
+              </span>
+              <h1 className="truncate whitespace-nowrap text-[13px] font-bold text-[#1e293b]">Nava Reservationist</h1>
+            </div>
+            <NeedsYouEntry
+              list={needsYou}
+              compact
+              onOpen={() => {
+                needsYou.reload();
+                setCurrentScreen('needs-you');
+              }}
             />
-            {sync.eligible ? <OutlookSyncProgress status={sync.status} mailbox={activeConnection?.email??''} error={sync.error} busy={sync.busy} onControl={(operation)=>{void sync.control(operation).catch(()=>undefined);}}/> : <span>Centurion</span>}
+          </div>
+          <div className="flex h-8 min-w-0 items-center gap-1.5 border-t border-[#f1f5f9] bg-[#f8fafc] px-3.5 text-[11px] font-medium text-[#475569]">
+            <span
+              aria-hidden="true"
+              className={`h-2 w-2 shrink-0 rounded-full ${isConnected ? 'animate-pulse bg-emerald-600' : 'bg-rose-500'}`}
+            />
+            <span
+              aria-label={`Connected mailbox: ${mailboxDescription}`}
+              title={mailboxDescription}
+              className="min-w-0 flex-1 truncate font-semibold"
+            >
+              {mailboxLabel}
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5 [&_button]:whitespace-nowrap">
+              <HmsJobRunningChip />
+              {activeConnection?.email && (sync.eligible || readOnlySyncStatus) ? (
+                <OutlookSyncProgress
+                  status={sync.status}
+                  mailbox={activeConnection.email}
+                  error={sync.error}
+                  busy={sync.busy}
+                  controlsEnabled={sync.eligible}
+                  emptyLabel={readOnlySyncStatus && sync.statusLoaded ? 'No Outlook sync found' : undefined}
+                  onControl={(operation) => { void sync.control(operation).catch(() => undefined); }}
+                />
+              ) : (
+                <span className="max-w-[130px] truncate" title={activeConnection?.email ? undefined : 'Sync unavailable'}>
+                  {activeConnection?.email ? outlookSyncLabel(sync.status, sync.error) : 'Sync unavailable'}
+                </span>
+              )}
+            </span>
             <span className="sr-only">
               {isConnected
                 ? `Connected to Classic Outlook (${capabilities?.outlookVersion ?? 'version unavailable'}; product/build unknown)`
@@ -1756,65 +1863,28 @@ export function NavaPane({
           </div>
         </header>
 
+        <HmsJobNoticeBanner onReveal={() => setCurrentScreen('tool')} />
+        <SelectedEmailBlock activeEmail={activeEmail} />
+        {readAs ? (
+          <div className="mx-3 mt-2 shrink-0">
+            <WorkflowBadge
+              analysis={quoteSession.analysis}
+              kind={selectedReadKind}
+              readAs={readAs}
+              treatAs={quoteSession.treatAs}
+              workState={workState}
+              onIntentChange={isNonActionableMailSource ? undefined : (treatAs) => {
+                suppressAutoStaffQuoteForCurrentEmail();
+                dispatchQuote({ type: 'treat_as', treatAs });
+              }}
+            />
+          </div>
+        ) : null}
+
         {shownScreen !== 'tool' && mailSourceNoActionNotice ? (
           <div className="mx-3 mt-2">{mailSourceNoActionNotice}</div>
         ) : null}
-
-        <HmsJobNoticeBanner />
-
-        {isConnected && capabilities && capabilities.mailboxSync !== 1 && <p className="mx-3 mt-2 text-[11px] text-slate-600">Update the Outlook add-in to enable automatic email copying.</p>}
-        {/* An old installer cannot perform even read-only COM actions. */}
-        {isConnected && (updateRequired || workstationInfo?.bridgeProtocolVersion !== 4) && (
-          <div
-            role="alert"
-            className="m-3 mb-0 rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800"
-          >
-            Update the Outlook add-in to protocol v4. This installer cannot access mail.
-          </div>
-        )}
-        {isConnected && !updateRequired && workstationInfo?.paired === false && (
-          <div className="m-3 mb-0 rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
-            <p>
-              Outlook device pairing requires a supervised operator code entered in a Windows-only
-              dialog.
-            </p>
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => {
-                void pairDevice?.().catch((error: unknown) => {
-                  toast.error(
-                    error instanceof Error ? error.message : 'Could not pair Outlook device',
-                  );
-                });
-              }}
-            >
-              Pair Outlook Device
-            </Button>
-          </div>
-        )}
-        {isConnected && workstationInfo?.paired && authorizationUnavailable && !requiresRelogin && (
-          <div role="status" className="m-3 mb-0 rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
-            <p>Nava is connecting to this mailbox. If this stays, open an email in your Inbox.</p>
-            <Button type="button" size="sm" onClick={refreshAuthorization}>
-              Try again
-            </Button>
-          </div>
-        )}
-        {pendingBuild !== null && (
-          <div role="status" className="m-3 mb-0 rounded-sm border border-sky-300 bg-sky-50 p-2.5 text-xs text-sky-800">
-            <p>New version available — it will load when you open the next email.</p>
-          </div>
-        )}
-        {selectionOutsideMailbox && (
-          <div role="status" className="m-3 mb-0 rounded-sm border border-slate-300 bg-slate-50 p-2.5 text-xs text-slate-700">
-            <p>
-              {activeConnection?.email
-                ? `This email isn't in ${activeConnection.email}. Pick an email from the ${activeConnection.email} inbox.`
-                : "This email isn't in the connected mailbox. Pick an email from its inbox."}
-            </p>
-          </div>
-        )}
+        {shownScreen !== 'tool' ? <div className="mx-3 mt-2 flex flex-col gap-2">{mailboxWarnings}</div> : null}
 
         {/* First-run steps only: the bar is gone once onboarding is done (replay from the ⋯ menu). Preview never shows it. */}
         {shownScreen !== 'tool' && shownScreen !== 'needs-you' && (
@@ -1857,7 +1927,6 @@ export function NavaPane({
         {shownScreen === 'welcome' && (
           <WelcomeScreen
             detectedEmail={detectedEmail}
-            detectedProperty={detectedProperty}
             onConfirm={() => {
               setCurrentScreen('diagnostics');
               void executeServerPing();
@@ -1908,7 +1977,22 @@ export function NavaPane({
             className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5"
           >
             {nonActionableMailSource ? (
-              shownScreen === 'tool' ? mailSourceNoActionNotice : null
+              <div className="flex flex-col gap-3.5">
+                {shownScreen === 'tool' ? mailSourceNoActionNotice : null}
+                {readAs === 'payment' && activeEmail?.internetMessageId ? (
+                  <VoucherFindCard
+                    key={activeEmail.internetMessageId}
+                    internetMessageId={activeEmail.internetMessageId}
+                    trpc={trpcClient}
+                    syncCommitted={sync.status?.committed ?? null}
+                    syncPending={
+                      sync.status
+                        ? sync.status.discovered > sync.status.committed && !sync.status.userPaused
+                        : false
+                    }
+                  />
+                ) : null}
+              </div>
             ) : (
               <>
             {/* Contact is the first selected-message context. Extraction values win; only an external sender can fill its early fallback. */}
@@ -1922,42 +2006,7 @@ export function NavaPane({
                 onEdit={storedWork.recordContact}
               />
             ) : null}
-            {/* Email context for the selected email; until one is selected, an empty state. */}
-            <SelectedEmailBlock activeEmail={activeEmail} />
-            {storedWork.pane.state === 'ready' ? (
-              <TranslationBox
-                key={storedWork.pane.workItemId ?? activeEmail?.internetMessageId ?? ''}
-                language={storedWork.pane.language}
-                translation={storedWork.pane.translation}
-                busy={storedWork.translationBusy}
-                onRetry={storedWork.retryTranslation}
-              />
-            ) : null}
-
-            {/* The quote follow-up on this thread, when the server holds one (R10). Keyed by the email, like the voucher card. */}
-            <FollowUpCard
-              key={activeEmail?.internetMessageId ?? 'no-email'}
-              bridge={bridge}
-              preview={preview}
-              trpc={trpcClient}
-            />
-
-            {/* Booking and voucher block: a change or cancellation card, then the Find the booking card. */}
-            <BookingVoucherCard
-              session={quoteSession}
-              internetMessageId={activeEmail?.internetMessageId ?? null}
-              senderEmail={activeEmail?.senderEmail ?? null}
-              subject={activeEmail?.subject ?? null}
-              bodyText={activeEmail?.bodyText ?? null}
-              syncCommitted={sync.status?.committed ?? null}
-              syncPending={
-                sync.status
-                  ? sync.status.discovered > sync.status.committed && !sync.status.userPaused
-                  : false
-              }
-              workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
-              writesEnabled={paneSaveOn}
-            />
+            <div className="flex flex-col gap-2">{mailboxWarnings}</div>
 
             {storedWork.saveFailed ? (
               <p role="status" className="flex items-center gap-2 px-1 text-[11px] text-[#b45309]">
@@ -2021,10 +2070,6 @@ export function NavaPane({
                 dispatchQuote({ type: 'patch_staff_stay_extras', stayKey, extras });
               }}
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
-              onTreatAs={(treatAs) => {
-                suppressAutoStaffQuoteForCurrentEmail();
-                dispatchQuote({ type: 'treat_as', treatAs });
-              }}
               onStaffNote={(staffNote) => {
                 suppressAutoStaffQuoteForCurrentEmail();
                 setStaffNoteSent(staffNote);
@@ -2052,6 +2097,39 @@ export function NavaPane({
               onDownloadWorkbook={downloadWorkbook}
               workbookPending={workbookPending}
               replyContent={quoteOrBookingEmail ? replyBody : undefined}
+            />
+
+            {/* Supporting tools follow the four-step quote flow and stay available without competing with its actions. */}
+            {storedWork.pane.state === 'ready' ? (
+              <TranslationBox
+                key={`translation:${storedWork.pane.workItemId ?? activeEmail?.internetMessageId ?? ''}`}
+                language={storedWork.pane.language}
+                translation={storedWork.pane.translation}
+                busy={storedWork.translationBusy}
+                onRetry={storedWork.retryTranslation}
+              />
+            ) : null}
+            <FollowUpCard
+              key={`follow-up:${activeEmail?.internetMessageId ?? 'no-email'}`}
+              bridge={bridge}
+              preview={preview}
+              trpc={trpcClient}
+            />
+            <BookingVoucherCard
+              session={quoteSession}
+              readAs={readAs}
+              internetMessageId={activeEmail?.internetMessageId ?? null}
+              senderEmail={activeEmail?.senderEmail ?? null}
+              subject={activeEmail?.subject ?? null}
+              bodyText={activeEmail?.bodyText ?? null}
+              syncCommitted={sync.status?.committed ?? null}
+              syncPending={
+                sync.status
+                  ? sync.status.discovered > sync.status.committed && !sync.status.userPaused
+                  : false
+              }
+              workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
+              writesEnabled={paneSaveOn}
             />
 
             {/* Non-quote mail keeps its plain reply actions; quote mail's action is inside Step 5. */}

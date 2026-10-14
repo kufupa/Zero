@@ -1121,21 +1121,23 @@ describe('AmendLookupPanel guest-name search', () => {
     expect(screen.queryByTestId('amend-guest-search')).toBeNull();
   });
 
-  it('shows one confirmation-only copy action after a found result', async () => {
+  it('shows one confirmation copy action and a supported HMS link after a found result', async () => {
     const HMS_LANDING = 'https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY';
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    expect(screen.queryAllByRole('link', { name: 'Open HMS' })).toHaveLength(0);
+    expect(screen.queryAllByRole('link', { name: 'Open in HMS' })).toHaveLength(0);
     expect(screen.queryAllByRole('button', { name: 'Copy link' })).toHaveLength(0);
-    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Copy for HMS' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Copy confirmation' })).toBeNull();
     vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', HMS_LANDING);
     cleanup();
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    expect(screen.getAllByRole('button', { name: 'Copy link' })).toHaveLength(1);
-    expect(screen.getAllByRole('link', { name: 'Open HMS' })).toHaveLength(1);
+    expect(screen.queryAllByRole('button', { name: 'Copy link' })).toHaveLength(0);
+    expect(screen.getAllByRole('button', { name: 'Copy for HMS' })).toHaveLength(1);
     await pressFind();
     await expectFoundBooking();
-    expect(screen.queryByRole('link', { name: 'Open HMS' })).toBeNull();
+    expect(screen.getAllByRole('link', { name: 'Open in HMS' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Copy for HMS' })).toBeNull();
     expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);

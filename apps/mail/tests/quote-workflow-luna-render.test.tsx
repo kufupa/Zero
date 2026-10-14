@@ -75,7 +75,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.getByText('Default')).toBeDefined();
   });
 
-  it('shows Booking badge and stay groups for create_booking workflow', () => {
+  it('renders stay groups for create_booking without a second classification badge', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',
       groups: [g1],
@@ -84,11 +84,11 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       luna: lunaWire({ workflow: 'create_booking' }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText('Booking')).toBeDefined();
+    expect(screen.queryByText('Booking')).toBeNull();
     expect(screen.getByLabelText('Arrival')).toBeDefined();
   });
 
-  it('shows Read without AI and still renders local groups', () => {
+  it('keeps Read without AI in the shared pane banner, not the workflow, and still renders local groups', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',
       groups: [g1],
@@ -99,11 +99,11 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       luna: null,
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText('Read without AI')).toBeDefined();
+    expect(screen.queryByText('Read without AI')).toBeNull();
     expect(screen.getByLabelText('Arrival')).toBeDefined();
   });
 
-  it('shows the not-supported copy and one notice on a non_quote Other workflow', () => {
+  it('shows not-supported guidance without duplicating the read-as banner in the workflow', () => {
     const session = sessionWithAnalysis({
       intent: 'other',
       groups: [],
@@ -116,10 +116,10 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       }),
     });
     render(<QuoteWorkflowPanel session={session} />);
-    expect((screen.getByLabelText('Nava reads this as') as HTMLSelectElement).value).toBe('other');
+    expect(screen.queryByLabelText('Change how Nava reads this email')).toBeNull();
     expect(screen.getByText('Changing or cancelling a booking is not supported yet. Handle it by hand in HMS.')).toBeDefined();
     expect(screen.queryByText('Reservation number?')).toBeNull();
-    expect(screen.getByText(/Not a quote or booking/)).toBeDefined();
+    expect(screen.queryByText(/Not a quote or booking/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'This is a quote request' })).toBeNull();
   });
 
@@ -146,8 +146,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.getByText('Nava can find the booking; make the change in HMS yourself.')).toBeDefined();
   });
 
-  it('calls onTreatAs quote and booking from the type picker on the Other workflow', () => {
-    const onTreatAs = vi.fn();
+  it('leaves the single read-as banner to the pane shell instead of duplicating it in the workflow', () => {
     const session = sessionWithAnalysis({
       intent: 'other',
       groups: [],
@@ -155,11 +154,9 @@ describe('QuoteWorkflowPanel Nava extras', () => {
       alternatives: [],
       luna: lunaWire({ workflow: 'other' }),
     });
-    render(<QuoteWorkflowPanel session={session} onTreatAs={onTreatAs} />);
-    fireEvent.change(screen.getByLabelText('Nava reads this as'), { target: { value: 'quote' } });
-    expect(onTreatAs).toHaveBeenCalledWith('quote');
-    fireEvent.change(screen.getByLabelText('Nava reads this as'), { target: { value: 'create_booking' } });
-    expect(onTreatAs).toHaveBeenCalledWith('create_booking');
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.queryByText(/Nava reads this as:/)).toBeNull();
+    expect(screen.queryByLabelText('Change how Nava reads this email')).toBeNull();
   });
 
   it('keeps unread-attachment warnings on a non_quote fallback', () => {
@@ -576,8 +573,8 @@ describe('Outlook pane Nava analysis bind', () => {
     });
     const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
     render(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getByLabelText('Nava reads this as')).toBeDefined());
-    fireEvent.change(screen.getByLabelText('Nava reads this as'), { target: { value: 'quote' } });
+    await waitFor(() => expect(screen.getByLabelText('Change how Nava reads this email')).toBeDefined());
+    fireEvent.change(screen.getByLabelText('Change how Nava reads this email'), { target: { value: 'quote' } });
     await waitFor(() => {
       expect(
         analyseMutate.mock.calls.some((call) => (call[0] as { treatAs?: string })?.treatAs === 'quote'),
@@ -598,7 +595,7 @@ describe('Outlook pane Nava analysis bind', () => {
     });
     const OutlookPanePage = (await import('../app/(routes)/outlook-pane/page')).default;
     render(<OutlookPanePage />);
-    await waitFor(() => expect(screen.getByLabelText('Nava reads this as')).toBeDefined());
+    await waitFor(() => expect(screen.getByLabelText('Change how Nava reads this email')).toBeDefined());
     expect(screen.queryByText(/Tell Nava/i)).toBeNull();
     expect(screen.queryByLabelText(/what's wrong/i)).toBeNull();
   }, 15_000);

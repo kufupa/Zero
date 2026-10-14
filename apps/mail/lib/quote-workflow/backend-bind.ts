@@ -191,6 +191,8 @@ export type StoredWork =
   | { status: 'failed'; reason: string }
   | {
       status: 'ready';
+      /** The stored mail kind, used to keep the selected-email classification in the shared pane vocabulary. */
+      kind: string;
       workItemId: string | null;
       workItemStatus: string | null;
       extractionId: string;
@@ -220,7 +222,7 @@ export type TranslationRetryResult = { status: string; translation?: StoredTrans
 export type NeedsYouRow = {
   id: string;
   kind: string;
-  status: 'needs_you' | 'review';
+  status: 'needs_you' | 'review' | 'done' | 'dismissed';
   chip: 'needs_you' | 'queued' | 'in_hms' | 'review';
   threadId: string | null;
   sender: string | null;
@@ -245,8 +247,12 @@ type WorkItemsClient = {
     ) => Promise<unknown>;
   };
   retryTranslation?: { mutate: (input: { workItemId: string }) => Promise<TranslationRetryResult> };
-  list?: { query: (input: { limit?: number }) => Promise<NeedsYouRow[]> };
-  dismiss?: { mutate: (input: { workItemId: string }) => Promise<unknown> };
+  list?: {
+    query: (input: { limit?: number; statuses?: NeedsYouRow['status'][] }) => Promise<NeedsYouRow[]>;
+  };
+  dismiss?: {
+    mutate: (input: { workItemId: string }, opts?: ReturnType<typeof inMailbox>) => Promise<unknown>;
+  };
 };
 
 export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {

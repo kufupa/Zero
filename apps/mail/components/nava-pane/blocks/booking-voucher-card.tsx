@@ -4,6 +4,7 @@ import { ApproveCard } from '@/components/quote-workflow/approve-card';
 import { hmsApprovalFromTrpc } from '@/lib/quote-workflow/hms-write';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { amendmentOf } from '@/lib/quote-workflow/session';
+import type { NavaReadAs } from '@/lib/quote-workflow/workflow-vocabulary';
 import { otaBookingChannel } from '@/lib/quote-workflow/ota-channel';
 import { trpcClient } from '@/providers/query-provider';
 import { OtaBookingChannelChip } from './ota-booking-channel-chip';
@@ -19,6 +20,7 @@ export function BookingVoucherCard({
   internetMessageId,
   syncCommitted,
   syncPending,
+  readAs = null,
   workItemId = null,
   writesEnabled = false,
   senderEmail = null,
@@ -29,6 +31,8 @@ export function BookingVoucherCard({
   internetMessageId: string | null;
   syncCommitted: number | null;
   syncPending: boolean;
+  /** Shared selected-email classification; payment mails need voucher lookup even when the older workflow is `other`. */
+  readAs?: NavaReadAs | null;
   /** The stored work item for the selected mail. The write attaches to it. */
   workItemId?: string | null;
   /** The pane save flag. Off hides HMS write controls; read-only lookup and Copy actions remain available. */
@@ -40,7 +44,7 @@ export function BookingVoucherCard({
   const amendment = amendmentOf(session);
   const intent = session.treatAs ?? session.analysis?.luna?.workflow;
   const hasBookingWorkflow = intent === 'create_booking';
-  const showVoucherFindCard = hasBookingWorkflow || amendment !== null;
+  const showVoucherFindCard = readAs === 'payment' || hasBookingWorkflow || amendment !== null;
   const ota = amendment || hasBookingWorkflow ? otaBookingChannel({ senderEmail, subject, bodyText }) : null;
   const lunaGroups = session.analysis?.luna?.groups ?? [];
   const guestName = lunaGroups.flatMap((group) => group.guestNames).find((name) => name.trim());

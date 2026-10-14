@@ -1,95 +1,107 @@
-import type { QuoteAmendment, QuoteAnalysis } from '@/lib/quote-workflow/types';
+import type { QuoteAnalysis } from '@/lib/quote-workflow/types';
+import {
+  NAVA_READ_AS_LABEL,
+  NAVA_WORK_STATE_LABEL,
+  quoteOrBookingWorkflow,
+  readAsForAnalysis,
+  type NavaReadAs,
+  type NavaWorkState,
+} from '@/lib/quote-workflow/workflow-vocabulary';
 import { paneFieldClass } from '@/components/nava-pane/pane-ui';
 
-/** The amendment kinds Nava can report. */
-export type AmendmentKind = QuoteAmendment['kind'];
-
-/** The type Nava reads the email as. Other means it is not a quote or a booking. */
 export type QuoteIntent = 'quote' | 'create_booking' | 'other';
 
-const mutedChipClass =
-  'rounded-xs bg-[#f1f5f9] px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#64748b]';
-
-const AMENDMENT_CHIP: Record<AmendmentKind, { label: string; hint: string; className: string }> = {
-  amend: {
-    label: 'Amendment',
-    hint: 'Nava thinks the guest wants to change an existing booking.',
-    className: 'rounded-sm bg-indigo-100 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-900',
-  },
-  cancel: {
-    label: 'Cancellation',
-    hint: 'Nava thinks the guest wants to cancel an existing booking.',
-    className: 'rounded-sm bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-800',
-  },
+const SPECIAL_READ_HINT: Partial<Record<NavaReadAs, string>> = {
+  amendment: 'Nava thinks the guest wants to change an existing booking.',
+  cancellation: 'Nava thinks the guest wants to cancel an existing booking.',
 };
 
-const INTENT_LABEL: Record<QuoteIntent, string> = {
-  quote: 'Quote request',
-  create_booking: 'Booking',
-  other: 'Other',
-};
-
-/**
- * The type picker. Changing it to a quote or a booking runs the same action as before. Other has no action of its
- * own, so it is listed only while it is the current reading.
- */
+/** One selected-email classification banner. Work state is deliberately a separate, optional chip. */
 export function WorkflowBadge({
   analysis,
-  amendmentKind,
-  intent,
+  kind,
+  readAs,
+  treatAs,
+  workState,
   onIntentChange,
 }: {
   analysis: QuoteAnalysis | null;
-  /** Optional. Its chip is shown next to the type picker. Absent or null shows no chip. */
-  amendmentKind?: AmendmentKind | null;
-  /** The current reading. Null shows a prompt to choose. */
-  intent?: QuoteIntent | null;
+  kind?: string | null;
+  readAs?: NavaReadAs | null;
+  treatAs?: 'quote' | 'create_booking' | null;
+  workState?: NavaWorkState | null;
   onIntentChange?: (intent: 'quote' | 'create_booking') => void;
 }) {
-  if (!analysis) return null;
-  const amendment = amendmentKind ? AMENDMENT_CHIP[amendmentKind] : undefined;
-  const current = intent ?? null;
-  const options = (['quote', 'create_booking', 'other'] as const).filter(
-    (value) => value !== 'other' || current === 'other',
-  );
+  const current = readAs ?? readAsForAnalysis(analysis, { kind, treatAs });
+  if (!current) return null;
+
+  const label = NAVA_READ_AS_LABEL[current];
+  // A paid claim relabels a quote or booking as payment; staff can still correct the workflow underneath.
+  const paidWorkflow = current === 'payment' ? quoteOrBookingWorkflow(analysis, kind) : null;
+  const changeable =
+    Boolean(onIntentChange) &&
+    (['quote', 'new_booking', 'group', 'not_for_nava'].includes(current) || Boolean(paidWorkflow));
+  const selectorValue =
+    treatAs ??
+    paidWorkflow ??
+    (current === 'quote' || current === 'group'
+      ? 'quote'
+      : current === 'new_booking'
+        ? 'create_booking'
+        : 'other');
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {!amendment ? (
-        <div className="flex items-center gap-2">
-          <span className="text-[11.5px] font-semibold text-[#475569]">Nava reads this as</span>
-          <div className="w-40 min-w-[10rem] shrink-0">
-            <select
-              aria-label="Nava reads this as"
-              className={paneFieldClass}
-              value={current ?? ''}
-              onChange={(event) => {
-                const next = event.target.value;
-                if (next === 'quote' || next === 'create_booking') onIntentChange?.(next);
-              }}
-            >
-              {current === null ? (
-                <option value="" disabled>
-                  Choose a type
-                </option>
-              ) : null}
-              {options.map((value) => (
-                <option key={value} value={value}>
-                  {INTENT_LABEL[value]}
-                </option>
-              ))}
-            </select>
-          </div>
+    <section
+      role="status"
+      aria-label={`Nava reads this as: ${label}`}
+      className="flex shrink-0 flex-col gap-2 rounded-[4px] border border-[#bfdbfe] bg-[#eff6ff] px-3 py-2.5"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-[#1e293b]">
+          <span className="font-semibold">Nava reads this as:</span>
+          <span
+            data-read-as={current}
+            title={SPECIAL_READ_HINT[current]}
+            className="rounded-full bg-white px-2 py-0.5 text-[11.5px] font-bold text-[#1d4ed8]"
+          >
+            {label}
+          </span>
+          {analysis?.aiUnavailable ? (
+            <span className="rounded-full bg-white px-2 py-0.5 text-[10.5px] font-semibold text-[#64748b]">
+              Read without AI
+            </span>
+          ) : null}
         </div>
+        {workState ? (
+          <span
+            data-work-state={workState}
+            className="whitespace-nowrap rounded-full border border-[#cbd5e1] bg-white px-2 py-0.5 text-[10.5px] font-semibold text-[#475569]"
+          >
+            {NAVA_WORK_STATE_LABEL[workState]}
+          </span>
+        ) : null}
+      </div>
+      {analysis?.aiUnavailable ? (
+        <p className="text-[11px] text-[#64748b]">Check every field by hand.</p>
       ) : null}
-      {amendment ? (
-        <span className={amendment.className} title={amendment.hint} data-amendment-kind={amendmentKind}>
-          {amendment.label}
-        </span>
+      {changeable ? (
+        <label className="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]">
+          Change how Nava reads this email
+          <select
+            aria-label="Change how Nava reads this email"
+            className={`${paneFieldClass} max-w-[15rem] bg-white`}
+            value={selectorValue}
+            onChange={(event) => {
+              if (event.target.value === 'quote' || event.target.value === 'create_booking') {
+                onIntentChange?.(event.target.value);
+              }
+            }}
+          >
+            <option value="quote">Quote</option>
+            <option value="create_booking">New booking</option>
+            {current === 'not_for_nava' ? <option value="other">Not for Nava</option> : null}
+          </select>
+        </label>
       ) : null}
-      {analysis.aiUnavailable ? <span className={mutedChipClass}>Read without AI</span> : null}
-      {analysis.aiUnavailable ? (
-        <span className="text-[10.5px] text-[#64748b]">Check every field by hand.</span>
-      ) : null}
-    </div>
+    </section>
   );
 }

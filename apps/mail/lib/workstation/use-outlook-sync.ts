@@ -26,7 +26,16 @@ export type OutlookSyncClientInput = {
   capabilityVersion: number | undefined;
   readRoots: Root[];
   authorized: boolean;
+  /** Webmail can inspect the active mailbox's server status, but cannot activate or control native Outlook sync. */
+  readOnlyStatus?: boolean;
   activateNative: (payload: Activation) => Promise<unknown>;
+};
+type ActiveMailboxSyncStatusClient = {
+  workstation: {
+    outlookSync: {
+      statusForActiveMailbox: { query: (input: Record<string, never>) => Promise<SyncStatusV1 | null> };
+    };
+  };
 };
 type Entry = {
   idempotencyKey: string;
@@ -58,9 +67,15 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
         root!.policyGeneration,
       ])
     : null;
+  const readOnlyKey = input.readOnlyStatus && input.authorized && input.userId && input.sessionId && input.transportId
+    ? JSON.stringify(['mailbox-status', input.userId, input.sessionId, input.transportId])
+    : null;
+  const statusKey = key ?? readOnlyKey;
   const current = useRef(input);
   current.current = input;
   const owner = useRef(key);
+  const readOnlyOwner = useRef(readOnlyKey);
+  readOnlyOwner.current = readOnlyKey;
   const scopeRevision = useRef(0);
   const statusRevision = useRef(0);
   const controlFlight = useRef<{ key: string; revision: number } | null>(null);
@@ -178,6 +193,33 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
       if (timer) clearTimeout(timer);
     };
   }, [key, readStatus]);
+  useEffect(() => {
+    if (key || !readOnlyKey) return;
+    const ownerKey = readOnlyKey;
+    let mounted = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function tick() {
+      if (!mounted || readOnlyOwner.current !== ownerKey) return;
+      try {
+        const status = await (trpcClient as unknown as ActiveMailboxSyncStatusClient)
+          .workstation.outlookSync.statusForActiveMailbox.query({});
+        if (!mounted || readOnlyOwner.current !== ownerKey) return;
+        setSnapshot({ key: ownerKey, status, error: null });
+        const pending = status !== null && status.discovered > status.committed && !status.userPaused;
+        timer = setTimeout(tick, pending ? 5000 : 30000);
+      } catch (error) {
+        if (!mounted || readOnlyOwner.current !== ownerKey) return;
+        const code = (error as { data?: { code?: string } })?.data?.code;
+        setSnapshot({ key: ownerKey, status: null, error: code === 'FORBIDDEN' ? 'access-removed' : 'offline' });
+        if (code !== 'FORBIDDEN') timer = setTimeout(tick, 5000);
+      }
+    }
+    void tick();
+    return () => {
+      mounted = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [key, readOnlyKey]);
   const control = useCallback(
     async (operation: SyncControlOperation) => {
       const k = owner.current,
@@ -235,8 +277,9 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
     [snapshot, readStatus],
   );
   return {
-    status: snapshot.key === key ? snapshot.status : null,
-    error: snapshot.key === key ? snapshot.error : null,
+    status: snapshot.key === statusKey ? snapshot.status : null,
+    error: snapshot.key === statusKey ? snapshot.error : null,
+    statusLoaded: Boolean(statusKey && snapshot.key === statusKey),
     busy: pendingControl?.key === key && pendingControl.revision === scopeRevision.current,
     eligible,
     control,
