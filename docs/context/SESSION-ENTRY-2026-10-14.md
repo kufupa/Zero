@@ -17,22 +17,21 @@ Checkpoint: 2026-10-14. Historical snapshot. Read `docs/context/ACTIVE.md` for t
 - **Folders are not a new UI-reuse project. Existing normal folder/mail behavior, different action triage feeding it. No custom desk or redesign.**
 - Gold labels: make correcting false positives fast, but do not turn unchecked rows into gold. Sample outside Quotes to find false negatives. Action labels, extraction facts and quote/write outcomes are separate judgments.
 - Owner voice-dictates. Agent must parse/log asks, not ask them to repeat every requirement.
-- Owner's flat usage-counter question was a status check, not pressure to rush. Do not infer frustration or shorten an evidence-backed ETA to placate them.
 
 ## Last verified state, refresh only the relevant delta
 
 - Deployed product code: `15e5bb63b`, checked on EC2 2026-10-14 18:03:56Z. Remote main: `00c10fd21`, handoff-only PR 240.
 - The source assessment worktree was parked Oct 6, 735 commits behind local main. Do not audit old on-disk product code as current. Use the deployed/current ref or an appropriate fresh worktree. Do not merge into active/dirty lanes.
 - Admin HTTPS 200; backend health on 8788/8789 ok; four PM2 processes online.
-- Live normal-pane bundle contains Save as gold/getOwnerActionLabel/setActionLabel. Live mail-layout bundle still contains custom Quote Desk/Review Nava.
-- Actual startup environment: preparation/matching flags set on http/worker/ai-worker, absent on remote-http. No runtime dotenv loading was found. The HTTP prepared-quote route checks HMS_QUOTE_PREPARE, so remote-http absence is a verified consumption gap. PARTY_MATCH_V2 is worker-side; its absence on remote-http is not itself that gap. Older build-stamp environment values do not by themselves prove old loaded code.
+- The shared pane bundle contains gold code; the owner control is enabled on normal webmail and defaults off for Outlook. Live mail-layout bundle still contains custom Quote Desk/Review Nava.
+- Actual startup environment: preparation/matching flags set on http/worker/ai-worker, absent on remote-http. No runtime dotenv loading was found. The HTTP prepared-quote route checks HMS_QUOTE_PREPARE, so remote-http absence is a potential consumption gap; actual pane/backend host routing was not proved. Matching-flag absence on remote-http was not itself verified as a defect. Older build-stamp environment values do not by themselves prove old loaded code.
 - Production-write flag absent on all four startup environments. Do not infer permission to write from existing HMS tools.
 - Two stuck outbound messages were reported in handoff; their present count not rechecked. Current staff adoption and full price/write proof not remeasured.
 - Historical golden action score 24/26, no create rows, dates unscored. Historical classifier agreement 77% medium; party picker no observed wrong binds on 95 evaluated emails, 57.9% auto-bind. Not full-product accuracy.
 
 ## How to work next
 
-- Read the mandatory PRODUCT.md, ACTIVE.md, research README and AGENT.md in a single bounded call at the relevant current ref.
+- Read the mandatory PRODUCT.md, ACTIVE.md, OWNER-ASKS.md, research README and AGENT.md in a single bounded call at the relevant current ref.
 - Check roster, current git/remote/deployed revision and changes since this checkpoint. Read only changes relevant to the chosen slice.
 - Preserve full roadmap, but execute one acceptance-tested workflow increment. One accountable coordinator; independent workers own explicit outputs/files.
 - Local tests/typecheck/oxlint plus adjudicated Greptile findings. No GitHub Actions or new GitHub checks. One live HMS owner. Both surfaces need last-fix proof.

@@ -5,13 +5,13 @@ Read by Cursor CLI, Codex CLI, and any agent that looks for `AGENTS.md`. Claude 
 **Read in this order, every session:**
 
 1. `PRODUCT.md` — owner product spec. Do not invent requirements.
-2. `docs/context/ACTIVE.md` — current run, models, deploy path.
+2. `docs/context/ACTIVE.md` and `docs/context/OWNER-ASKS.md` — current run and original asks.
 3. `docs/research/README.md` — current index, dated conclusions and evidence locators; do not redo settled research.
 4. `AGENT.md` — repo layout and commands.
 
 Done = score on the golden set in `PRODUCT.md`, not a merge.
 
-**Before your first claim or plan in a session:** say which of the four files you read (with `git rev-parse --short origin/main`). Before saying a tool, command or flag does not exist, check it (`claude --help`, `codex --help`, the docs). Both misses happened on 2026-10-13.
+**Before your first claim or plan in a session:** say which required files you read (with `git rev-parse --short origin/main`). Before saying a tool, command or flag does not exist, check it (`claude --help`, `codex --help`, the docs). Both misses happened on 2026-10-13.
 
 ## Bounded session startup and handoff
 

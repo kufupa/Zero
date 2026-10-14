@@ -2,7 +2,11 @@
 
 **Every session reads this file first.** When the owner sends a new ask, add a row in the same turn, then answer rows by number. A long voice note becomes several rows. Never drop a row: close it as done, dropped (with the reason) or parked.
 
+Rows 1–57 are historical ledger entries. Their section references are internal to this file. Private `~/retros/` pointers refer to authorized VPS evidence, not repository files. Current rows use direct answer links.
+
 Status key: ✅ done · 🟡 partial · ⬜ open · ⏸ parked (owner OK'd waiting) · ✖ dropped
+
+<a id="historical-asks"></a>
 
 ## 1. Asks
 

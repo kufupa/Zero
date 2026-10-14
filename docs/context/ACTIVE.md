@@ -35,8 +35,8 @@ No new product work is running from the assessment. Current source-backed gaps:
 
 Read-only check 2026-10-14 18:03:56Z: EC2 checkout `15e5bb63b`; remote main at audit `00c10fd21` added handoff docs only. Admin HTTPS and both backend health endpoints responded; four processes were online. Runtime evidence: [evidence.json](../research/2026-10-14/evidence.json).
 
-- Actual startup environment had `HMS_QUOTE_PREPARE=true` on http/worker/ai-worker, absent on remote-http. Prepared-quote HTTP access checks it; this is a source-backed parity gap.
-- `PARTY_MATCH_V2` is worker-side; its absence on remote-http is not the same defect. Older build-stamp labels do not prove stale loaded code.
+- Actual startup environment had `HMS_QUOTE_PREPARE=true` on http/worker/ai-worker, absent on remote-http. A prepared-quote HTTP route checks it; actual pane/backend routing was not proved, so this remains a potential parity gap.
+- `PARTY_MATCH_V2` was observed on http/worker/ai-worker; its absence on remote-http was not verified as a defect. Older build-stamp labels do not prove stale loaded code.
 - `RESERVATIONIST_PANE_SAVE` was absent on all observed startup environments. Do not infer permission to enable writes.
 - Current staff adoption, representative quote-price accuracy, safe live writes and next-hotel readiness were not proved. The handoff's two outbound warnings were not re-counted.
 
@@ -46,13 +46,19 @@ Historical scores: 24/26 action rows, no create rows, dates unscored; classifier
 
 - Read the required context in one bounded pass. Inspect relevant changes since the checkpoint. Do not rescan transcripts/corpora or rerun a full retro unless new scope, a contradiction or an explicit research request needs it.
 - Discuss settled product direction while independent verification runs. One coordinator owns closure; workers own named outputs/files. Keep one acceptance-tested workflow increment active.
-- User voice-dictates. Parse/log asks; do not require repeated specifications. Their flat usage-counter question was a status check, not a request to rush or lower quality.
+- Parse voice-dictated requests into logged asks and acceptance criteria; retain original wording.
 - Luna handles implementation and large local corpora. Fresh Haiku max handles bounded review. The previous broad Haiku reads were cheap but took over forty minutes; do not repeat that startup pattern.
 - Local gateway repurposes Sonnet slot to GPT-6 Luna and Fable slot to GPT-6.1 Sol. Verify routed model; do not trust a CLI label for accounting. No new memory framework is needed for continuity.
-- Never ask client staff to run scripts. Diagnostics before a remote fix. No HMS write authority invented; never accept cancellation-penalty dialogs. Never send email independently.
+- Never ask client staff to run scripts. Diagnostics before a remote fix; establish the causal chain before changing behavior. No HMS write authority invented; never accept cancellation-penalty dialogs. Never send email independently.
 - Before Vitest: unset `DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL`. DB tests only on the approved disposable local DB. Never expose credentials.
-- Local targeted tests/typecheck/oxlint plus adjudicated Greptile findings. No GitHub Actions beyond the authorized Outlook installer; no new GitHub checks without approval.
-- One live HMS browser owner. Deploy only through the authorized SSM path from `recover-parse-failure`, warn before live-user changes, and prove both relevant surfaces after the last fix.
+- Local targeted tests/typecheck/oxlint; validate findings and fix confirmed P0/P1 before merge. Check Greptile on the exact PR head; never bypass hooks with --no-verify. No GitHub Actions beyond the authorized Outlook installer; no new GitHub checks without approval.
+- Opus/lead review covers write paths, migrations and auth. Live-probe each changed HMS runner on EC2; unit tests do not see the HMS DOM. One live HMS browser owner. Deploy only through the authorized SSM path from `recover-parse-failure`, warn before live-user changes, and prove both relevant surfaces after the last fix.
 - Use a current checkout, not parked worktree/index contents as production source. Nothing in a dated context file authorizes a flag flip, guest write or cleanup.
 
 At handoff: update this short file with verified state, next acceptance check and open holds. Put detailed evidence in a dated report/source index. Keep owner requirements in `PRODUCT.md` and original asks in the ledger. Documents improve discovery; they are not a new enforcement hook.
+
+## Other open items and navigation
+
+- Webmail sync/access wording and the earlier workflow-folder load error: current live status not reverified. All core-workflow accuracy and final staff-bundle proof remain open. Historical overnight statuses are in the dated assessment, not silently claimed complete.
+- Current source exemptions preserve human Profitroom enquiries and non-notice H-Pay finance mail. RateTiger had no host evidence in the handoff. If broad vendor-skip wording means something different, clarify the policy before changing revenue-mail handling.
+- Code map and commands: AGENT.md. Verified solutions: docs/solutions/. Vocabulary: CONCEPTS.md. Mistakes: docs/context/MISTAKES.md. Run history: docs/context/ledger/. Record new verified mistakes at handoff.

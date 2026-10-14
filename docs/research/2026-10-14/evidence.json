@@ -71,7 +71,9 @@
       "v2Correct": 24,
       "sameRows": 26,
       "createRows": 0,
-      "datesScored": false
+      "datesScored": false,
+      "illustrativeWilson95Percent": [75.9, 97.9],
+      "intervalLimit": "Selected small set, not representative independent production trials"
     },
     "classifier": {
       "mediumAgreementPercent": 77,
@@ -84,7 +86,10 @@
       "evaluatedEmails": 95,
       "wrongBindsObserved": 0,
       "autoBindPercent": 57.9,
-      "automaticBindDenominatorNotEstablishedHere": true
+      "automaticBindDenominatorNotEstablishedHere": true,
+      "inferredAutomaticBindCount": 55,
+      "inferenceLimit": "Inferred from rounded 57.9% coverage, not observed count",
+      "conditionalZeroErrorUpper95Percent": 5.3
     }
   },
   "limits": [
