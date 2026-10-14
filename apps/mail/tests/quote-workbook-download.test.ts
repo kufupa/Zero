@@ -78,7 +78,7 @@ describe('Excel download request', () => {
     } as QuoteSession;
     expect(workbookRequestFor(session)).toEqual({
       status: 'unavailable',
-      reason: 'Enter the dinner allowance per person per night before downloading the Excel.',
+      reason: 'Dinner price — enter amount.',
     });
   });
 });
