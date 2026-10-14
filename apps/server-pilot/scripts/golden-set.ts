@@ -683,6 +683,7 @@ function hasPredictionConfirmationResult(prediction: JsonRecord): boolean {
 }
 
 function answerRoomCount(answer: GoldenAnswer): number | null {
+  if (Object.hasOwn(answer, 'room_count') && answer.room_count === null) return null;
   if (typeof answer.room_count === 'number' && Number.isFinite(answer.room_count)) {
     return answer.room_count;
   }
@@ -694,9 +695,14 @@ function answerRoomCount(answer: GoldenAnswer): number | null {
 }
 
 function predictionRoomCount(prediction: JsonRecord): number | null {
-  const direct = prediction.room_count ?? prediction.rooms_count ?? prediction.roomCount;
-  if (typeof direct === 'number' && Number.isFinite(direct)) return direct;
-  if (typeof direct === 'string' && /^\d+$/u.test(direct.trim())) return Number(direct);
+  const directKey = (['room_count', 'rooms_count', 'roomCount'] as const).find((key) =>
+    Object.hasOwn(prediction, key),
+  );
+  if (directKey) {
+    const direct = prediction[directKey];
+    if (typeof direct === 'number' && Number.isFinite(direct)) return direct;
+    return typeof direct === 'string' && /^\d+$/u.test(direct.trim()) ? Number(direct) : null;
+  }
   if (typeof prediction.rooms === 'number' && Number.isFinite(prediction.rooms)) {
     return prediction.rooms;
   }
@@ -1634,16 +1640,35 @@ function looksLikeCancellationRequest(message: CorpusMessage): boolean {
 function nextAmendmentRequestTime(
   message: CorpusMessage,
   thread: readonly CorpusMessage[],
+  messages: readonly CorpusMessage[],
+  conf: string,
 ): number | null {
   const requestIndex = thread.findIndex((candidate) => candidate.id === message.id);
   if (requestIndex < 0) return null;
-  const nextRequest = thread
+  const nextThreadRequest = thread
     .slice(requestIndex + 1)
     .find(
       (candidate) =>
         candidate.direction.toLowerCase() === 'inbound' && looksLikeChangeRequest(candidate),
     );
-  return nextRequest ? messageTimeMs(nextRequest) : null;
+  const requestTime = messageTimeMs(message);
+  const nextCrossThreadRequest = messages
+    .filter(
+      (candidate) =>
+        candidate.thread_id !== message.thread_id &&
+        candidate.direction.toLowerCase() === 'inbound' &&
+        messageTimeMs(candidate) > requestTime &&
+        looksLikeChangeRequest(candidate),
+    )
+    .filter((candidate) => {
+      const candidateConfs = confirmationNumbersFromText(requestText(candidate));
+      return candidateConfs.length !== 1 || candidateConfs[0] === conf;
+    })
+    .sort((left, right) => messageTimeMs(left) - messageTimeMs(right))[0];
+  const nextTimes = [nextThreadRequest, nextCrossThreadRequest]
+    .filter((candidate): candidate is CorpusMessage => candidate !== undefined)
+    .map(messageTimeMs);
+  return nextTimes.length ? Math.min(...nextTimes) : null;
 }
 
 function amendmentReplyMessages(
@@ -1778,12 +1803,47 @@ function answerCompleteness(answer: GoldenAnswer): number {
   ].filter(Boolean).length;
 }
 
-function bestPdfAnswer(documents: readonly StaffPdf[], sentAt: string): GoldenAnswer {
-  return (
-    documents
-      .map((document) => parsedPdfAnswer(document, sentAt))
-      .sort((left, right) => answerCompleteness(right) - answerCompleteness(left))[0] ?? {}
+function agreedPdfValue<T extends string | number>(
+  answers: readonly GoldenAnswer[],
+  valueFor: (answer: GoldenAnswer) => T | null | undefined,
+): T | null {
+  const first = answers[0] ? valueFor(answers[0]) : null;
+  return first !== null && first !== undefined && answers.every((answer) => valueFor(answer) === first)
+    ? first
+    : null;
+}
+
+export function bestPdfAnswer(documents: readonly StaffPdf[], sentAt: string): GoldenAnswer {
+  const answers = documents.map((document) => parsedPdfAnswer(document, sentAt));
+  if (!answers.length) return {};
+
+  const dates = answers.every((answer) => datesFromAnswer(answer).length > 0)
+    ? [
+        ...new Map(
+          answers
+            .flatMap(datesFromAnswer)
+            .map((date) => [`${date.arrival}/${date.departure}`, date] as const),
+        ).values(),
+      ]
+    : [];
+  const firstRooms = answers[0]?.rooms ?? [];
+  const roomsAgree = answers.every(
+    (answer) => JSON.stringify(answer.rooms ?? []) === JSON.stringify(firstRooms),
   );
+
+  return {
+    dates,
+    ...(roomsAgree ? { rooms: firstRooms } : {}),
+    room_count: agreedPdfValue(answers, (answer) => answer.room_count),
+    room_type: agreedPdfValue(answers, (answer) => answer.room_type),
+    board: agreedPdfValue(answers, (answer) => answer.board),
+    party: {
+      company: agreedPdfValue(answers, (answer) => answer.party?.company),
+      agency: agreedPdfValue(answers, (answer) => answer.party?.agency),
+    },
+    rate_plan: agreedPdfValue(answers, (answer) => answer.rate_plan),
+    total: agreedPdfValue(answers, (answer) => answer.total),
+  };
 }
 
 export function makeCandidate(input: {
@@ -1924,7 +1984,12 @@ export function matchingAmendmentUpdate(
   messageById: ReadonlyMap<string, CorpusMessage>,
 ): StaffPdf | undefined {
   const requestTime = messageTimeMs(message);
-  const nextRequestTime = nextAmendmentRequestTime(message, thread);
+  const nextRequestTime = nextAmendmentRequestTime(
+    message,
+    thread,
+    [...messageById.values()],
+    conf,
+  );
   const sameThreadReplies = amendmentReplyMessages(message, thread);
   const sameThreadReplyIds = new Set(sameThreadReplies.map((reply) => reply.id));
   return documents
@@ -1967,7 +2032,7 @@ export function matchingAmendmentReplies(
   conf: string,
 ): CorpusMessage[] {
   const requestTime = messageTimeMs(message);
-  const nextRequestTime = nextAmendmentRequestTime(message, thread);
+  const nextRequestTime = nextAmendmentRequestTime(message, thread, messages, conf);
   const sameThreadConfirmations = amendmentReplyMessages(message, thread).filter(
     (reply) => looksLikeChangeConfirmation(reply) && hasClearAmendmentLink(message, reply, conf),
   );
@@ -2454,17 +2519,22 @@ export function extractionRooms(extraction: JsonRecord): {
     let stayCount = numericValue(stay.totalRooms);
     let inferredRoomCount = 0;
     let hasInferredRoomCount = false;
+    let hasUnknownRoomCount = false;
     for (const rowValue of rows) {
       const row = asRecord(rowValue);
       const count = numericValue(row.rooms);
       const roomType = cleanText(row.roomType);
-      if (count !== null) rooms.push({ count, room_type: roomType });
+      rooms.push({ count, room_type: roomType });
       if (stayCount === null && count !== null) {
         inferredRoomCount += count;
         hasInferredRoomCount = true;
+      } else if (count === null) {
+        hasUnknownRoomCount = true;
       }
     }
-    if (stayCount === null && hasInferredRoomCount) stayCount = inferredRoomCount;
+    if (stayCount === null && hasInferredRoomCount && !hasUnknownRoomCount) {
+      stayCount = inferredRoomCount;
+    }
     if (stayCount !== null) perStayCounts.push(stayCount);
   }
   const roomCount =

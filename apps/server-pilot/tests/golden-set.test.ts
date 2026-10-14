@@ -144,6 +144,61 @@ describe('golden offer PDF parsing', () => {
     ]);
   });
 
+  it('combines dated answers across offer PDFs but leaves conflicting fields unknown', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const bestPdfAnswer = Reflect.get(module, 'bestPdfAnswer');
+    expect(bestPdfAnswer).toBeTypeOf('function');
+    if (typeof bestPdfAnswer !== 'function') return;
+
+    const answer = bestPdfAnswer(
+      [
+        {
+          attachment_id: 'offer-first',
+          message_id: 'quote-reply',
+          file_name: 'offer-first.pdf',
+          kind: 'offer',
+          text: [
+            'Arrival Date: 12-Sep-2026',
+            'Departure Date: 14-Sep-2026',
+            '2 x Standard Queen',
+            'Board: Bed & Breakfast',
+            'Rate Plan: BARBB',
+            'Grand Total: ZAR 5,600.00',
+          ].join('\n'),
+          conf: null,
+        },
+        {
+          attachment_id: 'offer-second',
+          message_id: 'quote-reply',
+          file_name: 'offer-second.pdf',
+          kind: 'offer',
+          text: [
+            'Arrival Date: 20-Oct-2026',
+            'Departure Date: 22-Oct-2026',
+            '1 x Deluxe Twin',
+            'Board: Bed & Breakfast',
+            'Rate Plan: BARBB',
+            'Grand Total: ZAR 7,200.00',
+          ].join('\n'),
+          conf: null,
+        },
+      ],
+      '2026-08-01T00:00:00Z',
+    );
+
+    expect(answer).toMatchObject({
+      dates: [
+        { arrival: '2026-09-12', departure: '2026-09-14' },
+        { arrival: '2026-10-20', departure: '2026-10-22' },
+      ],
+      room_count: null,
+      room_type: null,
+      board: 'Bed & Breakfast',
+      rate_plan: 'BARBB',
+      total: null,
+    });
+  });
+
   it('leaves dates unscored when only some labelled stays can be parsed', () => {
     const answer = parseOfferPdfAnswer(
       [
@@ -644,6 +699,45 @@ describe('snapshot extraction ordering', () => {
       roomCount: 3,
     });
   });
+
+  it('preserves rows without counts and keeps an incomplete stay total unknown', () => {
+    const answer = extractionRooms({
+      payload: {
+        stays: [
+          { rows: [{ rooms: 2, roomType: 'Standard Queen' }] },
+          { rows: [{ roomType: 'Deluxe Twin' }] },
+        ],
+      },
+    });
+
+    expect(answer).toEqual({
+      rooms: [
+        { count: 2, room_type: 'Standard Queen' },
+        { count: null, room_type: 'Deluxe Twin' },
+      ],
+      roomCount: null,
+    });
+  });
+
+  it('does not infer a stay total from only the counted rows', () => {
+    const answer = extractionRooms({
+      payload: {
+        stays: [
+          {
+            rows: [{ rooms: 2, roomType: 'Standard Queen' }, { roomType: 'Deluxe Twin' }],
+          },
+        ],
+      },
+    });
+
+    expect(answer).toEqual({
+      rooms: [
+        { count: 2, room_type: 'Standard Queen' },
+        { count: null, room_type: 'Deluxe Twin' },
+      ],
+      roomCount: null,
+    });
+  });
 });
 
 describe('snapshot source routing', () => {
@@ -957,6 +1051,116 @@ describe('amendment change typing', () => {
     expect(matchingAmendmentReplies(secondRequest, thread, messages, '12345678-1')).toEqual([
       laterReply,
     ]);
+  });
+
+  it('bounds cross-thread evidence at the next request for the same confirmation', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const matchingAmendmentUpdate = Reflect.get(module, 'matchingAmendmentUpdate');
+    const matchingAmendmentReplies = Reflect.get(module, 'matchingAmendmentReplies');
+    expect(matchingAmendmentUpdate).toBeTypeOf('function');
+    expect(matchingAmendmentReplies).toBeTypeOf('function');
+    if (
+      typeof matchingAmendmentUpdate !== 'function' ||
+      typeof matchingAmendmentReplies !== 'function'
+    ) {
+      return;
+    }
+
+    const conf = '12345678-1';
+    const firstRequest = amendmentMessage(
+      'first-cross-thread-request',
+      'first-request-thread',
+      'inbound',
+      `Please change reservation ${conf} to the first stay.`,
+      '2026-10-01T10:00:00Z',
+    );
+    const nextRequest = amendmentMessage(
+      'next-cross-thread-request',
+      'next-request-thread',
+      'inbound',
+      `Please change reservation ${conf} to the next stay.`,
+      '2026-10-01T12:00:00Z',
+    );
+    const laterReply = amendmentMessage(
+      'reply-after-next-request',
+      'staff-followup-thread',
+      'outbound',
+      `Updated reservation ${conf}.`,
+      '2026-10-01T13:00:00Z',
+    );
+    const messages = [firstRequest, nextRequest, laterReply];
+    const firstThread = [firstRequest];
+    const nextThread = [nextRequest];
+    const messageById = new Map(messages.map((message) => [message.id, message]));
+    const document = {
+      attachment_id: 'later-amendment-letter',
+      message_id: laterReply.id,
+      file_name: 'later-amendment-letter.pdf',
+      kind: 'confirmation' as const,
+      text: '',
+      conf,
+    };
+
+    expect(
+      matchingAmendmentUpdate(firstRequest, firstThread, conf, [document], messageById),
+    ).toBeUndefined();
+    expect(matchingAmendmentReplies(firstRequest, firstThread, messages, conf)).toEqual([]);
+    expect(
+      matchingAmendmentUpdate(nextRequest, nextThread, conf, [document], messageById)?.attachment_id,
+    ).toBe('later-amendment-letter');
+    expect(matchingAmendmentReplies(nextRequest, nextThread, messages, conf)).toEqual([laterReply]);
+  });
+
+  it('rejects ambiguous cross-thread evidence after an unnumbered amendment request', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const matchingAmendmentUpdate = Reflect.get(module, 'matchingAmendmentUpdate');
+    const matchingAmendmentReplies = Reflect.get(module, 'matchingAmendmentReplies');
+    expect(matchingAmendmentUpdate).toBeTypeOf('function');
+    expect(matchingAmendmentReplies).toBeTypeOf('function');
+    if (
+      typeof matchingAmendmentUpdate !== 'function' ||
+      typeof matchingAmendmentReplies !== 'function'
+    ) {
+      return;
+    }
+
+    const conf = '12345678-1';
+    const request = amendmentMessage(
+      'numbered-request',
+      'numbered-request-thread',
+      'inbound',
+      `Please change reservation ${conf} to the first stay.`,
+      '2026-10-01T10:00:00Z',
+    );
+    const unnumberedRequest = amendmentMessage(
+      'unnumbered-next-request',
+      'unnumbered-request-thread',
+      'inbound',
+      'Please change the reservation dates for the next stay.',
+      '2026-10-01T12:00:00Z',
+    );
+    const laterReply = amendmentMessage(
+      'reply-after-unnumbered-request',
+      'staff-followup-thread',
+      'outbound',
+      `Updated reservation ${conf}.`,
+      '2026-10-01T13:00:00Z',
+    );
+    const messages = [request, unnumberedRequest, laterReply];
+    const messageById = new Map(messages.map((message) => [message.id, message]));
+    const document = {
+      attachment_id: 'ambiguous-amendment-letter',
+      message_id: laterReply.id,
+      file_name: 'ambiguous-amendment-letter.pdf',
+      kind: 'confirmation' as const,
+      text: '',
+      conf,
+    };
+
+    expect(
+      matchingAmendmentUpdate(request, [request], conf, [document], messageById),
+    ).toBeUndefined();
+    expect(matchingAmendmentReplies(request, [request], messages, conf)).toEqual([]);
   });
 
   it('requires an explicit confirmation link to accept an amendment reply', async () => {
@@ -1601,6 +1805,29 @@ describe('golden-set scoring', () => {
       precision: { correct: 1, total: 2 },
       recall: { correct: 1, total: 1 },
     });
+  });
+
+  it('does not award room-count credit by filling an unknown total from partial rooms', () => {
+    const row: GoldenRow = {
+      message_id: 'partial-room-count',
+      class: 'quote',
+      answer: { room_count: 2 },
+      evidence: {
+        inbound_message_id: 'partial-room-count',
+        staff_message_ids: [],
+        pdf_files: [],
+      },
+    };
+    const score = scoreGoldenRows([row], [
+      {
+        message_id: 'partial-room-count',
+        action: 'quote',
+        room_count: null,
+        rooms: [{ count: 2, room_type: 'Standard Queen' }],
+      },
+    ]);
+
+    expect(score.byClass.quote.rooms).toEqual({ correct: 0, total: 1 });
   });
 
   it('does not count a company match in the agency role or vice versa', () => {
