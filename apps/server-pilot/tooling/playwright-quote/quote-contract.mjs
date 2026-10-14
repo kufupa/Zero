@@ -20,11 +20,16 @@ const BOARD_ALIASES = new Map([
   ['bb', 'breakfast'],
   ['b&b', 'breakfast'],
   ['bed & breakfast', 'breakfast'],
+  ['bed & breakfast r', 'breakfast'],
   ['bed and breakfast', 'breakfast'],
+  ['room only r', 'room_only'],
   ['dinner_bed_breakfast', 'dinner_bed_breakfast'],
   ['dbb', 'dinner_bed_breakfast'],
   ['dinner bed breakfast', 'dinner_bed_breakfast'],
   ['dinner, bed and breakfast', 'dinner_bed_breakfast'],
+  ['dinner bed & breakfast r', 'dinner_bed_breakfast'],
+  ['dinner, bed & breakfast r', 'dinner_bed_breakfast'],
+  ['dinner, bed, breakfast & beverage r', 'dinner_bed_breakfast'],
   ['half_board', 'half_board'],
   ['half board', 'half_board'],
   ['hb', 'half_board'],
@@ -788,6 +793,81 @@ export function shortfallsOf(groups = [], propertyCode) {
     }
   }
   return found;
+}
+
+/**
+ * Other observed room types that can cover the requested stay on the same board.
+ * These are choice hints, not a quote: only verified, available and explicitly
+ * unheld options are returned, with quantity bounded by every requested night.
+ */
+export function availableRoomAlternatives(groups = [], request) {
+  if (!Array.isArray(groups) || !isRecord(request) || !Array.isArray(request.rooms)) return [];
+  const arrival = calendarDate(request.arrivalDate);
+  const departure = calendarDate(request.departureDate);
+  if (!arrival || !departure || departure <= arrival) return [];
+  const dates = [];
+  for (let date = arrival; date < departure; date = new Date(date.getTime() + 86400000)) {
+    dates.push(date.toISOString().slice(0, 10));
+    if (dates.length > MAX_NIGHTS) return [];
+  }
+  const byIdentity = new Map();
+  for (const group of groups) {
+    const requested = request.rooms.find((room) => room?.id === group?.id);
+    const requestedQuantity = requested?.quantity ?? group?.request?.quantity ?? group?.quantity;
+    if (!requested || !Number.isInteger(requestedQuantity) || requestedQuantity < 1) continue;
+    const required = requested.required ?? {};
+    const requiredBoards = Array.isArray(required.boardBases)
+      ? required.boardBases.map(mapBoard).filter(Boolean)
+      : [];
+    const requestedRooms = Array.isArray(required.roomCodes) ? required.roomCodes : [];
+    const requestedRates = Array.isArray(required.rateCodes) ? required.rateCodes : [];
+    for (const option of group?.options ?? []) {
+      const roomCode = option?.room?.code;
+      const roomLabel = typeof option?.room?.label === 'string' ? option.room.label.trim() : '';
+      const board = mapBoard(option?.board);
+      if (
+        typeof roomCode !== 'string' || !NATIVE_CODE.test(roomCode) ||
+        !roomLabel || roomLabel.length > 120 ||
+        requestedRooms.includes(roomCode) ||
+        (requiredBoards.length > 0 && !requiredBoards.includes(board)) ||
+        (requestedRates.length > 0 && !requestedRates.includes(option?.rate?.code)) ||
+        !['match', 'alternative'].includes(option?.matchStatus) ||
+        option?.eligibility !== 'verified' ||
+        !['available', 'unavailable'].includes(option?.availability) ||
+        option?.held !== false ||
+        (Array.isArray(option?.issues) && option.issues.length > 0)
+      ) continue;
+      // An alternate room is acceptable only when every other required condition
+      // (not the requested room code itself) was actually satisfied. A checked party's
+      // public row carries only a preferred rateContext condition, so it stays offered as BAR;
+      // an unverified party adds a required rateContext condition and is dropped here.
+      const otherRequired = (option?.conditions ?? []).filter(
+        (condition) => condition?.kind === 'required' && condition.field !== 'roomCodes',
+      );
+      if (otherRequired.some((condition) => condition.status !== 'satisfied')) continue;
+      const nightly = option?.nightly;
+      if (!Array.isArray(nightly) || nightly.length !== dates.length) continue;
+      const supplyByDate = new Map();
+      for (const night of nightly) {
+        if (!dates.includes(night?.date) || !Number.isSafeInteger(night?.inventory) || night.inventory < 0) {
+          supplyByDate.clear();
+          break;
+        }
+        supplyByDate.set(night.date, night.inventory);
+      }
+      if (supplyByDate.size !== dates.length) continue;
+      const quantity = Math.min(requestedQuantity, ...dates.map((date) => supplyByDate.get(date)));
+      if (quantity < 1) continue;
+      const groupId = typeof requested.id === 'string' ? requested.id : '';
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(groupId)) continue;
+      const key = `${groupId}|${roomCode}`;
+      const current = byIdentity.get(key);
+      if (!current || quantity > current.quantity) {
+        byIdentity.set(key, { groupId, roomCode, roomLabel, quantity });
+      }
+    }
+  }
+  return [...byIdentity.values()];
 }
 
 /**

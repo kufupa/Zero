@@ -134,7 +134,7 @@ export type LunaAnalysisWire = {
     rooms: number | null;
     adultsPerRoom: number | null;
     childAges: number[];
-    board: 'room_only' | 'bb' | 'dbb' | null;
+    board: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
     roomPreference: string | null;
     guestNames: string[];
   }>;
@@ -185,6 +185,8 @@ export type QuoteAnalysis = {
   requestedRoomsByStay?: Record<string, number>;
   secondaryAsks: string[];
   alternatives: string[];
+  /** Fields requested by the reply-only draft when no complete quote date range was found. */
+  missingQuoteReplyFields?: string[];
   reviewItems?: QuoteReviewItem[];
   staffActions?: ReservationistStaffAction[];
   luna?: LunaAnalysisWire | null;
@@ -263,6 +265,14 @@ export type StaffQuoteAllocation = {
   totalMinor: number;
   currency: string;
   quoteRequestKey: string;
+  dinnerAddOnRequired?: boolean;
+  dinnerFallbackGroupIds?: string[];
+  dinnerAddOn?: {
+    label: string;
+    amountMinor: number;
+    unit: DinnerAddOnUnit;
+    totalMinor: number;
+  };
   approvedHeader: {
     salesStrategy: 'BAR' | 'Government';
     company: string;
@@ -304,6 +314,7 @@ export type StaffQuoteHeader = {
   clientEmail: string;
   clientTelephone: string;
   dinnerAllowanceMinor?: number;
+  dinnerAllowanceUnit?: DinnerAddOnUnit;
   /** Set when a dinner quote fell back to B&B: staff must enter the allowance; never priced by us. */
   dinnerAllowanceRequired?: boolean;
   /** The groups that took the B&B fallback. The allowance is charged only to these groups' guests. */
@@ -347,12 +358,15 @@ export type StaffStayExtras = {
   /** B&B fallback requires a staff-entered dinner allowance for this stay before documents can be made. */
   dinnerAllowanceRequired?: boolean;
   dinnerAllowanceMinor?: number;
+  dinnerAllowanceUnit?: DinnerAddOnUnit;
   dinnerAllowanceGroupIds?: string[];
   dinnerAllowanceLabel?: string;
   otherEnabled: boolean;
   other?: StaffQuoteOtherCharge;
   fieldErrors?: Partial<Record<StaffExtraField, string>>;
 };
+
+export type DinnerAddOnUnit = 'per_person_per_night' | 'per_room_per_night' | 'per_person';
 
 /** Amount and count fields whose typed text the pane reads. */
 export type StaffExtraField =
@@ -386,6 +400,7 @@ export function defaultStaffStayExtras(header: StaffQuoteHeader): StaffStayExtra
     dinnerEnabled: header.dinnerAllowanceMinor !== undefined || header.dinnerAllowanceRequired === true,
     dinnerAllowanceRequired: header.dinnerAllowanceRequired,
     dinnerAllowanceMinor: header.dinnerAllowanceMinor,
+    dinnerAllowanceUnit: header.dinnerAllowanceUnit,
     dinnerAllowanceGroupIds: header.dinnerAllowanceGroupIds,
     dinnerAllowanceLabel: header.dinnerAllowanceLabel,
     otherEnabled: Boolean(header.other?.amountMinor),
@@ -565,7 +580,15 @@ export type QuoteToolStep = {
   retryGuidance?: string;
   /** Raw diagnostic text, rendered only inside the closed Details disclosure. */
   errorDetail?: string;
+  roomAlternatives?: QuoteRoomAlternative[];
   shareKey?: string;
+};
+
+export type QuoteRoomAlternative = {
+  groupId: string;
+  roomCode: string;
+  roomLabel: string;
+  quantity: number;
 };
 
 export type BookingDraftRoom = {
@@ -616,6 +639,10 @@ export type QuoteSession = {
   selectedOfferIds: string[];
   pdf: QuotePdf | null;
   reviewedReplyHtml: string;
+  /** Marks generated replies that a later quote result can refresh; staff edits clear the marker. */
+  reviewedReplySource?: 'missing_quote_details' | 'quote_decline' | 'quote_generated';
+  /** Remembers a deliberate staff edit, including clearing the reply while a PDF is being prepared. */
+  reviewedReplyEdited?: boolean;
   steps: QuoteToolStep[];
   missing: string[];
   errorMessage: string | null;
@@ -742,6 +769,9 @@ export type QuoteSessionAction =
       stepId: string;
       reason: string;
       detail?: string;
+      alternatives?: QuoteRoomAlternative[];
+      /** A one-line reply for an explicit no-rate/refusal result; alternatives remain staff-only. */
+      declineReplyHtml?: string;
       selectionEpoch: number;
       inputRevision: number;
     }
@@ -753,6 +783,7 @@ export type QuoteSessionAction =
       party: PartyLookupRef;
     }
   | { type: 'step_running'; stepId: string }
+  | { type: 'step_stale'; stepId: string; selectionEpoch: number; inputRevision: number }
   | { type: 'step_failed'; stepId: string; retryGuidance: string }
   | {
       type: 'pdf_ready';
@@ -762,6 +793,6 @@ export type QuoteSessionAction =
       selectedOfferIds: string[];
       reviewedReplyHtml?: string;
     }
-  | { type: 'set_reviewed_reply'; html: string }
+  | { type: 'set_reviewed_reply'; html: string; source?: 'missing_quote_details' | 'quote_decline'; staffEdited?: boolean }
   | { type: 'select_offers'; offerIds: string[] }
   | { type: 'mailbox_status'; status: QuoteMailboxStatus | null };

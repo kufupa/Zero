@@ -3,6 +3,7 @@ import { withContactLines } from './document-contact';
 import {
   canCreatePdf,
   combinedStayRuns,
+  dinnerAddOnInputProblem,
   dinnerAllowanceStillRequired,
   evidenceMatchesSession,
   isMultiStay,
@@ -29,7 +30,7 @@ export type WorkbookRequest =
  */
 export function workbookRequestFor(session: QuoteSession): WorkbookRequest {
   if (dinnerAllowanceStillRequired(session)) {
-    return unavailable('Enter the dinner allowance per person per night before downloading the Excel.');
+    return unavailable(dinnerAddOnInputProblem(session) ?? 'Dinner price — enter amount.');
   }
   if (isMultiStay(session)) return combinedDocumentRequest(session);
   const key = session.selectedStayKey;

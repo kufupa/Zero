@@ -2318,12 +2318,18 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                           </span>
                         </div>
                         <p
+                          class="text-[11px] text-amber-800"
+                        >
+                          Add the missing arrival and departure dates before searching availability.
+                        </p>
+                        <p
                           class="text-[11px] text-[#64748b]"
                         >
                           Dates unknown → unknown · Room type needed ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
+                          disabled=""
                           type="button"
                         >
                           <span>
@@ -2603,7 +2609,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                       />
                     </svg>
                     <span>
-                      Search availability first.
+                      Add the missing arrival and departure dates before preparing quote documents.
                     </span>
                   </p>
                 </div>
@@ -4339,12 +4345,18 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                           </span>
                         </div>
                         <p
+                          class="text-[11px] text-amber-800"
+                        >
+                          Add the missing arrival and departure dates before searching availability.
+                        </p>
+                        <p
                           class="text-[11px] text-[#64748b]"
                         >
                           Dates unknown → unknown · Room type needed ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
+                          disabled=""
                           type="button"
                         >
                           <span>
@@ -4624,7 +4636,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                       />
                     </svg>
                     <span>
-                      Search availability first.
+                      Add the missing arrival and departure dates before preparing quote documents.
                     </span>
                   </p>
                 </div>
@@ -6684,12 +6696,18 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                           </span>
                         </div>
                         <p
+                          class="text-[11px] text-amber-800"
+                        >
+                          Add the missing arrival and departure dates before searching availability.
+                        </p>
+                        <p
                           class="text-[11px] text-[#64748b]"
                         >
                           Dates unknown → unknown · Room type needed ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
+                          disabled=""
                           type="button"
                         >
                           <span>
@@ -6969,7 +6987,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                       />
                     </svg>
                     <span>
-                      Search availability first.
+                      Add the missing arrival and departure dates before preparing quote documents.
                     </span>
                   </p>
                 </div>
@@ -8605,12 +8623,18 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                           </span>
                         </div>
                         <p
+                          class="text-[11px] text-amber-800"
+                        >
+                          Add the missing arrival and departure dates before searching availability.
+                        </p>
+                        <p
                           class="text-[11px] text-[#64748b]"
                         >
                           Dates unknown → unknown · Room type needed ×1, adults not set
                         </p>
                         <button
                           class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] self-start"
+                          disabled=""
                           type="button"
                         >
                           <span>
@@ -8890,7 +8914,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                       />
                     </svg>
                     <span>
-                      Search availability first.
+                      Add the missing arrival and departure dates before preparing quote documents.
                     </span>
                   </p>
                 </div>

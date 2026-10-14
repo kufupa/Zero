@@ -18,6 +18,8 @@ import type {
   StaffQuoteOtherUnit,
   StaffQuoteParty,
   StaffQuoteSource,
+  QuoteRoomAlternative,
+  DinnerAddOnUnit,
   StaffRowRate,
   StaffStayExtras,
   StayGroupRequirement,
@@ -76,6 +78,7 @@ export type ExecuteStaffQuoteInput = {
   clientEmail: string;
   clientTelephone: string;
   dinnerAllowanceMinor?: number;
+  dinnerAllowanceUnit?: DinnerAddOnUnit;
   dinnerAllowanceGroupIds?: string[];
   dinnerAllowanceLabel?: string;
   lunchAllowanceMinor?: number;
@@ -112,6 +115,9 @@ export type ExecuteStaffQuoteResult = {
   /** Optional so a pane built before the server change still parses the result. */
   runId?: string | null;
   screenshots?: string[];
+  dinnerAddOnRequired?: boolean;
+  dinnerFallbackGroupIds?: string[];
+  dinnerAddOn?: { label: string; amountMinor: number; unit: DinnerAddOnUnit; totalMinor: number };
   /** Optional: an older server sends none. */
   rateOptions?: RateOption[];
   /** Optional: an older server sends none. */
@@ -259,6 +265,16 @@ function rejectionReason(error: unknown): string {
     : 'The request did not finish. Refresh the pane and try again.';
 }
 
+/** True for markup brackets or C0 control characters, which never belong in an HMS label. */
+function hasMarkupOrControl(value: string): boolean {
+  return [...value].some((character) => character === '<' || character === '>' || character.codePointAt(0)! <= 0x1f);
+}
+
+// Staff labels such as "Children < 12" are plain text and every renderer escapes them, so only control characters fail.
+function hasControl(value: string): boolean {
+  return [...value].some((character) => character.codePointAt(0)! <= 0x1f);
+}
+
 function shortRefusalReason(raw: string): string {
   const firstLine = raw.split(/\r?\n/, 1)[0]!;
   const cleaned = [...firstLine]
@@ -276,28 +292,64 @@ function shortRefusalReason(raw: string): string {
 }
 
 /** A rejected quote request is shown in plain language; the complete error is kept for the closed Details disclosure. */
-function searchFailure(error: unknown): { reason: string; detail?: string; noMatchingRate?: boolean } {
+export function readQuoteRoomAlternatives(value: unknown): QuoteRoomAlternative[] {
+  if (!Array.isArray(value)) return [];
+  const alternatives: QuoteRoomAlternative[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const row = candidate as Record<string, unknown>;
+    if (
+      typeof row.groupId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(row.groupId) ||
+      typeof row.roomCode !== 'string' || !/^[A-Z0-9_-]{1,16}$/.test(row.roomCode) ||
+      typeof row.roomLabel !== 'string' || !row.roomLabel.trim() || row.roomLabel.length > 120 || hasMarkupOrControl(row.roomLabel) ||
+      !Number.isSafeInteger(row.quantity) || (row.quantity as number) < 1 || (row.quantity as number) > 100
+    ) continue;
+    const key = `${row.groupId}|${row.roomCode}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    alternatives.push({ groupId: row.groupId, roomCode: row.roomCode, roomLabel: row.roomLabel.trim(), quantity: row.quantity as number });
+  }
+  return alternatives;
+}
+
+function roomAlternativesFromError(error: unknown): QuoteRoomAlternative[] {
+  if (!error || typeof error !== 'object') return [];
+  const root = error as Record<string, unknown>;
+  const data = root.data && typeof root.data === 'object' ? root.data as Record<string, unknown> : {};
+  const cause = data.cause && typeof data.cause === 'object'
+    ? data.cause as Record<string, unknown>
+    : root.cause && typeof root.cause === 'object'
+      ? root.cause as Record<string, unknown>
+      : {};
+  return readQuoteRoomAlternatives(root.alternatives ?? data.alternatives ?? cause.alternatives);
+}
+
+function searchFailure(error: unknown): { reason: string; detail?: string; noMatchingRate?: boolean; alternatives?: QuoteRoomAlternative[] } {
   const detail = rejectionReason(error);
+  const alternatives = roomAlternativesFromError(error);
+  const withAlternatives = (value: { reason: string; detail?: string; noMatchingRate?: boolean }) =>
+    alternatives.length ? { ...value, alternatives } : value;
   const data = error && typeof error === 'object' && 'data' in error ? error.data : undefined;
   const isServerRefusal =
     data && typeof data === 'object' && 'code' in data && data.code === 'PRECONDITION_FAILED';
   if (detail.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX)) {
-    return {
+    return withAlternatives({
       reason: 'HMS refused the search: No rate matches this meal plan under the selected rate plan.',
       detail,
       noMatchingRate: true,
-    };
+    });
   }
   const refusal = /^HMS refused the search:\s*(.*)$/i.exec(detail);
-  if (refusal) return { reason: `HMS refused the search: ${shortRefusalReason(refusal[1] ?? '')}`, detail };
+  if (refusal) return withAlternatives({ reason: `HMS refused the search: ${shortRefusalReason(refusal[1] ?? '')}`, detail });
   if (/^(?:only\s+\d+\b|hms has only\s+\d+\b)/i.test(detail)) {
-    return { reason: `HMS refused the search: ${shortRefusalReason(detail)}`, detail };
+    return withAlternatives({ reason: `HMS refused the search: ${shortRefusalReason(detail)}`, detail });
   }
-  if (isServerRefusal) return { reason: detail, detail };
+  if (isServerRefusal) return withAlternatives({ reason: detail, detail });
   if (/\b(?:timed?\s*out|timeout|deadline exceeded|ETIMEDOUT)\b/i.test(detail)) {
-    return { reason: "HMS didn't answer in time.", detail };
+    return withAlternatives({ reason: "HMS didn't answer in time.", detail });
   }
-  return { reason: "HMS didn't answer in time.", detail };
+  return withAlternatives({ reason: "HMS didn't answer in time.", detail });
 }
 
 export const EXPIRED_STAFF_QUOTE_COPY = 'This quote has expired. Run the quote again.';
@@ -631,8 +683,16 @@ export async function bindStaffActions(args: {
 const NATIVE_NO_MATCHING_RATE_PREFIX = 'HMS has no rate for this meal plan under ';
 
 export type BoundExecuteStaffQuote =
-  | { status: 'unavailable'; reason: string; detail?: string; noMatchingRate?: boolean }
+  | { status: 'unavailable'; reason: string; detail?: string; noMatchingRate?: boolean; alternatives?: QuoteRoomAlternative[] }
   | { status: 'ok'; offer: QuoteOffer; staffQuote: StaffQuoteAllocation; extrasReviewItems: string[] };
+
+export function isStaffQuoteRefusal(
+  result: Pick<Extract<BoundExecuteStaffQuote, { status: 'unavailable' }>, 'reason' | 'noMatchingRate'>,
+): boolean {
+  return result.noMatchingRate === true ||
+    /^HMS refused the search:/i.test(result.reason) ||
+    /^(?:only\s+\d+\b|hms has only\s+\d+\b)/i.test(result.reason);
+}
 
 export function allocationFromStaffQuote(
   result: ExecuteStaffQuoteResult,
@@ -685,6 +745,7 @@ export function approvedExecuteHeader(
   | 'clientEmail'
   | 'clientTelephone'
   | 'dinnerAllowanceMinor'
+  | 'dinnerAllowanceUnit'
   | 'dinnerAllowanceGroupIds'
   | 'dinnerAllowanceLabel'
   | 'lunchAllowanceMinor'
@@ -709,13 +770,14 @@ export function approvedExecuteHeader(
     attention: header.attention.trim(),
     clientEmail: header.clientEmail.trim(),
     clientTelephone: header.clientTelephone.trim(),
+    ...(dinnerGroupIds ? { dinnerAllowanceGroupIds: dinnerGroupIds } : {}),
     ...(header.dinnerAllowanceMinor && header.dinnerAllowanceMinor > 0
       ? {
           dinnerAllowanceMinor: header.dinnerAllowanceMinor,
+          ...(header.dinnerAllowanceUnit ? { dinnerAllowanceUnit: header.dinnerAllowanceUnit } : {}),
           ...(trimmedOrUndefined(header.dinnerAllowanceLabel)
             ? { dinnerAllowanceLabel: trimmedOrUndefined(header.dinnerAllowanceLabel) }
             : {}),
-          ...(dinnerGroupIds ? { dinnerAllowanceGroupIds: dinnerGroupIds } : {}),
         }
       : {}),
     ...(positiveWhole(header.lunchAllowanceMinor)
@@ -757,6 +819,7 @@ export function staffHeaderForStay(header: StaffQuoteHeader, stayKey: string): S
     lunchAllowanceLabel: extras.lunchEnabled ? extras.lunchAllowanceLabel : undefined,
     dinnerAllowanceRequired: extras.dinnerAllowanceRequired,
     dinnerAllowanceMinor: extras.dinnerEnabled ? extras.dinnerAllowanceMinor : undefined,
+    dinnerAllowanceUnit: extras.dinnerEnabled ? extras.dinnerAllowanceUnit : undefined,
     dinnerAllowanceGroupIds: extras.dinnerEnabled ? extras.dinnerAllowanceGroupIds : undefined,
     dinnerAllowanceLabel: extras.dinnerEnabled ? extras.dinnerAllowanceLabel : undefined,
     other: extras.otherEnabled ? extras.other : undefined,
@@ -920,6 +983,16 @@ function boundStaffQuoteResult(
   }
   const rateOptions = readRateOptions(result.rateOptions);
   const rowRates = readRowRates(result.rowRates);
+  const dinnerFallbackGroupIds = Array.isArray(result.dinnerFallbackGroupIds)
+    ? [...new Set(result.dinnerFallbackGroupIds.filter((id): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id)))].slice(0, 8)
+    : [];
+  const dinnerAddOn = readDinnerAddOn(result.dinnerAddOn);
+  const dinnerFallbackGroupSet = new Set(dinnerFallbackGroupIds);
+  const offerGroups = dinnerFallbackGroupSet.size
+    ? args.groups.map((group) =>
+        dinnerFallbackGroupSet.has(group.id) ? { ...group, board: 'bb' as const } : group,
+      )
+    : args.groups;
   const staffQuote: StaffQuoteAllocation = {
     workflowRunId: result.workflowRunId,
     revisionRef: result.revisionRef,
@@ -935,6 +1008,11 @@ function boundStaffQuoteResult(
     totalMinor: result.totalMinor,
     currency: result.currency,
     quoteRequestKey: `${result.arrivalDate}:${result.departureDate}`,
+    ...(typeof result.dinnerAddOnRequired === 'boolean'
+      ? { dinnerAddOnRequired: result.dinnerAddOnRequired }
+      : {}),
+    ...(dinnerFallbackGroupIds.length ? { dinnerFallbackGroupIds } : {}),
+    ...(dinnerAddOn ? { dinnerAddOn } : {}),
     approvedHeader: {
       salesStrategy: built.header.salesStrategy,
       company: built.header.company,
@@ -955,13 +1033,30 @@ function boundStaffQuoteResult(
   };
   return {
     status: 'ok',
-    offer: allocationFromStaffQuote(result, args.groups),
+    offer: allocationFromStaffQuote(result, offerGroups),
     staffQuote,
     extrasReviewItems: Array.isArray(result.extrasReviewItems)
       ? result.extrasReviewItems.filter(
           (item): item is string => typeof item === 'string' && item.trim().length > 0,
         )
       : [],
+  };
+}
+
+function readDinnerAddOn(value: unknown): StaffQuoteAllocation['dinnerAddOn'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.label !== 'string' || !raw.label.trim() || raw.label.length > 140 || hasControl(raw.label) ||
+    !Number.isSafeInteger(raw.amountMinor) || (raw.amountMinor as number) <= 0 ||
+    !Number.isSafeInteger(raw.totalMinor) || (raw.totalMinor as number) <= 0 ||
+    !['per_person_per_night', 'per_room_per_night', 'per_person'].includes(String(raw.unit))
+  ) return undefined;
+  return {
+    label: raw.label.trim(),
+    amountMinor: raw.amountMinor as number,
+    unit: raw.unit as DinnerAddOnUnit,
+    totalMinor: raw.totalMinor as number,
   };
 }
 
@@ -1053,11 +1148,13 @@ function boundStaffQuoteJob(
       typeof result.message === 'string' && result.message.trim()
         ? result.message
         : 'The requested quote could not be qualified; review the stay inputs and try again.';
+    const alternatives = readQuoteRoomAlternatives(result.alternatives);
     return {
       status: 'unavailable',
       reason: message,
       detail: code,
       ...(message.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX) ? { noMatchingRate: true } : {}),
+      ...(alternatives.length ? { alternatives } : {}),
     };
   }
   if (view.status === 'failed') {

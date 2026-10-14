@@ -316,6 +316,7 @@ describe('a short-supply capture is insufficient, and says which room type and n
     expect((error as ReservationistTaskEvidenceUnavailable).code).toBe('native_quote_insufficient_inventory');
     expect((error as ReservationistTaskEvidenceUnavailable).detail).toEqual({
       shortfall: { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2026-11-12', demand: 40, supply: 34 },
+      alternatives: [],
     });
     expect(staffQuoteFailureMessage(error)).toBe('Only 34 Standard Queen free on 12 Nov — quote fewer or split');
     expect(staffQuoteFailureLog(error)).toEqual({ code: 'native_quote_insufficient_inventory', phase: 'qualification' });
@@ -330,6 +331,7 @@ describe('a short-supply capture is insufficient, and says which room type and n
     expect((error as ReservationistTaskEvidenceUnavailable).code).toBe('native_quote_insufficient_inventory');
     expect((error as ReservationistTaskEvidenceUnavailable).detail).toEqual({
       shortfall: { roomCode: 'STQN', roomLabel: 'Standard Queen', date: '2026-11-12', demand: 40, supply: 34 },
+      alternatives: [],
     });
   });
 
@@ -349,6 +351,7 @@ describe('a short-supply capture is insufficient, and says which room type and n
     expect((error as ReservationistTaskEvidenceUnavailable).code).toBe('native_quote_insufficient_inventory');
     expect((error as ReservationistTaskEvidenceUnavailable).detail).toEqual({
       shortfall: { roomCode: 'SUITE', roomLabel: 'Suite', date: '2026-11-12', demand: 2, supply: 1 },
+      alternatives: [],
     });
     expect(staffQuoteFailureMessage(error)).toBe('Only 1 Suite free on 12 Nov — quote fewer or split');
   });

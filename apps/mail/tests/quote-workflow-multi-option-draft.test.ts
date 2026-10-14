@@ -190,6 +190,34 @@ describe('one reply for every stay of a multi-stay quote', () => {
     expect(html).toContain('quotes only and are not bookings');
   });
 
+  it('includes the dinner add-on and its option total in a combined reply', () => {
+    const options = completedDateOptions(twoQuotedOptions());
+    const first = options[0]!;
+    const html = multiOptionDraftHtml([
+      {
+        ...first,
+        quote: {
+          ...first.quote,
+          totalMinor: 692_000,
+          dinnerAddOn: {
+            label: 'Dinner add-on (Set menu)',
+            amountMinor: 35_000,
+            unit: 'per_person_per_night',
+            totalMinor: 210_000,
+          },
+        },
+      },
+      options[1]!,
+    ]);
+
+    expect(html).toContain(
+      '<strong>Dinner add-on (Set menu)</strong>: R350.00 per person per night; add-on total R2\u00a0100.00.',
+    );
+    expect(html).toMatch(/LINE TOTAL[\s\S]*?<td align="right">R4\D*820\.00<\/td>/);
+    expect(html).toMatch(/Option A total: R6\D*920\.00/);
+    expect(html).toMatch(/Total for all options: R8\D*280\.00/);
+  });
+
   it('uses the staff-edited combined reply while the stays are unchanged, and the generated body otherwise', () => {
     const session = twoQuotedOptions();
     const generated = requireMultiOptionDraft(session)?.html ?? '';

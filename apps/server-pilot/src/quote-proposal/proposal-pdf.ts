@@ -70,7 +70,7 @@ export async function buildQuoteProposalPdf(
 
 import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
-import { deriveQuoteLines, deriveAuthorizedExtraLines, pricedRoomTotal, type AuthorizedProposalFacts, type RowPrice } from './quote-lines.js';
+import { deriveQuoteLines, deriveAuthorizedExtraLines, extraDisplayDescription, pricedRoomTotal, type AuthorizedProposalFacts, type RowPrice } from './quote-lines.js';
 import { quoteDigest, exactMinor, type QuoteRevision, type ImportedOffer } from './quote-revision.js';
 import { assertProposalLineLimit, quoteDateLabel, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
 export type RevisionProposalHeader = {attention:string;company:string;clientEmail:string;clientTelephone:string;agency:string;signerName:string;signerEmail:string;/** Unpriced staff note printed under the total. */notes?:string};
@@ -86,7 +86,7 @@ function moneyMinor(value:number,currency:string):string {
 export function renderRevisionProposalHtml(revision:QuoteRevision,header:RevisionProposalHeader,facts?:AuthorizedProposalFacts,rowPrices?:RowPrice[]):string {
   const native=deriveQuoteLines(revision,rowPrices);
   const extras=facts?deriveAuthorizedExtraLines(revision,facts):[];
-  const lines=[...native,...extras.map(line=>({...line,arrivalDate:line.dates[0]??revision.authoredDate,departureDate:line.dates.at(-1)??revision.authoredDate}))];
+  const lines=[...native,...extras.map(line=>({...line,description:extraDisplayDescription(line),arrivalDate:line.dates[0]??revision.authoredDate,departureDate:line.dates.at(-1)??revision.authoredDate}))];
   const totalMinor=native.reduce((sum,line)=>sum+line.totalMinor,0)+extras.reduce((sum,line)=>sum+line.totalMinor,0);
   if(!Number.isSafeInteger(totalMinor))throw new ProposalInputError('money_overflow');
   const files=unzipSync(readFileSync(TEMPLATE_PATH));

@@ -24,6 +24,11 @@ export type MultiOptionDraft = {
 const PDF_HASH = /^[a-f0-9]{64}$/;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const BOARD_LABELS: Record<string, string> = { bb: 'Bed & breakfast', room_only: 'Room only' };
+const DINNER_UNIT_LABELS = {
+  per_person_per_night: 'per person per night',
+  per_room_per_night: 'per room per night',
+  per_person: 'per person',
+} as const;
 const INTRO = 'Please see the quote below for each date option. One quotation PDF covers all of them.';
 const CLOSING = 'The options are quotes only and are not bookings.';
 
@@ -83,7 +88,13 @@ export function requireMultiOptionDraft(
 export function multiOptionDraftHtml(options: readonly CompletedDateOption[]): string {
   const sections = options.map((option) => {
     const [arrival = '', departure = ''] = option.key.split(':');
-    const amount = draftMoney(option.quote.totalMinor);
+    const dinner = option.quote.dinnerAddOn;
+    const dinnerTotal = dinner?.totalMinor ?? 0;
+    const amount = draftMoney(option.quote.totalMinor - dinnerTotal);
+    const optionTotal = draftMoney(option.quote.totalMinor);
+    const dinnerLine = dinner
+      ? `<p><strong>${escapeHtml(dinner.label)}</strong>: ${escapeHtml(draftMoney(dinner.amountMinor))} ${DINNER_UNIT_LABELS[dinner.unit]}; add-on total ${escapeHtml(draftMoney(dinner.totalMinor))}.</p>`
+      : '';
     const description = [option.offer.roomLabel, BOARD_LABELS[option.offer.board]]
       .filter(Boolean)
       .join(' · ');
@@ -99,7 +110,8 @@ export function multiOptionDraftHtml(options: readonly CompletedDateOption[]): s
       `<td>${escapeHtml(nightsBetween(arrival, departure))}</td>`,
       `<td align="right">${escapeHtml(amount)}</td>`,
       '</tr></tbody></table>',
-      `<p><strong>Option ${option.letter} total: ${escapeHtml(amount)}</strong></p>`,
+      dinnerLine,
+      `<p><strong>Option ${option.letter} total: ${escapeHtml(optionTotal)}</strong></p>`,
     ].join('');
   });
   const total = draftMoney(options.reduce((sum, option) => sum + option.quote.totalMinor, 0));

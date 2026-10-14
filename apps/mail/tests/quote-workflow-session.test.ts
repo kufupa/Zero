@@ -19,7 +19,12 @@ import {
   staffSourceReady,
   analysisRetryKey,
   hasStaffStayEdits,
+  dinnerAddOnInputProblem,
   dinnerAllowanceStillRequired,
+  missingQuoteDetailsReplyOnly,
+  isMultiStay,
+  quoteDeclineReplyOnly,
+  missingQuoteReplyFieldsForGroups,
   groupStays,
   removedStayFor,
   rowRoomCode,
@@ -27,7 +32,15 @@ import {
   stayTotals,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
-import { staffHeaderFieldProblem, staffStayExtrasFor } from '../lib/quote-workflow/types';
+import {
+  defaultStaffStayExtras,
+  emptyStaffQuoteHeader,
+  staffHeaderFieldProblem,
+  staffStayExtrasFor,
+} from '../lib/quote-workflow/types';
+import { approvedExecuteHeader, staffHeaderForStay } from '../lib/quote-workflow/staff-quote-bind';
+import { workbookRequestFor } from '../lib/quote-workflow/quote-workbook-download';
+import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
 import type {
   LunaAnalysisWire,
@@ -567,7 +580,8 @@ describe('quote session', () => {
       selectionEpoch: 1,
       inputRevision: 1,
     });
-    expect(current.errorMessage).toBe('live bind unavailable');
+    expect(stepFor(current, '2026-11-12:2026-11-14').retryGuidance).toBe('live bind unavailable');
+    expect(current.errorMessage).toBeNull();
     expect(current.phase).toBe('tools');
 
     const switched = reduceQuoteSession(s, {
@@ -1032,9 +1046,158 @@ function twoDateSession() {
   return withStaffSource(analysisReady(twoDateAnalysis()));
 }
 
+function declinedQuoteSession() {
+  const session = withStaffSource(analysisReady());
+  return reduceQuoteSession(session, {
+    type: 'results_unavailable',
+    stepId: stepFor(session, STAY_A).id,
+    reason: 'No supported rate was returned',
+    declineReplyHtml: '<p>Unfortunately, we are fully booked.</p>',
+    selectionEpoch: session.binding!.selectionEpoch,
+    inputRevision: session.inputRevision,
+  });
+}
+
+const quoteDeclineInputEdits: Array<[string, QuoteSessionAction]> = [
+  ['company', { type: 'patch_staff_header', header: { company: 'Another company' } }],
+  ['agency', { type: 'patch_staff_header', header: { agency: 'Another agency' } }],
+  ['rate strategy', { type: 'patch_staff_header', header: { salesStrategy: 'Government' } }],
+  ['dates', { type: 'patch_group', groupId: 'g1', patch: { arrivalDate: '2026-11-13' } }],
+  ['room count', { type: 'patch_group', groupId: 'g1', patch: { quantity: 2 } }],
+  ['board', { type: 'patch_group', groupId: 'g1', patch: { board: 'room_only' } }],
+];
+
+describe('generated quote-decline freshness', () => {
+  it('does not create a whole-request decline after another stay is added during a search', () => {
+    const session = withStaffSource(analysisReady());
+    const firstStayStep = stepFor(session, STAY_A);
+    const running = reduceQuoteSession(session, { type: 'step_running', stepId: firstStayStep.id });
+    const multiStay = reduceQuoteSession(running, { type: 'add_stay', token: 'second' });
+    const refused = reduceQuoteSession(multiStay, {
+      type: 'results_unavailable',
+      stepId: firstStayStep.id,
+      reason: 'No supported rate was returned',
+      declineReplyHtml: '<p>decline</p>',
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+    });
+
+    expect(isMultiStay(multiStay)).toBe(true);
+    expect(refused.reviewedReplyHtml).toBe('');
+    expect(refused.reviewedReplySource).toBeUndefined();
+    expect(quoteDeclineReplyOnly(refused)).toBe(false);
+    expect(refused.steps.find((step) => step.id === firstStayStep.id)?.status).toBe('failed');
+  });
+
+  it('keeps a reply staff wrote during the search when the search is refused', () => {
+    const session = withStaffSource(analysisReady());
+    const step = stepFor(session, STAY_A);
+    const running = reduceQuoteSession(session, { type: 'step_running', stepId: step.id });
+    const edited = reduceQuoteSession(running, { type: 'set_reviewed_reply', html: '<p>Staff text</p>', staffEdited: true });
+    const refused = reduceQuoteSession(edited, {
+      type: 'results_unavailable',
+      stepId: step.id,
+      reason: 'No supported rate was returned',
+      declineReplyHtml: '<p>decline</p>',
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+    });
+
+    expect(refused.reviewedReplyHtml).toBe('<p>Staff text</p>');
+    expect(refused.reviewedReplySource).toBeUndefined();
+  });
+
+  it('keeps the decline marker while staff clear the suggestion and type their own', () => {
+    const declined = declinedQuoteSession();
+    const cleared = reduceQuoteSession(declined, { type: 'set_reviewed_reply', html: '', staffEdited: true });
+    expect(cleared.reviewedReplySource).toBe('quote_decline');
+    expect(quoteDeclineReplyOnly(cleared)).toBe(false);
+
+    const typed = reduceQuoteSession(cleared, { type: 'set_reviewed_reply', html: '<p>Own words</p>', staffEdited: true });
+    expect(quoteDeclineReplyOnly(typed)).toBe(true);
+  });
+
+  it.each(quoteDeclineInputEdits)('clears the decline when %s changes', (_input, action) => {
+    const declined = declinedQuoteSession();
+    expect(quoteDeclineReplyOnly(declined)).toBe(true);
+
+    const edited = reduceQuoteSession(declined, action);
+
+    expect(edited.reviewedReplyHtml).toBe('');
+    expect(edited.reviewedReplySource).toBeUndefined();
+    expect(quoteDeclineReplyOnly(edited)).toBe(false);
+  });
+});
+
 function stepFor(session: { steps: QuoteToolStep[] }, stayKey: string): QuoteToolStep {
   return session.steps.find((step) => step.shareKey === stayKey)!;
 }
+
+describe('mixed complete and incomplete quote dates', () => {
+  it('allows the complete date option to run without sending the incomplete sibling to HMS', () => {
+    const analysis = {
+      ...twoDateAnalysis(),
+      groups: [
+        twoDateAnalysis().groups[0]!,
+        { ...twoDateAnalysis().groups[1]!, arrivalDate: undefined, departureDate: undefined },
+      ],
+      missingQuoteReplyFields: ['Arrival date for stay 2', 'Departure date for stay 2'],
+    };
+    const session = analysisReady(analysis);
+
+    expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toBeNull();
+    expect(quoteRunBlockReason(session, stepFor(session, 'unknown:unknown'))).toMatch(/missing arrival and departure/i);
+    expect(missingQuoteDetailsReplyOnly(session)).toBe(false);
+  });
+
+  it('derives only the quote details that remain missing from the current groups', () => {
+    const group = {
+      ...quoteAnalysis.groups[0]!,
+      arrivalDate: '2026-11-12',
+      departureDate: undefined,
+    };
+
+    expect(missingQuoteReplyFieldsForGroups([group])).toEqual(['Departure date for stay 1']);
+  });
+
+  it('clears only Nava’s generated missing-date reply after the stay becomes complete', () => {
+    const incompleteGroup = {
+      ...quoteAnalysis.groups[0]!,
+      arrivalDate: undefined,
+      fields: { ...quoteAnalysis.groups[0]!.fields, arrivalDate: 'missing' as const },
+    };
+    const session = analysisReady({
+      ...quoteAnalysis,
+      groups: [incompleteGroup],
+      missingQuoteReplyFields: ['Arrival date for stay 1'],
+    });
+    const automatic = reduceQuoteSession(session, {
+      type: 'set_reviewed_reply',
+      html: '<p>Please confirm the arrival date.</p>',
+      source: 'missing_quote_details',
+    });
+    const completed = reduceQuoteSession(automatic, {
+      type: 'patch_group',
+      groupId: incompleteGroup.id,
+      patch: { arrivalDate: '2026-11-12' },
+    });
+
+    expect(completed.reviewedReplyHtml).toBe('');
+    expect(completed.reviewedReplySource).toBeUndefined();
+
+    const manual = reduceQuoteSession(automatic, {
+      type: 'set_reviewed_reply',
+      html: '<p>Staff wrote this reply.</p>',
+      staffEdited: true,
+    });
+    const completedManual = reduceQuoteSession(manual, {
+      type: 'patch_group',
+      groupId: incompleteGroup.id,
+      patch: { arrivalDate: '2026-11-12' },
+    });
+    expect(completedManual.reviewedReplyHtml).toBe('<p>Staff wrote this reply.</p>');
+  });
+});
 
 function staffQuoteFor(
   stayKey: string,
@@ -1264,8 +1427,183 @@ describe('quote session staff review items', () => {
     const typed = reduceQuoteSession(quoteReady(), {
       type: 'set_reviewed_reply',
       html: '<p>Staff typed this first.</p>',
+      staffEdited: true,
     });
     expect(preparePdf(typed).reviewedReplyHtml).toBe('<p>Staff typed this first.</p>');
+  });
+
+  describe('generated quotation reply freshness', () => {
+    const quoteWithDinner = (
+      session: QuoteSession,
+      revisionRef: string,
+      dinnerAmountMinor: number,
+      dinnerTotalMinor: number,
+      totalMinor: number,
+    ) => {
+      const action = staffQuoteFor(STAY_A, revisionRef, totalMinor, session.inputRevision);
+      if (action.type !== 'staff_quote_ready') throw new Error('expected a staff quote run');
+      return reduceQuoteSession(session, {
+        ...action,
+        staffQuote: {
+          ...action.staffQuote,
+          dinnerAddOn: {
+            label: 'Dinner allowance',
+            amountMinor: dinnerAmountMinor,
+            unit: 'per_person_per_night',
+            totalMinor: dinnerTotalMinor,
+          },
+        },
+      });
+    };
+
+    const preparePdf = (session: QuoteSession) => {
+      const quote = session.staffQuote!;
+      return reduceQuoteSession(session, {
+        type: 'pdf_ready',
+        pdf: quotePdf(quote.revisionRef, quote.totalMinor),
+        selectionEpoch: session.binding!.selectionEpoch,
+        inputRevision: session.inputRevision,
+        selectedOfferIds: session.selectedOfferIds,
+        reviewedReplyHtml: quoteWrapperHtml('', 'R Opperman', {
+          ...(quote.dinnerAddOn ? { dinnerAddOn: quote.dinnerAddOn } : {}),
+          totalMinor: quote.totalMinor,
+        }),
+      });
+    };
+
+    it('refreshes the generated dinner charge and total after a new quote run', () => {
+      let session = withStaffSource(analysisReady());
+      session = quoteWithDinner(session, 'rev-dinner-200', 20_000, 40_000, 160_000);
+      session = preparePdf(session);
+      expect(session.reviewedReplyHtml.includes('R200.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R1600.00')).toBe(true);
+
+      session = reduceQuoteSession(session, {
+        type: 'patch_staff_stay_extras',
+        stayKey: STAY_A,
+        extras: {
+          dinnerEnabled: true,
+          dinnerAllowanceMinor: 25_000,
+          dinnerAllowanceUnit: 'per_person_per_night',
+        },
+      });
+      session = quoteWithDinner(session, 'rev-dinner-250', 25_000, 50_000, 170_000);
+      session = preparePdf(session);
+
+      expect(session.reviewedReplyHtml.includes('R250.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R500.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R1700.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R200.00')).toBe(false);
+      expect(session.reviewedReplySource).toBe('quote_generated');
+    });
+
+    it('keeps generated reply provenance through a combined PDF so a later single-stay quote can refresh it', () => {
+      let session = withStaffSource(analysisReady());
+      session = quoteWithDinner(session, 'rev-dinner-200', 20_000, 40_000, 160_000);
+      session = preparePdf(session);
+
+      session = reduceQuoteSession(session, { type: 'add_stay', token: 'second' });
+      const secondGroup = session.groups.at(-1)!;
+      session = reduceQuoteSession(session, {
+        type: 'patch_group',
+        groupId: secondGroup.id,
+        patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+      });
+      const secondStayKey = stepFor(session, STAY_B).shareKey!;
+      session = reduceQuoteSession(session, staffQuoteFor(secondStayKey, 'rev-second-stay', 180_000, session.inputRevision));
+      session = reduceQuoteSession(session, {
+        type: 'pdf_ready',
+        pdf: quotePdf('combined-stays', 340_000),
+        selectionEpoch: session.binding!.selectionEpoch,
+        inputRevision: session.inputRevision,
+        selectedOfferIds: [
+          session.staffQuotes[STAY_A]!.revisionRef,
+          session.staffQuotes[secondStayKey]!.revisionRef,
+        ],
+      });
+
+      expect(session.reviewedReplySource).toBe('quote_generated');
+      session = reduceQuoteSession(session, { type: 'remove_stay', stayId: stayIdOf(secondGroup) });
+      session = reduceQuoteSession(session, {
+        type: 'patch_staff_stay_extras',
+        stayKey: STAY_A,
+        extras: {
+          dinnerEnabled: true,
+          dinnerAllowanceMinor: 25_000,
+          dinnerAllowanceUnit: 'per_person_per_night',
+        },
+      });
+      session = quoteWithDinner(session, 'rev-dinner-250-after-multi', 25_000, 50_000, 170_000);
+      session = preparePdf(session);
+
+      expect(session.reviewedReplyHtml.includes('R250.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R500.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R1700.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R200.00')).toBe(false);
+    });
+
+    it('keeps staff edits to a generated quotation reply across another quote run', () => {
+      let session = withStaffSource(analysisReady());
+      session = quoteWithDinner(session, 'rev-dinner-200', 20_000, 40_000, 160_000);
+      session = preparePdf(session);
+      session = reduceQuoteSession(session, {
+        type: 'set_reviewed_reply',
+        html: '<p>Staff-edited reply</p>',
+        staffEdited: true,
+      });
+      expect(session.reviewedReplySource).toBeUndefined();
+
+      session = reduceQuoteSession(session, {
+        type: 'patch_staff_stay_extras',
+        stayKey: STAY_A,
+        extras: {
+          dinnerEnabled: true,
+          dinnerAllowanceMinor: 25_000,
+          dinnerAllowanceUnit: 'per_person_per_night',
+        },
+      });
+      session = quoteWithDinner(session, 'rev-dinner-250', 25_000, 50_000, 170_000);
+      session = preparePdf(session);
+
+      expect(session.reviewedReplyHtml.includes('Staff-edited reply')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R250.00')).toBe(false);
+      expect(session.reviewedReplySource).toBeUndefined();
+    });
+
+    it('does not restore a reply staff cleared while its repriced PDF was being prepared', () => {
+      let session = withStaffSource(analysisReady());
+      session = quoteWithDinner(session, 'rev-dinner-200', 20_000, 40_000, 160_000);
+      session = preparePdf(session);
+      session = reduceQuoteSession(session, {
+        type: 'patch_staff_stay_extras',
+        stayKey: STAY_A,
+        extras: {
+          dinnerEnabled: true,
+          dinnerAllowanceMinor: 25_000,
+          dinnerAllowanceUnit: 'per_person_per_night',
+        },
+      });
+      session = quoteWithDinner(session, 'rev-dinner-250-pending', 25_000, 50_000, 170_000);
+      const quote = session.staffQuote!;
+      const pendingPdf: QuoteSessionAction = {
+        type: 'pdf_ready',
+        pdf: quotePdf(quote.revisionRef, quote.totalMinor),
+        selectionEpoch: session.binding!.selectionEpoch,
+        inputRevision: session.inputRevision,
+        selectedOfferIds: session.selectedOfferIds,
+        reviewedReplyHtml: quoteWrapperHtml('', 'R Opperman', {
+          ...(quote.dinnerAddOn ? { dinnerAddOn: quote.dinnerAddOn } : {}),
+          totalMinor: quote.totalMinor,
+        }),
+      };
+
+      session = reduceQuoteSession(session, { type: 'set_reviewed_reply', html: '', staffEdited: true });
+      session = reduceQuoteSession(session, pendingPdf);
+
+      expect(session.reviewedReplyHtml).toBe('');
+      expect(session.reviewedReplySource).toBeUndefined();
+      expect(session.reviewedReplyEdited).toBe(true);
+    });
   });
 
   it('still blocks PDF when a pricing-critical fact is missing', () => {
@@ -1664,7 +2002,8 @@ describe('quote session staff review items', () => {
     expect(stepFor(s, STAY_B).status).toBe('failed');
     expect(stepFor(s, STAY_A).status).toBe('succeeded');
     expect(s.staffQuotes[STAY_A]?.revisionRef).toBe('rev-a');
-    expect(s.errorMessage).toBe('HMS did not answer. Run option B again.');
+    expect(stepFor(s, STAY_B).retryGuidance).toBe('HMS did not answer. Run option B again.');
+    expect(s.errorMessage).toBeNull();
     expect(quoteRunBlockReason(s, stepFor(s, STAY_B))).toBeNull();
     expect(canRunQuoteStep(stepFor(s, STAY_B), s.steps, null)).toBe(true);
   });
@@ -1681,7 +2020,11 @@ describe('quote session staff review items', () => {
   it('keeps the full reply on repricing but requires a reviewed current PDF', () => {
     let s = analysisReady({ intent: 'quote', groups: quoteAnalysis.groups, secondaryAsks: [], alternatives: [] });
     s = withStaffSource(s);
-    s = reduceQuoteSession(s, { type: 'set_reviewed_reply', html: '<p>Full staff-edited reply</p>' });
+    s = reduceQuoteSession(s, {
+      type: 'set_reviewed_reply',
+      html: '<p>Full staff-edited reply</p>',
+      staffEdited: true,
+    });
     s = reduceQuoteSession(s, {
       type: 'staff_quote_ready',
       offer: { ...authorisedOffer, id: 'rev-1', sourceRef: 'rev-1', nightly: [], stayTotalMinor: 850000 },
@@ -1890,7 +2233,7 @@ describe('quote session staff review items', () => {
     expect(s.staffHeader.salesStrategy).toBe('BAR');
   });
 
-  it('prefills a per-person dinner allowance and ignores room rates that include dinner', () => {
+  it('does not treat email rate claims as installed staff dinner add-on prices', () => {
     const allowance = analysisReady({
       ...quoteAnalysis,
       luna: lunaQuote({
@@ -1906,7 +2249,7 @@ describe('quote session staff review items', () => {
         ],
       }),
     });
-    expect(allowance.staffHeader.dinnerAllowanceMinor).toBe(45000);
+    expect(allowance.staffHeader.dinnerAllowanceMinor).toBeUndefined();
     const included = analysisReady({
       ...quoteAnalysis,
       luna: lunaQuote({
@@ -1923,6 +2266,14 @@ describe('quote session staff review items', () => {
       }),
     });
     expect(included.staffHeader.dinnerAllowanceMinor).toBeUndefined();
+  });
+
+  it('does not infer a dinner charging basis from an amount without staff or hotel configuration', () => {
+    const extras = defaultStaffStayExtras({
+      ...emptyStaffQuoteHeader(),
+      dinnerAllowanceMinor: 45_000,
+    });
+    expect(extras.dinnerAllowanceUnit).toBeUndefined();
   });
 
   it('checks shuttle only when the email mentions a shuttle or transfer', () => {
@@ -2274,18 +2625,93 @@ describe('staff dinner B&B fallback', () => {
     expect(extras?.dinnerAllowanceMinor).toBeUndefined();
     expect(after.inputRevision).toBe(before.inputRevision);
     expect(dinnerAllowanceStillRequired(after.staffHeader)).toBe(true);
-    expect(
-      dinnerAllowanceStillRequired({
-        ...after.staffHeader,
-        stayExtrasByKey: {
-          ...after.staffHeader.stayExtrasByKey,
-          [stayKey]: { ...staffStayExtrasFor(after.staffHeader, stayKey), dinnerAllowanceMinor: 45_000 },
+    const priceEntered = {
+      ...after.staffHeader,
+      stayExtrasByKey: {
+        ...after.staffHeader.stayExtrasByKey,
+        [stayKey]: {
+          ...staffStayExtrasFor(after.staffHeader, stayKey),
+          dinnerAllowanceMinor: 45_000,
+          dinnerAllowanceUnit: 'per_person_per_night' as const,
         },
-      }),
-    ).toBe(false);
+      },
+    };
+    expect(dinnerAllowanceStillRequired(priceEntered)).toBe(true);
+    expect(dinnerAddOnInputProblem(priceEntered)).toBe(
+      'Run Get rates again to apply the dinner price before preparing documents.',
+    );
     expect(reduceQuoteSession(before, { type: 'staff_dinner_bb_fallback', groupIds: [] })).toBe(
       before,
     );
+  });
+
+  it('clears the required allowance after a priced B&B quote with no fallback group ids', () => {
+    const analysis = {
+      ...quoteAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+    };
+    let before = withStaffSource(analysisReady(analysis));
+    before = reduceQuoteSession(before, { type: 'staff_dinner_bb_fallback', groupIds: ['g1'] });
+    before = reduceQuoteSession(before, {
+      type: 'patch_staff_stay_extras',
+      stayKey: STAY_A,
+      extras: { dinnerAllowanceMinor: 45_000, dinnerAllowanceUnit: 'per_person_per_night' },
+    });
+
+    const action = staffQuoteFor(STAY_A, 'rev-dinner-bb', 850_000, before.inputRevision);
+    if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    const after = reduceQuoteSession(before, {
+      ...action,
+      staffQuote: {
+        ...action.staffQuote,
+        dinnerAddOn: {
+          label: 'Dinner add-on',
+          amountMinor: 45_000,
+          unit: 'per_person_per_night',
+          totalMinor: 90_000,
+        },
+      },
+    });
+
+    expect(after.staffHeader.stayExtrasByKey?.[STAY_A]).toMatchObject({
+      dinnerEnabled: true,
+      dinnerAllowanceRequired: false,
+      dinnerAllowanceMinor: 45_000,
+      dinnerAllowanceUnit: 'per_person_per_night',
+      dinnerAllowanceGroupIds: ['g1'],
+    });
+    expect(dinnerAllowanceStillRequired(after)).toBe(false);
+    expect(canCreatePdf(after)).toBe(true);
+    expect(workbookRequestFor(after).status).toBe('ok');
+  });
+
+  it('blocks documents when a normal B&B result requires a dinner unit without fallback group ids', () => {
+    let before = withStaffSource(analysisReady());
+    before = reduceQuoteSession(before, {
+      type: 'patch_staff_stay_extras',
+      stayKey: STAY_A,
+      extras: { dinnerEnabled: true, dinnerAllowanceMinor: 45_000 },
+    });
+    const action = staffQuoteFor(STAY_A, 'rev-dinner-unit', 850_000, before.inputRevision);
+    if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    const after = reduceQuoteSession(before, {
+      ...action,
+      staffQuote: { ...action.staffQuote, dinnerAddOnRequired: true },
+    });
+
+    expect(after.staffQuote).toMatchObject({ dinnerAddOnRequired: true });
+    expect(after.staffQuote?.dinnerFallbackGroupIds).toBeUndefined();
+    expect(after.staffHeader.stayExtrasByKey?.[STAY_A]).toMatchObject({
+      dinnerEnabled: true,
+      dinnerAllowanceRequired: true,
+      dinnerAllowanceMinor: 45_000,
+    });
+    expect(pdfBlockReason(after)).toBe('Choose how the dinner price is charged.');
+    expect(canCreatePdf(after)).toBe(false);
+    expect(workbookRequestFor(after)).toEqual({
+      status: 'unavailable',
+      reason: 'Choose how the dinner price is charged.',
+    });
   });
 
   it('treats a quote run as current only while its selection epoch and input revision are still the session', () => {
@@ -2297,6 +2723,28 @@ describe('staff dinner B&B fallback', () => {
     expect(quoteRunIsCurrent(session, { selectionEpoch: 2, inputRevision: 3 })).toBe(true);
     expect(quoteRunIsCurrent(session, { selectionEpoch: 2, inputRevision: 2 })).toBe(false);
     expect(quoteRunIsCurrent(session, { selectionEpoch: 1, inputRevision: 3 })).toBe(false);
+  });
+
+  it('clears a stale running step without clearing a newer step run', () => {
+    const session = analysisReady(twoDateAnalysis());
+    const stepA = stepFor(session, STAY_A);
+    const staleAction = {
+      type: 'step_stale' as const,
+      stepId: stepA.id,
+      selectionEpoch: session.binding?.selectionEpoch ?? 0,
+      inputRevision: session.inputRevision,
+    };
+    const runningA = reduceQuoteSession(session, { type: 'step_running', stepId: stepA.id });
+    const staleA = reduceQuoteSession(runningA, staleAction);
+
+    expect(staleA.runningStepId).toBeNull();
+    expect(stepFor(staleA, STAY_A).status).toBe('ready');
+
+    const runningB = reduceQuoteSession(staleA, {
+      type: 'step_running',
+      stepId: stepFor(staleA, STAY_B).id,
+    });
+    expect(reduceQuoteSession(runningB, staleAction)).toBe(runningB);
   });
 
   it('treats the dinner fallback as stale once a row was edited after its run, though the input revision held', () => {
@@ -2315,6 +2763,100 @@ describe('staff dinner B&B fallback', () => {
       groupIds: ['g1'],
     });
     expect(after.staffHeader.stayExtrasByKey?.['2026-11-12:2026-11-14']?.dinnerAllowanceGroupIds).toEqual(['g1']);
+  });
+
+  it('a search result for one stay keeps the extras staff entered on another stay meanwhile', () => {
+    let before = withStaffSource(analysisReady());
+    const stale = { ...defaultStaffStayExtras(before.staffHeader), dinnerEnabled: false };
+    const fresh = { ...defaultStaffStayExtras(before.staffHeader), dinnerEnabled: true, dinnerAllowanceMinor: 30_000, dinnerAllowanceUnit: 'per_person_per_night' as const };
+    const approvedA = { ...defaultStaffStayExtras(before.staffHeader), dinnerEnabled: false };
+    before = {
+      ...before,
+      staffHeader: { ...before.staffHeader, salesStrategy: 'BAR', stayExtrasByKey: { [STAY_A]: approvedA, 'other-stay': fresh } },
+    };
+    const action = staffQuoteFor(STAY_A, 'rev-two-stays', 85_000, before.inputRevision);
+    if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    const after = reduceQuoteSession(before, {
+      ...action,
+      approvedHeader: { ...before.staffHeader, stayExtrasByKey: { [STAY_A]: approvedA, 'other-stay': stale } },
+    } as typeof action);
+    expect(after.staffHeader.stayExtrasByKey?.['other-stay']).toEqual(fresh);
+    expect(after.staffHeader.stayExtrasByKey?.[STAY_A]).toEqual(approvedA);
+  });
+
+  it('keeps a staff-approved whole-stay dinner charge when the server retried only some rooms as B&B', () => {
+    let before = withStaffSource(analysisReady());
+    before = {
+      ...before,
+      staffHeader: {
+        ...before.staffHeader,
+        salesStrategy: 'BAR',
+        stayExtrasByKey: {
+          ...before.staffHeader.stayExtrasByKey,
+          [STAY_A]: {
+            ...defaultStaffStayExtras(before.staffHeader),
+            dinnerEnabled: true,
+            dinnerAllowanceMinor: 35_000,
+            dinnerAllowanceUnit: 'per_person_per_night',
+          },
+        },
+      },
+    };
+    const action = staffQuoteFor(STAY_A, 'rev-mixed', 85_000, before.inputRevision);
+    if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    const after = reduceQuoteSession(before, {
+      ...action,
+      staffQuote: {
+        ...action.staffQuote,
+        dinnerFallbackGroupIds: ['g1'],
+        dinnerAddOn: { label: 'Dinner add-on', amountMinor: 35_000, unit: 'per_person_per_night', totalMinor: 140_000 },
+      },
+    });
+    expect(after.staffHeader.stayExtrasByKey?.[STAY_A]?.dinnerAllowanceGroupIds).toBeUndefined();
+  });
+
+  it.each([
+    { name: 'short', qualifier: 'Set menu' },
+    { name: '120-character', qualifier: 'x'.repeat(120) },
+  ])('keeps a $name dinner qualifier separate from its display label', ({ qualifier }) => {
+    let before = withStaffSource(analysisReady());
+    before = {
+      ...before,
+      staffHeader: {
+        ...before.staffHeader,
+        salesStrategy: 'BAR',
+        stayExtrasByKey: {
+          ...before.staffHeader.stayExtrasByKey,
+          [STAY_A]: {
+            ...defaultStaffStayExtras(before.staffHeader),
+            dinnerEnabled: true,
+            dinnerAllowanceMinor: 35_000,
+            dinnerAllowanceUnit: 'per_person_per_night',
+            dinnerAllowanceLabel: qualifier,
+          },
+        },
+      },
+    };
+    const action = staffQuoteFor(STAY_A, 'rev-dinner', 85_000, before.inputRevision);
+    if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    const displayLabel = `Dinner add-on (${qualifier})`;
+    const after = reduceQuoteSession(before, {
+      ...action,
+      staffQuote: {
+        ...action.staffQuote,
+        dinnerFallbackGroupIds: ['g1'],
+        dinnerAddOn: {
+          label: displayLabel,
+          amountMinor: 35_000,
+          unit: 'per_person_per_night',
+          totalMinor: 140_000,
+        },
+      },
+    });
+
+    expect(after.staffQuote?.dinnerAddOn?.label).toBe(displayLabel);
+    const nextSearch = approvedExecuteHeader(staffHeaderForStay(after.staffHeader, STAY_A), ['g1']);
+    expect(nextSearch.dinnerAllowanceLabel).toBe(qualifier);
   });
 });
 

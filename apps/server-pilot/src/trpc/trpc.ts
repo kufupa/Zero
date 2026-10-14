@@ -22,6 +22,10 @@
  */
 import { initTRPC, TRPCError } from '@trpc/server';
 import superjson from 'superjson';
+import {
+  staffQuoteRoomAlternatives,
+  type StaffQuoteRoomAlternative,
+} from '../ai/staff-quote-alternatives.js';
 import type { Auth } from '../lib/auth.js';
 import { getDb, type DB } from '../db/client.js';
 import {
@@ -50,8 +54,28 @@ export type TrpcPrivateContext = {
 
 export type TrpcMailboxContext = TrpcPrivateContext & MailboxContext;
 
+function staffQuoteAlternativesFromError(error: TRPCError): StaffQuoteRoomAlternative[] | undefined {
+  if (error.code !== 'PRECONDITION_FAILED' || !error.cause || typeof error.cause !== 'object') {
+    return undefined;
+  }
+  const cause = error.cause as { staffQuoteRefusal?: unknown; alternatives?: unknown };
+  if (cause.staffQuoteRefusal !== true) return undefined;
+  const alternatives = staffQuoteRoomAlternatives(cause.alternatives);
+  return alternatives.length ? alternatives : undefined;
+}
+
 const t = initTRPC.context<TrpcSourceContext>().create({
   transformer: superjson,
+  errorFormatter: ({ shape, error }) => {
+    const alternatives = staffQuoteAlternativesFromError(error);
+    return {
+      ...shape,
+      data: {
+        ...shape.data,
+        ...(alternatives ? { alternatives } : {}),
+      },
+    };
+  },
 });
 
 function noMailboxTrpcError(): TRPCError {

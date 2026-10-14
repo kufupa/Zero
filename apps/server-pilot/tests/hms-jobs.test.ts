@@ -42,7 +42,10 @@ import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed
 import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
 const staffQuoteRunner = vi.hoisted(() => ({ run: vi.fn() }));
-vi.mock('../src/ai/staff-quote-run.js', () => ({ runStaffQuote: staffQuoteRunner.run }));
+vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/ai/staff-quote-run.js')>()),
+  runStaffQuote: staffQuoteRunner.run,
+}));
 
 const reachable = await probeTestDb();
 const TENANT = 'tenant-centurion';
@@ -838,10 +841,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const alternatives = [
+        { groupId: 'single', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 1 },
+      ];
       staffQuoteRunner.run.mockRejectedValue(
         new TRPCError({
           code: 'PRECONDITION_FAILED',
           message: 'HMS has no rate for this meal plan under BAR.',
+          cause: { alternatives },
         }),
       );
 
@@ -853,6 +860,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           ok: false,
           code: 'PRECONDITION_FAILED',
           message: 'HMS has no rate for this meal plan under BAR.',
+          alternatives,
         },
       });
     }));

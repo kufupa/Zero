@@ -12,7 +12,8 @@ import type { HmsJobRequest, HmsJobView } from '../lib/quote-workflow/amend-find
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
 import { useHmsJobNoticeReporter } from '../lib/quote-workflow/hms-job-notice-context';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
-import type { QuoteSession, RateOption, RatePlanCatalogueEntry } from '../lib/quote-workflow/types';
+import type { QuoteRoomAlternative, QuoteSession, RateOption, RatePlanCatalogueEntry } from '../lib/quote-workflow/types';
+import { defaultStaffStayExtras } from '../lib/quote-workflow/types';
 import { CENTURION_RATE_PLANS } from '../../server-pilot/src/hms/rate-catalogue';
 
 vi.mock('sonner', () => ({ toast: { warning: vi.fn(), success: vi.fn(), error: vi.fn() } }));
@@ -82,7 +83,11 @@ function EditableStayPanel({ initial }: { initial: QuoteSession }) {
   );
 }
 
-function failedRateSession(reason: string, detail: string): QuoteSession {
+function failedRateSession(
+  reason: string,
+  detail: string,
+  alternatives: QuoteRoomAlternative[] = [],
+): QuoteSession {
   let session = sessionFromFixture('failed-run');
   const groups = session.groups.map((group) => ({ ...group, roomPreference: 'SKNG' }));
   session = {
@@ -104,9 +109,33 @@ function failedRateSession(reason: string, detail: string): QuoteSession {
     stepId: 'quote-1',
     reason,
     detail,
+    alternatives,
     selectionEpoch: session.binding?.selectionEpoch ?? 0,
     inputRevision: session.inputRevision,
   });
+}
+
+function AlternativeStayPanel({
+  initial,
+  onRunStep,
+  onPatchGroup,
+}: {
+  initial: QuoteSession;
+  onRunStep: (stepId: string) => void;
+  onPatchGroup: (groupId: string, patch: Partial<QuoteSession['groups'][number]>) => void;
+}) {
+  const [session, setSession] = useState(initial);
+  return (
+    <QuoteWorkflowPanel
+      session={session}
+      onStayAction={(action) => setSession((current) => reduceQuoteSession(current, action))}
+      onPatchGroup={(groupId, patch) => {
+        onPatchGroup(groupId, patch);
+        setSession((current) => reduceQuoteSession(current, { type: 'patch_group', groupId, patch }));
+      }}
+      onRunStep={onRunStep}
+    />
+  );
 }
 
 function FailedRatesNoticeTrigger({
@@ -369,6 +398,39 @@ describe('QuoteWorkflowPanel', () => {
     expect(onRunNext).not.toHaveBeenCalled();
     expect(onRunStep).toHaveBeenCalledWith('quote-1');
     expect(screen.getByRole('button', { name: 'Search availability' })).toBeTruthy();
+  });
+
+  it('shows HMS room alternatives without choosing one and reruns only after Use this', async () => {
+    const onRunStep = vi.fn();
+    const onPatchGroup = vi.fn();
+    const alternatives = [
+      { groupId: 'g1', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 2 },
+    ];
+    const failed = failedRateSession(
+      'No qualified rate covers every room-night.',
+      'Some nights are short.',
+      alternatives,
+    );
+    const session = {
+      ...failed,
+      groups: failed.groups.map((group) => ({ ...group, rateCode: 'BAR' })),
+    };
+    render(<AlternativeStayPanel initial={session} onRunStep={onRunStep} onPatchGroup={onPatchGroup} />);
+
+    expect(screen.getByText('Requested type not available — available instead: Deluxe Twin × 2')).toBeDefined();
+    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('SKNG');
+    expect(onPatchGroup).not.toHaveBeenCalled();
+    expect(onRunStep).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use this' }));
+
+    expect(onPatchGroup).toHaveBeenCalledWith('g1', expect.objectContaining({
+      roomCodes: ['DLXTWN'],
+      roomPreference: 'Deluxe Twin',
+      quantity: 2,
+      rateCode: 'BAR',
+    }));
+    await waitFor(() => expect(onRunStep).toHaveBeenCalledWith('quote-1'));
   });
 
   it('shows a safe failed-rate banner once, then one safe local retry message', () => {
@@ -788,6 +850,46 @@ describe('QuoteWorkflowPanel', () => {
 
     assertRatePlanVisible();
     expect(screen.getByText('HMS notes (optional)')).toBeDefined();
+  });
+
+  it('renders the required dinner price and charging unit before quote documents', () => {
+    const base = sessionFromFixture('public-single');
+    const group = base.groups[0]!;
+    const stayKey = `${group.arrivalDate}:${group.departureDate}`;
+    const extras = {
+      ...defaultStaffStayExtras(base.staffHeader),
+      dinnerEnabled: true,
+      dinnerAllowanceRequired: true,
+      dinnerAllowanceGroupIds: [group.id],
+    };
+    const session = {
+      ...base,
+      staffSource: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
+      evidence: { kind: 'authorised' as const, selectionEpoch: 1, inputRevision: 1 },
+      selectedOfferIds: ['pub-1'],
+      staffHeader: {
+        ...base.staffHeader,
+        stayExtrasByKey: { ...base.staffHeader.stayExtrasByKey, [stayKey]: extras },
+      },
+    };
+    const onPatchStayExtras = vi.fn();
+    render(<QuoteWorkflowPanel session={session} onPatchStayExtras={onPatchStayExtras} />);
+
+    const extraGroup = screen.getByRole('group', { name: 'Extras for Stay 1' });
+    expect(within(extraGroup).getByText('Dinner price — enter amount')).toBeDefined();
+    expect((within(extraGroup).getByLabelText('Dinner allowance amount') as HTMLInputElement).disabled).toBe(false);
+    expect(['per_person_per_night', 'per_room_per_night', 'per_person']).not.toContain(
+      (within(extraGroup).getByLabelText('Dinner add-on unit') as HTMLSelectElement).value,
+    );
+    expect((screen.getByRole('button', { name: 'Prepare PDF' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Download Excel' }) as HTMLButtonElement).disabled).toBe(true);
+
+    const amount = within(extraGroup).getByLabelText('Dinner allowance amount');
+    fireEvent.focus(amount);
+    fireEvent.change(amount, { target: { value: '450' } });
+    fireEvent.change(within(extraGroup).getByLabelText('Dinner add-on unit'), { target: { value: 'per_person' } });
+    expect(onPatchStayExtras).toHaveBeenCalledWith(stayKey, { dinnerAllowanceMinor: 45_000 });
+    expect(onPatchStayExtras).toHaveBeenCalledWith(stayKey, { dinnerAllowanceUnit: 'per_person' });
   });
 
   it('keeps an editable optional Notes for HMS field in Rates', () => {

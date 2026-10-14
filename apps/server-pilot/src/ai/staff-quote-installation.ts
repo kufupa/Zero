@@ -49,6 +49,15 @@ const configurationSchema = z
       .strict(),
     outputDir: z.string().min(1),
     ratePolicyConfigurationPath: z.string().min(1),
+    // Hotel/staff-approved dinner pricing. Deliberately absent by default: the pane must ask staff to price it.
+    dinnerAddOn: z
+      .object({
+        amountMinor: z.number().int().positive().max(100_000_000),
+        unit: z.enum(['per_person_per_night', 'per_room_per_night', 'per_person']),
+        label: z.string().trim().min(1).max(120),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type StaffQuoteInstallationConfiguration = z.infer<typeof configurationSchema>;

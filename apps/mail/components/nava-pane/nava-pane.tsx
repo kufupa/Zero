@@ -16,7 +16,7 @@ import {
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import { withContactLines } from '@/lib/quote-workflow/document-contact';
-import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
+import { missingQuoteDetailsWrapperHtml, quoteDeclineReplyHtml, quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
@@ -70,6 +70,7 @@ import {
   bindStaffActions,
   bindStaffQuoteSource,
   staffQuoteFromTrpc,
+  isStaffQuoteRefusal,
   canBuildStaffQuoteRequest,
   type BoundExecuteStaffQuote,
   type StaffQuoteJobQuery,
@@ -81,11 +82,15 @@ import {
   DRAFT_GROUP_ID,
   canCreatePdf,
   canRunQuoteStep,
+  dinnerAddOnInputProblem,
   dinnerAllowanceStillRequired,
+  missingQuoteDetailsReplyOnly,
+  missingQuoteReplyFieldsForGroups,
   evidenceMatchesSession,
   groupsForQuoteStep,
   isMultiStay,
   quoteRunIsCurrent,
+  quoteStayRunIsCurrent,
   requestedQuoteKeys,
   stayKeyForGroup,
   hasStaffStayEdits,
@@ -548,7 +553,8 @@ export function NavaPane({
     suppressAutoStaffQuoteForCurrentEmail();
     const before = quoteSessionRef.current;
     dispatchQuote(action);
-    storedWork.recordGroups(before.groups, reduceQuoteSession(before, action).groups);
+    const after = reduceQuoteSession(before, action);
+    storedWork.recordGroups(before.groups, after.groups);
   };
   // With a treat-as or note the read is live, so only Retry read (its count) re-runs it, not a stored-read change.
   const storedGate = storedOverridden ? `override|${storedWork.retryCount}` : storedWork.key;
@@ -649,6 +655,35 @@ export function NavaPane({
     // Admission key is the selection identity. Body/subject are no longer read on the client.
     // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
   }, [quoteAnalysisRetryKey, storedGate, isNonActionableMailSource]);
+
+  useEffect(() => {
+    const fields = missingQuoteReplyFieldsForGroups(quoteSession.groups);
+    if (fields.length && missingQuoteDetailsReplyOnly(quoteSession)) {
+      const senderName = activeEmail?.senderName.trim() ?? '';
+      const senderEmail = activeEmail?.senderEmail.trim().toLowerCase() ?? '';
+      const greetingName = senderName.toLowerCase() === senderEmail ? '' : senderName;
+      const html = missingQuoteDetailsWrapperHtml(greetingName, fields, staffSignerName);
+      if (
+        (!quoteSession.reviewedReplyHtml.trim() && !quoteSession.reviewedReplyEdited) ||
+        (quoteSession.reviewedReplySource === 'missing_quote_details' && quoteSession.reviewedReplyHtml !== html)
+      ) {
+        dispatchQuote({ type: 'set_reviewed_reply', html, source: 'missing_quote_details' });
+      }
+      return;
+    }
+    if (quoteSession.reviewedReplySource === 'missing_quote_details') {
+      dispatchQuote({ type: 'set_reviewed_reply', html: '' });
+    }
+  }, [
+    activeEmail?.senderEmail,
+    activeEmail?.senderName,
+    quoteSession.analysis,
+    quoteSession.groups,
+    quoteSession.reviewedReplyEdited,
+    quoteSession.reviewedReplyHtml,
+    quoteSession.reviewedReplySource,
+    staffSignerName,
+  ]);
 
   const priorQuoteKey = [
     quoteSession.analysis?.luna?.workflow ?? '',
@@ -1120,15 +1155,6 @@ export function NavaPane({
     reloadPane();
   }, [selectedIdentity]);
 
-  // Hooks stay above the early returns below; the re-run only fires after a user-clicked fallback.
-  const pendingDinnerFallbackStepRef = useRef<string | null>(null);
-  useEffect(() => {
-    const stepId = pendingDinnerFallbackStepRef.current;
-    if (!stepId) return;
-    pendingDinnerFallbackStepRef.current = null;
-    runQuoteStep(stepId);
-  }, [quoteSession.inputRevision]);
-
   if (isLoading) {
     return (
       <div className="flex min-h-screen w-full items-center justify-center bg-[#f1f3f6] font-sans text-slate-700">
@@ -1286,7 +1312,6 @@ export function NavaPane({
     dispatchQuote({ type: 'step_running', stepId: step.id });
     const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
     const inputRevision = quoteSession.inputRevision;
-    const stayRevision = quoteSession.stayRevision;
     if (isQuoteFixturePreview()) {
       const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
       dispatchQuote({
@@ -1428,6 +1453,21 @@ export function NavaPane({
         return remote;
       });
     function applyStaffQuoteResult(remote: BoundExecuteStaffQuote | null) {
+      if (
+        !quoteStayRunIsCurrent(quoteSessionRef.current, {
+          selectionEpoch,
+          inputRevision,
+          stepId: staffQuoteStep.id,
+          stayKey: staffQuoteStep.shareKey ?? '',
+          groups: stayGroups,
+        })
+      ) {
+        dispatchQuote({ type: 'step_stale', stepId: staffQuoteStep.id, selectionEpoch, inputRevision });
+        if (remote !== null) {
+          toast.warning('Details changed while HMS was searching — search availability again.');
+        }
+        return;
+      }
       if (remote === null) {
         dispatchQuote({
           type: 'results_unavailable',
@@ -1438,42 +1478,20 @@ export function NavaPane({
         });
         return;
       }
-      // The reducer drops a result whose selection or input moved on while HMS searched. Say so, rather than let it vanish.
-      if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision })) {
-        toast.warning('Details changed while HMS was searching — search availability again.');
-        return;
-      }
       if (remote.status !== 'ok') {
         dispatchQuote({
           type: 'results_unavailable',
           stepId: staffQuoteStep.id,
           reason: remote.reason,
           detail: remote.detail,
+          alternatives: remote.alternatives,
+          ...(!isMultiStay(quoteSession) && isStaffQuoteRefusal(remote)
+            ? { declineReplyHtml: quoteDeclineReplyHtml() }
+            : {}),
           selectionEpoch,
           inputRevision,
         });
-        const dinnerGroupIds = stayGroups
-          .filter((group) => group.board === 'dinner_bb')
-          .map((group) => group.id);
-        if (remote.noMatchingRate && dinnerGroupIds.length) {
-          toast.warning(remote.reason, {
-            duration: 60_000,
-            action: {
-              label: 'Quote as B&B + dinner allowance',
-              onClick: () => {
-                // The offer belongs to the run that made it. If staff have since moved to another email or edited
-                // the inputs, it is stale and must not patch the current quote.
-                if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
-                  toast.warning('That quote has changed. Run the quote again to quote as B&B.');
-                  return;
-                }
-                quoteAsBbWithDinnerAllowance(staffQuoteStep.id, dinnerGroupIds);
-              },
-            },
-          });
-        } else {
-          toast.warning(remote.reason);
-        }
+        toast.warning(remote.reason);
         return;
       }
       dispatchQuote({
@@ -1576,18 +1594,6 @@ export function NavaPane({
   autoStartStaffQuoteStepRef.current = autoStartStaffQuoteStep;
 
   /**
-   * One-click dinner fallback after a clean HMS no-match: switch the dinner groups to B&B, mark the
-   * dinner allowance as staff-entered (never priced here), then re-run the same quote step once the
-   * patched session has rendered (see pendingDinnerFallbackStepRef).
-   */
-  const quoteAsBbWithDinnerAllowance = (stepId: string, groupIds: string[]) => {
-    if (!groupIds.length) return;
-    pendingDinnerFallbackStepRef.current = stepId;
-    dispatchQuote({ type: 'staff_dinner_bb_fallback', groupIds });
-    toast.warning('Quoting as Bed & Breakfast. Enter the dinner allowance per person per night before preparing the PDF.');
-  };
-
-  /**
    * Builds the quotation PDF for one date option from that option's own run.
    * A null stayKey means the selected option (the "Prepare quotation PDF" button).
    */
@@ -1596,7 +1602,7 @@ export function NavaPane({
     // The PDF is recorded on the item it was made for, even if staff open another mail while it builds.
     const owner = currentPaneOwner();
     if (dinnerAllowanceStillRequired(session)) {
-      toast.warning('Enter the dinner allowance per person per night before preparing the PDF.');
+      toast.warning(dinnerAddOnInputProblem(session) ?? 'Dinner price — enter amount.');
       return;
     }
     if (isMultiStay(session)) {
@@ -1681,7 +1687,10 @@ export function NavaPane({
     const senderEmail = activeEmail?.senderEmail.trim().toLowerCase() ?? '';
     const greetingName = senderName.toLowerCase() === senderEmail ? '' : senderName;
     const reviewedReplyHtml = session.analysis?.intent === 'quote'
-      ? quoteWrapperHtml(greetingName, staffSignerName)
+      ? quoteWrapperHtml(greetingName, staffSignerName, {
+          ...(quote.dinnerAddOn ? { dinnerAddOn: quote.dinnerAddOn } : {}),
+          totalMinor: quote.totalMinor,
+        })
       : undefined;
     const staff = staffQuoteFromTrpc(trpcClient);
     void bindQualifiedStaffProposalPdf({
@@ -2058,7 +2067,7 @@ export function NavaPane({
               onSelectOffer={(offerId) =>
                 dispatchQuote({ type: 'select_offers', offerIds: nextSelectedOfferIds(quoteSession, offerId) })
               }
-              onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html })}
+              onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html, staffEdited: true })}
               onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
               onPatchStaffHeader={(header, options) => {

@@ -422,6 +422,7 @@ export function ledgerQuoteInput(input: StaffQuoteInput & QuotePartyInput): Reco
       : undefined,
     groups: input.groups,
     dinnerAllowanceMinor: input.dinnerAllowanceMinor,
+    dinnerAllowanceUnit: input.dinnerAllowanceUnit,
     dinnerAllowanceGroupIds: input.dinnerAllowanceGroupIds,
     lunchAllowanceMinor: input.lunchAllowanceMinor,
     officeTransferMinor: input.officeTransferMinor,

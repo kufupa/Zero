@@ -30,6 +30,8 @@ export type PriorStaffQuoteRequotePayload = {
   company: string;
   agency: string;
   dinnerAllowanceMinor?: number;
+  dinnerAllowanceUnit?: 'per_person_per_night' | 'per_room_per_night' | 'per_person';
+  dinnerAllowanceGroupIds?: string[];
   dinnerAllowanceLabel?: string;
   lunchAllowanceMinor?: number;
   lunchAllowanceLabel?: string;
@@ -216,8 +218,18 @@ function extrasHeaderFromFacts(
 ): Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'company' | 'agency' | 'notes'> {
   const out: Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'company' | 'agency' | 'notes'> = {};
   for (const row of facts?.extras ?? []) {
-    if (row.service === 'dinner_allowance' && row.unitKind === 'person_service') {
+    if (row.service === 'dinner_add_on') {
       out.dinnerAllowanceMinor = row.unitMinor;
+      if (row.chargeUnit === 'per_person_night') out.dinnerAllowanceUnit = 'per_person_per_night';
+      else if (row.chargeUnit === 'per_person' || row.chargeUnit === 'per_room_per_night') {
+        out.dinnerAllowanceUnit = row.chargeUnit;
+      }
+      if (row.groupIds?.length) out.dinnerAllowanceGroupIds = [...row.groupIds];
+      const qualifier = qualifierFromLabel(row.label, 'Dinner add-on');
+      if (qualifier) out.dinnerAllowanceLabel = qualifier;
+    } else if (row.service === 'dinner_allowance' && row.unitKind === 'person_service') {
+      out.dinnerAllowanceMinor = row.unitMinor;
+      out.dinnerAllowanceUnit = 'per_person_per_night';
       const qualifier = qualifierFromLabel(row.label, 'Dinner allowance');
       if (qualifier) out.dinnerAllowanceLabel = qualifier;
     } else if (row.service === 'lunch_allowance' && row.unitKind === 'person_service') {
@@ -236,9 +248,10 @@ function extrasHeaderFromFacts(
       out.shuttleTrips = row.units;
     } else if (row.service === 'other') {
       // The unit the staff chose is stored on the fact. Facts stored before that fall back to the old inference.
+      const inferredUnit =
+        row.unitKind === 'trip' ? 'per_trip' : row.unitKind === 'item' ? 'item' : row.dates.length > 1 ? 'per_person_night' : 'per_person';
       const unit: OtherChargeUnit =
-        row.chargeUnit ??
-        (row.unitKind === 'trip' ? 'per_trip' : row.unitKind === 'item' ? 'item' : row.dates.length > 1 ? 'per_person_night' : 'per_person');
+        row.chargeUnit && row.chargeUnit !== 'per_room_per_night' ? row.chargeUnit : inferredUnit;
       out.other = { label: row.label, amountMinor: row.unitMinor, unit };
     }
   }

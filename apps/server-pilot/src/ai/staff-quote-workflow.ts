@@ -102,7 +102,8 @@ export const staffQuoteInput = z
     // Staff-typed extras. Every amount is ZAR minor units and must be positive; absent means not charged.
     dinnerAllowanceMinor: extraAmount.optional(),
     dinnerAllowanceLabel: staffLabel.optional(),
-    // The groups that took the B&B fallback. The allowance charges only these groups' guests; absent means every group.
+    dinnerAllowanceUnit: z.enum(['per_person_per_night', 'per_room_per_night', 'per_person']).optional(),
+    // Staff-approved dinner charge scope. Omitted on a manual dinner charge means every group.
     dinnerAllowanceGroupIds: z.array(z.string().min(1).max(64)).max(8).optional(),
     lunchAllowanceMinor: extraAmount.optional(),
     lunchAllowanceLabel: staffLabel.optional(),
@@ -129,6 +130,40 @@ export const staffQuoteInput = z
   })
   .strict();
 export type StaffQuoteInput = z.infer<typeof staffQuoteInput>;
+
+export type StaffQuoteDinnerAddOn = {
+  amountMinor: number;
+  unit: 'per_person_per_night' | 'per_room_per_night' | 'per_person';
+  label: string;
+};
+
+/** Retry metadata for dinner groups changed to B&B; approved dinner-charge scope stays on the input. */
+export function staffQuoteDinnerFallback(
+  input: StaffQuoteInput,
+  requestedGroupIds?: readonly string[],
+): {
+  input: StaffQuoteInput;
+  groupIds: string[];
+} | null {
+  const requested = requestedGroupIds === undefined ? null : new Set(requestedGroupIds);
+  const groupIds = input.groups
+    .filter((group) => group.board === 'dinner_bb' && (!requested || requested.has(group.id)))
+    .map((group) => group.id);
+  if (!groupIds.length) return null;
+  const selected = new Set(groupIds);
+  return {
+    groupIds,
+    input: {
+      ...input,
+      groups: input.groups.map((group) => {
+        if (!selected.has(group.id)) return { ...group };
+        const fallbackGroup = { ...group, board: 'bb' as const };
+        delete fallbackGroup.rateCode;
+        return fallbackGroup;
+      }),
+    },
+  };
+}
 
 export type StaffQuoteRates = 'party' | 'public';
 export type PartyRateRef = { nativeId: string; name: string };
@@ -170,6 +205,19 @@ export function partyContractReviewNote(
 ): string | null {
   if (!parties) return null;
   return groups.some((group) => !isPublicRateCode(group.rateCode)) ? null : partyNoContractNote(partyNames(parties));
+}
+
+/** Public dinner-board prices are replaced by B&B plus the separate dinner add-on. A verified party contract keeps its existing rate. */
+export function staffQuoteDinnerGroupIdsToRetryAsBb(
+  input: StaffQuoteInput,
+  rateOptions: readonly { groupId: string; selected: boolean; contract: boolean; rateCode: string }[],
+): string[] {
+  const dinnerGroupIds = input.groups.filter((group) => group.board === 'dinner_bb').map((group) => group.id);
+  if (!input.parties) return dinnerGroupIds;
+  const verifiedContractGroupIds = new Set(
+    rateOptions.filter((option) => option.selected && option.contract).map((option) => option.groupId),
+  );
+  return dinnerGroupIds.filter((id) => !verifiedContractGroupIds.has(id));
 }
 
 export { isPartyRateFailure, PartyRateFailure } from './party-rate-failure.js';
@@ -243,6 +291,8 @@ export type StaffQuoteAttestation = {
   notes?: string;
   /** Row prices approved with the quote, snapshotted when it ran. Old quotes keep these even after a rate is archived. */
   rowPrices?: RowPrice[];
+  /** Prevents any document/reply action until staff prices the dinner add-on when hotel policy has no price. */
+  dinnerAddOnRequired?: boolean;
 };
 export function staffQuoteSourceHash(mail: {
   id: string;
@@ -435,6 +485,8 @@ export type StaffProposalFactsBuild = {
   facts: AuthorizedProposalFacts | null;
   factRefs: string[];
   extrasReviewItems: string[];
+  dinnerAddOnRequired: boolean;
+  dinnerGroupIds: string[];
 };
 
 /** Pure staff-confirmed extras for PDF and draft totals; never model-priced. */
@@ -443,6 +495,13 @@ export function buildStaffProposalFacts(
   scope: { messageId: string; sourceHash: string },
   prepared: { authorizationId: string },
   revision: QuoteRevision,
+  options: {
+    /** Staff-approved dinner charge groups. */
+    dinnerGroupIds?: string[];
+    /** Retry metadata only; keeps an unpriced or uncovered dinner fallback from becoming ready. */
+    dinnerFallbackGroupIds?: string[];
+    dinnerAddOn?: StaffQuoteDinnerAddOn;
+  } = {},
 ): StaffProposalFactsBuild {
   input = staffQuoteInput.parse(input);
   if (revision.authorizationId !== prepared.authorizationId)
@@ -451,10 +510,35 @@ export function buildStaffProposalFacts(
   const extrasReviewItems: string[] = [];
   const first = input.groups[0]!;
   const nights = occupiedDates(first.arrivalDate, first.departureDate);
-  const allowanceIds = input.dinnerAllowanceGroupIds;
-  const allowanceGroups = allowanceIds ? input.groups.filter((group) => allowanceIds.includes(group.id)) : input.groups;
+  const allowanceIds = options.dinnerGroupIds ?? input.dinnerAllowanceGroupIds;
+  const dinnerFallbackGroupIds = options.dinnerFallbackGroupIds ?? [];
+  const hasManualDinnerRequest =
+    input.dinnerAllowanceMinor !== undefined ||
+    input.dinnerAllowanceLabel !== undefined ||
+    input.dinnerAllowanceUnit !== undefined;
+  // A priced dinner charge also covers rows retried from a dinner board after the scope was saved (a row staff added later).
+  const pricedDinner =
+    (input.dinnerAllowanceMinor ?? options.dinnerAddOn?.amountMinor) !== undefined &&
+    (input.dinnerAllowanceUnit ?? options.dinnerAddOn?.unit) !== undefined;
+  const allowanceGroups =
+    allowanceIds !== undefined
+      ? input.groups.filter(
+          (group) =>
+            allowanceIds.includes(group.id) || (pricedDinner && allowanceIds.length > 0 && dinnerFallbackGroupIds.includes(group.id)),
+        )
+      : hasManualDinnerRequest
+        ? input.groups
+        : input.groups.filter((group) => dinnerFallbackGroupIds.includes(group.id));
   const allowancePersons = buildStayPersons({ ...input, groups: allowanceGroups });
   const stayPersons = buildStayPersons(input);
+  const dinnerGroupIds = allowanceGroups.map((group) => group.id);
+  const hasDinnerAddOn = dinnerGroupIds.length > 0 || dinnerFallbackGroupIds.length > 0;
+  const hasUncoveredDinnerFallback = dinnerFallbackGroupIds.some((id) => !dinnerGroupIds.includes(id));
+  const configured = options.dinnerAddOn;
+  const amountMinor = input.dinnerAllowanceMinor ?? configured?.amountMinor;
+  const unit = input.dinnerAllowanceUnit ?? configured?.unit;
+  const dinnerLabel = withQualifier('Dinner add-on', input.dinnerAllowanceLabel ?? configured?.label);
+  let dinnerAddOnRequired = false;
   // Person services print as guests x dates; the rate is per guest per date (night or day).
   const personService = (
     id: string,
@@ -463,7 +547,7 @@ export function buildStaffProposalFacts(
     unitMinor: number,
     persons: Array<{ id: string; age: number }>,
     dates: string[],
-    options: { chargeUnit?: OtherChargeUnit; daysExplicit?: boolean } = {},
+    options: { chargeUnit?: OtherChargeUnit; daysExplicit?: boolean; groupIds?: string[] } = {},
   ) => {
     extras.push({
       id,
@@ -477,17 +561,50 @@ export function buildStaffProposalFacts(
       dates,
       ...(options.chargeUnit ? { chargeUnit: options.chargeUnit } : {}),
       ...(options.daysExplicit === undefined ? {} : { daysExplicit: options.daysExplicit }),
+      ...(options.groupIds ? { groupIds: [...options.groupIds] } : {}),
     });
   };
-  if (input.dinnerAllowanceMinor && allowancePersons.length) {
-    personService(
-      'dinner-allowance',
-      withQualifier('Dinner allowance', input.dinnerAllowanceLabel),
-      'dinner_allowance',
-      input.dinnerAllowanceMinor,
-      allowancePersons,
-      nights,
-    );
+  if (hasDinnerAddOn) {
+    if (!amountMinor || !unit) {
+      dinnerAddOnRequired = true;
+      extrasReviewItems.push('Dinner price — enter amount');
+    } else if (!allowanceGroups.length) {
+      // Retry IDs prove a dinner board was changed to B&B; they do not authorize charging those guests.
+      dinnerAddOnRequired = true;
+      extrasReviewItems.push('Dinner allowance — confirm charge groups');
+    } else if (unit === 'per_person_per_night' || unit === 'per_person') {
+      personService(
+        'dinner-add-on',
+        dinnerLabel,
+        'dinner_add_on',
+        amountMinor,
+        allowancePersons,
+        unit === 'per_person_per_night' ? nights : [first.arrivalDate],
+        {
+          chargeUnit: unit === 'per_person_per_night' ? 'per_person_night' : 'per_person',
+          groupIds: dinnerGroupIds,
+        },
+      );
+    } else {
+      const rooms = allowanceGroups.reduce((sum, group) => sum + group.quantity, 0);
+      extras.push({
+        id: 'dinner-add-on',
+        label: dinnerLabel,
+        quantity: rooms,
+        units: nights.length,
+        unitKind: 'item',
+        unitMinor: amountMinor,
+        service: 'dinner_add_on',
+        persons: [],
+        dates: nights,
+        chargeUnit: 'per_room_per_night',
+        groupIds: dinnerGroupIds,
+      });
+    }
+    if (hasUncoveredDinnerFallback && allowanceGroups.length) {
+      dinnerAddOnRequired = true;
+      extrasReviewItems.push('Dinner allowance — confirm charge groups');
+    }
   }
   if (input.lunchAllowanceMinor) {
     personService(
@@ -553,7 +670,7 @@ export function buildStaffProposalFacts(
     }
   }
   if (!extras.length) {
-    return { facts: null, factRefs: [], extrasReviewItems };
+    return { facts: null, factRefs: [], extrasReviewItems, dinnerAddOnRequired, dinnerGroupIds };
   }
   const facts: AuthorizedProposalFacts = {
     revisionId: revision.id,
@@ -564,7 +681,7 @@ export function buildStaffProposalFacts(
     includedEntitlements: [],
   };
   deriveAuthorizedExtraLines(revision, facts);
-  return { facts, factRefs: ['extras'], extrasReviewItems };
+  return { facts, factRefs: ['extras'], extrasReviewItems, dinnerAddOnRequired, dinnerGroupIds };
 }
 
 export async function executeStaffQuote(
@@ -658,6 +775,7 @@ export function attestStaffQuote(
   prepared: ReturnType<typeof prepareStaffQuote>,
   revision: QuoteRevision,
   rowPrices: RowPrice[] = [],
+  options: { dinnerAddOnRequired?: boolean } = {},
 ): StaffQuoteAttestation {
   if (revision.authorizationId !== prepared.authorizationId)
     throw new Error('staff_quote_attestation_mismatch');
@@ -679,5 +797,6 @@ export function attestStaffQuote(
     header: { company: prepared.header.company, agency: prepared.header.agency },
     ...(input.notes ? { notes: input.notes } : {}),
     ...(rowPrices.length ? { rowPrices } : {}),
+    ...(options.dinnerAddOnRequired ? { dinnerAddOnRequired: true } : {}),
   };
 }

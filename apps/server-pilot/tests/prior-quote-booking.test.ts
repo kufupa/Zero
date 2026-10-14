@@ -276,6 +276,79 @@ describe('priorStaffQuoteRequotePayload', () => {
     });
   });
 
+  it('restores configured dinner add-on amount, unit, label, and fallback groups on re-quote', async () => {
+    const revision = await syntheticRevision();
+    const sourceHash = 'cd'.repeat(32);
+    for (const unit of ['per_person_per_night', 'per_person', 'per_room_per_night'] as const) {
+      const input = staffQuoteInput.parse({
+        messageId: 'mail-1',
+        sourceHash,
+        selectionEpoch: 1,
+        inputRevision: 1,
+        groups: [
+          {
+            id: 'g1',
+            arrivalDate: revision.groups[0]!.arrivalDate,
+            departureDate: revision.groups[0]!.departureDate,
+            quantity: revision.groups[0]!.quantity,
+            adults: revision.groups[0]!.adults,
+            childrenAges: revision.groups[0]!.childAges,
+            board: 'bb',
+          },
+        ],
+        dinnerAllowanceMinor: 17_500,
+        dinnerAllowanceUnit: unit,
+        dinnerAllowanceLabel: 'Set menu',
+        dinnerAllowanceGroupIds: ['g1'],
+      });
+      const proposal = buildStaffProposalFacts(
+        input,
+        { messageId: 'mail-1', sourceHash },
+        { authorizationId: revision.authorizationId },
+        revision,
+        { dinnerGroupIds: ['g1'] },
+      );
+      const payload = priorStaffQuoteRequotePayload(
+        {
+          transportId: 't1',
+          threadId: 'thread-1',
+          state: 'succeeded',
+          metrics: {
+            staffQuoteAttestation: {
+              version: 1,
+              kind: 'staff_approved_quote',
+              transportId: 't1',
+              userId: 'u1',
+              threadId: 'thread-1',
+              messageId: 'mail-1',
+              sourceHash,
+              selectionEpoch: 1,
+              inputRevision: 1,
+              inputDigest: 'digest',
+              authorizationId: revision.authorizationId,
+              revisionIds: [revision.id],
+              header: { company: '', agency: '' },
+              salesStrategy: 'BAR',
+            },
+            reservationistResult: {
+              quoteRevisionIds: [revision.id],
+              quoteRevisions: [revision],
+              proposalFacts: proposal.facts ? [{ ref: 'extras', facts: proposal.facts }] : [],
+            },
+          },
+        },
+        revision.id,
+      );
+
+      expect(payload).toMatchObject({
+        dinnerAllowanceMinor: 17_500,
+        dinnerAllowanceUnit: unit,
+        dinnerAllowanceLabel: 'Set menu',
+        dinnerAllowanceGroupIds: ['g1'],
+      });
+    }
+  });
+
   it('restores the chosen unit of an other charge on a re-quote, including a one-night per-guest-per-night charge', async () => {
     const revision = await syntheticRevision();
     const sourceHash = 'a'.repeat(64);
@@ -870,7 +943,10 @@ describe('prior-quote routes', () => {
         dates: [],
       },
     ]);
-    expect(legacy).toMatchObject({ dinnerAllowanceMinor: 12_500 });
+    expect(legacy).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceUnit: 'per_person_per_night',
+    });
     expect(legacy).not.toHaveProperty('notes');
     expect(legacy).not.toHaveProperty('other');
   });

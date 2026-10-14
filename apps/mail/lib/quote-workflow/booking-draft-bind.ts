@@ -245,6 +245,8 @@ export type PriorStaffQuoteRequotePayload = {
   company: string;
   agency: string;
   dinnerAllowanceMinor?: number;
+  dinnerAllowanceUnit?: 'per_person_per_night' | 'per_room_per_night' | 'per_person';
+  dinnerAllowanceGroupIds?: string[];
   dinnerAllowanceLabel?: string;
   lunchAllowanceMinor?: number;
   lunchAllowanceLabel?: string;
@@ -299,13 +301,16 @@ export function buildExpiredPriorRequoteBindArgs(args: {
 }): { groups: StayGroupRequirement[]; header: StaffQuoteHeader } {
   if (!args.staffEdited) {
     const oneStay = new Set(args.sessionGroups.map(dateKeyOf)).size <= 1;
+    const mappedGroupIds = new Map<string, string>();
     const groups = args.stored.groups.map((group, index) => {
       // A row takes the id of the session row for the same stay, so another stay's row id never lands here.
       const within = args.stored.groups.slice(0, index).filter((row) => dateKeyOf(row) === dateKeyOf(group)).length;
       const sameStay = args.sessionGroups.filter((row) => dateKeyOf(row) === dateKeyOf(group));
       const price = args.stored.rowPrices?.find((row) => row.groupId === group.id);
+      const id = sameStay[within]?.id ?? (oneStay ? args.sessionGroups[index]?.id : undefined) ?? group.id;
+      mappedGroupIds.set(group.id, id);
       return {
-        id: sameStay[within]?.id ?? (oneStay ? args.sessionGroups[index]?.id : undefined) ?? group.id,
+        id,
         arrivalDate: group.arrivalDate,
         departureDate: group.departureDate,
         quantity: group.quantity,
@@ -339,6 +344,11 @@ export function buildExpiredPriorRequoteBindArgs(args: {
           : {}),
         ...definedEntries({
           dinnerAllowanceLabel: args.stored.dinnerAllowanceLabel,
+          dinnerAllowanceUnit: args.stored.dinnerAllowanceUnit,
+          dinnerAllowanceGroupIds: args.stored.dinnerAllowanceGroupIds?.flatMap((id) => {
+            const mapped = mappedGroupIds.get(id);
+            return mapped ? [mapped] : [];
+          }),
           lunchAllowanceMinor: args.stored.lunchAllowanceMinor,
           lunchAllowanceLabel: args.stored.lunchAllowanceLabel,
           officeTransferMinor: args.stored.officeTransferMinor,

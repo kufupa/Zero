@@ -64,7 +64,10 @@ function outlookSendCommand() {
   });
 }
 
-function renderInsertHook(sendCommand: ReturnType<typeof outlookSendCommand>) {
+function renderInsertHook(
+  sendCommand: ReturnType<typeof outlookSendCommand>,
+  session: QuoteSession = quoteSession,
+) {
   const contextRevision = { current: { scopeEpoch: 1, selectionEpoch: 1 } };
   return renderHook(() =>
     useInsertAiDraft({
@@ -73,7 +76,7 @@ function renderInsertHook(sendCommand: ReturnType<typeof outlookSendCommand>) {
       transportLoading: false,
       currentScope: 'scope-1',
       contextRevision,
-      quoteSession,
+      quoteSession: session,
       combinedEdit: null,
       sendCommand: sendCommand as unknown as PaneBridge['sendCommand'],
       supportsAction: () => true,
@@ -129,6 +132,36 @@ describe('Save reply on the webmail panel', () => {
         'Saved the reply and PDF as this thread\'s draft. Nothing is sent.',
       ),
     );
+  });
+
+  it('saves a missing-details reply without a PDF or Outlook draft', async () => {
+    saveReplyMutate.mockResolvedValueOnce({ id: 'draft-1', replaced: false });
+    const sendCommand = outlookSendCommand();
+    const html = '<p>Please confirm the arrival date.</p>';
+    const requestOnlySession = {
+      ...quoteSession,
+      analysis: { intent: 'quote', missingQuoteReplyFields: ['Arrival date for stay 1'] },
+      groups: [{ arrivalDate: null, departureDate: '2026-11-14' }],
+      reviewedReplyHtml: html,
+    } as unknown as QuoteSession;
+    const { result } = renderInsertHook(sendCommand, requestOnlySession);
+
+    await act(async () => {
+      result.current.trackedSave('selected');
+    });
+
+    await waitFor(() => expect(saveReplyMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread-1',
+        replyToMessageId: 'message-db-1',
+        html,
+        attachments: [],
+      }),
+    ));
+    expect(sendCommand).not.toHaveBeenCalled();
+    await waitFor(() => expect(result.current.draftStatus?.message).toBe(
+      'Saved the reply asking for the missing details. Nothing is sent.',
+    ));
   });
 
   it('asks Replace current draft? before overwriting, and replaces only the draft the prompt named', async () => {

@@ -4,6 +4,7 @@ import { unzipSync, zipSync } from 'fflate';
 import { HOTEL_TELEPHONE } from './filename.js';
 import {
   deriveAuthorizedExtraLines,
+  extraDisplayDescription,
   deriveQuoteLines,
   type AuthorizedProposalFacts,
   type RowPrice,
@@ -165,7 +166,7 @@ export function workbookLinesForStays(stays: WorkbookStay[]): { lines: WorkbookL
       (line): WorkbookItem => ({
         service: line.service,
         extra: true,
-        description: line.description,
+        description: extraDisplayDescription(line),
         qty: line.quantity,
         nights: line.nights,
         rateMinor: line.rateMinor,
