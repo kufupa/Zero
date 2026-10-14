@@ -310,8 +310,22 @@ function datePairsFromText(text: string, defaultYear?: number): GoldenDate[] {
         ? [{ index: match.index ?? 0, dates: { arrival, departure } }]
         : [];
     });
-  const arrivalLabels = [...text.matchAll(/\b(?:arrival(?:\s+date)?|check[\s-]?in)\b/giu)];
-  const departureLabels = [...text.matchAll(/\b(?:departure(?:\s+date)?|check[\s-]?out)\b/giu)];
+  const arrivalLabels = [
+    ...text.matchAll(
+      new RegExp(
+        String.raw`\b(?:arrival(?:\s+date)?|check[\s-]?in)\s*[:=]?\s*(?=${DATE_TOKEN})`,
+        'giu',
+      ),
+    ),
+  ];
+  const departureLabels = [
+    ...text.matchAll(
+      new RegExp(
+        String.raw`\b(?:departure(?:\s+date)?|check[\s-]?out)\s*[:=]?\s*(?=${DATE_TOKEN})`,
+        'giu',
+      ),
+    ),
+  ];
   const labeledPairs = collectPairs(patterns[0]!);
   if (arrivalLabels.length || departureLabels.length) {
     if (
@@ -325,7 +339,7 @@ function datePairsFromText(text: string, defaultYear?: number): GoldenDate[] {
 
   const rangePairs = collectPairs(patterns[1]!);
   const rangeStarts = [
-    ...text.matchAll(new RegExp(String.raw`\b(?:from|between)\s+(?=\d|${MONTH_TOKEN}\b)`, 'giu')),
+    ...text.matchAll(new RegExp(String.raw`\b(?:from|between)\s+(?=${DATE_TOKEN})`, 'giu')),
   ];
   if (rangeStarts.length !== rangePairs.length) return [];
 
@@ -410,6 +424,7 @@ export function parseOfferPdfAnswer(
   let explicitRoomCount: number | null = null;
   let hasPartialRoomEntry = false;
   for (const line of lines) {
+    const roomsAtLineStart = rooms.length;
     const countFirstPattern = new RegExp(
       String.raw`\b(\d{1,3})\s*[x×]\s*(${roomTypePattern})\b`,
       'giu',
@@ -447,10 +462,19 @@ export function parseOfferPdfAnswer(
     const countFirstMarkers = line.match(/\b\d{1,3}\s*[x×]/giu) ?? [];
     const countFirstRoomsMarkers =
       line.match(/\b\d{1,3}\s+(?![x×]\s)[^,;|]{1,50}?\s+rooms?\b/giu) ?? [];
-    const typeFirstMarkers = line.match(/[x×:]\s*\d{1,3}\b/giu) ?? [];
+    const typeFirstMarkers = [
+      ...line
+        .split(/[,;|]/u)
+        .flatMap((segment) => segment.match(/\b[^,;|]{1,50}?\b[x×]\s*\d{1,3}\b/giu) ?? []),
+      ...(line.match(
+        new RegExp(
+          String.raw`\b(?:${roomTypePattern}|rooms?|accommodation)\b[^,;|]{0,40}:\s*\d{1,3}\b`,
+          'giu',
+        ),
+      ) ?? []),
+    ];
     const hasRoomContext =
-      /\brooms?\b/iu.test(line) ||
-      new RegExp(String.raw`\b${roomTypePattern}\b`, 'iu').test(line);
+      /\brooms?\b/iu.test(line) || new RegExp(String.raw`\b${roomTypePattern}\b`, 'iu').test(line);
     if (
       countFirstMarkers.length > countFirstMatches.length ||
       countFirstRoomsMarkers.length > countFirstRoomsMatches.length ||
@@ -460,7 +484,13 @@ export function parseOfferPdfAnswer(
     }
     const roomCount = /\b(?:total\s+)?(?:no\.?\s+of\s+)?rooms?\s*[:=-]\s*(\d{1,3})\b/iu.exec(line);
     if (roomCount?.[1]) explicitRoomCount = Number(roomCount[1]);
-    if (labeledType?.[1]) rooms.push({ count: null, room_type: titleCaseRoomType(labeledType[1]) });
+    if (labeledType?.[1]) {
+      const roomType = titleCaseRoomType(labeledType[1]);
+      const alreadyCounted = rooms
+        .slice(roomsAtLineStart)
+        .some((room) => room.count !== null && room.room_type === roomType);
+      if (!alreadyCounted) rooms.push({ count: null, room_type: roomType });
+    }
   }
   if (explicitRoomCount !== null && rooms.length === 1 && rooms[0]?.count === null) {
     rooms[0] = { ...rooms[0], count: explicitRoomCount };
@@ -681,10 +711,7 @@ function stringValues(value: unknown): string[] {
 
 function answerOutcomeConfirmationNumbers(answer: GoldenAnswer): string[] {
   return [
-    ...new Set([
-      ...stringValues(answer.confirmation_numbers),
-      ...stringValues(answer.conf),
-    ]),
+    ...new Set([...stringValues(answer.confirmation_numbers), ...stringValues(answer.conf)]),
   ].sort();
 }
 
@@ -1297,6 +1324,10 @@ function authoredBodyText(message: CorpusMessage): string {
   return authored?.trim() ?? body.trim();
 }
 
+function authoredMessageText(message: CorpusMessage): string {
+  return `${cleanText(message.subject) ?? ''}\n${authoredBodyText(message)}`.trim();
+}
+
 function requestText(message: CorpusMessage): string {
   const body = plainTextBody(message);
   const unquoted = body.split(
@@ -1304,6 +1335,24 @@ function requestText(message: CorpusMessage): string {
     1,
   )[0];
   return `${cleanText(message.subject) ?? ''}\n${unquoted ?? body}`.trim();
+}
+
+function navaVisibleReferenceText(
+  message: CorpusMessage,
+  precedingMessages: readonly CorpusMessage[],
+): string {
+  let threadBudget = 40_000;
+  const threadBodies: string[] = [];
+  for (const previous of precedingMessages) {
+    if (threadBudget <= 0) break;
+    const next = plainTextBody(previous).slice(0, 8_000).slice(0, threadBudget);
+    if (!next) continue;
+    threadBodies.push(next);
+    threadBudget -= next.length;
+  }
+  return [cleanText(message.subject), plainTextBody(message), ...threadBodies]
+    .filter((part): part is string => Boolean(part))
+    .join('\n');
 }
 
 function senderDomain(value: unknown): string | null {
@@ -1695,7 +1744,7 @@ function nextAmendmentRequestTime(
     )
     .filter((candidate) => {
       const candidateConfs = confirmationNumbersFromText(requestText(candidate));
-      return candidateConfs.length !== 1 || candidateConfs[0] === conf;
+      return candidateConfs.includes(conf);
     })
     .sort((left, right) => messageTimeMs(left) - messageTimeMs(right))[0];
   const nextTimes = [nextThreadRequest, nextCrossThreadRequest]
@@ -1729,17 +1778,14 @@ function hasClearAmendmentLink(
   conf: string,
 ): boolean {
   const requestConfs = confirmationNumbersFromText(requestText(request));
-  const replyConfs = confirmationNumbersFromText(authoredBodyText(reply));
+  const replyConfs = confirmationNumbersFromText(authoredMessageText(reply));
   return requestConfs.includes(conf) || replyConfs.includes(conf);
 }
 
 const CHANGE_REFUSAL_TERMS = String.raw`(?:cannot|can't|could\s+not|couldn't|unable(?:\s+to)?|not\s+able\s+to|not\s+possible(?:\s+to)?|will\s+not|won't|would\s+not|wouldn't|do\s+not|don't|refus(?:e|es|ed)\s+to|not\s+authori[sz]ed\s+to|not\s+permitted\s+to)`;
 const CHANGE_ACTION_TERMS = String.raw`(?:make|process|apply|complete|change|amend|modify|update|revise|adjust|correct)`;
 const CHANGE_REFUSAL_PATTERNS = [
-  new RegExp(
-    String.raw`\b${CHANGE_REFUSAL_TERMS}\b[\s\S]{0,100}\b${CHANGE_ACTION_TERMS}\b`,
-    'iu',
-  ),
+  new RegExp(String.raw`\b${CHANGE_REFUSAL_TERMS}\b[\s\S]{0,100}\b${CHANGE_ACTION_TERMS}\b`, 'iu'),
   /\b(?:change|amendment|reservation|booking)\b[\s\S]{0,100}\b(?:cannot|can't|could\s+not|couldn't|unable|not\s+possible|will\s+not|won't)\b/iu,
   /\bnot\s+(?:yet\s+)?(?:been\s+)?(?:changed|amended|modified|updated|revised|adjusted|corrected|processed|completed)\b/iu,
   /\bno\s+(?:changes?|amendments?|updates?)\s+(?:have|has)\s+been\s+(?:made|processed|applied|completed)\b/iu,
@@ -1775,16 +1821,26 @@ export function cancellationReplyEvidence(
   message: CorpusMessage,
 ): CancellationReplyEvidence | null {
   const text = authoredBodyText(message);
+  const sentences = text
+    .split(/(?<=[.!?;])\s+/u)
+    .map((sentence) => sentence.replace(/[\r\n]+/gu, ' '));
+  const denied = sentences.some(
+    (sentence) =>
+      CANCELLATION_DENIAL_PATTERN.test(sentence) ||
+      /\b(?:cannot|can't|unable|not possible|not yet|please cancel)\b/iu.test(sentence),
+  );
   if (
     !/\b(?:cancell?ed|cancellation (?:has been )?(?:processed|confirmed|completed)|reservation (?:has been )?cancell?ed)\b/iu.test(
       text,
     ) ||
-    CANCELLATION_DENIAL_PATTERN.test(text) ||
-    /\b(?:cannot|can't|unable|not possible|not yet|please cancel)\b/iu.test(text)
+    denied
   ) {
     return null;
   }
-  return { message_id: message.id, confirmation_numbers: confirmationNumbersFromText(text) };
+  return {
+    message_id: message.id,
+    confirmation_numbers: confirmationNumbersFromText(authoredMessageText(message)),
+  };
 }
 
 function confirmationDocuments(documents: readonly StaffPdf[]): StaffPdf[] {
@@ -1850,8 +1906,29 @@ function agreedPdfValue<T extends string | number>(
   valueFor: (answer: GoldenAnswer) => T | null | undefined,
 ): T | null {
   const first = answers[0] ? valueFor(answers[0]) : null;
-  return first !== null && first !== undefined && answers.every((answer) => valueFor(answer) === first)
+  return first !== null &&
+    first !== undefined &&
+    answers.every((answer) => valueFor(answer) === first)
     ? first
+    : null;
+}
+
+function combinedPdfRoomCount(answers: readonly GoldenAnswer[]): number | null {
+  if (answers.length === 1) return answerRoomCount(answers[0] ?? {});
+
+  const roomsByStay = new Map<string, number>();
+  for (const answer of answers) {
+    const dates = datesFromAnswer(answer);
+    const roomCount = answerRoomCount(answer);
+    if (dates.length !== 1 || roomCount === null) return null;
+    const stayKey = `${dates[0]!.arrival}/${dates[0]!.departure}`;
+    const existing = roomsByStay.get(stayKey);
+    if (existing !== undefined && existing !== roomCount) return null;
+    roomsByStay.set(stayKey, roomCount);
+  }
+
+  return roomsByStay.size
+    ? [...roomsByStay.values()].reduce((total, count) => total + count, 0)
     : null;
 }
 
@@ -1876,7 +1953,7 @@ export function bestPdfAnswer(documents: readonly StaffPdf[], sentAt: string): G
   return {
     dates,
     ...(roomsAgree ? { rooms: firstRooms } : {}),
-    room_count: agreedPdfValue(answers, (answer) => answer.room_count),
+    room_count: combinedPdfRoomCount(answers),
     room_type: agreedPdfValue(answers, (answer) => answer.room_type),
     board: agreedPdfValue(answers, (answer) => answer.board),
     party: {
@@ -1890,6 +1967,7 @@ export function bestPdfAnswer(documents: readonly StaffPdf[], sentAt: string): G
 
 export function makeCandidate(input: {
   message: CorpusMessage;
+  precedingMessages?: readonly CorpusMessage[];
   mailClass: GoldenClass;
   answer: GoldenAnswer;
   staffMessages?: readonly CorpusMessage[];
@@ -1903,7 +1981,9 @@ export function makeCandidate(input: {
     input.mailClass === 'create' || input.mailClass === 'amend' || input.mailClass === 'cancel'
       ? {
           ...input.answer,
-          extracted_confirmation_numbers: confirmationNumbersFromText(requestText(input.message)),
+          extracted_confirmation_numbers: confirmationNumbersFromText(
+            navaVisibleReferenceText(input.message, input.precedingMessages ?? []),
+          ),
         }
       : input.answer;
   const conf = cleanText(answerWithExtractedReferences.conf);
@@ -2051,7 +2131,7 @@ export function matchingAmendmentUpdate(
         return false;
       }
       if (looksLikeChangeRefusal(attached)) return false;
-      const replyConfs = confirmationNumbersFromText(authoredBodyText(attached));
+      const replyConfs = confirmationNumbersFromText(authoredMessageText(attached));
       if (attached.thread_id === message.thread_id) {
         return (
           sameThreadReplyIds.has(attached.id) && hasClearAmendmentLink(message, attached, conf)
@@ -2089,7 +2169,7 @@ export function matchingAmendmentReplies(
       delta <= CROSS_THREAD_REPLY_WINDOW_MS &&
       (nextRequestTime === null || replyTime < nextRequestTime) &&
       looksLikeChangeConfirmation(reply) &&
-      confirmationNumbersFromText(authoredBodyText(reply)).includes(conf)
+      confirmationNumbersFromText(authoredMessageText(reply)).includes(conf)
     );
   });
   return [
@@ -2139,6 +2219,8 @@ async function selectCandidates(): Promise<{
     if (message.direction.toLowerCase() !== 'inbound') continue;
     const source = sourceClassification(message);
     const thread = threads.get(message.thread_id) ?? [];
+    const messageIndex = thread.findIndex((candidate) => candidate.id === message.id);
+    const precedingMessages = messageIndex < 0 ? [] : thread.slice(0, messageIndex);
     const replies = nextStaffReplies(thread, message.id);
     const replyPdfs = replies.flatMap((reply) => pdfData.byMessage.get(reply.id) ?? []);
 
@@ -2205,6 +2287,7 @@ async function selectCandidates(): Promise<{
         candidates.push(
           makeCandidate({
             message,
+            precedingMessages,
             mailClass: 'create',
             answer,
             staffMessages: replies.filter((reply) => reply.id === document.message_id),
@@ -2261,6 +2344,7 @@ async function selectCandidates(): Promise<{
         candidates.push(
           makeCandidate({
             message,
+            precedingMessages,
             mailClass: 'amend',
             answer,
             staffMessages,
@@ -2306,6 +2390,7 @@ async function selectCandidates(): Promise<{
         candidates.push(
           makeCandidate({
             message,
+            precedingMessages,
             mailClass: 'cancel',
             answer: {
               conf,
@@ -2757,6 +2842,49 @@ type PrivateOutputOptions = {
   inputPaths?: readonly string[];
 };
 
+async function ensurePrivateDirectory(
+  directory: string,
+  privateRoot: string,
+  repositoryRoot: string,
+): Promise<void> {
+  const relativeDirectory = relative(privateRoot, directory);
+  if (
+    isAbsolute(relativeDirectory) ||
+    relativeDirectory === '..' ||
+    relativeDirectory.startsWith(`..${sep}`)
+  ) {
+    throw new Error('Refusing to write a report outside the private reports directory');
+  }
+
+  let parent = privateRoot;
+  for (const segment of relativeDirectory.split(sep).filter(Boolean)) {
+    const current = resolve(parent, segment);
+    try {
+      const info = await lstat(current);
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        throw new Error('Refusing to write a report outside the private reports directory');
+      }
+    } catch (error) {
+      if (!hasErrorCode(error, 'ENOENT')) throw error;
+      try {
+        await mkdir(current, { mode: 0o700 });
+      } catch (mkdirError) {
+        if (!hasErrorCode(mkdirError, 'EEXIST')) throw mkdirError;
+      }
+      const info = await lstat(current);
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        throw new Error('Refusing to write a report outside the private reports directory');
+      }
+    }
+
+    const canonical = await realpath(current);
+    if (!isPathWithin(privateRoot, canonical) || isPathWithin(repositoryRoot, canonical)) {
+      throw new Error('Refusing to write a report outside the private reports directory');
+    }
+    parent = current;
+  }
+}
+
 export async function resolvePrivateOutputPath(
   path: string,
   privateRoot = DATA_ROOT,
@@ -2797,6 +2925,11 @@ export async function resolvePrivateOutputPath(
 
   let canonicalAllowedRoot: string | undefined;
   if (allowedRootPath) {
+    await ensurePrivateDirectory(
+      resolve(canonicalPrivateRoot, relative(privateRootPath, allowedRootPath)),
+      canonicalPrivateRoot,
+      canonicalRepositoryRoot,
+    );
     try {
       const allowedRootInfo = await lstat(allowedRootPath);
       if (!allowedRootInfo.isDirectory() || allowedRootInfo.isSymbolicLink()) {

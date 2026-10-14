@@ -26,6 +26,7 @@ import {
   readFile,
   readdir,
   rm,
+  stat,
   symlink,
   writeFile,
   type FileHandle,
@@ -142,6 +143,25 @@ describe('golden offer PDF parsing', () => {
     expect(answer.room_count).toBeNull();
   });
 
+  it('leaves unknown type-first room entries out of the total', () => {
+    const answer = parseOfferPdfAnswer('2 x Standard Queen, Penthouse x 1');
+
+    expect(answer.room_count).toBeNull();
+  });
+
+  it('keeps room counts when nearby check-in and check-out fields contain times', () => {
+    const answer = parseOfferPdfAnswer('2 x Standard Queen, Check-in: 14:00, Check-out: 10:00');
+
+    expect(answer.room_count).toBe(2);
+  });
+
+  it('does not duplicate a counted room from its Room Type label', () => {
+    const answer = parseOfferPdfAnswer('Room Type: Standard Queen x 2');
+
+    expect(answer.rooms).toEqual([{ count: 2, room_type: 'Standard Queen' }]);
+    expect(answer.room_count).toBe(2);
+  });
+
   it('collects every fully labelled stay from an offer PDF', () => {
     const answer = parseOfferPdfAnswer(
       [
@@ -158,6 +178,20 @@ describe('golden offer PDF parsing', () => {
       { arrival: '2026-09-12', departure: '2026-09-14' },
       { arrival: '2026-10-20', departure: '2026-10-22' },
     ]);
+  });
+
+  it('ignores check-in times and guest ranges when validating labelled stay dates', () => {
+    const answer = parseOfferPdfAnswer(
+      [
+        'Arrival Date: 12-Sep-2026',
+        'Departure Date: 14-Sep-2026',
+        'Check-in: 14:00',
+        'Check-out: 10:00',
+        'Between 2 and 3 guests',
+      ].join('\n'),
+    );
+
+    expect(answer.dates).toEqual([{ arrival: '2026-09-12', departure: '2026-09-14' }]);
   });
 
   it('combines dated answers across offer PDFs but leaves conflicting fields unknown', async () => {
@@ -207,12 +241,67 @@ describe('golden offer PDF parsing', () => {
         { arrival: '2026-09-12', departure: '2026-09-14' },
         { arrival: '2026-10-20', departure: '2026-10-22' },
       ],
-      room_count: null,
+      room_count: 3,
       room_type: null,
       board: 'Bed & Breakfast',
       rate_plan: 'BARBB',
       total: null,
     });
+  });
+
+  it('sums equal room counts across distinct dated offer PDFs', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const bestPdfAnswer = Reflect.get(module, 'bestPdfAnswer');
+    expect(bestPdfAnswer).toBeTypeOf('function');
+    if (typeof bestPdfAnswer !== 'function') return;
+
+    const offer = (id: string, dates: [string, string]) => ({
+      attachment_id: id,
+      message_id: 'quote-reply',
+      file_name: `${id}.pdf`,
+      kind: 'offer' as const,
+      text: [`Arrival Date: ${dates[0]}`, `Departure Date: ${dates[1]}`, '2 x Standard Queen'].join(
+        '\n',
+      ),
+      conf: null,
+    });
+    const answer = bestPdfAnswer(
+      [
+        offer('offer-first', ['12-Sep-2026', '14-Sep-2026']),
+        offer('offer-second', ['20-Oct-2026', '22-Oct-2026']),
+      ],
+      '2026-08-01T00:00:00Z',
+    );
+
+    expect(answer.room_count).toBe(4);
+  });
+
+  it('deduplicates equal and conflicting room counts for the same dated stay', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const bestPdfAnswer = Reflect.get(module, 'bestPdfAnswer');
+    expect(bestPdfAnswer).toBeTypeOf('function');
+    if (typeof bestPdfAnswer !== 'function') return;
+
+    const offer = (id: string, roomCount: number) => ({
+      attachment_id: id,
+      message_id: 'quote-reply',
+      file_name: `${id}.pdf`,
+      kind: 'offer' as const,
+      text: [
+        'Arrival Date: 12-Sep-2026',
+        'Departure Date: 14-Sep-2026',
+        `${roomCount} x Standard Queen`,
+      ].join('\n'),
+      conf: null,
+    });
+    const roomCountFor = (secondCount: number) =>
+      bestPdfAnswer(
+        [offer('offer-first', 2), offer('offer-second', secondCount)],
+        '2026-08-01T00:00:00Z',
+      ).room_count;
+
+    expect(roomCountFor(2)).toBe(2);
+    expect(roomCountFor(3)).toBeNull();
   });
 
   it('leaves dates unscored when only some labelled stays can be parsed', () => {
@@ -447,131 +536,144 @@ describe('golden set input validation', () => {
     expect(() => assertHmsNeededMatchesGolden(rows, manifest)).not.toThrow();
   });
 
-  it('recovers a paired golden/HMS-needed update after one target install fails', async () => {
-    const tempRoot = await mkdtemp(join(tmpdir(), 'golden-pair-'));
-    const goldenPath = join(tempRoot, 'golden.jsonl');
-    const hmsNeededPath = join(tempRoot, 'hms-needed.json');
-    try {
-      await writeFile(goldenPath, 'old golden\n');
-      await mkdir(hmsNeededPath);
-
-      await expect(
-        withGoldenSetPairLock(goldenPath, hmsNeededPath, ({ write }) =>
-          write('new golden\n', 'new manifest\n'),
-        ),
-      ).rejects.toThrow();
-
-      await rm(hmsNeededPath, { recursive: true });
-      await withGoldenSetPairLock(goldenPath, hmsNeededPath, ({ recover }) => recover());
-
-      expect(await readFile(goldenPath, 'utf8')).toBe('new golden\n');
-      expect(await readFile(hmsNeededPath, 'utf8')).toBe('new manifest\n');
-    } finally {
-      await rm(tempRoot, { recursive: true, force: true });
-    }
-  });
-
-  it('syncs staged directory entries before publishing the recovery journal', async () => {
-    const tempRoot = await mkdtemp(join(tmpdir(), 'golden-pair-stage-sync-'));
-    const goldenPath = join(tempRoot, 'golden.jsonl');
-    const hmsNeededPath = join(tempRoot, 'hms-needed.json');
-    const journalPath = join(tempRoot, '.golden-v1-pair-update.json');
-
-    try {
-      await writeFile(goldenPath, 'old golden\n');
-      await writeFile(hmsNeededPath, 'old manifest\n');
-      const handle = await open(tempRoot, 'r');
-      const syncPrototype = Object.getPrototypeOf(handle);
-      const originalSync = syncPrototype.sync as (this: typeof handle) => Promise<void>;
-      await handle.close();
-      const syncSpy = vi.spyOn(syncPrototype, 'sync').mockImplementation(async function (
-        this: typeof handle,
-      ) {
-        if ((await this.stat()).isDirectory()) throw new Error('simulated directory sync failure');
-        await originalSync.call(this);
-      });
-
+  // The paired-update lock uses Linux flock; these lock-dependent tests are Linux-only.
+  it.skipIf(process.platform !== 'linux')(
+    'recovers a paired golden/HMS-needed update after one target install fails',
+    async () => {
+      const tempRoot = await mkdtemp(join(tmpdir(), 'golden-pair-'));
+      const goldenPath = join(tempRoot, 'golden.jsonl');
+      const hmsNeededPath = join(tempRoot, 'hms-needed.json');
       try {
+        await writeFile(goldenPath, 'old golden\n');
+        await mkdir(hmsNeededPath);
+
         await expect(
           withGoldenSetPairLock(goldenPath, hmsNeededPath, ({ write }) =>
             write('new golden\n', 'new manifest\n'),
           ),
         ).rejects.toThrow();
+
+        await rm(hmsNeededPath, { recursive: true });
+        await withGoldenSetPairLock(goldenPath, hmsNeededPath, ({ recover }) => recover());
+
+        expect(await readFile(goldenPath, 'utf8')).toBe('new golden\n');
+        expect(await readFile(hmsNeededPath, 'utf8')).toBe('new manifest\n');
       } finally {
-        syncSpy.mockRestore();
+        await rm(tempRoot, { recursive: true, force: true });
       }
+    },
+  );
 
-      expect(await readFile(goldenPath, 'utf8')).toBe('old golden\n');
-      expect(await readFile(hmsNeededPath, 'utf8')).toBe('old manifest\n');
-      const journalState = await readFile(journalPath).then(
-        () => 'present',
-        (error: unknown) =>
-          error && typeof error === 'object' && 'code' in error ? String(error.code) : 'unreadable',
-      );
-      expect(journalState).toBe('ENOENT');
-    } finally {
-      await rm(tempRoot, { recursive: true, force: true });
-    }
-  });
+  it.skipIf(process.platform !== 'linux')(
+    'syncs staged directory entries before publishing the recovery journal',
+    async () => {
+      const tempRoot = await mkdtemp(join(tmpdir(), 'golden-pair-stage-sync-'));
+      const goldenPath = join(tempRoot, 'golden.jsonl');
+      const hmsNeededPath = join(tempRoot, 'hms-needed.json');
+      const journalPath = join(tempRoot, '.golden-v1-pair-update.json');
 
-  it('serializes concurrent paired updates so their journals cannot interleave', async () => {
-    const tempRoot = await mkdtemp(join(tmpdir(), 'golden-pair-lock-'));
-    const goldenPath = join(tempRoot, 'golden.jsonl');
-    const hmsNeededPath = join(tempRoot, 'hms-needed.json');
-    const entered: string[] = [];
-    let active = 0;
-    let maximumActive = 0;
-    let signalFirstEntered = () => {};
-    let releaseFirst = () => {};
-    const pendingUpdates: Promise<void>[] = [];
-    const firstEntered = new Promise<void>((resolve) => {
-      signalFirstEntered = resolve;
-    });
-    const firstGate = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
+      try {
+        await writeFile(goldenPath, 'old golden\n');
+        await writeFile(hmsNeededPath, 'old manifest\n');
+        const handle = await open(tempRoot, 'r');
+        const syncPrototype = Object.getPrototypeOf(handle);
+        const originalSync = syncPrototype.sync as (this: typeof handle) => Promise<void>;
+        await handle.close();
+        const syncSpy = vi.spyOn(syncPrototype, 'sync').mockImplementation(async function (
+          this: typeof handle,
+        ) {
+          if ((await this.stat()).isDirectory())
+            throw new Error('simulated directory sync failure');
+          await originalSync.call(this);
+        });
 
-    const update = (label: string, hold = false) =>
-      withGoldenSetPairLock(goldenPath, hmsNeededPath, async ({ write }) => {
-        active += 1;
-        maximumActive = Math.max(maximumActive, active);
-        entered.push(label);
-        if (hold) {
-          signalFirstEntered();
-          await firstGate;
+        try {
+          await expect(
+            withGoldenSetPairLock(goldenPath, hmsNeededPath, ({ write }) =>
+              write('new golden\n', 'new manifest\n'),
+            ),
+          ).rejects.toThrow();
+        } finally {
+          syncSpy.mockRestore();
         }
-        await write(`${label} golden\n`, `${label} manifest\n`);
-        active -= 1;
+
+        expect(await readFile(goldenPath, 'utf8')).toBe('old golden\n');
+        expect(await readFile(hmsNeededPath, 'utf8')).toBe('old manifest\n');
+        const journalState = await readFile(journalPath).then(
+          () => 'present',
+          (error: unknown) =>
+            error && typeof error === 'object' && 'code' in error
+              ? String(error.code)
+              : 'unreadable',
+        );
+        expect(journalState).toBe('ENOENT');
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'linux')(
+    'serializes concurrent paired updates so their journals cannot interleave',
+    async () => {
+      const tempRoot = await mkdtemp(join(tmpdir(), 'golden-pair-lock-'));
+      const goldenPath = join(tempRoot, 'golden.jsonl');
+      const hmsNeededPath = join(tempRoot, 'hms-needed.json');
+      const entered: string[] = [];
+      let active = 0;
+      let maximumActive = 0;
+      let signalFirstEntered = () => {};
+      let releaseFirst = () => {};
+      const pendingUpdates: Promise<void>[] = [];
+      const firstEntered = new Promise<void>((resolve) => {
+        signalFirstEntered = resolve;
+      });
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
       });
 
-    try {
-      const first = update('first', true);
-      pendingUpdates.push(first);
-      await firstEntered;
-      const second = update('second');
-      pendingUpdates.push(second);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(entered).toEqual(['first']);
+      const update = (label: string, hold = false) =>
+        withGoldenSetPairLock(goldenPath, hmsNeededPath, async ({ write }) => {
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
+          entered.push(label);
+          if (hold) {
+            signalFirstEntered();
+            await firstGate;
+          }
+          await write(`${label} golden\n`, `${label} manifest\n`);
+          active -= 1;
+        });
 
-      releaseFirst();
-      await Promise.all([first, second]);
+      try {
+        const first = update('first', true);
+        pendingUpdates.push(first);
+        await firstEntered;
+        const second = update('second');
+        pendingUpdates.push(second);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(entered).toEqual(['first']);
 
-      expect(entered).toEqual(['first', 'second']);
-      expect(maximumActive).toBe(1);
-      const [golden, hmsNeeded] = await Promise.all([
-        readFile(goldenPath, 'utf8'),
-        readFile(hmsNeededPath, 'utf8'),
-      ]);
-      expect([
-        ['first golden\n', 'first manifest\n'],
-        ['second golden\n', 'second manifest\n'],
-      ]).toContainEqual([golden, hmsNeeded]);
-    } finally {
-      releaseFirst();
-      await Promise.allSettled(pendingUpdates);
-      await rm(tempRoot, { recursive: true, force: true });
-    }
-  });
+        releaseFirst();
+        await Promise.all([first, second]);
+
+        expect(entered).toEqual(['first', 'second']);
+        expect(maximumActive).toBe(1);
+        const [golden, hmsNeeded] = await Promise.all([
+          readFile(goldenPath, 'utf8'),
+          readFile(hmsNeededPath, 'utf8'),
+        ]);
+        expect([
+          ['first golden\n', 'first manifest\n'],
+          ['second golden\n', 'second manifest\n'],
+        ]).toContainEqual([golden, hmsNeeded]);
+      } finally {
+        releaseFirst();
+        await Promise.allSettled(pendingUpdates);
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('preserves an existing report when staging the replacement fails', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'golden-report-atomic-'));
@@ -676,6 +778,47 @@ describe('private corpus path guards', () => {
           inputPaths: [mergeAliasPath],
         }),
       ).rejects.toThrow(/overwrite.*input/u);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects symlinked report roots before creating outside descendants', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'golden-report-symlink-'));
+    const privateRoot = join(tempRoot, 'private');
+    const repoRoot = join(tempRoot, 'repo');
+    const outsideRoot = join(tempRoot, 'outside');
+    const reportRoot = join(privateRoot, 'reports', 'nested');
+    const reportPath = join(reportRoot, 'score.md');
+    try {
+      await Promise.all([mkdir(privateRoot), mkdir(repoRoot), mkdir(outsideRoot)]);
+      await symlink(outsideRoot, join(privateRoot, 'reports'));
+
+      await expect(
+        resolvePrivateOutputPath(reportPath, privateRoot, repoRoot, { allowedRoot: reportRoot }),
+      ).rejects.toThrow(/private reports directory/u);
+      expect(await readdir(outsideRoot)).toEqual([]);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('creates a missing report root before resolving a private report', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'golden-report-root-'));
+    const privateRoot = join(tempRoot, 'private');
+    const repoRoot = join(tempRoot, 'repo');
+    const reportRoot = join(privateRoot, 'reports');
+    const reportPath = join(reportRoot, 'score.md');
+    try {
+      await Promise.all([mkdir(privateRoot), mkdir(repoRoot)]);
+
+      await expect(
+        resolvePrivateOutputPath(reportPath, privateRoot, repoRoot, { allowedRoot: reportRoot }),
+      ).resolves.toBe(reportPath);
+      expect(await readdir(reportRoot)).toEqual([]);
+      if (process.platform !== 'win32') {
+        expect((await stat(reportRoot)).mode & 0o077).toBe(0);
+      }
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
@@ -863,7 +1006,7 @@ describe('cancellation evidence matching', () => {
       thread_id: 'cancel-thread',
       direction: 'outbound',
       from_address: 'reservations@legacyhotels.co.za',
-      subject: `Re: Please cancel ${conf}`,
+      subject: 'Re: Cancellation request',
       body: `Reservation cancelled.\n\nFrom: guest@example.test\nSubject: Please cancel ${conf}\n\nPlease cancel ${conf}.`,
       body_is_html: false,
     };
@@ -887,14 +1030,19 @@ describe('cancellation evidence matching', () => {
     });
 
     expect(replyEvidence).toEqual({ message_id: reply.id, confirmation_numbers: [] });
-    expect(htmlReplyEvidence).toEqual({ message_id: 'cancel-html-reply', confirmation_numbers: [] });
+    expect(htmlReplyEvidence).toEqual({
+      message_id: 'cancel-html-reply',
+      confirmation_numbers: [],
+    });
     expect(numberedReplyEvidence).toEqual({
       message_id: 'cancel-numbered-reply',
       confirmation_numbers: [authoredConf],
     });
-    expect(
-      resolveCancellationEvidence(request.body, [replyEvidence]),
-    ).toEqual({ conf, staff_message_ids: [reply.id], confirmed: true });
+    expect(resolveCancellationEvidence(request.body, [replyEvidence])).toEqual({
+      conf,
+      staff_message_ids: [reply.id],
+      confirmed: true,
+    });
   });
 
   it('does not count a denied cancellation as completion evidence', async () => {
@@ -915,6 +1063,67 @@ describe('cancellation evidence matching', () => {
     expect(evidence).toBeNull();
     expect(
       resolveCancellationEvidence(`Please cancel ${conf}`, evidence ? [evidence] : []),
+    ).toBeNull();
+  });
+
+  it('rejects a cancellation denial split across a hard line wrap', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const cancellationReplyEvidence = Reflect.get(module, 'cancellationReplyEvidence');
+    expect(cancellationReplyEvidence).toBeTypeOf('function');
+    if (typeof cancellationReplyEvidence !== 'function') return;
+
+    const evidence = cancellationReplyEvidence({
+      id: 'line-wrapped-cancellation-denial',
+      thread_id: 'line-wrapped-cancellation-denial',
+      direction: 'outbound',
+      body: 'Reservation 12345678-1 has not been\ncancelled.',
+      body_is_html: false,
+    });
+
+    expect(evidence).toBeNull();
+  });
+
+  it('does not let unrelated negation cancel completed-cancellation evidence', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const cancellationReplyEvidence = Reflect.get(module, 'cancellationReplyEvidence');
+    expect(cancellationReplyEvidence).toBeTypeOf('function');
+    if (typeof cancellationReplyEvidence !== 'function') return;
+
+    const evidence = cancellationReplyEvidence({
+      id: 'cancelled-with-nonrefundable-deposit',
+      thread_id: 'cancelled-with-nonrefundable-deposit',
+      direction: 'outbound',
+      body: 'The deposit is not refundable. Reservation 12345678-1 has been cancelled.',
+      body_is_html: false,
+    });
+
+    expect(evidence).toEqual({
+      message_id: 'cancelled-with-nonrefundable-deposit',
+      confirmation_numbers: ['12345678-1'],
+    });
+  });
+
+  it('keeps a staff reply subject number when matching cancellation evidence', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const cancellationReplyEvidence = Reflect.get(module, 'cancellationReplyEvidence');
+    expect(cancellationReplyEvidence).toBeTypeOf('function');
+    if (typeof cancellationReplyEvidence !== 'function') return;
+
+    const evidence = cancellationReplyEvidence({
+      id: 'reply-for-another-cancellation',
+      thread_id: 'reply-for-another-cancellation',
+      direction: 'outbound',
+      subject: 'Cancelled 22222222-2',
+      body: 'Reservation cancelled.',
+      body_is_html: false,
+    });
+
+    expect(evidence).toEqual({
+      message_id: 'reply-for-another-cancellation',
+      confirmation_numbers: ['22222222-2'],
+    });
+    expect(
+      resolveCancellationEvidence('Please cancel 11111111-1', evidence ? [evidence] : []),
     ).toBeNull();
   });
 });
@@ -1143,12 +1352,65 @@ describe('amendment change typing', () => {
     ).toBeUndefined();
     expect(matchingAmendmentReplies(firstRequest, firstThread, messages, conf)).toEqual([]);
     expect(
-      matchingAmendmentUpdate(nextRequest, nextThread, conf, [document], messageById)?.attachment_id,
+      matchingAmendmentUpdate(nextRequest, nextThread, conf, [document], messageById)
+        ?.attachment_id,
     ).toBe('later-amendment-letter');
     expect(matchingAmendmentReplies(nextRequest, nextThread, messages, conf)).toEqual([laterReply]);
   });
 
-  it('rejects ambiguous cross-thread evidence after an unnumbered amendment request', async () => {
+  it('bounds earlier evidence when a later request names multiple confirmations', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const matchingAmendmentUpdate = Reflect.get(module, 'matchingAmendmentUpdate');
+    const matchingAmendmentReplies = Reflect.get(module, 'matchingAmendmentReplies');
+    expect(matchingAmendmentUpdate).toBeTypeOf('function');
+    expect(matchingAmendmentReplies).toBeTypeOf('function');
+    if (
+      typeof matchingAmendmentUpdate !== 'function' ||
+      typeof matchingAmendmentReplies !== 'function'
+    ) {
+      return;
+    }
+
+    const conf = '12345678-1';
+    const firstRequest = amendmentMessage(
+      'first-multi-confirm-request',
+      'first-request-thread',
+      'inbound',
+      `Please change reservation ${conf} to the first stay.`,
+      '2026-10-01T10:00:00Z',
+    );
+    const nextRequest = amendmentMessage(
+      'next-multi-confirm-request',
+      'next-request-thread',
+      'inbound',
+      `Please change reservations ${conf} and 87654321-2.`,
+      '2026-10-01T12:00:00Z',
+    );
+    const laterReply = amendmentMessage(
+      'reply-after-multi-confirm-request',
+      'staff-followup-thread',
+      'outbound',
+      `Updated reservation ${conf}.`,
+      '2026-10-01T13:00:00Z',
+    );
+    const messages = [firstRequest, nextRequest, laterReply];
+    const messageById = new Map(messages.map((message) => [message.id, message]));
+    const document = {
+      attachment_id: 'multi-confirm-amendment-letter',
+      message_id: laterReply.id,
+      file_name: 'multi-confirm-amendment-letter.pdf',
+      kind: 'confirmation' as const,
+      text: '',
+      conf,
+    };
+
+    expect(
+      matchingAmendmentUpdate(firstRequest, [firstRequest], conf, [document], messageById),
+    ).toBeUndefined();
+    expect(matchingAmendmentReplies(firstRequest, [firstRequest], messages, conf)).toEqual([]);
+  });
+
+  it('does not let unlinked requests end another booking evidence window', async () => {
     const module = await import('../scripts/golden-set.js');
     const matchingAmendmentUpdate = Reflect.get(module, 'matchingAmendmentUpdate');
     const matchingAmendmentReplies = Reflect.get(module, 'matchingAmendmentReplies');
@@ -1176,14 +1438,24 @@ describe('amendment change typing', () => {
       'Please change the reservation dates for the next stay.',
       '2026-10-01T12:00:00Z',
     );
-    const laterReply = amendmentMessage(
-      'reply-after-unnumbered-request',
-      'staff-followup-thread',
-      'outbound',
-      `Updated reservation ${conf}.`,
-      '2026-10-01T13:00:00Z',
+    const multiNumberRequest = amendmentMessage(
+      'multi-number-next-request',
+      'multi-number-request-thread',
+      'inbound',
+      'Please change reservations 22222222-2 and 33333333-3.',
+      '2026-10-01T12:30:00Z',
     );
-    const messages = [request, unnumberedRequest, laterReply];
+    const laterReply = {
+      ...amendmentMessage(
+        'reply-after-unnumbered-request',
+        'staff-followup-thread',
+        'outbound',
+        'Please find the updated confirmation attached.',
+        '2026-10-01T13:00:00Z',
+      ),
+      subject: `Updated ${conf}`,
+    };
+    const messages = [request, unnumberedRequest, multiNumberRequest, laterReply];
     const messageById = new Map(messages.map((message) => [message.id, message]));
     const document = {
       attachment_id: 'ambiguous-amendment-letter',
@@ -1195,9 +1467,9 @@ describe('amendment change typing', () => {
     };
 
     expect(
-      matchingAmendmentUpdate(request, [request], conf, [document], messageById),
-    ).toBeUndefined();
-    expect(matchingAmendmentReplies(request, [request], messages, conf)).toEqual([]);
+      matchingAmendmentUpdate(request, [request], conf, [document], messageById)?.attachment_id,
+    ).toBe('ambiguous-amendment-letter');
+    expect(matchingAmendmentReplies(request, [request], messages, conf)).toEqual([laterReply]);
   });
 
   it('requires an explicit confirmation link to accept an amendment reply', async () => {
@@ -1555,25 +1827,24 @@ describe('HMS truth enrichment', () => {
     const row: GoldenRow = {
       message_id: 'amend-without-historical-document',
       class: 'amend',
-      answer: answerWithTruth(
-        { conf, confirmation_numbers: [conf], hms: null },
-        conf,
-        currentRead,
-      ),
+      answer: answerWithTruth({ conf, confirmation_numbers: [conf], hms: null }, conf, currentRead),
       evidence: {
         inbound_message_id: 'amend-without-historical-document',
         staff_message_ids: ['staff-amend-confirmation'],
         pdf_files: [],
       },
     };
-    const score = scoreGoldenRows([row], [
-      {
-        message_id: row.message_id,
-        action: 'amend',
-        dates: [{ arrival: '2026-10-01', departure: '2026-10-03' }],
-        party: { company: 'Earlier Company', agency: 'Earlier Agency' },
-      },
-    ]);
+    const score = scoreGoldenRows(
+      [row],
+      [
+        {
+          message_id: row.message_id,
+          action: 'amend',
+          dates: [{ arrival: '2026-10-01', departure: '2026-10-03' }],
+          party: { company: 'Earlier Company', agency: 'Earlier Agency' },
+        },
+      ],
+    );
     const legacyHmsScore = scoreGoldenRows(
       [
         {
@@ -1721,7 +1992,7 @@ describe('golden-set scoring', () => {
     expect(leakedOutcomeNumber.byClass.create.confirmation).toEqual({ correct: 0, total: 1 });
   });
 
-  it('stores and scores a non-empty inbound reference independently from the outcome number', async () => {
+  it('scores thread-visible references separately from outcome numbers', async () => {
     const module = await import('../scripts/golden-set.js');
     const makeCandidate = Reflect.get(module, 'makeCandidate');
     expect(makeCandidate).toBeTypeOf('function');
@@ -1734,10 +2005,25 @@ describe('golden-set scoring', () => {
         direction: 'inbound',
         from_address: 'guest@example.test',
         subject: 'Change reservation',
-        body: 'Please amend reservation 11111111-1.',
+        body: [
+          'Please amend reservation 11111111-1.',
+          '',
+          '-----Original Message-----',
+          'Reservation 33333333-3.',
+        ].join('\n'),
         body_is_html: false,
         received_at: '2026-10-01T10:00:00Z',
       },
+      precedingMessages: [
+        {
+          id: 'earlier-thread-reference',
+          thread_id: 'thread-with-reference',
+          direction: 'inbound',
+          subject: 'Earlier request',
+          body: 'The existing booking is 44444444-4.',
+          body_is_html: false,
+        },
+      ],
       mailClass: 'amend',
       answer: {
         conf: '22222222-2',
@@ -1749,12 +2035,11 @@ describe('golden-set scoring', () => {
         [row],
         [{ message_id: 'amend-with-reference', action: 'amend', confirmation_numbers }],
       );
+    const references = ['11111111-1', '33333333-3', '44444444-4'];
 
-    expect(row.answer.extracted_confirmation_numbers).toEqual(['11111111-1']);
-    expect(prediction(['11111111-1']).byClass.amend.confirmation).toEqual({
-      correct: 1,
-      total: 1,
-    });
+    expect(row.answer.extracted_confirmation_numbers).toEqual(references);
+    expect(row.answer.extracted_confirmation_numbers).not.toContain('22222222-2');
+    expect(prediction(references).byClass.amend.confirmation).toEqual({ correct: 1, total: 1 });
     expect(prediction(['22222222-2']).byClass.amend.confirmation).toEqual({
       correct: 0,
       total: 1,
@@ -1855,14 +2140,17 @@ describe('golden-set scoring', () => {
         pdf_files: [],
       },
     };
-    const score = scoreGoldenRows([row], [
-      {
-        message_id: 'partial-room-count',
-        action: 'quote',
-        room_count: null,
-        rooms: [{ count: 2, room_type: 'Standard Queen' }],
-      },
-    ]);
+    const score = scoreGoldenRows(
+      [row],
+      [
+        {
+          message_id: 'partial-room-count',
+          action: 'quote',
+          room_count: null,
+          rooms: [{ count: 2, room_type: 'Standard Queen' }],
+        },
+      ],
+    );
 
     expect(score.byClass.quote.rooms).toEqual({ correct: 0, total: 1 });
   });
