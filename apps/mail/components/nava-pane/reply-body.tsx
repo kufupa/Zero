@@ -1,11 +1,11 @@
 import { Send } from 'lucide-react';
-import { isMultiStay, optionLetter, requestedQuoteKeys } from '@/lib/quote-workflow/session';
+import { canCreateNativeDraft, optionLetter, requestedQuoteKeys } from '@/lib/quote-workflow/session';
 import {
+  completedDateOptions,
   multiOptionSignature,
   requireMultiOptionDraft,
   type CombinedReplyEdit,
 } from '@/lib/quote-workflow/multi-option-draft';
-import { ratedStaysReason } from '@/components/quote-workflow/document-review';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
@@ -54,10 +54,17 @@ export function ReplyBody({
   const reply = onSaveReply ?? onDraft;
   // A no-reply sender (an automated mailbox) gets no insert actions. The reply text stays for copying.
   const noReplySender = quoteSession.analysis?.noReplySender === true;
-  // A multi-stay quote is one combined PDF, so its one reply covers every date option. A single stay keeps its own reply.
-  const allOptionsDraft = isMultiStay(quoteSession);
-  const dateOptionLetters = requestedQuoteKeys(quoteSession.groups).map((_, index) => optionLetter(index));
+  // One reply for every completed date option (two or more PDFs); per-option Draft stays available.
+  const dateOptionLetters = completedDateOptions(quoteSession).map((option) => option.letter);
+  const allOptionsDraft = dateOptionLetters.length >= 2;
   const allOptionsLabel = `Create one reply with all date options (${dateOptionLetters.join(', ')})`;
+  const selectedIndex = quoteSession.selectedStayKey
+    ? requestedQuoteKeys(quoteSession.groups).indexOf(quoteSession.selectedStayKey)
+    : -1;
+  const selectedOptionLabel =
+    selectedIndex >= 0
+      ? `Draft option ${optionLetter(selectedIndex)} only`
+      : 'Draft the selected option only';
 
   // Why the reply button is off, or null when it can make the draft. A click that still gets through toasts the same reason.
   const draftBlockedReason: string | null = !activeEmail
@@ -67,10 +74,10 @@ export function ReplyBody({
       : !supportsAction('CREATE_REPLY_DRAFT') || !supportsAction('ADD_ATTACHMENT_TO_DRAFT')
         ? 'This Outlook add-in is too old to attach the PDF. Update the Nava Outlook add-in, then try again.'
         : allOptionsDraft
-          ? requireMultiOptionDraft(quoteSession, combinedEdit)
-            ? null
-            : (ratedStaysReason(quoteSession) ?? 'Prepare the quote first')
-          : singleReplyDraft(requireReviewedNativeDraft(quoteSession))
+        ? requireMultiOptionDraft(quoteSession, combinedEdit)
+          ? null
+          : 'Prepare a PDF for each date option first'
+        : singleReplyDraft(requireReviewedNativeDraft(quoteSession))
           ? null
           : quoteSession.pdf
             ? 'Finish the reply and PDF first'
@@ -80,15 +87,11 @@ export function ReplyBody({
     ? 'Select an email first'
     : !quoteSession.staffSource
       ? 'Wait for this email to sync, then select it again'
-      : allOptionsDraft
-        ? requireMultiOptionDraft(quoteSession, combinedEdit)
-          ? null
-          : (ratedStaysReason(quoteSession) ?? 'Prepare the quote first')
-        : singleReplyDraft(requireReviewedNativeDraft(quoteSession))
-          ? null
-          : quoteSession.pdf
-            ? 'Finish the reply and PDF first'
-            : 'Prepare the quote PDF first';
+      : (allOptionsDraft ? requireMultiOptionDraft(quoteSession, combinedEdit) : singleReplyDraft(requireReviewedNativeDraft(quoteSession)))
+        ? null
+        : quoteSession.pdf
+          ? 'Finish the reply and PDF first'
+          : 'Prepare the quote PDF first';
   const blockedReason = saving ? saveBlockedReason : draftBlockedReason;
   const insertAddInReady = saving || supportsAction('CREATE_REPLY_DRAFT');
   return (
@@ -161,8 +164,22 @@ export function ReplyBody({
       ) : null}
       {allOptionsDraft && !noReplySender ? (
         <p className="text-center text-[11px] text-[#64748b]">
-          Puts the quote for every date option into one email draft. Nothing is sent.
+          Puts every option you ran into one email draft. Nothing is sent.
         </p>
+      ) : null}
+      {allOptionsDraft && !noReplySender ? (
+        <SecondaryButton
+          onClick={() => reply('selected')}
+          disabled={
+            !activeEmail ||
+            !insertAddInReady ||
+            isDraftPending ||
+            !canCreateNativeDraft(quoteSession)
+          }
+          className="w-full"
+        >
+          {selectedOptionLabel}
+        </SecondaryButton>
       ) : null}
       {noReplySender ? null : (
         <p className="text-[11px] text-[#64748b]">

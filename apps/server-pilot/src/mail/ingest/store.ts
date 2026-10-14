@@ -56,10 +56,8 @@ import {
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
-import { enqueueInboundExtraction } from '../../ai/extraction/inbound-run.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
 import { enqueueShadowPrediction, rematchShadowPredictions } from '../../ai/shadow-evaluation.js';
-import { ingestRequireOwnerHeader, isInboundTriageClassifierEnabled } from '../../env.js';
 import { rawMimeKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { parsePersistedDeliveryOutcome } from '../send/outbound-queue.js';
 import { buildReferenceChain, canonicalMessageId } from './message-id.js';
@@ -67,6 +65,7 @@ import { refreshThreadSearchVector } from '../search/search-vector.js';
 import { sanitizeHtmlBodyForStorage } from '../sanitize-email-html.js';
 import { and, asc, eq, gt, inArray, lte, or, sql } from 'drizzle-orm';
 import { getSenderPreference } from '../sender-preference.js';
+import { ingestRequireOwnerHeader } from '../../env.js';
 import { admitLiveMessage } from './live-admission.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { markThreadRead } from '../thread-read.js';
@@ -745,35 +744,24 @@ export async function persistInboundMessage(
         },
       });
     } else if (!ambiguousSource && !opts.skipAiEnqueue) {
-      // INBOUND_TRIAGE_CLASSIFIER=off retires the inbound classifier run. Sent copies keep their baseline run.
-      if (isHotelSent || isInboundTriageClassifierEnabled(process.env)) {
-        await enqueueAiRun(
-          {
-            transportId: transport.id,
-            threadId,
-            triggerMessageId: messageId,
-            runKind: 'inbound_triage',
-            // An independently observed Sent copy has no Nava outbox row, but
-            // still needs one fenced analytics generation. Keep its key
-            // separate from inbound triage so retries cannot collide across
-            // directions or imply local delivery authority.
-            idempotencyKey: isHotelSent
-              ? `external-sent-baseline:${messageId}`
-              : `inbound-triage:${messageId}`,
-            modelId: DEFAULT_AI_MODEL_ID,
-            promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
-          },
-          tx as unknown as DB,
-        );
-      }
-      // Once the classifier is retired, the read replaces its run on this path too, so spam and the baseline keep
-      // running. Retired implies INBOUND_EXTRACTION=on. Sent copies never get one.
-      if (!isHotelSent && !isInboundTriageClassifierEnabled(process.env)) {
-        await enqueueInboundExtraction(
-          { transportId: transport.id, threadId, messageId },
-          tx as unknown as DB,
-        );
-      }
+      await enqueueAiRun(
+        {
+          transportId: transport.id,
+          threadId,
+          triggerMessageId: messageId,
+          runKind: 'inbound_triage',
+          // An independently observed Sent copy has no Nava outbox row, but
+          // still needs one fenced analytics generation. Keep its key
+          // separate from inbound triage so retries cannot collide across
+          // directions or imply local delivery authority.
+          idempotencyKey: isHotelSent
+            ? `external-sent-baseline:${messageId}`
+            : `inbound-triage:${messageId}`,
+          modelId: DEFAULT_AI_MODEL_ID,
+          promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
+        },
+        tx as unknown as DB,
+      );
 
       // U13 shadow admission is a separate private purpose. It is queued only
       // after this inbound row/attachment transaction has the same committed

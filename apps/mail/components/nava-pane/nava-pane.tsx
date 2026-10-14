@@ -15,11 +15,10 @@ import {
   type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
-import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
+import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
-import { savedRatesFromTrpc } from '@/components/quote-workflow/rate-controls';
 import {
   fixtureReplyHtml,
   loadQuoteFixture,
@@ -45,7 +44,6 @@ import {
   offerBoardFromRevision,
   overlayLunaGroupsFromStaff,
   type PriorStaffQuoteRequoteRow,
-  type UsePriorQuoteForBookingReady,
 } from '@/lib/quote-workflow/booking-draft-bind';
 import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
 import { partyFinderFromTrpc, partyIndexFromTrpc } from '@/lib/quote-workflow/party-lookup';
@@ -67,10 +65,7 @@ import {
   dinnerAllowanceStillRequired,
   evidenceMatchesSession,
   groupsForQuoteStep,
-  isMultiStay,
   quoteRunIsCurrent,
-  requestedQuoteKeys,
-  stayKeyForGroup,
   hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
@@ -78,7 +73,6 @@ import {
   quoteRunBlockReason,
   reduceQuoteSession,
   removedStayFor,
-  rowsTakeOnceExtras,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -90,19 +84,17 @@ import { toast } from 'sonner';
 import { WelcomeScreen } from './screens/welcome';
 import { DiagnosticsScreen } from './screens/diagnostics';
 import { TourScreen } from './screens/tour';
-import { NeedsYouEntry, NeedsYouView } from './screens/needs-you';
 import { SelectedEmailBlock } from './blocks/selected-email';
 import { ContactBlock } from './blocks/contact-block';
 import { TranslationBox } from './blocks/translation-box';
 import { BookingVoucherCard } from './blocks/booking-voucher-card';
-import { FollowUpCard } from './blocks/follow-up-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
 import { SystemCheckResultsBlock } from './blocks/system-check-results';
 import { ReplyBody } from './reply-body';
 import { useInsertAiDraft, type ReviewedReply } from './use-insert-ai-draft';
 import { useSystemCheck } from './use-system-check';
 
-type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
+type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool';
 
 // One client for the pane's life, so screenshot loaders keep their identity across renders.
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
@@ -110,24 +102,13 @@ const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
 const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
 // The same picker's typeahead: the HMS list and the listed parties, as staff type. Null when the route is missing.
 const PANE_PARTY_INDEX = partyIndexFromTrpc(trpcClient);
-// The saved rates for each row's price (R7). Null when the rates route is missing, so only one-off and override show.
-const PANE_SAVED_RATES = savedRatesFromTrpc(trpcClient);
 
 /**
  * Pane body. The route calls useOutlookBridge() once and passes the result in as `bridge`.
  * `preview` (the /nava-preview viewer) starts on the quoting tool, skipping the welcome, connection
  * and tour screens and their automatic ping. Analysis does not wait on the ping. Outlook passes nothing.
  */
-export function NavaPane({
-  bridge,
-  preview = false,
-  onOpenThread,
-}: {
-  bridge: PaneBridge;
-  preview?: boolean;
-  /** Webmail only: opens a Needs-you row's thread in the webmail. Outlook passes nothing. */
-  onOpenThread?: (threadId: string) => void;
-}) {
+export function NavaPane({ bridge, preview = false }: { bridge: PaneBridge; preview?: boolean }) {
   const {
     isConnected,
     activeEmail,
@@ -404,21 +385,19 @@ export function NavaPane({
       .map((group) => `${group.arrivalDate ?? ''}:${group.departureDate ?? ''}:${group.quantity ?? ''}:${group.adults ?? ''}`)
       .join(','),
     quoteSession.staffQuote ? 'quoted' : '',
-    Object.keys(quoteSession.staffQuotes).join(','),
-    Object.keys(quoteSession.bookingDrafts).join(','),
+    quoteSession.bookingDraft ? 'drafted' : '',
   ].join(':');
   useEffect(() => {
     const luna = quoteSession.analysis?.luna;
     const source = quoteSession.staffSource;
     const binding = quoteSession.binding;
-    // Each date option waits for its own earlier quote. An option that already has a run or a draft is left alone.
-    // A single stay waits as one, dated or not, so its first accepted prior quote binds as it did before date options.
-    const stayKeys = requestedQuoteKeys(quoteSession.groups);
-    const singleStayKey = stayKeys.length <= 1 ? (stayKeys[0] ?? 'unknown:unknown') : null;
-    const waiting = (singleStayKey ? [singleStayKey] : stayKeys).filter(
-      (key) => !quoteSession.staffQuotes[key] && !quoteSession.bookingDrafts[key],
-    );
-    if (luna?.workflow !== 'create_booking' || !source || !binding || waiting.length === 0) {
+    if (
+      luna?.workflow !== 'create_booking' ||
+      !source ||
+      !binding ||
+      quoteSession.staffQuote ||
+      quoteSession.bookingDraft
+    ) {
       return;
     }
     const staff = staffQuoteFromTrpc(trpcClient);
@@ -427,64 +406,8 @@ export function NavaPane({
     // A stay edit does not always move inputRevision, so the result is also tied to the rows it read.
     const stayRevision = quoteSession.stayRevision;
     const header = quoteSession.staffHeader;
-    // The earlier quote's run and draft belong to the stay it was made for, so its rows are that stay's rows.
-    const bindPrior = (prior: UsePriorQuoteForBookingReady, stayKey: string) => {
-      const stayRow = quoteSession.groups.find((group) => stayKeyForGroup(group) === stayKey);
-      const groupId = stayRow?.id;
-      const quantity = stayRow?.quantity;
-      dispatchQuote({
-        type: 'staff_quote_ready',
-        offer: {
-          id: prior.revisionRef,
-          kind: 'allocation',
-          roomCode: prior.roomCode,
-          roomLabel: 'Selected allocation',
-          board: offerBoardFromRevision(prior.board),
-          rateCode: prior.rateCode,
-          currency: 'ZAR',
-          nightly: [],
-          stayTotalMinor: prior.totalMinor,
-          observedAt: '',
-          sourceRef: prior.revisionRef,
-          restrictions: [],
-          combinable: true,
-          quoteRequestKey: stayKey,
-          coversGroupIds: groupId ? [groupId] : [],
-          quantity,
-        },
-        staffQuote: {
-          workflowRunId: prior.workflowRunId,
-          revisionRef: prior.revisionRef,
-          factRefs: [],
-          messageId: source.messageId,
-          threadId: source.threadId,
-          sourceHash: source.sourceHash,
-          selectionEpoch,
-          inputRevision,
-          inputDigest: prior.revisionRef,
-          totalMinor: prior.totalMinor,
-          currency: prior.currency,
-          quoteRequestKey: stayKey,
-          approvedHeader: header,
-        },
-        selectionEpoch,
-        inputRevision,
-        stayRevision,
-      });
-      dispatchQuote({
-        type: 'booking_draft_ready',
-        stayRevision,
-        payload: {
-          draft: prior.draft,
-          options: prior.options,
-          messageId: prior.messageId,
-          selectionEpoch: prior.selectionEpoch,
-          inputRevision: prior.inputRevision,
-          revisionRef: prior.revisionRef,
-        },
-        sourceHash: source.sourceHash,
-      });
-    };
+    const groupId = quoteSession.groups[0]?.id;
+    const quantity = quoteSession.groups[0]?.quantity;
     let cancelled = false;
     void bindListThreadQuoteRevisions({
       query: staff.workstation.listThreadQuoteRevisions?.query,
@@ -492,10 +415,10 @@ export function NavaPane({
     }).then(async (revisions) => {
       if (cancelled || !revisions[0]) return;
       const reasons: string[] = [];
+      let prior: Awaited<ReturnType<typeof bindUsePriorQuoteForBooking>> | null = null;
       let expiredPrior: PriorStaffQuoteRequoteRow | null = null;
-      const unbound = new Set(waiting);
       for (const row of revisions) {
-        if (cancelled || unbound.size === 0) break;
+        if (cancelled) return;
         const candidate = await bindUsePriorQuoteForBooking({
           mutate: staff.workstation.usePriorQuoteForBooking?.mutate,
           source,
@@ -510,22 +433,17 @@ export function NavaPane({
             groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups),
           },
         });
-        if (cancelled) return;
-        if (candidate.status !== 'ok') {
-          reasons.push(candidate.reason);
-          if (candidate.reason === 'expired' && !expiredPrior) {
-            expiredPrior = { workflowRunId: row.workflowRunId, revisionRef: row.revisionRef };
-          }
-          continue;
+        if (candidate.status === 'ok') {
+          prior = candidate;
+          break;
         }
-        // A candidate binds only to a stay that is still waiting for one. Other rows of that stay are skipped.
-        const stayKey = singleStayKey ?? `${candidate.payload.arrivalDate}:${candidate.payload.departureDate}`;
-        if (!unbound.has(stayKey)) continue;
-        unbound.delete(stayKey);
-        bindPrior(candidate.payload, stayKey);
+        reasons.push(candidate.reason);
+        if (candidate.reason === 'expired' && !expiredPrior) {
+          expiredPrior = { workflowRunId: row.workflowRunId, revisionRef: row.revisionRef };
+        }
       }
       if (cancelled) return;
-      if (unbound.size > 0) {
+      if (!prior || prior.status !== 'ok') {
         const notice = expiredPriorQuoteNotice(reasons, expiredPrior);
         if (notice === 'requote' && expiredPrior) {
           toast.warning(expiredPriorQuoteToastMessage(), {
@@ -539,7 +457,61 @@ export function NavaPane({
         } else if (notice === 'mismatch') {
           toast.warning('The dates no longer match the earlier quote. Run the search again.');
         }
+        return;
       }
+      const stayKey = `${prior.payload.arrivalDate}:${prior.payload.departureDate}`;
+      dispatchQuote({
+        type: 'staff_quote_ready',
+        offer: {
+          id: prior.payload.revisionRef,
+          kind: 'allocation',
+          roomCode: prior.payload.roomCode,
+          roomLabel: 'Selected allocation',
+          board: offerBoardFromRevision(prior.payload.board),
+          rateCode: prior.payload.rateCode,
+          currency: 'ZAR',
+          nightly: [],
+          stayTotalMinor: prior.payload.totalMinor,
+          observedAt: '',
+          sourceRef: prior.payload.revisionRef,
+          restrictions: [],
+          combinable: true,
+          quoteRequestKey: stayKey,
+          coversGroupIds: groupId ? [groupId] : [],
+          quantity,
+        },
+        staffQuote: {
+          workflowRunId: prior.payload.workflowRunId,
+          revisionRef: prior.payload.revisionRef,
+          factRefs: [],
+          messageId: source.messageId,
+          threadId: source.threadId,
+          sourceHash: source.sourceHash,
+          selectionEpoch,
+          inputRevision,
+          inputDigest: prior.payload.revisionRef,
+          totalMinor: prior.payload.totalMinor,
+          currency: prior.payload.currency,
+          quoteRequestKey: stayKey,
+          approvedHeader: header,
+        },
+        selectionEpoch,
+        inputRevision,
+        stayRevision,
+      });
+      dispatchQuote({
+        type: 'booking_draft_ready',
+        stayRevision,
+        payload: {
+          draft: prior.payload.draft,
+          options: prior.payload.options,
+          messageId: prior.payload.messageId,
+          selectionEpoch: prior.payload.selectionEpoch,
+          inputRevision: prior.payload.inputRevision,
+          revisionRef: prior.payload.revisionRef,
+        },
+        sourceHash: source.sourceHash,
+      });
     });
     return () => {
       cancelled = true;
@@ -559,9 +531,7 @@ export function NavaPane({
     return 'welcome';
   });
   // Preview starts on the quoting tool; the welcome, connection and tour screens never show there.
-  const shownScreen: PaneScreen = preview && currentScreen !== 'needs-you' ? 'tool' : currentScreen;
-  // Bumped when the list closes, so the entry remounts and its count takes in any dismiss made on the list.
-  const [needsYouVisit, setNeedsYouVisit] = useState(0);
+  const shownScreen: PaneScreen = preview ? 'tool' : currentScreen;
   const [tourSlideIndex, setTourSlideIndex] = useState(0);
   const [pingState, setPingState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
@@ -612,15 +582,13 @@ export function NavaPane({
   // any input in the pane resets the idle clock, and writes are counted, so no per-field checks are needed.
   const quoteSessionDirty =
     combinedEdit !== null ||
-    Object.keys(quoteSession.bookingDrafts).length > 0 ||
+    quoteSession.bookingDraft !== null ||
     unsentStaffNote ||
     hasStaffStayEdits(quoteSession);
   // One Excel export at a time. A second click while one is being made does nothing, and the button
   // stays disabled until the export settles. The server call is a tRPC mutation, so it also counts as in flight.
   const [workbookPending, setWorkbookPending] = useState(false);
   const workbookInFlight = useRef(false);
-  // The combined quote for every stay. A second click while it is being made does nothing.
-  const pdfInFlight = useRef(false);
   const downloadWorkbook = () => {
     if (workbookInFlight.current) return;
     workbookInFlight.current = true;
@@ -754,10 +722,6 @@ export function NavaPane({
         sessionHeader: session.staffHeader,
         staffEdited: hasStaffStayEdits(session),
       });
-      if (!groups.length) {
-        toast.warning('The stays changed since this quote. Run the search for that stay again.');
-        return;
-      }
       const run = bindExecuteStaffQuote({
         mutate: staff.workstation.executeStaffQuote?.mutate,
         source,
@@ -765,7 +729,6 @@ export function NavaPane({
         inputRevision,
         groups,
         header,
-        onceExtras: rowsTakeOnceExtras(session, requestedQuoteKeys(groups)),
       });
       return trackStaffQuoteRun(run).then((remote) => {
         if (remote.status !== 'ok') {
@@ -873,8 +836,6 @@ export function NavaPane({
       inputRevision,
       groups: stayGroups,
       header: quoteSession.staffHeader,
-      // A combined quote charges the shuttle and flat "other" charges once, on its first stay.
-      onceExtras: rowsTakeOnceExtras(quoteSession, requestedQuoteKeys(stayGroups)),
     });
     void trackStaffQuoteRun(run).then((remote) => {
       if (remote.status !== 'ok') {
@@ -967,51 +928,6 @@ export function NavaPane({
     const session = quoteSessionRef.current;
     if (dinnerAllowanceStillRequired(session.staffHeader)) {
       toast.warning('Enter the dinner allowance per person per night before preparing the PDF.');
-      return;
-    }
-    if (isMultiStay(session)) {
-      // One combined document for every stay. Until each stay is rated, the request says how many are.
-      const request = combinedDocumentRequest(session);
-      if (request.status === 'unavailable') {
-        toast.warning(request.reason);
-        return;
-      }
-      if (pdfInFlight.current) return;
-      pdfInFlight.current = true;
-      const selectionEpoch = session.binding?.selectionEpoch ?? 0;
-      const inputRevision = session.inputRevision;
-      // The combined PDF is bound to the stays' runs, not to the selected option, so selecting another option while it
-      // builds keeps it.
-      const selectedOfferIds = [
-        request.input.revisionRef,
-        ...(request.input.additionalStays ?? []).map((stay) => stay.revisionRef),
-      ];
-      const staff = staffQuoteFromTrpc(trpcClient);
-      void bindQualifiedStaffProposalPdf({
-        mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
-        input: request.input,
-        expectedTotalMinor: request.expectedTotalMinor,
-      }).then((remote) => {
-        if (remote.status === 'unavailable') {
-          toast.warning(remote.reason);
-          return;
-        }
-        dispatchQuote({
-          type: 'pdf_ready',
-          pdf: {
-            fileName: remote.pdf.fileName,
-            bytesBase64: remote.pdf.pdfBase64,
-            pdfHash: remote.pdf.pdfHash,
-            revisionId: remote.pdf.revisionId,
-            totalMinor: remote.pdf.totalMinor,
-          },
-          selectionEpoch,
-          inputRevision,
-          selectedOfferIds,
-        });
-      }).finally(() => {
-        pdfInFlight.current = false;
-      });
       return;
     }
     const key = stayKey ?? session.selectedStayKey;
@@ -1192,7 +1108,7 @@ export function NavaPane({
         )}
 
         {/* First-run steps only: the bar is gone once onboarding is done (replay from the ⋯ menu). Preview never shows it. */}
-        {shownScreen !== 'tool' && shownScreen !== 'needs-you' && (
+        {shownScreen !== 'tool' && (
         <div className="flex w-full items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-1.5 text-xs">
           <div className="flex items-center gap-1 font-semibold text-[#1e293b]">
             <span className="text-[11px] text-[#64748b]">Step</span>
@@ -1263,34 +1179,11 @@ export function NavaPane({
             onOpenTool={() => setCurrentScreen('tool')}
           />
         )}
-        {/* SCREEN 5: NEEDS YOU (U24). Reached from the entry on the quoting tool, on both surfaces. */}
-        {shownScreen === 'needs-you' && (
-          <NeedsYouView
-            trpc={trpcClient}
-            host={preview ? 'web' : 'outlook'}
-            onBack={() => {
-              setNeedsYouVisit((visit) => visit + 1);
-              setCurrentScreen('tool');
-            }}
-            onOpenThread={onOpenThread}
-          />
-        )}
+        {/* Screen slot: the Needs-you list (U24) mounts here as one more shownScreen branch. */}
 
-        {/* Scrollable Body: SCREEN 4 QUOTING TOOL. Stays mounted, hidden, while the list is open, so its state survives. */}
-        {(shownScreen === 'tool' || shownScreen === 'needs-you') && (
-          <main
-            style={shownScreen === 'tool' ? undefined : { display: 'none' }}
-            className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5"
-          >
-            {/* The open count from the Needs-you list. Shows "Needs you" alone until the list has loaded. */}
-            <div className="flex justify-end">
-              <NeedsYouEntry
-                key={needsYouVisit}
-                trpc={trpcClient}
-                onOpen={() => setCurrentScreen('needs-you')}
-              />
-            </div>
-
+        {/* Scrollable Body: SCREEN 4 QUOTING TOOL */}
+        {shownScreen === 'tool' && (
+          <main className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5">
             {/* Email context for the selected email; until one is selected, an empty state. */}
             <SelectedEmailBlock activeEmail={activeEmail} />
 
@@ -1311,14 +1204,6 @@ export function NavaPane({
                 onRetry={storedWork.retryTranslation}
               />
             ) : null}
-
-            {/* The quote follow-up on this thread, when the server holds one (R10). Keyed by the email, like the voucher card. */}
-            <FollowUpCard
-              key={activeEmail?.internetMessageId ?? 'no-email'}
-              bridge={bridge}
-              preview={preview}
-              trpc={trpcClient}
-            />
 
             {/* Booking and voucher block: a change or cancellation card, then the Find the booking card. */}
             <BookingVoucherCard
@@ -1353,7 +1238,6 @@ export function NavaPane({
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               findParty={PANE_PARTY_FINDER}
               partyIndex={PANE_PARTY_INDEX}
-              rates={PANE_SAVED_RATES}
               onPatchGroup={(groupId, patch) => editStayRows({ type: 'patch_group', groupId, patch })}
               // Shown only on a failed-read item, which stays listed after she starts typing in the form.
               onRetryRead={storedWork.retry}
@@ -1407,6 +1291,7 @@ export function NavaPane({
                 );
               }}
               onPreparePdf={() => preparePdfFor(null)}
+              onPreparePdfFor={(stayKey) => preparePdfFor(stayKey)}
               onDownloadWorkbook={downloadWorkbook}
               workbookPending={workbookPending}
             />

@@ -60,7 +60,6 @@ import {
   type LinkedContextReferenceKind,
 } from '../hms/context-read-reference.js';
 import {
-  isInboundTriageClassifierEnabled,
   parseEnv,
   requireHmsEvidenceHmacChildKey,
   requireHmsReadRuntimeConfig,
@@ -4440,19 +4439,6 @@ export async function executeAiRun(
       );
 
       const externalSentAnalyticsOnly = trigger?.direction === 'outbound';
-      if (!externalSentAnalyticsOnly && !isInboundTriageClassifierEnabled(process.env)) {
-        // Classifier retired (INBOUND_TRIAGE_CLASSIFIER=off with INBOUND_EXTRACTION=on): no classifier call and no
-        // folder, read or spam write. Spam, the baseline and the warmer come from inbound_extraction. A run queued
-        // before the flag flipped ends here. With the classifier on, this run projects the inbound baseline as before.
-        const retired = await markAiRunSucceeded({
-          runId,
-          claimOwner: owner,
-          claimToken,
-          expectedStates: ['running'],
-          metrics: { triageRetired: true },
-        });
-        return { runId, state: retired ? 'succeeded' : 'retry_wait' };
-      }
       let output: WorkflowTriageOutput;
       let mastraTraceId: string | undefined;
       let workflowMetrics: Record<string, unknown> = {};
@@ -5278,7 +5264,6 @@ export async function executeAiRun(
         signal,
         adapter: options.inboundExtractionAdapter,
         db,
-        mailBaselineRoute: baselineRoute,
       });
       // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
       if (extracted.state === 'succeeded') scheduleAvailabilityPrefetch(runWithFence);
@@ -5464,15 +5449,11 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     // HMS lane: live factory only — never createMockCandidateSession.
     ...(lane === 'hms' ? { candidateSessionFactory: createLiveHmsCandidateSessionFactory() } : {}),
   });
-  // The live inbound trigger is the classifier run, or the extraction run once the classifier is retired. Never both.
-  const inboundTriggerKind = isInboundTriageClassifierEnabled(process.env)
-    ? 'inbound_triage'
-    : 'inbound_extraction';
-  if (executed.state === 'succeeded' && claimed.runKind === inboundTriggerKind) {
-    // Fire-and-forget after the commit, never inside the admission
+  if (executed.state === 'succeeded') {
+    // Fire-and-forget after the triage commit, never inside the admission
     // transaction. Off unless LUNA_ANALYSE_WARMER=on (see quote-workflow-warmer.ts).
     scheduleInboundTriageAnalyseWarm(claimed);
-    // Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1; live inbound only.
+    // Off unless HMS_JOB_QUEUE=on and HMS_PREFETCH_ENABLED=1; live inbound triage only.
     schedulePrefetchForInbound(claimed);
   }
   return true;

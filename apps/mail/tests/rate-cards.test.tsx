@@ -5,7 +5,6 @@ import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
-import { CRICKET_RATE_HINT } from '../components/quote-workflow/rate-cards';
 import { draftMoney } from '../lib/quote-workflow/multi-option-draft';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import {
@@ -354,23 +353,5 @@ describe('the pinned rate on the execute request', () => {
 
   it('keeps well-formed rate rows and drops the rest', () => {
     expect(readRateOptions([NCOR, { id: 'x' }, { ...BAR, board: 'brunch' }, 'nope'])).toEqual([NCOR]);
-  });
-});
-
-describe('cricket event rates', () => {
-  it('shows the cricket hint on GNC3B and GNC4B only, where HMS rate options list', async () => {
-    const gnc3 = rate({ id: 'o-gnc3b', rateCode: 'GNC3B', rateLabel: 'Cricket event 3', hint: 'event_rate' });
-    const gnc4 = rate({ id: 'o-gnc4b', rateCode: 'GNC4B', rateLabel: 'Cricket event 4', hint: 'event_rate' });
-    render(<QuoteWorkflowPanel session={await quotedSession([NCOR, gnc3, gnc4])} />);
-    const cards = rateCards();
-    expect(within(cards[0]!).queryByText(CRICKET_RATE_HINT)).toBeNull();
-    expect(within(cards[1]!).getByText(CRICKET_RATE_HINT)).toBeDefined();
-    expect(within(cards[2]!).getByText(CRICKET_RATE_HINT)).toBeDefined();
-  });
-
-  it('keeps the event hint when the server rate options are read', () => {
-    const [read] = readRateOptions([{ ...BAR, rateCode: 'GNC3B', hint: 'event_rate' }]);
-    expect(read?.hint).toBe('event_rate');
-    expect(readRateOptions([BAR])[0]?.hint).toBeUndefined();
   });
 });

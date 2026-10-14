@@ -10,16 +10,9 @@ import {
   storedTranslation,
   storedWorkFor,
 } from '../../ai/work-items.js';
-import {
-  dismissFollowUpDraft,
-  followUpForMessage,
-  followUpWire,
-  useFollowUpDraft,
-} from '../../ai/quote-followup.js';
 import { mailboxProcedure, router } from '../trpc.js';
 
 const internetMessageId = z.string().min(1).max(998);
-const followUpDraftId = z.string().min(1).max(200);
 
 // Field edits and accept/reject only. approve and review have their own procedures (U25, U18), so they are not here.
 const fieldEventInput = z
@@ -110,46 +103,5 @@ export const workItemsRouter = router({
       });
       if (!result) throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
       return result;
-    }),
-  // The quote follow-up suggestion on this mail's thread (R10). Null when there is none.
-  followUpByMessage: mailboxProcedure
-    .input(z.object({ internetMessageId }).strict())
-    .query(async ({ input, ctx }) => {
-      const found = await followUpForMessage(getDb(), {
-        transportId: ctx.activeTransportId,
-        internetMessageId: input.internetMessageId,
-      });
-      return found;
-    }),
-  // Makes the suggestion the thread's reply draft. replaceActive discards the draft already holding that slot.
-  useFollowUp: mailboxProcedure
-    .input(z.object({ draftId: followUpDraftId, replaceActive: z.boolean().optional() }).strict())
-    .mutation(async ({ input, ctx }) => {
-      const result = await useFollowUpDraft(getDb(), {
-        transportId: ctx.activeTransportId,
-        userId: ctx.sessionUser.id,
-        draftId: input.draftId,
-        replaceActive: input.replaceActive === true,
-      });
-      if (result.status === 'not_found') {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'FOLLOW_UP_NOT_FOUND' });
-      }
-      if (result.status === 'active_exists') {
-        throw new TRPCError({ code: 'CONFLICT', message: 'ACTIVE_DRAFT_EXISTS' });
-      }
-      return followUpWire('in_reply', result.draft);
-    }),
-  dismissFollowUp: mailboxProcedure
-    .input(z.object({ draftId: followUpDraftId }).strict())
-    .mutation(async ({ input, ctx }) => {
-      const result = await dismissFollowUpDraft(getDb(), {
-        transportId: ctx.activeTransportId,
-        userId: ctx.sessionUser.id,
-        draftId: input.draftId,
-      });
-      if (result === 'not_found') {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'FOLLOW_UP_NOT_FOUND' });
-      }
-      return { status: 'dismissed' as const };
     }),
 });

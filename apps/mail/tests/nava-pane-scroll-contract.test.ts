@@ -21,7 +21,7 @@ describe('the Outlook pane scrolls inside itself with a visible bar', () => {
   });
 
   it('scrolls the tool body and the first-run screens in a visible-bar area', () => {
-    expect(pane).toMatch(/<main\s[^>]*className="nava-pane-scroll [^"]*overflow-y-auto/);
+    expect(pane).toMatch(/<main className="nava-pane-scroll [^"]*overflow-y-auto/);
     expect(`${pane}\n${screens}`.match(/nava-pane-scroll/g)?.length).toBeGreaterThanOrEqual(4);
   });
 

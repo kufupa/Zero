@@ -17,7 +17,7 @@ import { parseAndPersist } from '../src/mail/ingest/store.js';
 import { enqueueAiRun } from '../src/ai/run-ledger.js';
 import { runAiWorkerDrain } from '../src/ai/worker.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -56,17 +56,7 @@ const configuredExtractionDescriptor = JSON.stringify({
 
 const reachable = await probeTestDb();
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-});
-
 async function withWorkerDb<T>(callback: (db: DB) => Promise<T>): Promise<T> {
-  // The worker's parseEnv needs the server's required keys. The rest of the lane config stays unset.
-  vi.stubEnv('PORT', '3000');
-  vi.stubEnv('BETTER_AUTH_URL', 'https://nava.legacy.local');
-  vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
-  vi.stubEnv('AWS_REGION', 'synthetic-region-1');
-  vi.stubEnv('S3_BUCKET', 'mail-baseline-synthetic-bucket');
   return withSeededTestDb(async (db) => {
     __setDbForTests({ db, conn: null as never });
     try {

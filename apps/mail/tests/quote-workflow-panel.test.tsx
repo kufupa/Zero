@@ -180,7 +180,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(onPatchGroup).toHaveBeenCalledWith('g1', { childrenAges: [] });
   });
 
-  it('keeps two date-group allocations selected and blocks the combined quote until every stay is rated', () => {
+  it('keeps two date-group allocations selected and blocks a partial PDF', () => {
     const onSelectOffer = vi.fn();
     let session = sessionFromFixture('staggered-dates');
     session = {
@@ -195,13 +195,12 @@ describe('QuoteWorkflowPanel', () => {
     first.unmount();
     session = { ...session, selectedOfferIds: ['st-a'] };
     render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
-    expect(screen.getByRole('button', { name: /^Prepare quote$/i })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', true);
     session = { ...session, selectedOfferIds: ['st-a', 'st-b'] };
     cleanup();
     render(<QuoteWorkflowPanel session={session} onSelectOffer={onSelectOffer} />);
-    expect(screen.getByRole('button', { name: /^Prepare quote$/i })).toHaveProperty('disabled', true);
-    expect(screen.getAllByText('0 of 2 stays rated').length).toBeGreaterThan(0);
-    expect(screen.getByText(/Every date option goes into one quote/)).toBeDefined();
+    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', true);
+    expect(screen.getByText(/Each date search keeps its own quote and PDF/)).toBeDefined();
     expect(screen.queryByText(/Combined PDF is blocked/i)).toBeNull();
   });
 
@@ -533,56 +532,58 @@ describe('QuoteWorkflowPanel', () => {
     expect(onRunStep).toHaveBeenCalledWith(session.steps[1]!.id);
   });
 
-  it('lists date options with totals and quotes every option together', () => {
+  it('lists date options with totals and says why a later option waits for the earlier PDF', () => {
     const onRunStep = vi.fn();
     const quoted = staggeredDatesWithOptionA();
     render(<QuoteWorkflowPanel session={quoted} onRunStep={onRunStep} onRunNext={vi.fn()} />);
     expect(screen.getByRole('heading', { name: 'Date options' })).toBeDefined();
     expect(
-      screen.getByText(
-        'This email asks for more than one set of dates. Run each option; Nava keeps every result and quotes them together.',
-      ),
+      screen.getByText('This email asks for more than one set of dates. Run each option; Nava keeps every result.'),
     ).toBeDefined();
-    expect(screen.getAllByText('1 of 2 stays rated').length).toBeGreaterThan(0);
     const optionA = screen.getByRole('button', { name: 'Select date scope 2026-11-02 to 2026-11-04' });
-    expect(optionA.textContent).toMatch(/Quoted R\d/);
+    expect(optionA.textContent).toMatch(/Quoted R.*PDF not built/);
+    expect(screen.getAllByText('Finish the PDF for option A first, then run option B.').length).toBeGreaterThan(0);
     const runB = screen.getByRole('button', { name: /^Run Search availability 2026-11-10/i }) as HTMLButtonElement;
-    expect(runB.disabled).toBe(false);
+    expect(runB.disabled).toBe(true);
     fireEvent.click(runB);
-    expect(onRunStep).toHaveBeenCalledWith(quoted.steps[1]!.id);
+    expect(onRunStep).not.toHaveBeenCalled();
   });
 
-  it('shows one combined quote once it is prepared, with no PDF per option', () => {
-    const session = {
+  it('removes the wait once option A has its PDF', () => {
+    const withPdf = {
       ...staggeredDatesWithOptionA(),
-      pdf: {
-        fileName: 'Quote - Standard King.pdf',
-        bytesBase64: 'JVBERi0xLjQK',
-        pdfHash: 'cd'.repeat(32),
-        revisionId: 'quotes:abc',
-        totalMinor: 850000,
+      stayPdfs: {
+        '2026-11-02:2026-11-04': {
+          fileName: 'Quote-rev-a.pdf',
+          bytesBase64: 'JVBERi0xLjQK',
+          pdfHash: 'cd'.repeat(32),
+          revisionId: 'rev-a',
+          totalMinor: 850000,
+        },
       },
     };
-    render(<QuoteWorkflowPanel session={session} onRunStep={vi.fn()} onRunNext={vi.fn()} />);
-    expect(screen.queryByRole('button', { name: /Prepare PDF for option/ })).toBeNull();
-    expect(screen.getByText(/Prepared quote Quote - Standard King\.pdf for all stays/)).toBeDefined();
+    render(<QuoteWorkflowPanel session={withPdf} onRunStep={vi.fn()} onRunNext={vi.fn()} />);
+    expect(screen.queryByText(/Finish the PDF for option A/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Select date scope 2026-11-02 to 2026-11-04' }).textContent).toMatch(
+      /PDF ready/,
+    );
+    const runB = screen.getByRole('button', { name: /^Run Search availability 2026-11-10/i }) as HTMLButtonElement;
+    expect(runB.disabled).toBe(false);
   });
 
-  it('gates the one Prepare quote button on every stay and has no per-option PDF button', () => {
-    const onPreparePdf = vi.fn();
+  it('prepares the PDF for a quoted date option from its own row', () => {
+    const onPreparePdfFor = vi.fn();
     render(
       <QuoteWorkflowPanel
         session={staggeredDatesWithOptionA()}
-        onPreparePdf={onPreparePdf}
+        onPreparePdfFor={onPreparePdfFor}
         onRunStep={vi.fn()}
         onRunNext={vi.fn()}
       />,
     );
-    expect(screen.queryByRole('button', { name: 'Prepare PDF for option A' })).toBeNull();
-    const prepare = screen.getByRole('button', { name: 'Prepare quote' }) as HTMLButtonElement;
-    expect(prepare.disabled).toBe(true);
-    fireEvent.click(prepare);
-    expect(onPreparePdf).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Prepare PDF for option B' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare PDF for option A' }));
+    expect(onPreparePdfFor).toHaveBeenCalledWith('2026-11-02:2026-11-04');
   });
 });
 

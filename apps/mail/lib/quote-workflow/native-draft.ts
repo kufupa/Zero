@@ -1,5 +1,5 @@
 import { FIXTURE_PDF } from './fixtures';
-import { canCreateNativeDraft, isMultiStay } from './session';
+import { canCreateNativeDraft } from './session';
 import type { QuotePdf, QuoteSession } from './types';
 
 export function requireReviewedNativeDraft(session: QuoteSession): {
@@ -7,8 +7,7 @@ export function requireReviewedNativeDraft(session: QuoteSession): {
   pdf: { fileName: string; pdfBase64: string };
 } | null {
   const html = session.reviewedReplyHtml.trim();
-  // A combined quote is answered by the multi-stay reply, never by the single-stay one.
-  if (isMultiStay(session) || !session.pdf || !html) return null;
+  if (!session.pdf || !html) return null;
   if (!canCreateNativeDraft(session)) return null;
   if (session.pdf.fileName === FIXTURE_PDF.fileName) return null;
   return {

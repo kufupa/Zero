@@ -1,11 +1,7 @@
 import {
   addSaBusinessDays,
-  dismissFollowUpDraft,
   executeQuoteFollowupRun,
-  followUpForMessage,
-  QUOTE_FOLLOWUP_DRAFT_PREFIX,
   runQuoteFollowupSweep,
-  useFollowUpDraft,
 } from '../src/ai/quote-followup.js';
 import {
   aiWorkflowRun,
@@ -225,7 +221,7 @@ describe('quote follow-up drafts', () => {
 
       const counts = await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
 
-      expect(counts).toEqual({ linked: 2, cancelled: 0, queued: 0, discarded: 0 });
+      expect(counts).toEqual({ linked: 2, cancelled: 0, queued: 0 });
       for (const [itemId, sentId] of [
         [attached, 'out-attached'],
         [bodyOnly, 'out-body'],
@@ -248,7 +244,7 @@ describe('quote follow-up drafts', () => {
 
       const counts = await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE });
 
-      expect(counts).toEqual({ linked: 0, cancelled: 1, queued: 0, discarded: 0 });
+      expect(counts).toEqual({ linked: 0, cancelled: 1, queued: 0 });
       expect((await loadItem(db, itemId)).followUpDueAt).toBeNull();
       expect(await followUpRuns(db, itemId)).toHaveLength(0);
     });
@@ -265,7 +261,6 @@ describe('quote follow-up drafts', () => {
         linked: 0,
         cancelled: 0,
         queued: 1,
-        discarded: 0,
       });
       // A later pass, or a crash before the due date was cleared, must find the same run key.
       await db.update(workItem).set({ followUpDueAt: WED_DUE }).where(eq(workItem.id, itemId));
@@ -365,7 +360,6 @@ describe('quote follow-up drafts', () => {
         linked: 0,
         cancelled: 0,
         queued: 0,
-        discarded: 0,
       });
       expect((await loadItem(db, itemId)).sentMessageId).toBeNull();
 
@@ -397,7 +391,6 @@ describe('quote follow-up drafts', () => {
         linked: 1,
         cancelled: 0,
         queued: 1,
-        discarded: 0,
       });
       expect((await loadItem(db, old)).sentMessageId).toBeNull();
       expect(await followUpRuns(db, old)).toHaveLength(0);
@@ -422,7 +415,7 @@ describe('quote follow-up drafts', () => {
 
       expect(
         await runQuoteFollowupSweep({ db, env, now: new Date('2027-01-01T08:00:00Z') }),
-      ).toEqual({ linked: 0, cancelled: 0, queued: 0, discarded: 0 });
+      ).toEqual({ linked: 0, cancelled: 0, queued: 0 });
       expect((await loadItem(db, itemId)).sentMessageId).toBeNull();
     });
   });
@@ -454,351 +447,8 @@ describe('quote follow-up drafts', () => {
         linked: 0,
         cancelled: 0,
         queued: 0,
-        discarded: 0,
       });
       expect((await loadItem(db, itemId)).sentMessageId).toBeNull();
-    });
-  });
-});
-
-/** A quote sent Friday, followed up on Wednesday: the run has written the suggestion. Returns the ids. */
-async function suggestionFor(db: DB, threadId: string) {
-  const itemId = await quoteRequest(db, threadId, REQUEST_AT);
-  await sendReply(db, { id: `out-${threadId}`, threadId, sentAt: FRI_SEND });
-  await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE });
-  const { run, fence } = await claimRun(db, itemId);
-  await executeQuoteFollowupRun({ run, fence, db, env: ON });
-  return { itemId, draftId: `${QUOTE_FOLLOWUP_DRAFT_PREFIX}out-${threadId}` };
-}
-
-const STAFF = 'staff-1';
-
-describe('follow-up suggestions are discarded once a reply overtakes them', () => {
-  it('a client reply after the suggestion exists discards it, and the next pass does nothing more', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { draftId } = await suggestionFor(db, 'thread-overtaken');
-      await clientReplies(db, 'thread-overtaken', 'in-overtaken', new Date('2026-10-12T07:00:00Z'));
-
-      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toMatchObject({
-        discarded: 1,
-      });
-      expect((await threadDrafts(db, 'thread-overtaken')).find((d) => d.id === draftId)?.status).toBe(
-        'discarded',
-      );
-      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toMatchObject({
-        discarded: 0,
-      });
-    });
-  });
-
-  it('a reply from staff after the suggestion exists discards it', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { draftId } = await suggestionFor(db, 'thread-staff-own');
-      await sendReply(db, {
-        id: 'out-staff-own',
-        threadId: 'thread-staff-own',
-        sentAt: new Date('2026-10-12T08:00:00Z'),
-      });
-
-      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toMatchObject({
-        discarded: 1,
-      });
-      expect((await threadDrafts(db, 'thread-staff-own')).find((d) => d.id === draftId)?.status).toBe(
-        'discarded',
-      );
-    });
-  });
-
-  it('the discard touches only the follow-up suggestion, never other drafts or waiting suggestions', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { draftId } = await suggestionFor(db, 'thread-mixed');
-      const waiting = await suggestionFor(db, 'thread-waiting');
-      await db.insert(user).values({ id: STAFF, name: 'Staff', email: 'staff@example.com', emailVerified: true });
-      const other = { transportId: TRANSPORT, threadId: 'thread-mixed', subject: 'Re: Quote request' };
-      await db.insert(mailDraft).values([
-        { ...other, id: 'ai-candidate-mixed', createdByUserId: NAVA_USER_ID, textBody: 'AI.', status: 'candidate', origin: 'ai' },
-        { ...other, id: 'staff-candidate-mixed', createdByUserId: STAFF, textBody: 'Mine.', status: 'candidate', origin: 'manual' },
-        { ...other, id: 'staff-active-mixed', createdByUserId: STAFF, textBody: 'Open.', status: 'active', origin: 'manual' },
-      ]);
-      await clientReplies(db, 'thread-mixed', 'in-mixed', new Date('2026-10-12T07:00:00Z'));
-
-      expect(await runQuoteFollowupSweep({ db, env: OFF, now: WED_DUE })).toMatchObject({ discarded: 1 });
-      expect((await threadDrafts(db, 'thread-mixed')).map((d) => [d.id, d.status]).sort()).toEqual([
-        ['ai-candidate-mixed', 'candidate'],
-        [draftId, 'discarded'],
-        ['staff-active-mixed', 'active'],
-        ['staff-candidate-mixed', 'candidate'],
-      ]);
-      expect((await threadDrafts(db, 'thread-waiting')).map((d) => [d.id, d.status])).toEqual([
-        [waiting.draftId, 'candidate'],
-      ]);
-    });
-  });
-
-  it('a suggestion that was used is kept when the client replies', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { draftId } = await suggestionFor(db, 'thread-used-kept');
-      await useFollowUpDraft(db, {
-        transportId: TRANSPORT,
-        userId: STAFF,
-        draftId,
-        replaceActive: false,
-      });
-      await clientReplies(db, 'thread-used-kept', 'in-used-kept', new Date('2026-10-12T07:00:00Z'));
-
-      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toMatchObject({
-        discarded: 0,
-      });
-      expect((await threadDrafts(db, 'thread-used-kept')).find((d) => d.id === draftId)?.status).toBe(
-        'active',
-      );
-    });
-  });
-
-  it('with QUOTE_FOLLOWUPS off, an overtaken suggestion is still discarded', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { draftId } = await suggestionFor(db, 'thread-off-discard');
-      await clientReplies(db, 'thread-off-discard', 'in-off', new Date('2026-10-12T07:00:00Z'));
-
-      expect(await runQuoteFollowupSweep({ db, env: OFF, now: WED_DUE })).toMatchObject({
-        discarded: 1,
-      });
-      expect((await threadDrafts(db, 'thread-off-discard')).find((d) => d.id === draftId)?.status).toBe(
-        'discarded',
-      );
-    });
-  });
-
-  it('a staff reply before the run is due writes no suggestion', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const itemId = await quoteRequest(db, 'thread-staff-early', REQUEST_AT);
-      await sendReply(db, { id: 'out-staff-early', threadId: 'thread-staff-early', sentAt: FRI_SEND });
-      await sendReply(db, {
-        id: 'out-staff-second',
-        threadId: 'thread-staff-early',
-        sentAt: new Date('2026-10-12T08:00:00Z'),
-      });
-      await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE });
-      const { run, fence } = await claimRun(db, itemId);
-
-      await executeQuoteFollowupRun({ run, fence, db, env: ON });
-
-      expect(await threadDrafts(db, 'thread-staff-early')).toHaveLength(0);
-      expect(await runOutcome(db, run.id)).toBe('staff_replied');
-    });
-  });
-});
-
-describe('follow-up suggestion for the pane', () => {
-  it('finds the suggestion from the mail it is about, and nothing for another mail', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { draftId } = await suggestionFor(db, 'thread-pane');
-      await quoteRequest(db, 'thread-quiet', REQUEST_AT);
-
-      expect(
-        await followUpForMessage(db, {
-          transportId: TRANSPORT,
-          internetMessageId: 'thread-pane-request@example.com',
-        }),
-      ).toMatchObject({
-        state: 'suggested',
-        id: draftId,
-        subject: 'Re: Quote request',
-        replyToMessageId: 'out-thread-pane',
-        htmlBody: expect.stringContaining('the quote we sent on 9 October'),
-      });
-      expect(
-        await followUpForMessage(db, {
-          transportId: TRANSPORT,
-          internetMessageId: 'thread-quiet-request@example.com',
-        }),
-      ).toBeNull();
-      expect(
-        await followUpForMessage(db, { transportId: TRANSPORT, internetMessageId: 'unknown@example.com' }),
-      ).toBeNull();
-    });
-  });
-
-  it('use makes the suggestion the active reply, keeps it manual, and logs the accept on the quote', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { itemId, draftId } = await suggestionFor(db, 'thread-use');
-
-      const result = await useFollowUpDraft(db, {
-        transportId: TRANSPORT,
-        userId: STAFF,
-        draftId,
-        replaceActive: false,
-      });
-
-      expect(result.status).toBe('used');
-      const draft = (await threadDrafts(db, 'thread-use')).find((d) => d.id === draftId);
-      expect(draft).toMatchObject({ status: 'active', origin: 'manual', isSent: false });
-      const revisions = await db
-        .select()
-        .from(mailDraftRevision)
-        .where(eq(mailDraftRevision.draftId, draftId));
-      expect(revisions.map((r) => [r.kind, r.actorUserId])).toEqual(
-        expect.arrayContaining([
-          ['created', NAVA_USER_ID],
-          ['promoted', STAFF],
-        ]),
-      );
-      const accepts = (await db.select().from(workEvent).where(eq(workEvent.workItemId, itemId))).filter(
-        (e) => e.type === 'field.accept',
-      );
-      expect(accepts).toEqual([
-        expect.objectContaining({
-          actorKind: 'user',
-          actorUserId: STAFF,
-          fieldPath: 'followUp.draft',
-          aiSource: 'quote-followup/1',
-          aiValue: draft?.textBody,
-          value: draft?.textBody,
-        }),
-      ]);
-      expect(
-        await followUpForMessage(db, {
-          transportId: TRANSPORT,
-          internetMessageId: 'thread-use-request@example.com',
-        }),
-      ).toMatchObject({ state: 'in_reply', id: draftId });
-    });
-  });
-
-  it('use refuses while another reply is active, and replaceActive discards that reply first', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { itemId, draftId } = await suggestionFor(db, 'thread-busy');
-      await db.insert(mailDraft).values({
-        id: 'staff-reply-in-progress',
-        transportId: TRANSPORT,
-        threadId: 'thread-busy',
-        createdByUserId: NAVA_USER_ID,
-        subject: 'Re: Quote request',
-        textBody: 'Our own reply, in progress.',
-        status: 'active',
-        origin: 'manual',
-      });
-
-      expect(
-        await useFollowUpDraft(db, { transportId: TRANSPORT, userId: STAFF, draftId, replaceActive: false }),
-      ).toEqual({ status: 'active_exists' });
-      const before = await threadDrafts(db, 'thread-busy');
-      expect(before.map((d) => [d.id, d.status]).sort()).toEqual([
-        ['quote-followup:out-thread-busy', 'candidate'],
-        ['staff-reply-in-progress', 'active'],
-      ]);
-      expect(
-        (await db.select().from(workEvent).where(eq(workEvent.workItemId, itemId))).some(
-          (e) => e.type === 'field.accept',
-        ),
-      ).toBe(false);
-
-      expect(
-        await useFollowUpDraft(db, { transportId: TRANSPORT, userId: STAFF, draftId, replaceActive: true }),
-      ).toMatchObject({ status: 'used' });
-      const after = await threadDrafts(db, 'thread-busy');
-      expect(after.map((d) => [d.id, d.status]).sort()).toEqual([
-        ['quote-followup:out-thread-busy', 'active'],
-        ['staff-reply-in-progress', 'discarded'],
-      ]);
-    });
-  });
-
-  it('a candidate that is not a follow-up cannot be used or dismissed', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { draftId } = await suggestionFor(db, 'thread-foreign');
-      await db.insert(mailDraft).values({
-        id: 'ai-candidate-foreign',
-        transportId: TRANSPORT,
-        threadId: 'thread-foreign',
-        createdByUserId: NAVA_USER_ID,
-        subject: 'Re: Quote request',
-        textBody: 'An AI draft.',
-        status: 'candidate',
-        origin: 'ai',
-      });
-
-      expect(
-        await useFollowUpDraft(db, {
-          transportId: TRANSPORT,
-          userId: STAFF,
-          draftId: 'ai-candidate-foreign',
-          replaceActive: false,
-        }),
-      ).toEqual({ status: 'not_found' });
-      expect(
-        await dismissFollowUpDraft(db, {
-          transportId: TRANSPORT,
-          userId: STAFF,
-          draftId: 'ai-candidate-foreign',
-        }),
-      ).toBe('not_found');
-      // Another transport never sees the suggestion either.
-      expect(
-        await dismissFollowUpDraft(db, { transportId: 'transport-other', userId: STAFF, draftId }),
-      ).toBe('not_found');
-    });
-  });
-
-  it('dismiss discards the suggestion, logs a reject, and leaves the quote open', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { itemId, draftId } = await suggestionFor(db, 'thread-dismiss');
-
-      expect(
-        await dismissFollowUpDraft(db, { transportId: TRANSPORT, userId: STAFF, draftId }),
-      ).toBe('dismissed');
-
-      expect((await threadDrafts(db, 'thread-dismiss')).find((d) => d.id === draftId)?.status).toBe(
-        'discarded',
-      );
-      const rejects = (await db.select().from(workEvent).where(eq(workEvent.workItemId, itemId))).filter(
-        (e) => e.type === 'field.reject',
-      );
-      expect(rejects).toEqual([
-        expect.objectContaining({
-          actorUserId: STAFF,
-          fieldPath: 'followUp.draft',
-          value: null,
-          aiValue: expect.stringContaining('the quote we sent on 9 October'),
-        }),
-      ]);
-      expect((await loadItem(db, itemId)).status).toBe('needs_you');
-      expect(
-        await followUpForMessage(db, {
-          transportId: TRANSPORT,
-          internetMessageId: 'thread-dismiss-request@example.com',
-        }),
-      ).toBeNull();
-      expect(
-        await useFollowUpDraft(db, { transportId: TRANSPORT, userId: STAFF, draftId, replaceActive: false }),
-      ).toEqual({ status: 'not_found' });
-    });
-  });
-
-  it('a used suggestion leaves the pane once it is sent', async () => {
-    await withIngestionDb(async ({ db }) => {
-      await seedNavaUser(db);
-      const { draftId } = await suggestionFor(db, 'thread-sent');
-      await useFollowUpDraft(db, { transportId: TRANSPORT, userId: STAFF, draftId, replaceActive: false });
-      await db.update(mailDraft).set({ status: 'sent', isSent: true }).where(eq(mailDraft.id, draftId));
-
-      expect(
-        await followUpForMessage(db, {
-          transportId: TRANSPORT,
-          internetMessageId: 'thread-sent-request@example.com',
-        }),
-      ).toBeNull();
     });
   });
 });

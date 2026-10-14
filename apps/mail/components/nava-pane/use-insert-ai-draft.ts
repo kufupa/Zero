@@ -41,15 +41,15 @@ function confirmNewReplyAfterUncertainOutcome(): boolean {
 
 function confirmReplaceDraft(): boolean {
   try {
-    // Intentional blocking question: a saved reply must not silently replace an AI, someone else's or a hand-edited draft.
+    // Intentional blocking question: a saved reply must not silently overwrite a draft someone else wrote.
     // oxlint-disable-next-line no-alert
     return window.confirm(
-      'Replace current draft? This thread already has a draft: an AI draft, one someone else wrote, or one edited by hand. It is set aside, not deleted.',
+      'Replace current draft? This thread already has a draft that someone else wrote or that was edited by hand.',
     );
   } catch { return false; }
 }
 
-/** The server's refusal to replace an AI, other-person or hand-edited draft without a confirm (see drafts.saveReply). */
+/** The server's refusal to overwrite a hand-written or other-person draft (see drafts.saveReply). */
 function isReplaceDraftRequired(error: unknown): boolean {
   const maybe = error as { data?: { code?: string }; message?: string };
   return maybe.data?.code === 'CONFLICT' && maybe.message === 'DRAFT_REPLACE_CONFIRM_REQUIRED';
@@ -274,10 +274,10 @@ export function useInsertAiDraft({
     }
 
     if (previousAttempt && previousAttempt.scope !== scope) {
-      // An attempt that may already have reached Outlook is retried with its own scope only.
+      // An attempt that may already have reached Outlook is retried with its own button only.
       if (previousAttempt.replyPayload) {
         toast.error(
-          `${replyLabel}An earlier reply for this email may already be in Outlook Drafts. Check Drafts before creating another reply.`,
+          `${replyLabel}An earlier reply for this email may already be in Outlook Drafts. Retry it with its own button, or check Drafts first.`,
         );
         return;
       }
@@ -295,7 +295,7 @@ export function useInsertAiDraft({
         scope === 'saved'
           ? `${replyLabel}The saved reply could not be loaded. Select the email again.`
           : scope === 'all'
-            ? `${replyLabel}Rate every stay and prepare the quote first. The quote must match every stay's run.`
+            ? `${replyLabel}Prepare a PDF for each date option first. Each PDF must match its own run.`
             : 'Make the PDF and finish the reply before creating the draft. Sample rates are never used.',
       );
       return;

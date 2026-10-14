@@ -11,11 +11,12 @@ import {
 import type { DB } from '../../db/client.js';
 import {
   attachment,
+  mailCategory,
   mailDraft,
   mailThread,
+  mailThreadCategory,
   message,
 } from '../../db/schema/mail.js';
-import { threadInCategories } from '../extraction-pill.js';
 import { THREAD_SEARCH_VECTOR_CONFIG } from './search-vector.js';
 import type { ParsedSearchQuery } from './types.js';
 
@@ -212,7 +213,21 @@ export function buildThreadSearchConditions(
   }
 
   for (const slug of parsed.categorySlugs) {
-    conditions.push(threadInCategories(db, ctx.transportId, { slug }));
+    conditions.push(
+      exists(
+        db
+          .select({ one: sql`1` })
+          .from(mailThreadCategory)
+          .innerJoin(mailCategory, eq(mailThreadCategory.categoryId, mailCategory.id))
+          .where(
+            and(
+              eq(mailThreadCategory.threadId, mailThread.id),
+              eq(mailThreadCategory.transportId, ctx.transportId),
+              eq(mailCategory.slug, slug),
+            ),
+          ),
+      ),
+    );
   }
 
   return conditions;

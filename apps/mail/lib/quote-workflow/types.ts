@@ -51,15 +51,7 @@ export type StayGroupRequirement = {
   fields: Record<string, FactProvenance>;
   /** HMS rate code pinned from a rate card. Cleared when staff change the board, dates or room type by hand. */
   rateCode?: string;
-  /** The price staff chose for this row instead of HMS's nightly rate. Absent means HMS prices the row. */
-  rowPrice?: RowPriceChoice;
 };
-
-/** Staff's price for one row (KTD6). A saved rate is named by id; its name and amount are copied for display. */
-export type RowPriceChoice =
-  | { source: 'saved'; customRateId: string; name: string; amountMinor: number }
-  | { source: 'one_off'; amountMinor: number }
-  | { source: 'override'; rateCode: string; amountMinor: number; note: string };
 
 export type QuoteReviewItemKind =
   | 'pricing_fact'
@@ -210,21 +202,6 @@ export type RateOption = {
   currency: string;
   priced: 'full' | 'summary';
   selected: boolean;
-  /** Staff-only label. Ranking, matching and pricing never read it. */
-  hint?: 'event_rate';
-};
-
-/** What one row was charged on its last run: HMS's nightly rates, the rates charged, and for an override its HMS comment. */
-export type StaffRowRate = {
-  groupId: string;
-  source: 'hms' | 'saved' | 'one_off' | 'override';
-  hmsNightlyMinor: number[];
-  nightlyMinor: number[];
-  customRateName?: string;
-  rateCode?: string;
-  note?: string;
-  /** The line staff paste into the HMS comments. Never shown to the client. */
-  hmsComment?: string;
 };
 
 export type StaffQuoteAllocation = {
@@ -248,16 +225,12 @@ export type StaffQuoteAllocation = {
     clientEmail: string;
     clientTelephone: string;
   };
-  /** True when this run carried the once-per-quote extras (the shuttle, a per-trip or one-item "other" charge). */
-  onceExtras?: boolean;
   /** HMS evidence run for the audit view; null when the run left no screenshots. */
   runId?: string | null;
   /** Screenshot file names for runId, in capture order. */
   screenshots?: string[];
   /** Rate options from this run. Carried on the allocation because the pane dispatches the allocation alone. */
   rateOptions?: RateOption[];
-  /** Each row's charged rate from this run, with the HMS comment for an override. */
-  rowRates?: StaffRowRate[];
 };
 
 /** The HMS company or agency staff picked with Find in HMS. nativeId is HMS's id; the server re-checks it before any rate. */
@@ -543,8 +516,8 @@ export type QuoteSession = {
   handledReviewItemIds: string[];
   /** Rate cards for the latest run of each room group. Kept while a pinned re-run is pending. */
   rateOptions?: RateOption[];
-  /** U8 booking cards, one per stay whose matching prepareBookingDraft result has arrived. */
-  bookingDrafts: Record<string, BookingDraftReady>;
+  /** U8 booking card. Null until a matching prepareBookingDraft result arrives. */
+  bookingDraft: BookingDraftReady | null;
   /** Staff override that re-runs analyseSelection as quote or booking. */
   treatAs: 'quote' | 'create_booking' | null;
   /** Staff "Tell Luna" note re-submitted as top-priority evidence. */

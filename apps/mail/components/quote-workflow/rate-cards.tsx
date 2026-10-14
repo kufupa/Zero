@@ -1,9 +1,6 @@
 import { draftMoney } from '@/lib/quote-workflow/multi-option-draft';
 import type { RateOption } from '@/lib/quote-workflow/types';
 
-/** Shown on GNC3B and GNC4B. The server marks these as event rates; they are never matched, ranked or priced differently. */
-export const CRICKET_RATE_HINT = 'Cricket event rate. Shown for reference: never matched, ranked or priced differently.';
-
 /**
  * The rate cards for one room group: the options HMS returned, in its order. The quoted one is green. Tapping another
  * pins that rate and re-runs the quote for it, so the PDF follows the pick. The panel shows these for two or more options.
@@ -64,7 +61,6 @@ export function RateCards({
                   {`Not what they asked: ${option.boardLabel}`}
                 </span>
               )}
-              {option.hint === 'event_rate' ? <span className="text-[11px] text-[#475569]">{CRICKET_RATE_HINT}</span> : null}
               {loading && selected ? (
                 <span role="status" className="flex items-center gap-1.5 text-[11px] font-semibold text-[#0066cc]">
                   <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-2 border-[#0066cc] border-t-transparent" />

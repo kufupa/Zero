@@ -1,14 +1,6 @@
 import { triggerBlobDownload } from '../attachment-access';
-import {
-  canCreatePdf,
-  combinedStayRuns,
-  dinnerAllowanceStillRequired,
-  evidenceMatchesSession,
-  isMultiStay,
-  ratedStayCount,
-  staffSourceReady,
-} from './session';
-import { revisionMatchesRequest, type QualifiedStaffPdfInput, type QualifiedStaffWorkbookResult } from './staff-quote-bind';
+import { canCreatePdf, dinnerAllowanceStillRequired, evidenceMatchesSession, staffSourceReady } from './session';
+import type { QualifiedStaffPdfInput, QualifiedStaffWorkbookResult } from './staff-quote-bind';
 import type { QuoteSession } from './types';
 
 export const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -30,7 +22,6 @@ export function workbookRequestFor(session: QuoteSession): WorkbookRequest {
   if (dinnerAllowanceStillRequired(session.staffHeader)) {
     return unavailable('Enter the dinner allowance per person per night before downloading the Excel.');
   }
-  if (isMultiStay(session)) return combinedDocumentRequest(session);
   const key = session.selectedStayKey;
   const quote = key ? (session.staffQuotes[key] ?? null) : null;
   if (!key || !quote) return unavailable(NOT_READY);
@@ -59,45 +50,6 @@ export function workbookRequestFor(session: QuoteSession): WorkbookRequest {
       clientTelephone: header.clientTelephone,
     },
     expectedTotalMinor: quote.totalMinor,
-  };
-}
-
-/**
- * The one document for a multi-stay quote, made from every stay's current run. The first stay is the primary run and
- * each other stay goes in additionalStays. Until every stay is rated the reason is the count, e.g. "1 of 2 stays rated".
- */
-export function combinedDocumentRequest(session: QuoteSession): WorkbookRequest {
-  const authorised =
-    staffSourceReady(session) && session.evidence?.kind === 'authorised' && evidenceMatchesSession(session);
-  if (!authorised) return unavailable('This is sample data, so no quote can be made. Open a live email to continue.');
-  const runs = combinedStayRuns(session);
-  const source = session.staffSource;
-  if (!runs || !source) {
-    const { rated, total } = ratedStayCount(session);
-    return unavailable(`${rated} of ${total} stays rated`);
-  }
-  const primary = runs[0]!;
-  const header = primary.approvedHeader;
-  return {
-    status: 'ok',
-    input: {
-      workflowRunId: primary.workflowRunId,
-      revisionRef: primary.revisionRef,
-      messageId: source.messageId,
-      outlookEmail: session.binding?.mailboxEmail ?? '',
-      factRefs: primary.factRefs,
-      company: header.company,
-      agency: header.agency,
-      attention: header.attention,
-      clientEmail: header.clientEmail,
-      clientTelephone: header.clientTelephone,
-      additionalStays: runs.slice(1).map((run) => ({
-        workflowRunId: run.workflowRunId,
-        revisionRef: run.revisionRef,
-        factRefs: run.factRefs,
-      })),
-    },
-    expectedTotalMinor: runs.reduce((sum, run) => sum + run.totalMinor, 0),
   };
 }
 
@@ -140,14 +92,13 @@ export async function bindQualifiedStaffWorkbook(args: {
       clientEmail: args.input.clientEmail,
       clientTelephone: args.input.clientTelephone,
       agency: args.input.agency,
-      ...(args.input.additionalStays?.length ? { additionalStays: args.input.additionalStays } : {}),
     });
     const bytes = bytesFromBase64(result?.xlsxBase64 ?? '');
     const matches =
       !!result &&
       typeof result.fileName === 'string' &&
       /^Quote - .+\.xlsx$/.test(result.fileName) &&
-      revisionMatchesRequest(args.input, result.revisionId) &&
+      result.revisionId === args.input.revisionRef &&
       Number.isSafeInteger(result.totalMinor) &&
       result.totalMinor > 0 &&
       result.totalMinor === args.expectedTotalMinor &&

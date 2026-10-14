@@ -6,7 +6,7 @@ import { TRPCError } from '@trpc/server';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
-import { aiDraftGeneration, mailDraft, mailDraftRevision } from '../src/db/schema/mail.js';
+import { mailDraft, mailDraftRevision } from '../src/db/schema/mail.js';
 import { CENTURION_USER_ID, NAVA_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
 import { configureDraftArtifactStorage } from '../src/trpc/routes/drafts.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread';
@@ -111,9 +111,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .select()
             .from(mailDraftRevision)
             .where(eq(mailDraftRevision.draftId, saved.id));
-          // A saved reply is a human revision, never labelled as AI output.
-          expect(revisions.map((r) => [r.kind, r.actorUserId])).toEqual([['created', NAVA_USER_ID]]);
-          expect(revisions[0]?.id).toMatch(/^saved-reply:/);
+          expect(revisions.map((r) => [r.kind, r.actorUserId])).toEqual([
+            ['ai_generated', NAVA_USER_ID],
+          ]);
 
           const read = await nava.drafts.savedReply({ threadId: THREAD_ID });
           expect(read).toEqual({
@@ -143,7 +143,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .select()
             .from(mailDraftRevision)
             .where(eq(mailDraftRevision.draftId, first.id));
-          expect(revisions.map((r) => r.kind).sort()).toEqual(['created', 'edited']);
+          expect(revisions.map((r) => r.kind)).toEqual(['ai_generated', 'ai_generated']);
           expect((await nava.drafts.savedReply({ threadId: THREAD_ID }))?.html).toContain('Second');
         });
       },
@@ -151,7 +151,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      "another person's saved reply needs the replace confirm, then is set aside for a new draft",
+      "another person's saved reply needs the replace confirm, then is replaced in place",
       async () => {
         await withSeededTestDb(async (db) => {
           await seedThreads(db);
@@ -171,21 +171,24 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           const replaced = await centurion.drafts.saveReply(
             saveInput('<p>Centurion reply</p>', true),
           );
-          expect(replaced).toEqual({ id: expect.any(String), replaced: true });
-          expect(replaced.id).not.toBe(first.id);
-          const [old] = await db.select().from(mailDraft).where(eq(mailDraft.id, first.id));
-          expect(old).toMatchObject({ status: 'discarded' });
-          expect(old?.htmlBody).toContain('Navaai reply');
-          const [current] = await db.select().from(mailDraft).where(eq(mailDraft.id, replaced.id));
-          expect(current).toMatchObject({ status: 'active', createdByUserId: CENTURION_USER_ID });
-          expect(current?.htmlBody).toContain('Centurion reply');
+          expect(replaced).toEqual({ id: first.id, replaced: true });
+          const drafts = await db.select().from(mailDraft).where(eq(mailDraft.threadId, THREAD_ID));
+          expect(drafts.map((d) => d.id)).toEqual([first.id]);
+          expect(drafts[0]?.htmlBody).toContain('Centurion reply');
+          const revisions = await db
+            .select()
+            .from(mailDraftRevision)
+            .where(eq(mailDraftRevision.draftId, first.id));
+          expect(revisions.map((r) => r.actorUserId).sort()).toEqual(
+            [CENTURION_USER_ID, NAVA_USER_ID].sort(),
+          );
         });
       },
       30000,
     );
 
     it(
-      'a hand edit needs the replace confirm, then replaceExisting sets it aside for a new draft',
+      'a hand edit needs the replace confirm, then replaceExisting replaces the same draft',
       async () => {
         await withSeededTestDb(async (db) => {
           await seedThreads(db);
@@ -215,64 +218,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           expect(unchanged?.htmlBody).toContain('Hand edit');
 
           const replaced = await nava.drafts.saveReply(saveInput('<p>Overwrite</p>', true));
-          expect(replaced).toEqual({ id: expect.any(String), replaced: true });
-          const [kept] = await db.select().from(mailDraft).where(eq(mailDraft.id, first.id));
-          expect(kept).toMatchObject({ status: 'discarded' });
-          expect(kept?.htmlBody).toContain('Hand edit');
-          expect((await nava.drafts.savedReply({ threadId: THREAD_ID }))?.html).toContain('Overwrite');
-        });
-      },
-      30000,
-    );
-
-    it(
-      'an active AI draft needs the replace confirm and keeps its origin, generation and revisions',
-      async () => {
-        await withSeededTestDb(async (db) => {
-          await seedThreads(db);
-          const nava = await callerFor(NAVA_USER_ID, { db, requestedTransportId: TRANSPORT_ID });
-          await db.insert(aiDraftGeneration).values({
-            id: 'gen-save-reply',
-            transportId: TRANSPORT_ID,
-            threadId: THREAD_ID,
-            requestedByUserId: NAVA_USER_ID,
-            model: 'test-model',
-            promptVersion: 'test',
-          });
-          await db.insert(mailDraft).values({
-            id: 'draft-ai-active',
-            transportId: TRANSPORT_ID,
-            threadId: THREAD_ID,
-            createdByUserId: NAVA_USER_ID,
-            replyToMessageId: MESSAGE_ID,
-            htmlBody: '<p>AI reply</p>',
-            status: 'active',
-            origin: 'ai',
-            generationId: 'gen-save-reply',
-          });
-          await db.insert(mailDraftRevision).values({
-            id: 'rev-ai-active',
-            draftId: 'draft-ai-active',
-            generationId: 'gen-save-reply',
-            kind: 'ai_generated',
-            htmlBody: '<p>AI reply</p>',
-          });
-
-          const refused = await refusalOf(nava.drafts.saveReply(saveInput('<p>Mine</p>')));
-          expect(refused.message).toBe('DRAFT_REPLACE_CONFIRM_REQUIRED');
-
-          const saved = await nava.drafts.saveReply(saveInput('<p>Mine</p>', true));
-          expect(saved.replaced).toBe(true);
-          const [ai] = await db.select().from(mailDraft).where(eq(mailDraft.id, 'draft-ai-active'));
-          expect(ai).toMatchObject({ status: 'discarded', origin: 'ai', generationId: 'gen-save-reply' });
-          expect(ai?.htmlBody).toBe('<p>AI reply</p>');
-          const aiRevisions = await db
-            .select()
-            .from(mailDraftRevision)
-            .where(eq(mailDraftRevision.draftId, 'draft-ai-active'));
-          expect(aiRevisions.map((r) => r.kind)).toEqual(['ai_generated']);
-          const [mine] = await db.select().from(mailDraft).where(eq(mailDraft.id, saved.id));
-          expect(mine).toMatchObject({ status: 'active', origin: 'manual', generationId: null });
+          expect(replaced).toEqual({ id: first.id, replaced: true });
+          const drafts = await db.select().from(mailDraft).where(eq(mailDraft.threadId, THREAD_ID));
+          expect(drafts.map((d) => d.id)).toEqual([first.id]);
+          expect(drafts[0]?.htmlBody).toContain('Overwrite');
         });
       },
       30000,

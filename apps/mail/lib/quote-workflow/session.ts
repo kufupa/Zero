@@ -17,7 +17,7 @@ import type {
 } from './types';
 import { emptyStaffQuoteHeader, staffHeaderFieldProblem, type StaffExtraField } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
-import { approvedExecuteHeader, hasOncePerQuoteExtras } from './staff-quote-bind';
+import { approvedExecuteHeader } from './staff-quote-bind';
 import { knownRoomCode, type RoomTypeCode } from './room-types';
 
 /**
@@ -158,8 +158,6 @@ export function optionLetter(index: number): string {
 export function pendingPdfStayKey(
   session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs'>,
 ): string | null {
-  // A combined quote has one PDF for all stays, so no single stay waits for its own.
-  if (isMultiStay(session)) return null;
   return (
     requestedQuoteKeys(session.groups).find(
       (key) => Boolean(session.staffQuotes[key]) && !session.stayPdfs[key],
@@ -315,7 +313,7 @@ export function initialQuoteSession(): QuoteSession {
     handledSourceKey: null,
     reviewItems: [],
     handledReviewItemIds: [],
-    bookingDrafts: {},
+    bookingDraft: null,
     treatAs: null,
     staffNote: null,
     stayRevision: 1,
@@ -378,77 +376,6 @@ export function staffQuoteForStay(
   return session.staffQuotes[stayKey] ?? (session.staffQuote?.quoteRequestKey === stayKey ? session.staffQuote : null);
 }
 
-/** More than one date option. The combined quote then needs a current staff run for every stay. */
-export function isMultiStay(session: Pick<QuoteSession, 'groups'>): boolean {
-  return requestedQuoteKeys(session.groups).length > 1;
-}
-
-/**
- * A stay's staff run when it still matches the session: the same selection and inputs, the same source and header,
- * and the offer it was booked on. Null when the stay has no run or the run is stale.
- */
-export function currentStayRun(session: QuoteSession, key: string): StaffQuoteAllocation | null {
-  const quote = session.staffQuotes[key];
-  const source = session.staffSource;
-  const binding = session.binding;
-  if (!quote || !source || !binding || !staffSourceReady(session)) return null;
-  const offer = session.offers.find((item) => item.id === quote.revisionRef);
-  if (!offer || offer.kind !== 'allocation' || offer.nightly.length) return null;
-  let header: ReturnType<typeof approvedExecuteHeader>;
-  try {
-    header = approvedExecuteHeader(session.staffHeader);
-  } catch {
-    return null;
-  }
-  const current =
-    quote.totalMinor > 0 &&
-    quote.quoteRequestKey === key &&
-    quote.selectionEpoch === binding.selectionEpoch &&
-    quote.inputRevision === session.inputRevision &&
-    quote.sourceHash === source.sourceHash &&
-    quote.messageId === source.messageId &&
-    quote.threadId === source.threadId &&
-    quote.approvedHeader.salesStrategy === header.salesStrategy &&
-    quote.approvedHeader.company === header.company &&
-    quote.approvedHeader.agency === header.agency &&
-    offer.stayTotalMinor === quote.totalMinor;
-  if (!current) return null;
-  // A combined quote charges the once-per-quote extras once, on the first stay. A run that has them on another stay, or
-  // a first stay's run without them, would put the wrong amount in the total.
-  if (isMultiStay(session) && Boolean(quote.onceExtras) !== runCarriesOnceExtras(session, key)) return null;
-  return quote;
-}
-
-/**
- * Whether the run of this stay carries the once-per-quote extras (the shuttle, a per-trip or one-item "other" charge):
- * one stay always does, and a combined quote charges them on its first stay only.
- */
-export function runCarriesOnceExtras(
-  session: Pick<QuoteSession, 'groups' | 'staffHeader'>,
-  stayKey: string,
-): boolean {
-  return hasOncePerQuoteExtras(session.staffHeader) && rowsTakeOnceExtras(session, [stayKey]);
-}
-
-/** False only for a run of a combined quote's stays other than the first: it leaves the once-per-quote extras out. */
-export function rowsTakeOnceExtras(session: Pick<QuoteSession, 'groups'>, stayKeys: readonly string[]): boolean {
-  const keys = requestedQuoteKeys(session.groups);
-  return keys.length <= 1 || stayKeys.includes(keys[0]!);
-}
-
-/** Every date option's current staff run in option order, or null while any stay is unrated or its run is stale. */
-export function combinedStayRuns(session: QuoteSession): StaffQuoteAllocation[] | null {
-  const keys = requestedQuoteKeys(session.groups);
-  const runs = keys.map((key) => currentStayRun(session, key));
-  return keys.length > 0 && runs.every((run): run is StaffQuoteAllocation => run !== null) ? runs : null;
-}
-
-/** How many date options have a current staff run. Drives the "1 of 2 stays rated" message. */
-export function ratedStayCount(session: QuoteSession): { rated: number; total: number } {
-  const keys = requestedQuoteKeys(session.groups);
-  return { rated: keys.filter((key) => currentStayRun(session, key) !== null).length, total: keys.length };
-}
-
 export function staffSourceReady(session: Pick<QuoteSession, 'staffSource'>): boolean {
   const source = session.staffSource;
   return Boolean(
@@ -496,8 +423,6 @@ export function canCreatePdf(session: QuoteSession): boolean {
   if (staffHeaderFieldProblem(session.staffHeader)) return false;
   if (!staffSourceReady(session)) return false;
   if (!evidenceMatchesSession(session) || session.evidence?.kind !== 'authorised') return false;
-  // A combined quote is one document for every stay: each stay needs its current run, not one selection.
-  if (isMultiStay(session)) return combinedStayRuns(session) !== null;
   const selectedKeys = new Set(
     session.selectedOfferIds
       .map((id) => session.offers.find((item) => item.id === id)?.quoteRequestKey)
@@ -521,8 +446,6 @@ export function canCreatePdf(session: QuoteSession): boolean {
 }
 
 export function canCreateNativeDraft(session: QuoteSession): boolean {
-  // A combined quote's reply is the multi-stay draft, which checks its own PDF. The single-stay reply never applies.
-  if (isMultiStay(session)) return Boolean(session.pdf) && canCreatePdf(session);
   if (!session.pdf || !session.reviewedReplyHtml.trim() || !canCreatePdf(session)) return false;
   const quote = staffQuoteForStay(session);
   if (!quote) return true;
@@ -548,7 +471,7 @@ function clearDownstream(session: QuoteSession): QuoteSession {
     staffQuotes: {},
     stayPdfs: {},
     rateOptions: [],
-    bookingDrafts: {},
+    bookingDraft: null,
     // Results are gone, so every date option is runnable again.
     steps: session.steps.map((step) =>
       step.kind === 'quote_stay' ? { ...step, status: 'ready' as const, retryGuidance: undefined } : step,
@@ -742,10 +665,7 @@ function blankRow(
   return { id, stayId, ...dates, childrenAges: [], specialRequests: [], fields: {} };
 }
 
-/**
- * A duplicate row: the same values under a new id and stay, with no rate pin or row price. Staff own every value in the
- * copy, and an approved override belongs to the row it was approved for.
- */
+/** A duplicate row: the same values under a new id and stay, with no rate pin. Staff own every value in the copy. */
 function copyRow(source: StayGroupRequirement, id: string, stayId: string): StayGroupRequirement {
   const copy: StayGroupRequirement = {
     ...source,
@@ -757,7 +677,6 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
     fields: Object.fromEntries(Object.keys(source.fields).map((key) => [key, 'staff_corrected' as const])),
   };
   delete copy.rateCode;
-  delete copy.rowPrice;
   return copy;
 }
 
@@ -780,22 +699,6 @@ function rePlanSteps(
  * run in flight. The input revision moves only when the running option is one of the touched ones: its result would
  * otherwise land on rows that changed under it. `keepRatesOf` keeps one row's rate cards while its pinned re-run waits.
  */
-/**
- * Puts a re-run stay's rows in place of that stay's old rows. The other stays keep their rows and order. With one stay
- * the new rows are the whole session, as before.
- */
-function replaceStayRows(current: StayGroupRequirement[], next: StayGroupRequirement[]): StayGroupRequirement[] {
-  if (requestedQuoteKeys(current).length <= 1) return next;
-  const keys = new Set(next.map(stayKeyForGroup));
-  const at = current.findIndex((group) => keys.has(stayKeyForGroup(group)));
-  if (at < 0) return [...current, ...next];
-  // A re-run keeps the stay's identity, so its new rows keep the stayId the old rows had.
-  const stayId = current[at]?.stayId;
-  const rows = stayId ? next.map((group) => ({ ...group, stayId })) : next;
-  const rest = current.filter((group) => !keys.has(stayKeyForGroup(group)));
-  return [...rest.slice(0, at), ...rows, ...rest.slice(at)];
-}
-
 function editStays(
   session: QuoteSession,
   groups: StayGroupRequirement[],
@@ -844,12 +747,10 @@ function editStays(
     offers,
     selectedOfferIds: session.selectedOfferIds.filter((id) => offers.some((offer) => offer.id === id)),
     staffQuote: selectedAffected ? null : session.staffQuote,
-    // A combined PDF covers every stay, so any edit to the stays makes it stale.
-    pdf: selectedAffected || keys.length > 1 || isMultiStay(session) ? null : session.pdf,
+    pdf: selectedAffected ? null : session.pdf,
     // The evidence still backs the results of the stays that were not touched. It goes only with the last result.
     evidence: hasResults ? session.evidence : null,
-    // Only the edited stays lose their booking drafts. A single stay has no other drafts to keep.
-    bookingDrafts: isMultiStay(session) ? keepKeys(session.bookingDrafts, affected, false) : {},
+    bookingDraft: null,
     rateOptions: (session.rateOptions ?? []).filter(
       (option) => option.groupId === keepRatesOf || !affectedGroupIds.has(option.groupId),
     ),
@@ -931,11 +832,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const chosen = { ...session, treatAs: action.treatAs };
       // Rates were got for the old type. A booking needs its cards and a quote must not keep them, so the results go
       // and Get rates runs again for the chosen type. The stays staff have are kept.
-      if (
-        !session.staffQuote &&
-        Object.keys(session.bookingDrafts).length === 0 &&
-        Object.keys(session.staffQuotes ?? {}).length === 0
-      ) {
+      if (!session.staffQuote && !session.bookingDraft && Object.keys(session.staffQuotes ?? {}).length === 0) {
         return chosen;
       }
       return clearDownstream({
@@ -1153,8 +1050,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         selectedStayKey: action.stayKey,
         staffQuote: quote,
         selectedOfferIds: quote ? [quote.revisionRef] : [],
-        // A combined PDF covers every stay, so it stays when the selection moves between them.
-        pdf: isMultiStay(session) ? session.pdf : (session.stayPdfs[action.stayKey] ?? null),
+        pdf: session.stayPdfs[action.stayKey] ?? null,
+        bookingDraft:
+          quote && session.bookingDraft?.revisionRef === quote.revisionRef ? session.bookingDraft : null,
       };
     }
     case 'staff_quote_ready': {
@@ -1208,14 +1106,13 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         staffHeader: action.approvedHeader
           ? { ...session.staffHeader, ...action.approvedHeader }
           : session.staffHeader,
-        groups: action.groups?.length ? replaceStayRows(session.groups, action.groups) : session.groups,
+        groups: action.groups?.length ? action.groups : session.groups,
         stayRevision: action.groups?.length ? session.stayRevision + 1 : session.stayRevision,
         reviewItems: reviewItemsFromExtrasNotes(session, action.extrasReviewItems ?? []),
         steps: session.steps.map((step) =>
           step.shareKey === stayKey ? { ...step, status: 'succeeded' as const, retryGuidance: undefined } : step,
         ),
-        // Only this stay's booking draft is stale. The other stays' drafts still match their own runs.
-        bookingDrafts: stayCount > 1 ? keepKeys(session.bookingDrafts, new Set([stayKey]), false) : {},
+        bookingDraft: null,
       };
     }
     case 'booking_draft_ready': {
@@ -1226,12 +1123,10 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const source = session.staffSource;
       if (!source || source.sourceHash !== action.sourceHash) return session;
       if (source.messageId !== action.payload.messageId) return session;
-      // A draft belongs to the stay whose run it was prepared from. With no matching run it is stale.
-      const draftKey = Object.keys(session.staffQuotes).find(
-        (key) => session.staffQuotes[key]?.revisionRef === action.payload.revisionRef,
-      );
-      if (!draftKey) return session;
-      return { ...session, bookingDrafts: { ...session.bookingDrafts, [draftKey]: action.payload } };
+      if (!session.staffQuote || session.staffQuote.revisionRef !== action.payload.revisionRef) {
+        return session;
+      }
+      return { ...session, bookingDraft: action.payload };
     }
     case 'handle_review_item': {
       const item = session.reviewItems.find((row) => row.id === action.itemId);
@@ -1283,12 +1178,12 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         group.id === action.groupId ? applyGroupPatch(group, action.patch) : group,
       );
       const patched = groups.find((group) => group.id === action.groupId)!;
-      // A rate pick or a row price keeps its own cards on screen while the re-run is pending. Other edits clear them.
+      // A rate pick keeps its own cards on screen while the pinned re-run is pending. Other edits clear them.
       return editStays(
         session,
         groups,
         new Set([stayKeyForGroup(target), stayKeyForGroup(patched)]),
-        'rateCode' in action.patch || 'rowPrice' in action.patch ? action.groupId : undefined,
+        'rateCode' in action.patch ? action.groupId : undefined,
       );
     }
     case 'add_stay': {
@@ -1482,11 +1377,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
-      // A combined PDF is for the stays' current runs (the action names them), whichever option is selected.
-      const expectedIds = isMultiStay(session)
-        ? (combinedStayRuns(session)?.map((run) => run.revisionRef) ?? [])
-        : session.selectedOfferIds;
-      if (!sameSelectedOfferIds(action.selectedOfferIds, expectedIds)) {
+      if (!sameSelectedOfferIds(action.selectedOfferIds, session.selectedOfferIds)) {
         return session;
       }
       const stayKey = session.selectedStayKey;
@@ -1494,20 +1385,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         ...session,
         pdf: action.pdf,
         phase: 'review',
-        // A combined PDF is one document for all stays, so it is not kept under any one of them.
-        stayPdfs: stayKey && !isMultiStay(session) ? { ...session.stayPdfs, [stayKey]: action.pdf } : session.stayPdfs,
+        stayPdfs: stayKey ? { ...session.stayPdfs, [stayKey]: action.pdf } : session.stayPdfs,
       };
     }
     case 'set_reviewed_reply':
       return { ...session, reviewedReplyHtml: action.html };
     case 'select_offers':
       if (sameSelectedOfferIds(action.offerIds, session.selectedOfferIds)) return session;
-      // A combined PDF covers every stay's run, not the selection, so it stays.
-      return {
-        ...session,
-        selectedOfferIds: action.offerIds,
-        pdf: isMultiStay(session) ? session.pdf : null,
-      };
+      return { ...session, selectedOfferIds: action.offerIds, pdf: null };
     case 'mailbox_status':
       return { ...session, mailboxStatus: action.status };
     default:

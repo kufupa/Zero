@@ -6,17 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { toast } from 'sonner';
 
-const { sendCommandMock, sessionState, COMBINED, OPTIONS } = vi.hoisted(() => ({
+const { sendCommandMock, sessionState, OPTIONS } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
   sessionState: { timeoutFirstCreate: false },
-  // The one PDF that covers every date option (the server's combined document).
-  COMBINED: {
-    revisionId: 'quotes:both',
-    pdfHash: '124dff05a6467fc826cdd3097cee8f35b69b85988fadeef713fb5a2ea072461d',
-    fileName: 'Quote - Standard King.pdf',
-    pdfBase64: 'JVBERi0xLjQgY29tYmluZWQ=',
-    totalMinor: 408000,
-  },
   OPTIONS: [
     {
       revisionRef: 'rev-a',
@@ -155,9 +147,7 @@ vi.mock('../providers/query-provider', () => {
           },
         },
         qualifiedQuoteProposalPdf: {
-          mutate: async (input: { revisionRef: string; additionalStays?: unknown[] }) => {
-            // Several date options come back as one combined document.
-            if (input.additionalStays?.length) return { ...COMBINED, centsReconciled: true };
+          mutate: async (input: { revisionRef: string }) => {
             const option = OPTIONS.find((item) => item.revisionRef === input.revisionRef)!;
             return {
               revisionId: option.revisionRef,
@@ -204,36 +194,19 @@ vi.mock('../providers/query-provider', () => {
   };
 });
 
-const COMBINED_REPLY = 'Create one reply with all date options (A, B)';
-
-/** Runs one date option's staff search and waits for its rate. */
-async function runOption(arrival: string): Promise<void> {
+async function quoteOption(letter: 'A' | 'B', arrival: string): Promise<void> {
   fireEvent.click(
     await screen.findByRole('button', { name: new RegExp(`^Run Search availability ${arrival}`) }),
   );
   await waitFor(() =>
+    expect(screen.getByRole('button', { name: `Prepare PDF for option ${letter}` })).toBeDefined(),
+  );
+  fireEvent.click(screen.getByRole('button', { name: `Prepare PDF for option ${letter}` }));
+  await waitFor(() =>
     expect(
       screen.getByRole('button', { name: new RegExp(`^Select date scope ${arrival}`) }).textContent,
-    ).toMatch(/Quoted R/),
+    ).toMatch(/PDF ready/),
   );
-}
-
-/** With every stay rated, one Prepare quote click makes the combined PDF for all of them. */
-async function prepareCombinedQuote(): Promise<void> {
-  await waitFor(() =>
-    expect((screen.getByRole('button', { name: 'Prepare quote' }) as HTMLButtonElement).disabled).toBe(false),
-  );
-  fireEvent.click(screen.getByRole('button', { name: 'Prepare quote' }));
-  await waitFor(() =>
-    expect(screen.getByText(/Prepared quote Quote - Standard King\.pdf for all stays/)).toBeDefined(),
-  );
-}
-
-async function draftCombinedReply(): Promise<void> {
-  await waitFor(() =>
-    expect((screen.getByRole('button', { name: COMBINED_REPLY }) as HTMLButtonElement).disabled).toBe(false),
-  );
-  fireEvent.click(screen.getByRole('button', { name: COMBINED_REPLY }));
 }
 
 function callsFor(action: string) {
@@ -274,68 +247,107 @@ describe('Outlook pane: one reply for every completed date option', () => {
     vi.mocked(toast.warning).mockClear();
   });
 
-  it('runs both date options, prepares one combined quote, and drafts one reply with it', async () => {
+  it('keeps the single-option label until a second option has its PDF, then drafts all options together', async () => {
     render(<OutlookPanePage />);
-    await runOption('2027-11-12');
-    expect(screen.getAllByText('1 of 2 stays rated').length).toBeGreaterThan(0);
-    await runOption('2027-12-01');
-    await prepareCombinedQuote();
-    await draftCombinedReply();
+    await quoteOption('A', '2027-11-12');
+    expect(screen.getByRole('button', { name: /Insert Draft in Outlook/i })).toBeDefined();
     expect(
-      screen.getByText('Puts the quote for every date option into one email draft. Nothing is sent.'),
+      screen.queryByRole('button', { name: /Create one reply with all date options/ }),
+    ).toBeNull();
+
+    await quoteOption('B', '2027-12-01');
+    expect(screen.getByText('Use Draft option B only below for this option.')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Draft option B only' })).toBeDefined();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Create one reply with all date options (A, B)' }),
+    );
+    expect(
+      screen.getByText('Puts every option you ran into one email draft. Nothing is sent.'),
     ).toBeDefined();
 
-    await waitFor(() => expect(callsFor('ADD_ATTACHMENT_TO_DRAFT')).toHaveLength(1));
+    await waitFor(() => expect(callsFor('ADD_ATTACHMENT_TO_DRAFT')).toHaveLength(2));
     expect(callsFor('CREATE_REPLY_DRAFT')).toHaveLength(1);
     const create = callsFor('CREATE_REPLY_DRAFT')[0]![1] as { htmlBody: string };
-    expect(create.htmlBody).toContain('One quotation PDF covers all of them.');
     expect(create.htmlBody).toContain('Option A: 12–14 Nov 2027');
     expect(create.htmlBody).toContain('Option B: 1–3 Dec 2027');
     expect(create.htmlBody.match(/<table/g)).toHaveLength(2);
     expect(create.htmlBody).toMatch(/Option A total: R2\D*720\.00/);
     expect(create.htmlBody).toMatch(/Option B total: R1\D*360\.00/);
-    expect(create.htmlBody).toMatch(/Total for all options: R4\D*080\.00/);
 
     const attachments = callsFor('ADD_ATTACHMENT_TO_DRAFT').map(
-      ([, payload]) => payload as { fileName: string; base64Data: string; entryId: string },
+      ([, payload]) =>
+        payload as {
+          operationId: string;
+          entryId: string;
+          fileName: string;
+          base64Data: string;
+        },
     );
-    expect(attachments.map((item) => item.fileName)).toEqual([COMBINED.fileName]);
-    expect(attachments.map((item) => item.base64Data)).toEqual([COMBINED.pdfBase64]);
+    expect(attachments.map((item) => item.fileName)).toEqual([
+      'Quote-rev-a - Option A.pdf',
+      'Quote-rev-b - Option B.pdf',
+    ]);
+    expect(attachments.map((item) => item.base64Data)).toEqual([
+      OPTIONS[0]!.pdfBase64,
+      OPTIONS[1]!.pdfBase64,
+    ]);
+    expect(new Set(attachments.map((item) => item.operationId)).size).toBe(2);
     expect(attachments.every((item) => item.entryId === 'draft-99')).toBe(true);
 
     const actions = new Set(sendCommandMock.mock.calls.map(([name]) => name));
     expect([...actions].every((name) => NATIVE_DRAFT_COMMANDS.has(name as string))).toBe(true);
-    await waitFor(() => expect(screen.getByText(/Attached: Quote - Standard King\.pdf/)).toBeDefined());
-  }, 30_000);
-
-  it('has no per-option draft and sends the staff-edited combined reply', async () => {
-    render(<OutlookPanePage />);
-    await runOption('2027-11-12');
-    await runOption('2027-12-01');
-    await prepareCombinedQuote();
-    expect(screen.queryByRole('button', { name: 'Draft option B only' })).toBeNull();
-    fireEvent.change(screen.getByLabelText('Combined reply'), {
-      target: { value: '<p>Edited combined reply</p>' },
-    });
-
-    await draftCombinedReply();
-    await waitFor(() => expect(callsFor('ADD_ATTACHMENT_TO_DRAFT')).toHaveLength(1));
-    expect((callsFor('CREATE_REPLY_DRAFT')[0]![1] as { htmlBody: string }).htmlBody).toBe(
-      '<p>Edited combined reply</p>',
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Attached: Quote-rev-a - Option A\.pdf, Quote-rev-b - Option B\.pdf/),
+      ).toBeDefined(),
     );
   }, 30_000);
 
-  it('retries the same combined reply after an unknown outcome instead of starting a second draft', async () => {
+  it('keeps a per-option draft for the selected option with only its own PDF', async () => {
+    render(<OutlookPanePage />);
+    await quoteOption('A', '2027-11-12');
+    await quoteOption('B', '2027-12-01');
+    fireEvent.change(screen.getByLabelText('Reviewed reply'), {
+      target: { value: '<p>Option B only</p>' },
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Draft option B only' }));
+    await waitFor(() => expect(callsFor('ADD_ATTACHMENT_TO_DRAFT')).toHaveLength(1));
+    expect((callsFor('CREATE_REPLY_DRAFT')[0]![1] as { htmlBody: string }).htmlBody).toBe(
+      '<p>Option B only</p>',
+    );
+    expect((callsFor('ADD_ATTACHMENT_TO_DRAFT')[0]![1] as { fileName: string }).fileName).toBe(
+      'Quote-rev-b.pdf',
+    );
+    expect((callsFor('ADD_ATTACHMENT_TO_DRAFT')[0]![1] as { base64Data: string }).base64Data).toBe(
+      OPTIONS[1]!.pdfBase64,
+    );
+  }, 30_000);
+
+  it('will not start a different draft while an earlier reply may already be in Outlook Drafts', async () => {
     sessionState.timeoutFirstCreate = true;
     render(<OutlookPanePage />);
-    await runOption('2027-11-12');
-    await runOption('2027-12-01');
-    await prepareCombinedQuote();
+    await quoteOption('A', '2027-11-12');
+    await quoteOption('B', '2027-12-01');
+    fireEvent.change(screen.getByLabelText('Reviewed reply'), {
+      target: { value: '<p>Option B only</p>' },
+    });
 
-    await draftCombinedReply();
+    fireEvent.click(await screen.findByRole('button', { name: 'Draft option B only' }));
     await waitFor(() => expect(callsFor('CREATE_REPLY_DRAFT')).toHaveLength(1));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Draft option B only' }).hasAttribute('disabled'),
+      ).toBe(false),
+    );
 
-    await draftCombinedReply();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Create one reply with all date options (A, B)' }),
+    );
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Retry it with its own button/));
+    expect(callsFor('CREATE_REPLY_DRAFT')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Draft option B only' }));
     await waitFor(() => expect(callsFor('ADD_ATTACHMENT_TO_DRAFT')).toHaveLength(1));
     const [first, retry] = callsFor('CREATE_REPLY_DRAFT').map(
       ([, payload]) => payload as { operationId: string },
@@ -343,7 +355,7 @@ describe('Outlook pane: one reply for every completed date option', () => {
     expect(callsFor('CREATE_REPLY_DRAFT')).toHaveLength(2);
     expect(retry!.operationId).toBe(first!.operationId);
     expect((callsFor('ADD_ATTACHMENT_TO_DRAFT')[0]![1] as { fileName: string }).fileName).toBe(
-      COMBINED.fileName,
+      'Quote-rev-b.pdf',
     );
   }, 30_000);
 });

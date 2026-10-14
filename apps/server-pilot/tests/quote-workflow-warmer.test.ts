@@ -226,21 +226,6 @@ describe('inbound triage analyse warmer', () => {
     expect(await readdir(cacheDir)).toHaveLength(1);
   });
 
-  it('accepts an inbound_extraction run, the live trigger after U5, as it accepted inbound_triage', async () => {
-    const adapter = okAdapter();
-    vi.mocked(getDb).mockReturnValue(
-      triggerDb({ direction: 'inbound', messageIdHeader: MESSAGE_ID }) as never,
-    );
-    expect(
-      await warmInboundTriageAnalyse(
-        run({ runKind: 'inbound_extraction' }),
-        deps({ adapter: adapter as never, cacheDir, promptVersion: PROMPT_VERSION }),
-        FLAG_ON,
-      ),
-    ).toBe('stored');
-    expect(adapter.invoke).toHaveBeenCalledTimes(1);
-  });
-
   it('an existing cache file skips the model call and logs luna_warm_skip_cached', async () => {
     const adapter = okAdapter();
     const withDeps = deps({ adapter: adapter as never, cacheDir });

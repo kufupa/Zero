@@ -100,8 +100,6 @@ vi.mock('@/paraglide/messages', () => ({
 }));
 vi.mock('@/providers/query-provider', () => ({
   useTRPC: () => ({ mail: { listThreads: { queryOptions: (input: unknown) => input } } }),
-  // The header's Needs-you control reads the list route. With no list route it reads as unavailable.
-  trpcClient: { workItems: {} },
 }));
 vi.mock('@tanstack/react-query', () => ({
   useQuery: () => ({
@@ -292,18 +290,8 @@ describe('shared WebPanePanel', () => {
     expect(pageSource).toContain(
       "import { WebPanePanel } from '@/components/nava-pane/web-pane-panel';",
     );
-    expect(pageSource).toContain('<WebPanePanel');
-    expect(pageSource).toContain('key={selectedId}');
-    expect(pageSource).toContain('threadId={selectedId}');
-    expect(pageSource).toContain('onOpenThread={(id) => setParams({ thread: id })}');
+    expect(pageSource).toContain('<WebPanePanel key={selectedId} threadId={selectedId} />');
     expect(pageSource).not.toContain('function PreviewPanel');
-  });
-});
-
-describe('Needs-you link in the webmail list header', () => {
-  it('the list header offers Needs you beside the refresh control', () => {
-    render(<MailLayout />);
-    expect(screen.getByRole('button', { name: 'Needs you' })).toBeDefined();
   });
 });
 

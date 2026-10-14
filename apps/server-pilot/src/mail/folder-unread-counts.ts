@@ -8,11 +8,6 @@ import {
 } from '../db/schema/mail.js';
 import { and, asc, eq, exists, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { clearExpiredSnoozes } from './folder-semantics.js';
-import {
-  extractionPillSlugSql,
-  extractionPillsApply,
-  threadHasNoCategoryRows,
-} from './extraction-pill.js';
 import type { DB } from '../db/client.js';
 
 export type MailUnreadFolderId = 'inbox' | 'sent' | 'archive' | 'snoozed' | 'bin' | 'spam';
@@ -201,28 +196,6 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
 
   let categories: MailCategoryCountItem[] = [];
   if (activeCategories.length > 0) {
-    // A thread counts once per category: in the inbox, not history-only, with an inbound message.
-    const inboxThread = and(
-      eq(mailThread.transportId, transportId),
-      eq(mailThread.historyOnly, false),
-      isNull(mailThread.trashedAt),
-      isNull(mailThread.spamAt),
-      eq(mailThread.isArchived, false),
-      or(isNull(mailThread.snoozedUntil), lte(mailThread.snoozedUntil, sql`now()`)),
-      exists(
-        db
-          .select({ one: sql`1` })
-          .from(message)
-          .where(
-            and(
-              eq(message.threadId, mailThread.id),
-              eq(message.transportId, transportId),
-              eq(message.direction, 'inbound'),
-              eq(message.historyOnly, false),
-            ),
-          ),
-      ),
-    );
     const categoryCounts = await db
       .select({
         categoryId: mailThreadCategory.categoryId,
@@ -231,34 +204,37 @@ export async function loadUnreadCounts(db: DB, transportId: string): Promise<Mai
       })
       .from(mailThreadCategory)
       .innerJoin(mailThread, eq(mailThreadCategory.threadId, mailThread.id))
-      .where(and(eq(mailThreadCategory.transportId, transportId), inboxThread))
+      .where(
+        and(
+          eq(mailThreadCategory.transportId, transportId),
+          eq(mailThread.transportId, transportId),
+          eq(mailThread.historyOnly, false),
+          isNull(mailThread.trashedAt),
+          isNull(mailThread.spamAt),
+          eq(mailThread.isArchived, false),
+          or(isNull(mailThread.snoozedUntil), lte(mailThread.snoozedUntil, sql`now()`)),
+          exists(
+            db
+              .select({ one: sql`1` })
+              .from(message)
+              .where(
+                and(
+                  eq(message.threadId, mailThread.id),
+                  eq(message.transportId, transportId),
+                  eq(message.direction, 'inbound'),
+                  eq(message.historyOnly, false),
+                ),
+              ),
+          ),
+        ),
+      )
       .groupBy(mailThreadCategory.categoryId);
-    // With the classifier retired, a thread with no category rows counts under its read's pill (see extraction-pill).
-    const pillCounts = extractionPillsApply()
-      ? await db
-          .select({
-            categoryId: mailCategory.id,
-            unreadCount: sql<number>`count(DISTINCT ${mailThread.id}) FILTER (WHERE ${mailThread.isRead} = false)`,
-            totalCount: sql<number>`count(DISTINCT ${mailThread.id})`,
-          })
-          .from(mailThread)
-          .innerJoin(
-            mailCategory,
-            and(
-              eq(mailCategory.transportId, transportId),
-              sql`${mailCategory.slug} = ${extractionPillSlugSql(transportId)}`,
-            ),
-          )
-          .where(and(inboxThread, threadHasNoCategoryRows(db, transportId)))
-          .groupBy(mailCategory.id)
-      : [];
 
     const categoryCountMap = new Map<string, { unreadCount: number; totalCount: number }>();
-    for (const row of [...categoryCounts, ...pillCounts]) {
-      const counted = categoryCountMap.get(row.categoryId);
+    for (const row of categoryCounts) {
       categoryCountMap.set(row.categoryId, {
-        unreadCount: (counted?.unreadCount ?? 0) + Number(row.unreadCount ?? 0),
-        totalCount: (counted?.totalCount ?? 0) + Number(row.totalCount ?? 0),
+        unreadCount: Number(row.unreadCount ?? 0),
+        totalCount: Number(row.totalCount ?? 0),
       });
     }
     categories = activeCategories.map((c) => {

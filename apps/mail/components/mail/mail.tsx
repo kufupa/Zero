@@ -42,10 +42,6 @@ import {
 } from '@/lib/mail/mail-panel-visibility';
 import { useAtom } from 'jotai';
 import { navaSidePanelAtom } from '@/store/navaSidePanel';
-import { NeedsYouWebControl } from '@/components/nava-pane/screens/needs-you';
-import { trpcClient } from '@/providers/query-provider';
-import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
-import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
 import type { ImperativePanelHandle } from 'react-resizable-panels';
 const ThreadDisplay = lazy(() =>
   import('@/components/mail/thread-display').then((module) => ({
@@ -390,18 +386,7 @@ export function MailLayout() {
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const isWideSplit = useMediaQuery('(min-width: 1024px)');
 
-  const [threadId, setThreadId] = useQueryState('threadId');
-  const [, setMode] = useQueryState('mode');
-  const [, setActiveReplyId] = useQueryState('activeReplyId');
-  const [, setDraftId] = useQueryState('draftId');
-  // Opening a list row leaves the compose the same way a thread link in the list does.
-  const openListThread = (id: string) => {
-    void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
-      setMode(null);
-      setActiveReplyId(null);
-      setDraftId(null);
-    }).then(() => setThreadId(id));
-  };
+  const [threadId] = useQueryState('threadId');
   const [navaSidePanelOpen] = useAtom(navaSidePanelAtom);
   const [listCollapsed, setListCollapsed] = useState(false);
   const listPanelRef = useRef<ImperativePanelHandle>(null);
@@ -615,8 +600,6 @@ export function MailLayout() {
                     </div>
                   )}
 
-                  <NeedsYouWebControl trpc={trpcClient} onOpenThread={openListThread} />
-
                   <Button
                     onClick={handleRefetchThreads}
                     variant="ghost"
@@ -713,11 +696,7 @@ export function MailLayout() {
               >
                 <div className="flex h-full min-h-0 flex-col">
                   <Suspense fallback={<div className="flex h-full items-center justify-center" />}>
-                    <WebPanePanel
-                      key={threadId}
-                      threadId={threadId}
-                      onOpenThread={openListThread}
-                    />
+                    <WebPanePanel key={threadId} threadId={threadId} />
                   </Suspense>
                 </div>
               </ResizablePanel>
