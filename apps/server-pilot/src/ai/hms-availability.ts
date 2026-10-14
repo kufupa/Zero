@@ -130,6 +130,7 @@ type QuoteOption = {
   room?: { code?: unknown; label?: unknown } | null;
   rate?: { code?: unknown; label?: unknown } | null;
   availability?: unknown;
+  availabilityReason?: unknown;
   eligibility?: unknown;
   nightly?: unknown;
 } | null;
@@ -163,6 +164,7 @@ export type AvailabilityNightFact = {
   availableCount: number | null;
   requestedCount: number | null;
   stockStatus: AvailabilityStockStatus;
+  restrictionReason?: string;
   price: AvailabilityNightPrice;
 };
 
@@ -258,7 +260,8 @@ function stockStatusOf(
     night?.rateAvailable === false ||
     restrictions?.combClosed === true ||
     (date === request?.arrival && restrictions?.combClosedToArrival === true) ||
-    (date === request?.departure && restrictions?.combClosedToDeparture === true)
+    (date === request?.departure && restrictions?.combClosedToDeparture === true) ||
+    optionAvailability === 'restricted'
   ) {
     return 'restricted';
   }
@@ -269,13 +272,7 @@ function stockStatusOf(
   ) {
     return 'available';
   }
-  if (
-    availableCount === null ||
-    optionAvailability === 'restricted' ||
-    optionAvailability === 'unknown'
-  ) {
-    return 'unknown';
-  }
+  if (availableCount === null || optionAvailability === 'unknown') return 'unknown';
   if (optionAvailability === 'available') return 'available';
   return 'unknown';
 }
@@ -288,17 +285,36 @@ function nightFactOf(
   ratePlanLabel: string | null,
   optionAvailability: string,
   request: AvailabilityRequest | undefined,
+  availabilityReason: string | null,
 ): AvailabilityNightFact {
   const sourcePrice = record(night?.price);
   const amount = text(sourcePrice?.amount);
   const currency = text(sourcePrice?.currency);
   const priceKnown = amount !== null && currency !== null;
   const availableCount = inventoryCount(night?.inventory);
+  const stockStatus = stockStatusOf(night, date, request, availableCount, optionAvailability);
+  const restrictions = record(night?.restrictions);
+  const nightReason = night?.restricted === true
+    ? 'HMS marks this night restricted.'
+    : night?.rateAvailable === false
+      ? 'Rate is unavailable on this night.'
+      : restrictions?.combClosed === true
+        ? 'HMS closes this night.'
+        : date === request?.arrival && restrictions?.combClosedToArrival === true
+          ? 'HMS closes the arrival date to arrivals.'
+          : date === request?.departure && restrictions?.combClosedToDeparture === true
+            ? 'HMS closes the departure date to departures.'
+            : null;
+  const restrictionReason =
+    stockStatus === 'restricted'
+      ? availabilityReason ?? nightReason ?? 'HMS marks this stay restricted.'
+      : null;
   return {
     date,
     availableCount,
     requestedCount,
-    stockStatus: stockStatusOf(night, date, request, availableCount, optionAvailability),
+    stockStatus,
+    ...(restrictionReason ? { restrictionReason } : {}),
     price: {
       status: priceKnown ? 'known' : 'unknown',
       amount,
@@ -317,6 +333,7 @@ function nightlyFactsOf(
   ratePlanLabel: string | null,
   optionAvailability: string,
   request: AvailabilityRequest | undefined,
+  availabilityReason: string | null,
 ): AvailabilityNightFact[] | undefined {
   const sourceNights = Array.isArray(option?.nightly) ? (option.nightly as QuoteNight[]) : undefined;
   if (dates.length > 0) {
@@ -341,6 +358,7 @@ function nightlyFactsOf(
         ratePlanLabel,
         optionAvailability,
         request,
+        availabilityReason,
       ),
     );
   }
@@ -357,6 +375,7 @@ function nightlyFactsOf(
             ratePlanLabel,
             optionAvailability,
             request,
+            availabilityReason,
           ),
         ]
       : [];
@@ -381,6 +400,9 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
         const rate = text(option?.rate?.code);
         const rateLabel = text(option?.rate?.label);
         const availability = text(option?.availability) ?? 'unknown';
+        const availabilityReason =
+          text(option?.availabilityReason) ??
+          (availability === 'restricted' ? 'HMS restricts the requested full stay.' : null);
         const nightly = nightlyFactsOf(
           option,
           requestedDates,
@@ -389,6 +411,7 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
           rateLabel,
           availability,
           request,
+          availabilityReason,
         );
         const roomLabel = text(option?.room?.label);
         const eligibility = text(option?.eligibility);
@@ -397,6 +420,7 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
           room: text(option?.room?.code),
           rate,
           availability,
+          ...(availabilityReason ? { availabilityReason } : {}),
           ...(hasNightlyFacts && roomLabel ? { roomLabel } : {}),
           ...(hasNightlyFacts && rateLabel ? { rateLabel } : {}),
           ...(hasNightlyFacts && eligibility ? { eligibility } : {}),
