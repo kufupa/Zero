@@ -213,6 +213,37 @@ describe('golden set input validation', () => {
     ).toThrow(/row 1/u);
   });
 
+  it('allows supported create and amend rows without historical fact keys', () => {
+    for (const mailClass of ['create', 'amend'] as const) {
+      const messageId = `${mailClass}-without-answer-key`;
+      const row = {
+        message_id: messageId,
+        class: mailClass,
+        answer: {
+          conf: '12345678-1',
+          confirmation_numbers: ['12345678-1'],
+          extracted_confirmation_numbers: [],
+          ...(mailClass === 'amend' ? { change_types: ['dates'] } : {}),
+          hms: null,
+          hmsCurrent: {
+            commercial: {
+              arrival: '2026-10-15',
+              departure: '2026-10-18',
+              company: { name: 'Current Company' },
+            },
+          },
+        },
+        evidence: {
+          inbound_message_id: messageId,
+          staff_message_ids: ['staff-1'],
+          pdf_files: [],
+        },
+      };
+
+      expect(parseGoldenRow(row)).toMatchObject({ message_id: messageId, class: mailClass });
+    }
+  });
+
   it('fails closed on malformed HMS-needed metadata or a stale selection manifest', () => {
     const selection = (['quote', 'amend', 'cancel', 'create', 'skip'] as const).map(
       (mailClass) => ({
@@ -667,6 +698,60 @@ describe('cancellation evidence matching', () => {
       ]),
     ).toEqual({ conf: second, staff_message_ids: ['staff-specific'], confirmed: true });
   });
+
+  it('recognizes a completed cancellation without reading quoted request text as staff text', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const cancellationReplyEvidence = Reflect.get(module, 'cancellationReplyEvidence');
+    expect(cancellationReplyEvidence).toBeTypeOf('function');
+    if (typeof cancellationReplyEvidence !== 'function') return;
+
+    const conf = '12345678-1';
+    const request = {
+      id: 'cancel-request',
+      thread_id: 'cancel-thread',
+      direction: 'inbound',
+      subject: 'Cancellation request',
+      body: `Please cancel ${conf}.`,
+      body_is_html: false,
+    };
+    const reply = {
+      id: 'cancel-reply',
+      thread_id: 'cancel-thread',
+      direction: 'outbound',
+      from_address: 'reservations@legacyhotels.co.za',
+      subject: `Re: Please cancel ${conf}`,
+      body: `Reservation cancelled.\n\nFrom: guest@example.test\nSubject: Please cancel ${conf}\n\nPlease cancel ${conf}.`,
+      body_is_html: false,
+    };
+    const replyEvidence = cancellationReplyEvidence(reply);
+    const htmlReplyEvidence = cancellationReplyEvidence({
+      ...reply,
+      id: 'cancel-html-reply',
+      body: `<p>Reservation cancelled.</p><blockquote><p>Please cancel ${conf}.</p></blockquote>`,
+      body_is_html: true,
+    });
+    const authoredConf = '87654321-2';
+    const numberedReplyEvidence = cancellationReplyEvidence({
+      ...reply,
+      id: 'cancel-numbered-reply',
+      body: [
+        `Reservation cancelled (${authoredConf}).`,
+        '',
+        'From: guest@example.test',
+        `Subject: Please cancel ${conf}`,
+      ].join('\n'),
+    });
+
+    expect(replyEvidence).toEqual({ message_id: reply.id, confirmation_numbers: [] });
+    expect(htmlReplyEvidence).toEqual({ message_id: 'cancel-html-reply', confirmation_numbers: [] });
+    expect(numberedReplyEvidence).toEqual({
+      message_id: 'cancel-numbered-reply',
+      confirmation_numbers: [authoredConf],
+    });
+    expect(
+      resolveCancellationEvidence(request.body, [replyEvidence]),
+    ).toEqual({ conf, staff_message_ids: [reply.id], confirmed: true });
+  });
 });
 
 describe('amendment change typing', () => {
@@ -985,7 +1070,7 @@ describe('HMS truth enrichment', () => {
     expect(missingHmsConfirmations([mergedRow])).toEqual([]);
   });
 
-  it('preserves request evidence and stores later current state separately', async () => {
+  it('preserves request evidence without borrowing current HMS fields', async () => {
     const module = await import('../scripts/golden-set.js');
     const answerWithTruth = Reflect.get(module, 'answerWithTruth');
     expect(answerWithTruth).toBeTypeOf('function');
@@ -1018,12 +1103,117 @@ describe('HMS truth enrichment', () => {
     expect(answer).toMatchObject({
       dates: [{ arrival: '2026-10-01', departure: '2026-10-03' }],
       room_type: 'Requested Queen',
-      rate_plan: 'CURR1',
-      board: 'Dinner, Bed & Breakfast',
-      party: { company: 'Request Company', agency: 'Later Agency' },
+      party: { company: 'Request Company', agency: null },
       hms: null,
       hmsCurrent: currentRead,
     });
+    expect(answer.rate_plan).toBeUndefined();
+    expect(answer.board).toBeUndefined();
+  });
+
+  it('leaves historical fields unscored when only current HMS truth exists', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const answerWithTruth = Reflect.get(module, 'answerWithTruth');
+    expect(answerWithTruth).toBeTypeOf('function');
+    if (typeof answerWithTruth !== 'function') return;
+
+    const conf = '12345678-1';
+    const currentRead = {
+      conf,
+      outcome: 'found',
+      commercial: {
+        arrival: '2026-10-15',
+        departure: '2026-10-18',
+        company: { name: 'Later Company' },
+        agency: { name: 'Later Agency' },
+      },
+    };
+    const row: GoldenRow = {
+      message_id: 'amend-without-historical-document',
+      class: 'amend',
+      answer: answerWithTruth(
+        { conf, confirmation_numbers: [conf], hms: null },
+        conf,
+        currentRead,
+      ),
+      evidence: {
+        inbound_message_id: 'amend-without-historical-document',
+        staff_message_ids: ['staff-amend-confirmation'],
+        pdf_files: [],
+      },
+    };
+    const score = scoreGoldenRows([row], [
+      {
+        message_id: row.message_id,
+        action: 'amend',
+        dates: [{ arrival: '2026-10-01', departure: '2026-10-03' }],
+        party: { company: 'Earlier Company', agency: 'Earlier Agency' },
+      },
+    ]);
+    const legacyHmsScore = scoreGoldenRows(
+      [
+        {
+          ...row,
+          answer: { conf, confirmation_numbers: [conf], hms: currentRead },
+        },
+      ],
+      [
+        {
+          message_id: row.message_id,
+          action: 'amend',
+          dates: [{ arrival: '2026-10-01', departure: '2026-10-03' }],
+          party: { company: 'Earlier Company', agency: 'Earlier Agency' },
+        },
+      ],
+    );
+
+    expect(row.answer.hmsCurrent).toEqual(currentRead);
+    expect(score.byClass.amend.dates).toEqual({ correct: 0, total: 0 });
+    expect(score.byClass.amend.party).toEqual({ correct: 0, total: 0 });
+    expect(legacyHmsScore.byClass.amend.dates).toEqual({ correct: 0, total: 0 });
+    expect(legacyHmsScore.byClass.amend.party).toEqual({ correct: 0, total: 0 });
+  });
+});
+
+describe('golden-set score report', () => {
+  it('counts missing source-bound fields as no answer key', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const buildScoreReport = Reflect.get(module, 'buildScoreReport');
+    expect(buildScoreReport).toBeTypeOf('function');
+    if (typeof buildScoreReport !== 'function') return;
+
+    const row: GoldenRow = {
+      message_id: 'amend-with-no-answer-key',
+      class: 'amend',
+      answer: {
+        conf: '12345678-1',
+        confirmation_numbers: ['12345678-1'],
+        hmsCurrent: {
+          commercial: {
+            arrival: '2026-10-15',
+            departure: '2026-10-18',
+            company: { name: 'Later Company' },
+            agency: { name: 'Later Agency' },
+          },
+        },
+      },
+      evidence: {
+        inbound_message_id: 'amend-with-no-answer-key',
+        staff_message_ids: [],
+        pdf_files: [],
+      },
+    };
+    const score = scoreGoldenRows([row], []);
+    const report = buildScoreReport({
+      rows: [row],
+      score,
+      mode: 'snapshot',
+      selection: [],
+      hmsNeededCount: 0,
+    });
+
+    expect(report).toContain('## No answer key');
+    expect(report).toContain('| amend | 1 | 0 | 1 | 1 |');
   });
 });
 

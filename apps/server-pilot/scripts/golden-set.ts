@@ -589,10 +589,7 @@ function datePairs(value: unknown): GoldenDate[] {
 }
 
 function answerDates(answer: GoldenAnswer): GoldenDate[] {
-  const fromAnswer = datePairs(answer.dates);
-  if (fromAnswer.length) return fromAnswer;
-  const commercial = asRecord(asRecord(answer.hms).commercial);
-  return datePairs({ arrival: commercial.arrival, departure: commercial.departure });
+  return datePairs(answer.dates);
 }
 
 function predictionDates(prediction: JsonRecord): GoldenDate[] {
@@ -622,12 +619,10 @@ function stringValues(value: unknown): string[] {
 }
 
 function answerOutcomeConfirmationNumbers(answer: GoldenAnswer): string[] {
-  const commercialConf = asRecord(answer.hms).conf;
   return [
     ...new Set([
       ...stringValues(answer.confirmation_numbers),
       ...stringValues(answer.conf),
-      ...stringValues(commercialConf),
     ]),
   ].sort();
 }
@@ -703,10 +698,9 @@ function normalizedPartyNames(value: unknown): string[] {
 
 function answerPartyRoles(answer: GoldenAnswer): NormalizedPartyRoles {
   const party = asRecord(answer.party);
-  const commercial = asRecord(asRecord(answer.hms).commercial);
   return {
-    company: normalizedPartyNames(party.company ?? commercial.company),
-    agency: normalizedPartyNames(party.agency ?? commercial.agency),
+    company: normalizedPartyNames(party.company),
+    agency: normalizedPartyNames(party.agency),
     untyped: [],
   };
 }
@@ -973,17 +967,6 @@ function isValidGoldenAnswer(mailClass: GoldenClass, answer: GoldenAnswer): bool
     }
   }
   if (!hasConfirmationNumber(answer) || !hasHmsAnswer(answer)) return false;
-  const party = answerPartyRoles(answer);
-  const hasStayOrPartyFact = Boolean(
-    answerDates(answer).length ||
-      answerRoomCount(answer) !== null ||
-      cleanText(answer.room_type) ||
-      cleanText(answer.rate_plan) ||
-      cleanText(answer.board) ||
-      party.company.length ||
-      party.agency.length,
-  );
-  if ((mailClass === 'create' || mailClass === 'amend') && !hasStayOrPartyFact) return false;
   if (mailClass === 'create') return true;
   if (mailClass === 'amend') {
     return Boolean(
@@ -1213,6 +1196,7 @@ function plainTextBody(message: CorpusMessage): string {
   if (message.body_is_html !== true) return body;
   return body
     .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, ' ')
+    .replace(/<\s*blockquote\b[^>]*>/giu, '\n> ')
     .replace(/<\s*br\s*\/?\s*>/giu, '\n')
     .replace(/<\/(?:p|div|li|tr|table|blockquote|h[1-6]|section)\s*>/giu, '\n')
     .replace(/<[^>]+>/gu, ' ')
@@ -1223,6 +1207,15 @@ function plainTextBody(message: CorpusMessage): string {
     .replace(/&quot;/giu, '"')
     .replace(/&#39;|&apos;/giu, "'")
     .replace(/[ \t]+\n/gu, '\n');
+}
+
+function authoredBodyText(message: CorpusMessage): string {
+  const body = plainTextBody(message);
+  const authored = body.split(
+    /(?:^\s*from\s*:|^\s*sent\s*:|^\s*to\s*:|^\s*subject\s*:|^\s*-{2,}\s*original message|^\s*on .{2,160} wrote:|^\s*>)/imu,
+    1,
+  )[0];
+  return authored?.trim() ?? body.trim();
 }
 
 function requestText(message: CorpusMessage): string {
@@ -1651,13 +1644,18 @@ function looksLikeChangeConfirmation(message: CorpusMessage): boolean {
   );
 }
 
-function looksLikeCancellationConfirmation(message: CorpusMessage): boolean {
-  const text = `${cleanText(message.subject) ?? ''}\n${plainTextBody(message)}`;
-  return (
-    /\b(?:cancell?ed|cancellation (?:has been )?(?:processed|confirmed|completed)|reservation (?:has been )?cancell?ed)\b/iu.test(
+export function cancellationReplyEvidence(
+  message: CorpusMessage,
+): CancellationReplyEvidence | null {
+  const text = authoredBodyText(message);
+  if (
+    !/\b(?:cancell?ed|cancellation (?:has been )?(?:processed|confirmed|completed)|reservation (?:has been )?cancell?ed)\b/iu.test(
       text,
-    ) && !/\b(?:cannot|can't|unable|not possible|not yet|please cancel)\b/iu.test(text)
-  );
+    ) || /\b(?:cannot|can't|unable|not possible|not yet|please cancel)\b/iu.test(text)
+  ) {
+    return null;
+  }
+  return { message_id: message.id, confirmation_numbers: confirmationNumbersFromText(text) };
 }
 
 function confirmationDocuments(documents: readonly StaffPdf[]): StaffPdf[] {
@@ -1693,28 +1691,12 @@ export function answerWithTruth(
   conf: string,
   truth: JsonRecord | undefined,
 ): GoldenAnswer {
-  if (!truth) {
-    return { ...answer, conf, confirmation_numbers: [conf], hms: answer.hms ?? null };
-  }
-  const commercial = asRecord(truth.commercial);
-  const arrival = cleanText(commercial.arrival);
-  const departure = cleanText(commercial.departure);
-  const truthDates = arrival && departure ? datePairs({ arrival, departure }) : [];
-  const previousParty = answer.party ?? { company: null, agency: null };
-  const company = cleanText(previousParty.company) ?? truthPartyName(commercial, 'company');
-  const agency = cleanText(previousParty.agency) ?? truthPartyName(commercial, 'agency');
   return {
     ...answer,
     conf,
     confirmation_numbers: [conf],
-    dates: answer.dates?.length ? answer.dates : truthDates,
-    room_type: cleanText(answer.room_type) ?? cleanText(commercial.roomType),
-    rate_plan: cleanText(answer.rate_plan) ?? cleanText(commercial.ratePlan),
-    board: cleanText(answer.board) ?? cleanText(commercial.mealPlan),
-    party: { company, agency },
-    status: cleanText(answer.status) ?? cleanText(commercial.status),
-    hms: answer.hms ?? null,
-    hmsCurrent: truth,
+    hms: null,
+    hmsCurrent: truth ?? answer.hmsCurrent ?? answer.hms ?? null,
   };
 }
 
@@ -2125,15 +2107,17 @@ async function selectCandidates(): Promise<{
 
     if (looksLikeCancellationRequest(message)) {
       const request = requestText(message);
-      const repliesThatConfirm = replies.filter(looksLikeCancellationConfirmation);
+      const repliesThatConfirm = replies.flatMap((reply) => {
+        const evidence = cancellationReplyEvidence(reply);
+        return evidence ? [{ reply, evidence }] : [];
+      });
+      const replyEvidence = repliesThatConfirm.map(({ evidence }) => evidence);
       const pdfConfirmationNumbers = replyPdfs
         .filter((document) => document.kind === 'confirmation')
         .map((document) => document.conf);
       const requestAndReplyConfs = [
         ...confirmationNumbersFromText(request),
-        ...repliesThatConfirm.flatMap((reply) =>
-          confirmationNumbersFromText(`${cleanText(reply.subject) ?? ''}\n${plainTextBody(reply)}`),
-        ),
+        ...replyEvidence.flatMap((reply) => reply.confirmation_numbers),
         ...pdfConfirmationNumbers.filter((conf): conf is string => Boolean(conf)),
       ];
       const hmsCancelledConfNumbers = [...new Set(requestAndReplyConfs)].filter((conf) =>
@@ -2143,12 +2127,7 @@ async function selectCandidates(): Promise<{
       );
       const cancellation = resolveCancellationEvidence(
         request,
-        repliesThatConfirm.map((reply) => ({
-          message_id: reply.id,
-          confirmation_numbers: confirmationNumbersFromText(
-            `${cleanText(reply.subject) ?? ''}\n${plainTextBody(reply)}`,
-          ),
-        })),
+        replyEvidence,
         pdfConfirmationNumbers,
         hmsCancelledConfNumbers,
       );
@@ -2169,9 +2148,9 @@ async function selectCandidates(): Promise<{
               },
               status,
             },
-            staffMessages: repliesThatConfirm.filter((reply) =>
-              cancellation.staff_message_ids.includes(reply.id),
-            ),
+            staffMessages: repliesThatConfirm
+              .filter(({ reply }) => cancellation.staff_message_ids.includes(reply.id))
+              .map(({ reply }) => reply),
             pdfs: replyPdfs.filter(
               (document) => document.kind === 'confirmation' && document.conf === conf,
             ),
@@ -2483,7 +2462,7 @@ function shortReason(metadata: SelectionMetadata | undefined): string {
   return `selected ${metadata.selected}/${metadata.target}`;
 }
 
-function buildScoreReport(input: {
+export function buildScoreReport(input: {
   rows: readonly GoldenRow[];
   score: GoldenScore;
   mode: 'snapshot' | 'fresh JSONL';
@@ -2501,6 +2480,16 @@ function buildScoreReport(input: {
     const score = input.score.byClass[mailClass];
     return `| ${mailClass} | ${score.count} | ${metricText(score.action)} | ${metricText(score.dates)} | ${metricText(score.confirmation)} | ${metricText(score.rooms)} | ${metricText(score.party)} |`;
   });
+  const noAnswerKeyLines = GOLDEN_CLASSES.map((mailClass) => {
+    const score = input.score.byClass[mailClass];
+    const missing = [
+      score.count - score.dates.total,
+      score.count - score.confirmation.total,
+      score.count - score.rooms.total,
+      score.count - score.party.total,
+    ];
+    return `| ${mailClass} | ${missing.join(' | ')} |`;
+  });
   const shortClasses = GOLDEN_CLASSES.flatMap((mailClass) => {
     const count = input.score.byClass[mailClass].count;
     const target = selectionByClass.get(mailClass)?.target ?? TARGET_COUNTS[mailClass];
@@ -2514,7 +2503,7 @@ function buildScoreReport(input: {
   return [
     '# Golden v1 score',
     '',
-    `Nava input: ${input.mode}. Golden rows scored: ${input.rows.length}. HMS answers still missing: ${input.hmsNeededCount}.`,
+    `Nava input: ${input.mode}. Golden rows scored: ${input.rows.length}. Current HMS reads still missing: ${input.hmsNeededCount}.`,
     '',
     '## Selection audit',
     '',
@@ -2530,6 +2519,14 @@ function buildScoreReport(input: {
     ...scoreLines,
     `| **overall** | **${input.score.overall.count}** | **${metricText(input.score.overall.action)}** | ${metricText(input.score.overall.dates)} | ${metricText(input.score.overall.confirmation)} | ${metricText(input.score.overall.rooms)} | ${metricText(input.score.overall.party)} |`,
     '',
+    '## No answer key',
+    '',
+    '| Class | Dates | Conf | Rooms | Party |',
+    '|---|---:|---:|---:|---:|',
+    ...noAnswerKeyLines,
+    '',
+    'Rows without that field in the answer key are unscored for that field and excluded from its denominator.',
+    '',
     `Skip precision: ${skipPrecision}. Skip recall: ${skipRecall}. TP=${input.score.skip.true_positive}, FP=${input.score.skip.false_positive}, FN=${input.score.skip.false_negative}.`,
     '',
     '## Methodology',
@@ -2537,13 +2534,13 @@ function buildScoreReport(input: {
     '- Selection uses inbound mail plus staff/HMS evidence, not stored Nava labels: quote requests pair to offer/quotation PDFs; creates pair to a first confirmation letter, including split-thread links only when exact stay dates and party evidence agree within 30 days and the pair is unique; amendments require a human change request on an existing confirmation plus a later same-conf letter or staff confirmation (cross-thread evidence requires the exact conf); cancels require a human cancel request and staff/HMS evidence; channel/system notices are skip. Travel-agent senders remain eligible unless a known channel/system rule matches.',
     '- Selection prefers stays arriving on or after 2026-09-12, then newest inbound mail, and caps each sender domain at two rows per class. Evidence pointers and parsed answers live only in the private test set.',
     '- Action maps booking→create, amendment→amend, cancellation→cancel, and source-classified automated mail→skip. Dates compare exact normalized arrival/departure pairs; confirmation numbers compare exact sets; rooms compare counts; party names use accent- and legal-suffix normalization, matched company-to-company and agency-to-agency. If the answer names both roles, both must match.',
-    '- Field denominators include only answer-key fields present in the selected rows. Skip precision/recall use this deliberately balanced sample, not the production mail base rate.',
+    '- Field denominators include only answer-key fields present in the selected rows. “No answer key” counts rows where that answer field is absent and excludes them from its denominator. Skip precision/recall use this deliberately balanced sample, not the production mail base rate.',
     '',
     '## Known gaps',
     '',
-    `- ${input.hmsNeededCount} selected confirmation number(s) do not yet have a row in the private HMS truth file; merge those reads before treating their HMS fields as scored gold.`,
+    `- ${input.hmsNeededCount} selected confirmation number(s) do not yet have a current row in the private HMS truth file; any available current read stays in hmsCurrent and is never used as a historical answer key.`,
     '- HMS truth is limited by the existing find window. PDF text parsing is deterministic and conservative; unrecognized layouts remain null rather than guessed.',
-    '- In this selected quote sample, no offer PDF yielded a parseable stay-date pair or explicit rate plan; those fields remain blank rather than borrowing request dates or guessing. Offer totals, rooms, board, and named parties are retained when the PDF exposes them.',
+    '- In this selected quote sample, no offer PDF yielded a parseable stay-date pair or explicit rate plan; those fields remain unscored rather than borrowing request dates or guessing. Offer totals, rooms, board, and named parties are retained when the PDF exposes them.',
     '- Snapshot scoring uses each message’s latest succeeded extraction and does not replay the exact historical model state or thread chronology. A fresh JSONL run should use the same message_id/action/date/room/party/confirmation fields.',
     '- This is a curated, small real-mail set. Its per-class metrics are decision evidence, not population estimates; refresh the snapshot and re-audit evidence as the mix changes.',
     '',
