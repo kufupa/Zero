@@ -43,7 +43,8 @@ export const K2_MAPPING = [
   'Different date sets for the same ask become separate quote tasks.',
   'For every group, dateEvidence must be an exact phrase from that stay only; never reuse another stay’s phrase.',
   'Use dateEvidence from the staff note when it corrects dates. In multiple stays, apply a note correction only to the stay whose own dateEvidence appears in the note; if it cannot be attributed, apply it only for a single stay.',
-  'Per stay, precedence is: attributed staff correction > explicit year in that stay’s dateEvidence (subject may supply it only for one stay) > that stay’s verified “next <weekday>” resolved from Johannesburg receipt, overriding model dates > yearless rollover after checking the stay’s own text for an explicit year > unchanged model dates.',
+  'Per stay, precedence is: attributed staff correction > explicit year in that stay’s dateEvidence (subject may supply it only for one stay) > that stay’s verified “next year” (year after Johannesburg receipt) or “next <weekday>” resolved from Johannesburg receipt, overriding model dates > yearless next occurrence even when the model supplied a farther-future year > unchanged model dates.',
+  'For a cross-year span like “28 Dec - 2 Jan 2027”, the year after the second date applies to the January endpoint; December arrival is in the preceding year.',
   'If evidence is missing or mismatched, check body/subject for an explicit year only for a single stay; with multiple stays, keep model dates. Never borrow a year or relative phrase across stays.',
   '"Quote then book if OK" stays workflow=quote.',
   'Use workflow=create_booking only for explicit make/confirm asks without a quote, price, rate or',
@@ -444,6 +445,12 @@ export function mapLlmDecision(
       missing.push({
         field: 'departureDate',
         question: `Departure date for group ${index + 1} is not a valid ISO calendar date.`,
+      });
+    }
+    if (arrivalDate && departureDate && departureDate <= arrivalDate) {
+      missing.push({
+        field: 'stayDates',
+        question: `Departure date for group ${index + 1} must be after arrival; confirm the stay dates.`,
       });
     }
     const boardDefaulted = group.board === null;

@@ -247,6 +247,30 @@ describe('QUOTE_WORKFLOW_PROMPT_VERSION', () => {
 });
 
 describe('mapLlmDecision', () => {
+  it.each([
+    { arrival: '2027-03-15', departure: '2027-03-12' },
+    { arrival: '2027-03-12', departure: '2027-03-12' },
+  ])('flags reversed or zero-night dates in the pane warning field', ({ arrival, departure }) => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, arrival, departure, dateEvidence: '12-14 March' }],
+        }),
+      ),
+      {
+        dateAnchor: {
+          receivedAt: '2026-12-20T12:00:00.000Z',
+          sourceText: 'Please quote 12-14 March.',
+        },
+      },
+    );
+
+    expect(mapped.missing).toContainEqual(
+      expect.objectContaining({ field: 'stayDates', question: expect.stringContaining('after arrival') }),
+    );
+  });
+
   it('anchors yearless quote dates to received time and preserves an explicit trip year', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(

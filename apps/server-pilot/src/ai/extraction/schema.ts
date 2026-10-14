@@ -227,7 +227,17 @@ export function sanitizeExtraction(
       })),
     };
   });
-  const missing = output.missing
+  const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay) => {
+    const arrival = validIsoDate(stay.requested.arrival);
+    const departure = validIsoDate(stay.requested.departure);
+    return arrival && departure && departure <= arrival
+      ? [{ field: 'stayDates', question: 'Departure date must be after arrival; confirm the requested stay dates.' }]
+      : [];
+  });
+  const missing = [
+    ...output.missing.slice(0, Math.max(0, MAX_MISSING - reversedDateWarnings.length)),
+    ...reversedDateWarnings,
+  ]
     .slice(0, MAX_MISSING)
     .map((item) => ({
       field: cleanText(item.field, 60) ?? '',

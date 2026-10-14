@@ -32,6 +32,7 @@ const MONTH_DAY = new RegExp(
   'i',
 );
 const RELATIVE_WEEKDAY = /\bnext\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b/i;
+const RELATIVE_NEXT_YEAR = /\bnext\s+year\b/i;
 
 function validDay(value: string | null | undefined): value is string {
   if (!value || !ISO_DAY.test(value)) return false;
@@ -97,11 +98,18 @@ function hasExplicitYear(text: string | undefined): boolean {
 
 function hasStaffDateCorrection(note: string | undefined): boolean {
   if (!note?.trim()) return false;
-  return (
-    /\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b/i.test(note) ||
-    MONTH_DAY.test(note) ||
-    RELATIVE_WEEKDAY.test(note)
-  );
+  const numericDate =
+    /\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b|\b\d{1,2}-\d{1,2}(?:-\d{2,4})?\b(?!\s*(?:adults?|children?|guests?|rooms?|nights?|people|persons?|occupants?|pax)\b)/i;
+  return numericDate.test(note) || MONTH_DAY.test(note) || RELATIVE_WEEKDAY.test(note);
+}
+
+function explicitRangeEndYear(text: string | undefined): number | null {
+  if (!text) return null;
+  const dates = [...text.matchAll(new RegExp(MONTH_DAY.source, 'gi'))];
+  const years = [...text.matchAll(/\b(?:19|20)\d{2}\b/g)];
+  if (dates.length !== 2 || years.length !== 1) return null;
+  const endOfSecondDate = dates[1]!.index! + dates[1]![0].length;
+  return years[0]!.index! >= endOfSecondDate ? Number(years[0]![0]) : null;
 }
 
 function nextOccurrence(value: string, referenceDate: string): string | null {
@@ -127,42 +135,57 @@ export function anchorStayDateRange(
   context: StayDateAnchorContext,
 ): { arrival: string | null; departure: string | null } {
   const { arrival, departure } = range;
-  if (!validDay(arrival) || !validDay(departure) || departure <= arrival) {
-    return { arrival: arrival ?? null, departure: departure ?? null };
+  if (!validDay(arrival)) return { arrival: arrival ?? null, departure: departure ?? null };
+  const hasValidDeparture = validDay(departure);
+  if (hasValidDeparture && departure <= arrival) {
+    return { arrival, departure };
   }
 
   const referenceDate = receivedDateAtHotel(context.receivedAt);
-  if (!referenceDate) return { arrival, departure };
-  if (hasStaffDateCorrection(context.staffNote)) return { arrival, departure };
+  if (!referenceDate) return { arrival, departure: departure ?? null };
+  if (hasStaffDateCorrection(context.staffNote)) return { arrival, departure: departure ?? null };
+
+  const nights = hasValidDeparture
+    ? (Date.parse(`${departure}T00:00:00.000Z`) - Date.parse(`${arrival}T00:00:00.000Z`)) / DAY_MS
+    : null;
+  const withArrival = (anchoredArrival: string) => ({
+    arrival: anchoredArrival,
+    departure: nights === null ? departure ?? null : addDays(anchoredArrival, nights),
+  });
+
+  const explicitEndYear = explicitRangeEndYear(context.sourceText);
+  if (hasValidDeparture && explicitEndYear && Number(departure.slice(5, 7)) < Number(arrival.slice(5, 7))) {
+    const mixedYearArrival = dateInYear(arrival, explicitEndYear - 1);
+    const mixedYearDeparture = dateInYear(departure, explicitEndYear);
+    if (mixedYearArrival && mixedYearDeparture) {
+      return { arrival: mixedYearArrival, departure: mixedYearDeparture };
+    }
+  }
   if (
     hasExplicitYear(context.sourceText) ||
     hasExplicitYear(context.yearEvidenceText) ||
     hasExplicitYear(context.subjectText)
   ) {
-    return { arrival, departure };
+    return { arrival, departure: departure ?? null };
   }
 
-  const nights =
-    (Date.parse(`${departure}T00:00:00.000Z`) - Date.parse(`${arrival}T00:00:00.000Z`)) / DAY_MS;
-  if (!(nights > 0)) return { arrival, departure };
+  if (context.sourceText && RELATIVE_NEXT_YEAR.test(context.sourceText)) {
+    const anchoredArrival = dateInYear(arrival, Number(referenceDate.slice(0, 4)) + 1);
+    return anchoredArrival ? withArrival(anchoredArrival) : { arrival, departure: departure ?? null };
+  }
 
   const relativeWeekday = context.sourceText?.match(RELATIVE_WEEKDAY)?.[1];
   if (relativeWeekday) {
     const anchoredArrival = nextWeekdayAfter(referenceDate, relativeWeekday);
-    return anchoredArrival
-      ? { arrival: anchoredArrival, departure: addDays(anchoredArrival, nights) }
-      : { arrival, departure };
+    return anchoredArrival ? withArrival(anchoredArrival) : { arrival, departure: departure ?? null };
   }
 
-  if (arrival >= referenceDate) return { arrival, departure };
   const checkedStayText =
     Boolean(context.sourceText?.trim()) ||
     Boolean(context.subjectText?.trim()) ||
     Boolean(context.yearEvidenceText?.trim());
-  if (!checkedStayText) return { arrival, departure };
+  if (!checkedStayText) return { arrival, departure: departure ?? null };
 
   const anchoredArrival = nextOccurrence(arrival, referenceDate);
-  return anchoredArrival
-    ? { arrival: anchoredArrival, departure: addDays(anchoredArrival, nights) }
-    : { arrival, departure };
+  return anchoredArrival ? withArrival(anchoredArrival) : { arrival, departure: departure ?? null };
 }

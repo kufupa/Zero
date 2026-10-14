@@ -8,7 +8,7 @@ async function extractRequestedDates(input: {
   bodyText: string;
   receivedAt: string;
   arrival: string;
-  departure: string;
+  departure: string | null;
   subject?: string;
   dateEvidence?: string | null;
 }) {
@@ -306,6 +306,79 @@ describe('received-time date anchoring', () => {
         { requested: { arrival: '2026-03-12', departure: '2026-03-15' }, reason: 'past_dates' },
         { requested: { arrival: '2026-03-12', departure: '2026-03-15' }, reason: 'past_dates' },
       ],
+    },
+    {
+      name: 'mixed December-January range uses the explicit departure year',
+      run: async () =>
+        (await extractRequestedDates({
+          bodyText: 'Please quote 28 Dec - 2 Jan 2027.',
+          receivedAt: '2026-10-14T08:00:00.000Z',
+          arrival: '2027-12-28',
+          departure: '2028-01-03',
+        })).requested,
+      expected: { arrival: '2026-12-28', departure: '2027-01-03' },
+    },
+    {
+      name: 'arrival-only yearless date rolls forward from receipt',
+      run: async () =>
+        (await extractRequestedDates({
+          bodyText: 'Is a room available on 12 March?',
+          receivedAt: '2026-12-20T12:00:00.000Z',
+          arrival: '2026-03-12',
+          departure: null,
+        })).requested,
+      expected: { arrival: '2027-03-12', departure: null },
+    },
+    {
+      name: 'yearless date overrides a farther-future model year',
+      run: async () =>
+        (await extractRequestedDates({
+          bodyText: 'Please quote 12-14 March.',
+          receivedAt: '2026-12-20T12:00:00.000Z',
+          arrival: '2028-03-12',
+          departure: '2028-03-15',
+        })).requested,
+      expected: { arrival: '2027-03-12', departure: '2027-03-15' },
+    },
+    {
+      name: 'occupancy range in a staff note is not a date correction',
+      run: () =>
+        anchorStayDateRange(
+          { arrival: '2026-03-12', departure: '2026-03-15' },
+          {
+            receivedAt: '2026-12-20T12:00:00.000Z',
+            sourceText: '12-14 March',
+            staffNote: '2-3 adults requested.',
+          },
+        ),
+      expected: { arrival: '2027-03-12', departure: '2027-03-15' },
+    },
+    {
+      name: 'next year means the year after receipt, even when current-year dates are future',
+      run: async () =>
+        (await extractRequestedDates({
+          bodyText: 'Please quote 12-14 March next year.',
+          receivedAt: '2026-03-01T12:00:00.000Z',
+          arrival: '2026-03-12',
+          departure: '2026-03-15',
+        })).requested,
+      expected: { arrival: '2027-03-12', departure: '2027-03-15' },
+    },
+    {
+      name: 'reversed requested dates are carried to the pane warning field',
+      run: async () => {
+        const result = await extractRequestedDates({
+          bodyText: 'Please quote 12-14 March.',
+          receivedAt: '2026-12-20T12:00:00.000Z',
+          arrival: '2027-03-15',
+          departure: '2027-03-12',
+        });
+        return {
+          requested: result.requested,
+          hasDateWarning: result.payload.missing.some((item) => item.field === 'stayDates'),
+        };
+      },
+      expected: { requested: { arrival: '2027-03-15', departure: null }, hasDateWarning: true },
     },
   ];
 
