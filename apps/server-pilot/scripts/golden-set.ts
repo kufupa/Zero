@@ -1,11 +1,11 @@
-import { constants as fsConstants } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { lstat, mkdir, open, readFile, realpath } from 'node:fs/promises';
+import { classifyMailSource, type MailSourceClassification } from '../src/ai/mail-source.js';
+import { withGoldenSetPairLock, writePrivateFileAtomically } from './golden-set-storage.js';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { lstat, mkdir, readFile, realpath } from 'node:fs/promises';
+import { normalisePartyName } from '../src/ai/party-match-v2.js';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
-import { classifyMailSource, type MailSourceClassification } from '../src/ai/mail-source.js';
-import { normalisePartyName } from '../src/ai/party-match-v2.js';
 
 const DATA_ROOT = '/home/orca/nava-research';
 const CORPUS_ROOT = `${DATA_ROOT}/corpus/2026-10-13`;
@@ -76,9 +76,11 @@ export type GoldenAnswer = {
   total?: string | null;
   conf?: string | null;
   confirmation_numbers?: string[];
+  extracted_confirmation_numbers?: string[];
   change_type?: ChangeType | null;
   change_types?: ChangeType[];
   hms?: JsonRecord | null;
+  hmsCurrent?: JsonRecord | null;
   status?: string | null;
   cancellation_reply?: {
     confirmed: boolean;
@@ -170,7 +172,8 @@ export function isCrossThreadBookingMatch(evidence: CrossThreadBookingEvidence):
   const matchingStay = evidence.requestDates.some((requestDate) =>
     evidence.outcomeDates.some(
       (outcomeDate) =>
-        outcomeDate.arrival === requestDate.arrival && outcomeDate.departure === requestDate.departure,
+        outcomeDate.arrival === requestDate.arrival &&
+        outcomeDate.departure === requestDate.departure,
     ),
   );
   if (!matchingStay) return false;
@@ -191,7 +194,8 @@ export function isCrossThreadBookingMatch(evidence: CrossThreadBookingEvidence):
   if (!domainLabel) return false;
   const domainKey = normalisePartyName(domainLabel);
   return partyNames.some(
-    (name) => name === domainKey || name.split(' ').some((word) => word.length >= 5 && word === domainKey),
+    (name) =>
+      name === domainKey || name.split(' ').some((word) => word.length >= 5 && word === domainKey),
   );
 }
 
@@ -284,8 +288,7 @@ function parseDateToken(value: string, defaultYear?: number): string | null {
 
 const MONTH_TOKEN =
   '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
-const DATE_TOKEN =
-  String.raw`(?:\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}[-\s]+${MONTH_TOKEN}[-\s]+\d{2,4}|${MONTH_TOKEN}\s+\d{1,2},?\s+\d{2,4})`;
+const DATE_TOKEN = String.raw`(?:\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}[-\s]+${MONTH_TOKEN}[-\s]+\d{2,4}|${MONTH_TOKEN}\s+\d{1,2},?\s+\d{2,4})`;
 
 function datePairsFromText(text: string, defaultYear?: number): GoldenDate[] {
   const patterns = [
@@ -319,12 +322,16 @@ function titleCaseRoomType(value: string): string {
 }
 
 function parseMoney(value: string): string | null {
-  let amount = value.trim().replace(/^(?:ZAR|R)\s*/iu, '').replace(/[\s ]/gu, '');
+  let amount = value
+    .trim()
+    .replace(/^(?:ZAR|R)\s*/iu, '')
+    .replace(/[\s ]/gu, '');
   if (!/\d/u.test(amount)) return null;
   if (amount.includes(',') && amount.includes('.')) {
-    amount = amount.lastIndexOf(',') > amount.lastIndexOf('.')
-      ? amount.replace(/\./gu, '').replace(',', '.')
-      : amount.replace(/,/gu, '');
+    amount =
+      amount.lastIndexOf(',') > amount.lastIndexOf('.')
+        ? amount.replace(/\./gu, '').replace(',', '.')
+        : amount.replace(/,/gu, '');
   } else if (amount.includes(',')) {
     const tail = amount.split(',').at(-1) ?? '';
     amount = tail.length <= 2 ? amount.replace(',', '.') : amount.replace(/,/gu, '');
@@ -340,13 +347,18 @@ function partyField(lines: readonly string[], field: 'company' | 'agency'): stri
       : /^\s*(?:agency|travel agent|booking agent)\s*[:=-]\s*(.+?)\s*$/iu;
   for (const line of lines) {
     const value = pattern.exec(line)?.[1];
-    const clean = cleanText(value?.split('|')[0]?.replace(/[<>]?\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, ''));
+    const clean = cleanText(
+      value?.split('|')[0]?.replace(/[<>]?\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, ''),
+    );
     if (clean) return clean;
   }
   return null;
 }
 
-export function parseOfferPdfAnswer(text: string, sentAt?: string): Omit<
+export function parseOfferPdfAnswer(
+  text: string,
+  sentAt?: string,
+): Omit<
   GoldenAnswer,
   | 'conf'
   | 'confirmation_numbers'
@@ -369,10 +381,18 @@ export function parseOfferPdfAnswer(text: string, sentAt?: string): Omit<
   const rooms: GoldenRoom[] = [];
   let explicitRoomCount: number | null = null;
   for (const line of lines) {
-    const countFirst = new RegExp(String.raw`\b(\d{1,3})\s*[x×]?\s*(${roomTypePattern})\s+rooms?\b`, 'iu').exec(line)
-      ?? new RegExp(String.raw`\b(\d{1,3})\s*[x×]\s*(${roomTypePattern})\b`, 'iu').exec(line);
-    const typeFirst = new RegExp(String.raw`\b(${roomTypePattern})\s*(?:rooms?\s*)?[x×:]\s*(\d{1,3})\b`, 'iu').exec(line);
-    const labeledType = new RegExp(String.raw`(?:room|accommodation)\s+(?:type|category)\s*[:=\-]\s*(${roomTypePattern})\b`, 'iu').exec(line);
+    const countFirst =
+      new RegExp(String.raw`\b(\d{1,3})\s*[x×]?\s*(${roomTypePattern})\s+rooms?\b`, 'iu').exec(
+        line,
+      ) ?? new RegExp(String.raw`\b(\d{1,3})\s*[x×]\s*(${roomTypePattern})\b`, 'iu').exec(line);
+    const typeFirst = new RegExp(
+      String.raw`\b(${roomTypePattern})\s*(?:rooms?\s*)?[x×:]\s*(\d{1,3})\b`,
+      'iu',
+    ).exec(line);
+    const labeledType = new RegExp(
+      String.raw`(?:room|accommodation)\s+(?:type|category)\s*[:=\-]\s*(${roomTypePattern})\b`,
+      'iu',
+    ).exec(line);
     if (countFirst?.[1] && countFirst[2]) {
       rooms.push({ count: Number(countFirst[1]), room_type: titleCaseRoomType(countFirst[2]) });
       continue;
@@ -402,12 +422,12 @@ export function parseOfferPdfAnswer(text: string, sentAt?: string): Omit<
   const boardLine = lines.find((line) => /^(?:board|meal\s+plan|basis)\s*[:=-]/iu.test(line));
   if (boardLine) {
     board = cleanText(boardLine.replace(/^(?:board|meal\s+plan|basis)\s*[:=-]\s*/iu, ''));
+  } else if (/\b(?:dinner\s*,?\s*bed\s*(?:&|and)\s*breakfast|\bdbb\b)/iu.test(flatText)) {
+    board = 'Dinner, Bed & Breakfast';
   } else if (/\b(?:bed\s*(?:&|and)\s*breakfast|b\s*&\s*b|\bbb\b)/iu.test(flatText)) {
     board = 'Bed & Breakfast';
   } else if (/\broom\s+only\b/iu.test(flatText)) {
     board = 'Room Only';
-  } else if (/\b(?:dinner\s*,?\s*bed\s*(?:&|and)\s*breakfast|\bdbb\b)/iu.test(flatText)) {
-    board = 'Dinner, Bed & Breakfast';
   }
 
   const ratePlanMatch =
@@ -439,10 +459,18 @@ export function parseOfferPdfAnswer(text: string, sentAt?: string): Omit<
 
 export function inferChangeTypes(text: string): ChangeType[] {
   const changeTypes: ChangeType[] = [];
-  if (/\b(?:date|dates|arrival|departure|check[\s-]?in|check[\s-]?out|night|extend|extension|shorten|early|later)\b/iu.test(text)) {
+  if (
+    /\b(?:date|dates|arrival|departure|check[\s-]?in|check[\s-]?out|night|extend|extension|shorten|early|later)\b/iu.test(
+      text,
+    )
+  ) {
     changeTypes.push('dates');
   }
-  if (/\b(?:room|rooms|room\s+type|bed|occupancy|add\s+(?:a\s+)?room|remove\s+(?:a\s+)?room)\b/iu.test(text)) {
+  if (
+    /\b(?:room|rooms|room\s+type|bed|occupancy|add\s+(?:a\s+)?room|remove\s+(?:a\s+)?room)\b/iu.test(
+      text,
+    )
+  ) {
     changeTypes.push('rooms');
   }
   if (/\b(?:guest\s+name|names?|spelling|rename|replace\s+(?:the\s+)?guest)\b/iu.test(text)) {
@@ -456,8 +484,12 @@ function candidatePreferred(candidate: GoldenCandidate, cutoff: string): boolean
 }
 
 function outputCandidate(candidate: GoldenCandidate): GoldenRow {
-  const { sender_domain: _senderDomain, stay_date: _stayDate, received_at: _receivedAt, ...row } =
-    candidate;
+  const {
+    sender_domain: _senderDomain,
+    stay_date: _stayDate,
+    received_at: _receivedAt,
+    ...row
+  } = candidate;
   return row;
 }
 
@@ -469,10 +501,9 @@ export function selectDiverseGoldenRows(
   const targetCounts = Object.fromEntries(
     GOLDEN_CLASSES.map((mailClass) => [mailClass, targets[mailClass] ?? TARGET_COUNTS[mailClass]]),
   ) as Record<GoldenClass, number>;
-  const availableByClass = Object.fromEntries(GOLDEN_CLASSES.map((mailClass) => [mailClass, 0])) as Record<
-    GoldenClass,
-    number
-  >;
+  const availableByClass = Object.fromEntries(
+    GOLDEN_CLASSES.map((mailClass) => [mailClass, 0]),
+  ) as Record<GoldenClass, number>;
   const eligibleByClass = { ...availableByClass };
   const selectedByClass = { ...availableByClass };
   const uniqueByClass = new Map<GoldenClass, Map<string, GoldenCandidate>>();
@@ -590,20 +621,31 @@ function stringValues(value: unknown): string[] {
   });
 }
 
-function answerConfirmationNumbers(answer: GoldenAnswer): string[] {
+function answerOutcomeConfirmationNumbers(answer: GoldenAnswer): string[] {
   const commercialConf = asRecord(answer.hms).conf;
-  return [...new Set([
-    ...stringValues(answer.confirmation_numbers),
-    ...stringValues(answer.conf),
-    ...stringValues(commercialConf),
-  ])].sort();
+  return [
+    ...new Set([
+      ...stringValues(answer.confirmation_numbers),
+      ...stringValues(answer.conf),
+      ...stringValues(commercialConf),
+    ]),
+  ].sort();
+}
+
+function answerExtractedConfirmationNumbers(answer: GoldenAnswer): string[] | null {
+  if (!Array.isArray(answer.extracted_confirmation_numbers)) return null;
+  return [...new Set(stringValues(answer.extracted_confirmation_numbers))].sort();
 }
 
 function predictionConfirmationNumbers(prediction: JsonRecord): string[] {
-  return [...new Set([
-    ...stringValues(prediction.confirmation_numbers ?? prediction.confirmationNumbers),
-    ...stringValues(prediction.conf ?? prediction.confirmation_number ?? prediction.confirmationNumber),
-  ])].sort();
+  return [
+    ...new Set([
+      ...stringValues(prediction.confirmation_numbers ?? prediction.confirmationNumbers),
+      ...stringValues(
+        prediction.conf ?? prediction.confirmation_number ?? prediction.confirmationNumber,
+      ),
+    ]),
+  ].sort();
 }
 
 function answerRoomCount(answer: GoldenAnswer): number | null {
@@ -697,15 +739,20 @@ function predictionPartyRoles(prediction: JsonRecord): NormalizedPartyRoles {
 }
 
 function normalizeAction(value: unknown): GoldenClass | null {
-  const action = cleanText(value)?.toLowerCase().replace(/[\s-]+/gu, '_');
+  const action = cleanText(value)
+    ?.toLowerCase()
+    .replace(/[\s-]+/gu, '_');
   if (!action) return null;
   if (['quote', 'quote_availability'].includes(action)) return 'quote';
-  if (['create', 'booking', 'new_booking', 'create_reservation', 'new_reservation'].includes(action)) {
+  if (
+    ['create', 'booking', 'new_booking', 'create_reservation', 'new_reservation'].includes(action)
+  ) {
     return 'create';
   }
   if (['amend', 'amendment', 'modify', 'amend_reservation'].includes(action)) return 'amend';
   if (['cancel', 'cancellation', 'cancel_reservation'].includes(action)) return 'cancel';
-  if (['skip', 'no_action', 'none', 'system_notice', 'not_actionable'].includes(action)) return 'skip';
+  if (['skip', 'no_action', 'none', 'system_notice', 'not_actionable'].includes(action))
+    return 'skip';
   return null;
 }
 
@@ -718,7 +765,15 @@ function predictionAction(prediction: JsonRecord): GoldenClass | null {
 }
 
 function matchesSet(left: readonly string[], right: readonly string[]): boolean {
-  return left.length > 0 && left.length === right.length && left.every((value, index) => value === right[index]);
+  return (
+    left.length > 0 &&
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function matchesExactSet(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function sumClassScores(scores: readonly ClassScore[]): ClassScore {
@@ -760,15 +815,20 @@ export function scoreGoldenRows(
     if (expectedDates.length) {
       addMetric(
         score.dates,
-        matchesSet(normalizedDateSet(expectedDates), normalizedDateSet(predictionDates(prediction))),
+        matchesSet(
+          normalizedDateSet(expectedDates),
+          normalizedDateSet(predictionDates(prediction)),
+        ),
       );
     }
 
-    const expectedConfirmations = answerConfirmationNumbers(row.answer);
-    if (expectedConfirmations.length) {
+    const explicitExtractedConfirmations = answerExtractedConfirmationNumbers(row.answer);
+    const expectedConfirmations =
+      explicitExtractedConfirmations ?? answerOutcomeConfirmationNumbers(row.answer);
+    if (explicitExtractedConfirmations !== null || expectedConfirmations.length) {
       addMetric(
         score.confirmation,
-        matchesSet(expectedConfirmations, predictionConfirmationNumbers(prediction)),
+        matchesExactSet(expectedConfirmations, predictionConfirmationNumbers(prediction)),
       );
     }
 
@@ -903,6 +963,15 @@ function isValidGoldenAnswer(mailClass: GoldenClass, answer: GoldenAnswer): bool
         cleanText(answer.total),
     );
   }
+  if (mailClass === 'create' || mailClass === 'amend' || mailClass === 'cancel') {
+    const extractedConfirmations = stringArray(answer.extracted_confirmation_numbers);
+    if (
+      !extractedConfirmations ||
+      extractedConfirmations.some((conf) => !/^\d{8}-\d{1,3}$/u.test(conf))
+    ) {
+      return false;
+    }
+  }
   if (!hasConfirmationNumber(answer) || !hasHmsAnswer(answer)) return false;
   const party = answerPartyRoles(answer);
   const hasStayOrPartyFact = Boolean(
@@ -920,7 +989,9 @@ function isValidGoldenAnswer(mailClass: GoldenClass, answer: GoldenAnswer): bool
     return Boolean(
       (Array.isArray(answer.change_types) &&
         answer.change_types.length > 0 &&
-        answer.change_types.every((value) => ['dates', 'rooms', 'names', 'other'].includes(value))) ||
+        answer.change_types.every((value) =>
+          ['dates', 'rooms', 'names', 'other'].includes(value),
+        )) ||
         (typeof answer.change_type === 'string' &&
           ['dates', 'rooms', 'names', 'other'].includes(answer.change_type)),
     );
@@ -942,31 +1013,33 @@ export function parseGoldenRow(value: unknown, rowNumber = 1): GoldenRow {
   const evidenceMessageId = cleanText(evidence.inbound_message_id);
   const staffMessageIds = stringArray(evidence.staff_message_ids);
   const pdfFiles = stringArray(evidence.pdf_files);
-  const quoteRunIds = evidence.staff_quote_run_ids === undefined
-    ? []
-    : stringArray(evidence.staff_quote_run_ids);
+  const quoteRunIds =
+    evidence.staff_quote_run_ids === undefined ? [] : stringArray(evidence.staff_quote_run_ids);
   const hmsReadIds = evidence.hms_read_ids === undefined ? [] : stringArray(evidence.hms_read_ids);
   const source = asRecord(evidence.source_classification);
   const hmsTruth = asRecord(evidence.hms_truth);
   const hmsTruthIsValid =
     evidence.hms_truth === undefined ||
     evidence.hms_truth === null ||
+    Boolean(cleanText(hmsTruth.source) && /^\d{8}-\d{1,3}$/u.test(cleanText(hmsTruth.conf) ?? ''));
+  const sourceIsValid =
+    evidence.source_classification === undefined ||
     Boolean(
-      cleanText(hmsTruth.source) && /^\d{8}-\d{1,3}$/u.test(cleanText(hmsTruth.conf) ?? ''),
+      cleanText(source.kind) &&
+        cleanText(source.reason) &&
+        (source.source === null ||
+          source.source === undefined ||
+          typeof source.source === 'string'),
     );
-  const sourceIsValid = evidence.source_classification === undefined || Boolean(
-    cleanText(source.kind) &&
-      cleanText(source.reason) &&
-      (source.source === null || source.source === undefined || typeof source.source === 'string'),
-  );
   const validClass = mailClass && GOLDEN_CLASSES.includes(mailClass as GoldenClass);
   const answerIsObject = isObjectValue(row.answer);
   const evidenceIsObject = isObjectValue(row.evidence);
   const parsedAnswer = answer as GoldenAnswer;
   const parsedEvidence = evidence as GoldenEvidence;
-  const sourcePointerIsValid = mailClass === 'skip'
-    ? Boolean(cleanText(source.kind) && source.kind !== 'direct' && cleanText(source.reason))
-    : hasSupportingEvidence(evidence);
+  const sourcePointerIsValid =
+    mailClass === 'skip'
+      ? Boolean(cleanText(source.kind) && source.kind !== 'direct' && cleanText(source.reason))
+      : hasSupportingEvidence(evidence);
 
   if (
     !messageId ||
@@ -983,9 +1056,16 @@ export function parseGoldenRow(value: unknown, rowNumber = 1): GoldenRow {
     !sourcePointerIsValid ||
     !isValidGoldenAnswer(mailClass as GoldenClass, parsedAnswer)
   ) {
-    throw new Error(`golden-v1.jsonl row ${rowNumber} is missing a valid answer or evidence pointer`);
+    throw new Error(
+      `golden-v1.jsonl row ${rowNumber} is missing a valid answer or evidence pointer`,
+    );
   }
-  return { message_id: messageId, class: mailClass as GoldenClass, answer: parsedAnswer, evidence: parsedEvidence };
+  return {
+    message_id: messageId,
+    class: mailClass as GoldenClass,
+    answer: parsedAnswer,
+    evidence: parsedEvidence,
+  };
 }
 
 export function parseHmsNeededFile(value: unknown): HmsNeededFile {
@@ -1041,16 +1121,11 @@ export function assertHmsNeededMatchesGolden(
     GoldenClass,
     number
   >;
-  const missingConfs = new Set<string>();
   for (const row of rows) {
     counts[row.class] += 1;
-    if (row.class !== 'quote' && row.class !== 'skip' && row.answer.hms === null) {
-      const conf = rowConf(row);
-      if (conf) missingConfs.add(conf);
-    }
   }
   const selectedByClass = new Map(hmsNeeded.selection.map((row) => [row.class, row.selected]));
-  const expectedMissing = [...missingConfs].sort();
+  const expectedMissing = missingHmsConfirmations(rows);
   const actualMissing = [...hmsNeeded.conf_numbers].sort();
   if (
     GOLDEN_CLASSES.some((mailClass) => selectedByClass.get(mailClass) !== counts[mailClass]) ||
@@ -1058,8 +1133,28 @@ export function assertHmsNeededMatchesGolden(
     expectedMissing.some((conf, index) => conf !== actualMissing[index]) ||
     hmsNeeded.golden_sha256 !== goldenRowsSha256(rows)
   ) {
-    throw new Error('HMS-needed manifest does not match golden-v1.jsonl; rerun select to regenerate both');
+    throw new Error(
+      'HMS-needed manifest does not match golden-v1.jsonl; rerun select to regenerate both',
+    );
   }
+}
+
+export function missingHmsConfirmations(rows: readonly GoldenRow[]): string[] {
+  const missing = new Set<string>();
+  for (const row of rows) {
+    if (row.class === 'quote' || row.class === 'skip' || answerHasSuccessfulHmsTruth(row.answer)) {
+      continue;
+    }
+    const conf = rowConf(row);
+    if (conf) missing.add(conf);
+  }
+  return [...missing].sort();
+}
+
+function answerHasSuccessfulHmsTruth(answer: GoldenAnswer): boolean {
+  return [answer.hms, answer.hmsCurrent].some(
+    (truth) => truth !== null && truth !== undefined && isSuccessfulHmsRead(truth),
+  );
 }
 
 function parseJsonLines(source: string, label: string): JsonRecord[] {
@@ -1104,26 +1199,6 @@ async function readJson(file: string): Promise<unknown> {
   }
 }
 
-async function writePrivateFile(file: string, contents: string): Promise<void> {
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(
-      file,
-      fsConstants.O_WRONLY |
-        fsConstants.O_CREAT |
-        fsConstants.O_TRUNC |
-        fsConstants.O_NOFOLLOW,
-      0o600,
-    );
-    await handle.chmod(0o600);
-    await handle.writeFile(contents, 'utf8');
-  } catch {
-    throw new Error('Could not safely write private golden data');
-  } finally {
-    await handle?.close();
-  }
-}
-
 function serializeJsonLines(rows: readonly unknown[]): string {
   const contents = rows.map((row) => JSON.stringify(row) ?? 'null').join('\n');
   return contents ? `${contents}\n` : '';
@@ -1131,10 +1206,6 @@ function serializeJsonLines(rows: readonly unknown[]): string {
 
 export function goldenRowsSha256(rows: readonly GoldenRow[]): string {
   return createHash('sha256').update(serializeJsonLines(rows)).digest('hex');
-}
-
-async function writeJsonLines(file: string, rows: readonly unknown[]): Promise<void> {
-  await writePrivateFile(file, serializeJsonLines(rows));
 }
 
 function plainTextBody(message: CorpusMessage): string {
@@ -1202,9 +1273,13 @@ function sourceClassification(message: CorpusMessage): MailSourceClassification 
 
   const domain = senderDomain(message.from_address);
   if (KNOWN_NON_DIRECT_DOMAINS.some((registered) => domainMatches(domain, registered))) {
-    const system = ['reviewpro.com', 'trustyou.com', 'tripadvisor.com', 'revinate.com', 'medallia.com'].some(
-      (registered) => domainMatches(domain, registered),
-    );
+    const system = [
+      'reviewpro.com',
+      'trustyou.com',
+      'tripadvisor.com',
+      'revinate.com',
+      'medallia.com',
+    ].some((registered) => domainMatches(domain, registered));
     return {
       kind: system ? 'system' : 'channel',
       source: system ? 'Known system sender' : 'Known channel sender',
@@ -1212,13 +1287,13 @@ function sourceClassification(message: CorpusMessage): MailSourceClassification 
     };
   }
   if (systemCancellationNotice(text)) {
-    return { kind: 'system', source: 'Cancellation notification', reason: 'system_cancellation_notification' };
+    return {
+      kind: 'system',
+      source: 'Cancellation notification',
+      reason: 'system_cancellation_notification',
+    };
   }
   return source;
-}
-
-function isNonDirect(message: CorpusMessage): boolean {
-  return sourceClassification(message).kind !== 'direct';
 }
 
 function messageTime(message: Pick<CorpusMessage, 'received_at' | 'sent_at'>): string {
@@ -1255,7 +1330,9 @@ export function resolveCancellationEvidence(
 ): CancellationResolution | null {
   const requestedConfs = confirmationNumbersFromText(requestText);
   const explicitReplyConfs = [...new Set(replies.flatMap((reply) => reply.confirmation_numbers))];
-  const pdfConfs = [...new Set(replyPdfConfNumbers.filter((conf): conf is string => Boolean(conf)))];
+  const pdfConfs = [
+    ...new Set(replyPdfConfNumbers.filter((conf): conf is string => Boolean(conf))),
+  ];
   const cancelledHmsConfs = [...new Set(hmsCancelledConfNumbers)];
   const requestSet = new Set(requestedConfs);
 
@@ -1268,9 +1345,9 @@ export function resolveCancellationEvidence(
     if (replyMatches.length === 1) {
       conf = replyMatches[0];
     } else {
-      const supported = [...new Set(
-        [...pdfConfs, ...cancelledHmsConfs].filter((value) => requestSet.has(value)),
-      )];
+      const supported = [
+        ...new Set([...pdfConfs, ...cancelledHmsConfs].filter((value) => requestSet.has(value))),
+      ];
       if (supported.length !== 1) return null;
       conf = supported[0];
     }
@@ -1290,9 +1367,9 @@ export function resolveCancellationEvidence(
     requestedConfs.length === 1 ||
     (requestedConfs.length > 1 &&
       explicitReplyConfs.every((value) => !requestSet.has(value)) &&
-      new Set([...pdfConfs, ...cancelledHmsConfs].filter((value) => requestSet.has(value))).size === 1) ||
-    (requestedConfs.length === 0 &&
-      new Set([...pdfConfs, ...cancelledHmsConfs]).size === 1);
+      new Set([...pdfConfs, ...cancelledHmsConfs].filter((value) => requestSet.has(value))).size ===
+        1) ||
+    (requestedConfs.length === 0 && new Set([...pdfConfs, ...cancelledHmsConfs]).size === 1);
   const matchedReplies = replies.filter(
     (reply) =>
       reply.confirmation_numbers.includes(conf!) ||
@@ -1314,9 +1391,10 @@ export function extractConfirmationNumberFromFilename(fileName: string): string 
 function confirmationFromFile(fileName: string, text: string): string | null {
   const fromName = extractConfirmationNumberFromFilename(fileName);
   if (fromName) return fromName;
-  const labeled = /\b(?:confirmation|conf|reservation)(?:\s*(?:number|no\.?|#|ref(?:erence)?))?\s*[:#=-]?\s*(\d{8}-\d{1,3})\b/iu.exec(
-    text,
-  )?.[1];
+  const labeled =
+    /\b(?:confirmation|conf|reservation)(?:\s*(?:number|no\.?|#|ref(?:erence)?))?\s*[:#=-]?\s*(\d{8}-\d{1,3})\b/iu.exec(
+      text,
+    )?.[1];
   return labeled ?? null;
 }
 
@@ -1466,7 +1544,8 @@ function nextStaffReplies(thread: readonly CorpusMessage[], messageId: string): 
   const replies: CorpusMessage[] = [];
   for (const message of thread.slice(index + 1)) {
     if (message.direction?.toLowerCase() === 'inbound') break;
-    if (message.direction?.toLowerCase() === 'outbound' && isStaffMessage(message)) replies.push(message);
+    if (message.direction?.toLowerCase() === 'outbound' && isStaffMessage(message))
+      replies.push(message);
   }
   return replies;
 }
@@ -1474,13 +1553,19 @@ function nextStaffReplies(thread: readonly CorpusMessage[], messageId: string): 
 const ASK_SIGNAL =
   /\?|\b(?:please|kindly|could you|can you|would you|may we|may i|would like|looking for|looking to|request(?:ing)?|require(?:d)?|need|advise|enquire|inquire|do you have|are there|is there|interested in|wish to|planning to|want to)\b/iu;
 const QUOTE_LANGUAGE = /\b(?:quote|quotation|availability|available|tariff|rates?|prices?)\b/iu;
-const LODGING_LANGUAGE = /\b(?:accommodation|hotel\s+room|rooms?|bedroom|overnight|stay|check[\s-]?in|check[\s-]?out|guest\s+room|room\s+block)\b/iu;
-const CHANGE_LANGUAGE = /\b(?:amend(?:ment)?|change|modify|update|move|extend|extension|shorten|reduce|increase|add|remove|replace|correct|upgrade|downgrade|switch|revise)\b/iu;
-const BOOKING_LANGUAGE = /\b(?:new\s+booking|booking|book|reservation|reserve|make\s+a\s+reservation)\b/iu;
+const LODGING_LANGUAGE =
+  /\b(?:accommodation|hotel\s+room|rooms?|bedroom|overnight|stay|check[\s-]?in|check[\s-]?out|guest\s+room|room\s+block)\b/iu;
+const CHANGE_LANGUAGE =
+  /\b(?:amend(?:ment)?|change|modify|update|move|extend|extension|shorten|reduce|increase|add|remove|replace|correct|upgrade|downgrade|switch|revise)\b/iu;
+const BOOKING_LANGUAGE =
+  /\b(?:new\s+booking|booking|book|reservation|reserve|make\s+a\s+reservation)\b/iu;
 
 function looksLikeQuoteRequest(message: CorpusMessage): boolean {
   const text = requestText(message);
-  if (!text || /\b(?:cancell?ation|amendment|payment\s+proof|invoice|complaint|guest\s+review)\b/iu.test(text)) {
+  if (
+    !text ||
+    /\b(?:cancell?ation|amendment|payment\s+proof|invoice|complaint|guest\s+review)\b/iu.test(text)
+  ) {
     return false;
   }
   const hasAsk = ASK_SIGNAL.test(text);
@@ -1495,18 +1580,68 @@ function looksLikeQuoteRequest(message: CorpusMessage): boolean {
 function looksLikeBookingRequest(message: CorpusMessage): boolean {
   const text = requestText(message);
   if (!text || explicitCancellationRequest(text) || CHANGE_LANGUAGE.test(text)) return false;
-  if (/\b(?:confirm|verify|check)\b[\s\S]{0,80}\b(?:booking|reservation)\b/iu.test(text)) return false;
+  if (/\b(?:confirm|verify|check)\b[\s\S]{0,80}\b(?:booking|reservation)\b/iu.test(text))
+    return false;
   return ASK_SIGNAL.test(text) && BOOKING_LANGUAGE.test(text);
 }
 
 function looksLikeChangeRequest(message: CorpusMessage): boolean {
   const text = requestText(message);
   if (!text || explicitCancellationRequest(text)) return false;
-  return CHANGE_LANGUAGE.test(text) && /\b(?:booking|reservation|conf(?:irmation)?|stay|room|guest|arrival|departure)\b/iu.test(text);
+  return (
+    CHANGE_LANGUAGE.test(text) &&
+    /\b(?:booking|reservation|conf(?:irmation)?|stay|room|guest|arrival|departure)\b/iu.test(text)
+  );
 }
 
 function looksLikeCancellationRequest(message: CorpusMessage): boolean {
   return explicitCancellationRequest(requestText(message));
+}
+
+function nextAmendmentRequestTime(
+  message: CorpusMessage,
+  thread: readonly CorpusMessage[],
+): number | null {
+  const requestIndex = thread.findIndex((candidate) => candidate.id === message.id);
+  if (requestIndex < 0) return null;
+  const nextRequest = thread
+    .slice(requestIndex + 1)
+    .find(
+      (candidate) =>
+        candidate.direction.toLowerCase() === 'inbound' && looksLikeChangeRequest(candidate),
+    );
+  return nextRequest ? messageTimeMs(nextRequest) : null;
+}
+
+function amendmentReplyMessages(
+  message: CorpusMessage,
+  thread: readonly CorpusMessage[],
+): CorpusMessage[] {
+  const requestIndex = thread.findIndex((candidate) => candidate.id === message.id);
+  if (requestIndex < 0) return [];
+  const nextRequestIndex = thread.findIndex(
+    (candidate, index) =>
+      index > requestIndex &&
+      candidate.direction.toLowerCase() === 'inbound' &&
+      looksLikeChangeRequest(candidate),
+  );
+  return thread
+    .slice(requestIndex + 1, nextRequestIndex < 0 ? undefined : nextRequestIndex)
+    .filter(
+      (candidate) => candidate.direction.toLowerCase() === 'outbound' && isStaffMessage(candidate),
+    );
+}
+
+function hasClearAmendmentLink(
+  request: CorpusMessage,
+  reply: CorpusMessage,
+  conf: string,
+): boolean {
+  const requestConfs = confirmationNumbersFromText(requestText(request));
+  const replyConfs = confirmationNumbersFromText(
+    `${cleanText(reply.subject) ?? ''}\n${plainTextBody(reply)}`,
+  );
+  return requestConfs.includes(conf) || replyConfs.includes(conf);
 }
 
 function looksLikeChangeConfirmation(message: CorpusMessage): boolean {
@@ -1553,32 +1688,33 @@ function truthPartyName(commercial: JsonRecord, field: 'company' | 'agency'): st
   return cleanText(asRecord(commercial[field]).name);
 }
 
-function answerWithTruth(
+export function answerWithTruth(
   answer: GoldenAnswer,
   conf: string,
   truth: JsonRecord | undefined,
 ): GoldenAnswer {
   if (!truth) {
-    return { ...answer, conf, confirmation_numbers: [conf], hms: null };
+    return { ...answer, conf, confirmation_numbers: [conf], hms: answer.hms ?? null };
   }
   const commercial = asRecord(truth.commercial);
   const arrival = cleanText(commercial.arrival);
   const departure = cleanText(commercial.departure);
   const truthDates = arrival && departure ? datePairs({ arrival, departure }) : [];
   const previousParty = answer.party ?? { company: null, agency: null };
-  const company = truthPartyName(commercial, 'company') ?? previousParty.company;
-  const agency = truthPartyName(commercial, 'agency') ?? previousParty.agency;
+  const company = cleanText(previousParty.company) ?? truthPartyName(commercial, 'company');
+  const agency = cleanText(previousParty.agency) ?? truthPartyName(commercial, 'agency');
   return {
     ...answer,
     conf,
     confirmation_numbers: [conf],
-    dates: truthDates.length ? truthDates : answer.dates,
-    room_type: cleanText(commercial.roomType) ?? answer.room_type ?? null,
-    rate_plan: cleanText(commercial.ratePlan) ?? answer.rate_plan ?? null,
-    board: cleanText(commercial.mealPlan) ?? answer.board ?? null,
+    dates: answer.dates?.length ? answer.dates : truthDates,
+    room_type: cleanText(answer.room_type) ?? cleanText(commercial.roomType),
+    rate_plan: cleanText(answer.rate_plan) ?? cleanText(commercial.ratePlan),
+    board: cleanText(answer.board) ?? cleanText(commercial.mealPlan),
     party: { company, agency },
-    status: cleanText(commercial.status) ?? answer.status ?? null,
-    hms: truth,
+    status: cleanText(answer.status) ?? cleanText(commercial.status),
+    hms: answer.hms ?? null,
+    hmsCurrent: truth,
   };
 }
 
@@ -1599,12 +1735,14 @@ function answerCompleteness(answer: GoldenAnswer): number {
 }
 
 function bestPdfAnswer(documents: readonly StaffPdf[], sentAt: string): GoldenAnswer {
-  return documents
-    .map((document) => parsedPdfAnswer(document, sentAt))
-    .sort((left, right) => answerCompleteness(right) - answerCompleteness(left))[0] ?? {};
+  return (
+    documents
+      .map((document) => parsedPdfAnswer(document, sentAt))
+      .sort((left, right) => answerCompleteness(right) - answerCompleteness(left))[0] ?? {}
+  );
 }
 
-function makeCandidate(input: {
+export function makeCandidate(input: {
   message: CorpusMessage;
   mailClass: GoldenClass;
   answer: GoldenAnswer;
@@ -1615,9 +1753,18 @@ function makeCandidate(input: {
   quoteRunIds?: readonly string[];
   hmsReadIds?: readonly string[];
 }): GoldenCandidate {
-  const conf = cleanText(input.answer.conf);
+  const answerWithExtractedReferences =
+    input.mailClass === 'create' || input.mailClass === 'amend' || input.mailClass === 'cancel'
+      ? {
+          ...input.answer,
+          extracted_confirmation_numbers: confirmationNumbersFromText(requestText(input.message)),
+        }
+      : input.answer;
+  const conf = cleanText(answerWithExtractedReferences.conf);
   const truth = conf ? input.truthByConf?.get(conf) : undefined;
-  const answer = conf ? answerWithTruth(input.answer, conf, truth) : input.answer;
+  const answer = conf
+    ? answerWithTruth(answerWithExtractedReferences, conf, truth)
+    : answerWithExtractedReferences;
   const arrival = datesFromAnswer(answer)[0]?.arrival ?? null;
   return {
     message_id: input.message.id,
@@ -1666,13 +1813,140 @@ function staffQuoteRunIdsByThread(rows: readonly JsonRecord[]): Map<string, stri
   return result;
 }
 
-function indexedTruth(rows: readonly JsonRecord[]): Map<string, JsonRecord> {
+export function indexedTruth(rows: readonly JsonRecord[]): Map<string, JsonRecord> {
   const truth = new Map<string, JsonRecord>();
   for (const row of rows) {
     const conf = cleanText(row.conf);
-    if (conf) truth.set(conf, row);
+    if (!conf || !isSuccessfulHmsRead(row)) continue;
+    truth.set(conf, row);
   }
   return truth;
+}
+
+function isSuccessfulHmsRead(row: JsonRecord): boolean {
+  const statuses = [row.status, row.outcome]
+    .map((value) => cleanText(value)?.toLowerCase())
+    .filter((value): value is string => Boolean(value));
+  if (
+    !statuses.length ||
+    !statuses.includes('found') ||
+    statuses.some((value) => value !== 'found')
+  ) {
+    return false;
+  }
+  const commercial = asRecord(row.commercial);
+  return Boolean(
+    datePairs({ arrival: commercial.arrival, departure: commercial.departure }).length ||
+      cleanText(commercial.roomType) ||
+      cleanText(commercial.ratePlan) ||
+      cleanText(commercial.mealPlan) ||
+      truthPartyName(commercial, 'company') ||
+      truthPartyName(commercial, 'agency') ||
+      cleanText(commercial.status),
+  );
+}
+
+type MergeTruthChoice = { truth: JsonRecord; source: 'supplied' | 'saved' | 'base' };
+
+export function preferredMergeTruth(
+  answer: GoldenAnswer,
+  conf: string,
+  suppliedTruth?: JsonRecord,
+  baseTruth?: JsonRecord,
+): MergeTruthChoice | null {
+  if (
+    suppliedTruth &&
+    cleanText(suppliedTruth.conf) === conf &&
+    isSuccessfulHmsRead(suppliedTruth)
+  ) {
+    return { truth: suppliedTruth, source: 'supplied' };
+  }
+  for (const savedTruth of [answer.hmsCurrent, answer.hms]) {
+    if (savedTruth && cleanText(savedTruth.conf) === conf && isSuccessfulHmsRead(savedTruth)) {
+      return { truth: savedTruth, source: 'saved' };
+    }
+  }
+  if (baseTruth && cleanText(baseTruth.conf) === conf && isSuccessfulHmsRead(baseTruth)) {
+    return { truth: baseTruth, source: 'base' };
+  }
+  return null;
+}
+
+export function matchingAmendmentUpdate(
+  message: CorpusMessage,
+  thread: readonly CorpusMessage[],
+  conf: string,
+  documents: readonly StaffPdf[],
+  messageById: ReadonlyMap<string, CorpusMessage>,
+): StaffPdf | undefined {
+  const requestTime = messageTimeMs(message);
+  const nextRequestTime = nextAmendmentRequestTime(message, thread);
+  const sameThreadReplies = amendmentReplyMessages(message, thread);
+  const sameThreadReplyIds = new Set(sameThreadReplies.map((reply) => reply.id));
+  return documents
+    .filter((document) => document.kind === 'confirmation' && document.conf === conf)
+    .filter((document) => {
+      const attached = messageById.get(document.message_id);
+      if (
+        !attached ||
+        attached.direction.toLowerCase() !== 'outbound' ||
+        !isStaffMessage(attached)
+      ) {
+        return false;
+      }
+      const attachedTime = messageTimeMs(attached);
+      const delta = attachedTime - requestTime;
+      if (delta <= 0 || (nextRequestTime !== null && attachedTime >= nextRequestTime)) {
+        return false;
+      }
+      const replyConfs = confirmationNumbersFromText(
+        `${cleanText(attached.subject) ?? ''}\n${plainTextBody(attached)}`,
+      );
+      if (attached.thread_id === message.thread_id) {
+        return (
+          sameThreadReplyIds.has(attached.id) && hasClearAmendmentLink(message, attached, conf)
+        );
+      }
+      return delta <= CROSS_THREAD_REPLY_WINDOW_MS && replyConfs.includes(conf);
+    })
+    .sort(
+      (left, right) =>
+        messageTimeMs(messageById.get(left.message_id)) -
+        messageTimeMs(messageById.get(right.message_id)),
+    )
+    .at(0);
+}
+
+export function matchingAmendmentReplies(
+  message: CorpusMessage,
+  thread: readonly CorpusMessage[],
+  messages: readonly CorpusMessage[],
+  conf: string,
+): CorpusMessage[] {
+  const requestTime = messageTimeMs(message);
+  const nextRequestTime = nextAmendmentRequestTime(message, thread);
+  const sameThreadConfirmations = amendmentReplyMessages(message, thread).filter(
+    (reply) => looksLikeChangeConfirmation(reply) && hasClearAmendmentLink(message, reply, conf),
+  );
+  const crossThreadConfirmations = messages.filter((reply) => {
+    const replyTime = messageTimeMs(reply);
+    const delta = replyTime - requestTime;
+    return (
+      reply.thread_id !== message.thread_id &&
+      reply.direction.toLowerCase() === 'outbound' &&
+      isStaffMessage(reply) &&
+      delta > 0 &&
+      delta <= CROSS_THREAD_REPLY_WINDOW_MS &&
+      (nextRequestTime === null || replyTime < nextRequestTime) &&
+      looksLikeChangeConfirmation(reply) &&
+      confirmationNumbersFromText(plainTextBody(reply)).includes(conf)
+    );
+  });
+  return [
+    ...new Map(
+      [...sameThreadConfirmations, ...crossThreadConfirmations].map((reply) => [reply.id, reply]),
+    ).values(),
+  ];
 }
 
 async function selectCandidates(): Promise<{
@@ -1796,50 +2070,28 @@ async function selectCandidates(): Promise<{
     if (looksLikeChangeRequest(message)) {
       const request = requestText(message);
       const mentionedConfs = confirmationNumbersFromText(request);
-      const laterLetters = replyPdfs.filter((document) => document.kind === 'confirmation' && document.conf);
-      const possibleConfs = [...new Set([...mentionedConfs, ...laterLetters.map((doc) => doc.conf!)])];
+      const laterLetters = replyPdfs.filter(
+        (document) => document.kind === 'confirmation' && document.conf,
+      );
+      const possibleConfs = [
+        ...new Set([...mentionedConfs, ...laterLetters.map((doc) => doc.conf!)]),
+      ];
       for (const conf of possibleConfs) {
         const before = (lettersByConf.get(conf) ?? []).some((document) => {
           const attached = messageById.get(document.message_id);
           return attached && messageTimeMs(attached) < messageTimeMs(message);
         });
         const hmsExisting = truthByConf.get(conf)?.outcome === 'found';
-        const matchingUpdates = (lettersByConf.get(conf) ?? [])
-          .filter((document) => {
-            const attached = messageById.get(document.message_id);
-            if (!attached) return false;
-            const delta = messageTimeMs(attached) - messageTimeMs(message);
-            return (
-              delta > 0 &&
-              (attached.thread_id === message.thread_id || delta <= CROSS_THREAD_REPLY_WINDOW_MS)
-            );
-          })
-          .sort((left, right) =>
-            messageTimeMs(messageById.get(left.message_id)) -
-            messageTimeMs(messageById.get(right.message_id)),
-          );
-        const sameThreadConfirmations = replies.filter((reply) =>
-          looksLikeChangeConfirmation(reply) &&
-          (confirmationNumbersFromText(plainTextBody(reply)).includes(conf) || mentionedConfs.length === 1),
+        const matchingUpdate = matchingAmendmentUpdate(
+          message,
+          thread,
+          conf,
+          lettersByConf.get(conf) ?? [],
+          messageById,
         );
-        const crossThreadConfirmations = messages.filter((reply) => {
-          const delta = messageTimeMs(reply) - messageTimeMs(message);
-          return (
-            reply.direction.toLowerCase() === 'outbound' &&
-            isStaffMessage(reply) &&
-            delta > 0 &&
-            delta <= CROSS_THREAD_REPLY_WINDOW_MS &&
-            looksLikeChangeConfirmation(reply) &&
-            confirmationNumbersFromText(plainTextBody(reply)).includes(conf)
-          );
-        });
-        const confirmingReplies = [
-          ...new Map(
-            [...sameThreadConfirmations, ...crossThreadConfirmations].map((reply) => [reply.id, reply]),
-          ).values(),
-        ];
-        if (!(before || hmsExisting) || (!matchingUpdates.length && !confirmingReplies.length)) continue;
-        const update = matchingUpdates.at(-1);
+        const confirmingReplies = matchingAmendmentReplies(message, thread, messages, conf);
+        if (!(before || hmsExisting) || (!matchingUpdate && !confirmingReplies.length)) continue;
+        const update = matchingUpdate;
         const pdfs = update ? [update] : [];
         const answer = answerWithTruth(
           {
@@ -1853,7 +2105,9 @@ async function selectCandidates(): Promise<{
           truthByConf.get(conf),
         );
         const updateMessage = update ? messageById.get(update.message_id) : undefined;
-        const staffMessages = updateMessage ? [...confirmingReplies, updateMessage] : confirmingReplies;
+        const staffMessages = updateMessage
+          ? [...confirmingReplies, updateMessage]
+          : confirmingReplies;
         candidates.push(
           makeCandidate({
             message,
@@ -1883,7 +2137,9 @@ async function selectCandidates(): Promise<{
         ...pdfConfirmationNumbers.filter((conf): conf is string => Boolean(conf)),
       ];
       const hmsCancelledConfNumbers = [...new Set(requestAndReplyConfs)].filter((conf) =>
-        cleanText(asRecord(truthByConf.get(conf)?.commercial).status)?.toLowerCase().includes('cancel'),
+        cleanText(asRecord(truthByConf.get(conf)?.commercial).status)
+          ?.toLowerCase()
+          .includes('cancel'),
       );
       const cancellation = resolveCancellationEvidence(
         request,
@@ -1932,13 +2188,15 @@ async function selectCandidates(): Promise<{
     if (confirmationNumbersFromText(text).length) return [];
     const dates = datePairsFromText(text);
     if (!dates.length) return [];
-    return [{
-      message,
-      text,
-      dates,
-      senderDomain: senderDomain(message.from_address),
-      requestAt: messageTime(message),
-    }];
+    return [
+      {
+        message,
+        text,
+        dates,
+        senderDomain: senderDomain(message.from_address),
+        requestAt: messageTime(message),
+      },
+    ];
   });
   const firstLetterProfiles = [...firstLetters.values()].flatMap((document) => {
     if (!document.conf) return [];
@@ -2006,7 +2264,7 @@ async function selectCandidates(): Promise<{
   const selectedConfs = new Set(
     selection.rows
       .filter((row) => row.class !== 'quote' && row.class !== 'skip')
-      .flatMap((row) => answerConfirmationNumbers(row.answer)),
+      .flatMap((row) => answerOutcomeConfirmationNumbers(row.answer)),
   );
   const hmsNeeded = [...selectedConfs].filter((conf) => !truthByConf.has(conf)).sort();
   return { candidates, selection, hmsNeeded };
@@ -2024,25 +2282,28 @@ function selectionMetadata(selection: GoldenSelection): SelectionMetadata[] {
 
 function formatClassCounts(selection: GoldenSelection): string {
   return GOLDEN_CLASSES.map(
-    (mailClass) => `${mailClass} ${selection.selectedByClass[mailClass]}/${selection.targets[mailClass]}`,
+    (mailClass) =>
+      `${mailClass} ${selection.selectedByClass[mailClass]}/${selection.targets[mailClass]}`,
   ).join(', ');
 }
 
 async function runSelect(goldenPath: string, hmsNeededPath: string): Promise<void> {
-  const { selection, hmsNeeded } = await selectCandidates();
-  const rows = selection.rows.map((row, index) => parseGoldenRow(row, index + 1));
-  const hmsNeededFile: HmsNeededFile = {
-    conf_numbers: hmsNeeded,
-    selection: selectionMetadata(selection),
-    golden_sha256: goldenRowsSha256(rows),
-  };
-  const validatedManifest = parseHmsNeededFile(hmsNeededFile);
-  assertHmsNeededMatchesGolden(rows, validatedManifest);
-  await writeJsonLines(goldenPath, rows);
-  await writePrivateFile(hmsNeededPath, `${JSON.stringify(validatedManifest, null, 2)}\n`);
-  const total = selection.rows.length;
+  const result = await withGoldenSetPairLock(goldenPath, hmsNeededPath, async (pair) => {
+    await pair.recover();
+    const { selection, hmsNeeded } = await selectCandidates();
+    const rows = selection.rows.map((row, index) => parseGoldenRow(row, index + 1));
+    const hmsNeededFile: HmsNeededFile = {
+      conf_numbers: hmsNeeded,
+      selection: selectionMetadata(selection),
+      golden_sha256: goldenRowsSha256(rows),
+    };
+    const validatedManifest = parseHmsNeededFile(hmsNeededFile);
+    assertHmsNeededMatchesGolden(rows, validatedManifest);
+    await pair.write(serializeJsonLines(rows), `${JSON.stringify(validatedManifest, null, 2)}\n`);
+    return { selection, total: rows.length, hmsNeededCount: hmsNeeded.length };
+  });
   process.stdout.write(
-    `Golden v1 selection: ${formatClassCounts(selection)}; total=${total}; HMS-needed=${hmsNeeded.length}.\n`,
+    `Golden v1 selection: ${formatClassCounts(result.selection)}; total=${result.total}; HMS-needed=${result.hmsNeededCount}.\n`,
   );
 }
 
@@ -2055,12 +2316,8 @@ async function readHmsNeeded(): Promise<HmsNeededFile> {
   return parseHmsNeededFile(await readJson(HMS_NEEDED_PATH));
 }
 
-async function writeHmsNeeded(file: string, value: HmsNeededFile): Promise<void> {
-  await writePrivateFile(file, `${JSON.stringify(value, null, 2)}\n`);
-}
-
 function rowConf(row: GoldenRow): string | null {
-  return cleanText(row.answer.conf) ?? answerConfirmationNumbers(row.answer)[0] ?? null;
+  return cleanText(row.answer.conf) ?? answerOutcomeConfirmationNumbers(row.answer)[0] ?? null;
 }
 
 async function runMergeHms(
@@ -2068,48 +2325,55 @@ async function runMergeHms(
   goldenPath: string,
   hmsNeededPath: string,
 ): Promise<void> {
-  const [goldenRows, suppliedTruthRows, baseTruthRows, hmsNeeded] = await Promise.all([
-    readGoldenRows(),
-    readJsonl(hmsPath),
-    readJsonl(PARTY_TRUTH_PATH),
-    readHmsNeeded(),
-  ]);
-  assertHmsNeededMatchesGolden(goldenRows, hmsNeeded);
-  const suppliedTruthByConf = indexedTruth(suppliedTruthRows);
-  const truthByConf = indexedTruth([...baseTruthRows, ...suppliedTruthRows]);
-  const merged = goldenRows.map((row) => {
-    const conf = rowConf(row);
-    if (!conf) return row;
-    const truth = truthByConf.get(conf);
-    if (!truth) return row;
-    return {
-      ...row,
-      answer: answerWithTruth(row.answer, conf, truth),
-      evidence: {
-        ...row.evidence,
-        hms_truth: {
-          source: basename(suppliedTruthByConf.has(conf) ? hmsPath : PARTY_TRUTH_PATH),
-          conf,
-        },
-      },
-    };
+  const result = await withGoldenSetPairLock(goldenPath, hmsNeededPath, async (pair) => {
+    await pair.recover();
+    const [goldenRows, suppliedTruthRows, baseTruthRows, hmsNeeded] = await Promise.all([
+      readGoldenRows(),
+      readJsonl(hmsPath),
+      readJsonl(PARTY_TRUTH_PATH),
+      readHmsNeeded(),
+    ]);
+    assertHmsNeededMatchesGolden(goldenRows, hmsNeeded);
+    const suppliedTruthByConf = indexedTruth(suppliedTruthRows);
+    const baseTruthByConf = indexedTruth(baseTruthRows);
+    const merged = goldenRows.map((row) => {
+      const conf = rowConf(row);
+      if (!conf) return row;
+      const choice = preferredMergeTruth(
+        row.answer,
+        conf,
+        suppliedTruthByConf.get(conf),
+        baseTruthByConf.get(conf),
+      );
+      if (!choice) return row;
+      return {
+        ...row,
+        answer: answerWithTruth(row.answer, conf, choice.truth),
+        evidence:
+          choice.source === 'saved'
+            ? row.evidence
+            : {
+                ...row.evidence,
+                hms_truth: {
+                  source: basename(choice.source === 'supplied' ? hmsPath : PARTY_TRUTH_PATH),
+                  conf,
+                },
+              },
+      };
+    });
+    const updatedHmsNeeded = missingHmsConfirmations(merged);
+    const updatedManifest = parseHmsNeededFile({
+      ...hmsNeeded,
+      conf_numbers: updatedHmsNeeded,
+      golden_sha256: goldenRowsSha256(merged),
+    });
+    assertHmsNeededMatchesGolden(merged, updatedManifest);
+    await pair.write(serializeJsonLines(merged), `${JSON.stringify(updatedManifest, null, 2)}\n`);
+    return { mergedCount: merged.length, neededCount: updatedHmsNeeded.length };
   });
-  const selectedConfs = new Set(
-    merged.flatMap((row) => {
-      const conf = row.class === 'quote' || row.class === 'skip' ? null : rowConf(row);
-      return conf ? [conf] : [];
-    }),
+  process.stdout.write(
+    `Merged HMS truth into ${result.mergedCount} golden rows; still-needed=${result.neededCount}.\n`,
   );
-  const updatedHmsNeeded = [...selectedConfs].filter((conf) => !truthByConf.has(conf)).sort();
-  const updatedManifest = parseHmsNeededFile({
-    ...hmsNeeded,
-    conf_numbers: updatedHmsNeeded,
-    golden_sha256: goldenRowsSha256(merged),
-  });
-  assertHmsNeededMatchesGolden(merged, updatedManifest);
-  await writeJsonLines(goldenPath, merged);
-  await writeHmsNeeded(hmsNeededPath, updatedManifest);
-  process.stdout.write(`Merged HMS truth into ${merged.length} golden rows; still-needed=${updatedHmsNeeded.length}.\n`);
 }
 
 function numericValue(value: unknown): number | null {
@@ -2136,7 +2400,10 @@ function extractionDates(extraction: JsonRecord): GoldenDate[] {
   return dates;
 }
 
-export function extractionRooms(extraction: JsonRecord): { rooms: GoldenRoom[]; roomCount: number | null } {
+export function extractionRooms(extraction: JsonRecord): {
+  rooms: GoldenRoom[];
+  roomCount: number | null;
+} {
   const payload = asRecord(extraction.payload);
   const stays = Array.isArray(payload.stays) ? payload.stays : [];
   const rooms: GoldenRoom[] = [];
@@ -2160,18 +2427,28 @@ export function extractionRooms(extraction: JsonRecord): { rooms: GoldenRoom[]; 
     if (stayCount === null && hasInferredRoomCount) stayCount = inferredRoomCount;
     if (stayCount !== null) perStayCounts.push(stayCount);
   }
-  const roomCount = stays.length && perStayCounts.length === stays.length
-    ? perStayCounts.reduce((total, count) => total + count, 0)
-    : null;
+  const roomCount =
+    stays.length && perStayCounts.length === stays.length
+      ? perStayCounts.reduce((total, count) => total + count, 0)
+      : null;
   return { rooms, roomCount };
 }
 
-function snapshotPrediction(
+export function snapshotPrediction(
   messageId: string,
   message: CorpusMessage | undefined,
   extraction: JsonRecord | undefined,
 ): GoldenPrediction {
-  if (message && isNonDirect(message)) return { message_id: messageId, action: 'skip' };
+  if (
+    message &&
+    classifyMailSource({
+      fromAddress: cleanText(message.from_address),
+      subject: cleanText(message.subject),
+      bodyText: plainTextBody(message),
+    }).kind !== 'direct'
+  ) {
+    return { message_id: messageId, action: 'skip' };
+  }
   if (!extraction) return { message_id: messageId, action: null };
   const payload = asRecord(extraction.payload);
   const roomAnswer = extractionRooms(extraction);
@@ -2228,7 +2505,9 @@ function buildScoreReport(input: {
     const count = input.score.byClass[mailClass].count;
     const target = selectionByClass.get(mailClass)?.target ?? TARGET_COUNTS[mailClass];
     if (count >= target) return [];
-    return [`- **${mailClass}: ${count}/${target}** rows; ${shortReason(selectionByClass.get(mailClass))}.`];
+    return [
+      `- **${mailClass}: ${count}/${target}** rows; ${shortReason(selectionByClass.get(mailClass))}.`,
+    ];
   });
   const skipPrecision = metricText(input.score.skip.precision);
   const skipRecall = metricText(input.score.skip.recall);
@@ -2281,9 +2560,7 @@ export function isPathWithin(parent: string, candidate: string): boolean {
   const relativePath = relative(resolve(parent), resolve(candidate));
   return (
     relativePath === '' ||
-    (relativePath !== '..' &&
-      !relativePath.startsWith(`..${sep}`) &&
-      !isAbsolute(relativePath))
+    (relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath))
   );
 }
 
@@ -2301,15 +2578,34 @@ export function isSafeAttachmentId(value: string): boolean {
   return /^[A-Z0-9_-]+$/iu.test(value);
 }
 
+type PrivateOutputOptions = {
+  allowedRoot?: string;
+  inputPaths?: readonly string[];
+};
+
 export async function resolvePrivateOutputPath(
   path: string,
   privateRoot = DATA_ROOT,
   repositoryRoot = REPO_ROOT,
+  options: PrivateOutputOptions = {},
 ): Promise<string> {
   const outputPath = resolve(path);
   const privateRootPath = resolve(privateRoot);
   const repositoryRootPath = resolve(repositoryRoot);
+  const allowedRootPath = options.allowedRoot ? resolve(options.allowedRoot) : undefined;
   assertOutputIsPrivate(outputPath, privateRootPath, repositoryRootPath);
+  if (allowedRootPath) {
+    if (
+      !isPathWithin(privateRootPath, allowedRootPath) ||
+      isPathWithin(repositoryRootPath, allowedRootPath) ||
+      !isPathWithin(allowedRootPath, outputPath)
+    ) {
+      throw new Error('Refusing to write a report outside the private reports directory');
+    }
+  }
+  if ((options.inputPaths ?? []).some((inputPath) => resolve(inputPath) === outputPath)) {
+    throw new Error('Refusing to overwrite a golden scoring input');
+  }
 
   let canonicalPrivateRoot: string;
   let canonicalRepositoryRoot: string;
@@ -2321,10 +2617,27 @@ export async function resolvePrivateOutputPath(
   } catch {
     throw new Error('Refusing to write golden data or reports outside the private data directory');
   }
-  if (
-    isPathWithin(canonicalRepositoryRoot, canonicalPrivateRoot)
-  ) {
+  if (isPathWithin(canonicalRepositoryRoot, canonicalPrivateRoot)) {
     throw new Error('Refusing to write golden data or reports outside the private data directory');
+  }
+
+  let canonicalAllowedRoot: string | undefined;
+  if (allowedRootPath) {
+    try {
+      const allowedRootInfo = await lstat(allowedRootPath);
+      if (!allowedRootInfo.isDirectory() || allowedRootInfo.isSymbolicLink()) {
+        throw new Error('Refusing to write a report outside the private reports directory');
+      }
+      canonicalAllowedRoot = await realpath(allowedRootPath);
+    } catch {
+      throw new Error('Refusing to write a report outside the private reports directory');
+    }
+    if (
+      !isPathWithin(canonicalPrivateRoot, canonicalAllowedRoot) ||
+      isPathWithin(canonicalRepositoryRoot, canonicalAllowedRoot)
+    ) {
+      throw new Error('Refusing to write a report outside the private reports directory');
+    }
   }
 
   let existingParent = dirname(outputPath);
@@ -2334,11 +2647,15 @@ export async function resolvePrivateOutputPath(
       break;
     } catch (error) {
       if (!hasErrorCode(error, 'ENOENT') && !hasErrorCode(error, 'ENOTDIR')) {
-        throw new Error('Refusing to write golden data or reports outside the private data directory');
+        throw new Error(
+          'Refusing to write golden data or reports outside the private data directory',
+        );
       }
       const parent = dirname(existingParent);
       if (parent === existingParent) {
-        throw new Error('Refusing to write golden data or reports outside the private data directory');
+        throw new Error(
+          'Refusing to write golden data or reports outside the private data directory',
+        );
       }
       existingParent = parent;
     }
@@ -2352,9 +2669,14 @@ export async function resolvePrivateOutputPath(
   }
   if (
     !isPathWithin(canonicalPrivateRoot, canonicalExistingParent) ||
-    isPathWithin(canonicalRepositoryRoot, canonicalExistingParent)
+    isPathWithin(canonicalRepositoryRoot, canonicalExistingParent) ||
+    (canonicalAllowedRoot && !isPathWithin(canonicalAllowedRoot, canonicalExistingParent))
   ) {
-    throw new Error('Refusing to write golden data or reports outside the private data directory');
+    throw new Error(
+      canonicalAllowedRoot
+        ? 'Refusing to write a report outside the private reports directory'
+        : 'Refusing to write golden data or reports outside the private data directory',
+    );
   }
 
   try {
@@ -2370,25 +2692,60 @@ export async function resolvePrivateOutputPath(
   }
   if (
     !isPathWithin(canonicalPrivateRoot, canonicalParent) ||
-    isPathWithin(canonicalRepositoryRoot, canonicalParent)
+    isPathWithin(canonicalRepositoryRoot, canonicalParent) ||
+    (canonicalAllowedRoot && !isPathWithin(canonicalAllowedRoot, canonicalParent))
   ) {
-    throw new Error('Refusing to write golden data or reports outside the private data directory');
+    throw new Error(
+      canonicalAllowedRoot
+        ? 'Refusing to write a report outside the private reports directory'
+        : 'Refusing to write golden data or reports outside the private data directory',
+    );
   }
 
   const canonicalOutputPath = resolve(canonicalParent, basename(outputPath));
   try {
     const existingOutput = await lstat(canonicalOutputPath);
     if (existingOutput.isSymbolicLink() || !existingOutput.isFile() || existingOutput.nlink > 1) {
-      throw new Error('Refusing to write golden data or reports outside the private data directory');
+      throw new Error(
+        'Refusing to write golden data or reports outside the private data directory',
+      );
     }
   } catch (error) {
     if (!hasErrorCode(error, 'ENOENT')) throw error;
+  }
+  for (const inputPath of options.inputPaths ?? []) {
+    if (resolve(inputPath) === canonicalOutputPath) {
+      throw new Error('Refusing to overwrite a golden scoring input');
+    }
+    try {
+      if ((await realpath(inputPath)) === canonicalOutputPath) {
+        throw new Error('Refusing to overwrite a golden scoring input');
+      }
+    } catch (error) {
+      if (!hasErrorCode(error, 'ENOENT')) throw error;
+    }
   }
   return canonicalOutputPath;
 }
 
 async function runScore(navaInput: string, reportPath: string): Promise<void> {
-  const outputPath = await resolvePrivateOutputPath(reportPath);
+  const [goldenPath, hmsNeededPath] = await Promise.all([
+    resolvePrivateOutputPath(GOLDEN_PATH),
+    resolvePrivateOutputPath(HMS_NEEDED_PATH),
+  ]);
+  await withGoldenSetPairLock(goldenPath, hmsNeededPath, async ({ recover }) => {
+    await recover();
+    await runScoreWithPairLocked(navaInput, reportPath);
+  });
+}
+
+async function runScoreWithPairLocked(navaInput: string, reportPath: string): Promise<void> {
+  const inputPaths = [GOLDEN_PATH, HMS_NEEDED_PATH];
+  if (navaInput.toLowerCase() !== 'snapshot') inputPaths.push(resolve(navaInput));
+  const outputPath = await resolvePrivateOutputPath(reportPath, DATA_ROOT, REPO_ROOT, {
+    allowedRoot: `${DATA_ROOT}/reports`,
+    inputPaths,
+  });
   const goldenRows = await readGoldenRows();
   const hmsNeeded = await readHmsNeeded();
   assertHmsNeededMatchesGolden(goldenRows, hmsNeeded);
@@ -2426,7 +2783,7 @@ async function runScore(navaInput: string, reportPath: string): Promise<void> {
     selection: hmsNeeded.selection,
     hmsNeededCount: hmsNeeded.conf_numbers.length,
   });
-  await writePrivateFile(outputPath, report);
+  await writePrivateFileAtomically(outputPath, report);
   process.stdout.write(
     `Golden v1 score written: rows=${goldenRows.length}; action=${score.overall.action.correct}/${score.overall.action.total}; skip-precision=${metricText(score.skip.precision)}; skip-recall=${metricText(score.skip.recall)}.\n`,
   );
@@ -2506,9 +2863,14 @@ export async function runGoldenSet(args = process.argv.slice(2)): Promise<void> 
     return;
   }
   if (command.command === 'merge-hms') {
+    const mergeInputPaths = [command.hms];
     const [goldenPath, hmsNeededPath] = await Promise.all([
-      resolvePrivateOutputPath(GOLDEN_PATH),
-      resolvePrivateOutputPath(HMS_NEEDED_PATH),
+      resolvePrivateOutputPath(GOLDEN_PATH, DATA_ROOT, REPO_ROOT, {
+        inputPaths: mergeInputPaths,
+      }),
+      resolvePrivateOutputPath(HMS_NEEDED_PATH, DATA_ROOT, REPO_ROOT, {
+        inputPaths: mergeInputPaths,
+      }),
     ]);
     await runMergeHms(command.hms, goldenPath, hmsNeededPath);
     return;
@@ -2519,7 +2881,9 @@ export async function runGoldenSet(args = process.argv.slice(2)): Promise<void> 
 const entryPath = process.argv[1] ? resolve(process.argv[1]) : '';
 if (entryPath && entryPath === resolve(fileURLToPath(import.meta.url))) {
   void runGoldenSet().catch((error: unknown) => {
-    process.stderr.write(`${error instanceof Error ? error.message : 'golden-set command failed'}\n`);
+    process.stderr.write(
+      `${error instanceof Error ? error.message : 'golden-set command failed'}\n`,
+    );
     process.exitCode = 1;
   });
 }
