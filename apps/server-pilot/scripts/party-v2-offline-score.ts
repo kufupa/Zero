@@ -15,15 +15,13 @@ import {
   type PartyMatchRow,
 } from '../src/ai/party-match-v2.js';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
-import { quoteWorkflowLlmEnabled } from '../src/ai/quote-workflow-llm.js';
-import { resolveAdapter } from '../src/ai/quote-workflow-analyse-selection.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
-const DEFAULT_PATHS = {
+export const DEFAULT_PATHS = {
   truth: '/home/orca/nava-research/testsets/party-truth.jsonl',
   confDomain: '/home/orca/nava-research/testsets/party-truth-conf-domain.json',
   messages: '/home/orca/nava-research/corpus/2026-10-13/messages.jsonl.gz',
@@ -36,7 +34,7 @@ const HMS_CONTAINS_CAP = 50;
 const DOMAIN_CONSISTENCY_THRESHOLD = 0.8;
 const DEFAULT_MAX_PER_DOMAIN = 5;
 
-type JsonRecord = Record<string, unknown>;
+export type JsonRecord = Record<string, unknown>;
 type PartyNameInput = Parameters<typeof buildPartyMatchCandidates>[0];
 
 type CliOptions = {
@@ -57,13 +55,13 @@ type NameTally = {
   variants: Map<string, number>;
 };
 
-type RankedPartyName = {
+export type RankedPartyName = {
   name: string;
   normalizedName: string;
   count: number;
 };
 
-type DomainTruth = {
+export type DomainTruth = {
   domain: string;
   n: number;
   agencies: RankedPartyName[];
@@ -73,7 +71,7 @@ type DomainTruth = {
   consistency: string;
 };
 
-type TestEmail = {
+export type TestEmail = {
   domain: string;
   extractionKind: string;
   receivedAt: string;
@@ -95,7 +93,7 @@ type WrongBind = {
   extractedOrgName: string;
 };
 
-type ScoredEmail = {
+export type ScoredEmail = {
   testEmail: TestEmail;
   candidates: PartyMatchCandidate[];
   candidateFound: boolean;
@@ -157,7 +155,7 @@ function emailDomain(value: unknown): string | null {
   return normalizeDomain(match?.[1]);
 }
 
-async function readRows(file: string): Promise<JsonRecord[]> {
+export async function readRows(file: string): Promise<JsonRecord[]> {
   const bytes = await readFile(file);
   const source = file.endsWith('.gz') ? gunzipSync(bytes).toString('utf8') : bytes.toString('utf8');
   const rows: JsonRecord[] = [];
@@ -177,7 +175,7 @@ async function readRows(file: string): Promise<JsonRecord[]> {
   return rows;
 }
 
-async function readConfDomains(file: string): Promise<Map<string, string>> {
+export async function readConfDomains(file: string): Promise<Map<string, string>> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(await readFile(file, 'utf8')) as unknown;
@@ -311,7 +309,7 @@ export function buildDomainTruth(
   return { domains, foundRows, foundRowsMissingDomain };
 }
 
-function buildUniverse(truthRows: readonly JsonRecord[]): PartyMatchRow[] {
+export function buildUniverse(truthRows: readonly JsonRecord[]): PartyMatchRow[] {
   const grouped = new Map<string, { kind: PartyMatchKind; tally: NameTally }>();
   for (const row of truthRows) {
     if (!isFoundTruth(row)) continue;
@@ -351,7 +349,7 @@ function buildUniverse(truthRows: readonly JsonRecord[]): PartyMatchRow[] {
     );
 }
 
-function latestSucceededExtractions(rows: readonly JsonRecord[]): Map<string, JsonRecord> {
+export function latestSucceededExtractions(rows: readonly JsonRecord[]): Map<string, JsonRecord> {
   const latest = new Map<string, JsonRecord>();
   for (const row of rows) {
     if (cleanText(row.status)?.toLowerCase() !== 'succeeded') continue;
@@ -373,7 +371,7 @@ function latestSucceededExtractions(rows: readonly JsonRecord[]): Map<string, Js
   return latest;
 }
 
-function corpusTextBody(message: JsonRecord): string {
+export function corpusTextBody(message: JsonRecord): string {
   const body = typeof message.body === 'string' ? message.body : '';
   if (message.body_is_html !== true) return body;
   return body
@@ -390,7 +388,7 @@ function corpusTextBody(message: JsonRecord): string {
     .replace(/[ \t]+\n/gu, '\n');
 }
 
-function selectTestEmails(input: {
+export function selectTestEmails(input: {
   messages: readonly JsonRecord[];
   extractionsByMessage: ReadonlyMap<string, JsonRecord>;
   domains: readonly DomainTruth[];
@@ -529,12 +527,24 @@ export function selectPartyV2FailureExamples(
   return [...examples.values()];
 }
 
-async function scoreTestEmail(
+export async function scoreTestEmail(
   testEmail: TestEmail,
   universeByKind: ReadonlyMap<PartyMatchKind, readonly PartyMatchRow[]>,
   liveAdapter: ModelAdapter | null = null,
+  extraCandidates: readonly PartyMatchCandidate[] = [],
 ): Promise<ScoredEmail> {
   const candidates = buildPartyMatchCandidates(testEmail.emailInput);
+  for (const candidate of extraCandidates) {
+    const key = `${candidate.kind}:${normalisePartyName(candidate.name)}`;
+    const existing = candidates.find(
+      (row) => `${row.kind}:${normalisePartyName(row.name)}` === key,
+    );
+    if (!existing) candidates.push({ ...candidate });
+    else if (existing.strength === 'weak' && candidate.strength === 'strong') {
+      existing.source = candidate.source;
+      existing.strength = candidate.strength;
+    }
+  }
   const termsByCandidate = new Map<string, Set<string>>();
   for (const candidate of candidates) {
     const key = `${candidate.kind}:${normalisePartyName(candidate.name)}`;
@@ -952,6 +962,10 @@ export async function runPartyV2OfflineScore(args = process.argv.slice(2)): Prom
   ]);
   let liveAdapter: ModelAdapter | null = null;
   if (options.livePicker) {
+    const [{ quoteWorkflowLlmEnabled }, { resolveAdapter }] = await Promise.all([
+      import('../src/ai/quote-workflow-llm.js'),
+      import('../src/ai/quote-workflow-analyse-selection.js'),
+    ]);
     const route = resolveAdapter(quoteWorkflowLlmEnabled(process.env), null);
     if (!route.enabled || !route.adapter) throw new Error('--live-picker needs the production quote-workflow model route');
     liveAdapter = route.adapter;
