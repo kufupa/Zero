@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 const mocks = vi.hoisted(() => ({
   threadId: null as string | null,
   folder: 'inbox',
+  searchListFolder: 'inbox',
   wide: true,
   useWebPreview: vi.fn(),
 }));
@@ -36,7 +37,7 @@ const readSource = (relativePath: string) =>
   readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), relativePath), 'utf8');
 
 vi.mock('../lib/workstation/web-pane-bridge', () => ({
-  useWebPreview: (args: { threadId: string }) => mocks.useWebPreview(args),
+  useWebPreview: (args: { threadId: string; sourceThreadId?: string }) => mocks.useWebPreview(args),
 }));
 
 vi.mock('../components/nava-pane/nava-pane', () => ({
@@ -58,7 +59,13 @@ vi.mock('../hooks/use-media-query', () => ({
 }));
 vi.mock('../hooks/use-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('../hooks/use-threads', () => ({
-  useThreads: () => [{ isFetching: false, refetch: vi.fn() }, []],
+  useThreads: () => [
+    { isFetching: false, refetch: vi.fn() },
+    [],
+    false,
+    vi.fn(),
+    { folder: mocks.searchListFolder },
+  ],
 }));
 vi.mock('../hooks/use-connections', () => ({
   useActiveConnection: () => ({
@@ -144,6 +151,7 @@ beforeEach(() => {
   localStorage.clear();
   mocks.threadId = null;
   mocks.folder = 'inbox';
+  mocks.searchListFolder = 'inbox';
   mocks.wide = true;
   mocks.useWebPreview.mockReset();
   mocks.useWebPreview.mockImplementation(() => readyPreview());
@@ -249,6 +257,7 @@ describe('Nava pane beside the open thread', () => {
 describe('workflow folder mail routing', () => {
   it('renders the standard mail list, thread view, and Nava pane', async () => {
     mocks.folder = 'quotes';
+    mocks.searchListFolder = 'quotes';
     mocks.threadId = 'thread-42';
 
     render(<MailLayout />);
@@ -256,6 +265,10 @@ describe('workflow folder mail routing', () => {
     expect(screen.getByTestId('standard-mail-list')).toBeDefined();
     expect(screen.getByTestId('thread-display')).toBeDefined();
     expect(await screen.findByTestId('nava-pane')).toBeDefined();
+    expect(mocks.useWebPreview).toHaveBeenCalledWith({
+      threadId: 'thread-42',
+      sourceThreadId: 'thread-42',
+    });
   });
 });
 

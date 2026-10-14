@@ -66,6 +66,36 @@ describe('latest inbound selection', () => {
     expect(latestInboundMessage(messages, MAILBOX)?.id).toBe('in-2');
   });
 
+  it('keeps a workflow preview bound to its listed thread when a linked thread is newer', () => {
+    const selection = selectPreviewMessage(
+      [
+        message({
+          id: 'quotes-source-message',
+          threadId: 'quotes-thread',
+          receivedOn: '2026-10-08T09:00:00.000Z',
+          messageId: '<quotes-source@example.com>',
+        }),
+        message({
+          id: 'amendments-source-message',
+          threadId: 'amendments-thread',
+          receivedOn: '2026-10-08T10:00:00.000Z',
+          messageId: '<amendments-source@example.com>',
+        }),
+      ],
+      MAILBOX,
+      TRANSPORT,
+      'quotes-thread',
+    );
+
+    expect(selection).toMatchObject({
+      status: 'ready',
+      email: {
+        entryId: 'quotes-source-message',
+        internetMessageId: '<quotes-source@example.com>',
+      },
+    });
+  });
+
   it('trusts the stored direction over the sender address', () => {
     const outboundFromGuest = message({ id: 'odd', direction: 'outbound' });
     expect(isInboundMessage(outboundFromGuest, MAILBOX)).toBe(false);

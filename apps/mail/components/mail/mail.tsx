@@ -22,6 +22,7 @@ import { useMail } from '@/components/mail/use-mail';
 import { SidebarToggle } from '../ui/sidebar-toggle';
 import { clearBulkSelectionAtom } from './use-mail';
 import { useThreads } from '@/hooks/use-threads';
+import { isWorkflowFolderNavId } from '@/config/workflow-folders';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
@@ -405,11 +406,15 @@ function MailLayoutContent() {
     }
   }, [navigate, session?.user, isPending]);
 
-  const [{ isFetching, refetch: refetchThreads }] = useThreads();
+  const [{ isFetching, refetch: refetchThreads }, , , , searchList] = useThreads();
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const isWideSplit = useMediaQuery('(min-width: 1024px)');
 
   const [threadId, setThreadId] = useQueryState('threadId');
+  const sourceThreadId =
+    isWorkflowFolderNavId(folder.toLowerCase()) && searchList?.folder !== 'all'
+      ? threadId ?? undefined
+      : undefined;
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
@@ -744,6 +749,7 @@ function MailLayoutContent() {
                     <WebPanePanel
                       key={threadId}
                       threadId={threadId}
+                      sourceThreadId={sourceThreadId}
                       onOpenThread={openListThread}
                       goldLabelEnabled
                       hmsNoticesManagedByParent
