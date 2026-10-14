@@ -38,6 +38,7 @@ The source set spans local research reports, repo plans/research, and owner retr
 | `/home/orca/nava-research/reports/R1-agent-framework-exa-20261014.md` | 2026-10-14 | Keep Mastra or swap? | Keep Mastra core; add a governed, versioned playbook layer; Parlant = challenger. | Its migration-weeks estimate assumed human devs; ignore it. |
 | `/home/orca/nava-research/reports/R1b-workflow-builder-exa-20261014.md` | 2026-10-14 | Which OSS staff workflow builder fits (Exa, medium confidence)? | Langflow first; Sim copilot needs sim.ai key; Mastra Agent Builder EE. | Superseded on Langflow isolation and Sim licence by R4. |
 | `/home/orca/nava-research/reports/R4-workflow-builder-verify-20261014.md` | 2026-10-14 | Do Sim/Langflow/Windmill/Activepieces/Kestra/Flowise pass no-paywall + NL build + evals + per-hotel? | None pass all four; build a Nava-native builder; Windmill = benchmark. | Verified at source; no product tested on Nava mail; its 8–12 engineer-week figure assumes human devs. |
+| `/home/orca/nava-research/reports/R5-agent-stack-20261014.md` | 2026-10-14 | Which stack per layer (runtime, evals, builder UI, memory, durable waits, per-hotel)? | Keep Mastra core; Promptfoo evals; CopilotKit + React Flow; Temporal fallback; hotel_id + RLS. | Verified at source with GitHub snapshots; its 320–480 h figure is human hours; no Nava restart/isolation test run. |
 
 ## Related reproducibility and source pointers
 
