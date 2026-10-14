@@ -21,7 +21,8 @@ vi.mock('react-router', () => ({
 }));
 
 vi.mock('nuqs', () => ({
-  useQueryState: () => [null, vi.fn()],
+  parseAsString: {},
+  useQueryStates: () => [{ threadId: null, sourceMessageId: null }, vi.fn()],
 }));
 
 vi.mock('@/hooks/use-threads', () => ({

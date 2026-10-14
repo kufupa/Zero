@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useParams } from 'react-router';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryStates } from 'nuqs';
 import { useThread } from '@/hooks/use-threads';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { useTRPC } from '@/providers/query-provider';
@@ -27,8 +27,10 @@ export function WorkflowFolderDesk() {
   const folderTitle = WORKFLOW_FOLDER_NAV_ITEMS.find((item) => item.id === validFolder)?.title ?? 'Workflow';
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const [threadId, setThreadId] = useQueryState('threadId');
-  const [sourceMessageParam, setSourceMessageParam] = useQueryState('sourceMessageId');
+  const [{ threadId, sourceMessageId: sourceMessageParam }, setSelection] = useQueryStates({
+    threadId: parseAsString,
+    sourceMessageId: parseAsString,
+  });
   const [reviewNote, setReviewNote] = useState('');
   const isDemo = isFrontendOnlyDemo();
   const { data: workflowSummary } = useWorkflowFolderSummary(Boolean(validFolder) && !isDemo);
@@ -90,7 +92,7 @@ export function WorkflowFolderDesk() {
     if (listQuery.isLoading) return;
     if (!threadId) {
       const firstThreadId = rows[0]?.threadId;
-      if (firstThreadId) void setThreadId(firstThreadId);
+      if (firstThreadId) void setSelection({ threadId: firstThreadId, sourceMessageId: null });
       return;
     }
     if (rows.some((row) => row.threadId === threadId)) return;
@@ -99,15 +101,11 @@ export function WorkflowFolderDesk() {
     if (detailQuery.error?.data?.code !== 'NOT_FOUND') return;
     const firstThreadId = rows[0]?.threadId ?? null;
     if (firstThreadId === threadId) return;
-    void (async () => {
-      await setSourceMessageParam(null);
-      await setThreadId(firstThreadId);
-    })();
-  }, [detailQuery.error, listQuery.isLoading, rows, setSourceMessageParam, setThreadId, threadId]);
+    void setSelection({ threadId: firstThreadId, sourceMessageId: null });
+  }, [detailQuery.error, listQuery.isLoading, rows, setSelection, threadId]);
 
-  const openThread = async (id: string) => {
-    await setSourceMessageParam(null);
-    await setThreadId(id);
+  const openThread = (id: string) => {
+    void setSelection({ threadId: id, sourceMessageId: null });
   };
 
   const recordReview = (decision: ReviewDecision) => {
@@ -218,7 +216,7 @@ export function WorkflowFolderDesk() {
                     <select
                       aria-label="Inbound email in thread"
                       value={selectedSourceMessage.messageId}
-                      onChange={(event) => void setSourceMessageParam(event.target.value)}
+                      onChange={(event) => void setSelection({ sourceMessageId: event.target.value })}
                       className="max-w-40 rounded-md border bg-background px-2 py-1 text-xs"
                     >
                       {detailQuery.data?.messages.map((message) => (
