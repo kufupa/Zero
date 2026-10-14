@@ -76,3 +76,63 @@ The owner's real complaint is **repetition and controls in two places**, inside 
 | Not survived | Gateway doesn't restart on reboot (no systemd linger); `claude-team` restarts it |
 
 **Start a team session:** `tmux new-session -s team -c "$PWD" claude-team` (add your usual permission mode). The lead is still Opus: keep its context short, which is where the money goes (96% of the test's cost).
+
+## 7. Exa research run a52b5619 (owner retro questions)
+
+**Status:** completed, success, schema satisfied. Run `agent_run_a52b5619ea534bbeba1cf9e9218f4e13`.
+**Cost:** $0.50 total (agent compute $0.20, search $0.30). 60 searches. Exa does not split cost by model.
+
+**Coverage warning:** the run mostly answered PR review, email labeling and agent overhead. Q2 (gateway models), Q3 (solo workflow) and Q4 (design skills) got no new findings. Re-run those with a narrower prompt.
+
+### Q1. Agent teams vs orchestrator + subagents + Codex lanes
+
+| Finding | Why it matters for us | Source |
+|---|---|---|
+| Teams use much more tokens. Each teammate has its own context. Teams fit independent work only. Sequential, same-file or dependency-heavy work is better in one session or subagents. | Use teams for parallel review or research. Not for a chain of dependent code edits. | https://code.claude.com/docs/en/agent-teams |
+| Anthropic measured about 4x chat tokens for one agent and about 15x for multi-agent. Recommends 1 agent for simple tasks, 2-4 for comparisons. | Budget a team run at about 15x. Keep the Opus lead short. | https://www.anthropic.com/engineering/multi-agent-research-system |
+| Subagents return a summary, so verbose output stays out of the lead context. Per-subagent model override exists. | Use subagents for reads and searches. Keep Luna as its own CLI lane. Source says do not assume the subagent model setting alone gives GPT workers (inference from the run). | https://docs.anthropic.com/en/docs/claude-code/sub-agents |
+| Anthropic's planner/generator/evaluator harness got bulky, slow and costly. With stronger models the evaluator step was often not needed. | Do not add a reviewer agent unless it catches real bugs. | https://www.anthropic.com/engineering/harness-design-long-running-apps |
+| Controlled test, 180 configs (non-coding). Central coordinator gained 80.9% on parallel tasks. Every multi-agent variant lost 39-70% on sequential tasks. | Matches our rule: parallel for separate parts, one agent for chains. Not coding-specific. | https://arxiv.org/html/2512.08296v1 |
+| METR 2025 trial: 16 developers, AI work took 19% longer. METR 2026 says multi-agent time data is unreliable. | Feeling faster is not proof. Measure validated-merge time. | https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/ ; https://metr.org/blog/2026-02-24-uplift-update/ |
+| OpenAI default for max concurrent subagents is 3 (Responses API) or 6 (Agents API). | Defaults vary by product. Set our own cap. | https://developers.openai.com/api/docs/guides/responses-multi-agent |
+
+### Q2. Non-Anthropic models in Claude Code via gateway
+
+No new grounded findings. The run did not cover LiteLLM or GPT models inside Claude Code. Our section 6 test is still the only evidence.
+
+### Q3. Solo founder workflow (labels, sampling, sample size)
+
+| Finding | Why it matters for us | Source |
+|---|---|---|
+| Keep a clean eval set apart from active-learning labels. Yahoo's test sets were 4K+ messages each, two annotators, a third on disagreement. | Gives a clean gold set for the Nava classifier. | https://ar5iv.labs.arxiv.org/html/2112.07742 |
+| Uncertainty sampling biases the labeled set toward hard cases. A random stop set did best. | Do not measure accuracy on active-learning labels. Mix in random mail. | https://ar5iv.labs.arxiv.org/html/2201.05460 |
+| Fewer good labels beat many noisy ones. Expert-confidence sampling gave about 10% higher F1 (10 analysts, p=0.002). | Label fewer, higher-confidence cases. Founder labels can be noisy too. | https://arxiv.org/html/2405.07440v2 |
+| Binomial, 95% confidence, worst case: about 97 (say 100) true examples per class for +/-10 points, 385 for +/-5 points. | Sets the labeling budget for a per-class recall claim. Thread duplicates shrink the real n. | https://www.itl.nist.gov/div898/handbook/prc/section2/old.prc272.htm |
+| Geberit (vendor case): 5x throughput, 4-5x lower cost, up to 93% accuracy, using Label Studio plus LLM help. | Vendor claim only. Fallback if inbox labeling stalls. | https://humansignal.com/customers/geberit/ |
+| No controlled test found of inbox dropdown vs Label Studio or Argilla. | Open question. Our call. | none (gap) |
+
+### Q4. Product design, UX and forward-deployed skills
+
+No findings. The run returned nothing on design, UX or FDE skills.
+
+### Off-question: Greptile loop (fits the 12-16 round problem)
+
+| Finding | Why it matters for us | Source |
+|---|---|---|
+| Greptile reviews are single-pass. Each review is independent. Commits are not reviewed alone. | Each push gets a fresh review. Check each finding is real before fixing. | https://www.greptile.com/docs/code-review-bot/trigger-code-review |
+| `.greptile/config.json`: strictness 1-3 (default 2), `autoReview` (open, push, rebase; empty = manual only), `ignorePatterns`. `.greptile/rules.md` holds invariants. No numeric confidence threshold exists. | Cut noise with strictness 2 and invariants in rules.md. Do not invent a confidence cutoff. | https://www.greptile.com/docs/code-review/greptile-config-reference ; https://www.greptile.com/docs/code-review/controlling-nitpickiness |
+| Greptile's own data: larger merged PRs merged faster. Vendor data, selection bias. | No proof that PR size caused the 12-16 round loop. | https://www.greptile.com/blog/do-larger-prs-get-merged-faster |
+
+### Unverified (no grounding URL, or inference only)
+
+- Two substantive review rounds, then stop and triage. No study backs it.
+- 100-200 changed lines per PR. Google says 100 is usually fine, 1000 too big. The exact band is inference.
+- One Claude lead plus at most two GPT lanes. Inference, not an optimum.
+- 20-30 labels per class for a pilot. No source.
+- LLM self-confidence is not calibrated. No source.
+
+### Top 3 things to try
+
+1. Run one week with Luna as the only worker lanes, max 2 plus the lead. Log validated-merge minutes and $ per accepted fix.
+2. Add `.greptile/config.json` (strictness 2) and `.greptile/rules.md` with our invariants. Audit 10 dismissed comments.
+3. Pull about 100 random inbox emails per class we care about. Hide them from the labeling queue as the eval set.
