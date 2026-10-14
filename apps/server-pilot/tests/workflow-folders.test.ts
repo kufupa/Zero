@@ -168,6 +168,21 @@ describe('workflow folder list pagination', () => {
     expect(input.cursor).toBe('');
     expect(workflowFolderOffset(input.cursor)).toBe(0);
   });
+
+  it('accepts the input tRPC infinite queries send, including direction', () => {
+    // Shape built by @trpc/tanstack-react-query infiniteQueryOptions for the first page.
+    const input = workflowFolderListInputSchema.parse({
+      folder: 'quotes',
+      limit: 100,
+      cursor: '',
+      direction: 'forward',
+    });
+    expect(workflowFolderOffset(input.cursor)).toBe(0);
+  });
+
+  it('still rejects unknown keys', () => {
+    expect(() => workflowFolderListInputSchema.parse({ folder: 'quotes', extra: 1 })).toThrow();
+  });
 });
 
 describe('workItems.adminReview', () => {
