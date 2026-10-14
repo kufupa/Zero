@@ -1203,7 +1203,14 @@ export function QuoteWorkflowPanel({
     (session.phase === 'failed' || session.phase === 'missing_source' || session.phase === 'analysing');
   const showWorkspace = !hideQuoteWorkspace(session.phase);
   const showReply =
-    Boolean(session.offers.length || session.reviewedReplyHtml || canCreatePdf(session) || authorizedPartial || openItems.length);
+    Boolean(
+      session.offers.length ||
+        session.reviewedReplyHtml ||
+        session.reviewedReplySource === 'quote_decline' ||
+        canCreatePdf(session) ||
+        authorizedPartial ||
+        openItems.length,
+    );
 
   // While Nava reads, or after a read failed, a blank stay keeps the form open so she can type before the read lands.
   const formGroups =

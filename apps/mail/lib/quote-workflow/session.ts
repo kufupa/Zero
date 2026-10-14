@@ -1871,7 +1871,10 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         phase: 'tools',
         runningStepId: null,
         errorMessage: null,
-        ...(action.declineReplyHtml !== undefined && !isMultiStay(session)
+        // A reply staff wrote during the search stays; only an empty or generated reply becomes the decline.
+        ...(action.declineReplyHtml !== undefined &&
+        !isMultiStay(session) &&
+        (!session.reviewedReplyEdited || !session.reviewedReplyHtml.trim())
           ? { reviewedReplyHtml: action.declineReplyHtml, reviewedReplySource: 'quote_decline' as const }
           : {}),
         steps: session.steps.map((step) =>
@@ -1968,9 +1971,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         ...session,
         reviewedReplyHtml: action.html,
         reviewedReplyEdited: action.staffEdited === true,
-        reviewedReplySource:
-          action.source ??
-          (session.reviewedReplySource === 'quote_decline' && action.html.trim() ? 'quote_decline' : undefined),
+        // A cleared decline keeps its marker so the editor stays open for the staff's own text.
+        reviewedReplySource: action.source ?? (session.reviewedReplySource === 'quote_decline' ? 'quote_decline' : undefined),
       };
     case 'select_offers':
       if (sameSelectedOfferIds(action.offerIds, session.selectedOfferIds)) return session;

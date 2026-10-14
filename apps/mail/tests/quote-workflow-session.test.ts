@@ -1089,6 +1089,34 @@ describe('generated quote-decline freshness', () => {
     expect(refused.steps.find((step) => step.id === firstStayStep.id)?.status).toBe('failed');
   });
 
+  it('keeps a reply staff wrote during the search when the search is refused', () => {
+    const session = withStaffSource(analysisReady());
+    const step = stepFor(session, STAY_A);
+    const running = reduceQuoteSession(session, { type: 'step_running', stepId: step.id });
+    const edited = reduceQuoteSession(running, { type: 'set_reviewed_reply', html: '<p>Staff text</p>', staffEdited: true });
+    const refused = reduceQuoteSession(edited, {
+      type: 'results_unavailable',
+      stepId: step.id,
+      reason: 'No supported rate was returned',
+      declineReplyHtml: '<p>decline</p>',
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+    });
+
+    expect(refused.reviewedReplyHtml).toBe('<p>Staff text</p>');
+    expect(refused.reviewedReplySource).toBeUndefined();
+  });
+
+  it('keeps the decline marker while staff clear the suggestion and type their own', () => {
+    const declined = declinedQuoteSession();
+    const cleared = reduceQuoteSession(declined, { type: 'set_reviewed_reply', html: '', staffEdited: true });
+    expect(cleared.reviewedReplySource).toBe('quote_decline');
+    expect(quoteDeclineReplyOnly(cleared)).toBe(false);
+
+    const typed = reduceQuoteSession(cleared, { type: 'set_reviewed_reply', html: '<p>Own words</p>', staffEdited: true });
+    expect(quoteDeclineReplyOnly(typed)).toBe(true);
+  });
+
   it.each(quoteDeclineInputEdits)('clears the decline when %s changes', (_input, action) => {
     const declined = declinedQuoteSession();
     expect(quoteDeclineReplyOnly(declined)).toBe(true);
