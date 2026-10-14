@@ -1289,7 +1289,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 Needs your answer
               </p>
               <p>
-                Add this information to the fields above.
+                Use the fields below, or the button to jump to them.
               </p>
               <p
                 class="mt-1"
@@ -3367,7 +3367,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 Needs your answer
               </p>
               <p>
-                Add this information to the fields above.
+                Use the fields below, or the button to jump to them.
               </p>
               <p
                 class="mt-1"
@@ -5769,7 +5769,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 Needs your answer
               </p>
               <p>
-                Add this information to the fields above.
+                Use the fields below, or the button to jump to them.
               </p>
               <p
                 class="mt-1"
@@ -7747,7 +7747,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 Needs your answer
               </p>
               <p>
-                Add this information to the fields above.
+                Use the fields below, or the button to jump to them.
               </p>
               <p
                 class="mt-1"

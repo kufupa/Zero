@@ -873,6 +873,73 @@ function missingQuestionPriority(field: string): number {
   return 6;
 }
 
+/** Ignore analysis questions whose current editable quote value is already present. */
+function missingQuestionAnswered(
+  field: string,
+  groups: StayGroupRequirement[],
+  header: StaffQuoteHeader,
+): boolean {
+  const key = field.toLowerCase().replace(/[\s_-]/g, '');
+  const everyGroup = (answered: (group: StayGroupRequirement) => boolean) =>
+    groups.length > 0 && groups.every(answered);
+  const hasContact = [header.attention, header.clientEmail, header.clientTelephone].some((value) =>
+    Boolean(value.trim()),
+  );
+
+  if (['arrival', 'arrivaldate', 'checkin', 'checkindate'].includes(key)) {
+    return everyGroup((group) => Boolean(group.arrivalDate));
+  }
+  if (['departure', 'departuredate', 'checkout', 'checkoutdate'].includes(key)) {
+    return everyGroup((group) => Boolean(group.departureDate));
+  }
+  if (['date', 'dates', 'staydates', 'daterange'].includes(key)) {
+    return everyGroup((group) => Boolean(group.arrivalDate && group.departureDate));
+  }
+  if (key === 'stay' || key === 'staydetails') {
+    return everyGroup(
+      (group) => Boolean(
+        group.arrivalDate &&
+          group.departureDate &&
+          rowRoomTypeCode(group) &&
+          group.quantity &&
+          group.adults,
+      ),
+    );
+  }
+  if (key === 'party') {
+    return Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId);
+  }
+  if (key === 'company') return Boolean(header.company.trim() || header.parties?.company?.nativeId);
+  if (key === 'agency') return Boolean(header.agency.trim() || header.parties?.agency?.nativeId);
+  if (key === 'contact') return hasContact;
+  if (['attention', 'booker', 'contactname', 'clientname'].includes(key)) {
+    return Boolean(header.attention.trim());
+  }
+  if (['email', 'clientemail', 'contactemail'].includes(key)) {
+    return Boolean(header.clientEmail.trim());
+  }
+  if (['phone', 'telephone', 'clienttelephone', 'contactphone'].includes(key)) {
+    return Boolean(header.clientTelephone.trim());
+  }
+  if (
+    ['room', 'roomtype', 'roomtypes', 'roompreference', 'roomtypecode', 'roomcodes'].includes(key)
+  ) {
+    return everyGroup((group) =>
+      Boolean(rowRoomTypeCode(group) || group.roomPreference?.trim() || group.roomCodes?.length),
+    );
+  }
+  if (['quantity', 'rooms', 'roomcount', 'numberofrooms'].includes(key)) {
+    return everyGroup((group) => (group.quantity ?? 0) > 0);
+  }
+  if (['adult', 'adults', 'adultsperroom'].includes(key)) {
+    return everyGroup((group) => (group.adults ?? 0) > 0);
+  }
+  if (['childages', 'childrenages'].includes(key)) {
+    return everyGroup((group) => group.childrenAges.length > 0);
+  }
+  return false;
+}
+
 function scrollToStep(id: string): void {
   document.getElementById(id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
 }
@@ -1407,6 +1474,7 @@ export function QuoteWorkflowPanel({
             : 'Add a date range before searching.';
   const lunaMissing = session.analysis?.luna?.missing ?? [];
   const orderedMissing = lunaMissing
+    .filter((item) => !missingQuestionAnswered(item.field, formGroups, header))
     .map((item, index) => ({ item, index, priority: missingQuestionPriority(item.field) }))
     .sort((left, right) => left.priority - right.priority || left.index - right.index);
   const hasPartyBlocker = orderedMissing.some(({ priority }) => priority === 0);

@@ -380,6 +380,37 @@ describe('QuoteWorkflowPanel', () => {
     expect(primaryActions(container)[0]?.textContent).toBe('Review party and contact');
   });
 
+  it('skips a missing company ask after the quote header already has that company', () => {
+    const base = sessionFromFixture('public-single');
+    const session = withLunaMissing(
+      {
+        ...base,
+        groups: base.groups.map((group) => ({
+          ...group,
+          arrivalDate: undefined,
+          departureDate: undefined,
+        })),
+        staffHeader: {
+          ...base.staffHeader,
+          company: 'Sample Company',
+          parties: { company: { kind: 'company', nativeId: 'company-1', name: 'Sample Company' } },
+        },
+      },
+      [
+        { field: 'company', question: 'Which company should appear on the quote?' },
+        { field: 'arrivalDate', question: 'What arrival and departure dates should be quoted?' },
+      ],
+      { kind: 'organization', name: 'Sample Company', reference: null },
+    );
+    render(<QuoteWorkflowPanel session={session} />);
+
+    const ask = screen.getByLabelText('Needs your answer');
+    expect(within(ask).queryByText('Which company should appear on the quote?')).toBeNull();
+    expect(
+      within(ask).getByText('What arrival and departure dates should be quoted?'),
+    ).toBeDefined();
+  });
+
   it('surfaces one date ask and one current action when stay dates are missing', () => {
     const base = sessionFromFixture('missing-fields');
     const session = withLunaMissing(
@@ -395,6 +426,51 @@ describe('QuoteWorkflowPanel', () => {
     expect(within(ask).getAllByText(/arrival and departure dates/i)).toHaveLength(1);
     expect(primaryActions(container)).toHaveLength(1);
     expect(primaryActions(container)[0]?.textContent).toBe('Add stay dates');
+  });
+
+  it('advances to the next unresolved stay ask after staff fills the missing dates', () => {
+    const base = sessionFromFixture('missing-fields');
+    const session = withLunaMissing(
+      {
+        ...base,
+        groups: base.groups.map((group) => ({
+          ...group,
+          roomPreference: '',
+          roomTypeCode: undefined,
+          roomTypeSuggestions: [],
+          roomCodes: [],
+        })),
+      },
+      [
+        { field: 'arrivalDate', question: 'What arrival and departure dates should be quoted?' },
+        { field: 'roomPreference', question: 'Which room type should be quoted?' },
+      ],
+    );
+    render(<EditableStayPanel initial={session} />);
+    const ask = () => screen.getByLabelText('Needs your answer');
+
+    expect(
+      within(ask()).getByText('What arrival and departure dates should be quoted?'),
+    ).toBeDefined();
+    expect(within(ask()).queryByText('Which room type should be quoted?')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-11-12' } });
+    fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-14' } });
+
+    expect(
+      within(ask()).queryByText('What arrival and departure dates should be quoted?'),
+    ).toBeNull();
+    expect(within(ask()).getByText('Which room type should be quoted?')).toBeDefined();
+  });
+
+  it('points the missing-info ask to the fields below or its action button', () => {
+    const session = withLunaMissing(sessionFromFixture('missing-fields'), []);
+    render(<QuoteWorkflowPanel session={session} />);
+
+    const ask = screen.getByLabelText('Needs your answer');
+    expect(
+      within(ask).getByText('Use the fields below, or the button to jump to them.'),
+    ).toBeDefined();
   });
 
   it('shows one search action and no missing-info ask when quote facts are present', () => {
