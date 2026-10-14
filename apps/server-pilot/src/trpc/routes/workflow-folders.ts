@@ -16,6 +16,8 @@ export const workflowFolderListInputSchema = z
     limit: z.number().int().min(1).max(200).default(100),
     // React Query sends the initial cursor as an empty string; both forms mean offset zero.
     cursor: z.string().regex(/^\d*$/).optional(),
+    // tRPC infinite queries add the page direction; paging here is forward offsets only.
+    direction: z.enum(['forward', 'backward']).optional(),
   })
   .strict();
 
