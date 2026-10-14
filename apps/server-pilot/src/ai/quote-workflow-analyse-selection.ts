@@ -458,6 +458,7 @@ export async function analyseSyncedSelection(
       dateAnchor: {
         receivedAt: synced.receivedAt,
         sourceText: stayDateSourceText(synced),
+        staffNote,
       },
     });
     const payload = {

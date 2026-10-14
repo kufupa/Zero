@@ -187,3 +187,9 @@ Assessment closure: full product/scoping/retro/ETA/testing/model/session-continu
 | #   | Ask                                                                                                          | Status | Where answered                                                                                                                                               | Next step                                                                                              |
 | --- | ------------------------------------------------------------------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
 | 74  | Commit/save short current context and longer evidence-backed Markdown research so fresh agents do not rescan | ✅     | Versioned short ACTIVE, long assessment, evidence/source index and JSON; normal hooks and local docs gate passed; PR https://github.com/kufupa/Zero/pull/241 | Reviewed documentation publication; no raw transcripts, product code, runtime settings or guest writes |
+
+## 9. PR review follow-up (2026-10-14)
+
+| #   | Ask                                              | Status | Where answered                                     | Next step |
+| --- | ------------------------------------------------ | ------ | -------------------------------------------------- | --------- |
+| 75  | Fix Greptile date/bookability feedback on PR #242 | ✅     | PR https://github.com/kufupa/Zero/pull/242; fix commit | —         |

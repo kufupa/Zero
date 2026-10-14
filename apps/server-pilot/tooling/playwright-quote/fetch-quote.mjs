@@ -450,7 +450,7 @@ function nativeDate(value) {
 
 const issue = (code,path,reason,action='Inspect source evidence or narrow the request.') => ({code,path,reason,action});
 const restrictionKeys = ['combClosed','combClosedToArrival','combClosedToDeparture','combMinLOSToArrival',
-  'combMinLOSToDeparture','combMaxLOSToArrival','combMinLOSToThrough','combMaxLOSToThrough'];
+  'combMinLOSToDeparture','combMaxLOSToArrival','combMaxLOSToDeparture','combMinLOSToThrough','combMaxLOSToThrough'];
 const pick = (object,keys) => Object.fromEntries(keys.filter(k=>Object.hasOwn(object??{},k)).map(k=>[k,object[k]]));
 
 // Preserve bounded native labels as observations only, never package/tax/child entitlement.

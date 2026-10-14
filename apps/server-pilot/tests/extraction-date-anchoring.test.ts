@@ -20,6 +20,7 @@ async function extractRequestedDates(input: {
       {
         ...AE1_OUTPUT.stays[0]!,
         requested: { arrival: input.arrival, departure: input.departure },
+        requestedDateEvidence: input.bodyText,
       },
     ],
   }));
@@ -30,6 +31,29 @@ async function extractRequestedDates(input: {
   });
   if (!result.ok) throw new Error(`extraction failed: ${result.reason}`);
   return { requested: result.payload.stays[0]?.requested, prompt: model.calls[0]?.userPrompt ?? '' };
+}
+
+async function extractRequestedDateSets(input: {
+  bodyText: string;
+  receivedAt: string;
+  stays: Array<{ arrival: string; departure: string; dateEvidence: string }>;
+}) {
+  const selection = { ...selectionFor(input.bodyText), receivedAt: input.receivedAt };
+  const model = fakeModel(() => ({
+    ...AE1_OUTPUT,
+    stays: input.stays.map((stay) => ({
+      ...AE1_OUTPUT.stays[0]!,
+      requested: { arrival: stay.arrival, departure: stay.departure },
+      requestedDateEvidence: stay.dateEvidence,
+    })),
+  }));
+  const result = await extractInboundMail({
+    adapter: model.adapter,
+    selection,
+    messageId: 'msg-date-anchor-multiple-test',
+  });
+  if (!result.ok) throw new Error(`extraction failed: ${result.reason}`);
+  return result.payload.stays.map(({ requested }) => requested);
 }
 
 describe('received-time date anchoring', () => {
@@ -65,6 +89,22 @@ describe('received-time date anchoring', () => {
     });
 
     expect(result.requested).toEqual({ arrival: '2026-12-25', departure: '2026-12-28' });
+  });
+
+  it('anchors multiple extracted stays from their own source phrases', async () => {
+    const requested = await extractRequestedDateSets({
+      bodyText: 'Please quote next Friday for two nights, and 4–6 January.',
+      receivedAt: '2026-12-18T12:00:00.000Z',
+      stays: [
+        { arrival: '2026-12-11', departure: '2026-12-13', dateEvidence: 'next Friday for two nights' },
+        { arrival: '2026-01-04', departure: '2026-01-07', dateEvidence: '4–6 January' },
+      ],
+    });
+
+    expect(requested).toEqual([
+      { arrival: '2026-12-25', departure: '2026-12-27' },
+      { arrival: '2027-01-04', departure: '2027-01-07' },
+    ]);
   });
 
   it('keeps the explicit trip year when it differs from the receipt-based occurrence', async () => {

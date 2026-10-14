@@ -10,6 +10,7 @@ export function selectionFixture() {
     combMinLOSToArrival: 0,
     combMinLOSToDeparture: 0,
     combMaxLOSToArrival: null,
+    combMaxLOSToDeparture: null,
     combMinLOSToThrough: null,
     combMaxLOSToThrough: null,
   };
@@ -54,6 +55,7 @@ export function multipleSource() {
     combMinLOSToArrival: 0,
     combMinLOSToDeparture: 0,
     combMaxLOSToArrival: null,
+    combMaxLOSToDeparture: null,
     combMinLOSToThrough: null,
     combMaxLOSToThrough: null,
     value: 1780,

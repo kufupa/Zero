@@ -53,6 +53,11 @@ export const mailExtractionSchema = z.object({
     z.object({
       hotel: nullableText.describe('Target hotel as named in the mail, or null.'),
       requested: dateRange.describe('The dates the sender asks for now.'),
+      requestedDateEvidence: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Exact source phrase for THIS stay’s requested dates, or null if not stated. Never reuse another stay’s phrase.'),
       booked: dateRange
         .nullable()
         .describe(
@@ -192,10 +197,23 @@ export function sanitizeExtraction(
     .slice(0, MAX_CONFIRMATIONS);
   const stays = output.stays.slice(0, MAX_STAYS).map((stay, stayIndex): ExtractionStay => {
     const id = stableId('s', input.messageId, String(stayIndex));
+    const dateEvidence = stay.requestedDateEvidence?.trim() ?? '';
+    const selectionText = input.dateAnchor?.sourceText ?? '';
+    const sourceText =
+      dateEvidence && selectionText.includes(dateEvidence)
+        ? dateEvidence
+        : output.stays.length === 1
+          ? selectionText
+          : '';
+    const dateAnchor: StayDateAnchorContext = {
+      ...input.dateAnchor,
+      sourceText,
+      contextText: selectionText,
+    };
     return {
       id,
       hotel: cleanText(stay.hotel),
-      requested: dateRangeOf(anchorStayDateRange(stay.requested, input.dateAnchor ?? {})),
+      requested: dateRangeOf(anchorStayDateRange(stay.requested, dateAnchor)),
       booked: stay.booked ? dateRangeOf(stay.booked) : null,
       totalRooms: countOf(stay.totalRooms, 1, 999),
       rows: stay.rows.slice(0, MAX_ROWS).map((row, rowIndex) => ({

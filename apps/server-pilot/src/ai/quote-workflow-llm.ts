@@ -41,6 +41,8 @@ export const K2_MAPPING = [
   'Never ask for room type, board or rate; the hotel defaults those.',
   'Emit one task per distinct piece of PMS work, in the order staff would do it.',
   'Different date sets for the same ask become separate quote tasks.',
+  'For every group, dateEvidence must be an exact phrase from that stay only; never reuse another stay’s phrase.',
+  'Use dateEvidence from the staff note when it corrects dates; the staff note overrides email and thread dates.',
   '"Quote then book if OK" stays workflow=quote.',
   'Use workflow=create_booking only for explicit make/confirm asks without a quote, price, rate or',
   'availability ask.',
@@ -407,9 +409,21 @@ export function mapLlmDecision(
     };
   }
   const groups = analysis.groups.map((group, index) => {
+    const sourceText = options?.dateAnchor?.sourceText ?? '';
+    const dateEvidence = group.dateEvidence?.trim() ?? '';
+    const verifiedDateEvidence =
+      dateEvidence &&
+      (sourceText.includes(dateEvidence) || options?.dateAnchor?.staffNote?.includes(dateEvidence))
+        ? dateEvidence
+        : '';
+    const anchorContext: StayDateAnchorContext = {
+      ...options?.dateAnchor,
+      sourceText: verifiedDateEvidence || (analysis.groups.length === 1 ? sourceText : ''),
+      contextText: sourceText,
+    };
     const anchoredDates = anchorStayDateRange(
       { arrival: group.arrival, departure: group.departure },
-      options?.dateAnchor ?? {},
+      anchorContext,
     );
     const arrivalDate = validIsoDate(anchoredDates.arrival);
     const departureDate = validIsoDate(anchoredDates.departure);
@@ -558,6 +572,11 @@ export async function analyseQuoteSelection(input: {
       source: 'luna',
       analysis: {
         ...parsed.data,
+        groups: parsed.data.groups.map((group) => ({
+          ...group,
+          dateEvidence:
+            group.dateEvidence && sourceText.includes(group.dateEvidence) ? group.dateEvidence : null,
+        })),
         evidence: verbatim(parsed.data.evidence).map((item) =>
           staffNote && staffNote.includes(item.quote)
             ? { ...item, source: 'staff_note' as const }

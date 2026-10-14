@@ -39,6 +39,10 @@ const lunaGroupSchema = z.object({
     .string()
     .nullable()
     .describe('ISO YYYY-MM-DD checkout day (exclusive), or null if not stated.'),
+  dateEvidence: z
+    .string()
+    .nullable()
+    .describe('Exact source phrase for THIS group’s arrival/departure dates, or null if not stated. Never reuse another group’s phrase.'),
   rooms: z.number().int().nullable().describe('Number of identical rooms in this group.'),
   adultsPerRoom: z
     .number()

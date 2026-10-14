@@ -461,6 +461,14 @@ test('LOS restrictions include reasons and unexplained limited-night settings st
   f.rate.maxLOS=null;f.rate.maxNights=2;
   assert.equal(quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]).options[0].availability,'unknown');
 });
+test('departure maximum-LOS restriction survives native projection',()=>{
+  const f=multipleSource();
+  f.rate.columns.col4.combMaxLOSToDeparture=2;
+  const projected=quote.projectWindow({data:f.data,calendar:f.calendar,criteria:{}});
+  const option=quote.extractOptions(request,request.rooms[0],[projected]).options[0];
+  assert.equal(option.availability,'restricted');
+  assert.equal(option.availabilityReason,'Departure maximum stay allows 2 nights; requested stay is 3 nights.');
+});
 test('configured picker choices accept exact native code or label only',()=>{
   const choices=[{value:'CON',display:'Negotiated Contracted'},{value:'BAR',display:'BAR'}];
   assert.deepEqual(quote.configuredChoice?.(choices,'CON'),choices[0]);
