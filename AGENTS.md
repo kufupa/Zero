@@ -9,6 +9,9 @@ Read by Cursor CLI, Codex CLI, and any agent that looks for `AGENTS.md`. Claude 
 3. `docs/research/README.md` — current index, dated conclusions and evidence locators; do not redo settled research.
 4. `AGENT.md` — repo layout and commands.
 
+- Before any research or analysis lane, read `docs/context/FACTS.md` and `docs/research/CATALOG.md` and reuse.
+- A lane may only re-analyse when it names the prior artifact and why it’s insufficient.
+
 Done = score on the golden set in `PRODUCT.md`, not a merge.
 
 **Before your first claim or plan in a session:** say which required files you read (with `git rev-parse --short origin/main`). Before saying a tool, command or flag does not exist, check it (`claude --help`, `codex --help`, the docs). Both misses happened on 2026-10-13.

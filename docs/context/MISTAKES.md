@@ -4,6 +4,15 @@ One entry per lesson: trigger, what happened, rule. Newest first. Add an entry w
 
 | Date | Trigger | What happened | Rule |
 |---|---|---|---|
+| 2026-10-14 | Lane briefs told every lane to typecheck locally | Parallel tsc runs froze the VPS (load 27, 85% iowait); Hermes had to kill them | Never typecheck on the VPS. The hook blocks it; use the remote EC2 runner. Briefs must say so up front |
+| 2026-10-14 | Lanes assumed opening a PR triggers Actions | 4 lanes refused to open PRs. Every kufupa/Zero workflow is disabled_manually | Briefs state "workflows disabled; opening PRs is safe" with the verify command |
+| 2026-10-14 | Started a case-mix + party study (R3) without reading prior reports | It repeated research already done in r2/r3/r7. The owner had to re-explain | Read `docs/context/FACTS.md` + `docs/research/CATALOG.md` first. A new study must name the prior artifact and its gap |
+| 2026-10-14 | Wrote "under 2% of mail is out of scope" as an owner rule | It was the agent's inference from an Oct 11 complaint. The owner never set it | Quote owner rules verbatim with a source. Mark inferences as inferences |
+| 2026-10-14 | Said the owner hand-labelled 400 emails | The labels came from an LLM analyst | State label provenance (owner / staff evidence / LLM / extractor) on every mix number |
+| 2026-10-14 | Lost the Oct 13 voucher fact; repeated known facts as news | The owner had to restate that a voucher is a paid booking request | Settled facts go to FACTS.md in the same turn they are learned |
+| 2026-10-14 | ETAs not scaled by the ledger | Lanes finished at 0.2–0.6× the estimate | Scale by the ledger median for the same kind before quoting |
+| 2026-10-14 | One mega Exa "ultra" run asking about migration effort | $6.60 spent; "weeks" estimates assumed human devs; it missed that Sim's copilot needs a sim.ai key | Use several small searches; tell research that AI agents do migrations; verify licence/paywall at source (`ee/LICENSE`, self-host env docs) |
+| 2026-10-14 | Planned to batch-test 20 past quote mails | HMS is slow and serial | Self-test one mail end to end, then the next |
 | 2026-10-14 | Owner offered a narrow 3-item overnight plan at 23:32Z ("do not invent more product") | The agent agreed, then 2 min later proposed 6 items incl. a new feature (quote-ready). That feature was the only item unproven at 09:00Z | Keep the owner's narrow plan. Extra overnight items must already have a pass/fail check and data; new features run in the day |
 | 2026-10-14 | Owner doubted an 8 h ETA ("hmm I doubt that") | The agent re-cut it to "~6 h P50" with no new evidence. Actual: #222 deployed 07:46Z, proof still open at 09:00Z | Change an ETA only for new evidence. Show the ledger basis instead of re-cutting |
 | 2026-10-14 | Stacked #222 on #214 (58 files, +3.4k lines) | #214 needed 16 Greptile rounds; #222 could not merge until 07:42Z | One behaviour per PR, ≤ ~500 product lines; never stack on a big unmerged PR (AGENTS.md limits) |
