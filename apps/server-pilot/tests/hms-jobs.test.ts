@@ -508,7 +508,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(reused.run.priority).toBe(HMS_JOB_PRIORITY_PREFETCH);
     }));
 
-  it('claims a prepared quote with the configured HMS run deadline', () =>
+  it('claims a prepared quote with the staff quote read budget', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');
       const { run } = await seedQuoteExtraction(db);
@@ -524,7 +524,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         now,
       });
 
-      expect(claimed?.deadlineAt?.getTime()).toBe(now.getTime() + 150_000);
+      expect(claimed?.deadlineAt?.getTime()).toBe(now.getTime() + 7 * 60_000);
     }));
 
   it('yields a prepared quote without charging it while a user quote is queued', () =>

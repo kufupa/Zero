@@ -705,18 +705,13 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             ? 1
             : undefined;
 
-      const systemPreparedQuote =
-        request?.kind === 'staff_quote' &&
-        candidate.metrics?.quotePrepared === true &&
-        candidate.metrics?.userId == null;
+      // Prepared quotes get the staff budget too: the read takes minutes, and they already yield to staff work.
       const requestDeadlineMs =
         candidate.runKind === 'read_tool' &&
         candidate.executorLane === 'hms' &&
         candidate.promptVersion === HMS_JOB_PROMPT_VERSION &&
         request?.kind === 'staff_quote'
-          ? systemPreparedQuote
-            ? runDeadlineMs
-            : Math.max(runDeadlineMs, HMS_STAFF_QUOTE_RUN_DEADLINE_MS)
+          ? Math.max(runDeadlineMs, HMS_STAFF_QUOTE_RUN_DEADLINE_MS)
           : runDeadlineMs;
       const deadlineAt = candidate.deadlineAt ?? new Date(now.getTime() + requestDeadlineMs);
       const claimToken = randomUUID();
