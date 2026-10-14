@@ -11,10 +11,11 @@ Nava is an AI reservationist for Legacy Hotels' Centurion property. Staff work i
 - **Scoreboard:** `/tmp/p2/SCOREBOARD.md` on the VPS (outside repo): golden-set score + per-item state, last-good SHA, rollback.
 - **Golden set (PRODUCT.md "Done"):** 26 real past emails (quote 12, amend 5, cancel 4, create 0 — no create passed request-linked evidence, skip 5). Answer keys only from staff evidence tied to the request. v1 (stored extractions) 15/26; **v2 (fresh production extraction, deployed 7532bd5) 24/26 (92.3%)**. Scorer PR #218 open (eval tooling; 2 known P1s at golden-set.ts:1879, :2216). Fresh extractor: `scripts/golden-fresh-extract.ts` (#221).
 - **Live:** channel skip at the door (#215: Profitroom contact forms stay direct, Tiket.com, H-Pay payment links; Travelit/TBO never skipped; RateTiger has no host); party v2 (0 wrong binds on 95 answer-key emails, 57.9% auto-bind); #211 pane clarity; viewer gate runner fixes (#219, #220).
-- **In flight:** #214 dinner + alternatives (11 Greptile rounds, clean at round 11); #222 quote ready on open (`HMS_QUOTE_PREPARE`, default off, stacked on #214); proof set = 4 recent future-dated quote threads with the staff offer PDF.
+- **Live 2026-10-14 morning:** #214 dinner + alternatives (merged a4af9c9e0, deployed 07:34Z; 16 Greptile rounds; alternatives stay in the pane, the decline reply is one line). #222 quote ready on open (merged 574803809, deployed 07:46Z). `HMS_QUOTE_PREPARE='true'` since ~08:00Z on http/worker/ai-worker (remote-http/webmail not yet: it reads separate env files). Stable mark before these: 7532bd5fe.
+- **Quote-ready coverage:** the planner prepares only stays with dates, occupancy and a resolved room type. Of 47 future-dated quote asks (21 days), 12 were plannable; the 4 threads with staff offer PDFs were not (missing dates/occupancy, unresolved room type). Room-type resolution is the main gap. Proof results: scoreboard.
 - **Classifier (feat/action-classifier): not merged.** 400-email EC2 eval vs adjudicated labels: medium effort 77.0% action / 0.5% failures (p50 7 s); max effort 73.9% / 7.25% failures (timeouts). Gate is ≥90% and ≤1%. Next step is the prompt, not budgets.
 - Research library: `docs/research/2026-10-13/README.md`. Do not redo it.
-- Prod flags on: `PARTY_MATCH_V2`. Owner rules 2026-10-13/14: never Nova Lite; OTA/channel/system skipped at the door; travel agents stay in scope.
+- Prod flags on: `PARTY_MATCH_V2`, `HMS_QUOTE_PREPARE` (pane server + workers). Owner rules 2026-10-13/14: never Nova Lite; OTA/channel/system skipped at the door; travel agents stay in scope.
 
 ## Non-negotiable rules
 - Never ask client staff to run scripts, PowerShell or terminals. Fix it in the product.
