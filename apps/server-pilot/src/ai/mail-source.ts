@@ -1,3 +1,5 @@
+import { MAIL_SOURCE_RULE_DATA, type MailSourceRuleData } from '../../config/mail-source-rules.js';
+
 export type MailSourceKind = 'channel' | 'system' | 'direct';
 
 export type MailSourceClassification =
@@ -18,187 +20,43 @@ export function isMailSourceClassification(value: unknown): value is MailSourceC
     : typeof decision.source === 'string' && decision.source.trim().length > 0;
 }
 
-type MailSourceRule = {
-  id: string;
-  kind: Exclude<MailSourceKind, 'direct'>;
-  source: string;
-  domains: readonly string[];
+type MailSourceRule = Omit<
+  MailSourceRuleData,
+  'forwardedSubjectPatterns' | 'directSubjectPatterns' | 'skipSubjectPatterns'
+> & {
   forwardedSubjectPatterns?: readonly RegExp[];
-  otaChip?: boolean;
-  bookingPhrase?: string;
-  /** Subjects a vendor uses to relay a person's own enquiry (e.g. a website contact form); that mail stays direct. */
   directSubjectPatterns?: readonly RegExp[];
-  /** When set, only these subjects are skipped; other mail from the sender stays direct for triage to route. */
   skipSubjectPatterns?: readonly RegExp[];
 };
 
-/**
- * One registry for automated mail we do not handle as reservationist work. Add source domains and, when appropriate,
- * a forwarded-subject pattern here; both the server and the pane import this browser-safe module.
- */
-export const MAIL_SOURCE_RULES: readonly MailSourceRule[] = [
-  {
-    id: 'synxis',
-    kind: 'channel',
-    source: 'SynXis',
-    domains: ['synxis.com'],
-    forwardedSubjectPatterns: [/^synxis\s+res(?:ervation)?\s+confirmed\b/i],
-    otaChip: true,
-  },
-  {
-    id: 'expedia-partner-central',
-    kind: 'channel',
-    source: 'Expedia Partner Central',
-    domains: ['m.expediapartnercentral.com', 'expediapartnercentral.com'],
-    forwardedSubjectPatterns: [/^(?:expedia\s+partner\s+central\b|new\s+(?:booking|reservation)\s+from\s+expedia\b)/i],
-    otaChip: true,
-  },
-  {
-    id: 'expedia',
-    kind: 'channel',
-    source: 'Expedia',
-    domains: ['expedia.com'],
-    forwardedSubjectPatterns: [/^expedia(?:\.com)?\s+(?:booking|reservation)\b/i],
-    otaChip: true,
-    bookingPhrase: String.raw`expedia(?:\.com)?`,
-  },
-  {
-    id: 'webbeds',
-    kind: 'channel',
-    source: 'WebBeds',
-    domains: ['webbeds.com'],
-    forwardedSubjectPatterns: [/^webbeds\b/i],
-    otaChip: true,
-  },
-  {
-    id: 'hotelbeds',
-    kind: 'channel',
-    source: 'Hotelbeds',
-    domains: ['hotelbeds.com'],
-    forwardedSubjectPatterns: [/^hotelbeds\b/i],
-    otaChip: true,
-  },
-  {
-    id: 'booking-com',
-    kind: 'channel',
-    source: 'Booking.com',
-    domains: ['booking.com'],
-    forwardedSubjectPatterns: [/^booking\.com\b/i],
-    otaChip: true,
-    bookingPhrase: String.raw`booking\s*\.?\s*com`,
-  },
-  {
-    id: 'get-e',
-    kind: 'channel',
-    source: 'Get-e',
-    domains: ['get-e.com'],
-    forwardedSubjectPatterns: [/^get-e\b/i],
-    otaChip: true,
-  },
-  {
-    id: 'hotels-com',
-    kind: 'channel',
-    source: 'Hotels.com',
-    domains: ['hotels.com'],
-    forwardedSubjectPatterns: [/^hotels\.com\b/i],
-    otaChip: true,
-    bookingPhrase: String.raw`hotels\.com`,
-  },
-  {
-    id: 'agoda',
-    kind: 'channel',
-    source: 'Agoda',
-    domains: ['agoda.com'],
-    forwardedSubjectPatterns: [/^agoda\b/i],
-    otaChip: true,
-    bookingPhrase: String.raw`agoda(?:\.com)?`,
-  },
-  {
-    id: 'trip-com',
-    kind: 'channel',
-    source: 'Trip.com',
-    domains: ['trip.com'],
-    forwardedSubjectPatterns: [/^trip\.com\b/i],
-    otaChip: true,
-    bookingPhrase: String.raw`trip\.com`,
-  },
-  {
-    id: 'traveloka',
-    kind: 'channel',
-    source: 'Traveloka',
-    domains: ['traveloka.com'],
-    forwardedSubjectPatterns: [/^traveloka\b/i],
-    otaChip: true,
-    bookingPhrase: String.raw`traveloka(?:\.com)?`,
-  },
-  {
-    id: 'airbnb',
-    kind: 'channel',
-    source: 'Airbnb',
-    domains: ['airbnb.com'],
-    forwardedSubjectPatterns: [/^airbnb\b/i],
-    otaChip: true,
-    bookingPhrase: String.raw`airbnb(?:\.com)?`,
-  },
-  {
-    id: 'tiket-com',
-    kind: 'channel',
-    source: 'Tiket.com',
-    domains: ['tiket.com'],
-    otaChip: true,
-    bookingPhrase: String.raw`tiket(?:\.com)?`,
-  },
-  {
-    id: 'profitroom',
-    kind: 'channel',
-    source: 'Profitroom',
-    domains: ['profitroom.com'],
-    directSubjectPatterns: [/\bcontact\s+form\b/i],
-  },
-  {
-    id: 'h-pay',
-    kind: 'system',
-    source: 'H-Pay',
-    domains: ['hospitality.cloud'],
-    // Payment-link notices only; H-Pay finance mail still reaches money-billing triage.
-    skipSubjectPatterns: [/\bsecure\s+payment\s+link\b/i],
-  },
-  {
-    id: 'reviewpro',
-    kind: 'system',
-    source: 'ReviewPro',
-    domains: ['reviewpro.com'],
-    forwardedSubjectPatterns: [/^reviewpro\b/i],
-  },
-  {
-    id: 'trustyou',
-    kind: 'system',
-    source: 'TrustYou',
-    domains: ['trustyou.com'],
-    forwardedSubjectPatterns: [/^trustyou\b/i],
-  },
-  {
-    id: 'revinate',
-    kind: 'system',
-    source: 'Revinate',
-    domains: ['revinate.com'],
-    forwardedSubjectPatterns: [/^revinate\b/i],
-  },
-  {
-    id: 'medallia',
-    kind: 'system',
-    source: 'Medallia',
-    domains: ['medallia.com'],
-    forwardedSubjectPatterns: [/^medallia\b/i],
-  },
-  {
-    id: 'tripadvisor',
-    kind: 'system',
-    source: 'Tripadvisor',
-    domains: ['tripadvisor.com'],
-    forwardedSubjectPatterns: [/^tripadvisor\b/i],
-  },
-] as const;
+type MailSourcePatternData = NonNullable<MailSourceRuleData['forwardedSubjectPatterns']>[number];
+
+function compilePatterns(patterns: readonly MailSourcePatternData[]): readonly RegExp[] {
+  return patterns.map(({ source, flags }) => new RegExp(source, flags));
+}
+
+function compileRule(rule: MailSourceRuleData): MailSourceRule {
+  return {
+    id: rule.id,
+    kind: rule.kind,
+    source: rule.source,
+    domains: rule.domains,
+    ...(rule.forwardedSubjectPatterns === undefined
+      ? {}
+      : { forwardedSubjectPatterns: compilePatterns(rule.forwardedSubjectPatterns) }),
+    ...(rule.otaChip === undefined ? {} : { otaChip: rule.otaChip }),
+    ...(rule.bookingPhrase === undefined ? {} : { bookingPhrase: rule.bookingPhrase }),
+    ...(rule.directSubjectPatterns === undefined
+      ? {}
+      : { directSubjectPatterns: compilePatterns(rule.directSubjectPatterns) }),
+    ...(rule.skipSubjectPatterns === undefined
+      ? {}
+      : { skipSubjectPatterns: compilePatterns(rule.skipSubjectPatterns) }),
+  };
+}
+
+/** Compile configured regex data once for the browser-safe server/pane registry. */
+export const MAIL_SOURCE_RULES: readonly MailSourceRule[] = MAIL_SOURCE_RULE_DATA.map(compileRule);
 
 const INTERNAL_FORWARD_DOMAINS = ['legacyhotels.co.za'] as const;
 const FORWARD_SUBJECT_PREFIX = /^(?:(?:fw|fwd|forwarded)\s*:\s*)+/i;
