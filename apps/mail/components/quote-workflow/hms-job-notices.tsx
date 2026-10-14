@@ -92,10 +92,6 @@ function requestRecord(request: HmsJobRequest): Record<string, unknown> {
   return request as unknown as Record<string, unknown>;
 }
 
-function textField(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
 function completedMessage(request: HmsJobRequest): string {
   const kind = String(requestRecord(request).kind ?? '');
   if (kind === 'party') return 'Company/agency lookup finished';
@@ -200,7 +196,7 @@ export function HmsJobNoticeProvider({
             status === 'done'
               ? completedMessage(request)
               : String(requestRecord(request).kind ?? '') === 'staff_quote'
-                ? `Rates failed: ${textField(view.result?.message) ?? safeReason}`
+                ? `Rates failed: ${safeReason}`
                 : `HMS lookup failed: ${safeReason}`,
         },
       ];
@@ -488,8 +484,11 @@ export function HmsJobRunningChip() {
   );
 }
 
-/** The oldest undismissed completion is pinned below the pane header; later notices stay queued. */
-export function HmsJobNoticeBanner() {
+/**
+ * The oldest undismissed completion is pinned below the pane header; later notices stay queued.
+ * `onReveal` opens the screen holding the result cards when the banner shows over another screen.
+ */
+export function HmsJobNoticeBanner({ onReveal }: { onReveal?: () => void } = {}) {
   const view = useContext(ViewContext);
   const reporter = useContext(HmsJobNoticeReporterContext);
   const [returnHint, setReturnHint] = useState<string | null>(null);
@@ -520,13 +519,22 @@ export function HmsJobNoticeBanner() {
       );
       return;
     }
-    const target = document.getElementById(notice.targetId);
-    if (!target) {
-      setReturnHint("That section isn't open any more");
+    const reveal = () => {
+      const target = document.getElementById(notice.targetId);
+      if (!target) {
+        setReturnHint("That section isn't open any more");
+        return;
+      }
+      target.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+      reporter.dismiss(notice.id);
+    };
+    if (!onReveal) {
+      reveal();
       return;
     }
-    target.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
-    reporter.dismiss(notice.id);
+    // Scroll and dismiss only once the result screen has rendered, so the notice is never lost on a hidden screen.
+    onReveal();
+    window.setTimeout(reveal, 0);
   };
 
   return (

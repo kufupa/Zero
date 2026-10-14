@@ -92,6 +92,7 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.hmsQueueStatus',
   'workstation.listThreadQuoteRevisions',
   'workstation.outlookSync.status',
+  'workstation.outlookSync.statusForActiveMailbox',
   'workstation.quoteRunScreenshot',
   'workstation.staffQuoteJob',
   'workstation.staffQuoteSource',
@@ -115,6 +116,8 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'paneStayLookup.queueBatch',
   'paneStayLookup.queueParty',
   'workItems.acceptFields',
+  // Owner console review mark (admin only); never from the staff pane.
+  'workItems.adminReview',
   'workItems.recordActions',
   'workstation.queueStaffQuote',
   'drafts.saveReply',
@@ -356,6 +359,8 @@ export const VOUCHER_CARD_SELECTOR = '#quote-voucher-find';
  * a page from before the rename still counts as reading. While it shows, the thread has not settled.
  */
 export const ANALYSING_TEXT = /(Luna|Nava) is (reading the email|re-reading with your note)/;
+/** The pane's own note when the selected email is not in Nava yet (quote-workflow-panel.tsx, phase 'unsynced'). */
+export const PANE_UNSYNCED_TEXT = /This email has not finished syncing yet/;
 
 /** Browser-side: reads the pane and the list row for one thread. Plain JS, no DOM types. */
 export const READ_PANE_JS = `(threadId) => {
@@ -364,10 +369,11 @@ export const READ_PANE_JS = `(threadId) => {
   const status = panel ? panel.querySelector('[data-preview-status]') : null;
   const row = document.querySelector('aside a[data-thread-id="' + CSS.escape(threadId) + '"]');
   const text = panel ? clean(panel.innerText) : '';
-  // The type picker (workflow-badge.tsx). Its chosen option is the intent; an empty value means none is chosen yet.
-  const typeSelect = panel ? panel.querySelector('select[aria-label="Nava reads this as"]') : null;
-  const picked = typeSelect && typeSelect.value ? typeSelect.options[typeSelect.selectedIndex] : null;
-  const amendment = panel ? panel.querySelector('[data-amendment-kind]') : null;
+  const statusValue = status ? status.getAttribute('data-preview-status') : 'missing';
+  const paneUnsynced = statusValue === 'ready' && new RegExp(${JSON.stringify(PANE_UNSYNCED_TEXT.source)}).test(text);
+  // The read-as chip (workflow-badge.tsx). Its label is the intent; amendments and cancellations are its kind.
+  const readAs = panel ? panel.querySelector('[data-read-as]') : null;
+  const readAsKind = readAs ? clean(readAs.getAttribute('data-read-as')) : '';
   const alerts = panel
     ? Array.from(panel.querySelectorAll('[role="alert"], [role="status"]')).map((el) => clean(el.textContent))
     : [];
@@ -384,11 +390,11 @@ export const READ_PANE_JS = `(threadId) => {
     : [];
   return {
     subject: row ? clean(row.querySelector('.font-medium') ? row.querySelector('.font-medium').textContent : row.textContent) : null,
-    paneStatus: status ? status.getAttribute('data-preview-status') : 'missing',
-    unsyncedReason: status ? status.getAttribute('data-preview-reason') : null,
+    paneStatus: paneUnsynced ? 'unsynced' : statusValue,
+    unsyncedReason: paneUnsynced ? 'pane_not_synced' : status ? status.getAttribute('data-preview-reason') : null,
     analysing: new RegExp(${JSON.stringify(ANALYSING_TEXT.source)}).test(text),
-    intent: picked ? clean(picked.textContent) : null,
-    amendment: amendment ? clean(amendment.getAttribute('data-amendment-kind')) || null : null,
+    intent: readAs ? clean(readAs.textContent) || null : null,
+    amendment: readAsKind === 'amendment' || readAsKind === 'cancellation' ? readAsKind : null,
     voucher: Boolean(panel && panel.querySelector(${JSON.stringify(VOUCHER_CARD_SELECTOR)})),
     aiUnavailable: /Read without AI/.test(text),
     alerts: alerts.concat(toasts).filter(Boolean),
@@ -421,7 +427,7 @@ export type PaneRead = {
 };
 
 /**
- * A thread has settled when the pane shows an intent (the type picker has a choice), an amendment, the voucher card,
+ * A thread has settled when the pane shows an intent (the read-as chip), an amendment, the voucher card,
  * an alert, or a fallback notice. 'intent' means the pane read the email.
  */
 export function outcomeOf(read: PaneRead): Outcome | null {

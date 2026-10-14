@@ -178,6 +178,7 @@ function Harness({ trpc }: { trpc: unknown }) {
 
 const FAILED_READ: StoredWork = {
   status: 'ready',
+  kind: 'quote',
   workItemId: 'wi-fr',
   workItemStatus: 'needs_you',
   extractionId: 'ex-fr',

@@ -4,6 +4,7 @@
 import {
   NeedsYouScreen,
   NeedsYouWebControl,
+  NEEDS_YOU_UNDO_MS,
   useNeedsYou,
 } from '../components/nava-pane/screens/needs-you';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -11,10 +12,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import type { NeedsYouRow } from '../lib/quote-workflow/backend-bind';
+import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import { trpcClient } from '../providers/query-provider';
 
-const { listQuery, dismissMutate, pingMutate, silent } = vi.hoisted(() => {
+const { listQuery, dismissMutate, pingMutate, toastMock, toastDismissMock, silent } = vi.hoisted(() => {
   // A route this file does not exercise never answers, so the pane waits on it instead of failing.
   const silent = (): unknown =>
     new Proxy(() => new Promise<never>(() => {}), { get: () => silent() });
@@ -22,6 +24,8 @@ const { listQuery, dismissMutate, pingMutate, silent } = vi.hoisted(() => {
     listQuery: vi.fn(),
     dismissMutate: vi.fn(),
     pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
+    toastMock: vi.fn(),
+    toastDismissMock: vi.fn(),
     silent,
   };
 });
@@ -42,7 +46,12 @@ vi.mock('../providers/query-provider', () => {
 });
 
 vi.mock('sonner', () => ({
-  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+  toast: Object.assign(toastMock, {
+    dismiss: toastDismissMock,
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+  }),
 }));
 
 vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
@@ -160,15 +169,21 @@ const fakeBridge = {
 
 beforeEach(() => {
   localStorage.setItem('nava_onboarding_completed', 'true');
+  setMailCacheScope({ userId: null, activeTransportId: null });
   listQuery.mockReset();
   listQuery.mockResolvedValue(TWO_OPEN);
   dismissMutate.mockReset();
   dismissMutate.mockResolvedValue({ status: 'dismissed' });
+  toastMock.mockReset();
+  toastMock.mockReturnValue('needs-you-dismissal');
+  toastDismissMock.mockReset();
 });
 
 afterEach(() => {
   localStorage.clear();
   cleanup();
+  setMailCacheScope({ userId: null, activeTransportId: null });
+  vi.useRealTimers();
 });
 
 describe('Needs-you list', () => {
@@ -197,14 +212,15 @@ describe('Needs-you list', () => {
       'Queued',
       'In HMS',
     ]);
-    expect(items[1]!.textContent).toContain('Booking');
+    expect(items[1]!.textContent).toContain('New booking');
     expect(items[1]!.textContent).toContain('bookings@agency.example');
     expect(items[1]!.textContent).toContain('Confirm Labtest booking');
     expect(items[0]!.querySelector('time')?.getAttribute('datetime')).toBe(
       '2026-10-05T09:00:00.000Z',
     );
     expect(items[2]!.textContent).toContain('Amendment');
-    expect(items[3]!.textContent).toContain('Voucher or POP');
+    expect(items[3]!.textContent).toContain('Payment');
+    expect(listQuery).toHaveBeenCalledWith({ limit: 200, statuses: ['needs_you', 'review'] });
   });
 
   it('says All caught up when nothing is open', async () => {
@@ -247,7 +263,8 @@ describe('Needs-you list', () => {
     render(<Harness host="outlook" />);
 
     expect(await screen.findByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
-    expect(screen.queryByRole('button', { name: /^Open/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open Rooms request' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open Confirm booking' })).toBeNull();
     expect(
       screen.getByText('Find each email in your Outlook inbox by its sender and subject.'),
     ).toBeDefined();
@@ -255,26 +272,123 @@ describe('Needs-you list', () => {
     expect(screen.getAllByRole('listitem')[0]!.querySelector('time')).not.toBeNull();
   });
 
-  it('dismiss sends the item to the server, takes its row off, and reloads the list', async () => {
-    listQuery.mockResolvedValueOnce(TWO_OPEN).mockResolvedValue([TWO_OPEN[1]!]);
+  it('offers Undo before saving a dismissal, and Undo restores the row without a server write', async () => {
     render(<Harness host="web" onOpenThread={() => {}} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
     expect(screen.queryByRole('button', { name: 'Dismiss Rooms request' })).toBeNull();
-    expect(dismissMutate).toHaveBeenCalledWith({ workItemId: 'wi-1' });
     expect(await screen.findByRole('heading', { name: 'Needs you (1)' })).toBeDefined();
-    await waitFor(() => expect(listQuery).toHaveBeenCalledTimes(2));
+    expect(dismissMutate).not.toHaveBeenCalled();
+    const options = toastMock.mock.calls.at(-1)?.[1] as {
+      action?: { label: string; onClick: () => void };
+    };
+    expect(options.action?.label).toBe('Undo');
+    act(() => options.action?.onClick());
+    expect(await screen.findByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Dismiss Rooms request' })).toBeDefined();
+    expect(dismissMutate).not.toHaveBeenCalled();
   });
 
-  it('a refused dismiss puts the item back on the list and says so', async () => {
+  it('Undo after a mailbox switch re-reads the list instead of restoring the row into the other mailbox', async () => {
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' });
+    try {
+      render(<Harness host="web" onOpenThread={() => {}} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
+      setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-b' });
+      listQuery.mockResolvedValue([row({ id: 'wi-b', subject: 'Mailbox B request' })]);
+      const calls = listQuery.mock.calls.length;
+      const options = toastMock.mock.calls.at(-1)?.[1] as { action?: { onClick: () => void } };
+      act(() => options.action?.onClick());
+
+      expect(await screen.findByRole('button', { name: 'Dismiss Mailbox B request' })).toBeDefined();
+      expect(screen.queryByRole('button', { name: 'Dismiss Rooms request' })).toBeNull();
+      expect(listQuery.mock.calls.length).toBeGreaterThan(calls);
+      expect(dismissMutate).not.toHaveBeenCalled();
+    } finally {
+      setMailCacheScope({ userId: null, activeTransportId: null });
+    }
+  });
+
+  it('flushes pending dismissal on unmount before thread switch', async () => {
+    const { unmount } = render(<Harness host="web" onOpenThread={() => {}} />);
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+    vi.useFakeTimers();
+    fireEvent.click(dismiss);
+    const options = toastMock.mock.calls.at(-1)?.[1] as {
+      action?: { onClick: () => void };
+    };
+
+    act(() => unmount());
+
+    expect(dismissMutate).toHaveBeenCalledTimes(1);
+    expect(toastDismissMock).toHaveBeenCalledWith('needs-you-dismissal');
+    act(() => options.action?.onClick());
+    expect(dismissMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a delayed dismissal under the mailbox active when it was dismissed', async () => {
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' });
+    try {
+      render(<Harness host="web" onOpenThread={() => {}} />);
+      const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+      vi.useFakeTimers();
+      fireEvent.click(dismiss);
+      setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-b' });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS);
+      });
+
+      expect(dismissMutate).toHaveBeenCalledWith(
+        { workItemId: 'wi-1' },
+        { context: { activeTransportId: 'transport-a' } },
+      );
+    } finally {
+      setMailCacheScope({ userId: null, activeTransportId: null });
+    }
+  });
+
+  it('saves the dismissal after the Undo window and refreshes both filters', async () => {
+    const dismissed = row({ id: 'wi-1', status: 'dismissed', subject: 'Rooms request' });
+    listQuery
+      .mockResolvedValueOnce(TWO_OPEN)
+      .mockImplementation(async (input: { statuses?: string[] }) =>
+        input.statuses?.[0] === 'done' ? [dismissed] : [TWO_OPEN[1]!],
+      );
+    render(<Harness host="web" onOpenThread={() => {}} />);
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+    vi.useFakeTimers();
+    fireEvent.click(dismiss);
+    expect(dismissMutate).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS);
+    });
+    expect(dismissMutate).toHaveBeenCalledWith({ workItemId: 'wi-1' });
+    expect(listQuery).toHaveBeenCalledTimes(3);
+    expect(listQuery).toHaveBeenNthCalledWith(2, { limit: 200, statuses: ['needs_you', 'review'] });
+    expect(listQuery).toHaveBeenNthCalledWith(3, { limit: 200, statuses: ['done', 'dismissed'] });
+    expect(screen.getByRole('heading', { name: 'Needs you (1)' })).toBeDefined();
+
+    vi.useRealTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Finished' }));
+    const finishedList = await screen.findByRole('list', { name: 'Finished items' });
+    expect(finishedList.textContent).toContain('Rooms request');
+  });
+
+  it('a refused dismissal puts the item back on the list and says so', async () => {
     dismissMutate.mockRejectedValueOnce(new Error('refused'));
     render(<Harness host="web" onOpenThread={() => {}} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
+    const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
+    vi.useFakeTimers();
+    fireEvent.click(dismiss);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS);
+    });
     expect(
-      await screen.findByText("Couldn't dismiss that email. It is still on your list."),
+      screen.getByText("Couldn't dismiss that email. It is back on your list."),
     ).toBeDefined();
-    expect(await screen.findByRole('button', { name: 'Dismiss Rooms request' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Dismiss Rooms request' })).toBeDefined();
   });
 
   it('a reload still in flight when a dismiss commits cannot bring the row back', async () => {
@@ -291,10 +405,14 @@ describe('Needs-you list', () => {
           }),
       )
       .mockResolvedValueOnce([TWO_OPEN[1]!]);
+    vi.useFakeTimers();
     fireEvent.click(screen.getByRole('button', { name: 'Reload now' }));
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss Rooms request' }));
-    expect(await screen.findByRole('heading', { name: 'Needs you (1)' })).toBeDefined();
-    await waitFor(() => expect(listQuery).toHaveBeenCalledTimes(3));
+    expect(screen.getByRole('heading', { name: 'Needs you (1)' })).toBeDefined();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(NEEDS_YOU_UNDO_MS);
+    });
+    expect(listQuery).toHaveBeenCalledTimes(4);
 
     await act(async () => {
       answerReload(TWO_OPEN);
@@ -306,10 +424,26 @@ describe('Needs-you list', () => {
   it('a build without the list route reads as unavailable and does not throw', async () => {
     render(<Harness host="web" client={{}} />);
 
-    expect(
-      await screen.findByText('The Needs-you list is not available in this version yet.'),
-    ).toBeDefined();
+    expect(await screen.findByText(/Needs-you isn't available for this mailbox/)).toBeDefined();
     expect(listQuery).not.toHaveBeenCalled();
+  });
+
+  it('filters Finished from server-backed done and dismissed statuses', async () => {
+    const finished = row({ id: 'wi-done', status: 'done', subject: 'Completed quote' });
+    listQuery.mockResolvedValueOnce(TWO_OPEN).mockResolvedValueOnce([finished]);
+    render(<Harness host="web" onOpenThread={() => {}} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Finished' }));
+
+    const finishedList = await screen.findByRole('list', { name: 'Finished items' });
+    expect(finishedList.textContent).toContain('Completed quote');
+    expect(listQuery).toHaveBeenNthCalledWith(2, {
+      limit: 200,
+      statuses: ['done', 'dismissed'],
+    });
+    expect(screen.getByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
+    expect(screen.getByText('Finished', { selector: '[data-chip]' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Dismiss Completed quote' })).toBeNull();
   });
 });
 
@@ -351,7 +485,6 @@ describe('Needs-you entry on the pane', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
     listQuery.mockResolvedValue([TWO_OPEN[1]!]);
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
-    await waitFor(() => expect(dismissMutate).toHaveBeenCalledWith({ workItemId: 'wi-1' }));
     fireEvent.click(screen.getByRole('button', { name: 'Back to quotes' }));
     expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
   });
@@ -378,6 +511,11 @@ describe('Needs-you entry on the pane', () => {
 });
 
 describe('Needs-you webmail control', () => {
+  it('does not render a dead entry when the list route is unavailable', async () => {
+    render(<NeedsYouWebControl trpc={{}} onOpenThread={() => {}} />);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Needs you' })).toBeNull());
+  });
+
   it('the header button shows the count, opens the list in a dialog, and a row opens its thread and closes the dialog', async () => {
     const onOpenThread = vi.fn();
     render(<NeedsYouWebControl trpc={trpcClient} onOpenThread={onOpenThread} />);
@@ -396,7 +534,6 @@ describe('Needs-you webmail control', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
     listQuery.mockResolvedValue([TWO_OPEN[1]!]);
     fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
-    await waitFor(() => expect(dismissMutate).toHaveBeenCalledWith({ workItemId: 'wi-1' }));
     fireEvent.keyDown(document.body, { key: 'Escape' });
     expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
   });
@@ -409,6 +546,14 @@ describe('Needs-you webmail control', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Close' })).toBeNull());
     expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
+  });
+
+  it('opening the dialog re-reads the list, so mail that arrived while it was closed shows', async () => {
+    render(<NeedsYouWebControl trpc={trpcClient} onOpenThread={() => {}} />);
+    const button = await screen.findByRole('button', { name: 'Needs you (2)' });
+    listQuery.mockResolvedValue([...TWO_OPEN, row({ id: 'wi-new', subject: 'New arrival' })]);
+    fireEvent.click(button);
+    expect(await screen.findByRole('button', { name: 'Open New arrival' })).toBeDefined();
   });
 
   it('a full list reads 200+ on the webmail count', async () => {

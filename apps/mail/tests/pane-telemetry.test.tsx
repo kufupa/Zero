@@ -3,7 +3,6 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
 import { HmsLinkActions } from '../components/quote-workflow/hms-link-actions';
 import { setMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import {
@@ -165,40 +164,20 @@ describe('pane telemetry wiring', () => {
     );
   });
 
-  it('records link and contact copy success with field names only', async () => {
-    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
+  it('records only the single confirmation copy action, without its value', async () => {
     const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ recorded: 1 }));
     const writeText = vi.fn(async () => undefined);
     bindPaneTelemetry({ workItems: { recordActions: { mutate } } });
     setClipboard({ writeText });
     setPaneTelemetryScope({ workItemId: WORK_ITEM, transportId: 'mailbox-a', surface: 'web' });
 
-    render(
-      <>
-        <ContactBlock
-          contact={{
-            name: 'Priya Naidoo',
-            company: 'Example Agency',
-            endClient: null,
-            email: 'priya@example.com',
-            phone: null,
-          }}
-          onEdit={vi.fn()}
-        />
-        <HmsLinkActions confirmation="64318608-1" />
-      </>,
-    );
-
-    const contact = within(screen.getByRole('region', { name: 'Guest & contact' }));
-    fireEvent.click(contact.getByRole('button', { name: 'Copy email' }));
-    await waitFor(() => expect(contact.getByRole('button', { name: 'Copied email' })).toBeDefined());
-    fireEvent.click(contact.getByRole('button', { name: 'Copy company' }));
-    await waitFor(() => expect(contact.getByRole('button', { name: 'Copied company' })).toBeDefined());
-    expect(writeText).toHaveBeenCalledWith('Example Agency');
-    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    render(<HmsLinkActions confirmation="64318608-1" />);
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy for HMS' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy confirmation' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeDefined());
-    fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied for HMS' })).toBeDefined());
+    expect(writeText).toHaveBeenCalledWith('64318608-1');
     pageHide();
 
     await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
@@ -206,22 +185,16 @@ describe('pane telemetry wiring', () => {
       {
         workItemId: WORK_ITEM,
         events: [
-          { type: 'copy.contact', field: 'email', surface: 'web' },
-          { type: 'copy.contact', field: 'company', surface: 'web' },
-          { type: 'copy.link', surface: 'web' },
-          { type: 'copy.link', surface: 'web' },
+          { type: 'copy.confirmation', surface: 'web' },
         ],
       },
       { context: { activeTransportId: 'mailbox-a' } },
     );
     const recorded = JSON.stringify(mutate.mock.calls);
-    expect(recorded).not.toContain('priya@example.com');
-    expect(recorded).not.toContain('Example Agency');
     expect(recorded).not.toContain('64318608-1');
   });
 
-  it('records a link copy that finishes after the pane moves on on the item it started on', async () => {
-    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
+  it('records a confirmation copy that finishes after the pane moves on on the item it started on', async () => {
     const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ recorded: 1 }));
     let finishWrite: () => void = () => undefined;
     const writeText = vi.fn(
@@ -235,7 +208,7 @@ describe('pane telemetry wiring', () => {
     setPaneTelemetryScope({ workItemId: 'wi-1', transportId: 'mailbox-a', surface: 'web' });
 
     render(<HmsLinkActions confirmation="64318608-1" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy confirmation' }));
     setPaneTelemetryScope({ workItemId: 'wi-2', transportId: 'mailbox-a', surface: 'web' });
     finishWrite();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeDefined());
@@ -243,12 +216,12 @@ describe('pane telemetry wiring', () => {
 
     expect(mutate).toHaveBeenCalledTimes(1);
     expect(mutate).toHaveBeenCalledWith(
-      { workItemId: 'wi-1', events: [{ type: 'copy.link', surface: 'web' }] },
+      { workItemId: 'wi-1', events: [{ type: 'copy.confirmation', surface: 'web' }] },
       { context: { activeTransportId: 'mailbox-a' } },
     );
   });
 
-  it('records a contact copy that finishes after the pane moves on on the item it started on', async () => {
+  it('records a confirmation copy that finishes after the pane moves on on the item it started on', async () => {
     const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ recorded: 1 }));
     let finishWrite: () => void = () => undefined;
     const writeText = vi.fn(
@@ -261,27 +234,16 @@ describe('pane telemetry wiring', () => {
     setClipboard({ writeText });
     setPaneTelemetryScope({ workItemId: 'wi-1', transportId: 'mailbox-a', surface: 'web' });
 
-    render(
-      <ContactBlock
-        contact={{
-          name: 'Priya Naidoo',
-          company: 'Example Agency',
-          endClient: null,
-          email: 'priya@example.com',
-          phone: null,
-        }}
-        onEdit={vi.fn()}
-      />,
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Copy email' }));
+    render(<HmsLinkActions confirmation="64318608-1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Copy confirmation' }));
     setPaneTelemetryScope({ workItemId: 'wi-2', transportId: 'mailbox-a', surface: 'web' });
     finishWrite();
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied email' })).toBeDefined());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeDefined());
     pageHide();
 
     expect(mutate).toHaveBeenCalledTimes(1);
     expect(mutate).toHaveBeenCalledWith(
-      { workItemId: 'wi-1', events: [{ type: 'copy.contact', field: 'email', surface: 'web' }] },
+      { workItemId: 'wi-1', events: [{ type: 'copy.confirmation', surface: 'web' }] },
       { context: { activeTransportId: 'mailbox-a' } },
     );
   });

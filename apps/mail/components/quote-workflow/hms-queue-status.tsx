@@ -34,7 +34,7 @@ export function HmsLookupProgress({ pending, detail }: { pending: boolean; detai
     <p role="status" className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-[12.5px] text-[#475569]">
       <span className="font-semibold text-[#1e293b]">Looking up in HMS — you can keep working</span>
       <span>{`· ${formatQueueElapsed(elapsedMs)} elapsed`}</span>
-      {elapsedMs >= 30_000 ? <span>Still looking in HMS…</span> : null}
+      {elapsedMs >= 30_000 ? <span>Still working — you can keep going</span> : null}
       {detail ? <span>{`· ${detail}`}</span> : null}
     </p>
   );
@@ -58,7 +58,7 @@ export function HmsQueueStatusLine({
         role="alert"
         className="rounded-xs border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
       >
-        {status.message}
+        Could not check HMS status. You can keep working and retry shortly.
       </p>
     );
   }
@@ -67,14 +67,30 @@ export function HmsQueueStatusLine({
     status?.state === 'running' && status.runningForMs !== undefined
       ? Math.max(elapsedMs, status.runningForMs)
       : elapsedMs;
+  const queueLabel =
+    status?.state === 'running'
+      ? 'Running in HMS'
+      : status?.state === 'waiting'
+        ? `Queued · ${
+            status.aheadCount && status.aheadCount > 0
+              ? `${status.aheadCount} ${status.aheadCount === 1 ? 'quote' : 'quotes'} ahead`
+              : 'waiting for HMS to become free'
+          }${
+            status.etaMinutes && status.etaMinutes > 0
+              ? ` · about ${status.etaMinutes === 1 ? '1 minute' : `${status.etaMinutes} minutes`}`
+              : ''
+          }`
+        : status?.state === 'idle'
+          ? 'Queued'
+          : 'Queued';
   return (
     <p role="status" className="rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]">
       <span className="font-semibold text-[#1e293b]">
         {staffQuote ? 'Nava is getting rates from HMS — you can keep working' : 'Looking up in HMS — you can keep working'}
       </span>
       <span>{` · ${formatQueueElapsed(elapsed)} elapsed`}</span>
-      {status && status.state !== 'idle' && status.message ? <span>{` · ${status.message}`}</span> : null}
-      {status?.state === 'running' && elapsed >= 30_000 ? <span>Still looking in HMS…</span> : null}
+      <span>{` · ${queueLabel}`}</span>
+      {elapsed >= 30_000 ? <span>Still working — you can keep going</span> : null}
     </p>
   );
 }
@@ -201,7 +217,7 @@ export function HmsJobStatusLine({
           <span>{`${elapsed} elapsed`}</span>
         </>
       )}
-      {view?.status === 'running' && elapsedMs >= 30_000 ? <span>Still looking in HMS…</span> : null}
+      {elapsedMs >= 30_000 ? <span>Still working — you can keep going</span> : null}
     </p>
   );
 }

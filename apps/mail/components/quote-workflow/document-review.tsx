@@ -75,15 +75,9 @@ export function DocumentReview({
   const pdfButtonLabel = isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF';
   return (
     <div className="flex flex-col gap-3.5">
-      {session.pdf ? (
-        <SecondaryButton className="w-full" disabled={!pdfReady} disabledReason={pdfReason} onClick={onPreparePdf}>
-          {pdfButtonLabel}
-        </SecondaryButton>
-      ) : (
-        <PrimaryButton disabled={!pdfReady} disabledReason={pdfReason} onClick={onPreparePdf}>
-          {pdfButtonLabel}
-        </PrimaryButton>
-      )}
+      <PrimaryButton disabled={!pdfReady || !onPreparePdf} disabledReason={pdfReason ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null)} onClick={onPreparePdf}>
+        {pdfButtonLabel}
+      </PrimaryButton>
       {session.pdf ? (
         <p className="text-[12.5px] text-[#1e293b]">
           {isMultiStay(session)

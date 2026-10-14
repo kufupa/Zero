@@ -104,11 +104,11 @@ describe('useHmsQueueStatus polling', () => {
       .mockResolvedValue(WAITING);
     render(<Harness pending fetchStatus={fetchStatus} />);
     await advance(0);
-    expect(screen.getByText(/Luna is working in HMS/)).toBeDefined();
+    expect(screen.getByRole('status').textContent).toContain('Running in HMS');
     await advance(HMS_QUEUE_POLL_MS);
-    expect(screen.getByText(/Luna is working in HMS/)).toBeDefined();
+    expect(screen.getByRole('status').textContent).toContain('Running in HMS');
     await advance(HMS_QUEUE_POLL_MS);
-    expect(screen.getByRole('status').textContent).toContain('1 quote ahead of yours – about 6 minutes.');
+    expect(screen.getByRole('status').textContent).toContain('Queued · 1 quote ahead · about 6 minutes');
   });
 });
 
@@ -123,31 +123,37 @@ describe('HmsQueueStatusLine messages', () => {
     expect(first.textContent).toContain('Looking up in HMS — you can keep working');
     expect(first.textContent).toContain('0 s elapsed');
     expect(first.querySelector('svg')).toBeNull();
+    expect(first.textContent).toContain('Queued');
     expect(screen.queryByText(/idle/i)).toBeNull();
     await advance(HMS_QUEUE_POLL_MS);
     const live = screen.getByRole('status');
     expect(live.textContent).toContain('Looking up in HMS — you can keep working');
     expect(live.textContent).toContain('1 min 20 s elapsed');
-    expect(live.textContent).toContain('Luna is working in HMS – step 2 of 3: Checking the quote rules.');
+    expect(live.textContent).toContain('Running in HMS');
+    expect(live.textContent).not.toContain('Luna is working in HMS');
   });
 
-  it('shows the waiting message with the number of quotes ahead', async () => {
+  it('shows a plain queued state and the number of quotes ahead', async () => {
     render(<Harness pending fetchStatus={async () => WAITING} />);
     await advance(0);
-    expect(screen.getByRole('status').textContent).toContain('1 quote ahead of yours – about 6 minutes.');
+    expect(screen.getByRole('status').textContent).toContain('Queued');
+    expect(screen.getByRole('status').textContent).toContain('1 quote ahead · about 6 minutes');
   });
 
-  it('shows the unavailable message as a red alert', async () => {
+  it('shows safe unavailable copy as a red alert', async () => {
     render(<Harness pending fetchStatus={async () => UNAVAILABLE} />);
     await advance(0);
     const alert = screen.getByRole('alert');
-    expect(alert.textContent).toBe('HMS is not responding. Try again in a few minutes.');
+    expect(alert.textContent).toContain('Could not check HMS status. You can keep working and retry shortly.');
+    expect(alert.textContent).not.toContain(UNAVAILABLE.message);
     expect(alert.className).toContain('text-red-700');
   });
 
   it('uses rates-specific progress copy for the main staff quote run', () => {
     render(<HmsQueueStatusLine pending status={RUNNING} staffQuote />);
     expect(screen.getByRole('status').textContent).toContain('Nava is getting rates from HMS — you can keep working');
+    expect(screen.getByRole('status').textContent).toContain('Running in HMS');
+    expect(screen.queryByText(RUNNING.message)).toBeNull();
   });
 
   it('formats elapsed time as seconds, then minutes and seconds', () => {
@@ -191,7 +197,8 @@ describe('HMS queue line in the quote workflow panel', () => {
     );
     const line = screen.getByRole('status');
     expect(line.textContent).toContain('Nava is getting rates from HMS — you can keep working');
-    expect(line.textContent).toContain('Luna is working in HMS – step 2 of 3');
+    expect(line.textContent).toContain('Running in HMS');
+    expect(line.textContent).not.toContain(RUNNING.message);
     expect(line.querySelector('svg')).toBeNull();
   });
 

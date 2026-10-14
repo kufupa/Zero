@@ -1181,6 +1181,8 @@ export type StoredWork =
   | { status: 'failed'; reason: string }
   | {
       status: 'ready';
+      /** The stored extraction kind, for the pane's shared reservation-staff vocabulary. */
+      kind: string;
       /** Null when the read has no work item yet. The pane then opens one (openStoredWork) before it logs edits. */
       workItemId: string | null;
       workItemStatus: string | null;
@@ -1238,6 +1240,7 @@ async function readyView(
   const stored = storedAnalysis(read, state);
   return {
     status: 'ready',
+    kind: read.kind,
     workItemId: item?.id ?? null,
     workItemStatus: item?.status ?? null,
     extractionId: read.id,

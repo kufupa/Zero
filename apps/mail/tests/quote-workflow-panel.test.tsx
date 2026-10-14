@@ -212,7 +212,7 @@ describe('QuoteWorkflowPanel', () => {
         }), { type: 'analysis_ready', analysis: { intent: 'other', groups: [], secondaryAsks: [], alternatives: [] } })}
       />,
     );
-    expect(screen.getByText(/not a quote or booking/i)).toBeDefined();
+    expect(screen.queryByText(/not a quote or booking/i)).toBeNull();
     expect(screen.queryByRole('button', { name: /Search availability/i })).toBeNull();
   });
 
@@ -262,15 +262,17 @@ describe('QuoteWorkflowPanel', () => {
     expect(roomsAfterEdit[2]?.value).toBe(originalCode);
   });
 
-  it('has one Company / agency step with agency and company, not a per-room organisation field', () => {
+  it('has one Company/agency on the quote step with agency and company fields', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('agency-contract')} />);
-    expect(screen.getAllByRole('heading', { name: /Company \/ agency/ })).toHaveLength(1);
+    expect(
+      screen.getAllByRole('region', { name: 'Company/agency on the quote (sets contract rate)' }),
+    ).toHaveLength(1);
     expect(screen.getByLabelText('Agency (travel agent)')).toBeTruthy();
     expect(screen.getByLabelText('Company (end client)')).toBeTruthy();
     expect(screen.queryByLabelText('Company or agency')).toBeNull();
   });
 
-  it('presents the guided stay, party, rates and quote steps in order, with the reply action inside Quote', () => {
+  it('presents four guided steps in order, with one primary action in each step', () => {
     const session = { ...sessionFromFixture('mixed-same-dates'), reviewedReplyHtml: 'Reply draft' };
     const { container } = render(
       <QuoteWorkflowPanel
@@ -282,23 +284,33 @@ describe('QuoteWorkflowPanel', () => {
     expect(steps.map((step) => step.id)).toEqual(['quote-stay', 'quote-party', 'quote-rates', 'quote-quote']);
     expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual([
       'Stay',
-      'Company / agency',
+      'Company/agency on the quote (sets contract rate)',
       'Rates',
-      'Quote',
+      'Quote review',
     ]);
-    expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['2', '3', '4', '5']);
-    for (const step of steps) expect(within(step).getByTestId('quote-step-state')).toBeDefined();
+    expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['1', '2', '3', '4']);
+    for (const step of steps) {
+      expect(within(step).getByTestId('quote-step-state')).toBeDefined();
+      const primaryActions = within(step)
+        .getAllByRole('button')
+        .filter((button) => button.className.includes('bg-[#0066cc]') || button.className.includes('bg-[#1a4332]'));
+      expect(primaryActions).toHaveLength(1);
+    }
     expect(within(steps[1]!).getByText(/Optional if none in email/)).toBeDefined();
     expect(within(steps[3]!).getByRole('button', { name: 'Insert into reply' })).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
     expect(screen.queryByText('Coming soon')).toBeNull();
   });
 
-  it('marks Company / agency as looking up while an HMS party search is pending', () => {
+  it('marks Company/agency on the quote as looking up while an HMS party search is pending', () => {
     const session = { ...sessionFromFixture('public-single'), pendingPartyKinds: ['company' as const] };
     render(<QuoteWorkflowPanel session={session} />);
     expect(
-      within(screen.getByRole('region', { name: 'Company / agency' })).getByTestId('quote-step-state').textContent,
+      within(
+        screen.getByRole('region', {
+          name: 'Company/agency on the quote (sets contract rate)',
+        }),
+      ).getByTestId('quote-step-state').textContent,
     ).toBe('Looking up');
   });
 
@@ -349,7 +361,9 @@ describe('QuoteWorkflowPanel', () => {
     expect(onStayAction).toHaveBeenCalledWith(expect.objectContaining({ type: 'add_row', stayId: expect.any(String) }));
     const search = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
     expect(search.disabled).toBe(true);
-    const reason = screen.getByText('Choose a room type for each room before searching.').closest('p');
+    const reasons = screen.getAllByText('Choose a room type for each room before searching.');
+    expect(reasons).toHaveLength(2);
+    const reason = reasons[0]?.closest('p');
     expect(reason).toBeTruthy();
     expect(reason?.className).toMatch(/text-\[13px\].*text-\[#334155\]/);
     expect(reason?.previousElementSibling).toBe(search);
@@ -365,7 +379,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getAllByText('from email').length).toBeGreaterThan(0);
   });
 
-  it('retries the failed stay search directly and keeps the detailed HMS steps behind Details', () => {
+  it('retries one failed date range directly without exposing raw HMS errors', () => {
     const onRunNext = vi.fn();
     const onRunStep = vi.fn();
     const session = failedRateSession(
@@ -373,16 +387,17 @@ describe('QuoteWorkflowPanel', () => {
       "Cannot read properties of undefined (reading 'internetMessageId')",
     );
     render(<QuoteWorkflowPanel session={session} onRunNext={onRunNext} onRunStep={onRunStep} />);
-    expect(screen.getAllByText("HMS didn't answer in time.")).toHaveLength(1);
+    expect(screen.getAllByText('HMS could not complete this search. Retry the date range.')).toHaveLength(1);
+    expect(screen.queryByText("HMS didn't answer in time.")).toBeNull();
     expect(screen.getByText(/Dates 2026-11-12 → 2026-11-14/i)).toBeDefined();
     const details = screen.getByText('Details').closest('details');
     expect(details).toBeTruthy();
     expect(details?.hasAttribute('open')).toBe(false);
-    expect(details?.querySelector('pre')?.textContent).toContain('internetMessageId');
-    fireEvent.click(screen.getByRole('button', { name: 'Retry search' }));
+    expect(details?.textContent).not.toContain('internetMessageId');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry date range for Stay 1' }));
     expect(onRunNext).not.toHaveBeenCalled();
     expect(onRunStep).toHaveBeenCalledWith('quote-1');
-    expect(screen.getByRole('button', { name: /Run Search availability for 12–14 Nov/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Search availability' })).toBeTruthy();
   });
 
   it('shows HMS room alternatives without choosing one and reruns only after Use this', async () => {
@@ -418,7 +433,7 @@ describe('QuoteWorkflowPanel', () => {
     await waitFor(() => expect(onRunStep).toHaveBeenCalledWith('quote-1'));
   });
 
-  it('shows a failed rate reason in the banner once, then shows one local copy after dismissal', () => {
+  it('shows a safe failed-rate banner once, then one safe local retry message', () => {
     const reason = "HMS didn't answer in time.";
     const session = failedRateSession(reason, 'The full server diagnostic stays behind Details.');
     render(
@@ -431,14 +446,16 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show failed rate notice' }));
 
     const banner = screen.getByTestId('hms-job-notice-banner');
-    expect(banner.textContent).toContain(`Rates failed: ${reason}`);
+    expect(banner.textContent).toContain('Rates failed: HMS could not complete the lookup. Retry, or check the request.');
+    expect(banner.textContent).not.toContain(reason);
     expect(screen.queryByText(reason, { exact: true })).toBeNull();
 
     fireEvent.click(within(banner).getByRole('button', { name: 'Try again' }));
-    expect(screen.getAllByText(reason, { exact: true })).toHaveLength(1);
+    expect(screen.getAllByText('HMS could not complete this search. Retry the date range.')).toHaveLength(1);
+    expect(screen.queryByText(reason, { exact: true })).toBeNull();
   });
 
-  it('keeps the local rate reason visible when another failure owns the notice banner', () => {
+  it('keeps a safe local rate retry message when another failure owns the notice banner', () => {
     const reason = "HMS didn't answer in time.";
     const session = failedRateSession(reason, 'The full server diagnostic stays behind Details.');
     render(
@@ -458,10 +475,11 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show failed rate notice' }));
 
     expect(screen.getByTestId('hms-job-notice-banner').textContent).toContain('HMS lookup failed:');
-    expect(screen.getAllByText(reason, { exact: true })).toHaveLength(1);
+    expect(screen.getAllByText('HMS could not complete this search. Retry the date range.')).toHaveLength(1);
+    expect(screen.queryByText(reason, { exact: true })).toBeNull();
   });
 
-  it('offers Search again after results, enabled when idle and tied to the same stay', () => {
+  it('offers a date-specific search after results, enabled when idle and tied to the same stay', () => {
     const onRunStep = vi.fn();
     const session = sessionFromFixture('public-single');
     const step = session.steps.find((item) => item.kind === 'quote_stay');
@@ -469,17 +487,17 @@ describe('QuoteWorkflowPanel', () => {
     if (!step) return;
     session.steps = session.steps.map((item) => item.id === step.id ? { ...item, status: 'succeeded' as const } : item);
     const { rerender } = render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} />);
-    const button = screen.getByRole('button', { name: 'Search again' }) as HTMLButtonElement;
+    const button = screen.getByRole('button', { name: 'Search this date range for Stay 1' }) as HTMLButtonElement;
     expect(button.disabled).toBe(false);
     expect(button.className).toMatch(/border-\[#0066cc\].*text-\[#0066cc\]/);
     fireEvent.click(button);
     expect(onRunStep).toHaveBeenCalledWith(step.id);
 
     rerender(<QuoteWorkflowPanel session={{ ...session, runningStepId: step.id }} onRunStep={onRunStep} />);
-    expect((screen.getByRole('button', { name: 'Search again' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Search this date range for Stay 1' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('keeps Search again enabled while showing a pending party lookup reason', () => {
+  it('keeps the date-specific search enabled while showing a pending party lookup reason', () => {
     const session = sessionFromFixture('public-single');
     const step = session.steps.find((item) => item.kind === 'quote_stay');
     expect(step).toBeDefined();
@@ -487,12 +505,12 @@ describe('QuoteWorkflowPanel', () => {
     session.steps = session.steps.map((item) => item.id === step.id ? { ...item, status: 'succeeded' as const } : item);
     render(<QuoteWorkflowPanel session={{ ...session, pendingPartyKinds: ['company'] }} onRunStep={vi.fn()} />);
 
-    const button = screen.getByRole('button', { name: 'Search again' }) as HTMLButtonElement;
+    const button = screen.getByRole('button', { name: 'Search this date range for Stay 1' }) as HTMLButtonElement;
     expect(button.disabled).toBe(false);
     expect(screen.getByText('Finding the company in HMS…')).toBeTruthy();
   });
 
-  it('explains when Search again has no run handler instead of leaving an enabled no-op', () => {
+  it('explains when a date-specific search has no run handler instead of leaving an enabled no-op', () => {
     vi.mocked(toast.warning).mockClear();
     const session = sessionFromFixture('public-single');
     const step = session.steps.find((item) => item.kind === 'quote_stay');
@@ -501,7 +519,7 @@ describe('QuoteWorkflowPanel', () => {
     session.steps = session.steps.map((item) => item.id === step.id ? { ...item, status: 'succeeded' as const } : item);
     render(<QuoteWorkflowPanel session={session} />);
 
-    const button = screen.getByRole('button', { name: 'Search again' }) as HTMLButtonElement;
+    const button = screen.getByRole('button', { name: 'Search this date range for Stay 1' }) as HTMLButtonElement;
     expect(button.disabled).toBe(false);
     fireEvent.click(button);
     expect(toast.warning).toHaveBeenCalledWith('Search is not available in this view.');
@@ -568,10 +586,11 @@ describe('QuoteWorkflowPanel', () => {
 
     const roomTypes = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
     expect(roomTypes.every((input) => !input.disabled)).toBe(true);
-    const searchButtons = screen.getAllByRole('button', { name: 'Search availability' }) as HTMLButtonElement[];
-    expect(searchButtons[0]?.disabled).toBe(true);
-    expect(searchButtons[1]?.disabled).toBe(false);
-    fireEvent.click(searchButtons[1]!);
+    const searchButton = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
+    expect(searchButton.disabled).toBe(true);
+    const otherStaySearch = screen.getByRole('button', { name: 'Search this date range for Stay 2' });
+    expect((otherStaySearch as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(otherStaySearch);
     expect(screen.getByText('Search queued until the current stay finishes.')).toBeDefined();
     expect(onRunStep).not.toHaveBeenCalled();
     const rateCards = screen.getAllByRole('button', { name: /Best available BAR/ }) as HTMLButtonElement[];
@@ -676,6 +695,7 @@ describe('QuoteWorkflowPanel', () => {
       <QuoteWorkflowPanel
         session={{ ...session, selectedOfferIds: ['mix-a', 'mix-b'] }}
         onSelectOffer={onSelectOffer}
+        onPreparePdf={vi.fn()}
       />,
     );
     expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', false);
@@ -800,7 +820,7 @@ describe('QuoteWorkflowPanel', () => {
         },
       ],
     };
-    render(<QuoteWorkflowPanel session={ready} />);
+    render(<QuoteWorkflowPanel session={ready} onPreparePdf={vi.fn()} />);
     expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', false);
     expect(screen.getByText('Is an airport shuttle available?')).toBeDefined();
   });
@@ -920,7 +940,10 @@ describe('QuoteWorkflowPanel', () => {
     const key = `${base.groups[0]!.arrivalDate}:${base.groups[0]!.departureDate}`;
     const initial = { ...base, staffHeader: { ...base.staffHeader, dinnerAllowanceMinor: 45_000 } };
     render(<StayExtraGate initial={initial} seen={seen} />);
-    const runButtons = () => screen.getAllByRole('button', { name: 'Search availability' }) as HTMLButtonElement[];
+    const runButtons = () => [
+      screen.getByRole('button', { name: 'Search this date range for Stay 1' }) as HTMLButtonElement,
+      screen.getByRole('button', { name: 'Search this date range for Stay 2' }) as HTMLButtonElement,
+    ];
     expect(runButtons().every((button) => !button.disabled)).toBe(true);
     const dinner = within(screen.getAllByRole('group', { name: /^Extras for Stay / })[0]!).getByLabelText(
       'Dinner allowance amount',
@@ -969,14 +992,15 @@ describe('QuoteWorkflowPanel', () => {
     expect((screen.getByRole('button', { name: 'Download Excel' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('gives each date option its own Run button', () => {
+  it('keeps one primary search action and offers per-date retries as secondary actions', () => {
     const onRunStep = vi.fn();
     const session = staggeredDatesSession();
     render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} onRunNext={vi.fn()} />);
-    const runs = screen.getAllByRole('button', { name: 'Search availability' }) as HTMLButtonElement[];
-    expect(runs).toHaveLength(2);
-    expect(runs.every((button) => !button.disabled)).toBe(true);
-    fireEvent.click(runs[1]!);
+    expect(screen.getAllByRole('button', { name: 'Search availability' })).toHaveLength(1);
+    const dateRange = screen.getByRole('button', { name: 'Search this date range for Stay 2' }) as HTMLButtonElement;
+    expect(dateRange.disabled).toBe(false);
+    expect(dateRange.className).toContain('border');
+    fireEvent.click(dateRange);
     expect(onRunStep).toHaveBeenCalledWith(session.steps[1]!.id);
   });
 
@@ -1415,7 +1439,7 @@ describe('the Find in HMS picker in the quote header', () => {
       <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel', agency: 'Travel Hub' })} findParty={find} />,
     );
     await waitFor(() => expect(find).toHaveBeenCalledTimes(2), { timeout: 3000 });
-    expect(screen.getAllByRole('heading', { name: /Company \/ agency/ })).toHaveLength(1);
+    expect(screen.getAllByRole('heading', { name: /Company\/agency on the quote/ })).toHaveLength(1);
     expect(
       screen.getByLabelText('Agency (travel agent)').compareDocumentPosition(screen.getByLabelText('Company (end client)')) &
         Node.DOCUMENT_POSITION_FOLLOWING,
@@ -1429,7 +1453,7 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(screen.queryByText(/Searching HMS/)).toBeNull();
   });
 
-  it('prefills Company / agency from the email once, without restoring a cleared field', async () => {
+  it('prefills Company/agency from the email once, without restoring a cleared field', async () => {
     const initial = headerSession({ company: '', agency: '' });
     const namedInEmail = {
       name: 'Asha Patel',

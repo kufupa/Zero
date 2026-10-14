@@ -42,19 +42,22 @@ describe('cleanLandingUrl', () => {
   });
 });
 
-describe('HmsLinkActions Open HMS', () => {
+describe('HmsLinkActions Open in HMS', () => {
   it('is a plain link to the configured landing page, with no target attribute', () => {
     vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
     render(<HmsLinkActions confirmation="64318608-1" />);
-    const link = screen.getByRole('link', { name: 'Open HMS' });
+    const link = screen.getByRole('link', { name: 'Open in HMS' });
     expect(link.getAttribute('href')).toBe(LANDING);
     expect(link.hasAttribute('target')).toBe(false);
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy for HMS' })).toBeNull();
   });
 
   it('is hidden when the landing URL is not set, and Copy still shows', () => {
     vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', '');
     render(<HmsLinkActions confirmation="64318608-1" />);
-    expect(screen.queryByRole('link', { name: 'Open HMS' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Open in HMS' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
   });
@@ -62,7 +65,7 @@ describe('HmsLinkActions Open HMS', () => {
   it('is hidden when the configured value is not an http URL', () => {
     vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', 'javascript:alert(1)');
     render(<HmsLinkActions confirmation="64318608-1" />);
-    expect(screen.queryByRole('link', { name: 'Open HMS' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Open in HMS' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
   });
 
@@ -156,70 +159,30 @@ describe('copyText', () => {
   });
 });
 
-describe('HmsLinkActions Copy link', () => {
-  it('copies the landing page address and then shows Copied on the link button', async () => {
+describe('HmsLinkActions after a match', () => {
+  it('offers one confirmation copy and opens HMS only when a safe landing URL is configured', () => {
     vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
-    const writeText = vi.fn(async () => {});
-    setClipboard({ writeText });
     render(<HmsLinkActions confirmation="64318608-1" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy());
-    expect(writeText).toHaveBeenCalledWith(LANDING);
-    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
-  });
-
-  it('says so and points to Open HMS when the link cannot be copied', async () => {
-    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
-    setClipboard(undefined);
-    setExecCommand(vi.fn(() => false));
-    render(<HmsLinkActions confirmation="64318608-1" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
-    await waitFor(() =>
-      expect(screen.getByText("Couldn't copy the link. Use Open HMS instead.")).toBeTruthy(),
-    );
-    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
+    expect(screen.getAllByRole('link', { name: 'Open in HMS' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy for HMS' })).toBeNull();
   });
 });
 
-describe('HmsLinkActions Copy for HMS', () => {
-  it('copies the landing URL, confirmation, guest surname and arrival in one write', async () => {
+describe('HmsLinkActions handoff before a match', () => {
+  it('offers one Copy for HMS action, not three variants of the same copy', () => {
     vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', LANDING);
-    const writeText = vi.fn(async () => {});
-    setClipboard({ writeText });
     render(
       <HmsLinkActions
         confirmation="64318608-1"
         guestSurname="Smith"
         arrival="2026-11-12"
+        handoff
       />,
     );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied for HMS' })).toBeTruthy());
-
-    expect(writeText).toHaveBeenCalledTimes(1);
-    expect(writeText).toHaveBeenCalledWith(
-      LANDING + '\nConfirmation: 64318608-1\nGuest surname: Smith\nArrival: 2026-11-12',
-    );
-  });
-
-  it('copies only the confirmation when no landing URL is configured', async () => {
-    vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', '');
-    const writeText = vi.fn(async () => {});
-    setClipboard({ writeText });
-    render(
-      <HmsLinkActions
-        confirmation="64318608-1"
-        guestSurname="Smith"
-        arrival="2026-11-12"
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied for HMS' })).toBeTruthy());
-
-    expect(writeText).toHaveBeenCalledTimes(1);
-    expect(writeText).toHaveBeenCalledWith('64318608-1');
-    expect(toast.success).toHaveBeenCalledWith('Confirmation number 64318608-1 copied.');
+    expect(screen.getAllByRole('button', { name: 'Copy for HMS' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Copy confirmation' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy link' })).toBeNull();
   });
 });

@@ -67,3 +67,10 @@ Research already done: `docs/research/2026-10-13/README.md`. Do not redo it. Ref
 ## Asks logged
 
 _(agents append dated one-liners; owner promotes into the spec above)_
+
+- 2026-10-14 (owner): skip Profitroom, Tiket.com, RateTiger and H-Pay (hospitality.cloud) at the door, exact host; Travelit and TBO stay in scope.
+- 2026-10-14 (owner): quote ready on open — Nava prepares the priced quote in the background (reads only) so staff don't click and wait.
+- 2026-10-14 (owner): fully booked — alternatives are shown to staff in the pane only; the reply stays a one-line decline unless staff pick "Use this".
+- 2026-10-14 (owner): action labels come from what staff did (outbound) first; else two models must agree; disagreements go to the owner.
+- 2026-10-14 (owner policy): TMC cancellation notification = no action; a person asking to cancel = cancel; vouchers parked (find first, later); shuttle for a group = group/event, otherwise amend.
+- 2026-10-14 (owner): DB route tests may use a local disposable Postgres on 127.0.0.1; never pilot RDS.

@@ -3,8 +3,8 @@ import { toast } from 'sonner';
 import {
   allocationTotal,
   amendmentOf,
-  canCreatePdf,
   canRunQuoteStep,
+  canCreatePdf,
   currentStayRun,
   draftStayGroup,
   groupStays,
@@ -78,7 +78,6 @@ import {
 } from './rate-controls';
 import { StayCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
-import { WorkflowBadge, type QuoteIntent } from './workflow-badge';
 import { rowRoomLabel, rowRoomTypeCode } from '@/lib/quote-workflow/room-types';
 
 const TELL_NAVA_ENABLED = false;
@@ -862,11 +861,8 @@ function hideQuoteWorkspace(phase: QuoteSession['phase']): boolean {
   );
 }
 
-/** The type Nava reads the email as: the staff pick first, then the analysis. Other when it is not a quote or booking. */
-function intentOf(session: QuoteSession): QuoteIntent | null {
-  if (session.phase === 'non_quote') return 'other';
-  if (session.treatAs) return session.treatAs;
-  return session.analysis?.luna?.workflow ?? null;
+function scrollToStep(id: string): void {
+  document.getElementById(id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
 }
 
 /** Why this stay's availability search cannot run yet, or null when its one HMS step can run. */
@@ -979,7 +975,6 @@ export function QuoteWorkflowPanel({
   partyJobTransport,
   onPartyLookupPending,
   onSelectStayKey,
-  onTreatAs,
   onStaffNote,
   staffNoteDraft,
   onStaffNoteDraftChange,
@@ -1032,7 +1027,6 @@ export function QuoteWorkflowPanel({
   /** Tells the pane whether a company or agency search still decides its pick. A rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   onSelectStayKey?: (stayKey: string) => void;
-  onTreatAs?: (treatAs: 'quote' | 'create_booking') => void;
   onStaffNote?: (note: string) => void;
   /** A retained staff correction, owned by the pane so it survives a trip off the tool screen. */
   staffNoteDraft?: string;
@@ -1044,9 +1038,6 @@ export function QuoteWorkflowPanel({
 }) {
   const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
   const failedRatesNotice = useFailedHmsJobNoticeMessage('quote-rates', currentEmailKey);
-  const failedRatesNoticeReason = failedRatesNotice?.startsWith('Rates failed: ')
-    ? failedRatesNotice.slice('Rates failed: '.length)
-    : null;
   // A row price or rate tapped and waiting for its pin to reach the session. The re-run starts once every pin is there, so it reads them.
   const [pinRun, setPinRun] = useState<PinRun | null>(null);
   const [queuedStayRuns, setQueuedStayRuns] = useState<QueuedStayRun[]>([]);
@@ -1178,18 +1169,12 @@ export function QuoteWorkflowPanel({
       <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
     );
   }
-  const intent = intentOf(session);
   const amendment = amendmentOf(session);
   if (session.phase === 'non_quote') {
     // One notice. Staff only see more when Nava flagged something they must act on: the not-supported guidance, or a file it could not read.
     const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure');
     return (
       <div className="flex flex-col gap-3">
-        <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
-        {/* A change or cancellation has its own card above, so "not a quote or booking" would contradict the badge. */}
-        {amendment ? null : (
-          <Notice tone="info">Not a quote or booking. Change the type above if Nava got it wrong.</Notice>
-        )}
         {TELL_NAVA_ENABLED ? (
           <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         ) : null}
@@ -1377,10 +1362,29 @@ export function QuoteWorkflowPanel({
     }
     onRunStep?.(stepId);
   };
+  const nextRateStep = session.steps.find(
+    (step) => step.kind === 'quote_stay' && canRunQuoteStep(step, session.steps, session.runningStepId),
+  );
+  const nextRateStay = nextRateStep?.shareKey
+    ? stays.find((stay) => stay.rows.some((group) => stayKeyForGroup(group) === nextRateStep.shareKey))
+    : undefined;
+  const nextRateReason = !showRates
+    ? 'Wait for Nava to finish reading this email before searching.'
+    : running
+      ? 'An HMS search is already running. You can keep working.'
+      : pinRun
+        ? 'The rate change is still being saved before the next search.'
+        : nextRateStep
+          ? nextRateStay
+            ? stayRatesBlockReason(session, nextRateStay.rows, nextRateStep) ??
+              (!onRunStep && !onRunNext ? 'Search is not available in this view.' : null)
+            : 'Add a date range before searching.'
+          : rateKeys.length
+            ? 'Every date range has results. Use a date-range action below to search again.'
+            : 'Add a date range before searching.';
 
   return (
     <div className="flex flex-col gap-3.5">
-      <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
       {TELL_NAVA_ENABLED ? (
         <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
       ) : null}
@@ -1390,7 +1394,7 @@ export function QuoteWorkflowPanel({
         <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
       ) : null}
       {showWorkspace ? (
-        <Section step={2} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
+        <Section step={1} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
           {stays.map((stay, index) => (
             <StayCard
               key={stay.id}
@@ -1419,10 +1423,13 @@ export function QuoteWorkflowPanel({
             </SecondaryButton>
             <p className="text-center text-[13px] text-[#64748b]">Each date range is searched and priced independently.</p>
           </div>
+          <PrimaryButton onClick={() => scrollToStep('quote-party')}>
+            Continue to Company/agency
+          </PrimaryButton>
         </Section>
       ) : null}
       {showWorkspace ? (
-        <Section step={3} title="Company / agency" id="quote-party" action={<StepState state={partyState} />}>
+        <Section step={2} title="Company/agency on the quote (sets contract rate)" id="quote-party" action={<StepState state={partyState} />}>
           <StaffPartyFields
             header={header}
             onPatch={(header) => onPatchStaffHeader?.(header, { staffEdit: true })}
@@ -1435,10 +1442,13 @@ export function QuoteWorkflowPanel({
             sourceMessageId={session.staffSource?.messageId ?? null}
             onPartyLookupPending={onPartyLookupPending}
           />
+          <PrimaryButton onClick={() => scrollToStep('quote-rates')}>
+            Continue to Rates
+          </PrimaryButton>
         </Section>
       ) : null}
       {showWorkspace ? (
-        <Section step={4} title="Rates" id="quote-rates" action={<StepState state={ratesState} />}>
+        <Section step={3} title="Rates" id="quote-rates" action={<StepState state={ratesState} />}>
           <RatePlanFields
             key={selectionEpoch}
             ratePlans={ratePlans}
@@ -1449,8 +1459,22 @@ export function QuoteWorkflowPanel({
             onNotesChange={(value) => onPatchStaffHeader?.({ notes: value }, { staffEdit: true })}
           />
           {showRates ? (
+            <h4 className="text-[13px] font-semibold text-[#475569]">Search availability & room rates</h4>
+          ) : null}
+          <PrimaryButton
+            disabled={nextRateReason !== null}
+            disabledReason={nextRateReason}
+            onClick={() => {
+              if (!nextRateStep) return;
+              if (nextRateStep.shareKey) onSelectStayKey?.(nextRateStep.shareKey);
+              if (onRunStep) requestStayRun(nextRateStep.id);
+              else onRunNext?.();
+            }}
+          >
+            Search availability
+          </PrimaryButton>
+          {showRates ? (
             <>
-              <h4 className="text-[13px] font-semibold text-[#475569]">Search availability & room rates</h4>
               {stays.map((stay, stayIndex) => {
                 const first = stay.rows[0];
                 if (!first) return null;
@@ -1507,14 +1531,15 @@ export function QuoteWorkflowPanel({
                             else toast.warning(retryActionReason ?? 'Search is not available in this view.');
                           }}
                         >
-                          Search again
+                          {`Search this date range for Stay ${stayIndex + 1}`}
                         </SecondaryButton>
                         {queuedThisStay ? <p role="status">Search queued until the current stay finishes.</p> : null}
                         {retryActionReason ? <p className="text-[13px] text-[#334155]">{retryActionReason}</p> : null}
                       </>
                     ) : (
                       <>
-                        <PrimaryButton
+                        <SecondaryButton
+                          className="w-full"
                           onClick={() => {
                             onSelectStayKey?.(stayKey);
                             if (step && onRunStep) requestStayRun(step.id);
@@ -1529,11 +1554,15 @@ export function QuoteWorkflowPanel({
                                 : actionReason
                           }
                         >
-                          {step?.status === 'failed' ? 'Retry search' : 'Search availability'}
-                        </PrimaryButton>
+                          {step?.status === 'failed'
+                            ? `Retry date range for Stay ${stayIndex + 1}`
+                            : `Search this date range for Stay ${stayIndex + 1}`}
+                        </SecondaryButton>
                         {queuedThisStay ? <p role="status">Search queued until the current stay finishes.</p> : null}
-                        {step?.status === 'failed' && step.retryGuidance && step.retryGuidance !== failedRatesNoticeReason ? (
-                          <p className="text-[13px] text-[#334155]">{step.retryGuidance}</p>
+                        {step?.status === 'failed' && !failedRatesNotice ? (
+                          <p className="text-[13px] text-[#334155]">
+                            HMS could not complete this search. Retry the date range.
+                          </p>
                         ) : null}
                       </>
                     )}
@@ -1715,6 +1744,30 @@ export function QuoteWorkflowPanel({
         </Section>
       ) : null}
       {showWorkspace ? (
+        <Section step={4} title="Quote review" id="quote-quote" action={<StepState state={quoteState} />}>
+          <p className="text-[12px] font-semibold text-[#64748b]">Reply text · PDF · Excel</p>
+          {showReply ? (
+            <DocumentReview
+              session={session}
+              onReplyChange={onReplyChange}
+              onPreparePdf={onPreparePdf}
+              onDownloadWorkbook={onDownloadWorkbook}
+              workbookPending={workbookPending}
+            />
+          ) : (
+            <>
+              <PrimaryButton disabled disabledReason="Complete Rates first to prepare a reply, PDF or Excel file.">
+                Prepare PDF
+              </PrimaryButton>
+              <p className="text-[13px] text-[#64748b]">Complete Rates first to prepare a reply, PDF or Excel file.</p>
+            </>
+          )}
+          {replyContent}
+        </Section>
+      ) : replyContent ? (
+        <div className="flex flex-col gap-2.5">{replyContent}</div>
+      ) : null}
+      {showWorkspace ? (
         <>
           <NotSupportedList
             flags={session.analysis?.luna?.flags}
@@ -1750,25 +1803,6 @@ export function QuoteWorkflowPanel({
             />
           </Fragment>
         ))}
-      {showWorkspace ? (
-        <Section step={5} title="Quote" id="quote-quote" action={<StepState state={quoteState} />}>
-          <p className="text-[12px] font-semibold text-[#64748b]">Reply text · PDF · Excel</p>
-          {showReply ? (
-            <DocumentReview
-              session={session}
-              onReplyChange={onReplyChange}
-              onPreparePdf={onPreparePdf}
-              onDownloadWorkbook={onDownloadWorkbook}
-              workbookPending={workbookPending}
-            />
-          ) : (
-            <p className="text-[13px] text-[#64748b]">Complete Rates first to prepare a reply, PDF or Excel file.</p>
-          )}
-          {replyContent}
-        </Section>
-      ) : replyContent ? (
-        <div className="flex flex-col gap-2.5">{replyContent}</div>
-      ) : null}
     </div>
   );
 }

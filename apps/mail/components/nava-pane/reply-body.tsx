@@ -35,6 +35,8 @@ type ReplyBodyProps = {
   onInsertSaved?: (() => void) | null;
   /** The webmail preview. It cannot create a draft, so the reason says so instead of blaming the add-in. */
   preview?: boolean;
+  /** Inside Quote review the PDF is the step's one primary action; replying stays secondary. */
+  primaryAction?: boolean;
 };
 
 /**
@@ -55,6 +57,7 @@ export function ReplyBody({
   onSaveReply,
   onInsertSaved = null,
   preview = false,
+  primaryAction = true,
 }: ReplyBodyProps) {
   const saving = onSaveReply !== undefined;
   const reply = onSaveReply ?? onDraft;
@@ -107,6 +110,30 @@ export function ReplyBody({
             : 'Prepare the quote PDF first';
   const blockedReason = saving ? saveBlockedReason : draftBlockedReason;
   const insertAddInReady = saving || supportsAction('CREATE_REPLY_DRAFT');
+  const draftActionLabel = saving
+    ? isDraftPending
+      ? 'Saving the reply…'
+      : declineOnly
+        ? 'Draft decline reply'
+        : requestOnly
+          ? 'Draft reply asking for missing details'
+          : quotationDraft
+            ? 'Draft quotation into email reply'
+            : 'Save reply'
+    : isDraftPending
+      ? 'Creating the draft in Outlook…'
+      : declineOnly
+        ? 'Draft decline reply'
+        : requestOnly
+          ? 'Draft reply asking for missing details'
+          : allOptionsDraft
+            ? quotationDraft
+              ? 'Draft quotation into email reply'
+              : allOptionsLabel
+            : quotationDraft
+              ? 'Draft quotation into email reply'
+              : 'Insert draft in Outlook';
+  const runDraft = () => reply(allOptionsDraft ? 'all' : 'selected');
   return (
     <>
       {noReplySender ? null : onInsertSaved ? (
@@ -129,37 +156,27 @@ export function ReplyBody({
         </>
       ) : null}
       {noReplySender ? null : quoteOrBookingEmail || saving ? (
-        <PrimaryButton
-          onClick={() => reply(allOptionsDraft ? 'all' : 'selected')}
-          disabled={isDraftPending || blockedReason !== null}
-          disabledReason={isDraftPending ? null : blockedReason}
-          icon={<Send className="h-3.5 w-3.5" />}
-          tone="green"
-        >
-          {saving
-            ? isDraftPending
-              ? 'Saving the reply…'
-              : declineOnly
-                ? 'Draft decline reply'
-              : requestOnly
-                ? 'Draft reply asking for missing details'
-              : quotationDraft
-                ? 'Draft quotation into email reply'
-                : 'Save reply'
-            : isDraftPending
-              ? 'Creating the draft in Outlook…'
-              : declineOnly
-                ? 'Draft decline reply'
-              : requestOnly
-                ? 'Draft reply asking for missing details'
-              : allOptionsDraft
-                ? quotationDraft
-                  ? 'Draft quotation into email reply'
-                  : allOptionsLabel
-                : quotationDraft
-                  ? 'Draft quotation into email reply'
-                  : 'Insert draft in Outlook'}
-        </PrimaryButton>
+        primaryAction ? (
+          <PrimaryButton
+            onClick={runDraft}
+            disabled={isDraftPending || blockedReason !== null}
+            disabledReason={isDraftPending ? null : blockedReason}
+            icon={<Send className="h-3.5 w-3.5" />}
+            tone="green"
+          >
+            {draftActionLabel}
+          </PrimaryButton>
+        ) : (
+          <SecondaryButton
+            className="w-full"
+            onClick={runDraft}
+            disabled={isDraftPending || blockedReason !== null}
+            disabledReason={isDraftPending ? null : blockedReason}
+            icon={<Send className="h-3.5 w-3.5" />}
+          >
+            {draftActionLabel}
+          </SecondaryButton>
+        )
       ) : (
         <SecondaryButton
           onClick={() => reply(allOptionsDraft ? 'all' : 'selected')}

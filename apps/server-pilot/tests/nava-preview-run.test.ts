@@ -14,6 +14,7 @@ import {
   PII_SELECTOR,
   piiValuesOf,
   READ_PANE_JS,
+  PANE_UNSYNCED_TEXT,
   READ_PROCEDURES,
   redactText,
   safeSegment,
@@ -642,18 +643,16 @@ describe('screenshot masking of marked guest details (H6b)', () => {
 });
 
 describe('the pane read in a browser (H6b outcome labels)', () => {
-  const TYPE_PICKER = (value: string, amendment = '') => `<select aria-label="Nava reads this as"${amendment}>
-      ${value === '' ? '<option value="" disabled selected>Choose a type</option>' : ''}
-      <option value="quote"${value === 'quote' ? ' selected' : ''}>Quote request</option>
-      <option value="create_booking">Booking</option>
-      <option value="other"${value === 'other' ? ' selected' : ''}>Amendment</option>
-    </select>`;
+  const READ_AS = (kind: string, label: string) => `<section role="status" aria-label="Nava reads this as: ${label}">
+      <span>Nava reads this as:</span><span data-read-as="${kind}">${label}</span>
+      <select aria-label="Change how Nava reads this email"><option value="quote" selected>Quote</option></select>
+    </section>`;
   const pane = (body: string) =>
     `<aside><a data-thread-id="t-1"><span class="font-medium">Subject</span></a></aside>
     <div data-preview-pane><div data-preview-status="ready"><main class="nava-pane-scroll">${body}</main></div></div>`;
 
   it.skipIf(!chromiumBinary)(
-    'reads the type picker, the amendment kind and the voucher card',
+    'reads the read-as chip, the amendment kind and the voucher card',
     async () => {
       const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
       try {
@@ -663,27 +662,34 @@ describe('the pane read in a browser (H6b outcome labels)', () => {
           return (await page.evaluate(`(${READ_PANE_JS})("t-1")`)) as PaneRead;
         };
         const ae1 = await read(
-          `${TYPE_PICKER('quote')}<p role="status">Searching HMS for "Fixture Tours"… about 20 seconds</p>
+          `${READ_AS('quote', 'Quote')}<p role="status">Searching HMS for "Fixture Tours"… about 20 seconds</p>
           <p role="alert">HMS search didn't apply — try again</p>`,
         );
-        expect(ae1).toMatchObject({ intent: 'Quote request', amendment: null, voucher: false, alerting: true });
+        expect(ae1).toMatchObject({ intent: 'Quote', amendment: null, voucher: false, alerting: true });
         expect(outcomeOf(ae1)).toBe('intent');
 
-        const ae2 = await read(TYPE_PICKER('other', ' data-amendment-kind="amend"'));
-        expect(ae2).toMatchObject({ intent: 'Amendment', amendment: 'amend' });
+        const ae2 = await read(READ_AS('amendment', 'Amendment'));
+        expect(ae2).toMatchObject({ intent: 'Amendment', amendment: 'amendment' });
+        expect(outcomeOf(ae2)).toBe('intent');
+        const cancel = await read(READ_AS('cancellation', 'Cancellation'));
+        expect(cancel).toMatchObject({ intent: 'Cancellation', amendment: 'cancellation' });
 
         const ae3 = await read(
-          `${TYPE_PICKER('')}<section id="${VOUCHER_CARD_SELECTOR.slice(1)}" aria-label="Find the booking"></section>`,
+          `<section id="${VOUCHER_CARD_SELECTOR.slice(1)}" aria-label="Find the booking"></section>`,
         );
         expect(ae3).toMatchObject({ intent: null, voucher: true, alerting: false });
         expect(outcomeOf(ae3)).toBe('intent');
+
+        const notSynced = await read('<p>This email has not finished syncing yet. Wait a moment, then select it again.</p>');
+        expect(notSynced).toMatchObject({ paneStatus: 'unsynced', unsyncedReason: 'pane_not_synced' });
+        expect(outcomeOf(notSynced)).toBe('unsynced');
 
         const loading = await read('<p role="status">Searching HMS…</p>');
         expect(outcomeOf(loading)).toBeNull();
 
         // The AE4 run settled while the pane still said "Nava is reading the email…" (the regex knew only Luna).
         for (const copy of ['Nava is reading the email…', 'Nava is re-reading with your note…', 'Luna is reading the email…']) {
-          const reading = await read(`${TYPE_PICKER('quote')}<p aria-live="polite">${copy}</p>`);
+          const reading = await read(`${READ_AS('quote', 'Quote')}<p aria-live="polite">${copy}</p>`);
           expect(reading.analysing, copy).toBe(true);
           expect(outcomeOf(reading), copy).toBeNull();
         }
@@ -700,13 +706,16 @@ describe('the pane read in a browser (H6b outcome labels)', () => {
     expect(copies).toEqual(['Nava is re-reading with your note…', 'Nava is reading the email…']);
     for (const copy of copies) expect(ANALYSING_TEXT.test(copy), copy).toBe(true);
     expect(READ_PANE_JS).toContain(JSON.stringify(ANALYSING_TEXT.source));
+    expect(PANE_UNSYNCED_TEXT.test(panel)).toBe(true);
+    expect(READ_PANE_JS).toContain(JSON.stringify(PANE_UNSYNCED_TEXT.source));
   });
 
   it('the probes match the pane markup in the mail code', () => {
     const badge = readFileSync(join(mailRoot, 'components', 'quote-workflow', 'workflow-badge.tsx'), 'utf8');
     const voucher = readFileSync(join(mailRoot, 'components', 'quote-workflow', 'voucher-find-card.tsx'), 'utf8');
-    expect(badge).toContain('aria-label="Nava reads this as"');
-    expect(badge).toContain('data-amendment-kind=');
+    expect(badge).toContain('data-read-as={current}');
+    const vocabulary = readFileSync(join(mailRoot, 'lib', 'quote-workflow', 'workflow-vocabulary.ts'), 'utf8');
+    expect(vocabulary).toMatch(/\| 'amendment'\s*\| 'cancellation'/);
     expect(voucher).toContain(`id="${VOUCHER_CARD_SELECTOR.slice(1)}"`);
   });
 });

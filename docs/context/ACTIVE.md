@@ -7,12 +7,11 @@ Auto-loaded via `CLAUDE.md`. Keep under 120 lines. Update at the end of every wo
 ## Product in one paragraph
 Nava is an AI reservationist for Legacy Hotels' Centurion property. Staff work in classic Outlook. The VSTO add-in (`kufupa/nava-outlook-addin`) hosts a WebView2 side pane served from our EC2 (`apps/mail` route `/outlook-pane`). The pane analyses the selected email (Luna = the model, never shown to staff; staff-facing name is "Nava"). It pre-fills fields and runs deterministic Infor HMS tools through Playwright (`apps/server-pilot/tooling/playwright-quote/`): quote, PDF, party lookup, stay lookup, create (flagged), cancel (lab only). Human in the loop on every write.
 
-## Current focus (2026-10-13 evening run)
-- **Read first:** `docs/research/2026-10-13/README.md` (research library: mail mix, quote gold, party truth, architecture map, UI asks, SOTA). Do not redo that research; refresh the corpus snapshot instead.
-- **Run file:** `.worktrees/RUN-2026-10-13.md` (outside repo) — lanes, owner decisions, status log.
-- Goal: quote pilot staff can use. Party match v2 (#207, flag `PARTY_MATCH_V2`), find captures company/agency/rate plan (#208), dinner add-on + alternatives, one Luna-max action classifier (needs action + action), pane clarity (R5 IA), nava-admin workflow folders as owner review console.
-- "Done" = score on the golden set in `PRODUCT.md` (answer key from read-only HMS), not merged/deployed, not “3 live quote threads”.
-- Owner rules 2026-10-13: never Nova Lite (Luna max); scanned PDFs/images to Luna vision with card digits masked; OTA/channel mail skipped at the door (#206); travel-agent mail stays in scope.
+## Current focus (2026-10-14 overnight run)
+- **Scoreboard:** `/tmp/p2/SCOREBOARD.md` on the VPS (outside repo): golden-set score + per-item state, last-good SHA, rollback.
+- Items: #214 dinner + alternatives; #211 pane clarity; channel skip (Profitroom, Tiket.com, H-Pay); party v2 live-picker eval (0 wrong binds, 57.9% auto-bind on 95 emails); quote ready on open (`HMS_QUOTE_PREPARE`); Luna-max classifier budget fix + 400-email eval; golden set v1 (~30 real emails, PRODUCT.md "Done").
+- Research library: `docs/research/2026-10-13/README.md`. Do not redo it.
+- Prod flags on: `PARTY_MATCH_V2`. Owner rules 2026-10-13/14: never Nova Lite; OTA/channel/system skipped at the door; travel agents stay in scope.
 
 ## Non-negotiable rules
 - Never ask client staff to run scripts, PowerShell or terminals. Fix it in the product.
@@ -43,4 +42,4 @@ Nava is an AI reservationist for Legacy Hotels' Centurion property. Staff work i
 | Vocabulary | `CONCEPTS.md` |
 
 ## Next steps
-The handoff's "Still open at handoff" section and its "Next steps" list are the working queue: `docs/plans/handoff-reports/2026-10-09-overnight-v8.md`.
+The overnight scoreboard (`/tmp/p2/SCOREBOARD.md`) is the working queue until the owner reviews it on 2026-10-14. The 2026-10-09 v8 handoff is history.
