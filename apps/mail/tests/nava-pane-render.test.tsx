@@ -1234,7 +1234,7 @@ describe('NavaPane screen states', () => {
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     render(<NavaPane bridge={fakeBridge} />);
 
-    const requestOnly = await screen.findByRole('button', { name: 'Draft reply asking for missing details' });
+    await screen.findByRole('button', { name: 'Draft reply asking for missing details' });
     const reply = screen.queryByLabelText('Reviewed reply') as HTMLTextAreaElement | null;
     expect(reply).not.toBeNull();
     if (!reply) return;
@@ -1248,8 +1248,10 @@ describe('NavaPane screen states', () => {
     fireEvent.change(reply, { target: { value: editedReply } });
     await waitFor(() => expect(reply.value === editedReply).toBe(true));
 
-    expect((requestOnly as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(requestOnly);
+    // An empty reply keeps the button off, so it renders anew once the text is there.
+    const draftRequest = screen.getByRole('button', { name: 'Draft reply asking for missing details' });
+    expect((draftRequest as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(draftRequest);
     await waitFor(() =>
       expect(sendCommandMock).toHaveBeenCalledWith(
         'CREATE_REPLY_DRAFT',

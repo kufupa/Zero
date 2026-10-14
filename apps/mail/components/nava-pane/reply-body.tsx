@@ -72,6 +72,9 @@ export function ReplyBody({
   const dateOptionLetters = requestedQuoteKeys(quoteSession.groups).map((_, index) => optionLetter(index));
   const allOptionsLabel = `Create one reply with all date options (${dateOptionLetters.join(', ')})`;
 
+  // A request or decline reply needs no PDF, only some text to send.
+  const replyOnlyBlockedReason = quoteSession.reviewedReplyHtml.trim() ? null : 'Write the reply to the client first';
+
   // Why the reply button is off, or null when it can make the draft. A click that still gets through toasts the same reason.
   const draftBlockedReason: string | null = !activeEmail
     ? 'Select an email first'
@@ -82,7 +85,7 @@ export function ReplyBody({
         : !replyOnly && !supportsAction('ADD_ATTACHMENT_TO_DRAFT')
         ? 'This Outlook add-in is too old to attach the PDF. Update the Nava Outlook add-in, then try again.'
         : replyOnly
-          ? null
+          ? replyOnlyBlockedReason
           : allOptionsDraft
           ? requireMultiOptionDraft(quoteSession, combinedEdit)
             ? null
@@ -98,7 +101,7 @@ export function ReplyBody({
     : !quoteSession.staffSource
       ? 'Wait for this email to sync, then select it again'
       : replyOnly
-        ? null
+        ? replyOnlyBlockedReason
       : allOptionsDraft
         ? requireMultiOptionDraft(quoteSession, combinedEdit)
           ? null
