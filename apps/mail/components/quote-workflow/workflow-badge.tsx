@@ -2,6 +2,7 @@ import type { QuoteAnalysis } from '@/lib/quote-workflow/types';
 import {
   NAVA_READ_AS_LABEL,
   NAVA_WORK_STATE_LABEL,
+  quoteOrBookingWorkflow,
   readAsForAnalysis,
   type NavaReadAs,
   type NavaWorkState,
@@ -35,10 +36,14 @@ export function WorkflowBadge({
   if (!current) return null;
 
   const label = NAVA_READ_AS_LABEL[current];
+  // A paid claim relabels a quote or booking as payment; staff can still correct the workflow underneath.
+  const paidWorkflow = current === 'payment' ? quoteOrBookingWorkflow(analysis, kind) : null;
   const changeable =
-    Boolean(onIntentChange) && ['quote', 'new_booking', 'group', 'not_for_nava'].includes(current);
+    Boolean(onIntentChange) &&
+    (['quote', 'new_booking', 'group', 'not_for_nava'].includes(current) || Boolean(paidWorkflow));
   const selectorValue =
     treatAs ??
+    paidWorkflow ??
     (current === 'quote' || current === 'group'
       ? 'quote'
       : current === 'new_booking'

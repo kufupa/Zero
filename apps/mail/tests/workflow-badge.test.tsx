@@ -122,6 +122,19 @@ describe('WorkflowBadge', () => {
     expect(onIntentChange).toHaveBeenCalledWith('create_booking');
   });
 
+  it('keeps the correction on a booking request that mentions a payment', () => {
+    const paid = analysis('create_booking');
+    paid.luna!.rateClaims.push({ kind: 'paid' } as NonNullable<typeof paid.luna>['rateClaims'][number]);
+    const onIntentChange = vi.fn();
+    render(<WorkflowBadge analysis={paid} onIntentChange={onIntentChange} />);
+
+    expect(screen.getByText('Payment')).toBeDefined();
+    const picker = screen.getByLabelText('Change how Nava reads this email') as HTMLSelectElement;
+    expect(picker.value).toBe('create_booking');
+    fireEvent.change(picker, { target: { value: 'quote' } });
+    expect(onIntentChange).toHaveBeenCalledWith('quote');
+  });
+
   it('reports a supported change of reading to its owner', () => {
     const onIntentChange = vi.fn();
     render(

@@ -193,12 +193,18 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
 
       const transportId = getMailCacheScope().activeTransportId;
       const owner = { workItemId, transportId };
+      // After a mailbox switch the list shows another mailbox: re-read it instead of putting this row into it.
+      const mailboxChanged = () => getMailCacheScope().activeTransportId !== transportId;
       const undo = () => {
         const pending = pendingDismissals.current.get(workItemId);
         if (!pending) return;
         clearTimeout(pending.timer);
         pendingDismissals.current.delete(workItemId);
         dismissed.current.delete(workItemId);
+        if (mailboxChanged()) {
+          void load('open', true);
+          return;
+        }
         setView((prev) => ({
           ...prev,
           openRows: restoreAt(prev.openRows, pending.row, pending.index),
@@ -215,7 +221,7 @@ export function useNeedsYou(trpc: unknown): NeedsYou {
           })
           .catch(() => {
             dismissed.current.delete(workItemId);
-            if (mounted.current) {
+            if (mounted.current && !mailboxChanged()) {
               setView((prev) => ({
                 ...prev,
                 openRows: restoreAt(prev.openRows, row, index),

@@ -71,6 +71,17 @@ export function readAsForKind(kind: string | null | undefined): NavaReadAs {
  * Read-as for the selected message. Stored kind wins for explicit reservation/document classes; analysis fills in
  * group/payment intent that the older mail-kind contract represents only as `quote` or `other`.
  */
+/** The quote or booking workflow behind an email, even when its label shows something else (e.g. a paid claim). */
+export function quoteOrBookingWorkflow(
+  analysis: QuoteAnalysis | null | undefined,
+  kind?: string | null,
+): 'quote' | 'create_booking' | null {
+  const kindReadAs = kind ? readAsForKind(kind) : null;
+  if (analysis?.luna?.workflow === 'create_booking' || kindReadAs === 'new_booking') return 'create_booking';
+  if (analysis?.luna?.workflow === 'quote' || analysis?.intent === 'quote' || kindReadAs === 'quote') return 'quote';
+  return null;
+}
+
 export function readAsForAnalysis(
   analysis: QuoteAnalysis | null | undefined,
   options: {

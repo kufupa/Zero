@@ -289,6 +289,26 @@ describe('Needs-you list', () => {
     expect(dismissMutate).not.toHaveBeenCalled();
   });
 
+  it('Undo after a mailbox switch re-reads the list instead of restoring the row into the other mailbox', async () => {
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' });
+    try {
+      render(<Harness host="web" onOpenThread={() => {}} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
+      setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-b' });
+      listQuery.mockResolvedValue([row({ id: 'wi-b', subject: 'Mailbox B request' })]);
+      const calls = listQuery.mock.calls.length;
+      const options = toastMock.mock.calls.at(-1)?.[1] as { action?: { onClick: () => void } };
+      act(() => options.action?.onClick());
+
+      expect(await screen.findByRole('button', { name: 'Dismiss Mailbox B request' })).toBeDefined();
+      expect(screen.queryByRole('button', { name: 'Dismiss Rooms request' })).toBeNull();
+      expect(listQuery.mock.calls.length).toBeGreaterThan(calls);
+      expect(dismissMutate).not.toHaveBeenCalled();
+    } finally {
+      setMailCacheScope({ userId: null, activeTransportId: null });
+    }
+  });
+
   it('flushes pending dismissal on unmount before thread switch', async () => {
     const { unmount } = render(<Harness host="web" onOpenThread={() => {}} />);
     const dismiss = await screen.findByRole('button', { name: 'Dismiss Rooms request' });
