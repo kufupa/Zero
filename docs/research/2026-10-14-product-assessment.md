@@ -2,6 +2,8 @@
 
 Date: 2026-10-14. Scope: assessment, not feature implementation. Current product-code/deployed reference: `15e5bb63b`. Remote main is `00c10fd21`, which merged handoff PR 240 at 16:25Z. The requested handoff was recovered from its `3584d1592` source commit before the remote reference was checked. This worktree is parked at `3571c4dee` and lacks current context files. No merge, commit, deploy, flag flip, email send, or HMS write performed.
 
+<a id="verdict"></a>
+
 ## 1. Verdict
 
 The avoidable delay is a delivery-system problem: broad parallel feature creation, late integration, review churn, and weak closure on real staff outcomes. The owner's folder correction is an example: an already familiar product path was described as a new UI-reuse project when the intended change is the triage feeding it. It is not evidence that the owner needs a cleverer incantation or that typing speed is the principal constraint. Existing HMS tools are components, not completed workflows.
@@ -47,6 +49,8 @@ No blocking grilling session is needed to deliver this assessment. A later grill
 
 Sanitized runtime observations are versioned in [evidence.json](2026-10-14/evidence.json). The [source index](2026-10-14/README.md) names pinned code, historical private records, verification methods and refresh triggers. Raw invocation output and customer records remain private, not in git.
 
+<a id="retro-critique"></a>
+
 ## 4. What the owner should change, and what agents owe them
 
 | Pattern                                                 | Why it wastes time                                                  | Better contract                                                                                                |
@@ -62,6 +66,8 @@ Sanitized runtime observations are versioned in [evidence.json](2026-10-14/evide
 
 The owner's narrow bedtime plan was sound. The previous agent expanded it after agreeing. The overnight retrospective records no wait for the owner on its missed critical path. Voice dictation is not a defect the owner needs to stop; the agent must structure it.
 
+<a id="product-flow"></a>
+
 ## 5. Full product and acceptance architecture
 
 Read → Prepare → Queue → Act → Review is the canonical lifecycle. Reads may run automatically. Writes require a current, explicit approval and a result review.
@@ -73,6 +79,8 @@ Read → Prepare → Queue → Act → Review is the canonical lifecycle. Reads 
 | Queue   | Background work persists while staff move between emails; status, freshness, actionable failure and retry are visible                    |
 | Act     | One primary action for the current state; quote/PDF/Excel/reply saved or inserted; approved reservation writes execute deterministically |
 | Review  | Actual outcome, confirmation and screenshot for writes; partial failures and unknown outcomes reconcile before retry; edits feed evals   |
+
+<a id="gold-review"></a>
 
 ### Gold review is useful, but unchecked predictions are not gold
 
@@ -108,6 +116,8 @@ OTA booking operations remain outside the current agreed email-only product. Rec
 ### Company completion is broader than software completion
 
 A credible company needs staff adoption, measured saved handling time, trusted results, recoverable operations, repeatable onboarding to another hotel, configuration rather than client-specific forks, support ownership and viable costs. Code completion alone cannot establish willingness to pay, retention or profitable scaling. No honest ETA can promise those outcomes without observing the customer.
+
+<a id="agent-contract"></a>
 
 ### Model and parallelism contract
 
@@ -145,6 +155,8 @@ Track $ per correctly completed slice, minutes of rework, and latency until the 
 
 ## 6. Independent staff, engineering and original-chat findings
 
+<a id="original-chat"></a>
+
 ### Original-chat verification
 
 The prior lead is `/home/orca/.claude/projects/-home-ubuntu-projects-zero--worktrees-centurion-dashboard-tools/33440ce7-6408-4198-a86f-61e722850de8.jsonl`, active 08:56–17:52Z. The handoff at 16:25Z was a checkpoint, not the end of the chat. The first worker report accidentally identified this assessment session instead; that pointer was rejected and corrected before final synthesis.
@@ -174,6 +186,8 @@ The staff-call notes were read. Their wording is transcription-noisy and their e
 
 Earlier walkthrough feedback does not prove current production adoption. Existing recorded policies already say amendment scope follows guest requests supported by staff outbound. Do not re-ask the owner to invent a field list. Cancellation/fee authority and production-write approval remain real unresolved holds.
 
+<a id="current-code"></a>
+
 ### Current-code findings verified by the lead
 
 | Finding                                                            | Verified source                                                                                              | Concrete impact                                                                                                                                   |
@@ -202,6 +216,8 @@ Both independent reports returned. One redundant auto-resume was stopped after i
 
 ## 7. Delivery plan, conditional timing and owner touchpoints
 
+<a id="roi-sequencing"></a>
+
 ### ROI and sequencing
 
 | Order | Work                                                                                                      | Why this order                                                                       | Completion evidence                                                                                              |
@@ -214,6 +230,8 @@ Both independent reports returned. One redundant auto-resume was stopped after i
 | 6     | Payment/voucher/billing, grouped rooms, next-hotel onboarding                                             | Preserve eventual completeness without parallelizing every write policy              | Separate financial evidence, partial success, property-specific config and real new-hotel proof                  |
 
 The full roadmap is retained. Sequencing is not deleting features. Grouped create remains explicitly parked by the earlier owner decision until reprioritized. A per-feature case-mix check can change sequencing, not erase the promised roadmap silently.
+
+<a id="timing-budgets"></a>
 
 ### Conditional planning budgets, not guaranteed delivery dates
 
@@ -237,6 +255,8 @@ Read the entry brief and mandatory rules, refresh relevant deltas, then discuss 
 
 This assessment repeated part of the delivery problem: the two cheap Haiku reads took over forty minutes and returned mixed current/stale claims. They were cheap, but slow. The lead should have bounded their scope more sharply, used Luna for bulk reading, and discussed settled product direction while verification finished. The owner clarified their status question was not impatience; the research cutoff was the lead's scope decision, not the owner's approval to shrink the deliverable.
 
+<a id="test-plan"></a>
+
 ## 8. Practical test and evaluation plan
 
 | Layer              | Smallest useful test                                                                                                    | Completion evidence                                                                           |
@@ -258,6 +278,8 @@ A development set should be split by conversation and period from the hidden tes
 Native Outlook is not an optional afterthought: webmail browser tests cannot prove add-in authentication, selection messaging or attachment insertion. A correct reusable web component still needs host-level proof.
 
 The company metric is saved staff time per correctly completed eligible request, not number of PRs, classifier agreement alone, or a vendor's advertised resolution rate. Track eligibility, correct preparation, successful staff completion and time saved separately.
+
+<a id="owner-touchpoints"></a>
 
 ### Where the owner is needed
 
@@ -344,6 +366,8 @@ Escalate only missing business policy, write authorization or a genuine scope tr
 
 This is a prompt example, not authorization to execute or deploy this slice in the assessment turn.
 
+<a id="session-continuity"></a>
+
 ### Avoid repeating startup research
 
 Enough context now to establish product direction and the next slice. Current source-backed readiness for every workflow is a separate question; the two remaining verification workers do not need to block product discussion. This was a requested deep retro plus stale-checkout recovery, not the recommended ordinary startup.
@@ -355,6 +379,8 @@ The dated brief is now versioned. The living [ACTIVE.md](../context/ACTIVE.md) i
 ## 11. Final evidence threshold
 
 The process diagnosis, familiar-folder requirement, gold-routing disconnect, extraction-only visibility, amendment stub, disabled pane cancellation and prepared-quote parity gap are supported by current source/runtime and contradiction checks. The complete-product readiness threshold is not met: prices across representative requests, authorized writes, current adoption and next-hotel readiness remain unproven. This assessment is complete; those product gates are not. Documentation publication is a later, separate change and does not imply a product deployment. No tests or production writes were run for this audit.
+
+<a id="cost-record"></a>
 
 ## 12. Cost and completion record
 
