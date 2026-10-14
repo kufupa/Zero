@@ -209,7 +209,7 @@ export async function readPropertyLockHolder(db: DB, lockKey: string): Promise<L
 }
 
 /**
- * True while a staff-requested quote is in flight.
+ * True while a staff-requested quote is queued or in flight.
  * Prepared userless quotes do not block background work.
  */
 export async function staffQuoteInFlight(db: DB): Promise<boolean> {
@@ -233,7 +233,7 @@ export async function staffQuoteInFlight(db: DB): Promise<boolean> {
         eq(aiWorkflowRun.runKind, 'read_tool'),
         eq(aiWorkflowRun.executorLane, 'hms'),
         eq(aiWorkflowRun.promptVersion, 'hms-job/1'),
-        inArray(aiWorkflowRun.state, ['claimed', 'running']),
+        inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running']),
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
         sql`${aiWorkflowRun.metrics}->>'userId' IS NOT NULL`,
         sql`${aiWorkflowRun.updatedAt} > clock_timestamp() - interval '20 minutes'`,

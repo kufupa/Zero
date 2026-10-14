@@ -120,7 +120,11 @@ export function hmsJobQueueEnabled(env: NodeJS.Dict<string> = process.env): bool
 
 /** Default-off quote preparation. It can enqueue only when the persisted HMS queue is enabled. */
 export function quotePreparationEnabled(env: NodeJS.Dict<string> = process.env): boolean {
-  return (env.HMS_QUOTE_PREPARE === 'true' || env.HMS_QUOTE_PREPARE === '1') && hmsJobQueueEnabled(env);
+  return (
+    env.HMS_QUOTE_PREPARE === 'true' ||
+    env.HMS_QUOTE_PREPARE === '1' ||
+    env.HMS_QUOTE_PREPARE === 'on'
+  ) && hmsJobQueueEnabled(env);
 }
 
 /** System-prepared quote jobs per transport/hour. Invalid direct test input fails back to the safe default. */
@@ -1361,7 +1365,6 @@ async function countRecentPrefetches(
         ...(kind === 'staff_quote'
           ? [
               sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
-              sql`${aiWorkflowRun.state} NOT IN ('dead_letter', 'superseded')`,
             ]
           : []),
         sql`${aiWorkflowRun.readRequest}->>'kind' = ${kind}`,
@@ -2330,9 +2333,10 @@ async function retryOrFail(
   mark: Mark,
   failureClass: AiFailureClass,
   lastError: string,
+  maxAttempts = JOB_MAX_ATTEMPTS,
 ): Promise<'retry_wait' | 'dead_letter'> {
   const attempts = run.attempts + 1;
-  if (attempts >= JOB_MAX_ATTEMPTS) {
+  if (attempts >= maxAttempts) {
     await markAiRunDeadLetter({ ...mark, lastError, failureClass }, db);
     return 'dead_letter';
   }
@@ -2450,6 +2454,19 @@ function staffQuoteLockBusy(error: unknown): boolean {
     if (typeof current === 'object') {
       const code = 'code' in current ? current.code : undefined;
       if (code === 'HMS_LOCK_BUSY') return true;
+      current = 'cause' in current ? current.cause : null;
+    } else {
+      current = null;
+    }
+  }
+  return false;
+}
+
+function preparedQuoteYielded(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    if (typeof current === 'object') {
+      if ('code' in current && current.code === 'STAFF_QUOTE_ACTIVE') return true;
       current = 'cause' in current ? current.cause : null;
     } else {
       current = null;
@@ -2590,6 +2607,13 @@ export async function executeHmsJob(input: {
     );
     return 'dead_letter';
   }
+  if (systemPreparedQuote && run.attempts > 0) {
+    await markAiRunDeadLetter(
+      { ...mark, lastError: 'prepared_quote_attempt_exhausted', failureClass: 'TRANSIENT_NETWORK' },
+      db,
+    );
+    return 'dead_letter';
+  }
   const background = run.priority < HMS_JOB_PRIORITY_USER;
   if (background && (await staffQuoteInFlight(db))) {
     // Yield without counting an attempt, so a quote in flight does not use up the job's retries.
@@ -2645,6 +2669,17 @@ export async function executeHmsJob(input: {
       );
       return 'succeeded';
     } catch (error) {
+      if (systemPreparedQuote && preparedQuoteYielded(error)) {
+        await markAiRunDeadLetter(
+          {
+            ...mark,
+            lastError: 'prepared_quote_yielded_to_staff_quote',
+            failureClass: 'STAFF_QUOTE_ACTIVE',
+          },
+          db,
+        );
+        return 'dead_letter';
+      }
       if (
         input.signal?.aborted &&
         input.signal.reason &&
@@ -2661,13 +2696,35 @@ export async function executeHmsJob(input: {
         });
       }
       if (isPropertyReadLockDeadline(error)) {
+        if (systemPreparedQuote) {
+          return requeueRun(db, mark, {
+            attempts: run.attempts,
+            delayMs: JOB_YIELD_MS,
+            failureClass: 'HMS_LOCK_BUSY',
+            lastError: 'property lock busy',
+          });
+        }
         return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'property lock busy');
       }
       if (staffQuoteLockBusy(error)) {
-        return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'party verification lock busy');
+        return retryOrFail(
+          db,
+          run,
+          mark,
+          'HMS_LOCK_BUSY',
+          'party verification lock busy',
+          systemPreparedQuote ? 1 : JOB_MAX_ATTEMPTS,
+        );
       }
       if (staffQuoteTransientFailure(error)) {
-        return retryOrFail(db, run, mark, 'TRANSIENT_NETWORK', 'staff quote execution failed');
+        return retryOrFail(
+          db,
+          run,
+          mark,
+          'TRANSIENT_NETWORK',
+          'staff quote execution failed',
+          systemPreparedQuote ? 1 : JOB_MAX_ATTEMPTS,
+        );
       }
       const refusal = staffQuoteRefusal(error, request.input);
       return storeStaffQuoteResult({

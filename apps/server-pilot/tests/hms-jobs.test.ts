@@ -403,6 +403,12 @@ describe('U23 HMS job queue (pure)', () => {
     ).resolves.toBe(0);
   });
 
+  it.each(['true', '1', 'on'])('enables quote preparation for HMS_QUOTE_PREPARE=%s', (value) => {
+    expect(
+      hmsJobs.quotePreparationEnabled({ HMS_JOB_QUEUE: 'on', HMS_QUOTE_PREPARE: value }),
+    ).toBe(true);
+  });
+
   it('defaults the separate guest-search prefetch cap to 12 per transport per hour', () => {
     const base = {
       NODE_ENV: 'test',
@@ -500,6 +506,46 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       }, db);
       expect(reused).toMatchObject({ created: false, run: { id: prepared?.id } });
       expect(reused.run.priority).toBe(HMS_JOB_PRIORITY_PREFETCH);
+    }));
+
+  it('claims a prepared quote with the configured HMS run deadline', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');
+      const { run } = await seedQuoteExtraction(db);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      const now = new Date();
+
+      const claimed = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        db,
+        now,
+      });
+
+      expect(claimed?.deadlineAt?.getTime()).toBe(now.getTime() + 150_000);
+    }));
+
+  it('yields a prepared quote without charging it while a user quote is queued', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId, run } = await seedQuoteExtraction(db);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      const prepared = await claimJob(db);
+      await enqueueStaffQuoteJob(db, threadId, messageId);
+
+      await expect(runClaimedJob(db, prepared)).resolves.toBe('retry_wait');
+
+      const [yielded] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, prepared.id));
+      expect(yielded).toMatchObject({
+        state: 'retry_wait',
+        attempts: 0,
+        failureClass: 'STAFF_QUOTE_ACTIVE',
+        lastError: 'staff quote in flight',
+      });
+      expect(staffQuoteRunner.run).not.toHaveBeenCalled();
     }));
 
   it.each(['dead_letter', 'superseded'] as const)(
@@ -697,7 +743,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it.each(['dead_letter', 'superseded'] as const)(
-    'allows a fresh preparation after a prepared %s run without charging the hourly cap',
+    'counts a prepared %s run against the hourly cap',
     (state) => withSeededTestDb(async (db) => {
       const env = { ...QUOTE_PREPARE_ENV, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
       const { messageId, run } = await seedQuoteExtraction(db);
@@ -706,12 +752,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       await db.update(aiWorkflowRun).set({ state, finishedAt: new Date(), updatedAt: new Date() })
         .where(eq(aiWorkflowRun.id, first!.id));
 
-      expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBe(0);
       const prepared = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      expect(prepared).toHaveLength(2);
-      const retry = prepared.find((row) => row.id !== first!.id);
-      expect(retry).toMatchObject({ state: 'queued' });
-      expect(retry?.idempotencyKey).not.toBe(first!.idempotencyKey);
+      expect(prepared).toHaveLength(1);
+      expect(prepared[0]?.id).toBe(first!.id);
     }),
   );
 

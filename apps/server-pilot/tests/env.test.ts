@@ -186,7 +186,10 @@ describe('env', () => {
     expect(
       parseEnv(baseEnv({ HMS_QUOTE_PREPARE: '1', HMS_QUOTE_PREPARE_PER_HOUR: '9' })),
     ).toMatchObject({ HMS_QUOTE_PREPARE: true, HMS_QUOTE_PREPARE_PER_HOUR: 9 });
-    expect(() => parseEnv(baseEnv({ HMS_QUOTE_PREPARE: 'on' }))).toThrow(/HMS_QUOTE_PREPARE/);
+  });
+
+  it.each(['true', '1', 'on'])('parses HMS_QUOTE_PREPARE=%s as enabled', (value) => {
+    expect(parseEnv(baseEnv({ HMS_QUOTE_PREPARE: value })).HMS_QUOTE_PREPARE).toBe(true);
   });
 
   it('accepts only the explicit approved-local model route marker', () => {

@@ -46,7 +46,7 @@ import {
   staffQuoteRoomAlternatives,
   type StaffQuoteRoomAlternative,
 } from './staff-quote-alternatives.js';
-import { beginQuoteRun } from '../hms/property-queue-state.js';
+import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
@@ -514,6 +514,12 @@ function withRunDeadline<T extends ReturnType<typeof prepareStaffQuote>>(
   };
 }
 
+async function assertPreparedQuoteCanContinue(db: DB, systemPrepared: boolean): Promise<void> {
+  if (systemPrepared && (await staffQuoteInFlight(db))) {
+    throw Object.assign(new Error('A staff quote is waiting.'), { code: 'STAFF_QUOTE_ACTIVE' });
+  }
+}
+
 /** Runs one staff-approved native quote. The caller supplies the actor and transport from its trusted context. */
 export async function runStaffQuote(
   input: StaffQuoteInput,
@@ -665,6 +671,7 @@ export async function runStaffQuote(
     try {
       lockRun = lock.withLock(
         async () => {
+          await assertPreparedQuoteCanContinue(db, systemPrepared);
           queued.setPhase(1);
           // One attempt is one approval, with its own services and authorization. A party rate HMS cannot price is
           // quoted once more at public rates, and the review says so.
@@ -696,6 +703,7 @@ export async function runStaffQuote(
                   services.resolveQuoteTask &&
                   (async (quoteContext) => {
                     const resolved = await services.resolveQuoteTask!(quoteContext);
+                    await assertPreparedQuoteCanContinue(db, systemPrepared);
                     queued.setPhase(2);
                     return resolved;
                   }),
@@ -763,7 +771,11 @@ export async function runStaffQuote(
           })();
           return traceAsync ? awaitProvisionalCapture(quote, traceFinishes, captured) : quote;
         },
-        { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
+        {
+          signal,
+          deadlineAt: prepared.context.input.clock.deadlineAt,
+          ...(systemPrepared ? { tryOnce: true } : {}),
+        },
       );
       if (traceAsync) {
         lockRun.then(

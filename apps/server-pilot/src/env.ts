@@ -219,10 +219,11 @@ function toInt(name: string, raw: string): number {
   return n;
 }
 
-function toBool(name: string, raw: string): boolean {
-  if (raw === 'true' || raw === '1') return true;
+function toBool(name: string, raw: string, acceptOn = false): boolean {
+  if (raw === 'true' || raw === '1' || (acceptOn && raw === 'on')) return true;
   if (raw === 'false' || raw === '0') return false;
-  throw new Error(`env ${name} must be boolean (true|false|1|0), got: ${raw}`);
+  const acceptedValues = acceptOn ? 'true|false|1|0|on' : 'true|false|1|0';
+  throw new Error(`env ${name} must be boolean (${acceptedValues}), got: ${raw}`);
 }
 
 /**
@@ -530,7 +531,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     ? toBool('HMS_PREFETCH_ENABLED', input.HMS_PREFETCH_ENABLED)
     : false;
   env.HMS_QUOTE_PREPARE = input.HMS_QUOTE_PREPARE
-    ? toBool('HMS_QUOTE_PREPARE', input.HMS_QUOTE_PREPARE)
+    ? toBool('HMS_QUOTE_PREPARE', input.HMS_QUOTE_PREPARE, true)
     : false;
   env.HMS_QUOTE_PREPARE_PER_HOUR = input.HMS_QUOTE_PREPARE_PER_HOUR
     ? toInt('HMS_QUOTE_PREPARE_PER_HOUR', input.HMS_QUOTE_PREPARE_PER_HOUR)
