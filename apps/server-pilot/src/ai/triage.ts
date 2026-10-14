@@ -10,6 +10,7 @@ import {
   isAutoTriageNeverSpam,
   normalizeEmailAddress,
 } from './never-spam.js';
+import { ownMailboxPreStayConfirmation } from './pre-stay-mail.js';
 import type { MailSourceClassification } from './mail-source.js';
 import { getLatestInboundFromAddress, getSenderPreference } from '../mail/sender-preference.js';
 import { mailCategory, mailLabel, mailThread, mailThreadCategory } from '../db/schema/mail.js';
@@ -269,6 +270,7 @@ export interface TriageRefineInput {
   from: string;
   body: string;
   subject?: string;
+  mailboxEmail?: string;
   asOf?: string;
   threadSignals?: ThreadSignals;
   /** Optional parsed recipients used for the ReserveCloud staff discriminator. */
@@ -895,10 +897,13 @@ function hasUrgentOtaGuestNeed(haystack: string): boolean {
   );
 }
 
-/** Detects automated Infor PMS pre-stay guest registration and arrival profile notifications. */
+/** Detects a self-mailbox pre-stay confirmation for an existing stay. */
 function isPreStayNotification(input: TriageRefineInput): boolean {
-  const subject = (input.subject ?? '').trim();
-  return /^Pre Stay\s*:\s*Property\s+HRCEN\s+Confirmation\s+No/i.test(subject);
+  return ownMailboxPreStayConfirmation({
+    fromAddress: input.from,
+    mailboxEmail: input.mailboxEmail,
+    subject: input.subject,
+  }) !== null;
 }
 
 /** Detects internal staff night audit reports, discrepancy reports, duty manager handovers, F&B balances, printer scans, and server notices. */
@@ -957,6 +962,23 @@ function refineWorkflowTriageOutput(
   rawOutput: WorkflowTriageOutputInput,
 ): WorkflowTriageOutput {
   let next = validateWorkflowTriageOutput(rawOutput);
+  if (isPreStayNotification(input)) {
+    return validateWorkflowTriageOutput({
+      primaryFolder: 'manage-stay',
+      priority: 'P4',
+      urgent: false,
+      overlays: {},
+      isSpam: false,
+      suggestedTools: ['hms_find_reservation'],
+      sourceScope: 'internal_property',
+      automationState: 'unknown',
+      humanAction: 'verify_state',
+      confidence: 1,
+      rationale: 'Self-sent pre-stay confirmation is existing-stay pre-arrival information.',
+      policyFlags: ['refine:owner-self-pre-stay'],
+      abstainReason: null,
+    });
+  }
   const neverSpamFrom = isAutoTriageNeverSpam(input.from);
   const signals = {
     ...input,
@@ -1113,19 +1135,6 @@ function refineWorkflowTriageOutput(
       suggestedTools: ['hms_find_reservation'],
       policyFlags: addPolicyFlag(next.policyFlags, 'refine:ota-guest-message'),
       rationale: `${next.rationale} OTA direct guest inquiry is manage-stay${isUrgentNeed ? ' (urgent guest request).' : '.'}`,
-    };
-  } else if (isPreStayNotification(input)) {
-    next = {
-      ...next,
-      primaryFolder: 'manage-stay',
-      isSpam: false,
-      urgent: false,
-      priority: 'P4',
-      overlays: { ...next.overlays, booking: true },
-      humanAction: 'verify_state',
-      suggestedTools: ['hms_find_reservation'],
-      policyFlags: addPolicyFlag(next.policyFlags, 'refine:pre-stay-notification'),
-      rationale: `${next.rationale} Pre-stay arrival notification is manage-stay.`,
     };
   } else if (isInternalOperationsReport(input)) {
     next = {

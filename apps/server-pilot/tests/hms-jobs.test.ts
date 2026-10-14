@@ -2701,3 +2701,75 @@ async function insertStoredExtraction(
   });
 }
 
+const PRE_STAY_MAILBOX = 'reservations@example.test';
+const PRE_STAY_SUBJECT = 'Pre Stay : Property Sample Confirmation No 12345678 Guestname';
+
+async function seedSelfPreStayMail(
+  db: DB,
+  kind: Parameters<typeof insertStoredExtraction>[2],
+  payload: Record<string, unknown> = { confirmationNumbers: [] },
+) {
+  await db
+    .update(mailboxTransport)
+    .set({ email: PRE_STAY_MAILBOX })
+    .where(eq(mailboxTransport.id, TRANSPORT_ID));
+  const { threadId, messageId } = await seedThread(db, PRE_STAY_SUBJECT);
+  await db
+    .update(message)
+    .set({
+      fromAddress: PRE_STAY_MAILBOX,
+      subject: PRE_STAY_SUBJECT,
+      textBody: 'Synthetic pre-arrival details.',
+    })
+    .where(eq(message.id, messageId));
+  await insertStoredExtraction(db, messageId, kind, payload);
+  const snapshotId = `admission-snapshot:pre-stay:${randomUUID()}`;
+  await insertInboundExtraction(db, threadId, messageId, 'inbound_triage', snapshotId);
+  const run = await insertInboundExtraction(db, threadId, messageId, 'inbound_extraction', snapshotId);
+  return { threadId, messageId, run };
+}
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('self-sent pre-stay read-only routing', () => {
+  it('prefetches only a read-only find by the labeled confirmation, even when extraction did not classify it as a booking', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { messageId, run } = await seedSelfPreStayMail(db, 'other');
+      const env = {
+        ...parseEnv(process.env as Record<string, string | undefined>),
+        HMS_PREFETCH_ENABLED: true,
+      };
+
+      expect(await prefetchHmsConfirmations(run, db, env)).toBe(1);
+      const jobs = await db
+        .select({ runKind: aiWorkflowRun.runKind, request: aiWorkflowRun.readRequest })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, messageId),
+            eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+          ),
+        );
+
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]).toMatchObject({
+        runKind: 'read_tool',
+        request: { kind: 'find', confirmation: '12345678' },
+      });
+    }));
+
+  it('does not prepare a quote for a self-sent pre-stay message even when extraction says quote', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { messageId, run } = await seedSelfPreStayMail(db, 'quote', quoteExtractionPayload());
+      const evaluation = await hmsJobs.evaluateQuoteReadyForMessage(
+        { messageId, transportId: TRANSPORT_ID },
+        db,
+        QUOTE_PREPARE_ENV,
+      );
+
+      expect(evaluation.reason).toBe('pre_stay_self_mail');
+      expect(evaluation.plan).toBeNull();
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(0);
+    }));
+});
+

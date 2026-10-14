@@ -296,6 +296,30 @@ test('parseLookupArgs accepts find by confirmation with an optional arrival', ()
   });
 });
 
+test('read-only find accepts a plain numeric confirmation while cancellation still requires the write-safe form', () => {
+  const result = parseLookupArgs([...FIND, '--confirmation', '12345678']);
+  assert.equal(result.ok, true);
+  assert.equal(result.args.confirmation, '12345678');
+
+  const row = parseQuickSearchRow(
+    ['12345678', 'Example, Guestname', 'Reserved', '14-SEP-2027'],
+    '12345678',
+  );
+  assert.equal(row.confirmation, '12345678');
+  assert.deepEqual(stayIdentityVerdict({ confirmation: '12345678', arrival: null }, row), {
+    outcome: 'found',
+    reason: null,
+  });
+
+  const cancellation = parseCancelArgs([
+    '--confirmation', '12345678',
+    '--arrival', '2027-09-14',
+    '--mode', 'preview',
+    '--out', '/tmp/run',
+  ]);
+  assert.match(cancellation.error, /must look like/);
+});
+
 test('parseLookupArgs accepts search-guest with surname, arrival and an optional departure', () => {
   assert.deepEqual(parseLookupArgs([...GUEST, '--last-name', "  O'Neil-Jones ", '--arrival', '2027-09-14', '--departure', '2027-09-15']).args, {
     mode: 'search-guest', confirmation: null, arrival: '2027-09-14', lastName: "O'Neil-Jones", departure: '2027-09-15', out: '/tmp/stay-lookup', debugHtml: false,

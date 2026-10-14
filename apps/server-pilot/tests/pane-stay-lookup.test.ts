@@ -8,6 +8,7 @@ import {
   guestDatesDuplicateCheckViaCli,
   guestDatesVerdict,
   type GuestSearchQuery,
+  isConfirmation,
   isGuestSurname,
   type PaneStayFields,
   type PaneStayLookupSpawnInput,
@@ -324,6 +325,10 @@ describe('findStay', () => {
   });
 
   it('builds the find and search-guest CLI arguments, with optional arrival and departure', () => {
+    expect(isConfirmation('12345678')).toBe(true);
+    expect(buildStayLookupArgs({ mode: 'find', confirmation: '12345678', arrival: null }, '/tmp/run').slice(1)).toEqual([
+      '--mode', 'find', '--confirmation', '12345678', '--out', '/tmp/run',
+    ]);
     expect(buildStayLookupArgs({ mode: 'find', confirmation: '57291630-1', arrival: null }, '/tmp/run').slice(1)).toEqual([
       '--mode', 'find', '--confirmation', '57291630-1', '--out', '/tmp/run',
     ]);

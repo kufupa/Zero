@@ -66,6 +66,7 @@ export interface TriageInput {
   asOf: string;
   modelId: string;
   promptVersion: string;
+  mailboxEmail?: string;
   threadSignals?: TriageThreadSignals;
 }
 
@@ -149,6 +150,7 @@ export function hashTriageInput(input: TriageInput): string {
     asOf: input.asOf,
     modelId: input.modelId,
     promptVersion: input.promptVersion,
+    mailboxEmail: input.mailboxEmail?.trim().toLowerCase() ?? null,
     messages: input.messages.map((m) => ({
       id: m.id,
       from: m.from,

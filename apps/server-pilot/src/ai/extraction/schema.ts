@@ -47,7 +47,7 @@ export const mailExtractionSchema = z.object({
   }),
   confirmationNumbers: z
     .array(z.string())
-    .describe('Existing booking or confirmation numbers exactly as written, e.g. 57291630-1.'),
+    .describe('Existing booking or confirmation numbers exactly as written, with or without a numeric suffix, e.g. 12345678 or 57291630-1.'),
   stays: z.array(
     z.object({
       hotel: nullableText.describe('Target hotel as named in the mail, or null.'),
@@ -145,7 +145,7 @@ const MAX_STAYS = 8; // the quote engine prices at most 8 groups
 const MAX_ROWS = 40;
 const MAX_CONFIRMATIONS = 10;
 const MAX_MISSING = 20;
-const CONFIRMATION_PATTERN = /^\d+-\d+$/;
+const CONFIRMATION_PATTERN = /^\d+(?:-\d+)?$/;
 const LANGUAGE_PATTERN = /^[a-z]{2}$/;
 
 /** Card-mask, then cap, so a number cut at the limit is never left half-unmasked. Empty becomes null. */
@@ -175,7 +175,7 @@ export function stableId(prefix: 's' | 'r', ...parts: string[]): string {
 }
 
 /**
- * Validates and grounds the model output. Confirmation numbers must be digits-dash-digits and appear verbatim
+ * Validates and grounds the model output. Numeric confirmation numbers (with an optional numeric suffix) must appear verbatim
  * in the text the model read. The contact email must appear in that text too. Anything else is dropped to null.
  */
 export function sanitizeExtraction(

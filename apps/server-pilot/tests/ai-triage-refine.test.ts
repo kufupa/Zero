@@ -1143,7 +1143,7 @@ describe('workflow source and automation refinement', () => {
       expect(refined.policyFlags).toContain('refine:ota-guest-message');
     });
 
-    it('routes Infor PMS pre-stay guest registration notices to nonurgent manage-stay (Mandi Hattingh case)', () => {
+    it('does not route pre-stay subjects without processed-mailbox identity', () => {
       const refined = refineTriageOutput(
         {
           from: 'centurion@legacyhotels.co.za',
@@ -1155,12 +1155,8 @@ describe('workflow source and automation refinement', () => {
         }),
       );
 
-      expect(refined.primaryFolder).toBe('manage-stay');
-      expect(refined.urgent).toBe(false);
-      expect(refined.priority).toBe('P4');
-      expect(refined.humanAction).toBe('verify_state');
-      expect(refined.suggestedTools).toContain('hms_find_reservation');
-      expect(refined.policyFlags).toContain('refine:pre-stay-notification');
+      expect(refined.primaryFolder).toBe('bookings');
+      expect(refined.policyFlags).not.toContain('refine:pre-stay-notification');
     });
 
     it('routes night audit discrepancy reports from centurionnight to internal-partner', () => {
