@@ -749,6 +749,7 @@ function MailLayoutContent() {
                       key={threadId}
                       threadId={threadId}
                       onOpenThread={openListThread}
+                      goldLabelEnabled
                       hmsNoticesManagedByParent
                     />
                   </Suspense>

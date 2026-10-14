@@ -1,0 +1,117 @@
+/**
+ * @vitest-environment happy-dom
+ */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+  sourceResult: {
+    status: 'ready' as const,
+    messageId: 'db-message-1',
+    threadId: 'thread-1',
+    sourceHash: 'source-hash',
+  },
+  sourceInputs: [] as Array<{ internetMessageId: string }>,
+  saveActionLabel: vi.fn(async (input: { messageId: string; action: string }) => ({
+    action: input.action,
+    markedAt: new Date('2026-10-14T12:00:00.000Z'),
+  })),
+}));
+
+vi.mock('@/providers/query-provider', () => ({
+  useTRPC: () => ({
+    workstation: {
+      staffQuoteSource: {
+        queryOptions: (input: { internetMessageId: string }, options: Record<string, unknown> = {}) => {
+          mocks.sourceInputs.push(input);
+          return {
+            queryKey: ['workstation', 'staffQuoteSource', input.internetMessageId],
+            queryFn: async () => mocks.sourceResult,
+            ...options,
+          };
+        },
+      },
+    },
+    workflowFolders: {
+      setActionLabel: {
+        mutationOptions: (options: Record<string, unknown> = {}) => ({
+          mutationKey: ['workflowFolders', 'setActionLabel'],
+          mutationFn: mocks.saveActionLabel,
+          ...options,
+        }),
+      },
+      summary: { queryKey: () => ['workflowFolders', 'summary'] },
+      list: { infiniteQueryKey: () => ['workflowFolders', 'list'] },
+      thread: { queryKey: () => ['workflowFolders', 'thread'] },
+    },
+  }),
+}));
+
+import { WorkflowGoldLabel } from '../components/quote-workflow/workflow-gold-label';
+
+function renderGoldLabel() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <WorkflowGoldLabel
+        internetMessageId='<internet-message-1@example.invalid>'
+        initialAction="quote_availability"
+      />
+    </QueryClientProvider>,
+  );
+}
+
+afterEach(() => cleanup());
+beforeEach(() => {
+  mocks.sourceInputs.length = 0;
+  mocks.saveActionLabel.mockClear();
+});
+
+describe('WorkflowGoldLabel', () => {
+  it('offers every action and saves the synced message id and selected gold label', async () => {
+    renderGoldLabel();
+
+    const picker = await screen.findByRole('combobox', { name: 'Nava reads this as' }) as HTMLSelectElement;
+    expect(Array.from(picker.options).map(({ value, text }) => [value, text])).toEqual([
+      ['no_action', 'Not for Nava'],
+      ['quote_availability', 'Quote'],
+      ['new_booking', 'New booking'],
+      ['amend', 'Amendment'],
+      ['cancel', 'Cancellation'],
+      ['payment_proof', 'Payment proof'],
+      ['billing', 'Billing'],
+      ['group_event', 'Group/event'],
+      ['other_actionable', 'Other to do'],
+    ]);
+    expect(mocks.sourceInputs.some((input) => input.internetMessageId === '<internet-message-1@example.invalid>')).toBe(true);
+
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save as gold' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.change(picker, { target: { value: 'cancel' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save as gold' }));
+
+    expect(await screen.findByText('Saved as gold · Cancellation')).toBeDefined();
+    expect(mocks.saveActionLabel).toHaveBeenCalledWith({ messageId: 'db-message-1', action: 'cancel' });
+  });
+
+  it('lets the owner replace a saved gold label', async () => {
+    renderGoldLabel();
+    const picker = await screen.findByRole('combobox', { name: 'Nava reads this as' }) as HTMLSelectElement;
+    const saveButton = screen.getByRole('button', { name: 'Save as gold' });
+    await waitFor(() => expect((saveButton as HTMLButtonElement).disabled).toBe(false));
+
+    fireEvent.change(picker, { target: { value: 'cancel' } });
+    fireEvent.click(saveButton);
+    expect(await screen.findByText('Saved as gold · Cancellation')).toBeDefined();
+
+    fireEvent.change(picker, { target: { value: 'quote_availability' } });
+    fireEvent.click(saveButton);
+    expect(await screen.findByText('Saved as gold · Quote')).toBeDefined();
+    expect(mocks.saveActionLabel).toHaveBeenNthCalledWith(2, {
+      messageId: 'db-message-1',
+      action: 'quote_availability',
+    });
+  });
+});
