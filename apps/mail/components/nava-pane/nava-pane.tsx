@@ -2066,7 +2066,7 @@ export function NavaPane({
               onSelectOffer={(offerId) =>
                 dispatchQuote({ type: 'select_offers', offerIds: nextSelectedOfferIds(quoteSession, offerId) })
               }
-              onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html })}
+              onReplyChange={(html) => dispatchQuote({ type: 'set_reviewed_reply', html, staffEdited: true })}
               onHandleReviewItem={(itemId) => dispatchQuote({ type: 'handle_review_item', itemId })}
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
               onPatchStaffHeader={(header, options) => {

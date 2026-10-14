@@ -1,4 +1,12 @@
-import { canCreateNativeDraft, canCreatePdf, isMultiStay, pdfBlocker, ratedStayCount } from '@/lib/quote-workflow/session';
+import {
+  canCreateNativeDraft,
+  canCreatePdf,
+  isMultiStay,
+  missingQuoteDetailsReplyOnly,
+  pdfBlocker,
+  quoteDeclineReplyOnly,
+  ratedStayCount,
+} from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { Field, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 
@@ -73,6 +81,7 @@ export function DocumentReview({
         ? 'Excel is not available here.'
         : null;
   const pdfButtonLabel = isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF';
+  const replyOnly = missingQuoteDetailsReplyOnly(session) || quoteDeclineReplyOnly(session);
   return (
     <div className="flex flex-col gap-3.5">
       <PrimaryButton disabled={!pdfReady || !onPreparePdf} disabledReason={pdfReason ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null)} onClick={onPreparePdf}>
@@ -91,8 +100,8 @@ export function DocumentReview({
         </SecondaryButton>
         {excelDisabled && excelReason ? <p className="text-center text-[12.5px] text-[#64748b]">{excelReason}</p> : null}
       </div>
-      {/* A combined reply is built from every stay's quote, so the one-stay reply box would be ignored. */}
-      {isMultiStay(session) ? null : (
+      {/* A combined reply is built from every stay's quote; request-only replies still need the ordinary editor. */}
+      {!isMultiStay(session) || replyOnly ? (
         <Field label="Reply to the client (you can edit it)" htmlFor="quote-reviewed-reply">
           <textarea
             id="quote-reviewed-reply"
@@ -102,7 +111,7 @@ export function DocumentReview({
             onChange={(event) => onReplyChange?.(event.target.value)}
           />
         </Field>
-      )}
+      ) : null}
       {nativeReady ? (
         <p className="text-[12.5px] text-emerald-800">Reply and PDF are ready. Next, create the Outlook draft. It is not sent.</p>
       ) : null}

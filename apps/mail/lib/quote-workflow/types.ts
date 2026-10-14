@@ -639,8 +639,10 @@ export type QuoteSession = {
   selectedOfferIds: string[];
   pdf: QuotePdf | null;
   reviewedReplyHtml: string;
-  /** Marks generated no-PDF replies that a completed or changed quote can replace. */
-  reviewedReplySource?: 'missing_quote_details' | 'quote_decline';
+  /** Marks generated replies that a later quote result can refresh; staff edits clear the marker. */
+  reviewedReplySource?: 'missing_quote_details' | 'quote_decline' | 'quote_generated';
+  /** Remembers a deliberate staff edit, including clearing the reply while a PDF is being prepared. */
+  reviewedReplyEdited?: boolean;
   steps: QuoteToolStep[];
   missing: string[];
   errorMessage: string | null;
@@ -791,6 +793,6 @@ export type QuoteSessionAction =
       selectedOfferIds: string[];
       reviewedReplyHtml?: string;
     }
-  | { type: 'set_reviewed_reply'; html: string; source?: 'missing_quote_details' | 'quote_decline' }
+  | { type: 'set_reviewed_reply'; html: string; source?: 'missing_quote_details' | 'quote_decline'; staffEdited?: boolean }
   | { type: 'select_offers'; offerIds: string[] }
   | { type: 'mailbox_status'; status: QuoteMailboxStatus | null };

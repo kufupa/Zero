@@ -22,6 +22,7 @@ import {
   dinnerAddOnInputProblem,
   dinnerAllowanceStillRequired,
   missingQuoteDetailsReplyOnly,
+  isMultiStay,
   quoteDeclineReplyOnly,
   missingQuoteReplyFieldsForGroups,
   groupStays,
@@ -39,6 +40,7 @@ import {
 } from '../lib/quote-workflow/types';
 import { approvedExecuteHeader, staffHeaderForStay } from '../lib/quote-workflow/staff-quote-bind';
 import { workbookRequestFor } from '../lib/quote-workflow/quote-workbook-download';
+import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
 import type {
   LunaAnalysisWire,
@@ -1066,6 +1068,27 @@ const quoteDeclineInputEdits: Array<[string, QuoteSessionAction]> = [
 ];
 
 describe('generated quote-decline freshness', () => {
+  it('does not create a whole-request decline after another stay is added during a search', () => {
+    const session = withStaffSource(analysisReady());
+    const firstStayStep = stepFor(session, STAY_A);
+    const running = reduceQuoteSession(session, { type: 'step_running', stepId: firstStayStep.id });
+    const multiStay = reduceQuoteSession(running, { type: 'add_stay', token: 'second' });
+    const refused = reduceQuoteSession(multiStay, {
+      type: 'results_unavailable',
+      stepId: firstStayStep.id,
+      reason: 'No supported rate was returned',
+      declineReplyHtml: '<p>decline</p>',
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+    });
+
+    expect(isMultiStay(multiStay)).toBe(true);
+    expect(refused.reviewedReplyHtml).toBe('');
+    expect(refused.reviewedReplySource).toBeUndefined();
+    expect(quoteDeclineReplyOnly(refused)).toBe(false);
+    expect(refused.steps.find((step) => step.id === firstStayStep.id)?.status).toBe('failed');
+  });
+
   it.each(quoteDeclineInputEdits)('clears the decline when %s changes', (_input, action) => {
     const declined = declinedQuoteSession();
     expect(quoteDeclineReplyOnly(declined)).toBe(true);
@@ -1137,6 +1160,7 @@ describe('mixed complete and incomplete quote dates', () => {
     const manual = reduceQuoteSession(automatic, {
       type: 'set_reviewed_reply',
       html: '<p>Staff wrote this reply.</p>',
+      staffEdited: true,
     });
     const completedManual = reduceQuoteSession(manual, {
       type: 'patch_group',
@@ -1375,8 +1399,183 @@ describe('quote session staff review items', () => {
     const typed = reduceQuoteSession(quoteReady(), {
       type: 'set_reviewed_reply',
       html: '<p>Staff typed this first.</p>',
+      staffEdited: true,
     });
     expect(preparePdf(typed).reviewedReplyHtml).toBe('<p>Staff typed this first.</p>');
+  });
+
+  describe('generated quotation reply freshness', () => {
+    const quoteWithDinner = (
+      session: QuoteSession,
+      revisionRef: string,
+      dinnerAmountMinor: number,
+      dinnerTotalMinor: number,
+      totalMinor: number,
+    ) => {
+      const action = staffQuoteFor(STAY_A, revisionRef, totalMinor, session.inputRevision);
+      if (action.type !== 'staff_quote_ready') throw new Error('expected a staff quote run');
+      return reduceQuoteSession(session, {
+        ...action,
+        staffQuote: {
+          ...action.staffQuote,
+          dinnerAddOn: {
+            label: 'Dinner allowance',
+            amountMinor: dinnerAmountMinor,
+            unit: 'per_person_per_night',
+            totalMinor: dinnerTotalMinor,
+          },
+        },
+      });
+    };
+
+    const preparePdf = (session: QuoteSession) => {
+      const quote = session.staffQuote!;
+      return reduceQuoteSession(session, {
+        type: 'pdf_ready',
+        pdf: quotePdf(quote.revisionRef, quote.totalMinor),
+        selectionEpoch: session.binding!.selectionEpoch,
+        inputRevision: session.inputRevision,
+        selectedOfferIds: session.selectedOfferIds,
+        reviewedReplyHtml: quoteWrapperHtml('', 'R Opperman', {
+          ...(quote.dinnerAddOn ? { dinnerAddOn: quote.dinnerAddOn } : {}),
+          totalMinor: quote.totalMinor,
+        }),
+      });
+    };
+
+    it('refreshes the generated dinner charge and total after a new quote run', () => {
+      let session = withStaffSource(analysisReady());
+      session = quoteWithDinner(session, 'rev-dinner-200', 20_000, 40_000, 160_000);
+      session = preparePdf(session);
+      expect(session.reviewedReplyHtml.includes('R200.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R1600.00')).toBe(true);
+
+      session = reduceQuoteSession(session, {
+        type: 'patch_staff_stay_extras',
+        stayKey: STAY_A,
+        extras: {
+          dinnerEnabled: true,
+          dinnerAllowanceMinor: 25_000,
+          dinnerAllowanceUnit: 'per_person_per_night',
+        },
+      });
+      session = quoteWithDinner(session, 'rev-dinner-250', 25_000, 50_000, 170_000);
+      session = preparePdf(session);
+
+      expect(session.reviewedReplyHtml.includes('R250.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R500.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R1700.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R200.00')).toBe(false);
+      expect(session.reviewedReplySource).toBe('quote_generated');
+    });
+
+    it('keeps generated reply provenance through a combined PDF so a later single-stay quote can refresh it', () => {
+      let session = withStaffSource(analysisReady());
+      session = quoteWithDinner(session, 'rev-dinner-200', 20_000, 40_000, 160_000);
+      session = preparePdf(session);
+
+      session = reduceQuoteSession(session, { type: 'add_stay', token: 'second' });
+      const secondGroup = session.groups.at(-1)!;
+      session = reduceQuoteSession(session, {
+        type: 'patch_group',
+        groupId: secondGroup.id,
+        patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+      });
+      const secondStayKey = stepFor(session, STAY_B).shareKey!;
+      session = reduceQuoteSession(session, staffQuoteFor(secondStayKey, 'rev-second-stay', 180_000, session.inputRevision));
+      session = reduceQuoteSession(session, {
+        type: 'pdf_ready',
+        pdf: quotePdf('combined-stays', 340_000),
+        selectionEpoch: session.binding!.selectionEpoch,
+        inputRevision: session.inputRevision,
+        selectedOfferIds: [
+          session.staffQuotes[STAY_A]!.revisionRef,
+          session.staffQuotes[secondStayKey]!.revisionRef,
+        ],
+      });
+
+      expect(session.reviewedReplySource).toBe('quote_generated');
+      session = reduceQuoteSession(session, { type: 'remove_stay', stayId: stayIdOf(secondGroup) });
+      session = reduceQuoteSession(session, {
+        type: 'patch_staff_stay_extras',
+        stayKey: STAY_A,
+        extras: {
+          dinnerEnabled: true,
+          dinnerAllowanceMinor: 25_000,
+          dinnerAllowanceUnit: 'per_person_per_night',
+        },
+      });
+      session = quoteWithDinner(session, 'rev-dinner-250-after-multi', 25_000, 50_000, 170_000);
+      session = preparePdf(session);
+
+      expect(session.reviewedReplyHtml.includes('R250.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R500.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R1700.00')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R200.00')).toBe(false);
+    });
+
+    it('keeps staff edits to a generated quotation reply across another quote run', () => {
+      let session = withStaffSource(analysisReady());
+      session = quoteWithDinner(session, 'rev-dinner-200', 20_000, 40_000, 160_000);
+      session = preparePdf(session);
+      session = reduceQuoteSession(session, {
+        type: 'set_reviewed_reply',
+        html: '<p>Staff-edited reply</p>',
+        staffEdited: true,
+      });
+      expect(session.reviewedReplySource).toBeUndefined();
+
+      session = reduceQuoteSession(session, {
+        type: 'patch_staff_stay_extras',
+        stayKey: STAY_A,
+        extras: {
+          dinnerEnabled: true,
+          dinnerAllowanceMinor: 25_000,
+          dinnerAllowanceUnit: 'per_person_per_night',
+        },
+      });
+      session = quoteWithDinner(session, 'rev-dinner-250', 25_000, 50_000, 170_000);
+      session = preparePdf(session);
+
+      expect(session.reviewedReplyHtml.includes('Staff-edited reply')).toBe(true);
+      expect(session.reviewedReplyHtml.includes('R250.00')).toBe(false);
+      expect(session.reviewedReplySource).toBeUndefined();
+    });
+
+    it('does not restore a reply staff cleared while its repriced PDF was being prepared', () => {
+      let session = withStaffSource(analysisReady());
+      session = quoteWithDinner(session, 'rev-dinner-200', 20_000, 40_000, 160_000);
+      session = preparePdf(session);
+      session = reduceQuoteSession(session, {
+        type: 'patch_staff_stay_extras',
+        stayKey: STAY_A,
+        extras: {
+          dinnerEnabled: true,
+          dinnerAllowanceMinor: 25_000,
+          dinnerAllowanceUnit: 'per_person_per_night',
+        },
+      });
+      session = quoteWithDinner(session, 'rev-dinner-250-pending', 25_000, 50_000, 170_000);
+      const quote = session.staffQuote!;
+      const pendingPdf: QuoteSessionAction = {
+        type: 'pdf_ready',
+        pdf: quotePdf(quote.revisionRef, quote.totalMinor),
+        selectionEpoch: session.binding!.selectionEpoch,
+        inputRevision: session.inputRevision,
+        selectedOfferIds: session.selectedOfferIds,
+        reviewedReplyHtml: quoteWrapperHtml('', 'R Opperman', {
+          ...(quote.dinnerAddOn ? { dinnerAddOn: quote.dinnerAddOn } : {}),
+          totalMinor: quote.totalMinor,
+        }),
+      };
+
+      session = reduceQuoteSession(session, { type: 'set_reviewed_reply', html: '', staffEdited: true });
+      session = reduceQuoteSession(session, pendingPdf);
+
+      expect(session.reviewedReplyHtml).toBe('');
+      expect(session.reviewedReplySource).toBeUndefined();
+      expect(session.reviewedReplyEdited).toBe(true);
+    });
   });
 
   it('still blocks PDF when a pricing-critical fact is missing', () => {
@@ -1793,7 +1992,11 @@ describe('quote session staff review items', () => {
   it('keeps the full reply on repricing but requires a reviewed current PDF', () => {
     let s = analysisReady({ intent: 'quote', groups: quoteAnalysis.groups, secondaryAsks: [], alternatives: [] });
     s = withStaffSource(s);
-    s = reduceQuoteSession(s, { type: 'set_reviewed_reply', html: '<p>Full staff-edited reply</p>' });
+    s = reduceQuoteSession(s, {
+      type: 'set_reviewed_reply',
+      html: '<p>Full staff-edited reply</p>',
+      staffEdited: true,
+    });
     s = reduceQuoteSession(s, {
       type: 'staff_quote_ready',
       offer: { ...authorisedOffer, id: 'rev-1', sourceRef: 'rev-1', nightly: [], stayTotalMinor: 850000 },

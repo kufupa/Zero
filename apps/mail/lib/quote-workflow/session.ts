@@ -1871,7 +1871,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         phase: 'tools',
         runningStepId: null,
         errorMessage: null,
-        ...(action.declineReplyHtml !== undefined
+        ...(action.declineReplyHtml !== undefined && !isMultiStay(session)
           ? { reviewedReplyHtml: action.declineReplyHtml, reviewedReplySource: 'quote_decline' as const }
           : {}),
         steps: session.steps.map((step) =>
@@ -1937,16 +1937,28 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       }
       const stayKey = session.selectedStayKey;
       const generatedReply =
-        session.reviewedReplySource === 'missing_quote_details' || session.reviewedReplySource === 'quote_decline';
-      const reviewedReplyHtml = !isMultiStay(session) && (generatedReply || !session.reviewedReplyHtml.trim())
+        session.reviewedReplySource === 'missing_quote_details' ||
+        session.reviewedReplySource === 'quote_decline' ||
+        session.reviewedReplySource === 'quote_generated';
+      const replaceReply =
+        !isMultiStay(session) &&
+        (generatedReply || (!session.reviewedReplyHtml.trim() && !session.reviewedReplyEdited));
+      const preserveGeneratedReplySource = !replaceReply && session.reviewedReplySource === 'quote_generated';
+      const reviewedReplyHtml = replaceReply
         ? action.reviewedReplyHtml ?? (generatedReply ? '' : session.reviewedReplyHtml)
         : session.reviewedReplyHtml;
+      const reviewedReplySource = replaceReply && action.reviewedReplyHtml?.trim()
+        ? 'quote_generated'
+        : generatedReply && !preserveGeneratedReplySource
+          ? undefined
+          : session.reviewedReplySource;
       return {
         ...session,
         pdf: action.pdf,
         phase: 'review',
         reviewedReplyHtml,
-        reviewedReplySource: generatedReply ? undefined : session.reviewedReplySource,
+        reviewedReplySource,
+        reviewedReplyEdited: replaceReply ? false : session.reviewedReplyEdited,
         // A combined PDF is one document for all stays, so it is not kept under any one of them.
         stayPdfs: stayKey && !isMultiStay(session) ? { ...session.stayPdfs, [stayKey]: action.pdf } : session.stayPdfs,
       };
@@ -1955,6 +1967,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       return {
         ...session,
         reviewedReplyHtml: action.html,
+        reviewedReplyEdited: action.staffEdited === true,
         reviewedReplySource:
           action.source ??
           (session.reviewedReplySource === 'quote_decline' && action.html.trim() ? 'quote_decline' : undefined),

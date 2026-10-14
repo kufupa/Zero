@@ -1197,6 +1197,69 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
+  it('keeps the request-only reply editable when every date option is incomplete', async () => {
+    const missingFields = ['Departure date for stay 1', 'Departure date for stay 2'];
+    bridgeMockState.analysisOverride = {
+      status: 'ready',
+      intent: 'quote',
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: '2026-11-12',
+          departureDate: null,
+          quantity: 1,
+          adults: 2,
+          childrenAges: [],
+          board: 'bb',
+          specialRequests: [],
+          fields: { arrivalDate: 'extracted', departureDate: 'missing', quantity: 'extracted', adults: 'extracted' },
+        },
+        {
+          id: 'g2',
+          arrivalDate: '2026-12-01',
+          departureDate: null,
+          quantity: 1,
+          adults: 2,
+          childrenAges: [],
+          board: 'bb',
+          specialRequests: [],
+          fields: { arrivalDate: 'extracted', departureDate: 'missing', quantity: 'extracted', adults: 'extracted' },
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      missingQuoteReplyFields: missingFields,
+      sourceRevision: 1,
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    render(<NavaPane bridge={fakeBridge} />);
+
+    const requestOnly = await screen.findByRole('button', { name: 'Draft reply asking for missing details' });
+    const reply = screen.queryByLabelText('Reviewed reply') as HTMLTextAreaElement | null;
+    expect(reply).not.toBeNull();
+    if (!reply) return;
+    await waitFor(() =>
+      expect(
+        reply.value.includes(missingFields[0]!) && reply.value.includes(missingFields[1]!),
+      ).toBe(true),
+    );
+
+    const editedReply = '<p>Staff-edited request reply</p>';
+    fireEvent.change(reply, { target: { value: editedReply } });
+    await waitFor(() => expect(reply.value === editedReply).toBe(true));
+
+    expect((requestOnly as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(requestOnly);
+    await waitFor(() =>
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'CREATE_REPLY_DRAFT',
+        expect.objectContaining({ htmlBody: editedReply }),
+      ),
+    );
+    expect(sendCommandMock).not.toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything());
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
   it('clears the automatic missing-details reply once staff complete the date range', async () => {
     bridgeMockState.analysisOverride = {
       status: 'ready',
