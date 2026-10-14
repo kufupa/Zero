@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,7 @@ import {
   resolveGoldenFreshOutputPath,
   runGoldenFreshExtract,
   summarizeGoldenFreshRows,
+  writeGoldenFreshOutput,
 } from '../scripts/golden-fresh-extract.js';
 
 const MODEL_OUTPUT = {
@@ -195,7 +196,7 @@ describe('golden fresh extract script', () => {
       signal: expect.any(AbortSignal),
     });
     expect(adapter.invoke).toHaveBeenCalledTimes(1);
-    expect(tx.execute).toHaveBeenCalledTimes(1);
+    expect(tx.execute).toHaveBeenCalledTimes(2); // READ ONLY + statement_timeout
     for (const writer of Object.values(forbiddenWrites)) expect(writer).not.toHaveBeenCalled();
   });
 
@@ -227,13 +228,21 @@ describe('golden fresh extract script', () => {
     expect(adapter.invoke).not.toHaveBeenCalled();
   });
 
-  it('returns a bounded timeout row without waiting for a stuck context read', async () => {
+  it('returns a timeout row and keeps the worker until the slow read settles, so reads never pile up', async () => {
     const { db } = readOnlyDb(inboundMessage());
     const adapter = fakeAdapter();
-    const loadSelection = vi.fn(() => new Promise<SyncedQuoteSelection>(() => undefined));
+    let active = 0;
+    let maxActive = 0;
+    const loadSelection = vi.fn(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 30));
+      active -= 1;
+      return null;
+    });
 
     const rows = await runGoldenFreshExtract({
-      messageIds: ['message-1'],
+      messageIds: ['message-1', 'message-2'],
       db,
       loadSelection,
       adapter,
@@ -241,8 +250,19 @@ describe('golden fresh extract script', () => {
       timeoutMs: 5,
     });
 
-    expect(rows[0]).toMatchObject({ status: 'failed', error_code: 'timeout', kind: null, payload: null });
+    expect(rows.map((row) => row.error_code)).toEqual(['timeout', 'timeout']);
+    expect(rows[0]).toMatchObject({ status: 'failed', kind: null, payload: null });
+    expect(maxActive).toBe(1);
     expect(adapter.invoke).not.toHaveBeenCalled();
+  });
+
+  it('refuses to overwrite an existing output file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'golden-fresh-'));
+    const out = join(dir, 'out.jsonl');
+    writeFileSync(out, 'old', { mode: 0o644 });
+    expect(() => writeGoldenFreshOutput(out, [])).toThrow();
+    expect(readFileSync(out, 'utf8')).toBe('old');
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it('replaces raw context errors with a bounded code', async () => {

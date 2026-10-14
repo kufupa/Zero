@@ -208,6 +208,7 @@ export async function loadGoldenFreshMessage(
 ): Promise<GoldenFreshMessage | null> {
   return db.transaction(async (tx) => {
     await tx.execute(sql`SET TRANSACTION READ ONLY`);
+    await tx.execute(sql`SET LOCAL statement_timeout = '30s'`);
     const [row] = await tx
       .select({
         id: message.id,
@@ -299,13 +300,13 @@ async function runOne(
     };
   })();
 
+  const settled = read.catch((error: unknown) => failedRow(messageId, source, errorCode(error)));
   try {
-    return await Promise.race([
-      read.catch((error: unknown) => failedRow(messageId, source, errorCode(error))),
-      timeout,
-    ]);
+    return await Promise.race([settled, timeout]);
   } finally {
     if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    // A timed-out read keeps its worker until its queries finish, so timeouts never pile up concurrent reads.
+    await settled;
   }
 }
 
@@ -333,6 +334,11 @@ export async function runGoldenFreshExtract(input: GoldenFreshInput): Promise<Go
     }),
   );
   return rows;
+}
+
+/** 'wx' refuses an existing file, so a world-readable file is never reused for guest details. */
+export function writeGoldenFreshOutput(outputPath: string, rows: readonly GoldenFreshRow[]): void {
+  writeFileSync(outputPath, formatGoldenFreshJsonl(rows), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
 }
 
 export function formatGoldenFreshJsonl(rows: readonly GoldenFreshRow[]): string {
@@ -387,7 +393,7 @@ export async function runGoldenFreshExtractCli(argv: readonly string[]): Promise
       concurrency: args.concurrency,
       timeoutMs: args.timeoutMs,
     });
-    writeFileSync(outputPath, formatGoldenFreshJsonl(rows), { encoding: 'utf8', mode: 0o600 });
+    writeGoldenFreshOutput(outputPath, rows);
     console.log(formatGoldenFreshSummary(rows));
     return rows.some((row) => row.status === 'failed') ? 1 : 0;
   } catch (error) {
