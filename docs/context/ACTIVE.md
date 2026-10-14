@@ -5,7 +5,7 @@ Updated 2026-10-14 after the product assessment. Already imported by root `CLAUD
 ## Read without rediscovering
 
 1. `PRODUCT.md`: owner specification and hard rules.
-2. This file, then `docs/context/OWNER-ASKS.md`: current focus, decisions and unresolved asks.
+2. This file, `docs/context/WORKSTREAMS.md` (all workstreams by ROI), then `docs/context/OWNER-ASKS.md`: current focus, decisions and unresolved asks.
 3. `docs/research/README.md`: conclusions and exact evidence pointers; open only relevant reports.
 4. `AGENT.md`: commands and layout. Check current branch/remote revision before any claim.
 

@@ -1511,12 +1511,13 @@ describe('quote session staff review items', () => {
       });
     };
 
-    it('refreshes the generated dinner charge and total after a new quote run', () => {
+    it('keeps the generated cover reply unpriced after a new quote run', () => {
       let session = withStaffSource(analysisReady());
       session = quoteWithDinner(session, 'rev-dinner-200', 20_000, 40_000, 160_000);
       session = preparePdf(session);
-      expect(session.reviewedReplyHtml.includes('R200.00')).toBe(true);
-      expect(session.reviewedReplyHtml.includes('R1600.00')).toBe(true);
+      const originalReply = session.reviewedReplyHtml;
+      expect(originalReply).toContain('Please see attached quotation.');
+      expect(originalReply).not.toMatch(/R\d+\.\d{2}/);
 
       session = reduceQuoteSession(session, {
         type: 'patch_staff_stay_extras',
@@ -1530,10 +1531,8 @@ describe('quote session staff review items', () => {
       session = quoteWithDinner(session, 'rev-dinner-250', 25_000, 50_000, 170_000);
       session = preparePdf(session);
 
-      expect(session.reviewedReplyHtml.includes('R250.00')).toBe(true);
-      expect(session.reviewedReplyHtml.includes('R500.00')).toBe(true);
-      expect(session.reviewedReplyHtml.includes('R1700.00')).toBe(true);
-      expect(session.reviewedReplyHtml.includes('R200.00')).toBe(false);
+      expect(session.reviewedReplyHtml).toBe(originalReply);
+      expect(session.reviewedReplyHtml).not.toMatch(/R\d+\.\d{2}/);
       expect(session.reviewedReplySource).toBe('quote_generated');
     });
 
@@ -1541,6 +1540,7 @@ describe('quote session staff review items', () => {
       let session = withStaffSource(analysisReady());
       session = quoteWithDinner(session, 'rev-dinner-200', 20_000, 40_000, 160_000);
       session = preparePdf(session);
+      const originalReply = session.reviewedReplyHtml;
 
       session = reduceQuoteSession(session, { type: 'add_stay', token: 'second' });
       const secondGroup = session.groups.at(-1)!;
@@ -1576,10 +1576,8 @@ describe('quote session staff review items', () => {
       session = quoteWithDinner(session, 'rev-dinner-250-after-multi', 25_000, 50_000, 170_000);
       session = preparePdf(session);
 
-      expect(session.reviewedReplyHtml.includes('R250.00')).toBe(true);
-      expect(session.reviewedReplyHtml.includes('R500.00')).toBe(true);
-      expect(session.reviewedReplyHtml.includes('R1700.00')).toBe(true);
-      expect(session.reviewedReplyHtml.includes('R200.00')).toBe(false);
+      expect(session.reviewedReplyHtml).toBe(originalReply);
+      expect(session.reviewedReplyHtml).not.toMatch(/R\d+\.\d{2}/);
     });
 
     it('keeps staff edits to a generated quotation reply across another quote run', () => {
