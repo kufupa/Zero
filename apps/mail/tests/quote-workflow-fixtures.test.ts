@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { allocationTotal } from '../lib/quote-workflow/session';
-import { loadQuoteFixture, quoteRequestKeys } from '../lib/quote-workflow/fixtures';
+import { fixtureReplyHtml, loadQuoteFixture, quoteRequestKeys } from '../lib/quote-workflow/fixtures';
 
 describe('quote workflow fixtures', () => {
   it('shares one quote request across same-date occupancy groups', () => {
@@ -28,6 +28,13 @@ describe('quote workflow fixtures', () => {
     expect(fixture.offers.filter((o) => o.kind === 'alternative').every((o) => o.combinable === false)).toBe(
       true,
     );
+  });
+
+  it('keeps staff-facing alternatives out of the generated guest reply', () => {
+    const fixture = loadQuoteFixture('ro-vs-bb');
+
+    expect(fixture.alternatives).toEqual(['RO']);
+    expect(fixtureReplyHtml(fixture, 'David')).not.toContain('RO');
   });
 
   it('expands varying nightly prices instead of a single average', () => {

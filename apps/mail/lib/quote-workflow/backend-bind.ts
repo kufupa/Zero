@@ -56,6 +56,7 @@ export type AnalyseSelectionResult =
       intent: QuoteAnalysis['intent'];
       groups: QuoteAnalysis['groups'];
       requestedRoomsByStay?: QuoteAnalysis['requestedRoomsByStay'];
+      missingQuoteReplyFields?: QuoteAnalysis['missingQuoteReplyFields'];
       secondaryAsks: QuoteAnalysis['secondaryAsks'];
       alternatives: QuoteAnalysis['alternatives'];
       sourceRevision: number;
@@ -161,6 +162,7 @@ export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
     intent: ready.intent,
     groups: ready.groups,
     ...(ready.requestedRoomsByStay ? { requestedRoomsByStay: ready.requestedRoomsByStay } : {}),
+    ...(ready.missingQuoteReplyFields ? { missingQuoteReplyFields: ready.missingQuoteReplyFields } : {}),
     secondaryAsks: ready.secondaryAsks,
     alternatives: ready.alternatives,
     ...(ready.reviewItems?.length ? { reviewItems: ready.reviewItems } : {}),
@@ -191,6 +193,10 @@ export type StoredWork =
   | { status: 'failed'; reason: string }
   | {
       status: 'ready';
+      /** The stored mail kind, used to keep the selected-email classification in the shared pane vocabulary. */
+      kind: string;
+      existingStayInformation?: boolean;
+      confirmationNumbers?: string[];
       workItemId: string | null;
       workItemStatus: string | null;
       extractionId: string;
@@ -220,7 +226,7 @@ export type TranslationRetryResult = { status: string; translation?: StoredTrans
 export type NeedsYouRow = {
   id: string;
   kind: string;
-  status: 'needs_you' | 'review';
+  status: 'needs_you' | 'review' | 'done' | 'dismissed';
   chip: 'needs_you' | 'queued' | 'in_hms' | 'review';
   threadId: string | null;
   sender: string | null;
@@ -245,8 +251,12 @@ type WorkItemsClient = {
     ) => Promise<unknown>;
   };
   retryTranslation?: { mutate: (input: { workItemId: string }) => Promise<TranslationRetryResult> };
-  list?: { query: (input: { limit?: number }) => Promise<NeedsYouRow[]> };
-  dismiss?: { mutate: (input: { workItemId: string }) => Promise<unknown> };
+  list?: {
+    query: (input: { limit?: number; statuses?: NeedsYouRow['status'][] }) => Promise<NeedsYouRow[]>;
+  };
+  dismiss?: {
+    mutate: (input: { workItemId: string }, opts?: ReturnType<typeof inMailbox>) => Promise<unknown>;
+  };
 };
 
 export function workItemsFromTrpc(trpc: unknown): WorkItemsClient {
@@ -284,7 +294,15 @@ export async function bindStoredWork(args: {
   } catch {
     return { status: 'unavailable' };
   }
-  if (stored.status !== 'ready' || stored.workItemId || !args.open || args.isStale?.()) return stored;
+  if (
+    stored.status !== 'ready' ||
+    stored.workItemId ||
+    stored.existingStayInformation ||
+    !args.open ||
+    args.isStale?.()
+  ) {
+    return stored;
+  }
   args.onRead?.();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<StoredWork>((resolve) => {

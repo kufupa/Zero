@@ -30,6 +30,8 @@ export type PriorStaffQuoteRequotePayload = {
   company: string;
   agency: string;
   dinnerAllowanceMinor?: number;
+  dinnerAllowanceUnit?: 'per_person_per_night' | 'per_room_per_night' | 'per_person';
+  dinnerAllowanceGroupIds?: string[];
   dinnerAllowanceLabel?: string;
   lunchAllowanceMinor?: number;
   lunchAllowanceLabel?: string;
@@ -61,6 +63,7 @@ export type PriorQuoteRun = {
   createdAt?: Date | string;
   finishedAt?: Date | string | null;
   metrics: Record<string, unknown> | null;
+  readResult?: Record<string, unknown> | null;
 };
 
 export type PriorQuoteResolveResult =
@@ -82,11 +85,24 @@ function partyNameFromRevision(revision: QuoteRevision): string | null {
   return null;
 }
 
+function preparedProposalFor(run: Pick<PriorQuoteRun, 'readResult'>): {
+  revision?: QuoteRevision;
+  facts?: AuthorizedProposalFacts;
+  rowPrices?: RowPrice[];
+} | undefined {
+  const result = run.readResult;
+  if (result?.status !== 'ready') return undefined;
+  const prepared = result.preparedProposal;
+  return prepared && typeof prepared === 'object' && !Array.isArray(prepared)
+    ? (prepared as { revision?: QuoteRevision; facts?: AuthorizedProposalFacts; rowPrices?: RowPrice[] })
+    : undefined;
+}
+
 function revisionsFromRun(run: PriorQuoteRun): QuoteRevision[] {
   const result = run.metrics?.reservationistResult as
     | { quoteRevisions?: QuoteRevision[]; quoteRevisionIds?: string[] }
     | undefined;
-  const listed = result?.quoteRevisions ?? [];
+  const listed = result?.quoteRevisions?.length ? result.quoteRevisions : [];
   const ids = new Set(result?.quoteRevisionIds ?? listed.map((row) => row.id));
   return listed.filter((row) => ids.has(row.id));
 }
@@ -158,7 +174,14 @@ function proposalBundles(run: PriorQuoteRun): Array<{ ref: string; facts: Author
   const result = run.metrics?.reservationistResult as
     | { proposalFacts?: Array<{ ref: string; facts: AuthorizedProposalFacts }> }
     | undefined;
-  return result?.proposalFacts ?? [];
+  if (result?.proposalFacts) return result.proposalFacts;
+  const facts = preparedProposalFor(run)?.facts;
+  const factRefs = run.readResult?.factRefs;
+  const ref =
+    Array.isArray(factRefs) && factRefs.length === 1 && typeof factRefs[0] === 'string'
+      ? factRefs[0]
+      : undefined;
+  return facts && ref ? [{ ref, facts }] : [];
 }
 
 function proposalFactsForRevision(
@@ -174,12 +197,17 @@ export function proposalFactRefsForRevision(run: PriorQuoteRun, revisionId: stri
     .map((row) => row.ref);
 }
 
-/** The row prices a staff approval recorded for this revision. Empty when HMS priced every row. */
-export function storedRowPrices(run: { metrics: Record<string, unknown> | null }, revisionId: string): RowPrice[] {
+/** The row prices an approval recorded for this revision. Empty when HMS priced every row. */
+export function storedRowPrices(
+  run: Pick<PriorQuoteRun, 'metrics' | 'readResult'>,
+  revisionId: string,
+): RowPrice[] {
   const staff = run.metrics?.staffQuoteAttestation as
     | Pick<StaffQuoteAttestation, 'revisionIds' | 'rowPrices'>
     | undefined;
-  return staff?.revisionIds?.includes(revisionId) ? (staff.rowPrices ?? []) : [];
+  if (staff?.revisionIds?.includes(revisionId)) return staff.rowPrices ?? [];
+  const prepared = preparedProposalFor(run);
+  return prepared?.revision?.id === revisionId ? (prepared.rowPrices ?? []) : [];
 }
 
 /**
@@ -216,8 +244,18 @@ function extrasHeaderFromFacts(
 ): Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'company' | 'agency' | 'notes'> {
   const out: Omit<PriorStaffQuoteRequotePayload, 'groups' | 'salesStrategy' | 'company' | 'agency' | 'notes'> = {};
   for (const row of facts?.extras ?? []) {
-    if (row.service === 'dinner_allowance' && row.unitKind === 'person_service') {
+    if (row.service === 'dinner_add_on') {
       out.dinnerAllowanceMinor = row.unitMinor;
+      if (row.chargeUnit === 'per_person_night') out.dinnerAllowanceUnit = 'per_person_per_night';
+      else if (row.chargeUnit === 'per_person' || row.chargeUnit === 'per_room_per_night') {
+        out.dinnerAllowanceUnit = row.chargeUnit;
+      }
+      if (row.groupIds?.length) out.dinnerAllowanceGroupIds = [...row.groupIds];
+      const qualifier = qualifierFromLabel(row.label, 'Dinner add-on');
+      if (qualifier) out.dinnerAllowanceLabel = qualifier;
+    } else if (row.service === 'dinner_allowance' && row.unitKind === 'person_service') {
+      out.dinnerAllowanceMinor = row.unitMinor;
+      out.dinnerAllowanceUnit = 'per_person_per_night';
       const qualifier = qualifierFromLabel(row.label, 'Dinner allowance');
       if (qualifier) out.dinnerAllowanceLabel = qualifier;
     } else if (row.service === 'lunch_allowance' && row.unitKind === 'person_service') {
@@ -236,9 +274,10 @@ function extrasHeaderFromFacts(
       out.shuttleTrips = row.units;
     } else if (row.service === 'other') {
       // The unit the staff chose is stored on the fact. Facts stored before that fall back to the old inference.
+      const inferredUnit =
+        row.unitKind === 'trip' ? 'per_trip' : row.unitKind === 'item' ? 'item' : row.dates.length > 1 ? 'per_person_night' : 'per_person';
       const unit: OtherChargeUnit =
-        row.chargeUnit ??
-        (row.unitKind === 'trip' ? 'per_trip' : row.unitKind === 'item' ? 'item' : row.dates.length > 1 ? 'per_person_night' : 'per_person');
+        row.chargeUnit && row.chargeUnit !== 'per_room_per_night' ? row.chargeUnit : inferredUnit;
       out.other = { label: row.label, amountMinor: row.unitMinor, unit };
     }
   }

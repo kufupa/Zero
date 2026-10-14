@@ -1,4 +1,4 @@
-import { activateSource, controlSource, sourceStatus } from '../../outlook-sync/service.js';
+import { activateSource, activeTransportStatus, controlSource, sourceStatus } from '../../outlook-sync/service.js';
 import { activateInput, controlInput } from '../../outlook-sync/contracts.js';
 import { SyncDeniedError } from '../../outlook-sync/authorization.js';
 import { mailboxProcedure, router } from '../trpc.js';
@@ -38,6 +38,11 @@ export const outlookSyncRouter = router({
       guarded(() =>
         sourceStatus(getDb(), ctx.auth, ctx.reqHeaders, ctx.activeTransportId, input.sourceId),
       ),
+    ),
+  statusForActiveMailbox: mailboxProcedure
+    .input(z.object({}).strict())
+    .query(({ ctx }) =>
+      guarded(() => activeTransportStatus(getDb(), ctx.auth, ctx.reqHeaders, ctx.activeTransportId)),
     ),
   control: mailboxProcedure
     .input(controlInput)

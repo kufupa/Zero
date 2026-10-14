@@ -11,6 +11,7 @@ import {
 } from './authorization.js';
 import {
   activateInput,
+  type ActiveMailboxSyncStatus,
   controlInput,
   nativeActivateInput,
   nativeClaimInput,
@@ -18,6 +19,7 @@ import {
   type SyncReadLeaseV1,
   type SyncStatusV1,
 } from './contracts.js';
+import { resolveAuthSessionProfile } from '../lib/auth-profile.js';
 import {
   outlookSyncSource,
   outlookSyncScan,
@@ -26,7 +28,7 @@ import {
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import { wrappingKey } from '../outlook-security/device.js';
 import { refreshSourceSummary } from './ledger.js';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import type { z } from 'zod';
 
@@ -388,40 +390,70 @@ export async function sourceStatus(
       [s] = await t.select().from(outlookSyncSource).where(eq(outlookSyncSource.id, sourceId));
     if (!s || s.userId !== staff.userId || s.transportId !== transportId)
       throw new SyncDeniedError();
-    await requireRoot(t, s);
-    const now = await databaseNow(t);
-    const gap = s.gapCount;
-    return {
-      version: 1,
-      sourceId: s.id,
-      state: s.userPaused
-        ? 'paused'
-        : (!s.handleHash && s.captureStartedAt) ||
-            s.sessionId !== staff.sessionId ||
-            s.authorityExpiresAt <= now
-          ? 'sign-in-required'
-          : s.resourcePauseReason || gap
-            ? 'attention'
-            : s.captureStartedAt
-              ? 'running'
-              : 'pending',
-      capabilityRequirement: 'mailboxSync:1',
-      historyFrom: s.historyFrom?.toISOString() ?? null,
-      historyTo: s.historyTo?.toISOString() ?? null,
-      timezone: s.timezone,
-      captureStartedAt: s.captureStartedAt?.toISOString() ?? null,
-      discoveredThrough: s.discoveredThrough?.toISOString() ?? null,
-      committedThrough: s.committedThrough?.toISOString() ?? null,
-      discovered: s.discoveredCount,
-      retained: s.retainedCount,
-      committed: s.committedCount,
-      gaps: gap,
-      history: s.historySummary,
-      live: s.liveSummary,
-      userPaused: s.userPaused,
-      resourcePauseReason: s.resourcePauseReason,
-    };
+    return statusForSource(t, staff.sessionId, s);
   });
+}
+
+/** Read-only status for the signed-in staff member's active mailbox, for surfaces without an Outlook device bridge. */
+export async function activeTransportStatus(
+  db: DB,
+  auth: SyncAuth,
+  headers: Headers,
+  transportId: string,
+): Promise<ActiveMailboxSyncStatus> {
+  if (resolveAuthSessionProfile() === 'remote') return { state: 'not_applicable' };
+  return db.transaction(async (tx) => {
+    const t = tx as DB;
+    const staff = await authenticatedStaff(t, auth, headers);
+    const [source] = await t
+      .select()
+      .from(outlookSyncSource)
+      .where(and(eq(outlookSyncSource.userId, staff.userId), eq(outlookSyncSource.transportId, transportId)))
+      .orderBy(desc(outlookSyncSource.updatedAt), desc(outlookSyncSource.createdAt))
+      .limit(1);
+    return source ? statusForSource(t, source.sessionId, source) : null;
+  });
+}
+
+async function statusForSource(
+  db: DB,
+  sessionId: string,
+  source: typeof outlookSyncSource.$inferSelect,
+): Promise<SyncStatusV1> {
+  await requireRoot(db, source);
+  const now = await databaseNow(db);
+  const gap = source.gapCount;
+  return {
+    version: 1,
+    sourceId: source.id,
+    state: source.userPaused
+      ? 'paused'
+      : source.status === 'sign-in-required' ||
+          (!source.handleHash && source.captureStartedAt) ||
+          source.sessionId !== sessionId ||
+          source.authorityExpiresAt <= now
+        ? 'sign-in-required'
+        : source.resourcePauseReason || gap
+          ? 'attention'
+          : source.captureStartedAt
+            ? 'running'
+            : 'pending',
+    capabilityRequirement: 'mailboxSync:1',
+    historyFrom: source.historyFrom?.toISOString() ?? null,
+    historyTo: source.historyTo?.toISOString() ?? null,
+    timezone: source.timezone,
+    captureStartedAt: source.captureStartedAt?.toISOString() ?? null,
+    discoveredThrough: source.discoveredThrough?.toISOString() ?? null,
+    committedThrough: source.committedThrough?.toISOString() ?? null,
+    discovered: source.discoveredCount,
+    retained: source.retainedCount,
+    committed: source.committedCount,
+    gaps: gap,
+    history: source.historySummary,
+    live: source.liveSummary,
+    userPaused: source.userPaused,
+    resourcePauseReason: source.resourcePauseReason,
+  };
 }
 /** Auth logout deletes the real session; this helper additionally fences grants immediately. Pane unmount never calls it. */
 export async function invalidateSourceSession(db: DB, sessionId: string) {

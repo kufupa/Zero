@@ -391,10 +391,7 @@ export function fixtureReplyHtml(fixture: QuoteFixture, guestFirstName = 'Guest'
   const secondary = fixture.secondaryAsks.length
     ? `<p>${fixture.secondaryAsks.join(' ')}</p>`
     : '';
-  const alternatives = fixture.alternatives.length
-    ? `<p>Requested alternatives remain available in this email and are not booked: ${fixture.alternatives.join(', ')}.</p>`
-    : '';
-  return `<div><p>Good day ${guestFirstName},</p><p>Please see attached quotation for the selected allocation only.</p>${secondary}${alternatives}<p>Kind regards,</p></div>`;
+  return `<div><p>Good day ${guestFirstName},</p><p>Please see attached quotation for the selected allocation only.</p>${secondary}<p>Kind regards,</p></div>`;
 }
 
 export function loadQuoteFixture(id: QuoteFixtureId): QuoteFixture {

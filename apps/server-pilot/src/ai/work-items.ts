@@ -19,6 +19,7 @@ import {
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
 import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
+import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 
@@ -364,6 +365,7 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
           stayId: order[index]?.stayId,
         };
       }),
+      missingQuoteReplyFields: mapped.missingQuoteReplyFields,
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
       reviewItems: [...failures, ...questionItems(mapped.missing)],
@@ -1180,6 +1182,12 @@ export type StoredWork =
   | { status: 'failed'; reason: string }
   | {
       status: 'ready';
+      /** The stored extraction kind, for the pane's shared reservation-staff vocabulary. */
+      kind: string;
+      /** A self-sent pre-stay confirmation is information about an existing stay, not booking work. */
+      existingStayInformation: boolean;
+      /** Confirmation numbers stay available to staff even when the extraction kind is shown as `other`. */
+      confirmationNumbers: string[];
       /** Null when the read has no work item yet. The pane then opens one (openStoredWork) before it logs edits. */
       workItemId: string | null;
       workItemStatus: string | null;
@@ -1212,8 +1220,15 @@ async function messageFor(db: DB, input: { transportId: string; internetMessageI
   const internetMessageId = canonicalInternetMessageId(input.internetMessageId);
   if (!internetMessageId) return null;
   const found = await db
-    .select({ id: message.id, threadId: message.threadId, fromAddress: message.fromAddress })
+    .select({
+      id: message.id,
+      threadId: message.threadId,
+      fromAddress: message.fromAddress,
+      subject: message.subject,
+      mailboxAddress: mailboxTransport.email,
+    })
     .from(message)
+    .leftJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
     .where(and(eq(message.transportId, input.transportId), eq(message.messageIdHeader, internetMessageId)))
     .limit(2);
   return found.length === 1 ? found[0]! : null;
@@ -1224,7 +1239,12 @@ type ReadyRead = NonNullable<Awaited<ReturnType<typeof succeededRead>>>;
 /** The pane's ready view of a read with her saved values. The item can stay on an earlier read (see ensureWorkItem). */
 async function readyView(
   db: DB,
-  msg: { id: string; fromAddress: string | null },
+  msg: {
+    id: string;
+    fromAddress: string | null;
+    subject: string | null;
+    mailboxAddress: string | null;
+  },
   latest: ReadyRead,
   item: Pick<WorkItemRef, 'id' | 'status' | 'state' | 'extractionId'> | null,
 ): Promise<StoredWork> {
@@ -1233,12 +1253,22 @@ async function readyView(
     item?.extractionId && item.extractionId !== latest.id
       ? ((await succeededRead(db, messageId, item.extractionId)) ?? latest)
       : latest;
-  const state = item?.state ?? {};
+  const existingStayInformation = isSelfSentPreStayInformationMail({
+    fromAddress: msg.fromAddress,
+    mailboxAddress: msg.mailboxAddress,
+    subject: msg.subject,
+    confirmationNumbers: read.payload.confirmationNumbers,
+  });
+  const paneItem = existingStayInformation ? null : item;
+  const state = paneItem?.state ?? {};
   const stored = storedAnalysis(read, state);
   return {
     status: 'ready',
-    workItemId: item?.id ?? null,
-    workItemStatus: item?.status ?? null,
+    kind: existingStayInformation ? 'other' : read.kind,
+    existingStayInformation,
+    confirmationNumbers: read.payload.confirmationNumbers,
+    workItemId: paneItem?.id ?? null,
+    workItemStatus: paneItem?.status ?? null,
     extractionId: read.id,
     refs: stored.refs,
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
@@ -1262,6 +1292,13 @@ export async function storedWorkFor(
   if (!msg) return { status: 'none' };
   const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg.id);
+  const existingStayInformation = isSelfSentPreStayInformationMail({
+    fromAddress: msg.fromAddress,
+    mailboxAddress: msg.mailboxAddress,
+    subject: msg.subject,
+    confirmationNumbers: latest.payload.confirmationNumbers,
+  });
+  if (existingStayInformation) return readyView(db, msg, latest, null);
   const [item] = await db
     .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
     .from(workItem)
@@ -1289,6 +1326,16 @@ export async function openStoredWork(
   if (!msg) return { status: 'none' };
   const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg.id);
+  if (
+    isSelfSentPreStayInformationMail({
+      fromAddress: msg.fromAddress,
+      mailboxAddress: msg.mailboxAddress,
+      subject: msg.subject,
+      confirmationNumbers: latest.payload.confirmationNumbers,
+    })
+  ) {
+    return readyView(db, msg, latest, null);
+  }
   const item = await ensureWorkItem(db, {
     transportId: input.transportId,
     threadId: msg.threadId,
@@ -1533,6 +1580,7 @@ export async function listWorkItems(
       sender: message.fromAddress,
       subject: message.subject,
       receivedAt: message.receivedAt,
+      confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
       chipRank,
     })
     .from(workItem)
@@ -1556,8 +1604,26 @@ export async function listWorkItems(
       asc(workItem.id),
     )
     .limit(input.limit);
-  return rows.map(({ chipRank: rank, ...row }) => ({
-    ...row,
-    chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
-  }));
+  const [mailbox] = await db
+    .select({ email: mailboxTransport.email })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.id, input.transportId))
+    .limit(1);
+  // Items opened before the pre-stay rule stay out of Needs You: the mail is about a stay already booked.
+  return rows
+    .filter(
+      (row) =>
+        !isSelfSentPreStayInformationMail({
+          fromAddress: row.sender,
+          mailboxAddress: mailbox?.email,
+          subject: row.subject,
+          confirmationNumbers: Array.isArray(row.confirmationNumbers)
+            ? row.confirmationNumbers.filter((value): value is string => typeof value === 'string')
+            : [],
+        }),
+    )
+    .map(({ chipRank: rank, confirmationNumbers: _confirmationNumbers, ...row }) => ({
+      ...row,
+      chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
+    }));
 }

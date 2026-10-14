@@ -1,4 +1,12 @@
-import { canCreateNativeDraft, canCreatePdf, isMultiStay, pdfBlocker, ratedStayCount } from '@/lib/quote-workflow/session';
+import {
+  canCreateNativeDraft,
+  canCreatePdf,
+  isMultiStay,
+  missingQuoteDetailsReplyOnly,
+  pdfBlocker,
+  quoteDeclineReplyOnly,
+  ratedStayCount,
+} from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { Field, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 
@@ -15,6 +23,10 @@ export function pdfBlockReason(session: QuoteSession): string | null {
   switch (blocker.kind) {
     case 'amounts':
       return `Fix the amounts first. ${blocker.problem}`;
+    case 'dinner_add_on':
+      return blocker.problem;
+    case 'missing_stay_details':
+      return 'Add the missing arrival and departure dates before preparing quote documents.';
     case 'source_not_ready':
       return blocker.unsynced
         ? 'Waiting for this email to finish syncing.'
@@ -49,6 +61,7 @@ export function DocumentReview({
   onPreparePdf,
   onDownloadWorkbook,
   workbookPending,
+  primaryAction,
 }: {
   session: QuoteSession;
   onReplyChange?: (html: string) => void;
@@ -56,6 +69,8 @@ export function DocumentReview({
   onDownloadWorkbook?: () => void;
   /** An Excel export is being made. The button stays disabled until it settles. */
   workbookPending?: boolean;
+  /** The pane may keep this as the secondary PDF action while an earlier quote blocker is active. */
+  primaryAction?: boolean;
 }) {
   const pdfReady = canCreatePdf(session);
   const nativeReady = canCreateNativeDraft(session);
@@ -69,17 +84,18 @@ export function DocumentReview({
         ? 'Excel is not available here.'
         : null;
   const pdfButtonLabel = isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF';
+  const replyOnly = missingQuoteDetailsReplyOnly(session) || quoteDeclineReplyOnly(session);
+  const PdfActionButton = (primaryAction ?? !session.pdf) ? PrimaryButton : SecondaryButton;
   return (
     <div className="flex flex-col gap-3.5">
-      {session.pdf ? (
-        <SecondaryButton className="w-full" disabled={!pdfReady} disabledReason={pdfReason} onClick={onPreparePdf}>
-          {pdfButtonLabel}
-        </SecondaryButton>
-      ) : (
-        <PrimaryButton disabled={!pdfReady} disabledReason={pdfReason} onClick={onPreparePdf}>
-          {pdfButtonLabel}
-        </PrimaryButton>
-      )}
+      <PdfActionButton
+        className="w-full"
+        disabled={!pdfReady || !onPreparePdf}
+        disabledReason={pdfReason ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null)}
+        onClick={onPreparePdf}
+      >
+        {pdfButtonLabel}
+      </PdfActionButton>
       {session.pdf ? (
         <p className="text-[12.5px] text-[#1e293b]">
           {isMultiStay(session)
@@ -93,8 +109,8 @@ export function DocumentReview({
         </SecondaryButton>
         {excelDisabled && excelReason ? <p className="text-center text-[12.5px] text-[#64748b]">{excelReason}</p> : null}
       </div>
-      {/* A combined reply is built from every stay's quote, so the one-stay reply box would be ignored. */}
-      {isMultiStay(session) ? null : (
+      {/* A combined reply is built from every stay's quote; request-only replies still need the ordinary editor. */}
+      {!isMultiStay(session) || replyOnly ? (
         <Field label="Reply to the client (you can edit it)" htmlFor="quote-reviewed-reply">
           <textarea
             id="quote-reviewed-reply"
@@ -104,7 +120,7 @@ export function DocumentReview({
             onChange={(event) => onReplyChange?.(event.target.value)}
           />
         </Field>
-      )}
+      ) : null}
       {nativeReady ? (
         <p className="text-[12.5px] text-emerald-800">Reply and PDF are ready. Next, create the Outlook draft. It is not sent.</p>
       ) : null}

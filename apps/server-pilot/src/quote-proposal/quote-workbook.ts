@@ -4,6 +4,7 @@ import { unzipSync, zipSync } from 'fflate';
 import { HOTEL_TELEPHONE } from './filename.js';
 import {
   deriveAuthorizedExtraLines,
+  extraDisplayDescription,
   deriveQuoteLines,
   type AuthorizedProposalFacts,
   type RowPrice,
@@ -165,7 +166,7 @@ export function workbookLinesForStays(stays: WorkbookStay[]): { lines: WorkbookL
       (line): WorkbookItem => ({
         service: line.service,
         extra: true,
-        description: line.description,
+        description: extraDisplayDescription(line),
         qty: line.quantity,
         nights: line.nights,
         rateMinor: line.rateMinor,
@@ -466,13 +467,13 @@ export function quoteWorkbookForRevision(args: {
   });
 }
 
-/** "Quote - <Company or Guest> - <arrival>.xlsx" with path-unsafe characters removed. */
-export function quoteWorkbookFileName(company: string, arrivalDate: string): string {
+/** "Quote - <Company or Guest> <stay span>.xlsx" with path-unsafe characters removed. */
+export function quoteWorkbookFileName(company: string, arrivalDate: string, departureDate = arrivalDate): string {
   const label = Array.from(company)
     .filter((ch) => ch >= ' ' && !'\\/:*?"<>|'.includes(ch))
     .join('')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80);
-  return `Quote - ${label || 'Guest'} - ${arrivalDate}.xlsx`;
+  return `Quote - ${label || 'Guest'} ${quoteDateLabel(arrivalDate, departureDate)}.xlsx`;
 }

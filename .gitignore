@@ -131,3 +131,6 @@ docs/superpowers/plans/2026-07-29-centurion-spam-triage-audit.md
 
 # Lab-scratch local transcripts/contracts (PII). The rest of archive/lab-scratch is tracked.
 archive/lab-scratch/_local-pii/
+
+# Local Mastra runtime store written by tests
+apps/server-pilot/data/mastra/

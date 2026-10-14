@@ -173,6 +173,17 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.user).toContain('rooming.pdf');
   });
 
+  it('keeps requested dinner boards for the server-side B&B retry', () => {
+    const prompt = buildQuoteWorkflowPrompt(selection).system;
+
+    expect(prompt).toContain(
+      'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
+    );
+    expect(prompt).not.toContain(
+      'Half-board, half board, DBB or dinner with breakfast means quote Bed & Breakfast and show dinner as a separate staff-priced add-on.',
+    );
+  });
+
   it('gives quote and availability requests precedence over booking language', () => {
     const prompt = buildQuoteWorkflowPrompt(selection);
     expect(prompt.system).toContain(
@@ -260,6 +271,35 @@ describe('mapLlmDecision', () => {
       },
     ]);
     expect(JSON.stringify(mapped)).not.toMatch(/price|rate"|amount/i);
+  });
+
+  it('maps half-board to dinner B&B and derives only missing dates and occupancy for the reply', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{
+            ...group,
+            arrival: null,
+            departure: '2026-11-14',
+            rooms: null,
+            adultsPerRoom: null,
+            board: 'half_board',
+          }],
+          missing: [],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      departureDate: '2026-11-14',
+      board: 'dinner_bb',
+      fields: { arrivalDate: 'missing', departureDate: 'extracted' },
+    });
+    expect(mapped.missingQuoteReplyFields).toEqual([
+      'Arrival date for stay 1',
+      'Number of rooms and occupancy per room for stay 1',
+    ]);
   });
 
   it('maps create_booking to intent quote and leaves groups in place', () => {

@@ -13,6 +13,7 @@ import {
   profileHolds,
   restrictedNightsOf,
   shortfallsOf,
+  availableRoomAlternatives,
 } from './quote-contract.mjs';
 import { profileFor } from './property-profile.mjs';
 
@@ -319,6 +320,142 @@ test('quantity multiplies exact cents; mixed currency or missing night yields no
   ], 1);
   assert.equal(missing.ok, false);
   assert.ok(['missing_amount', 'incomplete_dates', 'unsupported_amount_format'].includes(missing.reason));
+});
+
+test('available room alternatives keep only observed, usable rooms on the requested board', () => {
+  const request = {
+    propertyCode: 'HRCEN',
+    arrivalDate: stay.arrivalDate,
+    departureDate: stay.departureDate,
+    requestedCurrency: 'ZAR',
+    rooms: [{
+      id: 'requested',
+      quantity: 2,
+      adults: 2,
+      children: 0,
+      childAges: [],
+      required: { roomCodes: ['STQN'], boardBases: ['breakfast'] },
+    }],
+  };
+  const nights = (inventory) => ['2026-09-24', '2026-09-25', '2026-09-26'].map((date) => ({
+    date,
+    inventory,
+    price: { amount: '100.00', currency: 'ZAR' },
+  }));
+  const groups = [{
+    id: 'requested',
+    request: request.rooms[0],
+    options: [
+      {
+        room: { code: 'STQN', label: 'Standard Queen' }, rate: { code: 'BAR', label: 'Bed & Breakfast' },
+        board: 'Bed & Breakfast', matchStatus: 'match', eligibility: 'verified', availability: 'available', held: false,
+        nightly: nights(1),
+      },
+      {
+        room: { code: 'DLXTWN', label: 'Deluxe Twin' }, rate: { code: 'BAR', label: 'Bed & Breakfast' },
+        board: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: false,
+        nightly: nights(1),
+      },
+      {
+        room: { code: 'SKNG', label: 'Standard King' }, rate: { code: 'BAR', label: 'Bed & Breakfast' },
+        board: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'unavailable', held: false,
+        nightly: nights(1),
+      },
+      {
+        room: { code: 'DLXTWN', label: 'Deluxe Twin' }, rate: { code: 'BARRO', label: 'Bed & Breakfast' },
+        board: 'B&B', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: false,
+        nightly: nights(2),
+      },
+      {
+        room: { code: 'EXKNG', label: 'Executive King' }, rate: { code: 'DBB', label: 'Dinner B&B' },
+        board: 'Dinner, bed & breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: false,
+        nightly: nights(2),
+      },
+      {
+        room: { code: 'DLXQN', label: 'Deluxe Queen' }, rate: { code: 'BAR', label: 'Bed & Breakfast' },
+        board: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'conditional', availability: 'available', held: false,
+        nightly: nights(2),
+      },
+      {
+        room: { code: 'LUXKNG', label: 'Luxury King' }, rate: { code: 'BAR', label: 'Bed & Breakfast' },
+        board: 'Bed & Breakfast', matchStatus: 'alternative', eligibility: 'verified', availability: 'available', held: true,
+        nightly: nights(2),
+      },
+    ],
+  }];
+
+  assert.deepEqual(availableRoomAlternatives(groups, request), [
+    { groupId: 'requested', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 2 },
+    { groupId: 'requested', roomCode: 'SKNG', roomLabel: 'Standard King', quantity: 1 },
+  ]);
+});
+
+test('available room alternatives recognize native HMS board labels', () => {
+  const request = {
+    propertyCode: 'HRCEN',
+    arrivalDate: '2026-09-24',
+    departureDate: '2026-09-25',
+    requestedCurrency: 'ZAR',
+    rooms: [{
+      id: 'requested',
+      quantity: 1,
+      adults: 1,
+      children: 0,
+      childAges: [],
+      required: { roomCodes: ['STQN'], boardBases: ['breakfast'] },
+    }],
+  };
+  const groups = [{
+    id: 'requested',
+    options: [{
+      room: { code: 'DLXTWN', label: 'Deluxe Twin' },
+      rate: { code: 'BAR' },
+      board: 'Bed & Breakfast R',
+      matchStatus: 'alternative',
+      eligibility: 'verified',
+      availability: 'available',
+      held: false,
+      nightly: [{ date: '2026-09-24', inventory: 1 }],
+    }],
+  }];
+
+  assert.deepEqual(availableRoomAlternatives(groups, request), [
+    { groupId: 'requested', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 1 },
+  ]);
+});
+
+test('available room alternatives keep a checked party\'s public rows and drop unverified-context rows', () => {
+  const request = {
+    propertyCode: 'HRCEN',
+    arrivalDate: '2026-09-24',
+    departureDate: '2026-09-25',
+    requestedCurrency: 'ZAR',
+    rateContext: { organization: { nativeId: '1842' } },
+    rooms: [{ id: 'requested', quantity: 1, adults: 1, children: 0, childAges: [], required: { roomCodes: ['STQN'] } }],
+  };
+  const option = (code, condition) => ({
+    room: { code, label: `Room ${code}` },
+    rate: { code: 'BAR' },
+    board: 'Bed & Breakfast R',
+    rateScope: 'public',
+    matchStatus: 'alternative',
+    eligibility: 'verified',
+    availability: 'available',
+    held: false,
+    conditions: [condition],
+    nightly: [{ date: '2026-09-24', inventory: 1 }],
+  });
+  const groups = [{
+    id: 'requested',
+    options: [
+      option('DLXTWN', { kind: 'preferred', field: 'rateContext', status: 'unsatisfied' }),
+      option('SKNG', { kind: 'required', field: 'rateContext', status: 'unknown' }),
+    ],
+  }];
+
+  assert.deepEqual(availableRoomAlternatives(groups, request), [
+    { groupId: 'requested', roomCode: 'DLXTWN', roomLabel: 'Room DLXTWN', quantity: 1 },
+  ]);
 });
 
 test('v2 rooms require ids; rate context accepts exactly one of code, name or nativeId', () => {

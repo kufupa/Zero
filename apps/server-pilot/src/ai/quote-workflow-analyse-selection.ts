@@ -457,6 +457,7 @@ export async function analyseSyncedSelection(
       status: 'ready' as const,
       intent: mapped.intent,
       groups: mapped.groups,
+      missingQuoteReplyFields: mapped.missingQuoteReplyFields,
       secondaryAsks: mapped.secondaryAsks,
       alternatives: mapped.alternatives,
       reviewItems: [...attachmentReviews, ...questionItems(mapped.missing)],

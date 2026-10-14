@@ -3,6 +3,7 @@ import {
   bindAnalyseSelection,
   bindQualifiedProposalPdf,
   bindRunStep,
+  bindStoredWork,
   quoteWorkflowFromTrpc,
   QUOTE_WORKFLOW_BIND_TARGETS,
   STAFF_QUOTE_PILOT_MISSING,
@@ -39,6 +40,35 @@ describe('quote workflow backend bind', () => {
     expect(
       quoteWorkflowFromTrpc({ quoteWorkflow: { rateCatalogue: { query } } }).rateCatalogue?.query,
     ).toBe(query);
+  });
+
+  it('does not open a work item for stored existing-stay information', async () => {
+    const stored = {
+      status: 'ready' as const,
+      kind: 'other',
+      existingStayInformation: true,
+      confirmationNumbers: ['57291630-1'],
+      workItemId: null,
+      workItemStatus: null,
+      extractionId: 'ex-existing-stay',
+      refs: {},
+      analysis: {} as never,
+      contact: {} as never,
+      language: null,
+      translation: null,
+    };
+    const query = { query: vi.fn(async () => stored) };
+    const open = { mutate: vi.fn() };
+
+    const result = await bindStoredWork({
+      query: query as unknown as Parameters<typeof bindStoredWork>[0]['query'],
+      open: open as unknown as Parameters<typeof bindStoredWork>[0]['open'],
+      internetMessageId: '<existing-stay@example.invalid>',
+      transportId: 'transport-existing-stay',
+    });
+
+    expect(result).toBe(stored);
+    expect(open.mutate).not.toHaveBeenCalled();
   });
 
   it('reports unavailable when analyseSelection is not on the client', async () => {
@@ -776,10 +806,12 @@ describe('staff quote execute/PDF header bind', () => {
         attention: '',
         clientEmail: '',
         clientTelephone: '',
+        notes: 'Breakfast only on day two.',
       },
       expectedTotalMinor: 850000,
     });
     expect(pdf.status).toBe('ok');
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ notes: 'Breakfast only on day two.' }));
     const mismatched = await bindQualifiedStaffProposalPdf({
       mutate: vi.fn(async () => ({
         revisionId: 'rev-1',

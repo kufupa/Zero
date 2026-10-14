@@ -135,11 +135,11 @@ describe('OutlookPane Onboarding Flow', () => {
     cleanup();
   });
 
-  it('renders Screen 1 Welcome with auto-detected Outlook email and property info', () => {
+  it('renders Screen 1 Welcome with the connected mailbox and no hard-coded hotel fallback', () => {
     render(<OutlookPanePage />);
     expect(screen.getByText(/Welcome to Nava/i)).toBeDefined();
-    expect(screen.getByText('ropperman@legacyhotels.co.za')).toBeDefined();
-    expect(screen.getByText(/The Centurion Hotel/i)).toBeDefined();
+    expect(screen.getByLabelText('Connected mailbox: ropperman@legacyhotels.co.za')).toBeDefined();
+    expect(screen.queryByText(/Centurion Hotel/i)).toBeNull();
     expect(screen.getByRole('button', { name: /Confirm Account & Connect/i })).toBeDefined();
   });
 
@@ -210,6 +210,10 @@ describe('OutlookPane Onboarding Flow', () => {
       expect(screen.getByText(/Server pinged at 2026-09-25 09:30:00 UTC/i)).toBeDefined();
       expect(screen.getByText(/Nava server connected/i)).toBeDefined();
     });
+    expect(
+      screen.getByText(/ropperman@legacyhotels\.co\.za · API server pinged at 2026-09-25 09:30:00 UTC/i),
+    ).toBeDefined();
+    expect(screen.queryByText(/Centurion Hotel/i)).toBeNull();
 
     expect(screen.getByRole('button', { name: /Next: 60-Second Feature Tour/i })).toBeDefined();
   });
@@ -276,7 +280,7 @@ describe('OutlookPane Onboarding Flow', () => {
     activeEmailState.current = null;
     render(<OutlookPanePage />);
     fireEvent.click(screen.getByRole('button', { name: /4\. Quote Tool/i }));
-    expect(screen.getByText('Click an email to start')).toBeDefined();
+    expect(screen.getByText('Select an email to start')).toBeDefined();
     expect(screen.queryByText('Sample')).toBeNull();
     expect(screen.queryByText('Synced')).toBeNull();
     expect(screen.queryByText(/Suite Availability Request/)).toBeNull();

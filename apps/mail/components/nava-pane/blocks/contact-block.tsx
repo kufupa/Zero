@@ -1,15 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { currentPaneOwner, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
-import { copyText } from '@/components/quote-workflow/hms-link-actions';
-import { Field, paneFieldClass, Section, StepState } from '../pane-ui';
+import { Field, paneFieldClass, Section } from '../pane-ui';
 
 const FIELDS: Array<{ field: ContactField; label: string; pii: boolean }> = [
   { field: 'name', label: 'Name', pii: true },
   { field: 'email', label: 'Email', pii: true },
   { field: 'phone', label: 'Phone', pii: true },
-  { field: 'company', label: 'Company', pii: false },
-  { field: 'endClient', label: 'End client', pii: true },
 ];
 
 const NO_CONTACT: StoredContact = {
@@ -37,34 +33,11 @@ export function ContactBlock({
     email: contact?.email ?? senderFallback?.email ?? null,
   }));
   const [correcting, setCorrecting] = useState(false);
-  const [feedback, setFeedback] = useState<{ field: ContactField; copied: boolean } | null>(null);
-  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const ready = Boolean(values.name?.trim() || values.email?.trim());
-
-  useEffect(
-    () => () => {
-      if (resetTimer.current) clearTimeout(resetTimer.current);
-    },
-    [],
-  );
-
-  const copyValue = async (field: ContactField, value: string) => {
-    if (!value.trim()) return;
-    // The owner is read before the clipboard write, so a switch of mail while it is pending does not move the copy.
-    const owner = currentPaneOwner();
-    const copied = await copyText(value);
-    setFeedback({ field, copied });
-    if (copied) trackPaneAction({ type: 'copy.contact', field }, owner);
-    if (resetTimer.current) clearTimeout(resetTimer.current);
-    resetTimer.current = setTimeout(() => setFeedback(null), 2000);
-  };
 
   return (
     <Section
-      title="Guest & contact"
-      step={1}
+      title="Quote contact — printed on the PDF"
       id="quote-contact"
-      action={<StepState state={ready ? 'Done' : 'Pending'} />}
     >
       <dl className="grid grid-cols-2 gap-x-2.5 gap-y-2">
         {FIELDS.map(({ field, label, pii }) => {
@@ -72,23 +45,9 @@ export function ContactBlock({
           return (
             <div key={field} data-contact-field={field} className="flex min-w-0 flex-col gap-0.5">
               <dt className="text-[11.5px] font-semibold text-[#64748b]">{label}</dt>
-              <dd data-pii={pii || undefined} className="flex min-w-0 items-start justify-between gap-1 text-[13px] text-[#1e293b]">
+              <dd data-pii={pii || undefined} className="flex min-w-0 items-start gap-1 text-[13px] text-[#1e293b]">
                 <span className="min-w-0 break-words">{value || '—'}</span>
-                <button
-                  type="button"
-                  className="h-6 shrink-0 rounded-[3px] px-1.5 text-[10px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:text-[#94a3b8]"
-                  aria-label={(feedback?.field === field && feedback.copied ? 'Copied ' : 'Copy ') + label.toLowerCase()}
-                  disabled={!value}
-                  onClick={() => void copyValue(field, value)}
-                >
-                  {feedback?.field === field && feedback.copied ? 'Copied' : 'Copy'}
-                </button>
               </dd>
-              {feedback?.field === field && !feedback.copied ? (
-                <span role="status" className="text-[10px] text-amber-900">
-                  Couldn&apos;t copy {label.toLowerCase()}.
-                </span>
-              ) : null}
             </div>
           );
         })}
@@ -100,7 +59,7 @@ export function ContactBlock({
           onClick={() => setCorrecting((open) => !open)}
           className="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
         >
-          {correcting ? 'Hide corrections' : 'Correct'}
+          {correcting ? 'Done' : 'Edit'}
         </button>
         <p className="text-[11.5px] text-[#64748b]">Corrections save to this request only. HMS is not changed.</p>
       </div>

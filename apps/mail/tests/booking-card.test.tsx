@@ -1248,6 +1248,35 @@ describe('expired prior re-quote', () => {
     });
   });
 
+  it('restores a dinner add-on unit and remaps its fallback group onto the re-quote rows', () => {
+    const { groups, header } = buildExpiredPriorRequoteBindArgs({
+      stored: {
+        ...stored,
+        dinnerAllowanceMinor: 17_500,
+        dinnerAllowanceUnit: 'per_room_per_night',
+        dinnerAllowanceLabel: 'Set menu',
+        dinnerAllowanceGroupIds: ['prior-g1'],
+      },
+      sessionGroups: [g1],
+      sessionHeader: {
+        salesStrategy: 'BAR',
+        company: '',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      staffEdited: false,
+    });
+
+    expect(header).toMatchObject({
+      dinnerAllowanceMinor: 17_500,
+      dinnerAllowanceUnit: 'per_room_per_night',
+      dinnerAllowanceLabel: 'Set menu',
+      dinnerAllowanceGroupIds: [groups[0]!.id],
+    });
+  });
+
   it('uses patched session groups when staff edited after prefill', () => {
     const edited: StayGroupRequirement = {
       ...g1,

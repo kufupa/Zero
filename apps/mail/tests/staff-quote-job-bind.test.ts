@@ -45,11 +45,11 @@ const READY: ExecuteStaffQuoteResult = {
   description: 'Standard King; Room Only',
 };
 
-function view(status: 'running' | 'done' | 'failed', result: unknown = null, asOf?: string) {
+function view(status: 'running' | 'done' | 'failed', result: unknown = null, asOf?: string, prefetch = false) {
   return {
     runId: 'staff-job-1',
     request: null,
-    prefetch: false,
+    prefetch,
     status,
     position: null,
     attempts: 0,
@@ -102,7 +102,7 @@ describe('staff quote HMS job binding', () => {
       selectionEpoch: 3,
       inputRevision: 4,
       groups,
-      header: emptyStaffQuoteHeader(),
+      header: { ...emptyStaffQuoteHeader(), notes: '  Breakfast only on day two.  ' },
     });
     await vi.runAllTimersAsync();
     const result = await pending;
@@ -188,6 +188,57 @@ describe('staff quote HMS job binding', () => {
     expect(result).toMatchObject({ status: 'ok', staffQuote: { workflowRunId: 'workflow-1' } });
   });
 
+  it.each(['Dinner buffet', 'Dinner buffet (Children < 12)'])('labels a server-priced dinner fallback as B&B and carries the verified add-on: %s', async (label) => {
+    const dinnerGroups = groups.map((group) => ({ ...group, board: 'dinner_bb' as const }));
+    const dinnerAddOn = {
+      label,
+      amountMinor: 25_000,
+      unit: 'per_person_per_night' as const,
+      totalMinor: 50_000,
+    };
+    const result = await bindExecuteStaffQuote({
+      queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
+      staffQuoteJob: vi.fn(async () => view('done', {
+        ...READY,
+        dinnerFallbackGroupIds: ['single'],
+        dinnerAddOnRequired: false,
+        dinnerAddOn,
+      })),
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups: dinnerGroups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      offer: { board: 'bb' },
+      staffQuote: { dinnerFallbackGroupIds: ['single'], dinnerAddOn },
+    });
+  });
+
+  it('preserves an unpriced dinner requirement without fallback group ids', async () => {
+    const result = await bindExecuteStaffQuote({
+      queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
+      staffQuoteJob: vi.fn(async () => view('done', {
+        ...READY,
+        dinnerAddOnRequired: true,
+      })),
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups: groups.map((group) => ({ ...group, board: 'bb' as const })),
+      header: { ...emptyStaffQuoteHeader(), dinnerAllowanceMinor: 25_000 },
+    });
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      staffQuote: { dinnerAddOnRequired: true },
+    });
+    if (result.status === 'ok') expect(result.staffQuote.dinnerFallbackGroupIds).toBeUndefined();
+  });
+
   it('surfaces the exact business refusal stored by the worker', async () => {
     const refusal = 'HMS has no rate for this meal plan under BAR. Try another meal plan.';
     const queue = vi.fn(async () => ({ runId: 'staff-job-1' }));
@@ -235,6 +286,30 @@ describe('staff quote HMS job binding', () => {
       detail: 'PRECONDITION_FAILED',
       noMatchingRate: true,
     });
+  });
+
+  it('preserves validated available-room alternatives from a persisted refusal', async () => {
+    const alternatives = [
+      { groupId: 'single', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 2 },
+    ];
+    const result = await bindExecuteStaffQuote({
+      queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
+      staffQuoteJob: vi.fn(async () =>
+        view('done', {
+          ok: false,
+          code: 'PRECONDITION_FAILED',
+          message: 'No qualified rate covers every room-night.',
+          alternatives,
+        }),
+      ),
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({ status: 'unavailable', alternatives });
   });
 
   it.each([
@@ -402,6 +477,59 @@ describe('staff quote HMS job binding', () => {
     });
   });
 
+  it('rebases a prepared auto-start result when its saved header differs but the price terms matched', async () => {
+    const asOf = '2026-10-14T10:35:00.000Z';
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
+    const staffQuoteJob = vi.fn(async () => ({
+      ...view('done', { ...READY, selectionEpoch: 0, inputRevision: 0 }, asOf, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { company: 'Example Client' }),
+    }));
+
+    const result = await bindAutoStartStaffQuote({
+      queue,
+      staffQuoteJob,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: { ...emptyStaffQuoteHeader(), notes: '  Breakfast only on day two.  ' },
+    });
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      staffQuote: {
+        selectionEpoch: 3,
+        inputRevision: 4,
+        preparedByNava: true,
+        preparedAt: asOf,
+        approvedHeader: { notes: 'Breakfast only on day two.' },
+      },
+    });
+  });
+
+  it('does not rebase a prepared auto-start result from a different source message version', async () => {
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
+    const staffQuoteJob = vi.fn(async () => ({
+      ...view('done', { ...READY, selectionEpoch: 0, inputRevision: 0 }, undefined, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { sourceHash: 'c'.repeat(64) }),
+    }));
+
+    const result = await bindAutoStartStaffQuote({
+      queue,
+      staffQuoteJob,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'unavailable',
+      reason: 'The quote is out of date because the stay details changed. Run it again.',
+    });
+  });
+
   it('does not rebase a reused auto-start result for a different stored request', async () => {
     const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'staff-job-reused' }));
     const staffQuoteJob = vi.fn(async () => ({
@@ -472,6 +600,25 @@ describe('staff quote HMS job binding', () => {
     expect(result).toMatchObject({
       status: 'ok',
       staffQuote: { selectionEpoch: 3, inputRevision: 4, workflowRunId: 'workflow-1' },
+    });
+  });
+
+  it('labels a prepared result for staff with its saved as-of time', async () => {
+    const asOf = '2026-10-14T10:35:00.000Z';
+    const query = vi.fn(async () => view('done', READY, asOf, true));
+
+    const result = await bindReadBackStaffQuote({
+      query,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      staffQuote: { preparedByNava: true, preparedAt: asOf },
     });
   });
 

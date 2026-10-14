@@ -99,13 +99,17 @@ export function activeEmailFromMessage(
   };
 }
 
-/** Which message the viewer selects for a thread, or why none can be analysed. */
+/** Selects the latest inbound message, optionally pinned to a workflow row's source thread. */
 export function selectPreviewMessage(
   messages: readonly ThreadMessage[],
   mailboxEmail: string,
   transportId: string,
+  sourceThreadId?: string,
 ): PreviewSelection {
-  const inbound = latestInboundMessage(messages, mailboxEmail);
+  const sourceMessages = sourceThreadId
+    ? messages.filter((message) => message.threadId === sourceThreadId)
+    : messages;
+  const inbound = latestInboundMessage(sourceMessages, mailboxEmail);
   if (!inbound) return { status: 'unsynced', reason: 'no_inbound' };
   const email = activeEmailFromMessage(inbound, transportId);
   if (!email) return { status: 'unsynced', reason: 'no_message_id' };
@@ -156,7 +160,13 @@ export function buildPreviewBridge(activeEmail: WorkstationEmailPayload | null):
  * message object keeps one identity while its content is unchanged, so the pane does not
  * re-run on every poll.
  */
-export function useWebPreview({ threadId }: { threadId: string }): {
+export function useWebPreview({
+  threadId,
+  sourceThreadId,
+}: {
+  threadId: string;
+  sourceThreadId?: string;
+}): {
   selection: PreviewSelection;
   bridge: PaneBridge;
 } {
@@ -169,8 +179,8 @@ export function useWebPreview({ threadId }: { threadId: string }): {
   const selection = useMemo<PreviewSelection>(() => {
     if (thread.isError) return { status: 'error' };
     if (!connection || !threadMessages) return { status: 'loading' };
-    return selectPreviewMessage(threadMessages, mailboxEmail, transportId);
-  }, [connection, mailboxEmail, thread.isError, threadMessages, transportId]);
+    return selectPreviewMessage(threadMessages, mailboxEmail, transportId, sourceThreadId);
+  }, [connection, mailboxEmail, sourceThreadId, thread.isError, threadMessages, transportId]);
 
   const stableKey = selection.status === 'ready' ? JSON.stringify(selection.email) : '';
   const activeEmail = useMemo(

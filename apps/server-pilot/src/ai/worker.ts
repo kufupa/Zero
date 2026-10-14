@@ -84,6 +84,8 @@ import {
   mailboxTransport,
   message,
 } from '../db/schema/mail.js';
+import { mailExtraction } from '../db/schema/work.js';
+import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import {
   isMailSourceClassification,
 } from './mail-source.js';
@@ -170,7 +172,8 @@ import {
   executeHmsJob,
   hmsJobQueueEnabled,
   scheduleAvailabilityPrefetch,
-  schedulePartyPrefetch,
+  scheduleQuotePreparationAfterPartyMatch,
+  scheduleQuotePreparationForExtraction,
   schedulePrefetchForInbound,
   type HmsRecoveryGate,
 } from './hms-jobs.js';
@@ -189,7 +192,7 @@ import type { IndexableMessage } from '../mail/conversation-signals.js';
 import { LocalModelRouteUnavailableError } from './bedrock/local.js';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
-import { and, asc, eq, inArray, lt, lte, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, lte, or } from 'drizzle-orm';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { normalizeEmailAddress } from './never-spam.js';
@@ -4246,7 +4249,16 @@ export async function executeAiRun(
 
     // Pane HMS jobs run through the CLI under the property lock, so they do not need the read service.
     if (run.runKind === 'read_tool' && run.promptVersion === HMS_JOB_PROMPT_VERSION) {
-      return { runId, state: await executeHmsJob({ run, fence, signal }) };
+      const state = await executeHmsJob({ run, fence, signal });
+      const request = run.readRequest as { kind?: unknown; matchVersion?: unknown } | null;
+      if (
+        request?.kind === 'party' &&
+        request.matchVersion === 2 &&
+        (state === 'succeeded' || state === 'dead_letter')
+      ) {
+        scheduleQuotePreparationAfterPartyMatch(run);
+      }
+      return { runId, state };
     }
 
     if (run.runKind === 'read_tool') {
@@ -4349,6 +4361,34 @@ export async function executeAiRun(
             .filter((row) => row.id === run.triggerMessageId)
             .map(fromSnapshot)
         : await db.select().from(message).where(eq(message.id, run.triggerMessageId)).limit(1);
+      const [mailbox] = await db
+        .select({ email: mailboxTransport.email })
+        .from(mailboxTransport)
+        .where(eq(mailboxTransport.id, run.transportId))
+        .limit(1);
+      const [storedExtraction] = trigger
+        ? await db
+            .select({ payload: mailExtraction.payload })
+            .from(mailExtraction)
+            .where(
+              and(
+                eq(mailExtraction.messageId, run.triggerMessageId),
+                eq(mailExtraction.status, 'succeeded'),
+              ),
+            )
+            .orderBy(desc(mailExtraction.createdAt))
+            .limit(1)
+        : [];
+      const rawConfirmationNumbers = storedExtraction?.payload?.confirmationNumbers;
+      const confirmationNumbers = Array.isArray(rawConfirmationNumbers)
+        ? rawConfirmationNumbers.filter((value): value is string => typeof value === 'string')
+        : [];
+      const existingStayInformation = isSelfSentPreStayInformationMail({
+        fromAddress: trigger?.fromAddress,
+        mailboxAddress: mailbox?.email,
+        subject: trigger?.subject,
+        confirmationNumbers,
+      });
 
       const threadMessages = admissionSnapshot
         ? admissionSnapshot.threadMessages.map(fromSnapshot)
@@ -4459,6 +4499,7 @@ export async function executeAiRun(
         ? initialRunMetrics.mailSourceDecision
         : null;
       const routeAsAutomatedChannel =
+        !existingStayInformation &&
         !externalSentAnalyticsOnly &&
         mailSourceDecision !== null &&
         mailSourceDecision.kind !== 'direct';
@@ -4506,6 +4547,7 @@ export async function executeAiRun(
             throw new Error(`failed to mark deterministic mail-source triage succeeded: ${runId}`);
           }
         });
+        scheduleQuotePreparationForExtraction(runWithFence);
         return { runId, state: 'succeeded' };
       }
 
@@ -4523,7 +4565,10 @@ export async function executeAiRun(
             ...(mailSourceDecision ? { mailSourceDecision } : {}),
           },
         });
-        if (retired) schedulePrefetchForInbound(runWithFence);
+        if (retired) {
+          schedulePrefetchForInbound(runWithFence);
+          scheduleQuotePreparationForExtraction(runWithFence);
+        }
         return { runId, state: retired ? 'succeeded' : 'retry_wait' };
       }
       let output: WorkflowTriageOutput;
@@ -4556,6 +4601,8 @@ export async function executeAiRun(
             transportId: run.transportId,
             threadId: run.threadId,
             triggerMessageId: run.triggerMessageId,
+            mailboxAddress: mailbox?.email ?? undefined,
+            confirmationNumbers,
             subject: trigger?.subject ?? undefined,
             from: trigger?.fromAddress ?? '',
             to: trigger?.toAddresses ?? [],
@@ -4729,6 +4776,7 @@ export async function executeAiRun(
       });
 
       schedulePrefetchForInbound(runWithFence);
+      scheduleQuotePreparationForExtraction(runWithFence);
       return { runId, state: 'succeeded' };
     }
 
@@ -5359,7 +5407,7 @@ export async function executeAiRun(
       // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
       if (extracted.state === 'succeeded') {
         scheduleAvailabilityPrefetch(runWithFence);
-        schedulePartyPrefetch(runWithFence);
+        scheduleQuotePreparationForExtraction(runWithFence);
         // U3 reads the committed extraction; the scheduler waits for matching triage too when that run exists.
         schedulePrefetchForInbound(runWithFence);
       }

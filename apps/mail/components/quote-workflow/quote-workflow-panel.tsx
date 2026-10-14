@@ -3,8 +3,8 @@ import { toast } from 'sonner';
 import {
   allocationTotal,
   amendmentOf,
-  canCreatePdf,
   canRunQuoteStep,
+  canCreatePdf,
   currentStayRun,
   draftStayGroup,
   groupStays,
@@ -38,6 +38,7 @@ import type {
   StaffExtraField,
   StaffQuoteOtherUnit,
   StaffStayExtras,
+  DinnerAddOnUnit,
   StayEditAction,
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
@@ -77,7 +78,6 @@ import {
 } from './rate-controls';
 import { StayCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
-import { WorkflowBadge, type QuoteIntent } from './workflow-badge';
 import { rowRoomLabel, rowRoomTypeCode } from '@/lib/quote-workflow/room-types';
 
 const TELL_NAVA_ENABLED = false;
@@ -583,16 +583,32 @@ function StayExtrasFields({
         </label>
       ) : null}
       {label === 'Dinner allowance' && enabled ? (
-        <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
-          <span>Note (optional)</span>
-          <input
-            aria-label="Dinner label"
-            className={paneFieldClass}
-            maxLength={120}
-            value={extras.dinnerAllowanceLabel ?? ''}
-            onChange={(event) => patch({ dinnerAllowanceLabel: event.target.value })}
-          />
-        </label>
+        <>
+          <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
+            <span>Charging unit</span>
+            <select
+              aria-label="Dinner add-on unit"
+              className={paneFieldClass}
+              value={extras.dinnerAllowanceUnit ?? ''}
+              onChange={(event) => patch({ dinnerAllowanceUnit: event.target.value as DinnerAddOnUnit | undefined })}
+            >
+              <option value="">Choose a unit</option>
+              <option value="per_person_per_night">Per person per night</option>
+              <option value="per_room_per_night">Per room per night</option>
+              <option value="per_person">Per person</option>
+            </select>
+          </label>
+          <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
+            <span>Label (optional)</span>
+            <input
+              aria-label="Dinner label"
+              className={paneFieldClass}
+              maxLength={120}
+              value={extras.dinnerAllowanceLabel ?? ''}
+              onChange={(event) => patch({ dinnerAllowanceLabel: event.target.value })}
+            />
+          </label>
+        </>
       ) : null}
       {label === 'Other' ? (
         <>
@@ -638,7 +654,13 @@ function StayExtrasFields({
         </>
       ) : null}
       {label === 'Dinner allowance' && required ? (
-        <p className="col-span-2 text-[13px] text-[#475569]">Enter the dinner allowance for this stay.</p>
+        <p className="col-span-2 text-[13px] text-[#475569]">
+          {!(amount && amount > 0)
+            ? 'Dinner price — enter amount'
+            : !extras.dinnerAllowanceUnit
+              ? 'Choose how the dinner price is charged.'
+              : 'Run Get rates again to apply the dinner price before documents can be made.'}
+        </p>
       ) : null}
     </div>
   );
@@ -839,11 +861,87 @@ function hideQuoteWorkspace(phase: QuoteSession['phase']): boolean {
   );
 }
 
-/** The type Nava reads the email as: the staff pick first, then the analysis. Other when it is not a quote or booking. */
-function intentOf(session: QuoteSession): QuoteIntent | null {
-  if (session.phase === 'non_quote') return 'other';
-  if (session.treatAs) return session.treatAs;
-  return session.analysis?.luna?.workflow ?? null;
+/** The first quote fact to resolve follows the reservationist's decision order, not model output order. */
+function missingQuestionPriority(field: string): number {
+  const key = field.toLowerCase().replace(/[\s_-]/g, '');
+  if (/(party|company|agency|contact|attention|client|booker)/.test(key)) return 0;
+  if (/(authority|authoris|authoriz|approv|rateplan|salesstrategy|contract)/.test(key)) return 1;
+  if (/(arrival|departure|checkin|checkout|stay|date|room|guest|adult|child|occupancy)/.test(key)) return 2;
+  if (/(availability|price|amount|rate|nightly|cost)/.test(key)) return 3;
+  if (/(extra|meal|dinner|lunch|breakfast|shuttle|alternative|option)/.test(key)) return 4;
+  if (/(document|pdf|attachment|reply)/.test(key)) return 5;
+  return 6;
+}
+
+/** Ignore analysis questions whose current editable quote value is already present. */
+function missingQuestionAnswered(
+  field: string,
+  groups: StayGroupRequirement[],
+  header: StaffQuoteHeader,
+): boolean {
+  const key = field.toLowerCase().replace(/[\s_-]/g, '');
+  const everyGroup = (answered: (group: StayGroupRequirement) => boolean) =>
+    groups.length > 0 && groups.every(answered);
+  const hasContact = [header.attention, header.clientEmail, header.clientTelephone].some((value) =>
+    Boolean(value.trim()),
+  );
+
+  if (['arrival', 'arrivaldate', 'checkin', 'checkindate'].includes(key)) {
+    return everyGroup((group) => Boolean(group.arrivalDate));
+  }
+  if (['departure', 'departuredate', 'checkout', 'checkoutdate'].includes(key)) {
+    return everyGroup((group) => Boolean(group.departureDate));
+  }
+  if (['date', 'dates', 'staydates', 'daterange'].includes(key)) {
+    return everyGroup((group) => Boolean(group.arrivalDate && group.departureDate));
+  }
+  if (key === 'stay' || key === 'staydetails') {
+    return everyGroup(
+      (group) => Boolean(
+        group.arrivalDate &&
+          group.departureDate &&
+          rowRoomTypeCode(group) &&
+          group.quantity &&
+          group.adults,
+      ),
+    );
+  }
+  if (key === 'party') {
+    return Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId);
+  }
+  if (key === 'company') return Boolean(header.company.trim() || header.parties?.company?.nativeId);
+  if (key === 'agency') return Boolean(header.agency.trim() || header.parties?.agency?.nativeId);
+  if (key === 'contact') return hasContact;
+  if (['attention', 'booker', 'contactname', 'clientname'].includes(key)) {
+    return Boolean(header.attention.trim());
+  }
+  if (['email', 'clientemail', 'contactemail'].includes(key)) {
+    return Boolean(header.clientEmail.trim());
+  }
+  if (['phone', 'telephone', 'clienttelephone', 'contactphone'].includes(key)) {
+    return Boolean(header.clientTelephone.trim());
+  }
+  if (
+    ['room', 'roomtype', 'roomtypes', 'roompreference', 'roomtypecode', 'roomcodes'].includes(key)
+  ) {
+    return everyGroup((group) =>
+      Boolean(rowRoomTypeCode(group) || group.roomPreference?.trim() || group.roomCodes?.length),
+    );
+  }
+  if (['quantity', 'rooms', 'roomcount', 'numberofrooms'].includes(key)) {
+    return everyGroup((group) => (group.quantity ?? 0) > 0);
+  }
+  if (['adult', 'adults', 'adultsperroom'].includes(key)) {
+    return everyGroup((group) => (group.adults ?? 0) > 0);
+  }
+  if (['childages', 'childrenages'].includes(key)) {
+    return everyGroup((group) => group.childrenAges.length > 0);
+  }
+  return false;
+}
+
+function scrollToStep(id: string): void {
+  document.getElementById(id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
 }
 
 /** Why this stay's availability search cannot run yet, or null when its one HMS step can run. */
@@ -871,6 +969,10 @@ function stayRatesBlockReason(
 /** A row price or rate change waiting to reach the session. Once every `check` has landed, the stay re-runs. */
 type PinRun = { stepId: string; changes: { groupId: string; check: Partial<StayGroupRequirement> }[] };
 type QueuedStayRun = { stepId: string; selectionEpoch: number };
+type CurrentQuoteAction =
+  | { kind: 'scroll'; targetId: string; label: string }
+  | { kind: 'search'; label: string }
+  | { kind: 'documents'; label: string };
 
 /** Equal for a session check. A cleared price (undefined) matches a row with no price. */
 function sameValue(current: unknown, wanted: unknown): boolean {
@@ -956,7 +1058,6 @@ export function QuoteWorkflowPanel({
   partyJobTransport,
   onPartyLookupPending,
   onSelectStayKey,
-  onTreatAs,
   onStaffNote,
   staffNoteDraft,
   onStaffNoteDraftChange,
@@ -1009,7 +1110,6 @@ export function QuoteWorkflowPanel({
   /** Tells the pane whether a company or agency search still decides its pick. A rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   onSelectStayKey?: (stayKey: string) => void;
-  onTreatAs?: (treatAs: 'quote' | 'create_booking') => void;
   onStaffNote?: (note: string) => void;
   /** A retained staff correction, owned by the pane so it survives a trip off the tool screen. */
   staffNoteDraft?: string;
@@ -1021,9 +1121,6 @@ export function QuoteWorkflowPanel({
 }) {
   const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
   const failedRatesNotice = useFailedHmsJobNoticeMessage('quote-rates', currentEmailKey);
-  const failedRatesNoticeReason = failedRatesNotice?.startsWith('Rates failed: ')
-    ? failedRatesNotice.slice('Rates failed: '.length)
-    : null;
   // A row price or rate tapped and waiting for its pin to reach the session. The re-run starts once every pin is there, so it reads them.
   const [pinRun, setPinRun] = useState<PinRun | null>(null);
   const [queuedStayRuns, setQueuedStayRuns] = useState<QueuedStayRun[]>([]);
@@ -1155,18 +1252,12 @@ export function QuoteWorkflowPanel({
       <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
     );
   }
-  const intent = intentOf(session);
   const amendment = amendmentOf(session);
   if (session.phase === 'non_quote') {
     // One notice. Staff only see more when Nava flagged something they must act on: the not-supported guidance, or a file it could not read.
     const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure');
     return (
       <div className="flex flex-col gap-3">
-        <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
-        {/* A change or cancellation has its own card above, so "not a quote or booking" would contradict the badge. */}
-        {amendment ? null : (
-          <Notice tone="info">Not a quote or booking. Change the type above if Nava got it wrong.</Notice>
-        )}
         {TELL_NAVA_ENABLED ? (
           <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         ) : null}
@@ -1195,7 +1286,14 @@ export function QuoteWorkflowPanel({
     (session.phase === 'failed' || session.phase === 'missing_source' || session.phase === 'analysing');
   const showWorkspace = !hideQuoteWorkspace(session.phase);
   const showReply =
-    Boolean(session.offers.length || session.reviewedReplyHtml || canCreatePdf(session) || authorizedPartial || openItems.length);
+    Boolean(
+      session.offers.length ||
+        session.reviewedReplyHtml ||
+        session.reviewedReplySource === 'quote_decline' ||
+        canCreatePdf(session) ||
+        authorizedPartial ||
+        openItems.length,
+    );
 
   // While Nava reads, or after a read failed, a blank stay keeps the form open so she can type before the read lands.
   const formGroups =
@@ -1354,10 +1452,88 @@ export function QuoteWorkflowPanel({
     }
     onRunStep?.(stepId);
   };
+  const nextRateStep = session.steps.find(
+    (step) => step.kind === 'quote_stay' && canRunQuoteStep(step, session.steps, session.runningStepId),
+  );
+  const nextRateStay = nextRateStep?.shareKey
+    ? stays.find((stay) => stay.rows.some((group) => stayKeyForGroup(group) === nextRateStep.shareKey))
+    : undefined;
+  const nextRateReason = !showRates
+    ? 'Wait for Nava to finish reading this email before searching.'
+    : running
+      ? 'An HMS search is already running. You can keep working.'
+      : pinRun
+        ? 'The rate change is still being saved before the next search.'
+        : nextRateStep
+          ? nextRateStay
+            ? stayRatesBlockReason(session, nextRateStay.rows, nextRateStep) ??
+              (!onRunStep && !onRunNext ? 'Search is not available in this view.' : null)
+            : 'Add a date range before searching.'
+          : rateKeys.length
+            ? 'Every date range has results. Use a date-range action below to search again.'
+            : 'Add a date range before searching.';
+  const lunaMissing = session.analysis?.luna?.missing ?? [];
+  const orderedMissing = lunaMissing
+    .filter((item) => !missingQuestionAnswered(item.field, formGroups, header))
+    .map((item, index) => ({ item, index, priority: missingQuestionPriority(item.field) }))
+    .sort((left, right) => left.priority - right.priority || left.index - right.index);
+  const hasPartyBlocker = orderedMissing.some(({ priority }) => priority === 0);
+  const hasUnconfirmedParty = partyState === 'Pending' || partyState === 'Looking up';
+  const missingStayDates = formGroups.length === 0 || formGroups.some((group) => !group.arrivalDate || !group.departureDate);
+  const hasStayBlocker = orderedMissing.some(({ priority }) => priority === 2);
+  const missingCandidates = orderedMissing.map(({ item, index, priority }) => ({ item, index, priority }));
+  if (hasUnconfirmedParty && !hasPartyBlocker) {
+    missingCandidates.push({
+      item: { field: 'party', question: 'Confirm the company or agency in HMS before using a contract rate.' },
+      index: -1,
+      priority: 0,
+    });
+  }
+  if (!stayReady && !hasStayBlocker) {
+    missingCandidates.push({
+      item: {
+        field: missingStayDates ? 'arrivalDate' : 'stay',
+        question: missingStayDates
+          ? 'What arrival and departure dates should be quoted?'
+          : 'What room types and guest details should be quoted?',
+      },
+      index: lunaMissing.length,
+      priority: 2,
+    });
+  }
+  const firstMissingAnswer = missingCandidates.sort(
+    (left, right) => left.priority - right.priority || left.index - right.index,
+  )[0]?.item;
+  const currentAction: CurrentQuoteAction = firstMissingAnswer
+    ? missingQuestionPriority(firstMissingAnswer.field) === 0
+      ? { kind: 'scroll', targetId: 'quote-party', label: 'Review party and contact' }
+      : missingQuestionPriority(firstMissingAnswer.field) === 1
+        ? { kind: 'scroll', targetId: 'quote-authority', label: 'Set rate authority' }
+        : missingQuestionPriority(firstMissingAnswer.field) === 2
+          ? {
+              kind: 'scroll',
+              targetId: 'quote-stay',
+              label: missingStayDates ? 'Add stay dates' : 'Complete stay details',
+            }
+          : missingQuestionPriority(firstMissingAnswer.field) === 3
+            ? { kind: 'search', label: 'Search availability' }
+            : missingQuestionPriority(firstMissingAnswer.field) === 4
+              ? { kind: 'scroll', targetId: 'quote-extras', label: 'Review extras & alternatives' }
+              : { kind: 'scroll', targetId: 'quote-quote', label: 'Review documents' }
+    : ratesReady
+      ? session.pdf
+        ? { kind: 'scroll', targetId: 'quote-quote', label: 'Review documents' }
+        : { kind: 'documents', label: isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF' }
+      : { kind: 'search', label: 'Search availability' };
+  const runNextRate = () => {
+    if (!nextRateStep) return;
+    if (nextRateStep.shareKey) onSelectStayKey?.(nextRateStep.shareKey);
+    if (onRunStep) requestStayRun(nextRateStep.id);
+    else onRunNext?.();
+  };
 
   return (
     <div className="flex flex-col gap-3.5">
-      <WorkflowBadge analysis={session.analysis} amendmentKind={amendment?.kind ?? null} intent={intent} onIntentChange={onTreatAs} />
       {TELL_NAVA_ENABLED ? (
         <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
       ) : null}
@@ -1366,8 +1542,65 @@ export function QuoteWorkflowPanel({
       {session.analysis?.alternatives.length ? (
         <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
       ) : null}
+      {showWorkspace && (firstMissingAnswer || currentAction.kind !== 'documents') ? (
+        <div className="flex flex-col gap-2">
+          <NeedsAnswerList missing={firstMissingAnswer ? [firstMissingAnswer] : undefined} />
+          {currentAction.kind !== 'documents' ? (
+            <PrimaryButton
+              disabled={currentAction.kind === 'search' && nextRateReason !== null}
+              disabledReason={currentAction.kind === 'search' ? nextRateReason : null}
+              onClick={() => {
+                if (currentAction.kind === 'search') runNextRate();
+                else if (currentAction.kind === 'scroll') scrollToStep(currentAction.targetId);
+              }}
+            >
+              {currentAction.label}
+            </PrimaryButton>
+          ) : null}
+        </div>
+      ) : null}
       {showWorkspace ? (
-        <Section step={2} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
+        <Section step={1} title="Party + contact" id="quote-party" action={<StepState state={partyState} />}>
+          <StaffPartyFields
+            header={header}
+            onPatch={(header) => onPatchStaffHeader?.(header, { staffEdit: true })}
+            onFieldEdit={markPartyFieldEdited}
+            findParty={findParty}
+            partySuggestions={partySuggestions}
+            partyIndex={partyIndex}
+            partyJobTransport={partyJobTransport}
+            threadId={session.staffSource?.threadId ?? null}
+            sourceMessageId={session.staffSource?.messageId ?? null}
+            onPartyLookupPending={onPartyLookupPending}
+          />
+          <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-authority')}>
+            Continue to Rate authority
+          </SecondaryButton>
+        </Section>
+      ) : null}
+      {showWorkspace ? (
+        <Section
+          step={2}
+          title="Rate authority"
+          id="quote-authority"
+          action={<StepState state={header.salesStrategy ? 'Done' : 'Pending'} />}
+        >
+          <RatePlanFields
+            key={selectionEpoch}
+            ratePlans={ratePlans}
+            ratePlan={ratePlan}
+            onRatePlanChange={changeRatePlan}
+            notesBlock={quoteNotesBlock(session, rowLabels, contact)}
+            notes={header.notes ?? ''}
+            onNotesChange={(value) => onPatchStaffHeader?.({ notes: value }, { staffEdit: true })}
+          />
+          <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-stay')}>
+            Continue to Stay
+          </SecondaryButton>
+        </Section>
+      ) : null}
+      {showWorkspace ? (
+        <Section step={3} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
           {stays.map((stay, index) => (
             <StayCard
               key={stay.id}
@@ -1399,35 +1632,22 @@ export function QuoteWorkflowPanel({
         </Section>
       ) : null}
       {showWorkspace ? (
-        <Section step={3} title="Company / agency" id="quote-party" action={<StepState state={partyState} />}>
-          <StaffPartyFields
-            header={header}
-            onPatch={(header) => onPatchStaffHeader?.(header, { staffEdit: true })}
-            onFieldEdit={markPartyFieldEdited}
-            findParty={findParty}
-            partySuggestions={partySuggestions}
-            partyIndex={partyIndex}
-            partyJobTransport={partyJobTransport}
-            threadId={session.staffSource?.threadId ?? null}
-            sourceMessageId={session.staffSource?.messageId ?? null}
-            onPartyLookupPending={onPartyLookupPending}
-          />
-        </Section>
-      ) : null}
-      {showWorkspace ? (
-        <Section step={4} title="Rates" id="quote-rates" action={<StepState state={ratesState} />}>
-          <RatePlanFields
-            key={selectionEpoch}
-            ratePlans={ratePlans}
-            ratePlan={ratePlan}
-            onRatePlanChange={changeRatePlan}
-            notesBlock={quoteNotesBlock(session, rowLabels, contact)}
-            notes={header.notes ?? ''}
-            onNotesChange={(value) => onPatchStaffHeader?.({ notes: value }, { staffEdit: true })}
-          />
+        <Section step={4} title="Availability & rates" id="quote-rates" action={<StepState state={ratesState} />}>
+          {showRates ? (
+            <h4 className="text-[13px] font-semibold text-[#475569]">Search availability & room rates</h4>
+          ) : null}
+          {currentAction.kind !== 'search' ? (
+            <SecondaryButton
+              className="w-full"
+              disabled={nextRateReason !== null}
+              disabledReason={nextRateReason}
+              onClick={runNextRate}
+            >
+              Search availability
+            </SecondaryButton>
+          ) : null}
           {showRates ? (
             <>
-              <h4 className="text-[13px] font-semibold text-[#475569]">Search availability & room rates</h4>
               {stays.map((stay, stayIndex) => {
                 const first = stay.rows[0];
                 if (!first) return null;
@@ -1452,9 +1672,19 @@ export function QuoteWorkflowPanel({
                 const countedInStay = sameDateStays.length > 1 && sameDateStays[0] !== stayIndex + 1 ? sameDateStays[0] : null;
                 // This stay's own HMS result. The selected stay's result is also session.staffQuote.
                 const selectedQuote = session.selectedStayKey === stayKey ? session.staffQuote : null;
-                const stayFound = Boolean(session.staffQuotes[stayKey] ?? selectedQuote);
+                const stayQuote = session.staffQuotes[stayKey] ?? selectedQuote;
+                const stayFound = Boolean(stayQuote);
+                const preparedAt = stayQuote?.preparedAt ? new Date(stayQuote.preparedAt) : null;
+                const preparedAtLabel = preparedAt && Number.isFinite(preparedAt.getTime())
+                  ? preparedAt.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+                  : null;
                 return (
                   <article key={`${stay.id}-search`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
+                    {stayQuote?.preparedByNava ? (
+                      <p className="text-[12px] font-semibold text-[#475569]">
+                        Prepared by Nava{preparedAtLabel ? ` · ${preparedAtLabel}` : ''}
+                      </p>
+                    ) : null}
                     <div className="flex flex-col gap-0.5">
                       <div className="flex flex-wrap items-center gap-2">
                         <h4 className="text-[13px] font-bold text-[#1e293b]">Availability for this date range</h4>
@@ -1484,14 +1714,15 @@ export function QuoteWorkflowPanel({
                             else toast.warning(retryActionReason ?? 'Search is not available in this view.');
                           }}
                         >
-                          Search again
+                          {`Search this date range for Stay ${stayIndex + 1}`}
                         </SecondaryButton>
                         {queuedThisStay ? <p role="status">Search queued until the current stay finishes.</p> : null}
                         {retryActionReason ? <p className="text-[13px] text-[#334155]">{retryActionReason}</p> : null}
                       </>
                     ) : (
                       <>
-                        <PrimaryButton
+                        <SecondaryButton
+                          className="w-full"
                           onClick={() => {
                             onSelectStayKey?.(stayKey);
                             if (step && onRunStep) requestStayRun(step.id);
@@ -1506,11 +1737,15 @@ export function QuoteWorkflowPanel({
                                 : actionReason
                           }
                         >
-                          {step?.status === 'failed' ? 'Retry search' : 'Search availability'}
-                        </PrimaryButton>
+                          {step?.status === 'failed'
+                            ? `Retry date range for Stay ${stayIndex + 1}`
+                            : `Search this date range for Stay ${stayIndex + 1}`}
+                        </SecondaryButton>
                         {queuedThisStay ? <p role="status">Search queued until the current stay finishes.</p> : null}
-                        {step?.status === 'failed' && step.retryGuidance && step.retryGuidance !== failedRatesNoticeReason ? (
-                          <p className="text-[13px] text-[#334155]">{step.retryGuidance}</p>
+                        {step?.status === 'failed' && !failedRatesNotice ? (
+                          <p className="text-[13px] text-[#334155]">
+                            HMS could not complete this search. Retry the date range.
+                          </p>
                         ) : null}
                       </>
                     )}
@@ -1591,12 +1826,6 @@ export function QuoteWorkflowPanel({
                               : money(stayTotal)}
                       </span>
                     </div>
-                    <StayExtrasFields
-                      header={header}
-                      stayKey={stayKey}
-                      stayNumber={stayIndex + 1}
-                      onPatch={onPatchStayExtras}
-                    />
                   </article>
                 );
               })}
@@ -1666,6 +1895,95 @@ export function QuoteWorkflowPanel({
         </Section>
       ) : null}
       {showWorkspace ? (
+        <Section step={5} title="Extras & alternatives" id="quote-extras" action={<StepState state="Optional" />}>
+          {stays.map((stay, stayIndex) => {
+            const first = stay.rows[0];
+            if (!first) return null;
+            const stayKey = stayKeyForGroup(first);
+            const loadingThisStay = running && stayKey === runningStayKey;
+            return (
+              <article key={`${stay.id}-extras`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
+                <h4 className="text-[13px] font-semibold text-[#475569]">{`Stay ${stayIndex + 1}`}</h4>
+                <StayExtrasFields
+                  header={header}
+                  stayKey={stayKey}
+                  stayNumber={stayIndex + 1}
+                  onPatch={onPatchStayExtras}
+                />
+                {stay.rows.map((group) => {
+                  const rowStep = stepFor(group);
+                  const alternatives = rowStep?.roomAlternatives?.filter((alternative) => alternative.groupId === group.id) ?? [];
+                  if (!alternatives.length) return null;
+                  const rowPinRunning = pinRun?.stepId === rowStep?.id;
+                  return (
+                    <div key={`${group.id}-alternatives`} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
+                      <h5 className="text-[13px] font-semibold text-[#475569]">{`${rowLabels.get(group.id) ?? 'Room type needed'} alternatives`}</h5>
+                      {alternatives.map((alternative) => (
+                        <div key={`${alternative.roomCode}:${alternative.quantity}`} className="flex flex-col gap-2 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-2.5">
+                          <p className="text-[13px] text-[#334155]">
+                            Requested type not available — available instead: {alternative.roomLabel} × {alternative.quantity}
+                          </p>
+                          <SecondaryButton
+                            className="w-full"
+                            disabled={loadingThisStay || rowPinRunning || !onPatchGroup}
+                            onClick={() => {
+                              if (!onPatchGroup || !rowStep) return;
+                              const check = {
+                                roomCodes: [alternative.roomCode],
+                                roomPreference: alternative.roomLabel,
+                                roomTypeSuggestions: [],
+                                quantity: alternative.quantity,
+                                ...(group.rateCode ? { rateCode: group.rateCode } : {}),
+                                rowPrice: undefined,
+                              } satisfies Partial<StayGroupRequirement>;
+                              onPatchGroup(group.id, check);
+                              setPinRun({ stepId: rowStep.id, changes: [{ groupId: group.id, check }] });
+                            }}
+                          >
+                            Use this
+                          </SecondaryButton>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </article>
+            );
+          })}
+        </Section>
+      ) : null}
+      {showWorkspace ? (
+        <Section step={6} title="Documents" id="quote-quote" action={<StepState state={quoteState} />}>
+          <p className="text-[12px] font-semibold text-[#64748b]">Reply text · PDF · Excel</p>
+          {showReply ? (
+            <DocumentReview
+              session={session}
+              onReplyChange={onReplyChange}
+              onPreparePdf={onPreparePdf}
+              onDownloadWorkbook={onDownloadWorkbook}
+              workbookPending={workbookPending}
+              primaryAction={currentAction.kind === 'documents' && !session.pdf}
+            />
+          ) : (
+            <>
+              {currentAction.kind === 'documents' ? (
+                <PrimaryButton disabled disabledReason="Complete Rates first to prepare a reply, PDF or Excel file.">
+                  Prepare PDF
+                </PrimaryButton>
+              ) : (
+                <SecondaryButton disabled disabledReason="Complete Rates first to prepare a reply, PDF or Excel file.">
+                  Prepare PDF
+                </SecondaryButton>
+              )}
+              <p className="text-[13px] text-[#64748b]">Complete Rates first to prepare a reply, PDF or Excel file.</p>
+            </>
+          )}
+          {replyContent}
+        </Section>
+      ) : replyContent ? (
+        <div className="flex flex-col gap-2.5">{replyContent}</div>
+      ) : null}
+      {showWorkspace ? (
         <>
           <NotSupportedList
             flags={session.analysis?.luna?.flags}
@@ -1673,7 +1991,6 @@ export function QuoteWorkflowPanel({
             amendment={amendment}
             unreadFiles={hasUnreadFiles}
           />
-          <NeedsAnswerList missing={session.analysis?.luna?.missing} />
           <ItemsForYou
             openItems={openItems}
             handledItems={handledItems}
@@ -1701,25 +2018,6 @@ export function QuoteWorkflowPanel({
             />
           </Fragment>
         ))}
-      {showWorkspace ? (
-        <Section step={5} title="Quote" id="quote-quote" action={<StepState state={quoteState} />}>
-          <p className="text-[12px] font-semibold text-[#64748b]">Reply text · PDF · Excel</p>
-          {showReply ? (
-            <DocumentReview
-              session={session}
-              onReplyChange={onReplyChange}
-              onPreparePdf={onPreparePdf}
-              onDownloadWorkbook={onDownloadWorkbook}
-              workbookPending={workbookPending}
-            />
-          ) : (
-            <p className="text-[13px] text-[#64748b]">Complete Rates first to prepare a reply, PDF or Excel file.</p>
-          )}
-          {replyContent}
-        </Section>
-      ) : replyContent ? (
-        <div className="flex flex-col gap-2.5">{replyContent}</div>
-      ) : null}
     </div>
   );
 }

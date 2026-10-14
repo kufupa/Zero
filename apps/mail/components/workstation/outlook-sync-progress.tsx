@@ -20,20 +20,28 @@ export function outlookSyncLabel(status: SyncStatusV1 | null, error: string | nu
 }
 export function OutlookSyncProgress({
   status,
+  notApplicable = false,
   mailbox,
   onControl,
   error = null,
   busy = false,
+  controlsEnabled = true,
+  emptyLabel,
 }: {
   status: SyncStatusV1 | null;
+  notApplicable?: boolean;
   mailbox: string;
   onControl: (operation: SyncControlOperation) => void;
   error?: string | null;
   busy?: boolean;
+  /** False on read-only surfaces such as webmail, which can show status but cannot control native Outlook. */
+  controlsEnabled?: boolean;
+  /** Copy for a read-only surface when the mailbox has no activated sync source yet. */
+  emptyLabel?: string;
 }) {
-  const [open, setOpen] = useState(false),
-    id = useId(),
-    label = outlookSyncLabel(status, error),
+  const [open, setOpen] = useState(false), id = useId();
+  if (notApplicable && !error) return null;
+  const label = !status && !error && emptyLabel ? emptyLabel : outlookSyncLabel(status, error),
     paused = Boolean(status?.userPaused),
     disabled = busy || !status || status.state === 'sign-in-required' || error === 'access-removed';
   return (
@@ -58,8 +66,9 @@ export function OutlookSyncProgress({
         >
           <p className="break-words font-semibold">{mailbox}</p>
           <p className="mt-1">
-            Outlook copies email originals to Nava while Outlook is open. Closing this pane keeps
-            sync running.
+            {controlsEnabled
+              ? 'Outlook copies email originals to Nava while Outlook is open. Closing this pane keeps sync running.'
+              : 'This page shows mailbox copy progress. Open Nava in Outlook to pause or restart sync.'}
           </p>
           {status && (
             <>
@@ -86,32 +95,34 @@ export function OutlookSyncProgress({
               )}
             </>
           )}
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={disabled}
-              onClick={() => onControl(paused ? 'resume' : 'pause')}
-              className="rounded border px-2 py-1 disabled:opacity-50"
-            >
-              {paused ? 'Resume' : 'Pause'}
-            </button>
-            <button
-              type="button"
-              disabled={disabled || paused}
-              onClick={() => onControl('syncNow')}
-              className="rounded border px-2 py-1 disabled:opacity-50"
-            >
-              Sync now
-            </button>
-            <button
-              type="button"
-              disabled={disabled || paused || !status?.gaps}
-              onClick={() => onControl('retryMissing')}
-              className="rounded border px-2 py-1 disabled:opacity-50"
-            >
-              Retry missing
-            </button>
-          </div>
+          {controlsEnabled ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onControl(paused ? 'resume' : 'pause')}
+                className="rounded border px-2 py-1 disabled:opacity-50"
+              >
+                {paused ? 'Resume' : 'Pause'}
+              </button>
+              <button
+                type="button"
+                disabled={disabled || paused}
+                onClick={() => onControl('syncNow')}
+                className="rounded border px-2 py-1 disabled:opacity-50"
+              >
+                Sync now
+              </button>
+              <button
+                type="button"
+                disabled={disabled || paused || !status?.gaps}
+                onClick={() => onControl('retryMissing')}
+                className="rounded border px-2 py-1 disabled:opacity-50"
+              >
+                Retry missing
+              </button>
+            </div>
+          ) : null}
         </section>
       )}
     </div>

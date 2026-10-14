@@ -1,14 +1,55 @@
 export const HOTEL_TELEPHONE = '0126433600';
 
-export function quoteWrapperHtml(guestName: string, signerName = ''): string {
+export type DinnerAddOnReplyLine = {
+  label: string;
+  amountMinor: number;
+  unit: 'per_person_per_night' | 'per_room_per_night' | 'per_person';
+  totalMinor: number;
+};
+
+export function quoteWrapperHtml(
+  guestName: string,
+  signerName = '',
+  _options?: { dinnerAddOn?: DinnerAddOnReplyLine; totalMinor?: number },
+): string {
   const name = escapeHtml(guestName.trim() || 'Guest');
   const signer = signerName.trim() ? `${escapeHtml(signerName.trim())}<br />` : '';
+  // Staff keep all amounts in the attached proposal; the cover reply stays unpriced.
   return `
       <div style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1e293b; line-height: 1.5;">
         <p>Good day ${name},</p>
-        <p>Thank you for choosing The Centurion Hotel.</p>
+        <p>Thank you for Choosing The Centurion Hotel.</p>
         <p>Please see attached quotation.</p>
-        <p>Kindly sign and return the quotation to confirm. Please note that no rooms are currently being held.</p>
+        <p>Should you wish to proceed, please sign and return the attached quotation so that we can confirm and secure your reservation.</p>
+        <p>Please note that no rooms are currently being held, and bookings will only be confirmed once we have received the signed quotation.</p>
+        <p>Please feel free to contact me should you require any further information</p>
+        <p>Kind regards,</p>
+        <p>${signer}Reservations<br />The Centurion Hotel</p>
+      </div>
+    `;
+}
+
+/** One-line refusal for a quote that HMS could not accommodate. Room alternatives stay in the staff pane. */
+export function quoteDeclineReplyHtml(): string {
+  return '<p>Unfortunately, we are unable to accommodate your requested stay.</p>';
+}
+
+/** Short request-only reply. It deliberately never says a quotation or attachment is ready. */
+export function missingQuoteDetailsWrapperHtml(
+  guestName: string,
+  fields: readonly string[],
+  signerName = '',
+): string {
+  const name = escapeHtml(guestName.trim() || 'Guest');
+  const signer = signerName.trim() ? `${escapeHtml(signerName.trim())}<br />` : '';
+  const items = [...new Set(fields.map((field) => field.trim()).filter(Boolean))];
+  const list = items.map((field) => `<li>${escapeHtml(field)}</li>`).join('');
+  return `
+      <div style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1e293b; line-height: 1.5;">
+        <p>Good day ${name},</p>
+        <p>Thank you for contacting The Centurion Hotel.</p>
+        <p>Please confirm the following details so we can prepare your quotation:</p>
+        <ul>${list}</ul>
         <p>Kind regards,</p>
         <p>${signer}Reservations<br />The Centurion Hotel</p>
       </div>

@@ -1,14 +1,21 @@
 /** @vitest-environment happy-dom */
-import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { useOutlookSync } from '../lib/workstation/use-outlook-sync';
-const mocks = vi.hoisted(() => ({ activate: vi.fn(), status: vi.fn(), control: vi.fn() }));
+import { OutlookSyncProgress } from '../components/workstation/outlook-sync-progress';
+const mocks = vi.hoisted(() => ({
+  activate: vi.fn(),
+  status: vi.fn(),
+  statusForActiveMailbox: vi.fn(),
+  control: vi.fn(),
+}));
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       outlookSync: {
         activate: { mutate: mocks.activate },
         status: { query: mocks.status },
+        statusForActiveMailbox: { query: mocks.statusForActiveMailbox },
         control: { mutate: mocks.control },
       },
     },
@@ -54,6 +61,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.activate.mockResolvedValue(response);
   mocks.status.mockResolvedValue(paused);
+  mocks.statusForActiveMailbox.mockResolvedValue(null);
   mocks.control.mockResolvedValue({ accepted: true });
 });
 afterEach(cleanup);
@@ -76,6 +84,104 @@ describe('automatic source scoped hosted sync', () => {
     await act(async () => {});
     expect(result.current.eligible).toBe(false);
     expect(mocks.activate).not.toHaveBeenCalled();
+  });
+  it('reads active mailbox progress on a read-only web surface without activating native sync', async () => {
+    const status = { ...paused, state: 'running', userPaused: false, discovered: 2, committed: 1 };
+    mocks.statusForActiveMailbox.mockResolvedValue(status);
+    const { result } = renderHook(() =>
+      useOutlookSync({
+        ...baseline,
+        deviceId: null,
+        capabilityVersion: undefined,
+        readRoots: [],
+        readOnlyStatus: true,
+      }),
+    );
+    await waitFor(() => expect(result.current.status?.committed).toBe(1));
+    expect(result.current.statusLoaded).toBe(true);
+    expect(result.current.eligible).toBe(false);
+    expect(mocks.statusForActiveMailbox).toHaveBeenCalledWith({});
+    expect(mocks.activate).not.toHaveBeenCalled();
+    expect(mocks.status).not.toHaveBeenCalled();
+    await expect(result.current.control('syncNow')).rejects.toThrow();
+    expect(mocks.control).not.toHaveBeenCalled();
+  });
+  it('keeps read-only sync status in checking until the active-mailbox query resolves', async () => {
+    let resolveStatus: (status: null) => void = () => {};
+    mocks.statusForActiveMailbox.mockReturnValueOnce(
+      new Promise<null>((resolve) => {
+        resolveStatus = resolve;
+      }),
+    );
+    const { result } = renderHook(() =>
+      useOutlookSync({
+        ...baseline,
+        deviceId: null,
+        capabilityVersion: undefined,
+        readRoots: [],
+        readOnlyStatus: true,
+      }),
+    );
+    expect(result.current.statusLoaded).toBe(false);
+    await act(async () => resolveStatus(null));
+    await waitFor(() => expect(result.current.statusLoaded).toBe(true));
+    expect(result.current.status).toBeNull();
+  });
+  it('hides not-applicable webmail status and stops polling it', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.statusForActiveMailbox.mockResolvedValue({ state: 'not_applicable' });
+      const hook = renderHook(() =>
+        useOutlookSync({
+          ...baseline,
+          deviceId: null,
+          capabilityVersion: undefined,
+          readRoots: [],
+          readOnlyStatus: true,
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(hook.result.current.status).toBeNull();
+      expect(hook.result.current.notApplicable).toBe(true);
+      expect(hook.result.current.error).toBeNull();
+
+      const view = render(
+        <OutlookSyncProgress
+          status={hook.result.current.status}
+          notApplicable={hook.result.current.notApplicable}
+          mailbox="shared@example.test"
+          onControl={vi.fn()}
+          controlsEnabled={false}
+        />,
+      );
+      expect(view.container.firstChild).toBeNull();
+      await act(async () => vi.advanceTimersByTimeAsync(60_000));
+      expect(mocks.statusForActiveMailbox).toHaveBeenCalledTimes(1);
+      hook.unmount();
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('keeps a genuine Outlook FORBIDDEN response visible as access removed', async () => {
+    mocks.activate.mockRejectedValueOnce(Object.assign(new Error('denied'), {
+      data: { code: 'FORBIDDEN' },
+    }));
+    const hook = renderHook(() => useOutlookSync({ ...baseline, sessionId: 'forbidden' }));
+    await waitFor(() => expect(hook.result.current.error).toBe('access-removed'));
+    render(
+      <OutlookSyncProgress
+        status={hook.result.current.status}
+        mailbox="shared@example.test"
+        onControl={vi.fn()}
+        error={hook.result.current.error}
+      />,
+    );
+    expect(screen.getByText('Access removed — contact Ansh')).toBeDefined();
+    hook.unmount();
   });
   it('deduplicates concurrent mounts and retries response loss with one bounded idempotency key', async () => {
     const a = renderHook(() => useOutlookSync({ ...baseline, sessionId: 'parallel' }));

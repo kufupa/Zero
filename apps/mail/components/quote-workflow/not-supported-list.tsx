@@ -1,9 +1,6 @@
 import type { LunaAnalysisWire, QuoteAmendment } from '@/lib/quote-workflow/types';
 import { Notice } from '@/components/nava-pane/pane-ui';
 
-/** Shown in place of the "not supported" copy while the change or cancel panel is on screen. */
-export const AMENDMENT_PANEL_COPY = 'Nava can find the booking; make the change in HMS yourself.';
-
 const FLAG_COPY: Record<LunaAnalysisWire['flags'][number], string> = {
   conference_or_group: 'Conference or group request (venue, day delegates, packages): handle it by hand.',
   rooms_only_group: 'Rooms-only group: quoting the number of rooms stated.',
@@ -12,7 +9,7 @@ const FLAG_COPY: Record<LunaAnalysisWire['flags'][number], string> = {
   discount_or_negotiation: 'Discount asked for: your decision is needed.',
   // Multi-stay (U20): one rate run per stay, then one combined proposal. Never one PDF per option.
   multi_date: 'Several stays: get rates for each one. Prepare quote puts every stay in one proposal.',
-  extras: 'Extras were requested. Check each stay\'s amounts below its subtotal before making the PDF.',
+  extras: 'Extras were requested. Check each stay\'s amounts in Extras & alternatives before making the PDF.',
   mixed_request: 'Several requests in one email: check each one.',
   attachment_unread: 'An attachment could not be read. Open it in Outlook and check it.',
 };
@@ -30,8 +27,8 @@ function flagCopy(
   flag: LunaAnalysisWire['flags'][number],
   amendment: QuoteAmendment | null | undefined,
 ): string {
-  // The change or cancel panel answers the amendment flag, so the note points at it instead.
-  if (flag === 'amendment_or_cancel' && amendment) return AMENDMENT_PANEL_COPY;
+  // The amendment panel carries its own request, booking and disabled Run state; skip duplicate warning copy.
+  if (flag === 'amendment_or_cancel' && amendment) return '';
   return FLAG_COPY[flag];
 }
 

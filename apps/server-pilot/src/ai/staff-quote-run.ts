@@ -6,8 +6,11 @@ import {
   partyNames,
   prepareStaffQuote,
   quoteWithPartyFallback,
+  staffQuoteDinnerFallback,
+  staffQuoteDinnerGroupIdsToRetryAsBb,
   staffQuoteSourceHash,
   type StaffQuoteAttestation,
+  type StaffQuoteDinnerAddOn,
   type StaffQuoteInput,
   type StaffQuoteParties,
 } from './staff-quote-workflow.js';
@@ -36,16 +39,24 @@ import type { NativeQuoteGapDetail } from './reservationist-evaluation-compositi
 import { type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
+import { mailExtraction } from '../db/schema/work.js';
+import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
 import { otherBoardContractNotes, type RateOption } from './rate-options.js';
 import { quoteWorkItemIdFor, recordRateEvents } from './work-events.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
-import { beginQuoteRun } from '../hms/property-queue-state.js';
+import {
+  staffQuoteRoomAlternatives,
+  type StaffQuoteRoomAlternative,
+} from './staff-quote-alternatives.js';
+import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
+
+export { staffQuoteRoomAlternatives, type StaffQuoteRoomAlternative };
 
 const HMS_NOT_RESPONDED_MESSAGE =
   "HMS didn't respond as expected. Try again; if it fails twice, quote in HMS directly.";
@@ -70,9 +81,10 @@ export function staffExtrasOrBadRequest(
   scope: Parameters<typeof buildStaffProposalFacts>[1],
   prepared: Parameters<typeof buildStaffProposalFacts>[2],
   revision: QuoteRevision,
+  options: Parameters<typeof buildStaffProposalFacts>[4] = {},
 ): { proposal: ReturnType<typeof buildStaffProposalFacts>; extraTotal: number } {
   try {
-    const proposal = buildStaffProposalFacts(input, scope, prepared, revision);
+    const proposal = buildStaffProposalFacts(input, scope, prepared, revision, options);
     const extraTotal = proposal.facts
       ? deriveAuthorizedExtraLines(revision, proposal.facts).reduce(
           (sum, line) => sum + line.totalMinor,
@@ -115,7 +127,13 @@ const STAFF_QUOTE_CAUSE_TRANSIENT_CODES = new Set([
 ]);
 
 /** Cause metadata is safe for tRPC logging and retains only codes needed for queue classification. */
-function staffQuoteCauseSummary(error: unknown): { name: string; code: string; message: string } {
+export function staffQuoteCauseSummary(error: unknown): {
+  name: string;
+  code: string;
+  message: string;
+  staffQuoteRefusal?: true;
+  alternatives?: StaffQuoteRoomAlternative[];
+} {
   if (isPropertyReadLockDeadline(error)) {
     return {
       name: 'Error',
@@ -127,10 +145,15 @@ function staffQuoteCauseSummary(error: unknown): { name: string; code: string; m
   let current: unknown = error;
   let leaf: unknown = error;
   let transientCode: string | undefined;
+  let alternatives: StaffQuoteRoomAlternative[] = [];
   for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
     if (typeof current !== 'object') break;
     leaf = current;
     const record = current as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown };
+    const detail = (current as { detail?: unknown }).detail;
+    if (!alternatives.length && detail && typeof detail === 'object') {
+      alternatives = staffQuoteRoomAlternatives((detail as { alternatives?: unknown }).alternatives);
+    }
     const code = typeof record.code === 'string' ? record.code : undefined;
     const message = typeof record.message === 'string' ? record.message : '';
     if (code && STAFF_QUOTE_CAUSE_TRANSIENT_CODES.has(code)) {
@@ -157,7 +180,30 @@ function staffQuoteCauseSummary(error: unknown): { name: string; code: string; m
     name: /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(rawName) ? rawName : 'Error',
     code: transientCode ?? (/^[A-Za-z0-9_.:-]{1,120}$/.test(rawCode) ? rawCode : 'unknown'),
     message: 'Staff quote execution failed.',
+    ...(alternatives.length ? { staffQuoteRefusal: true, alternatives } : {}),
   };
+}
+
+function dinnerAddOnDetails(
+  proposal: ReturnType<typeof buildStaffProposalFacts>,
+  revision: QuoteRevision,
+): {
+  label: string;
+  amountMinor: number;
+  unit: StaffQuoteDinnerAddOn['unit'];
+  totalMinor: number;
+} | undefined {
+  if (!proposal.facts) return undefined;
+  const line = deriveAuthorizedExtraLines(revision, proposal.facts).find((item) => item.service === 'dinner_add_on');
+  const extra = proposal.facts.extras.find((item) => item.service === 'dinner_add_on');
+  if (!line || !extra) return undefined;
+  const unit: StaffQuoteDinnerAddOn['unit'] =
+    extra.chargeUnit === 'per_person_night'
+      ? 'per_person_per_night'
+      : extra.chargeUnit === 'per_person'
+        ? 'per_person'
+        : 'per_room_per_night';
+  return { label: line.description, amountMinor: line.rateMinor, unit, totalMinor: line.totalMinor };
 }
 
 /**
@@ -275,14 +321,14 @@ function isHmsExecutionFailure(error: unknown, code: string, phase: string): boo
 
 export const NATIVE_NO_MATCHING_RATE_PREFIX = 'HMS has no rate for this meal plan under ';
 
-/** Clean HMS no-match: name the strategy, and offer the dinner fallback only when dinner was requested. */
+/** Clean HMS no-match: name the strategy and the automatic dinner fallback that was attempted. */
 export function nativeNoMatchingRateMessage(context: {
   salesStrategy?: string;
   dinnerRequested?: boolean;
 }): string {
   const strategy = context.salesStrategy ?? 'the selected rate type';
   const next = context.dinnerRequested
-    ? 'For dinner, quote Bed & Breakfast and add a dinner allowance (button below), or use the Government rate if the guest is entitled.'
+    ? 'Nava retries dinner requests on Bed & Breakfast with a separate dinner add-on. If no B&B rate is available, choose an available room option below or check the Government rate only if the guest is entitled.'
     : 'Try another meal plan or rate type.';
   return `${NATIVE_NO_MATCHING_RATE_PREFIX}${strategy}. ${next}`;
 }
@@ -437,12 +483,15 @@ async function awaitProvisionalCapture(
 
 export type StaffQuoteRunIdentity = {
   transportId: string;
-  user: { id: string; name: string | null; email: string };
+  /** Omitted for a system-prepared price. It is never replaced with a synthetic staff member. */
+  user?: { id: string; name: string | null; email: string };
 };
 
 export type StaffQuoteRunOptions = {
   signal?: AbortSignal;
   deadlineAt?: number;
+  /** Prepared read jobs use their own id as the document reference; no candidate-draft row is created. */
+  preparedRunId?: string;
   /** Commit a queued read result under the same claim fence and transaction as the quote artifacts. */
   commitQueuedResult?: (result: Record<string, unknown>, transaction: DB) => Promise<boolean>;
 };
@@ -467,6 +516,12 @@ function withRunDeadline<T extends ReturnType<typeof prepareStaffQuote>>(
   };
 }
 
+async function assertPreparedQuoteCanContinue(db: DB, systemPrepared: boolean): Promise<void> {
+  if (systemPrepared && (await staffQuoteInFlight(db))) {
+    throw Object.assign(new Error('A staff quote is waiting.'), { code: 'STAFF_QUOTE_ACTIVE' });
+  }
+}
+
 /** Runs one staff-approved native quote. The caller supplies the actor and transport from its trusted context. */
 export async function runStaffQuote(
   input: StaffQuoteInput,
@@ -481,6 +536,7 @@ export async function runStaffQuote(
     .limit(1);
   if (!mail || mail.direction !== 'inbound')
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
+  const systemPrepared = identity.user === undefined;
   let config: ReturnType<typeof readInstalledStaffQuoteConfiguration>;
   try {
     config = readInstalledStaffQuoteConfiguration();
@@ -492,7 +548,7 @@ export async function runStaffQuote(
   }
   const scope = {
     transportId: identity.transportId,
-    userId: identity.user.id,
+    userId: identity.user?.id ?? null,
     threadId: mail.threadId,
     messageId: mail.id,
     sourceHash: staffQuoteSourceHash(mail),
@@ -501,15 +557,21 @@ export async function runStaffQuote(
     propertyCode: config.owner.propertyCode,
   };
   const signal = options.signal ?? AbortSignal.timeout(20 * 60000);
-  const signer = { signerName: identity.user.name ?? '', signerEmail: identity.user.email };
+  // Pricing does not require a staff identity. The logged-in staff signer is added by PDF/Excel export.
+  const signer = {
+    signerName: identity.user?.name ?? '',
+    signerEmail: identity.user?.email ?? '',
+  };
   // Saved rates are read before any HMS call or generation row, so an archived rate fails cleanly here.
-  const rowPrices = await snapshotRowPrices(db, identity.transportId, input);
+  const rowPrices = systemPrepared ? [] : await snapshotRowPrices(db, identity.transportId, input);
   // A picked company or agency is re-checked in HMS before any rate is bound. The lookup runs before the quote lock,
   // which the same property lock would otherwise block. With the switch off no lookup runs and no party rate is sent.
   const notes: string[] = [];
   // The rate cards of the attempt that priced. Empty when the quote failed before they were built.
   let rateOptions: RateOption[] = [];
   let quoteInput: StaffQuoteInput = input;
+  let effectiveQuoteInput: StaffQuoteInput = input;
+  let dinnerFallbackGroupIds: string[] = [];
   if (input.parties) {
     if (quoteRateContextEnabled()) {
       quoteInput = { ...input, parties: await verifyStaffParties(input.parties) };
@@ -518,9 +580,9 @@ export async function runStaffQuote(
       notes.push(PARTY_LOOKUP_OFF_NOTE);
     }
   }
-  const prepare = (rates?: 'party' | 'public') =>
+  const prepare = (rates?: 'party' | 'public', attemptInput: StaffQuoteInput = quoteInput) =>
     withRunDeadline(
-      prepareStaffQuote(quoteInput, scope, signer, signal, rates),
+      prepareStaffQuote(attemptInput, scope, signer, signal, rates),
       options.deadlineAt,
     );
   let prepared: ReturnType<typeof prepareStaffQuote>;
@@ -532,43 +594,47 @@ export async function runStaffQuote(
       message: 'Selected email changed or stay inputs are incomplete; review and retry',
     });
   }
-  const generationId = randomUUID(),
-    workflowRunId = randomUUID();
-  // Existing generation ledger is the approval token; a new approval revokes older outputs.
-  await db.insert(aiDraftGeneration).values({
-    id: generationId,
-    transportId: scope.transportId,
-    threadId: scope.threadId,
-    requestedByUserId: scope.userId,
-    contextMessageIds: [mail.id],
-    model: 'staff-approved-native',
-    promptVersion: 'staff-quote-v1',
-    promptHash: prepared.inputDigest,
-    status: 'running',
-    createdAt: sql`clock_timestamp()`,
-  });
+  const generationId = randomUUID();
+  const workflowRunId = options.preparedRunId ?? randomUUID();
+  if (!systemPrepared) {
+    // Existing generation ledger is the approval token; a new approval revokes older outputs.
+    await db.insert(aiDraftGeneration).values({
+      id: generationId,
+      transportId: scope.transportId,
+      threadId: scope.threadId,
+      requestedByUserId: identity.user!.id,
+      contextMessageIds: [mail.id],
+      model: 'staff-approved-native',
+      promptVersion: 'staff-quote-v1',
+      promptHash: prepared.inputDigest,
+      status: 'running',
+      createdAt: sql`clock_timestamp()`,
+    });
+  }
   const stillCurrent = async () => {
     const [current] = await db
       .select()
       .from(message)
       .where(and(eq(message.id, mail.id), eq(message.transportId, identity.transportId)))
       .limit(1);
-    const [latest] = await db
-      .select({ id: aiDraftGeneration.id })
-      .from(aiDraftGeneration)
-      .where(
-        and(
-          eq(aiDraftGeneration.transportId, scope.transportId),
-          eq(aiDraftGeneration.threadId, scope.threadId),
-          eq(aiDraftGeneration.requestedByUserId, scope.userId),
-          eq(aiDraftGeneration.model, 'staff-approved-native'),
-          sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([scope.messageId])}::jsonb`,
-        ),
-      )
-      .orderBy(desc(aiDraftGeneration.createdAt))
-      .limit(1);
+    const [latest] = systemPrepared
+      ? [undefined]
+      : await db
+          .select({ id: aiDraftGeneration.id })
+          .from(aiDraftGeneration)
+          .where(
+            and(
+              eq(aiDraftGeneration.transportId, scope.transportId),
+              eq(aiDraftGeneration.threadId, scope.threadId),
+              eq(aiDraftGeneration.requestedByUserId, identity.user!.id),
+              eq(aiDraftGeneration.model, 'staff-approved-native'),
+              sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([scope.messageId])}::jsonb`,
+            ),
+          )
+          .orderBy(desc(aiDraftGeneration.createdAt))
+          .limit(1);
     return (
-      latest?.id === generationId &&
+      (systemPrepared || latest?.id === generationId) &&
       !!current &&
       current.threadId === scope.threadId &&
       staffQuoteSourceHash(current) === input.sourceHash
@@ -581,12 +647,14 @@ export async function runStaffQuote(
       message: 'Staff quotation database unavailable',
     });
   const evidence: { directory?: string } = {};
-  const queued = beginQuoteRun({
-    generationId,
-    transportId: scope.transportId,
-    userId: scope.userId,
-    lockKey: propertyReadLockKey(config.tenantId, scope.propertyCode),
-  });
+  const queued = systemPrepared
+    ? { setPhase: (_index: number) => undefined, end: () => undefined }
+    : beginQuoteRun({
+        generationId,
+        transportId: scope.transportId,
+        userId: identity.user!.id,
+        lockKey: propertyReadLockKey(config.tenantId, scope.propertyCode),
+      });
   // Provisional mode (QUOTE_TRACE_ASYNC=on): the quote is returned once captured, while the lock
   // and the run's record wait for the trace. Flag off, none of this changes the sequential flow.
   const traceAsync = quoteTraceAsyncEnabled();
@@ -605,6 +673,7 @@ export async function runStaffQuote(
     try {
       lockRun = lock.withLock(
         async () => {
+          await assertPreparedQuoteCanContinue(db, systemPrepared);
           queued.setPhase(1);
           // One attempt is one approval, with its own services and authorization. A party rate HMS cannot price is
           // quoted once more at public rates, and the review says so.
@@ -636,6 +705,7 @@ export async function runStaffQuote(
                   services.resolveQuoteTask &&
                   (async (quoteContext) => {
                     const resolved = await services.resolveQuoteTask!(quoteContext);
+                    await assertPreparedQuoteCanContinue(db, systemPrepared);
                     queued.setPhase(2);
                     return resolved;
                   }),
@@ -643,26 +713,71 @@ export async function runStaffQuote(
               stillCurrent,
             );
           };
-          const quote = quoteWithPartyFallback({
-            input: quoteInput,
-            first: prepared,
-            retry: () => prepare('public'),
-            run: quoteAt,
-          }).then((attempt) => {
+          const quoteOneInput = async (
+            attemptInput: StaffQuoteInput,
+            firstPrepared: ReturnType<typeof prepareStaffQuote>,
+          ) => {
+            const attempt = await quoteWithPartyFallback({
+              input: attemptInput,
+              first: firstPrepared,
+              retry: () => prepare('public', attemptInput),
+              run: quoteAt,
+            });
             prepared = attempt.prepared;
-            const contractNote = partyContractReviewNote(quoteInput.parties, attempt.result.groups);
+            effectiveQuoteInput = attemptInput;
+            const contractNote = partyContractReviewNote(attemptInput.parties, attempt.result.groups);
             // A contract on another board only: the public quote says which contract it did not take, instead of "no contract".
-            const elsewhere = quoteInput.parties
-              ? otherBoardContractNotes(partyNames(quoteInput.parties), rateOptions)
+            const elsewhere = attemptInput.parties
+              ? otherBoardContractNotes(partyNames(attemptInput.parties), rateOptions)
               : [];
             if (attempt.note) notes.push(attempt.note);
             else if (elsewhere.length) notes.push(...elsewhere);
             else if (contractNote) notes.push(contractNote);
             return attempt.result;
-          });
+          };
+          const quote = (async () => {
+            const allDinnerFallback = staffQuoteDinnerFallback(quoteInput);
+            const retryDinnerAsBb = (fallback = allDinnerFallback) => {
+              if (!fallback) throw new Error('staff_quote_dinner_fallback_missing');
+              // Retry only groups without a selected verified party contract; another group's contract stays pinned.
+              dinnerFallbackGroupIds = fallback.groupIds;
+              rateOptions = [];
+              return quoteOneInput(fallback.input, prepare(undefined, fallback.input));
+            };
+            const retryAllDinnerAsBb = () => {
+              if (!allDinnerFallback) throw new Error('staff_quote_dinner_fallback_missing');
+              // A no-match result has no selected-rate evidence, so preserve the existing all-dinner retry behavior.
+              dinnerFallbackGroupIds = allDinnerFallback.groupIds;
+              rateOptions = [];
+              return quoteOneInput(allDinnerFallback.input, prepare(undefined, allDinnerFallback.input));
+            };
+            const attemptNotesStart = notes.length;
+            let result: Awaited<ReturnType<typeof quoteOneInput>>;
+            try {
+              result = await quoteOneInput(quoteInput, prepared);
+            } catch (error) {
+              if (staffQuoteFailureCode(error) !== 'native_quote_no_matching_rate' || !allDinnerFallback) throw error;
+              // Preserve the same dates, room, occupancy, strategy and verified party context.
+              return retryAllDinnerAsBb();
+            }
+            const fallbackGroupIds = staffQuoteDinnerGroupIdsToRetryAsBb(quoteInput, rateOptions);
+            if (fallbackGroupIds.length) {
+              const dinnerFallback = staffQuoteDinnerFallback(quoteInput, fallbackGroupIds);
+              if (!dinnerFallback) throw new Error('staff_quote_dinner_fallback_missing');
+              // A public DBB/HB result is not the staff quote: use B&B and list dinner separately. Discard notes/rate
+              // cards from the superseded attempt; a selected, verified contract result is preserved group-by-group.
+              notes.splice(attemptNotesStart);
+              return retryDinnerAsBb(dinnerFallback);
+            }
+            return result;
+          })();
           return traceAsync ? awaitProvisionalCapture(quote, traceFinishes, captured) : quote;
         },
-        { signal, deadlineAt: prepared.context.input.clock.deadlineAt },
+        {
+          signal,
+          deadlineAt: prepared.context.input.clock.deadlineAt,
+          ...(systemPrepared ? { tryOnce: true } : {}),
+        },
       );
       if (traceAsync) {
         lockRun.then(
@@ -675,10 +790,12 @@ export async function runStaffQuote(
       }
     } catch (error) {
       console.warn('staff_quote_failed', staffQuoteFailureLog(error));
-      await db
-        .update(aiDraftGeneration)
-        .set({ status: 'failed', errorMessage: 'staff_quote_not_qualified' })
-        .where(eq(aiDraftGeneration.id, generationId));
+      if (!systemPrepared) {
+        await db
+          .update(aiDraftGeneration)
+          .set({ status: 'failed', errorMessage: 'staff_quote_not_qualified' })
+          .where(eq(aiDraftGeneration.id, generationId));
+      }
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
         message: staffQuoteFailureMessage(error, {
@@ -691,18 +808,31 @@ export async function runStaffQuote(
     queued.setPhase(3);
     // Any failure after pricing must not leave this generation 'running'.
     const markGenerationFailed = (code: string) =>
-      Promise.resolve(
-        db
-          .update(aiDraftGeneration)
-          .set({ status: 'failed', errorMessage: code })
-          .where(eq(aiDraftGeneration.id, generationId)),
-      ).catch(() => undefined);
-    let attestation: StaffQuoteAttestation;
+      systemPrepared
+        ? Promise.resolve()
+        : Promise.resolve(
+            db
+              .update(aiDraftGeneration)
+              .set({ status: 'failed', errorMessage: code })
+              .where(eq(aiDraftGeneration.id, generationId)),
+          ).catch(() => undefined);
+    let attestation: StaffQuoteAttestation | null = null;
     let proposal: ReturnType<typeof buildStaffProposalFacts>;
     let extraTotal: number;
     try {
-      attestation = attestStaffQuote(input, scope, prepared, revision, rowPrices);
-      ({ proposal, extraTotal } = staffExtrasOrBadRequest(input, scope, prepared, revision));
+      // Staff-approved scope controls charges; fallback IDs only keep an unpriced dinner-board retry gated.
+      ({ proposal, extraTotal } = staffExtrasOrBadRequest(effectiveQuoteInput, scope, prepared, revision, {
+        ...(effectiveQuoteInput.dinnerAllowanceGroupIds !== undefined
+          ? { dinnerGroupIds: effectiveQuoteInput.dinnerAllowanceGroupIds }
+          : {}),
+        ...(dinnerFallbackGroupIds.length ? { dinnerFallbackGroupIds } : {}),
+        ...(config.dinnerAddOn ? { dinnerAddOn: config.dinnerAddOn } : {}),
+      }));
+      if (!systemPrepared) {
+        attestation = attestStaffQuote(input, scope, prepared, revision, rowPrices, {
+          dinnerAddOnRequired: proposal.dinnerAddOnRequired,
+        });
+      }
       if (!(await stillCurrent()))
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
@@ -717,49 +847,84 @@ export async function runStaffQuote(
       : null;
     const persistRun = (quoteResult: Record<string, unknown>) =>
       db.transaction(async (tx) => {
-        await tx
-          .update(aiDraftGeneration)
-          .set({ status: 'succeeded' })
-          .where(eq(aiDraftGeneration.id, generationId));
-        await tx.insert(aiWorkflowRun).values({
-          id: workflowRunId,
-          transportId: scope.transportId,
-          threadId: scope.threadId,
-          triggerMessageId: mail.id,
-          runKind: 'candidate_draft',
-          idempotencyKey: prepared.authorizationId,
-          modelId: 'staff-approved-native',
-          promptVersion: 'staff-quote-v1',
-          state: 'succeeded',
-          executorLane: 'hms',
-          generationId,
-          metrics: {
-            staffQuoteAttestation: { ...attestation, salesStrategy: input.salesStrategy },
-            reservationistResult: {
-              readiness: 'ready_for_staff_review',
-              quoteRevisionIds: [revision.id],
-              quoteRevisions: [revision],
-              proposalFacts: proposal.facts ? [{ ref: 'extras', facts: proposal.facts }] : [],
+        if (!systemPrepared) {
+          await tx
+            .update(aiDraftGeneration)
+            .set({ status: 'succeeded' })
+            .where(eq(aiDraftGeneration.id, generationId));
+          await tx.insert(aiWorkflowRun).values({
+            id: workflowRunId,
+            transportId: scope.transportId,
+            threadId: scope.threadId,
+            triggerMessageId: mail.id,
+            runKind: 'candidate_draft',
+            idempotencyKey: prepared.authorizationId,
+            modelId: 'staff-approved-native',
+            promptVersion: 'staff-quote-v1',
+            state: 'succeeded',
+            executorLane: 'hms',
+            generationId,
+            metrics: {
+              staffQuoteAttestation: { ...attestation!, salesStrategy: input.salesStrategy },
+              reservationistResult: {
+                readiness: 'ready_for_staff_review',
+                quoteRevisionIds: [revision.id],
+                quoteRevisions: [revision],
+                proposalFacts: proposal.facts ? [{ ref: 'extras', facts: proposal.facts }] : [],
+              },
+              ...(runId ? { staffQuoteEvidence: { runId } } : {}),
             },
-            ...(runId ? { staffQuoteEvidence: { runId } } : {}),
-          },
-        });
-        // ponytail: U4 creates the quote's work item. Until it does, the approval is recorded and no rate event is written.
-        const workItemId = rowPrices.length
-          ? await quoteWorkItemIdFor(tx, {
-              transportId: scope.transportId,
-              threadId: scope.threadId,
-              messageId: mail.id,
-            })
-          : null;
-        if (workItemId)
-          await recordRateEvents(tx, {
-            workItemId,
-            actorUserId: scope.userId,
-            workflowRunId,
-            revision,
-            rowPrices,
           });
+          // ponytail: U4 creates the quote's work item. Until it does, the approval is recorded and no rate event is written.
+          const workItemId = rowPrices.length
+            ? await quoteWorkItemIdFor(tx, {
+                transportId: scope.transportId,
+                threadId: scope.threadId,
+                messageId: mail.id,
+              })
+            : null;
+          if (workItemId)
+            await recordRateEvents(tx, {
+              workItemId,
+              actorUserId: identity.user!.id,
+              workflowRunId,
+              revision,
+              rowPrices,
+            });
+        }
+        const outcomeWorkItemId = await ensureQuoteOutcomeWorkItem(tx as unknown as DB, {
+          transportId: scope.transportId, threadId: scope.threadId, sourceMessageId: mail.id,
+        });
+        const [extraction] = await tx.select({ payload: mailExtraction.payload }).from(mailExtraction)
+          .where(and(eq(mailExtraction.messageId, mail.id), eq(mailExtraction.status, 'succeeded')))
+          .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
+        const extractedFields = extraction?.payload ?? null;
+        const extractedContact = (extractedFields?.contact ?? {}) as Record<string, unknown>;
+        const groups = revision.groups.map(({ id, arrivalDate, departureDate, quantity, adults, children, childAges, roomCode, board }) =>
+          ({ id, arrivalDate, departureDate, quantity, adults, children, childAges, roomCode, board }));
+        const fields = { groups, contact: {
+          name: typeof extractedContact.name === 'string' ? extractedContact.name : '',
+          email: typeof extractedContact.email === 'string' ? extractedContact.email : '',
+          phone: typeof extractedContact.phone === 'string' ? extractedContact.phone : '',
+        } };
+        const staffFields = { ...fields, contact: {
+          name: effectiveQuoteInput.attention, email: effectiveQuoteInput.clientEmail,
+          phone: effectiveQuoteInput.clientTelephone,
+        } };
+        const toLines = (prices?: typeof rowPrices) => deriveQuoteLines(revision, prices)
+          .map(({ groupId, totalMinor, rateMinor, nights }) => ({ groupId, totalMinor, rateMinor, nights }));
+        const preparedLines = toLines();
+        const staffLines = [...toLines(rowPrices), ...(proposal.facts
+          ? deriveAuthorizedExtraLines(revision, proposal.facts).map(({ id, totalMinor, rateMinor, nights }) =>
+            ({ groupId: `extra:${id}`, totalMinor, rateMinor, nights })) : [])];
+        const preparedVersion = { version: 1 as const, sourceMessageId: mail.id, workflowRunId,
+          revisionRef: revision.id, action: 'quote_availability' as const, extractedFields, fields, party: null,
+          lines: preparedLines, totalMinor: revision.totalMinor, currency: revision.currency };
+        const staffVersion = { ...preparedVersion, fields: staffFields, party: effectiveQuoteInput.parties ?? null,
+          lines: staffLines, totalMinor: pricedRoomTotal(revision, rowPrices) + extraTotal };
+        await recordPreparedQuoteOutcome(tx as unknown as DB, { workItemId: outcomeWorkItemId,
+          actorUserId: identity.user?.id ?? null, workflowRunId, sourceMessageId: mail.id,
+          prepared: preparedVersion, staffFinal: staffVersion });
         if (
           options.commitQueuedResult &&
           !(await options.commitQueuedResult(quoteResult, tx as unknown as DB))
@@ -775,6 +940,9 @@ export async function runStaffQuote(
       threadId: mail.threadId,
       factRefs: proposal.factRefs,
       extrasReviewItems: [...notes, ...proposal.extrasReviewItems],
+      dinnerAddOnRequired: proposal.dinnerAddOnRequired,
+      ...(dinnerFallbackGroupIds.length ? { dinnerFallbackGroupIds } : {}),
+      ...(dinnerAddOnDetails(proposal, revision) ? { dinnerAddOn: dinnerAddOnDetails(proposal, revision) } : {}),
       rateOptions,
       selectionEpoch: input.selectionEpoch,
       inputRevision: input.inputRevision,
@@ -790,6 +958,19 @@ export async function runStaffQuote(
         .join('; '),
       // Per row: the HMS rate, the rate charged, and for an override the code and note for "Copy for HMS comments".
       rowRates: rowRatesFor(revision, rowPrices),
+      ...(systemPrepared
+        ? {
+            preparedProposal: {
+              version: 1,
+              inputDigest: prepared.inputDigest,
+              authorizationId: prepared.authorizationId,
+              sourceHash: scope.sourceHash,
+              revision,
+              ...(proposal.facts ? { facts: proposal.facts } : {}),
+              rowPrices,
+            },
+          }
+        : {}),
       runId,
       screenshots: runId ? await listQuoteRunScreenshots(config.outputDir, runId) : [],
     });
@@ -807,12 +988,7 @@ export async function runStaffQuote(
           console.error(
             `[staff-quote] run ${workflowRunId} not recorded: ${error instanceof Error ? error.message : 'unknown error'}`,
           );
-          await Promise.resolve(
-            db
-              .update(aiDraftGeneration)
-              .set({ status: 'failed', errorMessage: 'staff_quote_trace_finish_failed' })
-              .where(eq(aiDraftGeneration.id, generationId)),
-          ).catch(() => undefined);
+          await markGenerationFailed('staff_quote_trace_finish_failed');
           if (waitForTracePersistence && !(error instanceof Error && error.message === 'staff_quote_superseded')) {
             const failure = new Error('staff_quote_native_unavailable');
             Object.assign(failure, {

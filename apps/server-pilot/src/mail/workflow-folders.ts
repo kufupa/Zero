@@ -1,8 +1,10 @@
-import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import type { DB } from '../db/client.js';
 import {
   aiWorkflowRun,
   mailCategory,
+  mailActionLabel,
   mailThread,
   mailThreadCategory,
   message,
@@ -12,6 +14,7 @@ import {
   workEvent,
   workItem,
 } from '../db/schema/work.js';
+import type { MailAction } from './action-labels.js';
 
 export const WORKFLOW_FOLDER_IDS = [
   'quotes',
@@ -45,6 +48,7 @@ export type WorkflowFolderStats = {
 };
 
 export type WorkflowFolderSummary = Record<WorkflowFolderId, WorkflowFolderStats>;
+export type WorkflowFolderEvalSummary = Record<WorkflowFolderId, { total: number; marked: number }>;
 
 type WorkflowMappingInput = {
   /** Optional database column; deployments without it get null from to_jsonb(mail_extraction). */
@@ -53,6 +57,7 @@ type WorkflowMappingInput = {
   kind?: string | null;
   origin?: unknown;
   automatedChannel?: boolean;
+  ownerAction?: unknown;
 };
 
 type WorkflowSourceRow = {
@@ -68,6 +73,7 @@ type WorkflowSourceRow = {
   extractionId: string;
   kind: string | null;
   action: string | null;
+  ownerAction?: string | null;
   payload: Record<string, unknown> | null;
   extractorVersion: string;
   extractionCreatedAt: Date;
@@ -78,7 +84,7 @@ type WorkflowSourceRow = {
 export type WorkflowFolderRow = {
   threadId: string;
   sourceMessageId: string;
-  extractionId: string;
+  extractionId: string | null;
   folder: WorkflowFolderId;
   sender: string;
   subject: string;
@@ -87,11 +93,14 @@ export type WorkflowFolderRow = {
   kind: string | null;
   action: string | null;
   payload: Record<string, unknown> | null;
-  extractorVersion: string;
-  extractionCreatedAt: string;
+  extractorVersion: string | null;
+  extractionCreatedAt: string | null;
   prefilled: boolean;
   workItemStatus: string | null;
   review: WorkflowFolderReview | null;
+  predictedAction?: MailAction;
+  ownerAction?: MailAction | null;
+  markedAt?: string | null;
 };
 
 export type StoredWorkflowRun = {
@@ -124,6 +133,9 @@ export type WorkflowThreadMessage = {
   };
   review: WorkflowFolderReview | null;
   workItemStatus: string | null;
+  predictedAction?: MailAction;
+  ownerAction?: MailAction | null;
+  markedAt?: string | null;
 };
 
 type WorkItemReviewRow = {
@@ -164,6 +176,60 @@ const ACTION_FOLDERS: Record<string, WorkflowFolderId> = {
   no_action: 'not-for-nava',
 };
 
+function actionFolderSql(action: SQLWrapper): SQL<WorkflowFolderId> {
+  const actionCases = Object.entries(ACTION_FOLDERS).map(
+    ([value, folder]) => sql`when ${value} then ${folder}`,
+  );
+  return sql<WorkflowFolderId>`case ${action}
+    ${sql.join(actionCases, sql` `)}
+    else 'other-to-do'
+  end`;
+}
+
+function latestModelActionLabels(db: DB, transportId: string, version?: string) {
+  const conditions = [
+    eq(mailActionLabel.transportId, transportId),
+    eq(mailActionLabel.source, 'model'),
+  ];
+  // One model version at a time, so the desk shows exactly the set the eval report scores.
+  conditions.push(
+    version
+      ? eq(mailActionLabel.version, version)
+      : sql`${mailActionLabel.version} = (
+          select newest.version from ${mailActionLabel} newest
+          where newest.transport_id = ${transportId} and newest.source = 'model'
+          order by newest.created_at desc, newest.id desc
+          limit 1
+        )`,
+  );
+
+  return db.$with('workflow_review_set_labels').as(
+    db
+      .selectDistinctOn([mailActionLabel.messageId], {
+        modelTransportId: sql<string>`${mailActionLabel.transportId}`.as('model_transport_id'),
+        modelMessageId: sql<string>`${mailActionLabel.messageId}`.as('model_message_id'),
+        predictedAction: sql<MailAction>`${mailActionLabel.action}`.as('predicted_action'),
+        // Computed once here: a parameterised CASE repeated in GROUP BY is not the same expression to Postgres.
+        predictedFolder: actionFolderSql(sql<MailAction>`${mailActionLabel.action}`).as('predicted_folder'),
+        modelVersion: sql<string>`${mailActionLabel.version}`.as('model_version'),
+        modelCreatedAt: sql<Date>`${mailActionLabel.createdAt}`
+          .mapWith(mailActionLabel.createdAt)
+          .as('model_created_at'),
+      })
+      .from(mailActionLabel)
+      .where(and(...conditions))
+      .orderBy(
+        asc(mailActionLabel.messageId),
+        desc(mailActionLabel.createdAt),
+        desc(mailActionLabel.id),
+      ),
+  );
+}
+
+function actionFolder(action: MailAction): WorkflowFolderId {
+  return ACTION_FOLDERS[action] ?? 'other-to-do';
+}
+
 const LEGACY_KIND_FOLDERS: Record<string, WorkflowFolderId> = {
   quote: 'quotes',
   booking: 'new-bookings',
@@ -180,7 +246,8 @@ export function mapWorkflowFolder(input: WorkflowMappingInput): WorkflowFolderId
   const origin = cleanString(input.origin) ?? cleanString(payload.origin);
   if (input.automatedChannel || origin === 'system_notice') return 'not-for-nava';
 
-  const action = cleanString(input.action) ?? cleanString(payload.action);
+  const action =
+    cleanString(input.ownerAction) ?? cleanString(input.action) ?? cleanString(payload.action);
   if (action) return ACTION_FOLDERS[action] ?? 'other-to-do';
 
   const kind = cleanString(input.kind);
@@ -254,6 +321,28 @@ const effectiveAction = sql<string | null>`coalesce(
   nullif(btrim(${payloadAction}), '')
 )`;
 const payloadOrigin = sql<string | null>`${mailExtraction.payload}->>'origin'`;
+
+function ownerActionSql(transportId: string): SQL<string | null> {
+  return sql<string | null>`(
+    select ${mailActionLabel.action}
+    from ${mailActionLabel}
+    where ${mailActionLabel.messageId} = ${message.id}
+      and ${mailActionLabel.transportId} = ${transportId}
+      and ${mailActionLabel.source} = 'owner'
+      and ${mailActionLabel.version} = 'owner'
+    order by ${mailActionLabel.updatedAt} desc, ${mailActionLabel.id} desc
+    limit 1
+  )`;
+}
+
+export function workflowFolderMembershipSql(transportId: string): SQL<WorkflowFolderId> {
+  const action = sql<string | null>`coalesce(
+    nullif(btrim(${ownerActionSql(transportId)}), ''),
+    ${effectiveAction}
+  )`;
+  return mapWorkflowFolderSql(action);
+}
+
 const automatedChannel = sql<boolean>`exists (
   select 1
   from ${mailThreadCategory} mtc
@@ -265,7 +354,7 @@ const automatedChannel = sql<boolean>`exists (
 )`;
 
 /** SQL form used by the paged list/summary queries. It shares the same mapping tables as mapWorkflowFolder. */
-function mapWorkflowFolderSql(): SQL<WorkflowFolderId> {
+function mapWorkflowFolderSql(action: SQL<unknown> = effectiveAction): SQL<WorkflowFolderId> {
   const actionCases = Object.entries(ACTION_FOLDERS).map(
     ([action, folder]) => sql`when ${action} then ${folder}`,
   );
@@ -274,7 +363,7 @@ function mapWorkflowFolderSql(): SQL<WorkflowFolderId> {
   );
   return sql<WorkflowFolderId>`case
     when ${automatedChannel} or ${payloadOrigin} = 'system_notice' then 'not-for-nava'
-    when ${effectiveAction} is not null then case ${effectiveAction}
+    when ${action} is not null then case ${action}
       ${sql.join(actionCases, sql` `)}
       else 'other-to-do'
     end
@@ -345,28 +434,30 @@ function hasPrefilledDataSql(): SQL<boolean> {
   )`;
 }
 
-function latestWorkflowThreads(db: DB, transportId: string) {
+export function latestWorkflowThreads(db: DB, transportId: string) {
+  const ownerAction = ownerActionSql(transportId);
   return db.$with('workflow_latest_threads').as(
     db
       .selectDistinctOn([message.threadId], {
         threadId: message.threadId,
-        sourceMessageId: message.id,
+        sourceMessageId: sql<string>`${message.id}`.as('latest_source_message_id'),
         sender: message.fromAddress,
         subject: message.subject,
         receivedAt: message.receivedAt,
-        messageCreatedAt: message.createdAt,
+        messageCreatedAt: sql<Date>`${message.createdAt}`.mapWith(message.createdAt).as('message_created_at'),
         sortTime: sql<Date>`coalesce(${message.receivedAt}, ${message.createdAt})`.as('sort_time'),
-        isMessageRead: message.isRead,
-        isThreadRead: mailThread.isRead,
-        extractionId: mailExtraction.id,
+        isMessageRead: sql<boolean>`${message.isRead}`.as('message_is_read'),
+        isThreadRead: sql<boolean>`${mailThread.isRead}`.as('thread_is_read'),
+        extractionId: sql<string>`${mailExtraction.id}`.as('latest_extraction_id'),
         kind: mailExtraction.kind,
-        action: actionColumn,
+        action: actionColumn.as('action'),
+        ownerAction: ownerAction.as('owner_action'),
         payload: mailExtraction.payload,
         extractorVersion: mailExtraction.extractorVersion,
-        extractionCreatedAt: mailExtraction.createdAt,
-        origin: payloadOrigin,
-        automatedChannel,
-        folder: mapWorkflowFolderSql().as('folder'),
+        extractionCreatedAt: sql<Date>`${mailExtraction.createdAt}`.mapWith(mailExtraction.createdAt).as('extraction_created_at'),
+        origin: payloadOrigin.as('origin'),
+        automatedChannel: automatedChannel.as('automated_channel'),
+        folder: workflowFolderMembershipSql(transportId).as('folder'),
         prefilled: hasPrefilledDataSql().as('prefilled'),
       })
       .from(mailExtraction)
@@ -439,6 +530,7 @@ function latestSucceededExtractions(db: DB, transportId: string, threadId?: stri
       extractionId: mailExtraction.id,
       kind: mailExtraction.kind,
       action: actionColumn,
+      ownerAction: ownerActionSql(transportId),
       payload: mailExtraction.payload,
       extractorVersion: mailExtraction.extractorVersion,
       extractionCreatedAt: mailExtraction.createdAt,
@@ -549,6 +641,7 @@ function toWorkflowFolderRow(
     extractionId: row.extractionId,
     folder: row.folder ?? mapWorkflowFolder({
       action: row.action,
+      ownerAction: row.ownerAction,
       payload: row.payload,
       kind: row.kind,
       origin: row.origin,
@@ -575,7 +668,12 @@ export async function listWorkflowFolderRows(
   folder: WorkflowFolderId,
   offset: number,
   limit: number,
+  options: { set?: 'eval'; version?: string } = {},
 ): Promise<{ rows: WorkflowFolderRow[]; nextOffset: number | null }> {
+  if (options.set === 'eval') {
+    return listReviewSetRows(db, transportId, folder, offset, limit, options.version);
+  }
+
   const latest = latestWorkflowThreads(db, transportId);
   const selectedRows = await db
     .with(latest)
@@ -600,10 +698,117 @@ export async function listWorkflowFolderRows(
   };
 }
 
+async function listReviewSetRows(
+  db: DB,
+  transportId: string,
+  folder: WorkflowFolderId,
+  offset: number,
+  limit: number,
+  version?: string,
+): Promise<{ rows: WorkflowFolderRow[]; nextOffset: number | null }> {
+  const labels = latestModelActionLabels(db, transportId, version);
+  const ownerLabels = alias(mailActionLabel, 'workflow_review_owner_label');
+  const predictedFolder = labels.predictedFolder;
+  const selectedRows = await db
+    .with(labels)
+    .select({
+      threadId: message.threadId,
+      sourceMessageId: message.id,
+      folder: predictedFolder,
+      sender: message.fromAddress,
+      subject: message.subject,
+      receivedAt: message.receivedAt,
+      messageCreatedAt: message.createdAt,
+      isMessageRead: message.isRead,
+      isThreadRead: mailThread.isRead,
+      predictedAction: labels.predictedAction,
+      ownerAction: ownerLabels.action,
+      markedAt: ownerLabels.updatedAt,
+    })
+    .from(labels)
+    .innerJoin(
+      message,
+      and(
+        eq(message.id, labels.modelMessageId),
+        eq(message.transportId, transportId),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .innerJoin(
+      mailThread,
+      and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, transportId)),
+    )
+    .leftJoin(
+      ownerLabels,
+      and(
+        eq(ownerLabels.messageId, labels.modelMessageId),
+        eq(ownerLabels.transportId, transportId),
+        eq(ownerLabels.source, 'owner'),
+        eq(ownerLabels.version, 'owner'),
+      ),
+    )
+    .where(
+      and(
+        eq(labels.modelTransportId, transportId),
+        isNull(mailThread.trashedAt),
+        eq(predictedFolder, folder),
+      ),
+    )
+    .orderBy(
+      asc(sql<number>`case when ${ownerLabels.id} is null then 0 else 1 end`),
+      desc(sql`coalesce(${message.receivedAt}, ${message.createdAt})`),
+      desc(message.createdAt),
+      desc(message.id),
+    )
+    .limit(limit + 1)
+    .offset(offset);
+  const hasNextPage = selectedRows.length > limit;
+  const pageRows = selectedRows.slice(0, limit);
+
+  return {
+    rows: pageRows.map((row) => ({
+      threadId: row.threadId,
+      sourceMessageId: row.sourceMessageId,
+      extractionId: null,
+      folder: row.folder,
+      sender: row.sender,
+      subject: row.subject?.trim() || '(no subject)',
+      receivedAt: (row.receivedAt ?? row.messageCreatedAt).toISOString(),
+      isRead: row.isMessageRead || row.isThreadRead,
+      kind: null,
+      action: null,
+      payload: null,
+      extractorVersion: null,
+      extractionCreatedAt: null,
+      prefilled: false,
+      workItemStatus: null,
+      review: null,
+      predictedAction: row.predictedAction,
+      ownerAction: row.ownerAction,
+      markedAt: row.markedAt?.toISOString() ?? null,
+    })),
+    nextOffset: hasNextPage ? offset + limit : null,
+  };
+}
+
 export async function getWorkflowFolderSummary(
   db: DB,
   transportId: string,
-): Promise<WorkflowFolderSummary> {
+): Promise<WorkflowFolderSummary>;
+export async function getWorkflowFolderSummary(
+  db: DB,
+  transportId: string,
+  options: { set: 'eval'; version?: string },
+): Promise<WorkflowFolderEvalSummary>;
+export async function getWorkflowFolderSummary(
+  db: DB,
+  transportId: string,
+  options?: { set?: 'eval'; version?: string },
+): Promise<WorkflowFolderSummary | WorkflowFolderEvalSummary> {
+  if (options?.set === 'eval') {
+    return getReviewSetSummary(db, transportId, options.version);
+  }
+
   const latest = latestWorkflowThreads(db, transportId);
   const reviews = latestWorkflowReviews(db, transportId);
   const rows = await db
@@ -623,7 +828,8 @@ export async function getWorkflowFolderSummary(
       reviews,
       and(
         eq(reviews.sourceMessageId, latest.sourceMessageId),
-        eq(reviews.extractionId, latest.extractionId),
+        // Review evidence stores the extraction id as JSON text; the extraction id is a uuid.
+        sql`${reviews.extractionId} = ${latest.extractionId}::text`,
       ),
     )
     .groupBy(latest.folder);
@@ -637,6 +843,54 @@ export async function getWorkflowFolderSummary(
       reviewedEdited: row.reviewedEdited,
       reviewedWrong: row.reviewedWrong,
     };
+  }
+  return summary;
+}
+
+async function getReviewSetSummary(
+  db: DB,
+  transportId: string,
+  version?: string,
+): Promise<WorkflowFolderEvalSummary> {
+  const labels = latestModelActionLabels(db, transportId, version);
+  const ownerLabels = alias(mailActionLabel, 'workflow_review_summary_owner_label');
+  const predictedFolder = labels.predictedFolder;
+  const rows = await db
+    .with(labels)
+    .select({
+      folder: predictedFolder,
+      total: sql<number>`count(*)::int`.as('total'),
+      marked: sql<number>`count(${ownerLabels.id})::int`.as('marked'),
+    })
+    .from(labels)
+    .innerJoin(
+      message,
+      and(
+        eq(message.id, labels.modelMessageId),
+        eq(message.transportId, transportId),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .innerJoin(
+      mailThread,
+      and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, transportId)),
+    )
+    .leftJoin(
+      ownerLabels,
+      and(
+        eq(ownerLabels.messageId, labels.modelMessageId),
+        eq(ownerLabels.transportId, transportId),
+        eq(ownerLabels.source, 'owner'),
+        eq(ownerLabels.version, 'owner'),
+      ),
+    )
+    .where(and(eq(labels.modelTransportId, transportId), isNull(mailThread.trashedAt)))
+    .groupBy(predictedFolder);
+  const summary = Object.fromEntries(
+    WORKFLOW_FOLDER_IDS.map((folder) => [folder, { total: 0, marked: 0 }]),
+  ) as WorkflowFolderEvalSummary;
+  for (const row of rows) {
+    summary[row.folder as WorkflowFolderId] = { total: row.total, marked: row.marked };
   }
   return summary;
 }
@@ -708,7 +962,14 @@ function storedWorkflowRun(run: {
 
 export async function getWorkflowFolderThread(
   db: DB,
-  input: { transportId: string; folder: WorkflowFolderId; threadId: string },
+  input: {
+    transportId: string;
+    folder: WorkflowFolderId;
+    threadId: string;
+    set?: 'eval';
+    version?: string;
+    messageId?: string;
+  },
 ): Promise<{
   folder: WorkflowFolderId;
   threadId: string;
@@ -716,19 +977,91 @@ export async function getWorkflowFolderThread(
   messages: WorkflowThreadMessage[];
   runs: StoredWorkflowRun[];
 } | null> {
-  const threadRows = (await latestSucceededExtractions(db, input.transportId, input.threadId)) as WorkflowSourceRow[];
-  const latestForThread = newestExtractionPerMessage(threadRows)[0];
-  if (
-    !latestForThread ||
-    mapWorkflowFolder({
-      action: latestForThread.action,
-      payload: latestForThread.payload,
-      kind: latestForThread.kind,
-      origin: latestForThread.origin,
-      automatedChannel: latestForThread.automatedChannel,
-    }) !== input.folder
-  ) {
-    return null;
+  let defaultMessageId: string;
+  const reviewSetLabels = new Map<
+    string,
+    { predictedAction: MailAction; ownerAction: MailAction | null; markedAt: Date | null }
+  >();
+  if (input.set === 'eval') {
+    const labels = latestModelActionLabels(db, input.transportId, input.version);
+    const ownerLabels = alias(mailActionLabel, 'workflow_thread_owner_label');
+    const labelRows = await db
+      .with(labels)
+      .select({
+        messageId: message.id,
+        predictedAction: labels.predictedAction,
+        ownerAction: ownerLabels.action,
+        markedAt: ownerLabels.updatedAt,
+      })
+      .from(labels)
+      .innerJoin(
+        message,
+        and(
+          eq(message.id, labels.modelMessageId),
+          eq(message.transportId, input.transportId),
+          eq(message.direction, 'inbound'),
+        ),
+      )
+      .innerJoin(
+        mailThread,
+        and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, input.transportId)),
+      )
+      .leftJoin(
+        ownerLabels,
+        and(
+          eq(ownerLabels.messageId, labels.modelMessageId),
+          eq(ownerLabels.transportId, input.transportId),
+          eq(ownerLabels.source, 'owner'),
+          eq(ownerLabels.version, 'owner'),
+        ),
+      )
+      .where(
+        and(
+          eq(labels.modelTransportId, input.transportId),
+          eq(message.threadId, input.threadId),
+          isNull(mailThread.trashedAt),
+        ),
+      )
+      .orderBy(
+        desc(sql`coalesce(${message.receivedAt}, ${message.createdAt})`),
+        desc(message.createdAt),
+        desc(message.id),
+      );
+    for (const row of labelRows) {
+      reviewSetLabels.set(row.messageId, {
+        predictedAction: row.predictedAction,
+        ownerAction: row.ownerAction,
+        markedAt: row.markedAt,
+      });
+    }
+    const selected = input.messageId
+      ? labelRows.find(
+          (row) => row.messageId === input.messageId && actionFolder(row.predictedAction) === input.folder,
+        )
+      : labelRows.find((row) => actionFolder(row.predictedAction) === input.folder);
+    if (!selected) return null;
+    defaultMessageId = selected.messageId;
+  } else {
+    const threadRows = (await latestSucceededExtractions(
+      db,
+      input.transportId,
+      input.threadId,
+    )) as WorkflowSourceRow[];
+    const latestForThread = newestExtractionPerMessage(threadRows)[0];
+    if (
+      !latestForThread ||
+      mapWorkflowFolder({
+        action: latestForThread.action,
+        ownerAction: latestForThread.ownerAction,
+        payload: latestForThread.payload,
+        kind: latestForThread.kind,
+        origin: latestForThread.origin,
+        automatedChannel: latestForThread.automatedChannel,
+      }) !== input.folder
+    ) {
+      return null;
+    }
+    defaultMessageId = latestForThread.sourceMessageId;
   }
 
   const rows = await db
@@ -744,6 +1077,7 @@ export async function getWorkflowFolderThread(
       extractionId: mailExtraction.id,
       kind: mailExtraction.kind,
       action: actionColumn,
+      ownerAction: ownerActionSql(input.transportId),
       payload: mailExtraction.payload,
       extractorVersion: mailExtraction.extractorVersion,
       extractionCreatedAt: mailExtraction.createdAt,
@@ -795,6 +1129,7 @@ export async function getWorkflowFolderThread(
           action: cleanString(row.action) ?? cleanString(asRecord(row.payload).action),
           folder: mapWorkflowFolder({
             action: row.action,
+            ownerAction: row.ownerAction,
             payload: row.payload,
             kind: row.kind,
             origin: row.origin,
@@ -814,6 +1149,13 @@ export async function getWorkflowFolderThread(
       extraction,
       review: currentReview?.review ?? null,
       workItemStatus: currentReview?.status ?? null,
+      ...(reviewSetLabels.has(row.sourceMessageId)
+        ? {
+            predictedAction: reviewSetLabels.get(row.sourceMessageId)!.predictedAction,
+            ownerAction: reviewSetLabels.get(row.sourceMessageId)!.ownerAction,
+            markedAt: reviewSetLabels.get(row.sourceMessageId)!.markedAt?.toISOString() ?? null,
+          }
+        : {}),
     };
   });
   const sourceMessageIds = newestMessages.map((row) => row.sourceMessageId);
@@ -845,7 +1187,7 @@ export async function getWorkflowFolderThread(
   return {
     folder: input.folder,
     threadId: input.threadId,
-    defaultMessageId: latestForThread.sourceMessageId,
+    defaultMessageId,
     messages,
     runs: runs.map(storedWorkflowRun),
   };

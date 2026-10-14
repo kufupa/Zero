@@ -12,11 +12,16 @@ import { buildStaffProposalFacts, staffQuoteInput } from '../src/ai/staff-quote-
 import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { appRouter } from '../src/trpc/router.js';
+import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import {
   listThreadQuoteRevisionsInput,
   usePriorQuoteForBookingInput,
 } from '../src/trpc/routes/workstation.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
+import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
+import { randomUUID } from 'node:crypto';
+
+const reachable = await probeTestDb();
 
 function analysis(over: Partial<LunaAnalysis> = {}): LunaAnalysis {
   return {
@@ -41,6 +46,90 @@ function analysis(over: Partial<LunaAnalysis> = {}): LunaAnalysis {
     tasks: [],
     ...over,
   };
+}
+
+async function seedPreparedBookingRun(db: DB) {
+  const transportId = 'transport-centurion',
+    threadId = randomUUID(),
+    messageId = randomUUID(),
+    runId = randomUUID(),
+    capturedAt = new Date(Date.now() - 1_000).toISOString();
+  const revision = await syntheticRevision(['1850.00'], 'Room Only R', 'SKNG', capturedAt);
+  const rowPrices = [{ groupId: revision.groups[0]!.id, source: 'one_off' as const, amountMinor: 200_000 }];
+  const facts = {
+    revisionId: revision.id,
+    authorizationId: revision.authorizationId,
+    sourceRef: 'message:prepared-quote',
+    sourceHash: 'ab'.repeat(32),
+    extras: [
+      {
+        id: 'shuttle',
+        label: 'Shuttle',
+        quantity: 1,
+        units: 2,
+        unitKind: 'trip' as const,
+        unitMinor: 50_000,
+        service: 'shuttle',
+        persons: [],
+        dates: [],
+        chargeUnit: 'per_trip' as const,
+      },
+    ],
+    includedEntitlements: [],
+  };
+  const readResult = {
+    status: 'ready',
+    kind: 'staff_quote',
+    workflowRunId: runId,
+    messageId,
+    threadId,
+    revisionRef: revision.id,
+    factRefs: ['extras'],
+    inputDigest: 'prepared-input-digest',
+    asOf: capturedAt,
+    freshUntil: revision.sourceFreshness?.expiresAt,
+    preparedProposal: {
+      version: 1,
+      inputDigest: 'prepared-input-digest',
+      authorizationId: revision.authorizationId,
+      sourceHash: 'a'.repeat(64),
+      revision,
+      facts,
+      rowPrices,
+    },
+  };
+
+  await db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
+  await db.insert(message).values({
+    id: messageId,
+    transportId,
+    threadId,
+    direction: 'inbound',
+    fromAddress: 'guest@example.invalid',
+    messageIdHeader: `<${messageId}@example.invalid>`,
+    textBody: 'Please quote two rooms for 12 October.',
+    receivedAt: new Date(),
+  });
+  await db.insert(aiWorkflowRun).values({
+    id: runId,
+    transportId,
+    threadId,
+    triggerMessageId: messageId,
+    runKind: 'read_tool',
+    idempotencyKey: `prepared-quote:${runId}`,
+    modelId: 'not_applicable',
+    promptVersion: 'hms-job/1',
+    state: 'succeeded',
+    executorLane: 'hms',
+    priority: 10,
+    generationId: null,
+    readRequest: { kind: 'staff_quote', input: { messageId, sourceHash: 'a'.repeat(64) } },
+    readResult,
+    readResultExpiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+    metrics: { quotePrepared: true, userId: null },
+    finishedAt: new Date(),
+  });
+  return { threadId, messageId, runId, revision };
 }
 
 async function freshRevision() {
@@ -274,6 +363,79 @@ describe('priorStaffQuoteRequotePayload', () => {
       shuttleRequested: true,
       shuttleMinor: 45_000,
     });
+  });
+
+  it('restores configured dinner add-on amount, unit, label, and fallback groups on re-quote', async () => {
+    const revision = await syntheticRevision();
+    const sourceHash = 'cd'.repeat(32);
+    for (const unit of ['per_person_per_night', 'per_person', 'per_room_per_night'] as const) {
+      const input = staffQuoteInput.parse({
+        messageId: 'mail-1',
+        sourceHash,
+        selectionEpoch: 1,
+        inputRevision: 1,
+        groups: [
+          {
+            id: 'g1',
+            arrivalDate: revision.groups[0]!.arrivalDate,
+            departureDate: revision.groups[0]!.departureDate,
+            quantity: revision.groups[0]!.quantity,
+            adults: revision.groups[0]!.adults,
+            childrenAges: revision.groups[0]!.childAges,
+            board: 'bb',
+          },
+        ],
+        dinnerAllowanceMinor: 17_500,
+        dinnerAllowanceUnit: unit,
+        dinnerAllowanceLabel: 'Set menu',
+        dinnerAllowanceGroupIds: ['g1'],
+      });
+      const proposal = buildStaffProposalFacts(
+        input,
+        { messageId: 'mail-1', sourceHash },
+        { authorizationId: revision.authorizationId },
+        revision,
+        { dinnerGroupIds: ['g1'] },
+      );
+      const payload = priorStaffQuoteRequotePayload(
+        {
+          transportId: 't1',
+          threadId: 'thread-1',
+          state: 'succeeded',
+          metrics: {
+            staffQuoteAttestation: {
+              version: 1,
+              kind: 'staff_approved_quote',
+              transportId: 't1',
+              userId: 'u1',
+              threadId: 'thread-1',
+              messageId: 'mail-1',
+              sourceHash,
+              selectionEpoch: 1,
+              inputRevision: 1,
+              inputDigest: 'digest',
+              authorizationId: revision.authorizationId,
+              revisionIds: [revision.id],
+              header: { company: '', agency: '' },
+              salesStrategy: 'BAR',
+            },
+            reservationistResult: {
+              quoteRevisionIds: [revision.id],
+              quoteRevisions: [revision],
+              proposalFacts: proposal.facts ? [{ ref: 'extras', facts: proposal.facts }] : [],
+            },
+          },
+        },
+        revision.id,
+      );
+
+      expect(payload).toMatchObject({
+        dinnerAllowanceMinor: 17_500,
+        dinnerAllowanceUnit: unit,
+        dinnerAllowanceLabel: 'Set menu',
+        dinnerAllowanceGroupIds: ['g1'],
+      });
+    }
   });
 
   it('restores the chosen unit of an other charge on a re-quote, including a one-night per-guest-per-night charge', async () => {
@@ -572,6 +734,32 @@ describe('resolvePriorQuoteForBooking', () => {
     }
   });
 
+  it('does not restore a prepared quote after staff edits the board or room preference', async () => {
+    const revision = await freshRevision();
+    const editedAnalysis = analysis({
+      groups: [{ ...analysis().groups[0]!, board: 'bb', roomPreference: 'Queen' }],
+    });
+    const resolved = resolvePriorQuoteForBooking(
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        state: 'succeeded',
+        metrics: { quotePrepared: true, userId: null },
+        readResult: { status: 'ready', preparedProposal: { revision } },
+      },
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        revisionRef: revision.id,
+        analysis: editedAnalysis,
+        now: new Date('2026-10-07T03:00:00Z'),
+      },
+    );
+
+    expect(analysisMatchesQuotedStay(editedAnalysis, revision)).toBe(true);
+    expect(resolved.status).toBe('unavailable');
+  });
+
   it('returns expired when the authored window has lapsed', async () => {
     const revision = await freshRevision();
     revision.authoredDate = '2026-09-01';
@@ -738,6 +926,36 @@ describe('prior-quote routes', () => {
     expect(result).toEqual({ status: 'unavailable', reason: 'not_found' });
   });
 
+  it.skipIf(!TEST_DB_AVAILABLE || !reachable)('does not list an unadopted prepared quote as a prior offer', async () => {
+    await withSeededTestDb(async (db) => {
+      __setDbForTests({ db, conn: null as never });
+      const { threadId } = await seedPreparedBookingRun(db);
+
+      const result = await caller().workstation.listThreadQuoteRevisions({ threadId });
+
+      expect(result.revisions).toEqual([]);
+    });
+  });
+
+  it.skipIf(!TEST_DB_AVAILABLE || !reachable)('does not reuse an unadopted prepared quote for booking', async () => {
+    await withSeededTestDb(async (db) => {
+      __setDbForTests({ db, conn: null as never });
+      const { threadId, messageId, revision, runId } = await seedPreparedBookingRun(db);
+
+      const result = await caller().workstation.usePriorQuoteForBooking({
+        workflowRunId: runId,
+        revisionRef: revision.id,
+        threadId,
+        messageId,
+        selectionEpoch: 1,
+        inputRevision: 1,
+        analysis: analysis(),
+      });
+
+      expect(result).toEqual({ status: 'unavailable', reason: 'not_found' });
+    });
+  });
+
   it('carries every staff extra and the note into a requote, and reads legacy dinner and shuttle rows', async () => {
     const revision = await freshRevision();
     const payloadFor = (extras: unknown[], notes?: string) =>
@@ -870,7 +1088,10 @@ describe('prior-quote routes', () => {
         dates: [],
       },
     ]);
-    expect(legacy).toMatchObject({ dinnerAllowanceMinor: 12_500 });
+    expect(legacy).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceUnit: 'per_person_per_night',
+    });
     expect(legacy).not.toHaveProperty('notes');
     expect(legacy).not.toHaveProperty('other');
   });

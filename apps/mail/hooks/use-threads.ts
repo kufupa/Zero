@@ -30,6 +30,7 @@ import { resolveSearchListRequest } from '@/lib/mail/search-list';
 import { buildConversationPrimaryListRows } from '@/lib/mail/conversation-list';
 import { useCategorySettings } from './use-categories';
 import { useLabels } from './use-labels';
+import { isWorkflowFolderNavId } from '@/config/workflow-folders';
 
 const threadPollingMs = resolveThreadPollingMs(import.meta.env.VITE_MAIL_POLL_MS);
 const openThreadPolling = openThreadQueryPollingOptions(import.meta.env.VITE_MAIL_POLL_MS);
@@ -118,6 +119,10 @@ export const useThreads = () => {
   );
 
   const validSearchList = searchList.isValid ? searchList : undefined;
+  const workflowFolder =
+    isWorkflowFolderNavId(canonicalRouteFolder) && validSearchList?.folder !== 'all'
+      ? canonicalRouteFolder
+      : undefined;
   const demoListFolder =
     validSearchList?.folder === 'all'
       ? validSearchList.folder
@@ -230,6 +235,7 @@ export const useThreads = () => {
           q: validSearchList.q,
           folder: validSearchList.folder,
           filters: validSearchList.filters,
+          ...(workflowFolder ? { workflowFolder } : {}),
         }
       : {},
     {

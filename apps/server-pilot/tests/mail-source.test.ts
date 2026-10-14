@@ -67,6 +67,20 @@ const channelExamples = [
     source: 'Get-e',
     reason: 'sender_domain:get-e.com',
   },
+  {
+    name: 'Tiket.com sender',
+    input: { fromAddress: 'noreply@tiket.com', subject: 'New reservation', bodyText: '' },
+    kind: 'channel',
+    source: 'Tiket.com',
+    reason: 'sender_domain:tiket.com',
+  },
+  {
+    name: 'Profitroom booking engine sender',
+    input: { fromAddress: 'Profitroom <booking@profitroom.com>', subject: 'New booking', bodyText: '' },
+    kind: 'channel',
+    source: 'Profitroom',
+    reason: 'sender_domain:profitroom.com',
+  },
 ] as const;
 
 const systemExamples = [
@@ -104,6 +118,17 @@ const systemExamples = [
     kind: 'system',
     source: 'Tripadvisor',
     reason: 'sender_domain:tripadvisor.com',
+  },
+  {
+    name: 'H-Pay payment notice sender',
+    input: {
+      fromAddress: 'no-reply@hospitality.cloud',
+      subject: 'The Centurion Hotel Booking Secure Payment Link',
+      bodyText: '',
+    },
+    kind: 'system',
+    source: 'H-Pay',
+    reason: 'sender_domain:hospitality.cloud',
   },
 ] as const;
 
@@ -196,9 +221,74 @@ const directExamples = [
       bodyText: 'I saw reviews on ReviewPro and Tripadvisor.',
     },
   },
+  {
+    name: 'travel agent Travelit stays in scope',
+    input: { fromAddress: 'reservations@travelit.co.za', subject: 'Booking request', bodyText: '' },
+  },
+  {
+    name: 'travel agent TBO stays in scope',
+    input: { fromAddress: 'hotels@tbo.com', subject: 'Booking request', bodyText: '' },
+  },
+  {
+    name: 'TBO helpdesk stays in scope',
+    input: { fromAddress: 'support@tbohelp.zendesk.com', subject: 'Booking query', bodyText: '' },
+  },
+  {
+    name: 'look-alike host is not Tiket.com',
+    input: { fromAddress: 'sales@mytiket.com', subject: 'Rates', bodyText: '' },
+  },
 ] as const;
 
 describe('classifyMailSource', () => {
+  it('keeps a Profitroom website contact form direct, sent or forwarded', () => {
+    expect(
+      classifyMailSource({ fromAddress: 'noreply@profitroom.com', subject: 'Default contact form', bodyText: '' }),
+    ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
+    expect(
+      classifyMailSource({
+        fromAddress: 'reservations@legacyhotels.co.za',
+        subject: 'FW: Default contact form',
+        bodyText: 'From: Profitroom <noreply@profitroom.com>\nSent: today\nSubject: Default contact form',
+      }),
+    ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
+  });
+
+  it('keeps a renamed forward of a Profitroom contact form direct, from its original Subject line', () => {
+    expect(
+      classifyMailSource({
+        fromAddress: 'reservations@legacyhotels.co.za',
+        subject: 'FW: Guest enquiry',
+        bodyText:
+          'From: Profitroom <noreply@profitroom.com>\nSent: Monday\nTo: reservations\nSubject: Default contact form\n\nHello',
+      }),
+    ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
+  });
+
+  it('reads the original Subject of an HTML forward whose header fields are blank-line separated', () => {
+    const result = classifyMailSource({
+      fromAddress: 'reservations@legacyhotels.co.za',
+      subject: 'FW: please check',
+      bodyText:
+        'From: H-Pay <noreply@hospitality.cloud>\n\nSent: Monday\n\nTo: reservations\n\nCc: finance\n\nSubject: Secure payment link\n\nHello',
+    });
+    expect(result.kind).toBe('system');
+    expect(result.source).toBe('H-Pay');
+  });
+
+  it('skips only H-Pay payment-link notices; other H-Pay mail stays direct for finance triage', () => {
+    expect(
+      classifyMailSource({ fromAddress: 'finance@hospitality.cloud', subject: 'Payment confirmation', bodyText: '' }),
+    ).toEqual({ kind: 'direct', source: null, reason: 'unskipped_subject:h-pay' });
+  });
+
+  it('does not skip an internal forward on a brand-prefixed subject alone', () => {
+    for (const subject of ['Fwd: Profitroom request to change dates', 'Fwd: Tiket special request']) {
+      expect(
+        classifyMailSource({ fromAddress: 'reservations@legacyhotels.co.za', subject, bodyText: 'Please help.' }).kind,
+      ).toBe('direct');
+    }
+  });
+
   it.each(channelExamples)('matches channel source: $name', ({ input, kind, source, reason }) => {
     expect(classifyMailSource(input)).toEqual({ kind, source, reason });
   });

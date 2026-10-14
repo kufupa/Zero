@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { emailsMatch } from '../lib/quote-proposal/identity';
 import { occupancyRoomCode, proposalDescription } from '../lib/quote-proposal/description';
 import { lineTotal, quotePdfFileName } from '../lib/quote-proposal/filename';
-import { HOTEL_TELEPHONE, quoteWrapperHtml } from '../lib/quote-proposal/copy';
+import { HOTEL_TELEPHONE, missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 
 describe('quote proposal helpers', () => {
   it('matches Nava and Outlook emails case-insensitively', () => {
@@ -41,10 +41,10 @@ describe('quote proposal helpers', () => {
     expect(HOTEL_TELEPHONE).toBe('0126433600');
     const html = quoteWrapperHtml('David Miller', 'R Opperman');
     expect(html).toContain('Good day David Miller,');
-    expect(html).toContain('Thank you for choosing The Centurion Hotel.');
+    expect(html).toContain('Thank you for Choosing The Centurion Hotel.');
     expect(html).toContain('Please see attached quotation.');
     expect(html).toContain(
-      'Kindly sign and return the quotation to confirm. Please note that no rooms are currently being held.',
+      'Should you wish to proceed, please sign and return the attached quotation so that we can confirm and secure your reservation.',
     );
     expect(html).toContain('Kind regards,');
     expect(html).toContain('R Opperman<br />Reservations<br />The Centurion Hotel');
@@ -52,10 +52,51 @@ describe('quote proposal helpers', () => {
     expect(html).not.toContain('<table');
   });
 
+  it('matches staff-sent quote cover wording without changing the editable reply', () => {
+    const html = quoteWrapperHtml('Guest', 'Reservations Team');
+    expect(html).toContain('Thank you for Choosing The Centurion Hotel.');
+    expect(html).toContain('Should you wish to proceed, please sign and return the attached quotation so that we can confirm and secure your reservation.');
+    expect(html).toContain('bookings will only be confirmed once we have received the signed quotation.');
+    expect(html).toContain('Please feel free to contact me should you require any further information');
+  });
+
   it('uses a safe fallback greeting when the email has no sender name', () => {
     const html = quoteWrapperHtml('', 'R Opperman');
 
     expect(html).toContain('Good day Guest,');
     expect(html).toContain('R Opperman<br />Reservations<br />The Centurion Hotel');
+  });
+
+  it('keeps dinner pricing in the attachment, not the cover reply', () => {
+    const html = quoteWrapperHtml('David Miller', 'R Opperman', {
+      dinnerAddOn: {
+        label: 'Set menu',
+        amountMinor: 35_000,
+        unit: 'per_person_per_night',
+        totalMinor: 210_000,
+      },
+      totalMinor: 840_000,
+    });
+
+    expect(html).toContain('Please see attached quotation.');
+    expect(html).not.toContain('Set menu');
+    expect(html).not.toContain('R350.00');
+    expect(html).not.toContain('R2100.00');
+    expect(html).not.toContain('R8400.00');
+  });
+
+  it('asks only for missing quote details without claiming a quotation is attached', () => {
+    const html = missingQuoteDetailsWrapperHtml(
+      'David <Miller>',
+      ['Arrival date for stay 1', 'Number of rooms and occupancy per room for stay 1'],
+      'R Opperman & Co',
+    );
+
+    expect(html).toContain('Good day David &lt;Miller&gt;,');
+    expect(html).toContain('Please confirm the following details so we can prepare your quotation');
+    expect(html).toContain('<li>Arrival date for stay 1</li>');
+    expect(html).toContain('<li>Number of rooms and occupancy per room for stay 1</li>');
+    expect(html).toContain('R Opperman &amp; Co<br />Reservations');
+    expect(html).not.toMatch(/attached quotation|quotation attached|PDF/i);
   });
 });

@@ -32,4 +32,20 @@ describe('server/mail room matcher parity', () => {
     expect(matchServerRoomType(raw)).toEqual(expected);
     expect(matchServerRoomType(raw)).toEqual(matchMailRoomType(raw));
   });
+
+  it.each([
+    ['1 x double', { suggestions: ['STQN', 'SKNG', 'EXKNG'] }],
+    ['1 x single', { suggestions: ['STWN', 'SKNG'] }],
+    ['1 x queen', { suggestions: ['STQN', 'DLXQN'] }],
+    ['1 x king', { suggestions: ['SKNG', 'EXKNG', 'DLXKNG'] }],
+    ['1 x twin', { suggestions: ['STWN', 'DLXTWN'] }],
+    ['1 x standard', { suggestions: ['STWN', 'STQN', 'SKNG'] }],
+    ['1 x deluxe', { suggestions: ['DLXTWN', 'DLXQN', 'DLXKNG'] }],
+  ] as const)(
+    'normalizes count prefix for ambiguous phrase %s without selecting a code',
+    (raw, expected) => {
+      expect(matchServerRoomType(raw)).toEqual(expected);
+      expect(matchServerRoomType(raw)).toEqual(matchMailRoomType(raw));
+    },
+  );
 });

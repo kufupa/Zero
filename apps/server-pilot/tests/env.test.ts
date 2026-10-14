@@ -178,6 +178,24 @@ describe('env', () => {
     expect(parseEnv(baseEnv()).AI_MODEL_ROUTE).toBe('unavailable');
   });
 
+  it('keeps quote preparation off by default and parses its independent hourly cap', () => {
+    expect(parseEnv(baseEnv())).toMatchObject({
+      HMS_QUOTE_PREPARE: false,
+      HMS_QUOTE_PREPARE_PER_HOUR: 6,
+    });
+    expect(
+      parseEnv(baseEnv({ HMS_QUOTE_PREPARE: '1', HMS_QUOTE_PREPARE_PER_HOUR: '9' })),
+    ).toMatchObject({ HMS_QUOTE_PREPARE: true, HMS_QUOTE_PREPARE_PER_HOUR: 9 });
+  });
+
+  it.each(['true', '1', 'on'])('parses HMS_QUOTE_PREPARE=%s as enabled', (value) => {
+    expect(parseEnv(baseEnv({ HMS_QUOTE_PREPARE: value })).HMS_QUOTE_PREPARE).toBe(true);
+  });
+
+  it.each(['false', '0', 'off'])('parses HMS_QUOTE_PREPARE=%s as disabled', (value) => {
+    expect(parseEnv(baseEnv({ HMS_QUOTE_PREPARE: value })).HMS_QUOTE_PREPARE).toBe(false);
+  });
+
   it('accepts only the explicit approved-local model route marker', () => {
     expect(parseEnv(baseEnv({ AI_MODEL_ROUTE: 'approved-local' })).AI_MODEL_ROUTE).toBe(
       'approved-local',

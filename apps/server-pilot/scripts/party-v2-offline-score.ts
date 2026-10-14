@@ -14,6 +14,9 @@ import {
   type PartyMatchPick,
   type PartyMatchRow,
 } from '../src/ai/party-match-v2.js';
+import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
+import { quoteWorkflowLlmEnabled } from '../src/ai/quote-workflow-llm.js';
+import { resolveAdapter } from '../src/ai/quote-workflow-analyse-selection.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -43,6 +46,8 @@ type CliOptions = {
   extractions: string;
   report: string;
   maxPerDomain: number;
+  /** Call the production quote-workflow model route for each pick (needs the prod env, e.g. on EC2). */
+  livePicker: boolean;
   help: boolean;
 };
 
@@ -99,6 +104,8 @@ type ScoredEmail = {
   truncated: boolean;
   fallbackDecision: PartyMatchDecision;
   perfectDecision: PartyMatchDecision;
+  /** The production picker route (`--live-picker`); null when the run is offline only. */
+  liveDecision?: PartyMatchDecision | null;
   provenanceByRowId: Map<string, SearchProvenance>;
 };
 
@@ -525,6 +532,7 @@ export function selectPartyV2FailureExamples(
 async function scoreTestEmail(
   testEmail: TestEmail,
   universeByKind: ReadonlyMap<PartyMatchKind, readonly PartyMatchRow[]>,
+  liveAdapter: ModelAdapter | null = null,
 ): Promise<ScoredEmail> {
   const candidates = buildPartyMatchCandidates(testEmail.emailInput);
   const termsByCandidate = new Map<string, Set<string>>();
@@ -587,6 +595,13 @@ async function scoreTestEmail(
         source: 'llm',
       };
   const perfectDecision = applyPartyBindRule({ candidates, rows, pick: perfectPick, truncated });
+  // Same call shape as the V2 prefetch: no rows means no model call.
+  const livePick = liveAdapter
+    ? await pickPartyMatch({ adapter: rows.length ? liveAdapter : null, candidates, rows, context })
+    : null;
+  const liveDecision = livePick
+    ? applyPartyBindRule({ candidates, rows, pick: livePick, truncated })
+    : null;
   return {
     testEmail,
     candidates,
@@ -596,20 +611,27 @@ async function scoreTestEmail(
     truncated,
     fallbackDecision,
     perfectDecision,
+    liveDecision,
     provenanceByRowId,
   };
 }
 
 function scenarioMetrics(
   scores: readonly ScoredEmail[],
-  scenario: 'fallback' | 'perfect',
+  scenario: 'fallback' | 'perfect' | 'live',
 ): { bound: number; correct: number; top3: number; wrongBinds: WrongBind[] } {
   let bound = 0;
   let correct = 0;
   let top3 = 0;
   const wrongBinds: WrongBind[] = [];
   for (const score of scores) {
-    const decision = scenario === 'fallback' ? score.fallbackDecision : score.perfectDecision;
+    const decision =
+      scenario === 'fallback'
+        ? score.fallbackDecision
+        : scenario === 'perfect'
+          ? score.perfectDecision
+          : (score.liveDecision ?? null);
+    if (!decision) continue;
     const boundParty = decision.boundParty;
     if (decision.suggestions.some((row) => isExpectedRow(row, score.testEmail.expected))) {
       top3 += 1;
@@ -622,7 +644,12 @@ function scenarioMetrics(
     }
     const provenance = score.provenanceByRowId.get(rowKey(boundParty));
     wrongBinds.push({
-      mode: scenario === 'fallback' ? 'Oracle-free fallback' : 'Perfect picker',
+      mode:
+        scenario === 'fallback'
+          ? 'Oracle-free fallback'
+          : scenario === 'perfect'
+            ? 'Perfect picker'
+            : 'Live production picker',
       domain: score.testEmail.domain,
       term: safeOrgName(provenance?.term ?? '[no search term]'),
       bound: `${boundParty.kind}: ${safeOrgName(boundParty.name)}`,
@@ -687,7 +714,10 @@ function buildReport(input: {
   const perfectPrecision = perfect.bound
     ? formatPercent(perfect.correct, perfect.bound)
     : 'n/a (0 binds)';
-  const allWrong = [...fallback.wrongBinds, ...perfect.wrongBinds];
+  const liveScored = input.scores.filter((score) => score.liveDecision).length;
+  const live = liveScored ? scenarioMetrics(input.scores, 'live') : null;
+  const livePrecision = live?.bound ? formatPercent(live.correct, live.bound) : 'n/a (0 binds)';
+  const allWrong = [...fallback.wrongBinds, ...perfect.wrongBinds, ...(live?.wrongBinds ?? [])];
   const failureExamples = selectPartyV2FailureExamples(input.scores);
   const kindSummary =
     [...kindCounts.entries()]
@@ -701,6 +731,12 @@ function buildReport(input: {
     '## Answer',
     '',
     `Scored ${total} inbound emails from ${testedDomains.size} mapped business domains. Oracle-free fallback auto-bound ${fallback.bound}/${total} (${formatPercent(fallback.bound, total)}) at ${fallbackPrecision} precision; the perfect-picker upper bound auto-bound ${perfect.bound}/${total} (${formatPercent(perfect.bound, total)}).`,
+    ...(live
+      ? [
+        '',
+        `Live production picker (${liveScored} emails): auto-bound ${live.bound}/${total} (${formatPercent(live.bound, total)}) at ${livePrecision} precision; wrong binds: ${live.wrongBinds.length}.`,
+      ]
+      : []),
     '',
     '## Method',
     '',
@@ -721,6 +757,11 @@ function buildReport(input: {
     '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',
     `| Oracle-free fallback | ${formatPercent(candidateFound, total)} | ${formatPercent(truthRetrieved, total)} | ${formatPercent(fallback.bound, total)} | ${fallbackPrecision} | ${fallback.wrongBinds.length} | ${formatPercent(fallback.top3, total)} |`,
     `| Perfect picker upper bound | ${formatPercent(candidateFound, total)} | ${formatPercent(truthRetrieved, total)} | ${formatPercent(perfect.bound, total)} | ${perfectPrecision} | ${perfect.wrongBinds.length} | ${formatPercent(perfect.top3, total)} |`,
+    ...(live
+      ? [
+          `| Live production picker | ${formatPercent(candidateFound, total)} | ${formatPercent(truthRetrieved, total)} | ${formatPercent(live.bound, total)} | ${livePrecision} | ${live.wrongBinds.length} | ${formatPercent(live.top3, total)} |`,
+        ]
+      : []),
     '',
     '### Domain truth by sender domain',
     '',
@@ -765,7 +806,7 @@ function buildReport(input: {
           })
       : ['| — | 0 | — |']),
     '',
-    `Wrong auto-binds across both modes: ${allWrong.length}.`,
+    `Wrong auto-binds across all modes: ${allWrong.length}.`,
     '',
     ...(allWrong.length
       ? [
@@ -809,6 +850,7 @@ function parseArgs(args: readonly string[]): CliOptions {
   const options: CliOptions = {
     ...DEFAULT_PATHS,
     maxPerDomain: DEFAULT_MAX_PER_DOMAIN,
+    livePicker: false,
     help: false,
   };
   const pathFlags: Record<string, keyof typeof DEFAULT_PATHS> = {
@@ -827,6 +869,10 @@ function parseArgs(args: readonly string[]): CliOptions {
     const equalsAt = arg.indexOf('=');
     const flag = equalsAt >= 0 ? arg.slice(0, equalsAt) : arg;
     const inlineValue = equalsAt >= 0 ? arg.slice(equalsAt + 1) : undefined;
+    if (flag === '--live-picker') {
+      options.livePicker = true;
+      continue;
+    }
     if (flag === '--max-per-domain') {
       const value = inlineValue ?? args[++index];
       const parsed = Number(value);
@@ -856,6 +902,7 @@ function usage(): string {
     `  --extractions <path>   Extraction corpus (default: ${DEFAULT_PATHS.extractions})`,
     `  --report <path>        Markdown report (default: ${DEFAULT_PATHS.report})`,
     `  --max-per-domain <n>   Sample cap per domain (default: ${DEFAULT_MAX_PER_DOMAIN})`,
+    '  --live-picker          Also score the production picker route (needs the prod env)',
   ].join('\n');
 }
 
@@ -903,9 +950,15 @@ export async function runPartyV2OfflineScore(args = process.argv.slice(2)): Prom
     ['agency', universe.filter((row) => row.kind === 'agency')],
     ['company', universe.filter((row) => row.kind === 'company')],
   ]);
+  let liveAdapter: ModelAdapter | null = null;
+  if (options.livePicker) {
+    const route = resolveAdapter(quoteWorkflowLlmEnabled(process.env), null);
+    if (!route.enabled || !route.adapter) throw new Error('--live-picker needs the production quote-workflow model route');
+    liveAdapter = route.adapter;
+  }
   const scores: ScoredEmail[] = [];
   for (const email of sampleSelection.selected) {
-    scores.push(await scoreTestEmail(email, universeByKind));
+    scores.push(await scoreTestEmail(email, universeByKind, liveAdapter));
   }
   const report = buildReport({
     domainTruth: domainResult.domains,

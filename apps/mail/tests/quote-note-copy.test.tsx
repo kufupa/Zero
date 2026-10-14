@@ -4,7 +4,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DocumentReview } from '../components/quote-workflow/document-review';
-import { AMENDMENT_PANEL_COPY, NotSupportedList } from '../components/quote-workflow/not-supported-list';
+import { NotSupportedList } from '../components/quote-workflow/not-supported-list';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
@@ -37,21 +37,20 @@ function luna(flags: LunaAnalysisWire['flags']): LunaAnalysisWire {
 afterEach(() => cleanup());
 
 describe('NotSupportedList', () => {
-  it('points at the panel instead of saying not supported when an amendment is set', () => {
+  it('hides duplicate warning copy when an amendment panel is available', () => {
     render(<NotSupportedList flags={['amendment_or_cancel']} amendment={AMEND} />);
-    expect(screen.getByText(AMENDMENT_PANEL_COPY)).toBeDefined();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText(NOT_SUPPORTED)).toBeNull();
   });
 
   it('keeps the not-supported copy when there is no amendment', () => {
     render(<NotSupportedList flags={['amendment_or_cancel']} amendment={null} />);
     expect(screen.getByText(NOT_SUPPORTED)).toBeDefined();
-    expect(screen.queryByText(AMENDMENT_PANEL_COPY)).toBeNull();
   });
 
   it('sends staff to the Extras section for extras, not to add them by hand', () => {
     render(<NotSupportedList flags={['extras']} />);
-    expect(screen.getByText(/set them under Extras in Stay details before you make the PDF/)).toBeDefined();
+    expect(screen.getByText(/Check each stay's amounts in Extras & alternatives before making the PDF/)).toBeDefined();
     expect(screen.queryByText(/add these by hand/)).toBeNull();
   });
 });
@@ -68,7 +67,7 @@ describe('quote panel notes', () => {
     } as QuoteAnalysis;
     const session = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis } as never);
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByText(AMENDMENT_PANEL_COPY)).toBeDefined();
+    expect(screen.queryByText(/make the change in HMS yourself/)).toBeNull();
     expect(screen.queryByText(NOT_SUPPORTED)).toBeNull();
   });
 
@@ -86,7 +85,7 @@ describe('quote panel notes', () => {
     session = reduceQuoteSession(session, fixtureResultsReady(fixture.offers) as never);
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.queryByText(/combined PDF is blocked/)).toBeNull();
-    expect(screen.getByText(/Every date option goes into one quote/)).toBeDefined();
+    expect(screen.getByText(/Every date range is quoted separately, then included in one quotation/)).toBeDefined();
   });
 
   it('says a single stay draft attaches its own PDF, not one per option', () => {

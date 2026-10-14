@@ -4,11 +4,9 @@ import { Button } from '@/components/ui/button';
 /** First-run step 1: the detected Outlook account, and the button that starts the connection check. */
 export function WelcomeScreen({
   detectedEmail,
-  detectedProperty,
   onConfirm,
 }: {
   detectedEmail: string;
-  detectedProperty: string;
   onConfirm: () => void;
 }) {
   return (
@@ -31,7 +29,6 @@ export function WelcomeScreen({
             <Mail className="h-4 w-4 text-[#64748b]" />
             <span>{detectedEmail}</span>
           </div>
-          <span className="mt-1 block text-[11px] text-[#64748b]">{detectedProperty}</span>
         </div>
 
         <Button

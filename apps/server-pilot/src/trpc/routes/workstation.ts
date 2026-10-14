@@ -87,9 +87,13 @@ import {
   enqueueHmsJob,
   queueAutoStaffQuoteHmsJob,
   hmsJobQueueEnabled,
+  quotePreparationEnabled,
   HMS_JOB_PRIORITY_USER,
+  HMS_JOB_PRIORITY_PREFETCH,
   readHmsJobView,
+  staffQuoteResultReusable,
 } from '../../ai/hms-jobs.js';
+import { HMS_JOB_PROMPT_VERSION } from '../../ai/run-ledger.js';
 
 export {
   insufficientInventoryMessage,
@@ -196,6 +200,7 @@ const qualifiedStayInput = z
     workflowRunId: z.string().min(1),
     revisionRef: z.string().min(1),
     factRefs: z.array(z.string().min(1)).max(32).default([]),
+    notes: z.string().trim().max(1000).optional(),
   })
   .strict();
 export const qualifiedProposalInput = z
@@ -210,6 +215,7 @@ export const qualifiedProposalInput = z
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),
     agency: z.string().max(256).default('Quote'),
+    notes: z.string().trim().max(1000).optional(),
     // Empty for one stay. A combined quote lists its other stays here; the first stay stays in the fields above.
     additionalStays: z.array(qualifiedStayInput).max(62).default([]),
   })
@@ -237,6 +243,7 @@ export function resolveLedgerProposal(
     | undefined;
   if (!result) throw new Error('proposal_not_ready');
   const staff = run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
+  if (staff?.dinnerAddOnRequired === true) throw new Error('dinner_add_on_required');
   const qualifiedStaff =
     staff?.version === 1 &&
     staff.kind === 'staff_approved_quote' &&
@@ -277,6 +284,115 @@ export function resolveLedgerProposal(
   if (facts.length > 1) throw new Error('proposal_fact_bundle_required');
   if (facts[0]) deriveAuthorizedExtraLines(revision, facts[0]);
   return { revision, facts: facts[0] };
+}
+
+/** Resolve a fresh system-prepared price without manufacturing a staff approval or generation row. */
+export function resolvePreparedLedgerProposal(
+  run: {
+    transportId: string;
+    threadId: string;
+    triggerMessageId: string;
+    runKind: string;
+    promptVersion: string;
+    executorLane: string;
+    priority: number;
+    generationId: string | null;
+    state: string;
+    metrics: Record<string, unknown> | null;
+    readRequest: unknown;
+    readResult: Record<string, unknown> | null;
+    readResultExpiresAt: Date | null;
+  },
+  scope: {
+    transportId: string;
+    messageId: string;
+    revisionRef: string;
+    factRefs: string[];
+    sourceHash: string;
+    party: { company: string; agency: string };
+    now?: Date;
+  },
+): { revision: QuoteRevision; facts?: AuthorizedProposalFacts; rowPrices: RowPrice[] } {
+  const now = scope.now ?? new Date();
+  const metrics = run.metrics ?? {};
+  const request = run.readRequest && typeof run.readRequest === 'object' && !Array.isArray(run.readRequest)
+    ? run.readRequest as Record<string, unknown>
+    : null;
+  const parsedInput = staffQuoteInput.safeParse(request?.kind === 'staff_quote' ? request.input : null);
+  const result = run.readResult;
+  const prepared = result?.preparedProposal && typeof result.preparedProposal === 'object' && !Array.isArray(result.preparedProposal)
+    ? result.preparedProposal as Record<string, unknown>
+    : null;
+  const revision = prepared?.revision as QuoteRevision | undefined;
+  const rowPrices = Array.isArray(prepared?.rowPrices) ? prepared.rowPrices as RowPrice[] : [];
+  const facts = prepared?.facts as AuthorizedProposalFacts | undefined;
+  const factRefs = Array.isArray(result?.factRefs) ? result.factRefs : null;
+  const resultFactRefs = factRefs?.every((ref) => typeof ref === 'string') ? factRefs as string[] : null;
+  const parties = parsedInput.success ? parsedInput.data.parties : undefined;
+  const samePartyName = (left: string, right: string) =>
+    left.replace(/\s+/g, ' ').trim().toLowerCase() === right.replace(/\s+/g, ' ').trim().toLowerCase();
+  const boundPartyHeaderMatches = parsedInput.success &&
+    (parties?.company
+      ? samePartyName(scope.party.company, parties.company.name)
+      : true) &&
+    (parties?.agency
+      ? samePartyName(scope.party.agency, parties.agency.name)
+      : true);
+  const sourceStillCurrent = parsedInput.success &&
+    parsedInput.data.messageId === scope.messageId &&
+    parsedInput.data.sourceHash === scope.sourceHash &&
+    prepared?.sourceHash === scope.sourceHash;
+  const freshResult = !!result &&
+    staffQuoteResultReusable(result, now) &&
+    typeof result.asOf === 'string' &&
+    Number.isFinite(Date.parse(result.asOf)) &&
+    Date.parse(result.asOf) <= now.getTime() &&
+    !!run.readResultExpiresAt &&
+    run.readResultExpiresAt > now;
+  if (
+    run.transportId !== scope.transportId ||
+    run.triggerMessageId !== scope.messageId ||
+    run.runKind !== 'read_tool' ||
+    run.promptVersion !== HMS_JOB_PROMPT_VERSION ||
+    run.executorLane !== 'hms' ||
+    run.priority !== HMS_JOB_PRIORITY_PREFETCH ||
+    run.generationId !== null ||
+    run.state !== 'succeeded' ||
+    metrics.quotePrepared !== true ||
+    metrics.userId != null ||
+    !sourceStillCurrent ||
+    !boundPartyHeaderMatches ||
+    !freshResult ||
+    result?.status !== 'ready' ||
+    result.dinnerAddOnRequired === true ||
+    result.kind !== 'staff_quote' ||
+    result.messageId !== scope.messageId ||
+    result.threadId !== run.threadId ||
+    result.revisionRef !== scope.revisionRef ||
+    !prepared ||
+    prepared.version !== 1 ||
+    typeof prepared.inputDigest !== 'string' ||
+    prepared.inputDigest !== result.inputDigest ||
+    typeof prepared.authorizationId !== 'string' ||
+    prepared.authorizationId !== revision?.authorizationId ||
+    revision?.id !== scope.revisionRef ||
+    !resultFactRefs ||
+    new Set(resultFactRefs).size !== resultFactRefs.length ||
+    new Set(scope.factRefs).size !== scope.factRefs.length ||
+    [...resultFactRefs].sort().join('\n') !== [...scope.factRefs].sort().join('\n') ||
+    Boolean(facts) !== (resultFactRefs.length > 0)
+  ) {
+    throw new Error('proposal_not_ready');
+  }
+  try {
+    if (facts && facts.revisionId !== revision.id) throw new Error('proposal_fact_scope');
+    deriveQuoteLines(revision, rowPrices);
+    if (facts) deriveAuthorizedExtraLines(revision, facts);
+    assertReservationistResultFreshForAction({ version: 1, quoteRevisions: [revision] }, now);
+  } catch {
+    throw new Error('proposal_not_ready');
+  }
+  return { revision, facts, rowPrices };
 }
 
 /** Select and revalidate only the exact persisted source packet; readiness is never a freshness proof. */
@@ -345,6 +461,7 @@ type ProposalStay = {
   revision: QuoteRevision;
   facts?: AuthorizedProposalFacts;
   staff?: StaffQuoteAttestation;
+  preparedNotes?: string;
   /** The row prices the approval recorded. The PDF and Excel price the rows with them, and the total agrees. */
   rowPrices?: RowPrice[];
 };
@@ -357,6 +474,16 @@ function attestedStaySpan(metrics: Record<string, unknown> | null | undefined): 
   return revision ? approvedStaySpan(revision) : null;
 }
 
+/** The stay a system-prepared quote covers, or null when its dates are unavailable. */
+function preparedStaySpan(readResult: Record<string, unknown> | null | undefined): string | null {
+  const prepared = readResult?.preparedProposal;
+  const revision =
+    prepared && typeof prepared === 'object' && !Array.isArray(prepared)
+      ? (prepared as { revision?: QuoteRevision }).revision
+      : undefined;
+  return readResult?.status === 'ready' && revision ? approvedStaySpan(revision) : null;
+}
+
 /** Every staff approval for this message, newest first, with the stay dates each one covers. */
 async function staffApprovalsFor(
   ctx: { activeTransportId: string; sessionUser: { id: string } },
@@ -364,7 +491,11 @@ async function staffApprovalsFor(
   messageId: string,
 ) {
   const rows = await getDb()
-    .select({ id: aiDraftGeneration.id, metrics: aiWorkflowRun.metrics })
+    .select({
+      id: aiDraftGeneration.id,
+      createdAt: aiDraftGeneration.createdAt,
+      metrics: aiWorkflowRun.metrics,
+    })
     .from(aiDraftGeneration)
     .leftJoin(aiWorkflowRun, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
     .where(
@@ -377,13 +508,17 @@ async function staffApprovalsFor(
       ),
     )
     .orderBy(desc(aiDraftGeneration.createdAt));
-  return rows.map((row) => ({ generationId: row.id, span: attestedStaySpan(row.metrics) }));
+  return rows.map((row) => ({
+    generationId: row.id,
+    createdAt: row.createdAt,
+    span: attestedStaySpan(row.metrics),
+  }));
 }
 
 /**
- * Every stay of a proposal request, resolved to its approved revision. Each run must belong to this user, transport and
- * message. One stay keeps the message-wide currency rule. A combined quote needs every stay attested, and each stay is
- * current while no newer approval covers the same dates. Run again after a document is built, so nothing changes under it.
+ * Every stay of a proposal request, resolved to its approved revision. A run must be user-owned or system-prepared for
+ * this transport and message. One stay keeps the message-wide currency rule. Run again after a document is built, so
+ * nothing changes under it.
  */
 async function proposalStaysFor(
   input: z.infer<typeof qualifiedProposalInput>,
@@ -391,7 +526,12 @@ async function proposalStaysFor(
   resolveFailure: string,
 ): Promise<ProposalStay[]> {
   const requests = [
-    { workflowRunId: input.workflowRunId, revisionRef: input.revisionRef, factRefs: input.factRefs },
+    {
+      workflowRunId: input.workflowRunId,
+      revisionRef: input.revisionRef,
+      factRefs: input.factRefs,
+      notes: input.notes,
+    },
     ...input.additionalStays,
   ];
   if (new Set(requests.map((request) => request.workflowRunId)).size !== requests.length)
@@ -400,21 +540,43 @@ async function proposalStaysFor(
   const runs = await Promise.all(
     requests.map(async (request) => {
       await awaitPendingStaffQuote(request.workflowRunId);
-      const [bound] = await db
+      const [run] = await db
         .select({ run: aiWorkflowRun })
         .from(aiWorkflowRun)
-        .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
         .where(
           and(
-            eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
             eq(aiWorkflowRun.id, request.workflowRunId),
             eq(aiWorkflowRun.transportId, ctx.activeTransportId),
             eq(aiWorkflowRun.triggerMessageId, input.messageId),
           ),
         )
         .limit(1);
-      if (!bound) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
-      return { run: bound.run, request };
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
+      const systemPrepared = run.run.priority === HMS_JOB_PRIORITY_PREFETCH &&
+        run.run.metrics?.quotePrepared === true &&
+        run.run.metrics.userId == null;
+      if (systemPrepared && !quotePreparationEnabled())
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This quote is no longer ready. Run it again.',
+        });
+      if (!systemPrepared) {
+        const [owner] = await db
+          .select({ id: aiDraftGeneration.id })
+          .from(aiDraftGeneration)
+          .innerJoin(aiWorkflowRun, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
+          .where(
+            and(
+              eq(aiDraftGeneration.requestedByUserId, ctx.sessionUser.id),
+              eq(aiWorkflowRun.id, request.workflowRunId),
+              eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+              eq(aiWorkflowRun.triggerMessageId, input.messageId),
+            ),
+          )
+          .limit(1);
+        if (!owner) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
+      }
+      return { run: run.run, request, systemPrepared };
     }),
   );
   const combined = runs.length > 1;
@@ -424,12 +586,21 @@ async function proposalStaysFor(
     .from(message)
     .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
     .limit(1);
-  const approvals = combined ? await staffApprovalsFor(ctx, threadId, input.messageId) : [];
+  const approvals = combined
+    ? [
+        ...(await staffApprovalsFor(ctx, threadId, input.messageId)),
+        ...runs.flatMap(({ run, systemPrepared }) =>
+          systemPrepared
+            ? [{ generationId: run.id, createdAt: run.createdAt, span: preparedStaySpan(run.readResult) }]
+            : [],
+        ),
+      ].sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
+    : [];
   const latest = combined
     ? undefined
     : (
         await db
-          .select({ id: aiDraftGeneration.id })
+          .select({ id: aiDraftGeneration.id, createdAt: aiDraftGeneration.createdAt })
           .from(aiDraftGeneration)
           .where(
             and(
@@ -444,54 +615,84 @@ async function proposalStaysFor(
           .limit(1)
       )[0];
   const stays: ProposalStay[] = [];
-  for (const { run, request } of runs) {
+  for (const { run, request, systemPrepared } of runs) {
     const staff = run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
-    if (combined && !staff)
+    if (combined && !staff && !systemPrepared)
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Every stay needs its own approved quote' });
+    if (combined) {
+      const problem = combinedStayCurrencyProblem({
+        stay: {
+          generationId: systemPrepared ? run.id : run.generationId,
+          span: systemPrepared ? preparedStaySpan(run.readResult) : attestedStaySpan(run.metrics),
+        },
+        approvals,
+      });
+      if (problem) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: problem });
+    } else if (
+      systemPrepared &&
+      latest &&
+      latest.createdAt.getTime() >= run.createdAt.getTime()
+    ) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Newer stay inputs were approved; use the current quote',
+      });
+    }
     if (staff) {
       const party = { company: input.company, agency: input.agency };
-      const problem = combined
-        ? combinedStayCurrencyProblem({
-            stay: { generationId: run.generationId, span: attestedStaySpan(run.metrics) },
-            approvals,
-          }) ??
-          staffQuoteCurrencyProblem({
-            staff,
-            runGenerationId: run.generationId,
-            latestGenerationId: run.generationId,
-            currentMessage: current,
-            userId: ctx.sessionUser.id,
-            party,
-          })
-        : staffQuoteCurrencyProblem({
-            staff,
-            runGenerationId: run.generationId,
-            latestGenerationId: latest?.id,
-            currentMessage: current,
-            userId: ctx.sessionUser.id,
-            party,
-          });
+      const problem = staffQuoteCurrencyProblem({
+        staff,
+        runGenerationId: run.generationId,
+        latestGenerationId: combined ? run.generationId : latest?.id,
+        currentMessage: current,
+        userId: ctx.sessionUser.id,
+        party,
+      });
       if (problem) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: problem });
     }
     let resolved: ReturnType<typeof resolveLedgerProposal>;
+    let rowPrices: RowPrice[];
     try {
-      resolved = resolveLedgerProposal(run, {
+      const proposalScope = {
         transportId: ctx.activeTransportId,
         messageId: input.messageId,
         revisionRef: request.revisionRef,
         factRefs: request.factRefs,
-      });
+      };
+      if (systemPrepared) {
+        const prepared = resolvePreparedLedgerProposal(run, {
+          ...proposalScope,
+          sourceHash: current ? staffQuoteSourceHash(current) : '',
+          party: { company: input.company, agency: input.agency },
+        });
+        resolved = { revision: prepared.revision, facts: prepared.facts };
+        rowPrices = prepared.rowPrices;
+      } else {
+        resolved = resolveLedgerProposal(run, proposalScope);
+        rowPrices = storedRowPrices(run, resolved.revision.id);
+      }
     } catch {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
     }
-    stays.push({ ...resolved, staff, rowPrices: storedRowPrices(run, resolved.revision.id) });
+    stays.push({
+      ...resolved,
+      staff,
+      rowPrices,
+      ...(systemPrepared && request.notes ? { preparedNotes: request.notes } : {}),
+    });
   }
   return stays;
 }
 
 /** The staff notes approved with each stay, each kept once and one per line. */
 function stayNotes(stays: ProposalStay[]): string | undefined {
-  const notes = [...new Set(stays.map((stay) => stay.staff?.notes).filter((note): note is string => !!note))];
+  const notes = [
+    ...new Set(
+      stays
+        .map((stay) => (stay.staff ? stay.staff.notes : stay.preparedNotes))
+        .filter((note): note is string => !!note),
+    ),
+  ];
   return notes.length ? notes.join('\n') : undefined;
 }
 
@@ -744,6 +945,7 @@ export const workstationRouter = router({
           createdAt: aiWorkflowRun.createdAt,
           finishedAt: aiWorkflowRun.finishedAt,
           metrics: aiWorkflowRun.metrics,
+          readResult: aiWorkflowRun.readResult,
         })
         .from(aiWorkflowRun)
         .where(
@@ -801,6 +1003,7 @@ export const workstationRouter = router({
           createdAt: aiWorkflowRun.createdAt,
           finishedAt: aiWorkflowRun.finishedAt,
           metrics: aiWorkflowRun.metrics,
+          readResult: aiWorkflowRun.readResult,
         })
         .from(aiWorkflowRun)
         .where(
@@ -1130,7 +1333,7 @@ export const workstationRouter = router({
             agency: input.agency,
             signerName: ctx.sessionUser.name ?? '',
             signerEmail: ctx.sessionUser.email,
-            // The note comes from the approved attestations, not from this request.
+            // Fresh staff runs use their attested note; prepared prices carry the pane's reviewed header note.
             notes: stayNotes(stays),
           },
           { url },
@@ -1174,7 +1377,7 @@ export const workstationRouter = router({
             signerName: ctx.sessionUser.name ?? '',
             signerEmail: ctx.sessionUser.email,
           },
-          // The note comes from the approved attestations, not from this request.
+          // Fresh staff runs use their attested note; prepared prices carry the pane's reviewed header note.
           note: stayNotes(stays),
         });
       } catch (error) {
@@ -1183,12 +1386,11 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Excel could not be built from this quote' });
       }
       await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
-      // The file is named for the earliest arrival across the stays.
-      const arrival = stays
-        .map((stay) => stay.revision.groups[0]?.arrivalDate ?? stay.revision.authoredDate)
-        .sort()[0]!;
+      const groups = stays.flatMap((stay) => stay.revision.groups);
+      const arrival = groups.map((group) => group.arrivalDate).sort()[0] ?? stays[0]!.revision.authoredDate;
+      const departure = groups.map((group) => group.departureDate).sort().at(-1) ?? arrival;
       return {
-        fileName: quoteWorkbookFileName(input.company, arrival),
+        fileName: quoteWorkbookFileName(input.agency.trim() || input.company, arrival, departure),
         xlsxBase64: Buffer.from(workbook.bytes).toString('base64'),
         totalMinor: workbook.totalMinor,
         revisionId: documentIdFor(stays),
@@ -1197,7 +1399,7 @@ export const workstationRouter = router({
   sourceQuoteProposalPdf: mailboxProcedure
     .input(
       qualifiedProposalInput
-        .omit({ additionalStays: true })
+        .omit({ additionalStays: true, notes: true })
         .extend({ kind: z.enum(['imported_offer', 'approved_override']) })
         .strict(),
     )

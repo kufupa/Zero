@@ -200,10 +200,10 @@ describe('voucher find card: what shows', () => {
     expect(screen.getByText(`Guest Smith · arriving ${formatStayDate('2026-11-12')}`)).toBeTruthy();
     expect(screen.getByRole('button', { name: VOUCHER_COPY.save })).toBeTruthy();
     expect(screen.getByText('Smith_VCH_1879000.pdf')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Copy for HMS' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
     const saveAndMatch = screen.getByTestId('voucher-save-and-match');
     expect(saveAndMatch.contains(screen.getByRole('button', { name: VOUCHER_COPY.save }))).toBe(true);
-    expect(saveAndMatch.contains(screen.getByRole('button', { name: 'Copy for HMS' }))).toBe(true);
+    expect(saveAndMatch.contains(screen.getByRole('button', { name: 'Copy confirmation' }))).toBe(true);
     expect(searchGuest).toHaveBeenCalledWith({ lastName: 'Smith', arrival: '2026-11-12' });
   });
 
@@ -251,7 +251,7 @@ describe('voucher find card: the existing search', () => {
       autoStart: true,
     });
     expect(screen.queryByRole('button', { name: VOUCHER_COPY.search })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Copy for HMS' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
   });
 
   it('reads commercial parties by exact confirmation only after staff requests booking details', async () => {
@@ -407,7 +407,7 @@ describe('voucher find card: the existing search', () => {
     expect(screen.getByText('James Smith · 57291630-2')).toBeTruthy();
     expect(screen.getByText(VOUCHER_COPY.pickRow)).toBeTruthy();
     expect(screen.queryByTestId('voucher-matched-booking')).toBeNull();
-    expect(screen.getAllByRole('button', { name: 'Copy for HMS' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(2);
     expect(status).toHaveBeenCalledWith({
       threadId: 'thread-1',
       kind: 'search_guest',
@@ -467,7 +467,7 @@ describe('voucher find card: the existing search', () => {
     expect(status).toHaveBeenCalledTimes(2);
   });
 
-  it('copies the HMS landing page with the matched confirmation, surname and arrival in one action', async () => {
+  it('copies only the matched confirmation and opens the configured HMS landing page', async () => {
     const landing = 'https://hms.example.test/';
     vi.stubEnv('VITE_PUBLIC_HMS_LANDING_URL', landing);
     const prior = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
@@ -480,13 +480,10 @@ describe('voucher find card: the existing search', () => {
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
     await screen.findByText('John Smith · 57291630-1');
-    fireEvent.click(screen.getByRole('button', { name: 'Copy for HMS' }));
-    await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith(
-        `${landing}\nConfirmation: 57291630-1\nGuest surname: Smith\nArrival: 2026-11-12`,
-      ),
-    );
-    expect(await screen.findByRole('button', { name: 'Copied for HMS' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy confirmation' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('57291630-1'));
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open in HMS' }).getAttribute('href')).toBe(landing);
   });
 
   it('shows multiple matches without choosing one for the attachment row', async () => {
@@ -501,7 +498,7 @@ describe('voucher find card: the existing search', () => {
     expect(screen.getByText('James Smith · 57291630-2')).toBeTruthy();
     expect(screen.getByText(VOUCHER_COPY.pickRow)).toBeTruthy();
     expect(screen.queryByTestId('voucher-matched-booking')).toBeNull();
-    expect(screen.getAllByRole('button', { name: 'Copy for HMS' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(2);
   });
 
   it('reads a booking number only from HMS rows, never from the voucher text', async () => {

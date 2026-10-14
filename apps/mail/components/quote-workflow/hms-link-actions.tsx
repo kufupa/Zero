@@ -3,9 +3,8 @@ import { toast } from 'sonner';
 import { currentPaneOwner, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 
 /**
- * The HMS handoff for one confirmation number. Copy for HMS combines the configured landing URL with the confirmation
- * and any known guest surname or arrival. A confirmation number by itself does not locate the booking. Copy link and
- * Open HMS need VITE_PUBLIC_HMS_LANDING_URL in the build; without it Copy for HMS copies only the number.
+ * A matched booking has one copy action and, when configured, a safe HMS link. Before a match, the optional handoff
+ * mode copies the search details together so staff do not have to repeat separate copy actions.
  */
 
 const linkClass = 'text-[11.5px] font-medium text-[#0066cc] underline';
@@ -60,7 +59,7 @@ function copyWithSelection(text: string): boolean {
   }
 }
 
-type CopyTarget = 'link' | 'number' | 'hms';
+type CopyTarget = 'number' | 'hms';
 
 /** Copy actions for one HMS confirmation number. Renders nothing for an empty number. */
 export function HmsLinkActions({
@@ -68,12 +67,15 @@ export function HmsLinkActions({
   guestSurname,
   arrival,
   confirmationOnly = false,
+  handoff = false,
 }: {
   confirmation: string;
   guestSurname?: string | null;
   arrival?: string | null;
   /** A result/candidate card needs only the number copied from HMS. */
   confirmationOnly?: boolean;
+  /** Before a booking match, combine the configured landing URL and known search details in one copy action. */
+  handoff?: boolean;
 }) {
   const landing = hmsLandingUrl();
   const number = confirmation.trim();
@@ -104,16 +106,14 @@ export function HmsLinkActions({
     const copied = await copyText(text);
     setFeedback({ target, copied });
     if (copied && target === 'number') trackPaneAction({ type: 'copy.confirmation' }, owner);
-    if (copied && (target === 'link' || target === 'hms')) trackPaneAction({ type: 'copy.link' }, owner);
+    if (copied && target === 'hms') trackPaneAction({ type: 'copy.link' }, owner);
     if (copied) {
       toast.success(
-        target === 'link'
-          ? 'HMS link copied. Paste it into a browser.'
-          : target === 'hms'
-            ? landing
-              ? 'HMS details copied.'
-              : `Confirmation number ${number} copied.`
-            : `Confirmation number ${text} copied.`,
+        target === 'hms'
+          ? landing
+            ? 'HMS details copied.'
+            : `Confirmation number ${number} copied.`
+          : `Confirmation number ${text} copied.`,
       );
     }
     if (resetTimer.current) clearTimeout(resetTimer.current);
@@ -128,35 +128,31 @@ export function HmsLinkActions({
       : idle;
   const failure =
     feedback && !feedback.copied
-      ? feedback.target === 'link'
-        ? "Couldn't copy the link. Use Open HMS instead."
-        : feedback.target === 'hms'
-          ? landing
-            ? "Couldn't copy HMS details."
-            : "Couldn't copy. Select the number and copy it."
+      ? feedback.target === 'hms'
+        ? landing
+          ? "Couldn't copy HMS details."
           : "Couldn't copy. Select the number and copy it."
+        : "Couldn't copy. Select the number and copy it."
       : '';
 
   return (
     <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
-      {!confirmationOnly && landing ? (
-        <button type="button" className={buttonClass} onClick={() => void copy('link', landing)}>
-          {label('link', 'Copy link')}
-        </button>
-      ) : null}
-      <button type="button" className={buttonClass} onClick={() => void copy('number', number)}>
-        {label('number', 'Copy confirmation')}
-      </button>
-      {!confirmationOnly ? (
+      {handoff && !confirmationOnly ? (
         <button type="button" className={buttonClass} onClick={() => void copy('hms', hmsCopy)}>
           {label('hms', 'Copy for HMS')}
         </button>
-      ) : null}
-      {!confirmationOnly && landing ? (
-        <a href={landing} className={linkClass}>
-          Open HMS
-        </a>
-      ) : null}
+      ) : (
+        <>
+          <button type="button" className={buttonClass} onClick={() => void copy('number', number)}>
+            {label('number', 'Copy confirmation')}
+          </button>
+          {!confirmationOnly && landing ? (
+            <a href={landing} className={linkClass}>
+              Open in HMS
+            </a>
+          ) : null}
+        </>
+      )}
       <span role="status" className="text-[11px] text-amber-900">
         {failure}
       </span>

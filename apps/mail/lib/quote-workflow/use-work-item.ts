@@ -34,6 +34,11 @@ export type StoredPane =
   | {
       state: 'ready';
       analysis: QuoteAnalysis;
+      /** The mail kind and current work-item state, shared with the pane's read-as and work-state banners. */
+      kind: string;
+      existingStayInformation?: boolean;
+      confirmationNumbers?: string[];
+      workItemStatus: string | null;
       /** Null when the read has no work item (it could not be opened): the read shows, edits are not logged. */
       workItemId: string | null;
       contact: StoredContact;
@@ -219,10 +224,13 @@ function saveKey(workItemId: string, path: string): string {
 export function useStoredWork(args: {
   trpc: unknown;
   internetMessageId: string | null;
+  /** Read an existing item without opening a new work item when this is a non-actionable channel/system message. */
+  openMissingWorkItem?: boolean;
   /** The signed-in user, session and mailbox. A mailbox switch looks the mail up again in the new mailbox. */
   scope?: string | null;
 }) {
   const { trpc, internetMessageId } = args;
+  const openMissingWorkItem = args.openMissingWorkItem !== false;
   const scope = args.scope ?? '';
   // The lookup is for this mail in this mailbox. Either changing makes the last lookup someone else's.
   const lookupKey = internetMessageId ? `${scope}\n${internetMessageId}` : null;
@@ -363,7 +371,7 @@ export function useStoredWork(args: {
     // The deadline covers the stored read. Once it is in, a slow open shows that read rather than reading live.
     void bindStoredWork({
       query: routes.getByMessage,
-      open: routes.open,
+      open: openMissingWorkItem ? routes.open : undefined,
       internetMessageId,
       transportId,
       isStale: () => !current,
@@ -375,7 +383,7 @@ export function useStoredWork(args: {
       clearTimeout(timer);
       flushAll();
     };
-  }, [internetMessageId, lookupKey, canLookUp, flushAll]);
+  }, [internetMessageId, lookupKey, canLookUp, openMissingWorkItem, flushAll]);
 
   const stored = lookup && lookup.key === lookupKey ? lookup.result : null;
   const retried = retries.messageId === internetMessageId ? retries.count : 0;
@@ -386,6 +394,10 @@ export function useStoredWork(args: {
     pane = {
       state: 'ready',
       analysis: quoteAnalysisOf(stored.analysis),
+      kind: stored.kind,
+      existingStayInformation: stored.existingStayInformation === true,
+      confirmationNumbers: stored.confirmationNumbers ?? [],
+      workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,
       contact: stored.contact,
       language: stored.language,
