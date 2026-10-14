@@ -45,11 +45,11 @@ const READY: ExecuteStaffQuoteResult = {
   description: 'Standard King; Room Only',
 };
 
-function view(status: 'running' | 'done' | 'failed', result: unknown = null, asOf?: string) {
+function view(status: 'running' | 'done' | 'failed', result: unknown = null, asOf?: string, prefetch = false) {
   return {
     runId: 'staff-job-1',
     request: null,
-    prefetch: false,
+    prefetch,
     status,
     position: null,
     attempts: 0,
@@ -477,6 +477,58 @@ describe('staff quote HMS job binding', () => {
     });
   });
 
+  it('rebases a prepared auto-start result when its saved header differs but the price terms matched', async () => {
+    const asOf = '2026-10-14T10:35:00.000Z';
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
+    const staffQuoteJob = vi.fn(async () => ({
+      ...view('done', { ...READY, selectionEpoch: 0, inputRevision: 0 }, asOf, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { company: 'Example Client' }),
+    }));
+
+    const result = await bindAutoStartStaffQuote({
+      queue,
+      staffQuoteJob,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      staffQuote: {
+        selectionEpoch: 3,
+        inputRevision: 4,
+        preparedByNava: true,
+        preparedAt: asOf,
+      },
+    });
+  });
+
+  it('does not rebase a prepared auto-start result from a different source message version', async () => {
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
+    const staffQuoteJob = vi.fn(async () => ({
+      ...view('done', { ...READY, selectionEpoch: 0, inputRevision: 0 }, undefined, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { sourceHash: 'c'.repeat(64) }),
+    }));
+
+    const result = await bindAutoStartStaffQuote({
+      queue,
+      staffQuoteJob,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'unavailable',
+      reason: 'The quote is out of date because the stay details changed. Run it again.',
+    });
+  });
+
   it('does not rebase a reused auto-start result for a different stored request', async () => {
     const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'staff-job-reused' }));
     const staffQuoteJob = vi.fn(async () => ({
@@ -547,6 +599,25 @@ describe('staff quote HMS job binding', () => {
     expect(result).toMatchObject({
       status: 'ok',
       staffQuote: { selectionEpoch: 3, inputRevision: 4, workflowRunId: 'workflow-1' },
+    });
+  });
+
+  it('labels a prepared result for staff with its saved as-of time', async () => {
+    const asOf = '2026-10-14T10:35:00.000Z';
+    const query = vi.fn(async () => view('done', READY, asOf, true));
+
+    const result = await bindReadBackStaffQuote({
+      query,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      staffQuote: { preparedByNava: true, preparedAt: asOf },
     });
   });
 

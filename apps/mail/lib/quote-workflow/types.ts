@@ -262,6 +262,10 @@ export type StaffQuoteAllocation = {
   selectionEpoch: number;
   inputRevision: number;
   inputDigest: string;
+  /** A completed background quote prepared by Nava before staff opened this email. */
+  preparedByNava?: boolean;
+  /** The saved result's as-of time, displayed next to the preparation label. */
+  preparedAt?: string;
   totalMinor: number;
   currency: string;
   quoteRequestKey: string;

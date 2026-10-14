@@ -128,6 +128,7 @@ export type StaffQuoteJobView = {
   runId: string;
   status: 'queued' | 'running' | 'retrying' | 'done' | 'failed';
   request?: { kind: 'staff_quote'; input: ExecuteStaffQuoteInput } | null;
+  prefetch?: boolean;
   result: Record<string, unknown> | null;
   failureClass: string | null;
   asOf?: string | null;
@@ -1179,7 +1180,19 @@ function boundStaffQuoteJob(
   if (view.status !== 'done' || !result) {
     return { status: 'unavailable', reason: 'The queued quote did not return a result. Try again.' };
   }
-  return boundStaffQuoteResult(result, args, built);
+  const bound = boundStaffQuoteResult(result, args, built);
+  return bound.status === 'ok' && view.prefetch
+    ? {
+        ...bound,
+        staffQuote: {
+          ...bound.staffQuote,
+          preparedByNava: true,
+          ...(typeof view.asOf === 'string' && Number.isFinite(Date.parse(view.asOf))
+            ? { preparedAt: view.asOf }
+            : {}),
+        },
+      }
+    : bound;
 }
 
 export async function bindExecuteStaffQuote(
@@ -1260,7 +1273,14 @@ export async function bindAutoStartStaffQuote(
       return { status: 'unavailable', reason: 'Nava could not read the queued quote. Try again in a minute.' };
     }
     const settled = await pollStaffQuoteJob(args.staffQuoteJob, first);
-    const rebased = staffQuoteRequestMatches(settled.request, built.input) && settled.result
+    // The queue route returns a prepared run only after its server-side price-shape match. Its extracted display header
+    // can legitimately differ from the pane's edited header, so rebase counters for that same source as well.
+    const preparedForSource =
+      settled.prefetch &&
+      settled.request?.kind === 'staff_quote' &&
+      settled.request.input.messageId === built.input.messageId &&
+      settled.request.input.sourceHash === built.input.sourceHash;
+    const rebased = (preparedForSource || staffQuoteRequestMatches(settled.request, built.input)) && settled.result
       ? {
           ...settled,
           result: {

@@ -124,6 +124,10 @@ export interface MailEnv {
   HMS_LANE_PAUSED: boolean;
   /** Confirmation-number prefetch of inbound mail into the hms lane. Defaults off. */
   HMS_PREFETCH_ENABLED: boolean;
+  /** Staff quotes prepared from inbound quote extractions. Requires HMS_JOB_QUEUE=on. Defaults off. */
+  HMS_QUOTE_PREPARE: boolean;
+  /** System-prepared staff quotes enqueued per transport in a rolling hour. */
+  HMS_QUOTE_PREPARE_PER_HOUR: number;
   /** New precision-first party search/pick on quote prefetch. Defaults off until live HMS validation. */
   PARTY_MATCH_V2: boolean;
   /** Prefetch runs enqueued per transport in a rolling hour. */
@@ -426,6 +430,8 @@ export function parseEnv(input: EnvInput): MailEnv {
     HMS_READ_SERVICE_ENABLED: false,
     HMS_LANE_PAUSED: false,
     HMS_PREFETCH_ENABLED: false,
+    HMS_QUOTE_PREPARE: false,
+    HMS_QUOTE_PREPARE_PER_HOUR: 6,
     PARTY_MATCH_V2: false,
     HMS_PREFETCH_PER_HOUR: 30,
     HMS_GUEST_PREFETCH_PER_HOUR: 12,
@@ -523,6 +529,12 @@ export function parseEnv(input: EnvInput): MailEnv {
   env.HMS_PREFETCH_ENABLED = input.HMS_PREFETCH_ENABLED
     ? toBool('HMS_PREFETCH_ENABLED', input.HMS_PREFETCH_ENABLED)
     : false;
+  env.HMS_QUOTE_PREPARE = input.HMS_QUOTE_PREPARE
+    ? toBool('HMS_QUOTE_PREPARE', input.HMS_QUOTE_PREPARE)
+    : false;
+  env.HMS_QUOTE_PREPARE_PER_HOUR = input.HMS_QUOTE_PREPARE_PER_HOUR
+    ? toInt('HMS_QUOTE_PREPARE_PER_HOUR', input.HMS_QUOTE_PREPARE_PER_HOUR)
+    : 6;
   env.PARTY_MATCH_V2 = input.PARTY_MATCH_V2 ? toBool('PARTY_MATCH_V2', input.PARTY_MATCH_V2) : false;
   env.HMS_PREFETCH_PER_HOUR = input.HMS_PREFETCH_PER_HOUR
     ? toInt('HMS_PREFETCH_PER_HOUR', input.HMS_PREFETCH_PER_HOUR)

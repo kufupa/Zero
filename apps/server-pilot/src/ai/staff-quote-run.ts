@@ -481,12 +481,15 @@ async function awaitProvisionalCapture(
 
 export type StaffQuoteRunIdentity = {
   transportId: string;
-  user: { id: string; name: string | null; email: string };
+  /** Omitted for a system-prepared price. It is never replaced with a synthetic staff member. */
+  user?: { id: string; name: string | null; email: string };
 };
 
 export type StaffQuoteRunOptions = {
   signal?: AbortSignal;
   deadlineAt?: number;
+  /** Prepared read jobs use their own id as the document reference; no candidate-draft row is created. */
+  preparedRunId?: string;
   /** Commit a queued read result under the same claim fence and transaction as the quote artifacts. */
   commitQueuedResult?: (result: Record<string, unknown>, transaction: DB) => Promise<boolean>;
 };
@@ -525,6 +528,7 @@ export async function runStaffQuote(
     .limit(1);
   if (!mail || mail.direction !== 'inbound')
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
+  const systemPrepared = identity.user === undefined;
   let config: ReturnType<typeof readInstalledStaffQuoteConfiguration>;
   try {
     config = readInstalledStaffQuoteConfiguration();
@@ -536,7 +540,7 @@ export async function runStaffQuote(
   }
   const scope = {
     transportId: identity.transportId,
-    userId: identity.user.id,
+    userId: identity.user?.id ?? null,
     threadId: mail.threadId,
     messageId: mail.id,
     sourceHash: staffQuoteSourceHash(mail),
@@ -545,9 +549,13 @@ export async function runStaffQuote(
     propertyCode: config.owner.propertyCode,
   };
   const signal = options.signal ?? AbortSignal.timeout(20 * 60000);
-  const signer = { signerName: identity.user.name ?? '', signerEmail: identity.user.email };
+  // Pricing does not require a staff identity. The logged-in staff signer is added by PDF/Excel export.
+  const signer = {
+    signerName: identity.user?.name ?? '',
+    signerEmail: identity.user?.email ?? '',
+  };
   // Saved rates are read before any HMS call or generation row, so an archived rate fails cleanly here.
-  const rowPrices = await snapshotRowPrices(db, identity.transportId, input);
+  const rowPrices = systemPrepared ? [] : await snapshotRowPrices(db, identity.transportId, input);
   // A picked company or agency is re-checked in HMS before any rate is bound. The lookup runs before the quote lock,
   // which the same property lock would otherwise block. With the switch off no lookup runs and no party rate is sent.
   const notes: string[] = [];
@@ -578,43 +586,47 @@ export async function runStaffQuote(
       message: 'Selected email changed or stay inputs are incomplete; review and retry',
     });
   }
-  const generationId = randomUUID(),
-    workflowRunId = randomUUID();
-  // Existing generation ledger is the approval token; a new approval revokes older outputs.
-  await db.insert(aiDraftGeneration).values({
-    id: generationId,
-    transportId: scope.transportId,
-    threadId: scope.threadId,
-    requestedByUserId: scope.userId,
-    contextMessageIds: [mail.id],
-    model: 'staff-approved-native',
-    promptVersion: 'staff-quote-v1',
-    promptHash: prepared.inputDigest,
-    status: 'running',
-    createdAt: sql`clock_timestamp()`,
-  });
+  const generationId = randomUUID();
+  const workflowRunId = options.preparedRunId ?? randomUUID();
+  if (!systemPrepared) {
+    // Existing generation ledger is the approval token; a new approval revokes older outputs.
+    await db.insert(aiDraftGeneration).values({
+      id: generationId,
+      transportId: scope.transportId,
+      threadId: scope.threadId,
+      requestedByUserId: identity.user!.id,
+      contextMessageIds: [mail.id],
+      model: 'staff-approved-native',
+      promptVersion: 'staff-quote-v1',
+      promptHash: prepared.inputDigest,
+      status: 'running',
+      createdAt: sql`clock_timestamp()`,
+    });
+  }
   const stillCurrent = async () => {
     const [current] = await db
       .select()
       .from(message)
       .where(and(eq(message.id, mail.id), eq(message.transportId, identity.transportId)))
       .limit(1);
-    const [latest] = await db
-      .select({ id: aiDraftGeneration.id })
-      .from(aiDraftGeneration)
-      .where(
-        and(
-          eq(aiDraftGeneration.transportId, scope.transportId),
-          eq(aiDraftGeneration.threadId, scope.threadId),
-          eq(aiDraftGeneration.requestedByUserId, scope.userId),
-          eq(aiDraftGeneration.model, 'staff-approved-native'),
-          sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([scope.messageId])}::jsonb`,
-        ),
-      )
-      .orderBy(desc(aiDraftGeneration.createdAt))
-      .limit(1);
+    const [latest] = systemPrepared
+      ? [undefined]
+      : await db
+          .select({ id: aiDraftGeneration.id })
+          .from(aiDraftGeneration)
+          .where(
+            and(
+              eq(aiDraftGeneration.transportId, scope.transportId),
+              eq(aiDraftGeneration.threadId, scope.threadId),
+              eq(aiDraftGeneration.requestedByUserId, identity.user!.id),
+              eq(aiDraftGeneration.model, 'staff-approved-native'),
+              sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([scope.messageId])}::jsonb`,
+            ),
+          )
+          .orderBy(desc(aiDraftGeneration.createdAt))
+          .limit(1);
     return (
-      latest?.id === generationId &&
+      (systemPrepared || latest?.id === generationId) &&
       !!current &&
       current.threadId === scope.threadId &&
       staffQuoteSourceHash(current) === input.sourceHash
@@ -627,12 +639,14 @@ export async function runStaffQuote(
       message: 'Staff quotation database unavailable',
     });
   const evidence: { directory?: string } = {};
-  const queued = beginQuoteRun({
-    generationId,
-    transportId: scope.transportId,
-    userId: scope.userId,
-    lockKey: propertyReadLockKey(config.tenantId, scope.propertyCode),
-  });
+  const queued = systemPrepared
+    ? { setPhase: (_index: number) => undefined, end: () => undefined }
+    : beginQuoteRun({
+        generationId,
+        transportId: scope.transportId,
+        userId: identity.user!.id,
+        lockKey: propertyReadLockKey(config.tenantId, scope.propertyCode),
+      });
   // Provisional mode (QUOTE_TRACE_ASYNC=on): the quote is returned once captured, while the lock
   // and the run's record wait for the trace. Flag off, none of this changes the sequential flow.
   const traceAsync = quoteTraceAsyncEnabled();
@@ -762,10 +776,12 @@ export async function runStaffQuote(
       }
     } catch (error) {
       console.warn('staff_quote_failed', staffQuoteFailureLog(error));
-      await db
-        .update(aiDraftGeneration)
-        .set({ status: 'failed', errorMessage: 'staff_quote_not_qualified' })
-        .where(eq(aiDraftGeneration.id, generationId));
+      if (!systemPrepared) {
+        await db
+          .update(aiDraftGeneration)
+          .set({ status: 'failed', errorMessage: 'staff_quote_not_qualified' })
+          .where(eq(aiDraftGeneration.id, generationId));
+      }
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
         message: staffQuoteFailureMessage(error, {
@@ -778,13 +794,15 @@ export async function runStaffQuote(
     queued.setPhase(3);
     // Any failure after pricing must not leave this generation 'running'.
     const markGenerationFailed = (code: string) =>
-      Promise.resolve(
-        db
-          .update(aiDraftGeneration)
-          .set({ status: 'failed', errorMessage: code })
-          .where(eq(aiDraftGeneration.id, generationId)),
-      ).catch(() => undefined);
-    let attestation: StaffQuoteAttestation;
+      systemPrepared
+        ? Promise.resolve()
+        : Promise.resolve(
+            db
+              .update(aiDraftGeneration)
+              .set({ status: 'failed', errorMessage: code })
+              .where(eq(aiDraftGeneration.id, generationId)),
+          ).catch(() => undefined);
+    let attestation: StaffQuoteAttestation | null = null;
     let proposal: ReturnType<typeof buildStaffProposalFacts>;
     let extraTotal: number;
     try {
@@ -796,9 +814,11 @@ export async function runStaffQuote(
         ...(dinnerFallbackGroupIds.length ? { dinnerFallbackGroupIds } : {}),
         ...(config.dinnerAddOn ? { dinnerAddOn: config.dinnerAddOn } : {}),
       }));
-      attestation = attestStaffQuote(input, scope, prepared, revision, rowPrices, {
-        dinnerAddOnRequired: proposal.dinnerAddOnRequired,
-      });
+      if (!systemPrepared) {
+        attestation = attestStaffQuote(input, scope, prepared, revision, rowPrices, {
+          dinnerAddOnRequired: proposal.dinnerAddOnRequired,
+        });
+      }
       if (!(await stillCurrent()))
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
@@ -813,49 +833,51 @@ export async function runStaffQuote(
       : null;
     const persistRun = (quoteResult: Record<string, unknown>) =>
       db.transaction(async (tx) => {
-        await tx
-          .update(aiDraftGeneration)
-          .set({ status: 'succeeded' })
-          .where(eq(aiDraftGeneration.id, generationId));
-        await tx.insert(aiWorkflowRun).values({
-          id: workflowRunId,
-          transportId: scope.transportId,
-          threadId: scope.threadId,
-          triggerMessageId: mail.id,
-          runKind: 'candidate_draft',
-          idempotencyKey: prepared.authorizationId,
-          modelId: 'staff-approved-native',
-          promptVersion: 'staff-quote-v1',
-          state: 'succeeded',
-          executorLane: 'hms',
-          generationId,
-          metrics: {
-            staffQuoteAttestation: { ...attestation, salesStrategy: input.salesStrategy },
-            reservationistResult: {
-              readiness: 'ready_for_staff_review',
-              quoteRevisionIds: [revision.id],
-              quoteRevisions: [revision],
-              proposalFacts: proposal.facts ? [{ ref: 'extras', facts: proposal.facts }] : [],
+        if (!systemPrepared) {
+          await tx
+            .update(aiDraftGeneration)
+            .set({ status: 'succeeded' })
+            .where(eq(aiDraftGeneration.id, generationId));
+          await tx.insert(aiWorkflowRun).values({
+            id: workflowRunId,
+            transportId: scope.transportId,
+            threadId: scope.threadId,
+            triggerMessageId: mail.id,
+            runKind: 'candidate_draft',
+            idempotencyKey: prepared.authorizationId,
+            modelId: 'staff-approved-native',
+            promptVersion: 'staff-quote-v1',
+            state: 'succeeded',
+            executorLane: 'hms',
+            generationId,
+            metrics: {
+              staffQuoteAttestation: { ...attestation!, salesStrategy: input.salesStrategy },
+              reservationistResult: {
+                readiness: 'ready_for_staff_review',
+                quoteRevisionIds: [revision.id],
+                quoteRevisions: [revision],
+                proposalFacts: proposal.facts ? [{ ref: 'extras', facts: proposal.facts }] : [],
+              },
+              ...(runId ? { staffQuoteEvidence: { runId } } : {}),
             },
-            ...(runId ? { staffQuoteEvidence: { runId } } : {}),
-          },
-        });
-        // ponytail: U4 creates the quote's work item. Until it does, the approval is recorded and no rate event is written.
-        const workItemId = rowPrices.length
-          ? await quoteWorkItemIdFor(tx, {
-              transportId: scope.transportId,
-              threadId: scope.threadId,
-              messageId: mail.id,
-            })
-          : null;
-        if (workItemId)
-          await recordRateEvents(tx, {
-            workItemId,
-            actorUserId: scope.userId,
-            workflowRunId,
-            revision,
-            rowPrices,
           });
+          // ponytail: U4 creates the quote's work item. Until it does, the approval is recorded and no rate event is written.
+          const workItemId = rowPrices.length
+            ? await quoteWorkItemIdFor(tx, {
+                transportId: scope.transportId,
+                threadId: scope.threadId,
+                messageId: mail.id,
+              })
+            : null;
+          if (workItemId)
+            await recordRateEvents(tx, {
+              workItemId,
+              actorUserId: identity.user!.id,
+              workflowRunId,
+              revision,
+              rowPrices,
+            });
+        }
         if (
           options.commitQueuedResult &&
           !(await options.commitQueuedResult(quoteResult, tx as unknown as DB))
@@ -889,6 +911,19 @@ export async function runStaffQuote(
         .join('; '),
       // Per row: the HMS rate, the rate charged, and for an override the code and note for "Copy for HMS comments".
       rowRates: rowRatesFor(revision, rowPrices),
+      ...(systemPrepared
+        ? {
+            preparedProposal: {
+              version: 1,
+              inputDigest: prepared.inputDigest,
+              authorizationId: prepared.authorizationId,
+              sourceHash: scope.sourceHash,
+              revision,
+              ...(proposal.facts ? { facts: proposal.facts } : {}),
+              rowPrices,
+            },
+          }
+        : {}),
       runId,
       screenshots: runId ? await listQuoteRunScreenshots(config.outputDir, runId) : [],
     });
@@ -906,12 +941,7 @@ export async function runStaffQuote(
           console.error(
             `[staff-quote] run ${workflowRunId} not recorded: ${error instanceof Error ? error.message : 'unknown error'}`,
           );
-          await Promise.resolve(
-            db
-              .update(aiDraftGeneration)
-              .set({ status: 'failed', errorMessage: 'staff_quote_trace_finish_failed' })
-              .where(eq(aiDraftGeneration.id, generationId)),
-          ).catch(() => undefined);
+          await markGenerationFailed('staff_quote_trace_finish_failed');
           if (waitForTracePersistence && !(error instanceof Error && error.message === 'staff_quote_superseded')) {
             const failure = new Error('staff_quote_native_unavailable');
             Object.assign(failure, {

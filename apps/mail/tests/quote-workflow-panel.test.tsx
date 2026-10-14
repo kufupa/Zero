@@ -302,6 +302,48 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.queryByText('Coming soon')).toBeNull();
   });
 
+  it('labels a prepared stay price as Prepared by Nava with its as-of time', () => {
+    const base = sessionFromFixture('public-single');
+    const asOf = '2026-10-14T10:35:00.000Z';
+    const quoteRequestKey = '2026-11-12:2026-11-14';
+    const preparedQuote = {
+      workflowRunId: 'prepared-run-1',
+      revisionRef: 'prepared-revision-1',
+      factRefs: [],
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      sourceHash: 'a'.repeat(64),
+      selectionEpoch: 1,
+      inputRevision: 1,
+      inputDigest: 'b'.repeat(64),
+      preparedByNava: true,
+      preparedAt: asOf,
+      totalMinor: 272000,
+      currency: 'ZAR',
+      quoteRequestKey,
+      approvedHeader: {
+        salesStrategy: 'BAR' as const,
+        company: '',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+    };
+    render(
+      <QuoteWorkflowPanel
+        session={{
+          ...base,
+          selectedStayKey: quoteRequestKey,
+          staffQuote: preparedQuote,
+          staffQuotes: { [quoteRequestKey]: preparedQuote },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/^Prepared by Nava · /)).toBeDefined();
+  });
+
   it('marks Company/agency on the quote as looking up while an HMS party search is pending', () => {
     const session = { ...sessionFromFixture('public-single'), pendingPartyKinds: ['company' as const] };
     render(<QuoteWorkflowPanel session={session} />);

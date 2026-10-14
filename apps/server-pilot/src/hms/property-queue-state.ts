@@ -208,7 +208,10 @@ export async function readPropertyLockHolder(db: DB, lockKey: string): Promise<L
   };
 }
 
-/** True while any staff quote run is in flight. Background HMS work yields to it. */
+/**
+ * True while a staff-requested quote is in flight.
+ * Prepared userless quotes do not block background work.
+ */
 export async function staffQuoteInFlight(db: DB): Promise<boolean> {
   const [row] = await db
     .select({ id: aiDraftGeneration.id })
@@ -232,6 +235,7 @@ export async function staffQuoteInFlight(db: DB): Promise<boolean> {
         eq(aiWorkflowRun.promptVersion, 'hms-job/1'),
         inArray(aiWorkflowRun.state, ['claimed', 'running']),
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+        sql`${aiWorkflowRun.metrics}->>'userId' IS NOT NULL`,
         sql`${aiWorkflowRun.updatedAt} > clock_timestamp() - interval '20 minutes'`,
       ),
     )
