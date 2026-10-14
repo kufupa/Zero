@@ -8,6 +8,8 @@ Staff-facing name: **Nava**. Model name (Luna) never shown to staff.
 
 AI reservationist for Legacy Hotels Centurion. Staff stay in classic Outlook. A VSTO add-in hosts a WebView2 pane (`apps/mail` `/outlook-pane`). Same pane in webmail. Nava reads the selected email, pre-fills fields, and runs **deterministic** Infor HMS tools via Playwright. Human in the loop on every write.
 
+**Live with the client since 2026-10-14.** Never call it a demo. Every deploy and every flag flip reaches real staff: warn the owner before either during staff hours (staff start 05:00 UTC / 07:00 SAST), and record the last-good SHA first. Any pane feature ships on both surfaces (Outlook pane and the webmail panel at nava-admin).
+
 ## Who it is for
 
 Centurion reservations staff. Never ask them to run scripts, PowerShell, or terminals. Never show raw technical errors. If something takes >30s, say so in plain language.
@@ -25,6 +27,8 @@ Finish one before starting the next. Reads may be automatic. Writes are Prepare 
 ## Front door
 
 Classify every inbound mail. **Skip** OTA / channel / automated / spam at the door. Travel-agent mail **stays in scope**. Examples in chats are examples — generalise the class, do not overfit the three live quote threads that happened to be open.
+
+**Owner hard rule — pre-stay self-mail:** mail the hotel's own mailbox sends to itself (e.g. centurion@ → centurion@) titled "Pre Stay : Property … Confirmation No <conf> <name>" carries pre-arrival details for an **existing** booking. Read it as existing stay / pre-arrival info, never as a new booking, and never offer create. Build it as a general rule (own mailbox + pre-stay subject + confirmation number), not a Centurion string match.
 
 ## Pane (staff)
 
@@ -54,6 +58,20 @@ Keep the V1 look. One primary action per step. Hide dead controls.
 
 Target mix (~30): quote 12, amend 6, cancel 4, create 3, channel/system skip 5. Answer key from read-only HMS, not from whatever the agent last saw in Outlook. Overnight goal = move that scoreboard. Tests are allowed as a gate only when they encode this class of mail, not one thread.
 
+The golden set is versioned. Compare scores only on the same rows; when rows change, re-score the old build on the new rows before claiming a gain (2026-10-14: the set moved 30 → 27 → 26 rows overnight; v1 was re-scored each time, so 15/26 → 24/26 is a fair comparison). The golden set scores extraction and action class only; quote prices and party binds have their own bars below.
+
+**Pass bars per workflow** (proposed in the 2026-10-14 retro; owner confirms or edits):
+
+| Workflow / check | Pass bar | Unacceptable error |
+|---|---|---|
+| Party bind | 0 wrong auto-binds on the HMS answer key; auto-bind ≥ 70%; right party in top 3 ≥ 95% | any wrong bind → `PARTY_MATCH_V2` off |
+| Quote (prepared or staff-run) | rate plan + price per night = what staff sent, on every plannable real ask in the proof set (≥ 10 threads) | a price that differs with no HMS-side reason |
+| Front-door classifier | ≥ 90% agreement with outbound-grounded labels, ≤ 1% failures, at production concurrency and effort | a real booking/quote ask skipped |
+| Amend / cancel find | right reservation found ≥ 95% on golden rows | a different guest's booking shown as the match |
+| Any pane change | viewer run green + staff bundle load seen in nginx after the last deploy | "deployed" claimed without the bundle load |
+
+A slice is **done** only when its bar passes on prod after the last fix. Merged, deployed or "tests green" is progress, not done.
+
 Research already done: `docs/research/2026-10-13/README.md`. Do not redo it. Refresh the corpus snapshot if the mail mix is stale.
 
 ## How agents work this file
@@ -63,14 +81,19 @@ Research already done: `docs/research/2026-10-13/README.md`. Do not redo it. Ref
 3. Argue the opposite once (will this overfit a thread? is this ROI?).
 4. Ship the smallest slice that moves the scoreboard.
 5. Stop when the slice’s acceptance test passes in staff terms.
+6. **One workflow in progress at a time** (WIP = 1). Other lanes may only run evals, research or fixes that do not touch that workflow's files.
+7. **Scope changes are trades.** A new item for a running plan names the item it displaces and the new ETA, and the owner approves before work starts. Never add a new feature to an overnight run unless its pass/fail check already exists.
+8. Run contracts (overnight or daytime) follow `docs/context/RUN-CONTRACT.md`.
 
 ## Asks logged
 
 _(agents append dated one-liners; owner promotes into the spec above)_
 
 - 2026-10-14 (owner): skip Profitroom, Tiket.com, RateTiger and H-Pay (hospitality.cloud) at the door, exact host; Travelit and TBO stay in scope.
-- 2026-10-14 (owner): quote ready on open — Nava prepares the priced quote in the background (reads only) so staff don't click and wait.
+- 2026-10-14 (agent-proposed, owner approved): quote ready on open — Nava prepares the priced quote in the background (reads only) so staff don't click and wait.
 - 2026-10-14 (owner): fully booked — alternatives are shown to staff in the pane only; the reply stays a one-line decline unless staff pick "Use this".
 - 2026-10-14 (owner): action labels come from what staff did (outbound) first; else two models must agree; disagreements go to the owner.
 - 2026-10-14 (owner policy): TMC cancellation notification = no action; a person asking to cancel = cancel; vouchers parked (find first, later); shuttle for a group = group/event, otherwise amend.
 - 2026-10-14 (owner): DB route tests may use a local disposable Postgres on 127.0.0.1; never pilot RDS.
+- 2026-10-14 (owner, after the client saw the live product): (1) pre-stay self-mail is an existing stay, never New booking (rule promoted to Front door above); (2) webmail panel shows "Access removed — contact Ansh" for centurion@ — diagnose the sync-owner denial and give webmail its own wording; (3) nava-admin "could not load this workflow folder" — error visibility first, then fix; (4) "Prepared by Nava" quotes must show in webmail too (`HMS_QUOTE_PREPARE` on remote-http as well).
+- 2026-10-14 (owner): today's goal — every workflow (quote with price confidence, create, amend, cancel) to high accuracy. Work it one workflow at a time against the pass bars above.
