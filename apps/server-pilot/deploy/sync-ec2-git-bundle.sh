@@ -91,6 +91,7 @@ const phaseB=new Set([
 ]);
 const scope=[
   "apps/server-pilot/src",
+  "apps/server-pilot/config",
   "apps/server-pilot/deploy",
   "apps/server-pilot/tests",
   "apps/server-pilot/vitest.config.ts",
@@ -211,6 +212,7 @@ if(!valid)process.exit(1);
     cd "$REPO_ROOT"
     git archive HEAD -- \
       apps/server-pilot/src \
+      apps/server-pilot/config \
       apps/server-pilot/deploy \
       apps/server-pilot/package.json \
       apps/server-pilot/tsconfig.json \
