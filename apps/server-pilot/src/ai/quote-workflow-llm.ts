@@ -43,6 +43,8 @@ export const K2_MAPPING = [
   'Different date sets for the same ask become separate quote tasks.',
   'For every group, dateEvidence must be an exact phrase from that stay only; never reuse another stay’s phrase.',
   'Use dateEvidence from the staff note when it corrects dates. In multiple stays, apply a note correction only to the stay whose own dateEvidence appears in the note; if it cannot be attributed, apply it only for a single stay.',
+  'Per stay, precedence is: attributed staff correction > explicit year in that stay’s dateEvidence (subject may supply it only for one stay) > that stay’s verified “next <weekday>” resolved from Johannesburg receipt, overriding model dates > yearless rollover after checking the stay’s own text for an explicit year > unchanged model dates.',
+  'If evidence is missing or mismatched, check body/subject for an explicit year only for a single stay; with multiple stays, keep model dates. Never borrow a year or relative phrase across stays.',
   '"Quote then book if OK" stays workflow=quote.',
   'Use workflow=create_booking only for explicit make/confirm asks without a quote, price, rate or',
   'availability ask.',
@@ -423,6 +425,7 @@ export function mapLlmDecision(
       receivedAt: options?.dateAnchor?.receivedAt,
       sourceText: verifiedDateEvidence,
       subjectText: singleStay ? options?.dateAnchor?.subjectText : undefined,
+      yearEvidenceText: singleStay ? options?.dateAnchor?.yearEvidenceText ?? sourceText : undefined,
       staffNote: staffNote && (singleStay || noteNamesStay) ? staffNote : undefined,
     };
     const anchoredDates = anchorStayDateRange(

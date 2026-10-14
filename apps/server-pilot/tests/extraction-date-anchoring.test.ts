@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { extractInboundMail } from '../src/ai/extraction/extract.js';
 import { anchorStayDateRange, receivedDateAtHotel } from '../src/ai/stay-date-anchoring.js';
+import { buildPreparedStaffQuotePlan } from '../src/ai/quote-ready.js';
 import { AE1_OUTPUT, fakeModel, selectionFor } from './fixtures/inbound-extraction.js';
 
 async function extractRequestedDates(input: {
@@ -9,6 +10,7 @@ async function extractRequestedDates(input: {
   arrival: string;
   departure: string;
   subject?: string;
+  dateEvidence?: string | null;
 }) {
   const selection = {
     ...selectionFor(input.bodyText, input.subject),
@@ -20,7 +22,7 @@ async function extractRequestedDates(input: {
       {
         ...AE1_OUTPUT.stays[0]!,
         requested: { arrival: input.arrival, departure: input.departure },
-        requestedDateEvidence: input.bodyText,
+        requestedDateEvidence: input.dateEvidence === undefined ? input.bodyText : input.dateEvidence,
       },
     ],
   }));
@@ -30,7 +32,9 @@ async function extractRequestedDates(input: {
     messageId: 'msg-date-anchor-test',
   });
   if (!result.ok) throw new Error(`extraction failed: ${result.reason}`);
-  return { requested: result.payload.stays[0]?.requested, prompt: model.calls[0]?.userPrompt ?? '' };
+  const requested = result.payload.stays[0]?.requested;
+  if (!requested) throw new Error('extraction returned no stay');
+  return { requested, prompt: model.calls[0]?.userPrompt ?? '', payload: result.payload };
 }
 
 async function extractRequestedDateSets(input: {
@@ -159,5 +163,153 @@ describe('received-time date anchoring', () => {
 
   it('uses Johannesburg local date when received timestamp crosses UTC new year', () => {
     expect(receivedDateAtHotel('2026-12-31T22:30:00.000Z')).toBe('2027-01-01');
+  });
+
+  const greptileDateScenarios: Array<{
+    name: string;
+    run: () => unknown | Promise<unknown>;
+    expected: unknown;
+  }> = [
+    {
+      name: 'explicit ISO year wins over yearless rollover',
+      run: async () =>
+        (await extractRequestedDates({
+          bodyText: 'Please quote 2028-03-12 to 2028-03-15.',
+          receivedAt: '2026-12-20T12:00:00.000Z',
+          arrival: '2028-03-12',
+          departure: '2028-03-15',
+        })).requested,
+      expected: { arrival: '2028-03-12', departure: '2028-03-15' },
+    },
+    {
+      name: 'relative evidence is scoped to its matching stay',
+      run: () =>
+        extractRequestedDateSets({
+          bodyText: 'Please quote next Friday for two nights, and 4–6 January.',
+          receivedAt: '2026-12-18T12:00:00.000Z',
+          stays: [
+            { arrival: '2026-12-11', departure: '2026-12-13', dateEvidence: 'next Friday for two nights' },
+            { arrival: '2026-01-04', departure: '2026-01-07', dateEvidence: '4–6 January' },
+          ],
+        }),
+      expected: [
+        { arrival: '2026-12-25', departure: '2026-12-27' },
+        { arrival: '2027-01-04', departure: '2027-01-07' },
+      ],
+    },
+    {
+      name: 'staff correction outranks a conflicting email year',
+      run: () =>
+        anchorStayDateRange(
+          { arrival: '2028-03-12', departure: '2028-03-15' },
+          {
+            receivedAt: '2026-12-20T12:00:00.000Z',
+            sourceText: '12–14 March 2027',
+            staffNote: 'Use 12–14 March 2028 instead.',
+          },
+        ),
+      expected: { arrival: '2028-03-12', departure: '2028-03-15' },
+    },
+    {
+      name: 'single-stay subject year wins even when it is past',
+      run: async () =>
+        (await extractRequestedDates({
+          bodyText: 'Please quote 12–14 March.',
+          subject: 'March 2028',
+          receivedAt: '2028-12-20T12:00:00.000Z',
+          arrival: '2028-03-12',
+          departure: '2028-03-15',
+        })).requested,
+      expected: { arrival: '2028-03-12', departure: '2028-03-15' },
+    },
+    {
+      name: 'yearless numeric day-month dates roll from received date',
+      run: async () =>
+        (await extractRequestedDates({
+          bodyText: 'Please quote 12/03 to 15/03.',
+          receivedAt: '2026-12-20T12:00:00.000Z',
+          arrival: '2026-03-12',
+          departure: '2026-03-15',
+        })).requested,
+      expected: { arrival: '2027-03-12', departure: '2027-03-15' },
+    },
+    {
+      name: 'staff correction affects only its attributed stay',
+      run: () => [
+        anchorStayDateRange(
+          { arrival: '2026-12-11', departure: '2026-12-13' },
+          { receivedAt: '2026-12-18T12:00:00.000Z', sourceText: 'next Friday for two nights' },
+        ),
+        anchorStayDateRange(
+          { arrival: '2026-01-04', departure: '2026-01-07' },
+          {
+            receivedAt: '2026-12-18T12:00:00.000Z',
+            sourceText: '4–6 January',
+            staffNote: 'Keep 4–6 January for the second stay.',
+          },
+        ),
+      ],
+      expected: [
+        { arrival: '2026-12-25', departure: '2026-12-27' },
+        { arrival: '2026-01-04', departure: '2026-01-07' },
+      ],
+    },
+    {
+      name: 'another stay’s explicit year does not leak',
+      run: () =>
+        extractRequestedDateSets({
+          bodyText: 'Stay one: 12–14 March. Stay two: 12–14 March 2028.',
+          receivedAt: '2026-12-20T12:00:00.000Z',
+          stays: [
+            { arrival: '2026-03-12', departure: '2026-03-15', dateEvidence: '12–14 March' },
+            { arrival: '2028-03-12', departure: '2028-03-15', dateEvidence: '12–14 March 2028' },
+          ],
+        }),
+      expected: [
+        { arrival: '2027-03-12', departure: '2027-03-15' },
+        { arrival: '2028-03-12', departure: '2028-03-15' },
+      ],
+    },
+    {
+      name: 'verified next Friday overrides a future model range',
+      run: async () =>
+        (await extractRequestedDates({
+          bodyText: 'Please quote next Friday for two nights.',
+          receivedAt: '2026-12-18T12:00:00.000Z',
+          arrival: '2027-01-01',
+          departure: '2027-01-03',
+        })).requested,
+      expected: { arrival: '2026-12-25', departure: '2026-12-27' },
+    },
+    {
+      name: 'null or mismatched evidence preserves an explicit body year and flags it past',
+      run: async () =>
+        Promise.all(
+          ([null, 'March dates'] as const).map(async (dateEvidence) => {
+            const extracted = await extractRequestedDates({
+              bodyText: 'Please quote 12–14 March 2026.',
+              receivedAt: '2026-12-20T12:00:00.000Z',
+              arrival: '2026-03-12',
+              departure: '2026-03-15',
+              dateEvidence,
+            });
+            const plan = buildPreparedStaffQuotePlan({
+              messageId: 'msg-date-year-check',
+              sourceHash: 'a'.repeat(64),
+              payload: extracted.payload,
+              now: new Date('2026-12-20T12:00:00.000Z'),
+            });
+            return { requested: extracted.requested, reason: plan.stays[0]?.reason };
+          }),
+        ),
+      expected: [
+        { requested: { arrival: '2026-03-12', departure: '2026-03-15' }, reason: 'past_dates' },
+        { requested: { arrival: '2026-03-12', departure: '2026-03-15' }, reason: 'past_dates' },
+      ],
+    },
+  ];
+
+  it.each(greptileDateScenarios)('Greptile scenario: $name', async ({ run, expected }) => {
+    expect(await run()).toEqual(expected);
   });
 });

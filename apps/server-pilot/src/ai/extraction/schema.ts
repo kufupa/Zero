@@ -204,6 +204,10 @@ export function sanitizeExtraction(
       ...input.dateAnchor,
       sourceText,
       subjectText: output.stays.length === 1 ? input.dateAnchor?.subjectText : undefined,
+      yearEvidenceText:
+        output.stays.length === 1
+          ? input.dateAnchor?.yearEvidenceText ?? selectionText
+          : undefined,
     };
     return {
       id,

@@ -4,6 +4,8 @@ export type StayDateAnchorContext = {
   sourceText?: string;
   /** Supplied only for a single-stay request. */
   subjectText?: string;
+  /** Full selected body/subject text, supplied only for one stay to check explicit years. */
+  yearEvidenceText?: string;
   /** Passed only for a matched or single-stay correction. */
   staffNote?: string;
 };
@@ -79,6 +81,16 @@ export function stayDateSourceText(selection: {
     .join('\n');
 }
 
+/** Current message body and subject only; excludes quoted history and attachments. */
+export function stayDateYearEvidenceText(selection: {
+  subject?: string;
+  bodyText?: string;
+}): string {
+  return [selection.subject ? `Subject: ${selection.subject}` : '', selection.bodyText ?? '']
+    .filter(Boolean)
+    .join('\n');
+}
+
 function hasExplicitYear(text: string | undefined): boolean {
   return Boolean(text && /\b(?:19|20)\d{2}\b/.test(text));
 }
@@ -109,7 +121,7 @@ function nextWeekdayAfter(referenceDate: string, weekday: string): string | null
   return addDays(referenceDate, daysAhead);
 }
 
-/** Keep explicit-year dates; otherwise roll only past dates using this stay's evidence. */
+/** Resolve dates per stay using staff, explicit years, verified relative phrases, then yearless rollover. */
 export function anchorStayDateRange(
   range: { arrival: string | null | undefined; departure: string | null | undefined },
   context: StayDateAnchorContext,
@@ -120,9 +132,13 @@ export function anchorStayDateRange(
   }
 
   const referenceDate = receivedDateAtHotel(context.receivedAt);
-  if (!referenceDate || arrival >= referenceDate) return { arrival, departure };
+  if (!referenceDate) return { arrival, departure };
   if (hasStaffDateCorrection(context.staffNote)) return { arrival, departure };
-  if (hasExplicitYear(context.sourceText) || hasExplicitYear(context.subjectText)) {
+  if (
+    hasExplicitYear(context.sourceText) ||
+    hasExplicitYear(context.yearEvidenceText) ||
+    hasExplicitYear(context.subjectText)
+  ) {
     return { arrival, departure };
   }
 
@@ -131,9 +147,21 @@ export function anchorStayDateRange(
   if (!(nights > 0)) return { arrival, departure };
 
   const relativeWeekday = context.sourceText?.match(RELATIVE_WEEKDAY)?.[1];
-  const anchoredArrival = relativeWeekday
-    ? nextWeekdayAfter(referenceDate, relativeWeekday)
-    : nextOccurrence(arrival, referenceDate);
+  if (relativeWeekday) {
+    const anchoredArrival = nextWeekdayAfter(referenceDate, relativeWeekday);
+    return anchoredArrival
+      ? { arrival: anchoredArrival, departure: addDays(anchoredArrival, nights) }
+      : { arrival, departure };
+  }
+
+  if (arrival >= referenceDate) return { arrival, departure };
+  const checkedStayText =
+    Boolean(context.sourceText?.trim()) ||
+    Boolean(context.subjectText?.trim()) ||
+    Boolean(context.yearEvidenceText?.trim());
+  if (!checkedStayText) return { arrival, departure };
+
+  const anchoredArrival = nextOccurrence(arrival, referenceDate);
   return anchoredArrival
     ? { arrival: anchoredArrival, departure: addDays(anchoredArrival, nights) }
     : { arrival, departure };

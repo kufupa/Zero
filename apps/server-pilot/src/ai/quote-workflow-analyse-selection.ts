@@ -27,7 +27,7 @@ import type {
   SyncedQuoteSelection,
 } from './quote-workflow-synced-selection.js';
 import { attachmentMattersForReview, unreadReasonWords } from './quote-attachment-review.js';
-import { stayDateSourceText } from './stay-date-anchoring.js';
+import { stayDateSourceText, stayDateYearEvidenceText } from './stay-date-anchoring.js';
 
 /**
  * Luna analyse of a synced mail, shared by the pane route and the inbound
@@ -460,6 +460,7 @@ export async function analyseSyncedSelection(
         receivedAt: synced.receivedAt,
         sourceText: stayDateSourceText(synced),
         subjectText: synced.subject,
+        yearEvidenceText: stayDateYearEvidenceText(synced),
         staffNote,
       },
     });
