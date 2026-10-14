@@ -516,9 +516,16 @@ export function buildStaffProposalFacts(
     input.dinnerAllowanceMinor !== undefined ||
     input.dinnerAllowanceLabel !== undefined ||
     input.dinnerAllowanceUnit !== undefined;
+  // A priced dinner charge also covers rows retried from a dinner board after the scope was saved (a row staff added later).
+  const pricedDinner =
+    (input.dinnerAllowanceMinor ?? options.dinnerAddOn?.amountMinor) !== undefined &&
+    (input.dinnerAllowanceUnit ?? options.dinnerAddOn?.unit) !== undefined;
   const allowanceGroups =
     allowanceIds !== undefined
-      ? input.groups.filter((group) => allowanceIds.includes(group.id))
+      ? input.groups.filter(
+          (group) =>
+            allowanceIds.includes(group.id) || (pricedDinner && allowanceIds.length > 0 && dinnerFallbackGroupIds.includes(group.id)),
+        )
       : hasManualDinnerRequest
         ? input.groups
         : input.groups.filter((group) => dinnerFallbackGroupIds.includes(group.id));

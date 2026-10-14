@@ -266,6 +266,33 @@ describe('staff-approved quotation beneath native guards', () => {
     },
   );
 
+  it('a dinner row added after the charge scope was saved joins the priced dinner charge', async () => {
+    const source = input();
+    const group = source.groups[0]!;
+    source.groups = [
+      { ...group, id: 'first', quantity: 1, adults: 1, board: 'dinner_bb' },
+      { ...group, id: 'added', quantity: 1, adults: 1, board: 'dinner_bb' },
+    ];
+    source.dinnerAllowanceMinor = 12_500;
+    source.dinnerAllowanceUnit = 'per_person_per_night';
+    source.dinnerAllowanceGroupIds = ['first'];
+
+    const retry = staffQuoteDinnerFallback(source)!;
+    expect(retry.groupIds).toEqual(['first', 'added']);
+    const f = await fixture(retry.input);
+    const revision = await executeStaffQuote(
+      f.prepared,
+      createReservationistBusinessServices(f.options, f.prepared.approval),
+      async () => true,
+    );
+    const proposal = buildStaffProposalFacts(retry.input, scope, f.prepared, revision, {
+      dinnerFallbackGroupIds: retry.groupIds,
+    });
+
+    expect(proposal.dinnerAddOnRequired).toBe(false);
+    expect(proposal.facts?.extras[0]).toMatchObject({ groupIds: ['first', 'added'] });
+  });
+
   it('prices configured dinner only for mixed-stay groups retried from dinner board', async () => {
     const source = input();
     const group = source.groups[0]!;
