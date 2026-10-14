@@ -1491,7 +1491,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
               dinnerAllowanceRequired: staffQuote.dinnerAddOnRequired === true || !dinnerAddOn,
               dinnerAllowanceMinor: dinnerAddOn?.amountMinor ?? existing.dinnerAllowanceMinor,
               dinnerAllowanceUnit: dinnerAddOn?.unit ?? existing.dinnerAllowanceUnit,
-              dinnerAllowanceLabel: dinnerAddOn?.label ?? existing.dinnerAllowanceLabel,
+              dinnerAllowanceLabel: existing.dinnerAllowanceLabel,
               dinnerAllowanceGroupIds: fallbackGroupIds,
             },
           },

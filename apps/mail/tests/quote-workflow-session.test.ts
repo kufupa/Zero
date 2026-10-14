@@ -36,6 +36,7 @@ import {
   staffHeaderFieldProblem,
   staffStayExtrasFor,
 } from '../lib/quote-workflow/types';
+import { approvedExecuteHeader, staffHeaderForStay } from '../lib/quote-workflow/staff-quote-bind';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
 import type {
   LunaAnalysisWire,
@@ -2426,6 +2427,50 @@ describe('staff dinner B&B fallback', () => {
       groupIds: ['g1'],
     });
     expect(after.staffHeader.stayExtrasByKey?.['2026-11-12:2026-11-14']?.dinnerAllowanceGroupIds).toEqual(['g1']);
+  });
+
+  it.each([
+    { name: 'short', qualifier: 'Set menu' },
+    { name: '120-character', qualifier: 'x'.repeat(120) },
+  ])('keeps a $name dinner qualifier separate from its display label', ({ qualifier }) => {
+    let before = withStaffSource(analysisReady());
+    before = {
+      ...before,
+      staffHeader: {
+        ...before.staffHeader,
+        salesStrategy: 'BAR',
+        stayExtrasByKey: {
+          ...before.staffHeader.stayExtrasByKey,
+          [STAY_A]: {
+            ...defaultStaffStayExtras(before.staffHeader),
+            dinnerEnabled: true,
+            dinnerAllowanceMinor: 35_000,
+            dinnerAllowanceUnit: 'per_person_per_night',
+            dinnerAllowanceLabel: qualifier,
+          },
+        },
+      },
+    };
+    const action = staffQuoteFor(STAY_A, 'rev-dinner', 85_000, before.inputRevision);
+    if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    const displayLabel = `Dinner add-on (${qualifier})`;
+    const after = reduceQuoteSession(before, {
+      ...action,
+      staffQuote: {
+        ...action.staffQuote,
+        dinnerFallbackGroupIds: ['g1'],
+        dinnerAddOn: {
+          label: displayLabel,
+          amountMinor: 35_000,
+          unit: 'per_person_per_night',
+          totalMinor: 140_000,
+        },
+      },
+    });
+
+    expect(after.staffQuote?.dinnerAddOn?.label).toBe(displayLabel);
+    const nextSearch = approvedExecuteHeader(staffHeaderForStay(after.staffHeader, STAY_A), ['g1']);
+    expect(nextSearch.dinnerAllowanceLabel).toBe(qualifier);
   });
 });
 

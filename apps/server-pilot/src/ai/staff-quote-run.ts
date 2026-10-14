@@ -872,9 +872,7 @@ export async function runStaffQuote(
       factRefs: proposal.factRefs,
       extrasReviewItems: [...notes, ...proposal.extrasReviewItems],
       dinnerAddOnRequired: proposal.dinnerAddOnRequired,
-      ...(proposal.dinnerGroupIds.length || dinnerFallbackGroupIds.length
-        ? { dinnerFallbackGroupIds: proposal.dinnerGroupIds.length ? proposal.dinnerGroupIds : dinnerFallbackGroupIds }
-        : {}),
+      ...(dinnerFallbackGroupIds.length ? { dinnerFallbackGroupIds } : {}),
       ...(dinnerAddOnDetails(proposal, revision) ? { dinnerAddOn: dinnerAddOnDetails(proposal, revision) } : {}),
       rateOptions,
       selectionEpoch: input.selectionEpoch,

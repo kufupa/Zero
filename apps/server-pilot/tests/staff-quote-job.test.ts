@@ -410,6 +410,52 @@ describe('staff_quote HMS job execution', () => {
     );
   });
 
+  it('does not report a separate dinner charge as a B&B fallback for room-only accommodation', async () => {
+    const groups: StaffQuoteInput['groups'] = [
+      {
+        id: 'g1',
+        arrivalDate: '2026-11-12',
+        departureDate: '2026-11-14',
+        quantity: 2,
+        adults: 1,
+        childrenAges: [],
+        board: 'room_only',
+        roomCodes: ['SKNG'],
+      },
+    ];
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
+      groups,
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceUnit: 'per_person_per_night',
+      dinnerAllowanceLabel: 'Set menu',
+      dinnerAllowanceGroupIds: ['g1'],
+    });
+    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) =>
+      syntheticRevision(
+        ['600.00', '600.00'],
+        'Room Only R',
+        'SKNG',
+        undefined,
+        '2026-11-12',
+        prepared.authorizationId,
+      ),
+    );
+
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+
+    const readResult = jobMocks.markSucceeded.mock.calls[0]?.[0].readResult;
+    expect(readResult).toMatchObject({
+      dinnerAddOn: {
+        label: 'Dinner add-on (Set menu)',
+        amountMinor: 12_500,
+        unit: 'per_person_per_night',
+        totalMinor: 50_000,
+      },
+      totalMinor: 290_000,
+    });
+    expect(readResult).not.toHaveProperty('dinnerFallbackGroupIds');
+  });
+
   it.each([
     ['missing staffQuoteUser', { userId: user.id }],
     ['missing userId', { staffQuoteUser: user }],
