@@ -1478,8 +1478,18 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       // The same goes for rate cards: this run's groups get its options, and the other groups keep theirs.
       const runGroupIds = new Set(action.offer.coversGroupIds);
       const fallbackGroupIds = [...new Set(staffQuote.dinnerFallbackGroupIds ?? [])].filter((id) => runGroupIds.has(id));
+      // The search approved only its own stay's extras; other stays keep what staff entered since.
       let staffHeader = action.approvedHeader
-        ? { ...session.staffHeader, ...action.approvedHeader }
+        ? {
+            ...session.staffHeader,
+            ...action.approvedHeader,
+            stayExtrasByKey: {
+              ...session.staffHeader.stayExtrasByKey,
+              ...(action.approvedHeader.stayExtrasByKey?.[stayKey]
+                ? { [stayKey]: action.approvedHeader.stayExtrasByKey[stayKey] }
+                : {}),
+            },
+          }
         : session.staffHeader;
       const existingDinner = staffStayExtrasFor(staffHeader, stayKey);
       const dinnerAddOn = staffQuote.dinnerAddOn;

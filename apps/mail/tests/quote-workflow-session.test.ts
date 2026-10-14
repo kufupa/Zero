@@ -2534,6 +2534,25 @@ describe('staff dinner B&B fallback', () => {
     expect(after.staffHeader.stayExtrasByKey?.['2026-11-12:2026-11-14']?.dinnerAllowanceGroupIds).toEqual(['g1']);
   });
 
+  it('a search result for one stay keeps the extras staff entered on another stay meanwhile', () => {
+    let before = withStaffSource(analysisReady());
+    const stale = { ...defaultStaffStayExtras(before.staffHeader), dinnerEnabled: false };
+    const fresh = { ...defaultStaffStayExtras(before.staffHeader), dinnerEnabled: true, dinnerAllowanceMinor: 30_000, dinnerAllowanceUnit: 'per_person_per_night' as const };
+    const approvedA = { ...defaultStaffStayExtras(before.staffHeader), dinnerEnabled: false };
+    before = {
+      ...before,
+      staffHeader: { ...before.staffHeader, salesStrategy: 'BAR', stayExtrasByKey: { [STAY_A]: approvedA, 'other-stay': fresh } },
+    };
+    const action = staffQuoteFor(STAY_A, 'rev-two-stays', 85_000, before.inputRevision);
+    if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    const after = reduceQuoteSession(before, {
+      ...action,
+      approvedHeader: { ...before.staffHeader, stayExtrasByKey: { [STAY_A]: approvedA, 'other-stay': stale } },
+    } as typeof action);
+    expect(after.staffHeader.stayExtrasByKey?.['other-stay']).toEqual(fresh);
+    expect(after.staffHeader.stayExtrasByKey?.[STAY_A]).toEqual(approvedA);
+  });
+
   it('keeps a staff-approved whole-stay dinner charge when the server retried only some rooms as B&B', () => {
     let before = withStaffSource(analysisReady());
     before = {
