@@ -59,7 +59,7 @@ export function ContactBlock({
           onClick={() => setCorrecting((open) => !open)}
           className="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
         >
-          {correcting ? 'Hide corrections' : 'Correct'}
+          {correcting ? 'Done' : 'Edit'}
         </button>
         <p className="text-[11.5px] text-[#64748b]">Corrections save to this request only. HMS is not changed.</p>
       </div>

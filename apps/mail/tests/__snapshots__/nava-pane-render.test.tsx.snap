@@ -247,7 +247,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
                 class="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
                 type="button"
               >
-                Correct
+                Edit
               </button>
               <p
                 class="text-[11.5px] text-[#64748b]"
@@ -281,141 +281,60 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
           >
             Change to an existing booking
           </h3>
+          <p
+            class="text-[12.5px] text-[#1e293b]"
+            data-pii="true"
+            data-testid="amend-request-summary"
+            title="Request from this email"
+          >
+            Add the night of 31 Oct
+          </p>
           <div
-            class="grid grid-cols-2 gap-3"
+            class="grid grid-cols-1 gap-3"
           >
             <div
-              class="flex flex-col gap-2"
-            >
-              <p
-                class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-              >
-                What the guest asked
-              </p>
-              <div
-                class="flex flex-col gap-0.5"
-              >
-                <p
-                  class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                >
-                  Request
-                </p>
-                <p
-                  class="text-[12.5px] text-[#1e293b]"
-                >
-                  Add the night of 31 Oct
-                </p>
-                <p
-                  class="text-[10px] text-[#94a3b8]"
-                >
-                  From the email
-                </p>
-              </div>
-              <div
-                class="flex flex-col gap-0.5"
-              >
-                <p
-                  class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                >
-                  Confirmation
-                </p>
-                <p
-                  class="text-[12.5px] text-[#1e293b]"
-                  data-pii="true"
-                >
-                  57291630-1
-                </p>
-                <div
-                  class="pt-0.5"
-                >
-                  <span
-                    class="inline-flex flex-wrap items-center gap-x-3 gap-y-1"
-                  >
-                    <button
-                      class="rounded-sm border border-[#0066cc] bg-white px-2.5 py-1 text-[11.5px] font-medium text-[#0066cc]"
-                      type="button"
-                    >
-                      Copy for HMS
-                    </button>
-                    <span
-                      class="text-[11px] text-amber-900"
-                      role="status"
-                    />
-                  </span>
-                </div>
-                <p
-                  class="text-[10px] text-[#94a3b8]"
-                >
-                  From the email
-                </p>
-              </div>
-              <div
-                class="flex flex-col gap-0.5"
-              >
-                <p
-                  class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                >
-                  Guest last name
-                </p>
-                <p
-                  class="text-[12.5px] text-[#1e293b]"
-                  data-pii="true"
-                >
-                  Smith
-                </p>
-                <p
-                  class="text-[10px] text-[#94a3b8]"
-                >
-                  From the email
-                </p>
-              </div>
-              <div
-                class="flex flex-col gap-0.5"
-              >
-                <p
-                  class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                >
-                  Arrival
-                </p>
-                <p
-                  class="text-[12.5px] text-[#1e293b]"
-                >
-                  31 Oct 2026
-                </p>
-                <p
-                  class="text-[10px] text-[#94a3b8]"
-                >
-                  From the email
-                </p>
-              </div>
-              <div
-                class="flex flex-col gap-0.5"
-              >
-                <p
-                  class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
-                >
-                  Departure
-                </p>
-                <p
-                  class="text-[12.5px] text-[#1e293b]"
-                >
-                  7 Nov 2026
-                </p>
-                <p
-                  class="text-[10px] text-[#94a3b8]"
-                >
-                  From the email
-                </p>
-              </div>
-            </div>
-            <div
-              class="flex flex-col gap-2"
+              class="flex min-w-0 flex-col gap-2"
             >
               <p
                 class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
               >
                 Booking in HMS now
               </p>
+              <dl
+                class="grid grid-cols-2 gap-x-2.5 gap-y-1.5"
+              >
+                <div
+                  class="flex min-w-0 flex-col gap-0.5"
+                  data-field="confirmation"
+                >
+                  <dt
+                    class="text-[10px] font-semibold uppercase tracking-wide text-[#64748b]"
+                  >
+                    Confirmation
+                  </dt>
+                  <dd
+                    class="break-words text-[12.5px] text-[#1e293b]"
+                    data-pii="true"
+                    title="From the email"
+                  >
+                    57291630-1
+                  </dd>
+                </div>
+              </dl>
+              <span
+                class="inline-flex flex-wrap items-center gap-x-3 gap-y-1"
+              >
+                <button
+                  class="rounded-sm border border-[#0066cc] bg-white px-2.5 py-1 text-[11.5px] font-medium text-[#0066cc]"
+                  type="button"
+                >
+                  Copy for HMS
+                </button>
+                <span
+                  class="text-[11px] text-amber-900"
+                  role="status"
+                />
+              </span>
               <p
                 class="text-[11.5px] text-[#64748b]"
               >
@@ -465,11 +384,19 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
               aria-live="polite"
             />
           </div>
-          <p
-            class="text-[10px] text-[#94a3b8]"
+          <div
+            class="flex justify-end border-t border-[#e2e8f0] pt-2"
+            data-testid="amend-run-placeholder"
           >
-            Nava only looks the booking up. Make the change in HMS yourself.
-          </p>
+            <button
+              class="rounded-sm border border-[#0066cc] bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8]"
+              disabled=""
+              title="Amend save not enabled yet"
+              type="button"
+            >
+              Run
+            </button>
+          </div>
         </section>
         <div
           class="flex flex-col gap-2.5"
@@ -1249,7 +1176,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 class="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
                 type="button"
               >
-                Correct
+                Edit
               </button>
               <p
                 class="text-[11.5px] text-[#64748b]"
@@ -3327,7 +3254,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 class="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
                 type="button"
               >
-                Correct
+                Edit
               </button>
               <p
                 class="text-[11.5px] text-[#64748b]"
@@ -5729,7 +5656,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 class="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
                 type="button"
               >
-                Correct
+                Edit
               </button>
               <p
                 class="text-[11.5px] text-[#64748b]"
@@ -7707,7 +7634,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 class="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
                 type="button"
               >
-                Correct
+                Edit
               </button>
               <p
                 class="text-[11.5px] text-[#64748b]"

@@ -234,7 +234,7 @@ vi.mock('../providers/query-provider', () => ({
       jobQueueEnabled: { query: () => bridgeMockState.jobQueueEnabledQuery() },
       queueFind: { mutate: async () => ({ runId: 'job-find-1' }) },
       queueSearchGuest: { mutate: async () => ({ runId: 'job-search-1' }) },
-      jobStatus: { query: async () => null },
+      jobStatus: { query: async () => bridgeMockState.hmsQueueStatus as never },
       screenshot: { query: async () => null },
     },
     panePartyLookup: {
@@ -309,7 +309,7 @@ function openPaneMenuItem(name: string): HTMLElement {
 }
 
 function openContactCorrections() {
-  fireEvent.click(screen.getByRole('button', { name: 'Correct' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
 }
 
 const LOADED_BUILD = 'build-loaded-0001';
@@ -687,6 +687,7 @@ describe('NavaPane screen states', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     sendCommandMock.mockClear();
+    bridgeMockState.hmsQueueStatus = null;
     saveReplyMutate.mockReset().mockResolvedValue({ id: 'draft-1', replaced: false });
     bridgeMockState.holdStaffQuote = false;
     bridgeMockState.releaseStaffQuote = null;
@@ -2255,6 +2256,114 @@ describe('NavaPane screen states', () => {
     await waitFor(() => expect(bridgeMockState.releaseStaffQuote).toBeTypeOf('function'));
     await act(async () => bridgeMockState.releaseStaffQuote?.());
   });
+
+  function foundAmendmentHmsJob(confirmation: string): Record<string, unknown> {
+    return {
+      runId: 'hms-job-found-amendment',
+      sourceMessageId: 'mail-1',
+      request: { kind: 'find', confirmation, arrival: '2026-10-17' },
+      prefetch: false,
+      status: 'done',
+      position: null,
+      attempts: 1,
+      failureClass: null,
+      asOf: '2026-10-14T12:00:00.000Z',
+      result: {
+        outcome: 'found',
+        reason: null,
+        stay: {
+          status: 'Reserved',
+          confirmation,
+          firstName: 'Test',
+          lastName: 'Guest',
+          arrival: '2026-10-17',
+          departure: '2026-10-18',
+          nights: 1,
+          adults: 2,
+          children: 0,
+          roomType: 'Standard Twin',
+          ratePlan: 'BAR',
+          mealPlan: null,
+          averageRate: null,
+          grandTotal: null,
+          balance: null,
+          sourceOfBusiness: null,
+          guaranteeType: null,
+          bookingAgency: null,
+          organization: null,
+        },
+        screenshots: [],
+        runId: 'hms-run-found-amendment',
+      },
+    };
+  }
+
+  it('amendment: no requested change shows one plain line and each HMS date once', async () => {
+    bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
+    bridgeMockState.analysisOverride = {
+      status: 'ready',
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      sourceRevision: 1,
+      amendment: {
+        kind: 'amend',
+        confirmationNumber: '77945494-1',
+        guestLastName: 'Guest',
+        arrival: '2026-10-17',
+        departure: '2026-10-18',
+        requestedChange: null,
+      },
+    };
+    render(<NavaPane bridge={fakeBridge} />);
+    const card = await screen.findByRole('region', { name: 'Change to an existing booking' });
+    await waitFor(() => expect(card.querySelector('[data-testid="amend-hms-facts"]')).not.toBeNull());
+
+    expect(screen.getByTestId('amend-request-summary').textContent).toBe('No change requested in this email.');
+    expect(card.textContent).not.toContain('Not stated');
+    expect(card.textContent?.match(/18 Oct 2026/g)).toHaveLength(1);
+    expect(card.querySelectorAll('[data-testid="amend-hms-facts"] [data-field="dates"]')).toHaveLength(1);
+    expect(card.querySelector('[data-testid="amend-changes"]')).toBeNull();
+    expect(within(card).getByRole('button', { name: 'Copy confirmation' })).toBeDefined();
+    const run = within(card).getByRole('button', { name: 'Run' });
+    expect(run.hasAttribute('disabled')).toBe(true);
+    expect(run.getAttribute('title')).toBe('Amend save not enabled yet');
+  });
+
+  it('amendment: right column shows only the requested departure difference', async () => {
+    bridgeMockState.hmsQueueStatus = foundAmendmentHmsJob('77945494-1');
+    bridgeMockState.analysisOverride = {
+      status: 'ready',
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      sourceRevision: 1,
+      amendment: {
+        kind: 'amend',
+        confirmationNumber: '77945494-1',
+        guestLastName: 'Guest',
+        arrival: '2026-10-17',
+        departure: '2026-10-18',
+        requestedArrival: null,
+        requestedDeparture: '2026-10-19',
+        requestedChange: null,
+      },
+    };
+    render(<NavaPane bridge={fakeBridge} />);
+    const card = await screen.findByRole('region', { name: 'Change to an existing booking' });
+    const changes = await within(card).findByTestId('amend-changes');
+    const rows = changes.querySelectorAll('[data-testid="amend-diff-row"]');
+
+    expect(screen.getByTestId('amend-request-summary').textContent).toBe(
+      'Change departure 18 Oct 2026 → 19 Oct 2026',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.textContent).toBe('Departure: 18 Oct 2026 → 19 Oct 2026');
+    expect(changes.textContent).not.toContain('Arrival:');
+    expect(changes.textContent).not.toContain('Guest:');
+  });
 });
 
 describe('NavaPane contact and translation on both surfaces', () => {
@@ -2405,11 +2514,15 @@ describe('NavaPane contact and translation on both surfaces', () => {
       expect(selectedEmail?.textContent).toContain('David Miller <guest@example.com>');
       expect(selectedEmail?.textContent).toContain('Suite Availability Request');
       expect(selectedEmail?.querySelector('time')?.getAttribute('datetime')).toBe('2026-09-17T12:00:00.000Z');
-      expect(screen.getAllByRole('status', { name: /^Nava reads this as:/ })).toHaveLength(1);
+      const readAsLabels =
+        screen.queryAllByText('Nava reads this as:', { exact: true }).length +
+        screen.queryAllByLabelText('Nava reads this as', { exact: true }).length;
+      expect(readAsLabels).toBe(1);
       expect(screen.getByText('Needs you', { selector: '[data-work-state="needs_you"]' })).toBeDefined();
       expect(screen.queryByText(/^Centurion$/)).toBeNull();
       openContactCorrections();
       expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('marie.dupont@example.fr');
+      expect(screen.getByRole('button', { name: 'Done' })).toBeDefined();
       const contact = screen.getByRole('region', { name: 'Quote contact — printed on the PDF' });
       expect(selectedEmail!.compareDocumentPosition(contact) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(contact.compareDocumentPosition(translation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

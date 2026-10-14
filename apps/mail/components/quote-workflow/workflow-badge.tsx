@@ -60,26 +60,32 @@ export function WorkflowBadge({
         : 'other');
   return (
     <section
-      role="status"
-      aria-label={`Nava reads this as: ${label}`}
+      role={goldLabel ? 'group' : 'status'}
+      aria-label={goldLabel ? 'Email action label controls' : `Nava reads this as: ${label}`}
       className="flex shrink-0 flex-col gap-2 rounded-[4px] border border-[#bfdbfe] bg-[#eff6ff] px-3 py-2.5"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-[#1e293b]">
-          <span className="font-semibold">Nava reads this as:</span>
-          <span
-            data-read-as={current}
-            title={SPECIAL_READ_HINT[current]}
-            className="rounded-full bg-white px-2 py-0.5 text-[11.5px] font-bold text-[#1d4ed8]"
-          >
-            {label}
-          </span>
-          {analysis?.aiUnavailable ? (
-            <span className="rounded-full bg-white px-2 py-0.5 text-[10.5px] font-semibold text-[#64748b]">
-              Read without AI
+        {!goldLabel ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-[#1e293b]">
+            <span className="font-semibold">Nava reads this as:</span>
+            <span
+              data-read-as={current}
+              title={SPECIAL_READ_HINT[current]}
+              className="rounded-full bg-white px-2 py-0.5 text-[11.5px] font-bold text-[#1d4ed8]"
+            >
+              {label}
             </span>
-          ) : null}
-        </div>
+            {analysis?.aiUnavailable ? (
+              <span className="rounded-full bg-white px-2 py-0.5 text-[10.5px] font-semibold text-[#64748b]">
+                Read without AI
+              </span>
+            ) : null}
+          </div>
+        ) : analysis?.aiUnavailable ? (
+          <span className="rounded-full bg-white px-2 py-0.5 text-[10.5px] font-semibold text-[#64748b]">
+            Read without AI
+          </span>
+        ) : null}
         {workState ? (
           <span
             data-work-state={workState}
