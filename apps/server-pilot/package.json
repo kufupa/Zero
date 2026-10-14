@@ -25,6 +25,8 @@
     "eval:dev": "tsx src/ai/eval-runner.ts --mode=spike",
     "eval:hms-shadow": "tsx src/ai/eval-runner.ts --mode=hms-shadow --denominators=evals/hms/denominators.v1.json",
     "eval:hms-portfolio-ablation": "tsx src/ops/portfolio-ablation-replay.ts",
+    "eval:quote-outcomes": "tsx scripts/quote-outcome-eval.ts",
+    "eval:party": "tsx scripts/party-match-eval.ts",
     "test": "vitest run",
     "check:entities": "node scripts/check-entity-literals.mjs",
     "test:outlook-sync": "tsx scripts/outlook-sync-test-gate.ts",

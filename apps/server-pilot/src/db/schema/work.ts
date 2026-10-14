@@ -49,6 +49,8 @@ export const WORK_EVENT_TYPES = [
   'rate.saved',
   'rate.one_off',
   'rate.override',
+  'quote.prepared',
+  'quote.finalized',
   // Pane action telemetry (v5 B1) and staff notes (B2). Payload in `value`; no mail text.
   'pane.opened',
   'copy.hms_line',

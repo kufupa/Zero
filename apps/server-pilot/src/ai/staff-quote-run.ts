@@ -39,6 +39,8 @@ import type { NativeQuoteGapDetail } from './reservationist-evaluation-compositi
 import { type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
+import { mailExtraction } from '../db/schema/work.js';
+import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
 import { otherBoardContractNotes, type RateOption } from './rate-options.js';
 import { quoteWorkItemIdFor, recordRateEvents } from './work-events.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
@@ -890,6 +892,39 @@ export async function runStaffQuote(
               rowPrices,
             });
         }
+        const outcomeWorkItemId = await ensureQuoteOutcomeWorkItem(tx as unknown as DB, {
+          transportId: scope.transportId, threadId: scope.threadId, sourceMessageId: mail.id,
+        });
+        const [extraction] = await tx.select({ payload: mailExtraction.payload }).from(mailExtraction)
+          .where(and(eq(mailExtraction.messageId, mail.id), eq(mailExtraction.status, 'succeeded')))
+          .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
+        const extractedFields = extraction?.payload ?? null;
+        const extractedContact = (extractedFields?.contact ?? {}) as Record<string, unknown>;
+        const groups = revision.groups.map(({ id, arrivalDate, departureDate, quantity, adults, children, childAges, roomCode, board }) =>
+          ({ id, arrivalDate, departureDate, quantity, adults, children, childAges, roomCode, board }));
+        const fields = { groups, contact: {
+          name: typeof extractedContact.name === 'string' ? extractedContact.name : '',
+          email: typeof extractedContact.email === 'string' ? extractedContact.email : '',
+          phone: typeof extractedContact.phone === 'string' ? extractedContact.phone : '',
+        } };
+        const staffFields = { ...fields, contact: {
+          name: effectiveQuoteInput.attention, email: effectiveQuoteInput.clientEmail,
+          phone: effectiveQuoteInput.clientTelephone,
+        } };
+        const toLines = (prices?: typeof rowPrices) => deriveQuoteLines(revision, prices)
+          .map(({ groupId, totalMinor, rateMinor, nights }) => ({ groupId, totalMinor, rateMinor, nights }));
+        const preparedLines = toLines();
+        const staffLines = [...toLines(rowPrices), ...(proposal.facts
+          ? deriveAuthorizedExtraLines(revision, proposal.facts).map(({ id, totalMinor, rateMinor, nights }) =>
+            ({ groupId: `extra:${id}`, totalMinor, rateMinor, nights })) : [])];
+        const preparedVersion = { version: 1 as const, sourceMessageId: mail.id, workflowRunId,
+          revisionRef: revision.id, action: 'quote_availability' as const, extractedFields, fields, party: null,
+          lines: preparedLines, totalMinor: revision.totalMinor, currency: revision.currency };
+        const staffVersion = { ...preparedVersion, fields: staffFields, party: effectiveQuoteInput.parties ?? null,
+          lines: staffLines, totalMinor: pricedRoomTotal(revision, rowPrices) + extraTotal };
+        await recordPreparedQuoteOutcome(tx as unknown as DB, { workItemId: outcomeWorkItemId,
+          actorUserId: identity.user?.id ?? null, workflowRunId, sourceMessageId: mail.id,
+          prepared: preparedVersion, staffFinal: staffVersion });
         if (
           options.commitQueuedResult &&
           !(await options.commitQueuedResult(quoteResult, tx as unknown as DB))
