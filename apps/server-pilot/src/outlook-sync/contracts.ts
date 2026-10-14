@@ -177,6 +177,10 @@ export const syncStatusV1 = z
   })
   .strict();
 export type SyncStatusV1 = z.infer<typeof syncStatusV1>;
+export const activeMailboxSyncStatus = z
+  .union([syncStatusV1, z.object({ state: z.literal('not_applicable') }).strict()])
+  .nullable();
+export type ActiveMailboxSyncStatus = z.infer<typeof activeMailboxSyncStatus>;
 export const activateInput = z
   .object({
     sourceId: id.optional(),

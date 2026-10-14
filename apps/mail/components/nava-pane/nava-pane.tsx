@@ -1852,6 +1852,7 @@ export function NavaPane({
               {activeConnection?.email && (sync.eligible || readOnlySyncStatus) ? (
                 <OutlookSyncProgress
                   status={sync.status}
+                  notApplicable={sync.notApplicable}
                   mailbox={activeConnection.email}
                   error={sync.error}
                   busy={sync.busy}
