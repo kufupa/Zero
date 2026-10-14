@@ -835,11 +835,12 @@ export function availableRoomAlternatives(groups = [], request) {
         option?.eligibility !== 'verified' ||
         !['available', 'unavailable'].includes(option?.availability) ||
         option?.held !== false ||
-        (request.rateContext && option?.rateScope !== 'contextual') ||
         (Array.isArray(option?.issues) && option.issues.length > 0)
       ) continue;
       // An alternate room is acceptable only when every other required condition
-      // (not the requested room code itself) was actually satisfied.
+      // (not the requested room code itself) was actually satisfied. A checked party's
+      // public row carries only a preferred rateContext condition, so it stays offered as BAR;
+      // an unverified party adds a required rateContext condition and is dropped here.
       const otherRequired = (option?.conditions ?? []).filter(
         (condition) => condition?.kind === 'required' && condition.field !== 'roomCodes',
       );

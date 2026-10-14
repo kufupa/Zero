@@ -424,6 +424,40 @@ test('available room alternatives recognize native HMS board labels', () => {
   ]);
 });
 
+test('available room alternatives keep a checked party\'s public rows and drop unverified-context rows', () => {
+  const request = {
+    propertyCode: 'HRCEN',
+    arrivalDate: '2026-09-24',
+    departureDate: '2026-09-25',
+    requestedCurrency: 'ZAR',
+    rateContext: { organization: { nativeId: '1842' } },
+    rooms: [{ id: 'requested', quantity: 1, adults: 1, children: 0, childAges: [], required: { roomCodes: ['STQN'] } }],
+  };
+  const option = (code, condition) => ({
+    room: { code, label: `Room ${code}` },
+    rate: { code: 'BAR' },
+    board: 'Bed & Breakfast R',
+    rateScope: 'public',
+    matchStatus: 'alternative',
+    eligibility: 'verified',
+    availability: 'available',
+    held: false,
+    conditions: [condition],
+    nightly: [{ date: '2026-09-24', inventory: 1 }],
+  });
+  const groups = [{
+    id: 'requested',
+    options: [
+      option('DLXTWN', { kind: 'preferred', field: 'rateContext', status: 'unsatisfied' }),
+      option('SKNG', { kind: 'required', field: 'rateContext', status: 'unknown' }),
+    ],
+  }];
+
+  assert.deepEqual(availableRoomAlternatives(groups, request), [
+    { groupId: 'requested', roomCode: 'DLXTWN', roomLabel: 'Room DLXTWN', quantity: 1 },
+  ]);
+});
+
 test('v2 rooms require ids; rate context accepts exactly one of code, name or nativeId', () => {
   const noId = normalizeQuoteRequest(v2([{ quantity: 1, adults: 1, children: 0, childAges: [] }]));
   assert.equal(noId.ok, false);
