@@ -5,7 +5,7 @@ import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-fligh
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { requireMultiOptionDraft, type CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
-import { missingQuoteDetailsReplyOnly } from '@/lib/quote-workflow/session';
+import { missingQuoteDetailsReplyOnly, quoteDeclineReplyOnly } from '@/lib/quote-workflow/session';
 import { currentPaneOwner, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { trpcClient } from '@/providers/query-provider';
@@ -207,7 +207,8 @@ export function useInsertAiDraft({
 
   const handleInsertAiDraft = async (scope: ReplyDraftScope = 'selected', saved?: ReviewedReply) => {
     if (replyInFlight.current || !activeEmail?.entryId) return;
-    const requestOnly = scope !== 'saved' && missingQuoteDetailsReplyOnly(quoteSession);
+    const replyOnly =
+      scope !== 'saved' && (missingQuoteDetailsReplyOnly(quoteSession) || quoteDeclineReplyOnly(quoteSession));
     const owner = currentPaneOwner();
     const startedScope = currentScope;
     const startedScopeEpoch = contextRevision.current.scopeEpoch;
@@ -301,7 +302,7 @@ export function useInsertAiDraft({
       return;
     }
 
-    if (!requestOnly && !supportsAction('ADD_ATTACHMENT_TO_DRAFT')) {
+    if (!replyOnly && !supportsAction('ADD_ATTACHMENT_TO_DRAFT')) {
       toast.error('This Outlook add-in is too old to attach the PDF. Update the Nava Outlook add-in, then try again.');
       return;
     }
@@ -320,7 +321,7 @@ export function useInsertAiDraft({
     const reviewedDraft =
       scope === 'saved'
         ? saved ?? null
-        : requestOnly
+        : replyOnly
           ? quoteSession.reviewedReplyHtml.trim()
             ? { html: quoteSession.reviewedReplyHtml, attachments: [] }
             : null
@@ -516,7 +517,10 @@ export function useInsertAiDraft({
   const handleSaveReply = async (scope: ReplyDraftScope) => {
     const staffSource = quoteSession.staffSource;
     if (saveInFlight.current || !activeEmail?.entryId) return;
-    const requestOnly = scope !== 'saved' && missingQuoteDetailsReplyOnly(quoteSession);
+    const declineOnly = scope !== 'saved' && quoteDeclineReplyOnly(quoteSession);
+    const missingDetailsOnly = scope !== 'saved' && missingQuoteDetailsReplyOnly(quoteSession);
+    const replyOnly =
+      declineOnly || missingDetailsOnly;
     const owner = currentPaneOwner();
     const key = `${activeEmail.storeId ?? ''}:${activeEmail.entryId}`;
     if (!staffSource) {
@@ -524,7 +528,7 @@ export function useInsertAiDraft({
       return;
     }
     const reviewedDraft =
-      requestOnly
+      replyOnly
         ? quoteSession.reviewedReplyHtml.trim()
           ? { html: quoteSession.reviewedReplyHtml, attachments: [] }
           : null
@@ -559,11 +563,15 @@ export function useInsertAiDraft({
         // Replaces only the draft the prompt was about. If it changed meanwhile the server says DRAFT_CHANGED.
         saved = await saveDraft(token);
       }
-      const message = requestOnly
+      const message = declineOnly
         ? saved.replaced
-          ? 'Replaced this thread\'s draft with the reply asking for missing details. Nothing is sent.'
-          : 'Saved the reply asking for the missing details. Nothing is sent.'
-        : saved.replaced
+          ? 'Replaced this thread\'s draft with the decline reply. Nothing is sent.'
+          : 'Saved the decline reply as this thread\'s draft. Nothing is sent.'
+        : replyOnly
+          ? saved.replaced
+            ? 'Replaced this thread\'s draft with the reply asking for missing details. Nothing is sent.'
+            : 'Saved the reply asking for the missing details. Nothing is sent.'
+          : saved.replaced
           ? 'Replaced this thread\'s draft with the reply and PDF. Nothing is sent.'
           : 'Saved the reply and PDF as this thread\'s draft. Nothing is sent.';
       setDraftStatus({ key, message });

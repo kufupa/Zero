@@ -625,6 +625,34 @@ export function missingQuoteDetailsReplyOnly(
   );
 }
 
+/** A refused quote may be drafted without a PDF; alternatives remain available only in the staff pane. */
+export function quoteDeclineReplyOnly(
+  session: Pick<QuoteSession, 'reviewedReplyHtml' | 'reviewedReplySource'>,
+): boolean {
+  return session.reviewedReplySource === 'quote_decline' && session.reviewedReplyHtml.trim().length > 0;
+}
+
+/** The request-only reply follows current staff-edited rows, not the analysis snapshot. */
+export function missingQuoteReplyFieldsForGroups(groups: readonly StayGroupRequirement[]): string[] {
+  const fields: string[] = [];
+  const targets: readonly Partial<StayGroupRequirement>[] = groups.length
+    ? groups
+    : [{ id: 'g1', childrenAges: [], board: 'unknown' as const, specialRequests: [], fields: {} }];
+  targets.forEach((group, index) => {
+    const stay = index + 1;
+    if (!group.arrivalDate) fields.push(`Arrival date for stay ${stay}`);
+    if (!group.departureDate) fields.push(`Departure date for stay ${stay}`);
+    if (group.quantity == null && group.adults == null) {
+      fields.push(`Number of rooms and occupancy per room for stay ${stay}`);
+    } else if (group.quantity == null) {
+      fields.push(`Number of rooms for stay ${stay}`);
+    } else if (group.adults == null) {
+      fields.push(`Number of guests per room for stay ${stay}`);
+    }
+  });
+  return fields;
+}
+
 export function canCreateNativeDraft(session: QuoteSession): boolean {
   // A combined quote's reply is the multi-stay draft, which checks its own PDF. The single-stay reply never applies.
   if (isMultiStay(session)) return Boolean(session.pdf) && canCreatePdf(session);
@@ -986,13 +1014,16 @@ function editStays(
   const completedRequestReply =
     session.reviewedReplySource === 'missing_quote_details' &&
     !missingQuoteDetailsReplyOnly({ ...session, groups });
+  const replacedDeclineReply = session.reviewedReplySource === 'quote_decline';
   const edited = {
     ...session,
     groups,
     stayRevision: session.stayRevision + 1,
     selectedStayKey,
     reviewItems,
-    ...(completedRequestReply ? { reviewedReplyHtml: '', reviewedReplySource: undefined } : {}),
+    ...(completedRequestReply || replacedDeclineReply
+      ? { reviewedReplyHtml: '', reviewedReplySource: undefined }
+      : {}),
   };
   if (running?.shareKey && affected.has(running.shareKey)) {
     const cleared = clearDownstream({
@@ -1126,6 +1157,29 @@ export function quoteRunIsCurrent(
     session.inputRevision === run.inputRevision &&
     // A row edit after a run ends does not move inputRevision. The rows the run read must still be the rows.
     (run.stayRevision === undefined || session.stayRevision === run.stayRevision)
+  );
+}
+
+/** A quote-step result stays valid when another date option changes, but not when its own key or inputs move. */
+export function quoteStayRunIsCurrent(
+  session: Pick<QuoteSession, 'binding' | 'inputRevision' | 'steps' | 'groups'>,
+  run: {
+    selectionEpoch: number;
+    inputRevision: number;
+    stepId: string;
+    stayKey: string;
+    groups: readonly StayGroupRequirement[];
+  },
+): boolean {
+  const step = session.steps.find(
+    (item) => item.id === run.stepId && item.kind === 'quote_stay' && item.shareKey === run.stayKey,
+  );
+  const currentGroups = session.groups.filter((group) => stayKeyForGroup(group) === run.stayKey);
+  return (
+    (session.binding?.selectionEpoch ?? 0) === run.selectionEpoch &&
+    session.inputRevision === run.inputRevision &&
+    Boolean(step) &&
+    JSON.stringify(currentGroups) === JSON.stringify(run.groups)
   );
 }
 
@@ -1473,9 +1527,13 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         runningStepId: null,
         reviewedReplyHtml:
           action.reviewedReplyHtml ??
-          (session.reviewedReplySource === 'missing_quote_details' ? '' : session.reviewedReplyHtml),
+          (session.reviewedReplySource === 'missing_quote_details' || session.reviewedReplySource === 'quote_decline'
+            ? ''
+            : session.reviewedReplyHtml),
         reviewedReplySource:
-          action.reviewedReplyHtml !== undefined || session.reviewedReplySource === 'missing_quote_details'
+          action.reviewedReplyHtml !== undefined ||
+          session.reviewedReplySource === 'missing_quote_details' ||
+          session.reviewedReplySource === 'quote_decline'
             ? undefined
             : session.reviewedReplySource,
         staffHeader,
@@ -1730,9 +1788,13 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         runningStepId: null,
         reviewedReplyHtml:
           action.reviewedReplyHtml ??
-          (session.reviewedReplySource === 'missing_quote_details' ? '' : session.reviewedReplyHtml),
+          (session.reviewedReplySource === 'missing_quote_details' || session.reviewedReplySource === 'quote_decline'
+            ? ''
+            : session.reviewedReplyHtml),
         reviewedReplySource:
-          action.reviewedReplyHtml !== undefined || session.reviewedReplySource === 'missing_quote_details'
+          action.reviewedReplyHtml !== undefined ||
+          session.reviewedReplySource === 'missing_quote_details' ||
+          session.reviewedReplySource === 'quote_decline'
             ? undefined
             : session.reviewedReplySource,
         steps: session.steps.map((step) =>
@@ -1788,6 +1850,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         phase: 'tools',
         runningStepId: null,
         errorMessage: null,
+        ...(action.declineReplyHtml !== undefined
+          ? { reviewedReplyHtml: action.declineReplyHtml, reviewedReplySource: 'quote_decline' as const }
+          : {}),
         steps: session.steps.map((step) =>
           step.id === action.stepId
             ? {
@@ -1812,6 +1877,21 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
             : step,
         ),
       };
+    case 'step_stale': {
+      if (
+        session.runningStepId !== action.stepId ||
+        !requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)
+      ) {
+        return session;
+      }
+      return {
+        ...session,
+        runningStepId: null,
+        steps: session.steps.map((step) =>
+          step.id === action.stepId && step.status === 'running' ? { ...step, status: 'ready' as const } : step,
+        ),
+      };
+    }
     case 'step_failed':
       return {
         ...session,
@@ -1835,16 +1915,17 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         return session;
       }
       const stayKey = session.selectedStayKey;
-      const generatedRequestReply = session.reviewedReplySource === 'missing_quote_details';
-      const reviewedReplyHtml = !isMultiStay(session) && (generatedRequestReply || !session.reviewedReplyHtml.trim())
-        ? action.reviewedReplyHtml ?? (generatedRequestReply ? '' : session.reviewedReplyHtml)
+      const generatedReply =
+        session.reviewedReplySource === 'missing_quote_details' || session.reviewedReplySource === 'quote_decline';
+      const reviewedReplyHtml = !isMultiStay(session) && (generatedReply || !session.reviewedReplyHtml.trim())
+        ? action.reviewedReplyHtml ?? (generatedReply ? '' : session.reviewedReplyHtml)
         : session.reviewedReplyHtml;
       return {
         ...session,
         pdf: action.pdf,
         phase: 'review',
         reviewedReplyHtml,
-        reviewedReplySource: generatedRequestReply ? undefined : session.reviewedReplySource,
+        reviewedReplySource: generatedReply ? undefined : session.reviewedReplySource,
         // A combined PDF is one document for all stays, so it is not kept under any one of them.
         stayPdfs: stayKey && !isMultiStay(session) ? { ...session.stayPdfs, [stayKey]: action.pdf } : session.stayPdfs,
       };
@@ -1853,7 +1934,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       return {
         ...session,
         reviewedReplyHtml: action.html,
-        reviewedReplySource: action.source,
+        reviewedReplySource:
+          action.source ??
+          (session.reviewedReplySource === 'quote_decline' && action.html.trim() ? 'quote_decline' : undefined),
       };
     case 'select_offers':
       if (sameSelectedOfferIds(action.offerIds, session.selectedOfferIds)) return session;

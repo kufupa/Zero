@@ -51,6 +51,7 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     hmsQueueStatus: null as null | Record<string, unknown>,
     hmsQueueReads: 0,
     staffQuoteRunId: null as null | string,
+    staffQuoteFailure: null as null | { message: string; data?: { code?: string; alternatives?: unknown } },
     staffQuoteJobCalls: [] as Array<{ input: unknown; activeTransportId: string | null }>,
     lastStaffQuoteInput: null as null | Record<string, unknown>,
     staffQuoteScreenshots: [] as string[],
@@ -187,6 +188,11 @@ vi.mock('../providers/query-provider', () => ({
       prepareBookingDraft: { mutate: (input: unknown) => bridgeMockState.prepareBookingDraftMutation(input) },
       executeStaffQuote: {
         mutate: async (input: { selectionEpoch: number; inputRevision: number; groups: Array<{ arrivalDate: string; departureDate: string }> }) => {
+          if (bridgeMockState.staffQuoteFailure) {
+            const failure = bridgeMockState.staffQuoteFailure;
+            bridgeMockState.staffQuoteFailure = null;
+            throw Object.assign(new Error(failure.message), { data: failure.data });
+          }
           if (bridgeMockState.holdStaffQuote) {
             await new Promise<void>((resolve) => {
               bridgeMockState.releaseStaffQuote = resolve;
@@ -388,6 +394,7 @@ describe('NavaPane', () => {
     sendCommandMock.mockClear();
     bridgeMockState.holdStaffQuote = false;
     bridgeMockState.releaseStaffQuote = null;
+    bridgeMockState.staffQuoteFailure = null;
     bridgeMockState.lastStaffQuoteInput = null;
     bridgeMockState.staffQuoteSourceCalls = 0;
     bridgeMockState.storedWorkLookups = 0;
@@ -673,6 +680,7 @@ describe('NavaPane screen states', () => {
     saveReplyMutate.mockReset().mockResolvedValue({ id: 'draft-1', replaced: false });
     bridgeMockState.holdStaffQuote = false;
     bridgeMockState.releaseStaffQuote = null;
+    bridgeMockState.staffQuoteFailure = null;
     bridgeMockState.lastStaffQuoteInput = null;
     bridgeMockState.staffQuoteJobCalls.length = 0;
     bridgeMockState.queueStaffQuoteMutation.mockReset().mockResolvedValue({ runId: null });
@@ -1196,6 +1204,47 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
+  it('updates the automatic missing-details reply as staff fill each date', async () => {
+    const missingFields = ['Arrival date for stay 1', 'Departure date for stay 1'];
+    bridgeMockState.analysisOverride = {
+      status: 'ready',
+      intent: 'quote',
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: null,
+          departureDate: null,
+          quantity: 1,
+          adults: 2,
+          childrenAges: [],
+          board: 'bb',
+          specialRequests: [],
+          fields: { arrivalDate: 'missing', departureDate: 'missing', quantity: 'extracted', adults: 'extracted' },
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      missingQuoteReplyFields: missingFields,
+      sourceRevision: 1,
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    render(<NavaPane bridge={fakeBridge} />);
+
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const bothDatesMissing = missingQuoteDetailsWrapperHtml('David Miller', missingFields, 'R Opperman');
+    await waitFor(() => expect(reply.value).toBe(bothDatesMissing));
+
+    fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-11-12' } });
+
+    const departureOnly = missingQuoteDetailsWrapperHtml(
+      'David Miller',
+      ['Departure date for stay 1'],
+      'R Opperman',
+    );
+    await waitFor(() => expect(reply.value).toBe(departureOnly));
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
   it('preview: saves the missing-details reply without a PDF or HMS search', async () => {
     const analysis = {
       status: 'ready',
@@ -1439,6 +1488,88 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.listThreadQuoteRevisionsQuery).not.toHaveBeenCalled();
     expect(bridgeMockState.usePriorQuoteForBookingMutation).not.toHaveBeenCalled();
     expect(screen.queryByText('Available')).toBeNull();
+  });
+
+  it('keeps a refused quote reply to one decline line while room alternatives stay staff-side', async () => {
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: STORED_READY.analysis.groups.map((group) => ({ ...group, roomCodes: ['SKNG'] })),
+      },
+    };
+    bridgeMockState.staffQuoteFailure = {
+      message: 'HMS has no rate for this meal plan under BAR. Try another meal plan.',
+      data: {
+        code: 'PRECONDITION_FAILED',
+        alternatives: [{ groupId: 'r_1', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 2 }],
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await settle();
+    fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
+
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const declineHtml = '<p>Unfortunately, we are unable to accommodate your requested stay.</p>';
+    await waitFor(() => {
+      expect(reply.value).toBe(declineHtml);
+    });
+    expect(reply.value).not.toContain('Deluxe Twin');
+    expect(screen.getByText('Requested type not available — available instead: Deluxe Twin × 2')).toBeDefined();
+    expect((screen.getByRole('button', { name: 'Draft decline reply' }) as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Draft decline reply' }));
+    await waitFor(() =>
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'CREATE_REPLY_DRAFT',
+        expect.objectContaining({ htmlBody: declineHtml }),
+      ),
+    );
+    expect(sendCommandMock).not.toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use this' }));
+    await waitFor(() => {
+      expect((screen.getByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe('');
+      expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('DLXTWN');
+    });
+    expect(await screen.findByText('Available')).toBeDefined();
+  });
+
+  it('saves a refused quote decline without attaching or mentioning staff alternatives', async () => {
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: STORED_READY.analysis.groups.map((group) => ({ ...group, roomCodes: ['SKNG'] })),
+      },
+    };
+    bridgeMockState.staffQuoteFailure = {
+      message: 'HMS has no rate for this meal plan under BAR. Try another meal plan.',
+      data: {
+        code: 'PRECONDITION_FAILED',
+        alternatives: [{ groupId: 'r_1', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 2 }],
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);
+    const declineHtml = '<p>Unfortunately, we are unable to accommodate your requested stay.</p>';
+
+    render(<NavaPane bridge={fakeBridge} preview />);
+    await storedReadLands();
+    await settle();
+    fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
+    expect((await screen.findByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(declineHtml);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Draft decline reply' }));
+    await waitFor(() =>
+      expect(saveReplyMutate).toHaveBeenCalledWith(
+        expect.objectContaining({ html: declineHtml, attachments: [] }),
+      ),
+    );
+    expect(saveReplyMutate.mock.calls[0]?.[0].html).not.toContain('Deluxe Twin');
+    expect(screen.getByText('Saved the decline reply as this thread\'s draft. Nothing is sent.')).toBeDefined();
   });
 
   it('drops a restored rate when the stay changes while its persisted job is being read', async () => {
@@ -1912,6 +2043,54 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledWith(
       expect.objectContaining({ messageId: 'mail-1' }),
     );
+  });
+
+  it('keeps one stay search valid when staff edit a different stay, then lets them search that stay', async () => {
+    const firstGroup = STORED_READY.analysis.groups[0]!;
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      refs: {
+        r_1: { stayId: 's_1', rowId: 'r_1' },
+        r_2: { stayId: 's_2', rowId: 'r_2' },
+      },
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: [
+          { ...firstGroup, id: 'r_1', stayId: 's_1', roomCodes: ['SKNG'] },
+          {
+            ...firstGroup,
+            id: 'r_2',
+            stayId: 's_2',
+            arrivalDate: '2026-11-05',
+            departureDate: '2026-11-07',
+            roomCodes: ['SKNG'],
+          },
+        ],
+      },
+    };
+    bridgeMockState.holdStaffQuote = true;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await settle();
+
+    fireEvent.click(screen.getAllByRole('button', { name: /^Search availability$/i })[0]!);
+    await waitFor(() => expect(bridgeMockState.releaseStaffQuote).toBeTypeOf('function'));
+    const releaseFirstStay = bridgeMockState.releaseStaffQuote!;
+
+    fireEvent.change(screen.getAllByLabelText('Arrival', { selector: 'input' })[1]!, {
+      target: { value: '2026-11-06' },
+    });
+    await act(async () => releaseFirstStay());
+    expect(await screen.findByText('Available')).toBeDefined();
+    await screen.findByTestId('hms-job-notice-banner');
+    bridgeMockState.releaseStaffQuote = null;
+
+    const remainingSearches = screen.getAllByRole('button', { name: /^Search availability$/i });
+    fireEvent.click(remainingSearches[remainingSearches.length - 1]!);
+    await waitFor(() => expect(bridgeMockState.releaseStaffQuote).toBeTypeOf('function'));
+    await act(async () => bridgeMockState.releaseStaffQuote?.());
   });
 });
 

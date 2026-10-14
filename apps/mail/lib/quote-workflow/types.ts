@@ -639,8 +639,8 @@ export type QuoteSession = {
   selectedOfferIds: string[];
   pdf: QuotePdf | null;
   reviewedReplyHtml: string;
-  /** Marks the disposable request-only reply so it can be replaced when quote details become complete. */
-  reviewedReplySource?: 'missing_quote_details';
+  /** Marks generated no-PDF replies that a completed or changed quote can replace. */
+  reviewedReplySource?: 'missing_quote_details' | 'quote_decline';
   steps: QuoteToolStep[];
   missing: string[];
   errorMessage: string | null;
@@ -768,6 +768,8 @@ export type QuoteSessionAction =
       reason: string;
       detail?: string;
       alternatives?: QuoteRoomAlternative[];
+      /** A one-line reply for an explicit no-rate/refusal result; alternatives remain staff-only. */
+      declineReplyHtml?: string;
       selectionEpoch: number;
       inputRevision: number;
     }
@@ -779,6 +781,7 @@ export type QuoteSessionAction =
       party: PartyLookupRef;
     }
   | { type: 'step_running'; stepId: string }
+  | { type: 'step_stale'; stepId: string; selectionEpoch: number; inputRevision: number }
   | { type: 'step_failed'; stepId: string; retryGuidance: string }
   | {
       type: 'pdf_ready';
@@ -788,6 +791,6 @@ export type QuoteSessionAction =
       selectedOfferIds: string[];
       reviewedReplyHtml?: string;
     }
-  | { type: 'set_reviewed_reply'; html: string; source?: 'missing_quote_details' }
+  | { type: 'set_reviewed_reply'; html: string; source?: 'missing_quote_details' | 'quote_decline' }
   | { type: 'select_offers'; offerIds: string[] }
   | { type: 'mailbox_status'; status: QuoteMailboxStatus | null };

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
-import { staffQuoteInput, staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
+import { staffQuoteInput, staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import type { AiWorkflowRun } from '../src/ai/run-ledger.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
+import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
 const jobMocks = vi.hoisted(() => ({
@@ -296,6 +297,7 @@ function staffQuoteRunDb(mail: Record<string, unknown>) {
 async function provisionalWorkerQuote(
   finished: Promise<void>,
   onError?: (error: unknown) => void,
+  inputOverrides: Partial<StaffQuoteInput> = {},
 ) {
   const actualRun = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
     '../src/ai/staff-quote-run.js',
@@ -320,7 +322,11 @@ async function provisionalWorkerQuote(
     sentAt: null,
     createdAt: new Date('2026-10-12T08:00:00.000Z'),
   };
-  const input = { ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail) };
+  const input = staffQuoteInput.parse({
+    ...STAFF_QUOTE_INPUT,
+    ...inputOverrides,
+    sourceHash: staffQuoteSourceHash(mail),
+  });
   const { run, fence } = fixture();
   run.readRequest = { kind: 'staff_quote', input } as unknown as AiWorkflowRun['readRequest'];
   const quoteDb = staffQuoteRunDb(mail);
@@ -344,8 +350,8 @@ async function provisionalWorkerQuote(
     currency: 'ZAR',
     groups: [
       {
-        arrivalDate: STAFF_QUOTE_INPUT.groups[0].arrivalDate,
-        departureDate: STAFF_QUOTE_INPUT.groups[0].departureDate,
+        arrivalDate: input.groups[0]!.arrivalDate,
+        departureDate: input.groups[0]!.departureDate,
         context: {},
       },
     ],
@@ -356,6 +362,54 @@ async function provisionalWorkerQuote(
 }
 
 describe('staff_quote HMS job execution', () => {
+  it('includes a staff-entered dinner allowance on an ordinary B&B quote', async () => {
+    const groups: StaffQuoteInput['groups'] = [
+      {
+        id: 'g1',
+        arrivalDate: '2026-11-12',
+        departureDate: '2026-11-14',
+        quantity: 2,
+        adults: 1,
+        childrenAges: [],
+        board: 'bb',
+        roomCodes: ['SKNG'],
+      },
+    ];
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
+      groups,
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceUnit: 'per_person_per_night',
+    });
+    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) =>
+      syntheticRevision(
+        ['600.00', '600.00'],
+        'Bed & Breakfast R',
+        'SKNG',
+        undefined,
+        '2026-11-12',
+        prepared.authorizationId,
+      ),
+    );
+
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        readResult: expect.objectContaining({
+          factRefs: ['extras'],
+          dinnerAddOn: expect.objectContaining({
+            amountMinor: 12_500,
+            unit: 'per_person_per_night',
+            totalMinor: 50_000,
+          }),
+          dinnerAddOnRequired: false,
+          totalMinor: 290_000,
+        }),
+      }),
+      quoteDb,
+    );
+  });
+
   it.each([
     ['missing staffQuoteUser', { userId: user.id }],
     ['missing userId', { staffQuoteUser: user }],

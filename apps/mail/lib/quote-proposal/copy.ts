@@ -44,6 +44,11 @@ export function quoteWrapperHtml(
     `;
 }
 
+/** One-line refusal for a quote that HMS could not accommodate. Room alternatives stay in the staff pane. */
+export function quoteDeclineReplyHtml(): string {
+  return '<p>Unfortunately, we are unable to accommodate your requested stay.</p>';
+}
+
 /** Short request-only reply. It deliberately never says a quotation or attachment is ready. */
 export function missingQuoteDetailsWrapperHtml(
   guestName: string,

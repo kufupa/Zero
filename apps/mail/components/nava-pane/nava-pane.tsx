@@ -16,7 +16,7 @@ import {
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import { withContactLines } from '@/lib/quote-workflow/document-contact';
-import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '@/lib/quote-proposal/copy';
+import { missingQuoteDetailsWrapperHtml, quoteDeclineReplyHtml, quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
@@ -83,10 +83,12 @@ import {
   dinnerAddOnInputProblem,
   dinnerAllowanceStillRequired,
   missingQuoteDetailsReplyOnly,
+  missingQuoteReplyFieldsForGroups,
   evidenceMatchesSession,
   groupsForQuoteStep,
   isMultiStay,
   quoteRunIsCurrent,
+  quoteStayRunIsCurrent,
   requestedQuoteKeys,
   stayKeyForGroup,
   hasStaffStayEdits,
@@ -638,8 +640,8 @@ export function NavaPane({
   }, [quoteAnalysisRetryKey, storedGate, isNonActionableMailSource]);
 
   useEffect(() => {
-    const fields = quoteSession.analysis?.missingQuoteReplyFields;
-    if (fields?.length && missingQuoteDetailsReplyOnly(quoteSession)) {
+    const fields = missingQuoteReplyFieldsForGroups(quoteSession.groups);
+    if (fields.length && missingQuoteDetailsReplyOnly(quoteSession)) {
       const senderName = activeEmail?.senderName.trim() ?? '';
       const senderEmail = activeEmail?.senderEmail.trim().toLowerCase() ?? '';
       const greetingName = senderName.toLowerCase() === senderEmail ? '' : senderName;
@@ -1271,7 +1273,6 @@ export function NavaPane({
     dispatchQuote({ type: 'step_running', stepId: step.id });
     const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
     const inputRevision = quoteSession.inputRevision;
-    const stayRevision = quoteSession.stayRevision;
     if (isQuoteFixturePreview()) {
       const fixture = loadQuoteFixture(pickFixtureForSession(quoteSession.groups));
       dispatchQuote({
@@ -1413,6 +1414,21 @@ export function NavaPane({
         return remote;
       });
     function applyStaffQuoteResult(remote: BoundExecuteStaffQuote | null) {
+      if (
+        !quoteStayRunIsCurrent(quoteSessionRef.current, {
+          selectionEpoch,
+          inputRevision,
+          stepId: staffQuoteStep.id,
+          stayKey: staffQuoteStep.shareKey ?? '',
+          groups: stayGroups,
+        })
+      ) {
+        dispatchQuote({ type: 'step_stale', stepId: staffQuoteStep.id, selectionEpoch, inputRevision });
+        if (remote !== null) {
+          toast.warning('Details changed while HMS was searching — search availability again.');
+        }
+        return;
+      }
       if (remote === null) {
         dispatchQuote({
           type: 'results_unavailable',
@@ -1423,11 +1439,6 @@ export function NavaPane({
         });
         return;
       }
-      // The reducer drops a result whose selection or input moved on while HMS searched. Say so, rather than let it vanish.
-      if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
-        toast.warning('Details changed while HMS was searching — search availability again.');
-        return;
-      }
       if (remote.status !== 'ok') {
         dispatchQuote({
           type: 'results_unavailable',
@@ -1435,6 +1446,10 @@ export function NavaPane({
           reason: remote.reason,
           detail: remote.detail,
           alternatives: remote.alternatives,
+          ...(!isMultiStay(quoteSession) &&
+          (remote.noMatchingRate === true || /^HMS refused the search:/i.test(remote.reason))
+            ? { declineReplyHtml: quoteDeclineReplyHtml() }
+            : {}),
           selectionEpoch,
           inputRevision,
         });
@@ -1447,7 +1462,6 @@ export function NavaPane({
         staffQuote: remote.staffQuote,
         selectionEpoch,
         inputRevision,
-        stayRevision,
         extrasReviewItems: remote.extrasReviewItems,
         approvedHeader: runHeader,
       });

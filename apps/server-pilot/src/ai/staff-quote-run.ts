@@ -806,8 +806,12 @@ export async function runStaffQuote(
     let proposal: ReturnType<typeof buildStaffProposalFacts>;
     let extraTotal: number;
     try {
+      const dinnerGroupIds = effectiveQuoteInput.dinnerAllowanceGroupIds ?? dinnerFallbackGroupIds;
+      // Preserve an explicit empty scope; only omit the unconfigured default so manual dinner applies to every group.
+      const hasDinnerGroupRestriction =
+        effectiveQuoteInput.dinnerAllowanceGroupIds !== undefined || dinnerFallbackGroupIds.length > 0;
       ({ proposal, extraTotal } = staffExtrasOrBadRequest(effectiveQuoteInput, scope, prepared, revision, {
-        dinnerGroupIds: effectiveQuoteInput.dinnerAllowanceGroupIds ?? dinnerFallbackGroupIds,
+        ...(hasDinnerGroupRestriction ? { dinnerGroupIds } : {}),
         ...(config.dinnerAddOn ? { dinnerAddOn: config.dinnerAddOn } : {}),
       }));
       attestation = attestStaffQuote(input, scope, prepared, revision, rowPrices, {

@@ -22,6 +22,7 @@ import {
   dinnerAddOnInputProblem,
   dinnerAllowanceStillRequired,
   missingQuoteDetailsReplyOnly,
+  missingQuoteReplyFieldsForGroups,
   groupStays,
   removedStayFor,
   rowRoomCode,
@@ -1059,6 +1060,16 @@ describe('mixed complete and incomplete quote dates', () => {
     expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toBeNull();
     expect(quoteRunBlockReason(session, stepFor(session, 'unknown:unknown'))).toMatch(/missing arrival and departure/i);
     expect(missingQuoteDetailsReplyOnly(session)).toBe(false);
+  });
+
+  it('derives only the quote details that remain missing from the current groups', () => {
+    const group = {
+      ...quoteAnalysis.groups[0]!,
+      arrivalDate: '2026-11-12',
+      departureDate: undefined,
+    };
+
+    expect(missingQuoteReplyFieldsForGroups([group])).toEqual(['Departure date for stay 1']);
   });
 
   it('clears only Nava’s generated missing-date reply after the stay becomes complete', () => {
@@ -2375,6 +2386,28 @@ describe('staff dinner B&B fallback', () => {
     expect(quoteRunIsCurrent(session, { selectionEpoch: 2, inputRevision: 3 })).toBe(true);
     expect(quoteRunIsCurrent(session, { selectionEpoch: 2, inputRevision: 2 })).toBe(false);
     expect(quoteRunIsCurrent(session, { selectionEpoch: 1, inputRevision: 3 })).toBe(false);
+  });
+
+  it('clears a stale running step without clearing a newer step run', () => {
+    const session = analysisReady(twoDateAnalysis());
+    const stepA = stepFor(session, STAY_A);
+    const staleAction = {
+      type: 'step_stale' as const,
+      stepId: stepA.id,
+      selectionEpoch: session.binding?.selectionEpoch ?? 0,
+      inputRevision: session.inputRevision,
+    };
+    const runningA = reduceQuoteSession(session, { type: 'step_running', stepId: stepA.id });
+    const staleA = reduceQuoteSession(runningA, staleAction);
+
+    expect(staleA.runningStepId).toBeNull();
+    expect(stepFor(staleA, STAY_A).status).toBe('ready');
+
+    const runningB = reduceQuoteSession(staleA, {
+      type: 'step_running',
+      stepId: stepFor(staleA, STAY_B).id,
+    });
+    expect(reduceQuoteSession(runningB, staleAction)).toBe(runningB);
   });
 
   it('treats the dinner fallback as stale once a row was edited after its run, though the input revision held', () => {
