@@ -15,6 +15,7 @@ import {
   resolvePrivateOutputPath,
   scoreGoldenRows,
   selectDiverseGoldenRows,
+  snapshotPrediction,
   type GoldenCandidate,
   type GoldenRow,
 } from '../scripts/golden-set.js';
@@ -123,6 +124,39 @@ describe('golden offer PDF parsing', () => {
       rate_plan: 'BARBB',
       total: '5600.00',
     });
+  });
+
+  it('collects every fully labelled stay from an offer PDF', () => {
+    const answer = parseOfferPdfAnswer(
+      [
+        'Stay 1',
+        'Arrival Date: 12-Sep-2026',
+        'Departure Date: 14-Sep-2026',
+        'Stay 2',
+        'Arrival Date: 20-Oct-2026',
+        'Departure Date: 22-Oct-2026',
+      ].join('\n'),
+    );
+
+    expect(answer.dates).toEqual([
+      { arrival: '2026-09-12', departure: '2026-09-14' },
+      { arrival: '2026-10-20', departure: '2026-10-22' },
+    ]);
+  });
+
+  it('leaves dates unscored when only some labelled stays can be parsed', () => {
+    const answer = parseOfferPdfAnswer(
+      [
+        'Stay 1',
+        'Arrival Date: 12-Sep-2026',
+        'Departure Date: 14-Sep-2026',
+        'Stay 2',
+        'Arrival Date: to be confirmed',
+        'Departure Date: 22-Oct-2026',
+      ].join('\n'),
+    );
+
+    expect(answer.dates).toEqual([]);
   });
 
   it('leaves an unlabelled rate amount unknown instead of guessing the total', () => {
@@ -764,6 +798,26 @@ describe('amendment change typing', () => {
     expect(inferChangeTypes('Please update the billing reference.')).toEqual(['other']);
   });
 
+  function amendmentMessage(
+    id: string,
+    threadId: string,
+    direction: 'inbound' | 'outbound',
+    body: string,
+    receivedAt: string,
+  ) {
+    return {
+      id,
+      thread_id: threadId,
+      direction,
+      from_address:
+        direction === 'inbound' ? 'guest@example.test' : 'reservations@legacyhotels.co.za',
+      subject: direction === 'inbound' ? 'Change reservation' : 'Re: Change reservation',
+      body,
+      body_is_html: false,
+      received_at: receivedAt,
+    };
+  }
+
   it('assigns each same-thread confirmation letter only to the preceding request', async () => {
     const module = await import('../scripts/golden-set.js');
     const matchingAmendmentUpdate = Reflect.get(module, 'matchingAmendmentUpdate');
@@ -957,6 +1011,135 @@ describe('amendment change typing', () => {
         ]),
       )?.attachment_id,
     ).toBe('unlinked-letter');
+  });
+
+  it('rejects refused replies and attachments as amendment evidence', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const matchingAmendmentReplies = Reflect.get(module, 'matchingAmendmentReplies');
+    const matchingAmendmentUpdate = Reflect.get(module, 'matchingAmendmentUpdate');
+    expect(matchingAmendmentReplies).toBeTypeOf('function');
+    expect(matchingAmendmentUpdate).toBeTypeOf('function');
+    if (
+      typeof matchingAmendmentReplies !== 'function' ||
+      typeof matchingAmendmentUpdate !== 'function'
+    ) {
+      return;
+    }
+
+    const conf = '12345678-1';
+    const request = amendmentMessage(
+      'refused-amendment-request',
+      'refused-amendment-thread',
+      'inbound',
+      `Please change reservation ${conf}.`,
+      '2026-10-01T10:00:00Z',
+    );
+    const refusals = [
+      amendmentMessage(
+        'quoted-refusal',
+        request.thread_id,
+        'outbound',
+        [
+          'We cannot change this reservation.',
+          '',
+          '-----Original Message-----',
+          `Updated reservation ${conf}.`,
+        ].join('\n'),
+        '2026-10-01T11:00:00Z',
+      ),
+      amendmentMessage(
+        'denied-update',
+        request.thread_id,
+        'outbound',
+        `The reservation ${conf} has not been changed.`,
+        '2026-10-01T12:00:00Z',
+      ),
+      amendmentMessage(
+        'no-changes-made',
+        request.thread_id,
+        'outbound',
+        'No changes have been made to this reservation.',
+        '2026-10-01T13:00:00Z',
+      ),
+    ];
+    const thread = [request, ...refusals];
+    const documents = refusals.map((reply) => ({
+      attachment_id: `${reply.id}-letter`,
+      message_id: reply.id,
+      file_name: `${reply.id}-letter.pdf`,
+      kind: 'confirmation' as const,
+      text: '',
+      conf,
+    }));
+    const messageById = new Map(thread.map((message) => [message.id, message]));
+
+    expect({
+      replyIds: matchingAmendmentReplies(request, thread, thread, conf).map(({ id }) => id),
+      updateIds: documents.map(
+        (document) =>
+          matchingAmendmentUpdate(request, thread, conf, [document], messageById)?.attachment_id,
+      ),
+    }).toEqual({ replyIds: [], updateIds: [undefined, undefined, undefined] });
+  });
+
+  it('does not use quoted confirmation numbers to link staff amendment evidence', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const matchingAmendmentUpdate = Reflect.get(module, 'matchingAmendmentUpdate');
+    const matchingAmendmentReplies = Reflect.get(module, 'matchingAmendmentReplies');
+    expect(matchingAmendmentUpdate).toBeTypeOf('function');
+    expect(matchingAmendmentReplies).toBeTypeOf('function');
+    if (
+      typeof matchingAmendmentUpdate !== 'function' ||
+      typeof matchingAmendmentReplies !== 'function'
+    ) {
+      return;
+    }
+
+    const conf = '12345678-1';
+    const request = amendmentMessage(
+      'quoted-conf-request',
+      'quoted-conf-request-thread',
+      'inbound',
+      'Please change the reservation dates.',
+      '2026-10-01T10:00:00Z',
+    );
+    const quotedConfirmation = [
+      'Updated reservation.',
+      '',
+      '-----Original Message-----',
+      `Confirmation ${conf}.`,
+    ].join('\n');
+    const sameThreadReply = amendmentMessage(
+      'quoted-conf-same-thread-reply',
+      request.thread_id,
+      'outbound',
+      quotedConfirmation,
+      '2026-10-01T11:00:00Z',
+    );
+    const crossThreadReply = amendmentMessage(
+      'quoted-conf-cross-thread-reply',
+      'quoted-conf-staff-thread',
+      'outbound',
+      quotedConfirmation,
+      '2026-10-01T11:00:00Z',
+    );
+    const thread = [request, sameThreadReply];
+    const messages = [...thread, crossThreadReply];
+    const document = {
+      attachment_id: 'quoted-conf-update',
+      message_id: crossThreadReply.id,
+      file_name: 'quoted-conf-update.pdf',
+      kind: 'confirmation' as const,
+      text: '',
+      conf,
+    };
+    const messageById = new Map(messages.map((message) => [message.id, message]));
+
+    expect({
+      replyIds: matchingAmendmentReplies(request, thread, messages, conf).map(({ id }) => id),
+      updateId: matchingAmendmentUpdate(request, [request], conf, [document], messageById)
+        ?.attachment_id,
+    }).toEqual({ replyIds: [], updateId: undefined });
   });
 });
 
@@ -1218,6 +1401,52 @@ describe('golden-set score report', () => {
 });
 
 describe('golden-set scoring', () => {
+  it('does not award empty extraction credit without a confirmation result', () => {
+    const golden: GoldenRow[] = [
+      {
+        message_id: 'missing-confirmation-output',
+        class: 'create',
+        answer: { extracted_confirmation_numbers: [] },
+        evidence: {
+          inbound_message_id: 'missing-confirmation-output',
+          staff_message_ids: [],
+          pdf_files: [],
+        },
+      },
+    ];
+    const missingPrediction = scoreGoldenRows(golden, []);
+    const missingSnapshotExtraction = scoreGoldenRows(golden, [
+      snapshotPrediction('missing-confirmation-output', undefined, undefined),
+    ]);
+    const missingSnapshotConfirmationResult = scoreGoldenRows(golden, [
+      snapshotPrediction('missing-confirmation-output', undefined, {
+        kind: 'create',
+        payload: {},
+      }),
+    ]);
+    const emptySnapshotConfirmationResult = scoreGoldenRows(golden, [
+      snapshotPrediction('missing-confirmation-output', undefined, {
+        kind: 'create',
+        payload: { confirmationNumbers: [] },
+      }),
+    ]);
+    const explicitEmptyResult = scoreGoldenRows(golden, [
+      { message_id: 'missing-confirmation-output', confirmation_numbers: [] },
+    ]);
+
+    expect(missingPrediction.byClass.create.confirmation).toEqual({ correct: 0, total: 1 });
+    expect(missingSnapshotExtraction.byClass.create.confirmation).toEqual({ correct: 0, total: 1 });
+    expect(missingSnapshotConfirmationResult.byClass.create.confirmation).toEqual({
+      correct: 0,
+      total: 1,
+    });
+    expect(emptySnapshotConfirmationResult.byClass.create.confirmation).toEqual({
+      correct: 1,
+      total: 1,
+    });
+    expect(explicitEmptyResult.byClass.create.confirmation).toEqual({ correct: 1, total: 1 });
+  });
+
   it('scores extracted references separately from staff-issued confirmation numbers', () => {
     const golden: GoldenRow[] = [
       {

@@ -294,21 +294,49 @@ function datePairsFromText(text: string, defaultYear?: number): GoldenDate[] {
   const patterns = [
     new RegExp(
       String.raw`(?:arrival(?:\s+date)?|check[\s-]?in)\s*[:=]?\s*(${DATE_TOKEN})[\s\S]{0,200}?(?:departure(?:\s+date)?|check[\s-]?out)\s*[:=]?\s*(${DATE_TOKEN})`,
-      'iu',
+      'giu',
     ),
     new RegExp(
       String.raw`(?:from|between)\s+(${DATE_TOKEN})[\s\S]{0,80}?(?:to|until|through|and)\s+(${DATE_TOKEN})`,
-      'iu',
+      'giu',
     ),
   ];
-  for (const pattern of patterns) {
-    const match = pattern.exec(text);
-    if (!match?.[1] || !match[2]) continue;
-    const arrival = parseDateToken(match[1], defaultYear);
-    const departure = parseDateToken(match[2], defaultYear);
-    if (arrival && departure) return [{ arrival, departure }];
+  const collectPairs = (pattern: RegExp) =>
+    [...text.matchAll(pattern)].flatMap((match) => {
+      if (!match[1] || !match[2]) return [];
+      const arrival = parseDateToken(match[1], defaultYear);
+      const departure = parseDateToken(match[2], defaultYear);
+      return arrival && departure
+        ? [{ index: match.index ?? 0, dates: { arrival, departure } }]
+        : [];
+    });
+  const arrivalLabels = [...text.matchAll(/\b(?:arrival(?:\s+date)?|check[\s-]?in)\b/giu)];
+  const departureLabels = [...text.matchAll(/\b(?:departure(?:\s+date)?|check[\s-]?out)\b/giu)];
+  const labeledPairs = collectPairs(patterns[0]!);
+  if (arrivalLabels.length || departureLabels.length) {
+    if (
+      !arrivalLabels.length ||
+      arrivalLabels.length !== departureLabels.length ||
+      labeledPairs.length !== arrivalLabels.length
+    ) {
+      return [];
+    }
   }
-  return [];
+
+  const rangePairs = collectPairs(patterns[1]!);
+  const rangeStarts = [
+    ...text.matchAll(new RegExp(String.raw`\b(?:from|between)\s+(?=\d|${MONTH_TOKEN}\b)`, 'giu')),
+  ];
+  if (rangeStarts.length !== rangePairs.length) return [];
+
+  const pairs = [...labeledPairs, ...rangePairs].sort((left, right) => left.index - right.index);
+  const seen = new Set<string>();
+  return pairs.flatMap(({ dates }) => {
+    const key = `${dates.arrival}/${dates.departure}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [dates];
+  });
 }
 
 function titleCaseRoomType(value: string): string {
@@ -643,6 +671,17 @@ function predictionConfirmationNumbers(prediction: JsonRecord): string[] {
   ].sort();
 }
 
+function hasPredictionConfirmationResult(prediction: JsonRecord): boolean {
+  const hasExplicitList = ['confirmation_numbers', 'confirmationNumbers'].some((key) => {
+    const value = prediction[key];
+    return Array.isArray(value) && (value.length === 0 || stringValues(value).length > 0);
+  });
+  const hasExplicitNumber = ['conf', 'confirmation_number', 'confirmationNumber'].some(
+    (key) => stringValues(prediction[key]).length > 0,
+  );
+  return hasExplicitList || hasExplicitNumber;
+}
+
 function answerRoomCount(answer: GoldenAnswer): number | null {
   if (typeof answer.room_count === 'number' && Number.isFinite(answer.room_count)) {
     return answer.room_count;
@@ -822,7 +861,8 @@ export function scoreGoldenRows(
     if (explicitExtractedConfirmations !== null || expectedConfirmations.length) {
       addMetric(
         score.confirmation,
-        matchesExactSet(expectedConfirmations, predictionConfirmationNumbers(prediction)),
+        hasPredictionConfirmationResult(prediction) &&
+          matchesExactSet(expectedConfirmations, predictionConfirmationNumbers(prediction)),
       );
     }
 
@@ -1631,16 +1671,38 @@ function hasClearAmendmentLink(
   conf: string,
 ): boolean {
   const requestConfs = confirmationNumbersFromText(requestText(request));
-  const replyConfs = confirmationNumbersFromText(
-    `${cleanText(reply.subject) ?? ''}\n${plainTextBody(reply)}`,
-  );
+  const replyConfs = confirmationNumbersFromText(authoredBodyText(reply));
   return requestConfs.includes(conf) || replyConfs.includes(conf);
 }
 
+const CHANGE_REFUSAL_TERMS = String.raw`(?:cannot|can't|could\s+not|couldn't|unable(?:\s+to)?|not\s+able\s+to|not\s+possible(?:\s+to)?|will\s+not|won't|would\s+not|wouldn't|do\s+not|don't|refus(?:e|es|ed)\s+to|not\s+authori[sz]ed\s+to|not\s+permitted\s+to)`;
+const CHANGE_ACTION_TERMS = String.raw`(?:make|process|apply|complete|change|amend|modify|update|revise|adjust|correct)`;
+const CHANGE_REFUSAL_PATTERNS = [
+  new RegExp(
+    String.raw`\b${CHANGE_REFUSAL_TERMS}\b[\s\S]{0,100}\b${CHANGE_ACTION_TERMS}\b`,
+    'iu',
+  ),
+  /\b(?:change|amendment|reservation|booking)\b[\s\S]{0,100}\b(?:cannot|can't|could\s+not|couldn't|unable|not\s+possible|will\s+not|won't)\b/iu,
+  /\bnot\s+(?:yet\s+)?(?:been\s+)?(?:changed|amended|modified|updated|revised|adjusted|corrected|processed|completed)\b/iu,
+  /\bno\s+(?:changes?|amendments?|updates?)\s+(?:have|has)\s+been\s+(?:made|processed|applied|completed)\b/iu,
+  /\b(?:changes?|amendments?|updates?)\s+(?:have|has|was|were)\s+not\s+(?:been\s+)?(?:made|processed|applied|completed)\b/iu,
+];
+
+function isChangeRefusal(text: string): boolean {
+  return CHANGE_REFUSAL_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function looksLikeChangeRefusal(message: CorpusMessage): boolean {
+  return isChangeRefusal(authoredBodyText(message));
+}
+
 function looksLikeChangeConfirmation(message: CorpusMessage): boolean {
-  const text = `${cleanText(message.subject) ?? ''}\n${plainTextBody(message)}`;
-  return /\b(?:updated|amended|changed|modified|revised|adjusted|corrected|changes? (?:have|has) been made)\b/iu.test(
-    text,
+  const text = authoredBodyText(message);
+  return (
+    !isChangeRefusal(text) &&
+    /\b(?:updated|amended|changed|modified|revised|adjusted|corrected|changes? (?:have|has) been made)\b/iu.test(
+      text,
+    )
   );
 }
 
@@ -1881,9 +1943,8 @@ export function matchingAmendmentUpdate(
       if (delta <= 0 || (nextRequestTime !== null && attachedTime >= nextRequestTime)) {
         return false;
       }
-      const replyConfs = confirmationNumbersFromText(
-        `${cleanText(attached.subject) ?? ''}\n${plainTextBody(attached)}`,
-      );
+      if (looksLikeChangeRefusal(attached)) return false;
+      const replyConfs = confirmationNumbersFromText(authoredBodyText(attached));
       if (attached.thread_id === message.thread_id) {
         return (
           sameThreadReplyIds.has(attached.id) && hasClearAmendmentLink(message, attached, conf)
@@ -1921,7 +1982,7 @@ export function matchingAmendmentReplies(
       delta <= CROSS_THREAD_REPLY_WINDOW_MS &&
       (nextRequestTime === null || replyTime < nextRequestTime) &&
       looksLikeChangeConfirmation(reply) &&
-      confirmationNumbersFromText(plainTextBody(reply)).includes(conf)
+      confirmationNumbersFromText(authoredBodyText(reply)).includes(conf)
     );
   });
   return [
@@ -2431,6 +2492,10 @@ export function snapshotPrediction(
   if (!extraction) return { message_id: messageId, action: null };
   const payload = asRecord(extraction.payload);
   const roomAnswer = extractionRooms(extraction);
+  const confirmationNumbers = stringValues(payload.confirmationNumbers);
+  const hasConfirmationResult =
+    (Array.isArray(payload.confirmationNumbers) && payload.confirmationNumbers.length === 0) ||
+    confirmationNumbers.length > 0;
   return {
     message_id: messageId,
     action: cleanText(extraction.kind),
@@ -2441,7 +2506,7 @@ export function snapshotPrediction(
       company: cleanText(payload.endClient),
       agency: cleanText(payload.agency),
     },
-    confirmation_numbers: stringValues(payload.confirmationNumbers),
+    ...(hasConfirmationResult ? { confirmation_numbers: confirmationNumbers } : {}),
   };
 }
 
