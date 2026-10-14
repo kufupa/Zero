@@ -459,6 +459,7 @@ export async function analyseSyncedSelection(
       dateAnchor: {
         receivedAt: synced.receivedAt,
         sourceText: stayDateSourceText(synced),
+        subjectText: synced.subject,
         staffNote,
       },
     });

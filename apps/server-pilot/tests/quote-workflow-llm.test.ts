@@ -266,7 +266,7 @@ describe('mapLlmDecision', () => {
       lunaAnalysisSchema.parse(
         analysis({
           workflow: 'quote',
-          groups: [{ ...group, arrival: '2027-03-12', departure: '2027-03-15', dateEvidence: '12-14 March 2026' }],
+          groups: [{ ...group, arrival: '2026-03-12', departure: '2026-03-15', dateEvidence: '12-14 March 2026' }],
         }),
       ),
       {
@@ -347,6 +347,108 @@ describe('mapLlmDecision', () => {
     ]);
   });
 
+  it('keeps a single stay in the year stated by its subject', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [
+            {
+              ...group,
+              arrival: '2028-03-12',
+              departure: '2028-03-15',
+              dateEvidence: '12-14 March',
+            },
+          ],
+        }),
+      ),
+      {
+        dateAnchor: {
+          receivedAt: '2028-12-20T12:00:00.000Z',
+          sourceText: ['Subject: March 2028', 'Please quote 12-14 March.'].join('\n'),
+          subjectText: 'March 2028',
+        },
+      },
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      arrivalDate: '2028-03-12',
+      departureDate: '2028-03-15',
+    });
+  });
+
+  it('scopes a staff date correction to that stay and anchors the other stay', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [
+            {
+              ...group,
+              arrival: '2026-12-11',
+              departure: '2026-12-13',
+              dateEvidence: 'next Friday for two nights',
+            },
+            {
+              ...group,
+              arrival: '2026-01-04',
+              departure: '2026-01-07',
+              dateEvidence: '4–6 January',
+            },
+          ],
+        }),
+      ),
+      {
+        dateAnchor: {
+          receivedAt: '2026-12-18T12:00:00.000Z',
+          sourceText: 'Please quote next Friday for two nights, then 4–6 January.',
+          staffNote: 'Keep 4–6 January for the second stay.',
+        },
+      },
+    );
+
+    expect(mapped.groups.map(({ arrivalDate, departureDate }) => [arrivalDate, departureDate])).toEqual([
+      ['2026-12-25', '2026-12-27'],
+      ['2026-01-04', '2026-01-07'],
+    ]);
+  });
+
+  it('does not use another stay’s explicit year to change next Friday', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [
+            {
+              ...group,
+              arrival: '2026-12-25',
+              departure: '2026-12-27',
+              dateEvidence: 'next Friday for two nights',
+            },
+            {
+              ...group,
+              arrival: '2028-03-12',
+              departure: '2028-03-15',
+              dateEvidence: '12–14 March 2028',
+            },
+          ],
+        }),
+      ),
+      {
+        dateAnchor: {
+          receivedAt: '2026-12-18T12:00:00.000Z',
+          sourceText:
+            'Please quote next Friday for two nights. Another stay: 12–14 March 2028.',
+        },
+      },
+    );
+
+    expect(mapped.groups.map(({ arrivalDate, departureDate }) => [arrivalDate, departureDate])).toEqual([
+      ['2026-12-25', '2026-12-27'],
+      ['2028-03-12', '2028-03-15'],
+    ]);
+  });
+
   it('preserves a staff date correction ahead of conflicting email dates', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(
@@ -357,7 +459,7 @@ describe('mapLlmDecision', () => {
               ...group,
               arrival: '2028-03-12',
               departure: '2028-03-15',
-              dateEvidence: '12–14 March 2027',
+              dateEvidence: '12–14 March 2028',
             },
           ],
         }),

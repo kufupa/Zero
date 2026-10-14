@@ -69,6 +69,17 @@ describe('received-time date anchoring', () => {
     expect(result.requested).toEqual({ arrival: '2027-03-12', departure: '2027-03-15' });
   });
 
+  it('rolls a yearless numeric day/month phrase forward from receipt time', async () => {
+    const result = await extractRequestedDates({
+      bodyText: 'Please quote 12/03 to 15/03.',
+      receivedAt: '2026-12-20T12:00:00.000Z',
+      arrival: '2026-03-12',
+      departure: '2026-03-15',
+    });
+
+    expect(result.requested).toEqual({ arrival: '2027-03-12', departure: '2027-03-15' });
+  });
+
   it('carries a yearless January stay over the December year boundary', async () => {
     const result = await extractRequestedDates({
       bodyText: 'Please quote 4-6 January.',
@@ -107,35 +118,43 @@ describe('received-time date anchoring', () => {
     ]);
   });
 
-  it('keeps the explicit trip year when it differs from the receipt-based occurrence', async () => {
+  it('keeps model dates when the stay evidence or single-stay subject has a year', async () => {
     const dateYear = await extractRequestedDates({
       bodyText: 'Please quote 12-14 March 2026.',
       receivedAt: '2026-12-20T12:00:00.000Z',
-      arrival: '2027-03-12',
-      departure: '2027-03-15',
-    });
-    const subjectYear = await extractRequestedDates({
-      bodyText: 'Please quote 12-14 March.',
-      subject: 'Tour 2027 dates',
-      receivedAt: '2026-04-01T12:00:00.000Z',
       arrival: '2026-03-12',
       departure: '2026-03-15',
     });
+    const subjectYear = await extractRequestedDates({
+      bodyText: 'Please quote 12-14 March.',
+      subject: 'March 2028',
+      receivedAt: '2026-12-20T12:00:00.000Z',
+      arrival: '2028-03-12',
+      departure: '2028-03-15',
+    });
+    const pastSubjectYear = await extractRequestedDates({
+      bodyText: 'Please quote 12-14 March.',
+      subject: 'March 2028',
+      receivedAt: '2028-12-20T12:00:00.000Z',
+      arrival: '2028-03-12',
+      departure: '2028-03-15',
+    });
 
     expect(dateYear.requested).toEqual({ arrival: '2026-03-12', departure: '2026-03-15' });
-    expect(subjectYear.requested).toEqual({ arrival: '2027-03-12', departure: '2027-03-15' });
+    expect(subjectYear.requested).toEqual({ arrival: '2028-03-12', departure: '2028-03-15' });
+    expect(pastSubjectYear.requested).toEqual({ arrival: '2028-03-12', departure: '2028-03-15' });
   });
 
-  it('honors a trip year stated in the preceding thread', () => {
+  it('uses a relative weekday only from this stay’s date evidence', () => {
     expect(
       anchorStayDateRange(
-        { arrival: '2026-03-12', departure: '2026-03-15' },
+        { arrival: '2026-12-11', departure: '2026-12-13' },
         {
-          receivedAt: '2026-01-01T12:00:00.000Z',
-          sourceText: 'Subject: Quote\nPlease quote 12-14 March.\nOur trip is planned for 2027.',
+          receivedAt: '2026-12-18T12:00:00.000Z',
+          sourceText: 'next Friday for two nights',
         },
       ),
-    ).toEqual({ arrival: '2027-03-12', departure: '2027-03-15' });
+    ).toEqual({ arrival: '2026-12-25', departure: '2026-12-27' });
   });
 
   it('uses Johannesburg local date when received timestamp crosses UTC new year', () => {

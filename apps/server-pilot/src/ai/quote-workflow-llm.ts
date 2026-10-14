@@ -42,7 +42,7 @@ export const K2_MAPPING = [
   'Emit one task per distinct piece of PMS work, in the order staff would do it.',
   'Different date sets for the same ask become separate quote tasks.',
   'For every group, dateEvidence must be an exact phrase from that stay only; never reuse another stay’s phrase.',
-  'Use dateEvidence from the staff note when it corrects dates; the staff note overrides email and thread dates.',
+  'Use dateEvidence from the staff note when it corrects dates. In multiple stays, apply a note correction only to the stay whose own dateEvidence appears in the note; if it cannot be attributed, apply it only for a single stay.',
   '"Quote then book if OK" stays workflow=quote.',
   'Use workflow=create_booking only for explicit make/confirm asks without a quote, price, rate or',
   'availability ask.',
@@ -410,16 +410,20 @@ export function mapLlmDecision(
   }
   const groups = analysis.groups.map((group, index) => {
     const sourceText = options?.dateAnchor?.sourceText ?? '';
+    const staffNote = options?.dateAnchor?.staffNote;
     const dateEvidence = group.dateEvidence?.trim() ?? '';
     const verifiedDateEvidence =
       dateEvidence &&
-      (sourceText.includes(dateEvidence) || options?.dateAnchor?.staffNote?.includes(dateEvidence))
+      (sourceText.includes(dateEvidence) || staffNote?.includes(dateEvidence))
         ? dateEvidence
         : '';
+    const singleStay = analysis.groups.length === 1;
+    const noteNamesStay = Boolean(verifiedDateEvidence && staffNote?.includes(verifiedDateEvidence));
     const anchorContext: StayDateAnchorContext = {
-      ...options?.dateAnchor,
-      sourceText: verifiedDateEvidence || (analysis.groups.length === 1 ? sourceText : ''),
-      contextText: sourceText,
+      receivedAt: options?.dateAnchor?.receivedAt,
+      sourceText: verifiedDateEvidence,
+      subjectText: singleStay ? options?.dateAnchor?.subjectText : undefined,
+      staffNote: staffNote && (singleStay || noteNamesStay) ? staffNote : undefined,
     };
     const anchoredDates = anchorStayDateRange(
       { arrival: group.arrival, departure: group.departure },

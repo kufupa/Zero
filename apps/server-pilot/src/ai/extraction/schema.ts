@@ -199,16 +199,11 @@ export function sanitizeExtraction(
     const id = stableId('s', input.messageId, String(stayIndex));
     const dateEvidence = stay.requestedDateEvidence?.trim() ?? '';
     const selectionText = input.dateAnchor?.sourceText ?? '';
-    const sourceText =
-      dateEvidence && selectionText.includes(dateEvidence)
-        ? dateEvidence
-        : output.stays.length === 1
-          ? selectionText
-          : '';
+    const sourceText = dateEvidence && selectionText.includes(dateEvidence) ? dateEvidence : '';
     const dateAnchor: StayDateAnchorContext = {
       ...input.dateAnchor,
       sourceText,
-      contextText: selectionText,
+      subjectText: output.stays.length === 1 ? input.dateAnchor?.subjectText : undefined,
     };
     return {
       id,

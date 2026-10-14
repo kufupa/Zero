@@ -211,4 +211,5 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 89  | Check all running agents are on the roadmap; kill stragglers | ✅ | LANES "Agent audit" | Re-check at each lane event |
 | 90  | Pause; update every MD/ledger; admit and log mistakes | ✅ | `docs/context/MISTAKES.md` 2026-10-14 rows | — |
 | 91  | Profitroom computer-use agent? | ⬜ | FACTS §2 Profitroom note (Profitroom is an excluded host) | Owner decides whether it's a scope change |
-| 92  | Fix remote type errors on PR #242, merge current main, preserve #245 and push | 🟡 | PR #242; branch `fix/quote-trust-dates-bookability` | Targeted tests, then remote EC2 typecheck |
+| 92  | Fix remote type errors on PR #242, merge current main, preserve #245 and push | ✅ | Merge `2f091393e`, fix `6e021fcd4`; remote EC2 typecheck clean (0 new) | Greptile follow-up #93 |
+| 93  | Simplify PR #242 date anchoring; address five Greptile P1s, add scenario tests, reply/resolve with SHAs | 🟡 | Current pass: `fix/quote-trust-dates-bookability` | Simplify per-stay rules, targeted tests, push and close threads |
