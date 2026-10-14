@@ -41,15 +41,23 @@ describe('quote proposal helpers', () => {
     expect(HOTEL_TELEPHONE).toBe('0126433600');
     const html = quoteWrapperHtml('David Miller', 'R Opperman');
     expect(html).toContain('Good day David Miller,');
-    expect(html).toContain('Thank you for choosing The Centurion Hotel.');
+    expect(html).toContain('Thank you for Choosing The Centurion Hotel.');
     expect(html).toContain('Please see attached quotation.');
     expect(html).toContain(
-      'Kindly sign and return the quotation to confirm. Please note that no rooms are currently being held.',
+      'Should you wish to proceed, please sign and return the attached quotation so that we can confirm and secure your reservation.',
     );
     expect(html).toContain('Kind regards,');
     expect(html).toContain('R Opperman<br />Reservations<br />The Centurion Hotel');
     expect(html).not.toMatch(/ZAR/i);
     expect(html).not.toContain('<table');
+  });
+
+  it('matches staff-sent quote cover wording without changing the editable reply', () => {
+    const html = quoteWrapperHtml('Guest', 'Reservations Team');
+    expect(html).toContain('Thank you for Choosing The Centurion Hotel.');
+    expect(html).toContain('Should you wish to proceed, please sign and return the attached quotation so that we can confirm and secure your reservation.');
+    expect(html).toContain('bookings will only be confirmed once we have received the signed quotation.');
+    expect(html).toContain('Please feel free to contact me should you require any further information');
   });
 
   it('uses a safe fallback greeting when the email has no sender name', () => {
@@ -59,7 +67,7 @@ describe('quote proposal helpers', () => {
     expect(html).toContain('R Opperman<br />Reservations<br />The Centurion Hotel');
   });
 
-  it('includes the dinner add-on line and full quotation total in the reply', () => {
+  it('keeps dinner pricing in the attachment, not the cover reply', () => {
     const html = quoteWrapperHtml('David Miller', 'R Opperman', {
       dinnerAddOn: {
         label: 'Set menu',
@@ -70,8 +78,11 @@ describe('quote proposal helpers', () => {
       totalMinor: 840_000,
     });
 
-    expect(html).toContain('<strong>Set menu</strong>: R350.00 per person per night; add-on total R2100.00.');
-    expect(html).toContain('<strong>Quotation total including dinner add-on: R8400.00</strong>');
+    expect(html).toContain('Please see attached quotation.');
+    expect(html).not.toContain('Set menu');
+    expect(html).not.toContain('R350.00');
+    expect(html).not.toContain('R2100.00');
+    expect(html).not.toContain('R8400.00');
   });
 
   it('asks only for missing quote details without claiming a quotation is attached', () => {

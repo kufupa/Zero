@@ -8,11 +8,11 @@ describe('complete revision proposal rendering',()=>{
   const html=renderRevisionProposalHtml(r,header).replace(/data:image\/png;base64,[^"]+/g,'data:image/png;base64,');
   expect((html.match(/data-line=/g)||[]).length).toBe(count);
   expect((html.match(/data-proposal-total=/g)||[]).length).toBe(1);
-  expect((html.match(/class="proposal-page"/g)||[]).length).toBe(Math.ceil(count/6));
+  expect((html.match(/class="proposal-page(?: terms-page)?"/g)||[]).length).toBe(Math.ceil(count/6) + 1);
   expect(html).not.toContain(r.id);expect(html).toContain('data:image/png;base64,');
   expect(html).toContain('&lt;script&gt;');expect(html).not.toContain('<script>');
-  expect(html).not.toContain('Breakfast is included');expect(html).toContain('VAT and tourism levy included');
-  expect(html).toContain('three days');expect(html).toContain('no rooms are currently being held');
+  expect(html).not.toContain('Breakfast is included');expect(html).toContain('All rates above include 15% VAT');
+  expect(html).toContain('Valid until: 3 days from date quoted above');expect(html).toContain('No booking has been made');
  });
  it('binds PDF bytes and hash to the immutable revision, using local HTML without remote resources',async()=>{
   const r=await syntheticRevision();const fetchMock=vi.fn(async(_url:unknown,init:any)=>{
@@ -73,4 +73,26 @@ it('keeps adjustment actor, approval time, private reason and original revision 
  expect(html.includes('Approved replacement total')).toBe(true);expect(html.replace(/\s/g,'').includes('R2000.00')).toBe(true);
 });
 
-it('keeps internal revision identifiers and evidence explanations out of guest quotations',async()=>{const r=await syntheticRevision(),html=renderRevisionProposalHtml(r,header);expect(html).not.toContain(r.id);expect(html).not.toContain('commercial evidence');expect(html).toContain('VAT and tourism levy included');expect(html).toContain('no rooms are currently being held');});
+it('keeps internal revision identifiers and evidence explanations out of guest quotations',async()=>{const r=await syntheticRevision(),html=renderRevisionProposalHtml(r,header);expect(html).not.toContain(r.id);expect(html).not.toContain('commercial evidence');expect(html).toContain('All rates above include 15% VAT');expect(html).not.toContain('no rooms are currently being held');});
+
+it('matches staff BAR B&B proposal structure in offline HTML fallback', async () => {
+  const revision = await syntheticRevision(['123.45'], 'Bed & Breakfast R', 'STQN', undefined, '2026-11-08');
+  const html = renderRevisionProposalHtml(revision, header).replace(/data:image\/png;base64,[^"]+/g, 'data:image/png;base64,');
+  expect(html).toContain('Below is the tailored accommodation package we have curated for you.');
+  expect(html).toContain('Valid until: 3 days from date quoted above');
+  expect(html).toContain('15% VAT');
+  expect(html).toContain('*1% Tourism Levy');
+  expect(html).toContain('*Breakfast in Brunos Restaurant');
+  expect(html).toContain('Nights</th>');
+  expect(html).toContain('1 adult per room');
+  expect(html).toContain('8-9 November 2026');
+  expect(html).toContain('Terms and Conditions:');
+  expect(html).toContain('No booking has been made and is subjected to availability on acceptance of this quotation');
+  expect(html).toContain('Prices are subject to change without notice');
+  expect(html).toContain('For full terms and conditions, please click <a href="https://www.legacyhotels.co.za">HERE</a>');
+  expect(html).toContain('<a href="https://www.legacyhotels.co.za">The Centurion Hotel Website</a>');
+  expect(html).toContain('Accepted By:');
+  expect(html).toContain('Reservations Team:');
+  expect((html.match(/class="proposal-page(?: terms-page)?"/g) ?? []).length).toBe(2);
+  expect((html.match(/data-proposal-total=/g) ?? []).length).toBe(1);
+});

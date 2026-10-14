@@ -187,5 +187,29 @@ Assessment closure: full product/scoping/retro/ETA/testing/model/session-continu
 | #   | Ask                                                                                                          | Status | Where answered                                                                                                                                               | Next step                                                                                              |
 | --- | ------------------------------------------------------------------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
 | 74  | Commit/save short current context and longer evidence-backed Markdown research so fresh agents do not rescan | ✅     | Versioned short ACTIVE, long assessment, evidence/source index and JSON; normal hooks and local docs gate passed; PR https://github.com/kufupa/Zero/pull/241 | Reviewed documentation publication; no raw transcripts, product code, runtime settings or guest writes |
-| 75  | L6 pane UI cleanup: remove warning/repeated read-as and booking facts; show request + changed rows; use Edit/Done controls; no HMS writes or deploy | ✅     | PR https://github.com/kufupa/Zero/pull/246 | — |
-| 76  | Fix four Greptile P1s on PR #246; targeted tests only; reply with fix SHAs | ✅     | PR https://github.com/kufupa/Zero/pull/246; fixes `25ec195fd` | — |
+
+## 9. Quote pilot night (2026-10-14 ~20:30–22:15Z, session 6d18957a)
+
+Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settled facts are in `docs/context/FACTS.md`.
+
+| #   | Ask | Status | Where answered | Next step |
+| --- | --- | ------ | -------------- | --------- |
+| 75  | Staff test the side pane on live mail ASAP, quote first | 🟡 | Lanes L1–L4, L6 → PRs #242–#246 | Remote typecheck → merge L4→L2→L3→L1→L6 → one deploy → self-test past quote mails one at a time |
+| 76  | A correct quote = current HMS rates, right default, party rate found, right pax, every ask covered; major errors = missed party rate, wrong pax, forgotten ask | ✅ | FACTS §4; LANES "Owner answers" | Score self-tests against it |
+| 77  | Never run tsc on this VPS; typecheck on prod EC2; never wipe prod RDS | 🟡 | Hook `~/.claude/hooks/block-local-tsc.sh`; remote runner in progress | Runner lands → all PRs typechecked remotely |
+| 78  | Luna 6 max for all coding and reviews; small PRs; Greptile Apex only for huge PRs | 🟡 | Gateway `config.yaml.luna-max` staged | Activate when lanes are idle |
+| 79  | Amend: build the HMS writer now, don't enable it | 🟡 | PR #249 (lab-guarded; selectors TODO-LIVE-PROBE) | Remote typecheck + review; live probe on Labtest only |
+| 80  | Cancel parked until the owner briefs Da Vinci cancellation answers | ⏸ | — | Owner brief |
+| 81  | Party tool is bad (55/95): redesign from the ground up | 🟡 | P1 lane `spike/party-lookup-v3` | P1 report |
+| 82  | Never redo research; write facts down permanently | ✅ | PR #247 (FACTS + CATALOG + AGENTS.md rule) | Add facts as they settle |
+| 83  | Voucher = already-paid new booking (agent "we've booked this, please log it"); vouchers mean several things | 🟡 | FACTS §2 voucher rows + Profitroom note | Reclassify via `feat/action-classifier`; no new classifier |
+| 84  | Harvest leftover worktrees; land or park; catalog old PRs; say which trees are safe to delete | ✅ | FACTS §6; `park/*` branches on origin | Owner OKs deletion list |
+| 85  | Staff-facing OSS visual + NL workflow builder, per hotel and per staff member, with evals; nothing paywalled (Mastra lesson); Sim liked | 🟡 | Exa run b4b38088 (Langflow first; Sim copilot needs sim.ai key) | R4 source-verification lane → recommend |
+| 86  | mem0: is there a good place for it? | 🟡 | Exa: per-staff preferences only, never pricing or policy | R4 confirms licence |
+| 87  | Da Vinci: Infor login coming; per-hotel pane/tenant separation; per-property HMS browser (parallel across hotels, serial within) | ⬜ | `/home/orca/nava-research/davinci/2026-10-14-interview/HANDOFF.md` | Plan after the login |
+| 88  | GDS/SynXis "RESERVATION FAILED TO INTEGRATE" mail: staff check Infor has company/agency/details and add what's missing; scope it as a workflow | ⬜ | FACTS §2 GDS row (84 mails Jul 30–Oct 13; triage routes them to automated-channel today) | Scope after the quote pilot; read-only compare first |
+| 89  | Check all running agents are on the roadmap; kill stragglers | ✅ | LANES "Agent audit" | Re-check at each lane event |
+| 90  | Pause; update every MD/ledger; admit and log mistakes | ✅ | `docs/context/MISTAKES.md` 2026-10-14 rows | — |
+| 91  | Profitroom computer-use agent? | ⬜ | FACTS §2 Profitroom note (Profitroom is an excluded host) | Owner decides whether it's a scope change |
+| 92  | L6 pane UI cleanup: remove warning/repeated read-as and booking facts; show request + changed rows; use Edit/Done controls; no HMS writes or deploy | ✅ | PR https://github.com/kufupa/Zero/pull/246 | — |
+| 93  | Fix four Greptile P1s on PR #246; targeted tests only; reply with fix SHAs | ✅ | PR https://github.com/kufupa/Zero/pull/246; fixes `25ec195fd` | — |

@@ -300,9 +300,9 @@ describe('quote workbook line rows', () => {
 });
 
 describe('quote workbook file name and dates', () => {
-  it('labels the file "Quote - <Company or Guest> - <arrival>.xlsx" with unsafe characters removed', () => {
-    expect(quoteWorkbookFileName('Acme / Co: "Ltd"', '2026-10-12')).toBe('Quote - Acme Co Ltd - 2026-10-12.xlsx');
-    expect(quoteWorkbookFileName('   ', '2026-10-12')).toBe('Quote - Guest - 2026-10-12.xlsx');
+  it('labels the file like staff quotes, with unsafe characters removed', () => {
+    expect(quoteWorkbookFileName('Acme / Co: "Ltd"', '2026-10-12')).toBe('Quote - Acme Co Ltd 12 October 2026.xlsx');
+    expect(quoteWorkbookFileName('   ', '2026-10-12')).toBe('Quote - Guest 12 October 2026.xlsx');
   });
 
   it('labels DATE ranges the way the quotation reads them', () => {
@@ -310,6 +310,9 @@ describe('quote workbook file name and dates', () => {
     expect(quoteDateLabel('2026-10-30', '2026-11-02')).toBe('30 October - 2 November 2026');
     expect(quoteDateLabel('2026-12-30', '2027-01-02')).toBe('30 December 2026 - 2 January 2027');
     expect(quoteDateLabel('2026-10-12', '2026-10-12')).toBe('12 October 2026');
+    expect(quoteWorkbookFileName('Example Agency', '2026-10-12', '2026-10-14')).toBe(
+      'Quote - Example Agency 12-14 October 2026.xlsx',
+    );
   });
 });
 
