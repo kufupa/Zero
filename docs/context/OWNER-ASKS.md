@@ -212,4 +212,4 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 90  | Pause; update every MD/ledger; admit and log mistakes | ✅ | `docs/context/MISTAKES.md` 2026-10-14 rows | — |
 | 91  | Profitroom computer-use agent? | ⬜ | FACTS §2 Profitroom note (Profitroom is an excluded host) | Owner decides whether it's a scope change |
 | 92  | Fix remote type errors on PR #242, merge current main, preserve #245 and push | ✅ | Merge `2f091393e`, fix `6e021fcd4`; remote EC2 typecheck clean (0 new) | Greptile follow-up #93 |
-| 93  | Simplify PR #242 date anchoring; address five Greptile P1s, add scenario tests, reply/resolve with SHAs | ✅ | `d82cc3c9e`; targeted 134 tests pass; five threads replied with SHA and resolved | Remote typecheck for new head not verified here; no local typecheck |
+| 93  | Complete PR #242 date precedence across nine Greptile date scenarios; add table tests and reply/resolve with SHAs | ✅ | Fix `79696f751`; 9 table-driven date scenarios; 143 targeted tests pass; all 11 PR #242 threads resolved | Remote typecheck for code head not verified here; no local typecheck |
