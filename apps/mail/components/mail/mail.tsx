@@ -412,7 +412,7 @@ function MailLayoutContent() {
 
   const [threadId, setThreadId] = useQueryState('threadId');
   const sourceThreadId =
-    isWorkflowFolderNavId(folder.toLowerCase()) && searchList?.folder !== 'all'
+    isWorkflowFolderNavId(folder.toLowerCase()) && searchList?.isValid === true && searchList.folder !== 'all'
       ? threadId ?? undefined
       : undefined;
   const [, setMode] = useQueryState('mode');
