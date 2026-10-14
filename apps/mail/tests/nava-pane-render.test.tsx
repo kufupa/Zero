@@ -2538,6 +2538,50 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
+  it('shows a stored self-sent pre-stay confirmation as existing-stay information, not a booking builder', async () => {
+    const selfMailBridge = {
+      ...fakeBridge,
+      activeEmail: {
+        ...fakeBridge.activeEmail,
+        subject: 'Pre Stay: Property HRCEN arrival details',
+        senderEmail: 'Reservations <ropperman@legacyhotels.co.za>',
+        senderName: 'Reservations',
+        bodyText: 'Pre-arrival information for the existing reservation.',
+      },
+    } as unknown as PaneBridge;
+    bridgeMockState.analysisOverride = null;
+    bridgeMockState.analyseCalls = 0;
+    bridgeMockState.staffQuoteSourceCalls = 0;
+    bridgeMockState.storedWorkLookups = 0;
+    const stored = storedMail('other');
+    bridgeMockState.storedWork = {
+      ...stored,
+      kind: 'other',
+      existingStayInformation: true,
+      confirmationNumbers: ['57291630-1'],
+      analysis: {
+        ...stored.analysis,
+        intent: 'quote',
+        luna: { workflow: 'create_booking', flags: [], rateClaims: [] },
+      },
+    };
+    bridgeMockState.queueStaffQuoteMutation.mockClear();
+
+    render(<NavaPane bridge={selfMailBridge} />);
+
+    const notice = await screen.findByTestId('existing-stay-information');
+    expect(notice.textContent).toContain('Existing stay information');
+    expect(notice.textContent).toContain('57291630-1');
+    expect(screen.getByRole('status', { name: 'Nava reads this as: Not for Nava' })).toBeDefined();
+    expect(screen.queryByText('New booking')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Quote contact — printed on the PDF' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Draft quotation into email reply' })).toBeNull();
+    expect(screen.queryByLabelText('Arrival')).toBeNull();
+    expect(bridgeMockState.analyseCalls).toBe(0);
+    expect(bridgeMockState.storedWorkLookups).toBe(1);
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
   it('offers only read-only voucher lookup for a channel message already classified as payment', async () => {
     const channelBridge = {
       ...fakeBridge,

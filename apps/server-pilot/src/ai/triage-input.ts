@@ -63,6 +63,8 @@ export interface TriageInput {
   threadId: string;
   triggerMessageId: string;
   messages: TriageMessageRow[];
+  mailboxAddress?: string | null;
+  confirmationNumbers?: readonly string[];
   asOf: string;
   modelId: string;
   promptVersion: string;
@@ -146,6 +148,10 @@ export function hashTriageInput(input: TriageInput): string {
     transportId: input.transportId,
     threadId: input.threadId,
     triggerMessageId: input.triggerMessageId,
+    mailboxAddress: input.mailboxAddress?.trim().toLowerCase() ?? null,
+    confirmationNumbers: [
+      ...new Set((input.confirmationNumbers ?? []).map((value) => value.trim()).filter(Boolean)),
+    ].sort(),
     asOf: input.asOf,
     modelId: input.modelId,
     promptVersion: input.promptVersion,

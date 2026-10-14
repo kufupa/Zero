@@ -24,6 +24,7 @@ import {
 import { computeConversationTriageMetrics } from '../../mail/conversation-triage-metrics.js';
 import type { ConversationTriageMetrics } from '../../mail/conversation-triage-metrics.js';
 import type { ModelAdapter, ModelInvokeResult } from '../bedrock/adapter.js';
+import { isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
 import type { IndexableMessage } from '../../mail/conversation-signals.js';
 import { validateStructuredJsonOutput } from '../security/policy.js';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
@@ -78,6 +79,8 @@ const triageInputSchema = z.object({
   transportId: z.string(),
   threadId: z.string(),
   triggerMessageId: z.string(),
+  mailboxAddress: z.string().optional(),
+  confirmationNumbers: z.array(z.string()).optional(),
   subject: z.string().optional(),
   from: z.string().default(''),
   to: z.array(z.string()).default([]),
@@ -416,6 +419,8 @@ type MailTriageInput = {
   transportId: string;
   threadId: string;
   triggerMessageId: string;
+  mailboxAddress?: string | null;
+  confirmationNumbers?: readonly string[];
   subject?: string;
   from?: string;
   to?: string[];
@@ -796,6 +801,8 @@ export async function classifyWorkflowMailTriage(
     transportId: input.transportId,
     threadId: input.threadId,
     triggerMessageId: input.triggerMessageId,
+    mailboxAddress: input.mailboxAddress,
+    confirmationNumbers: input.confirmationNumbers,
     messages: causalRows,
     asOf: input.asOf,
     modelId: input.modelId,
@@ -837,15 +844,38 @@ export async function classifyWorkflowMailTriage(
     },
     rawOutput,
   );
-  const output = validateWorkflowTriageOutput({
-    ...refinedOutput,
-    suggestedTools: suggestReadTools(
-      refinedOutput.primaryFolder,
-      refinedOutput.overlays,
-      refinedOutput.humanAction,
-      refinedOutput.isSpam,
-    ),
+  const existingStayInformation = isSelfSentPreStayInformationMail({
+    fromAddress: triggerMessage.from,
+    mailboxAddress: input.mailboxAddress,
+    subject: triggerMessage.subject,
+    confirmationNumbers: input.confirmationNumbers,
   });
+  const output = existingStayInformation
+    ? validateWorkflowTriageOutput({
+        primaryFolder: 'internal-partner',
+        priority: 'P5',
+        urgent: false,
+        overlays: {},
+        isSpam: false,
+        suggestedTools: [],
+        sourceScope: 'internal_property',
+        automationState: 'excluded_internal',
+        humanAction: 'none',
+        confidence: 1,
+        rationale:
+          'Self-sent pre-stay confirmation is information about an existing stay, not booking or quote work.',
+        policyFlags: ['existing-stay-information'],
+        abstainReason: null,
+      })
+    : validateWorkflowTriageOutput({
+        ...refinedOutput,
+        suggestedTools: suggestReadTools(
+          refinedOutput.primaryFolder,
+          refinedOutput.overlays,
+          refinedOutput.humanAction,
+          refinedOutput.isSpam,
+        ),
+      });
   const conversationMetrics = computeConversationTriageMetrics({
     threadId: input.threadId,
     triggerMessageId: causalInput.triggerMessageId,
@@ -906,6 +936,8 @@ const classifyStep = createStep({
         transportId: inputData.transportId,
         threadId: inputData.threadId,
         triggerMessageId: inputData.triggerMessageId,
+        mailboxAddress: inputData.mailboxAddress,
+        confirmationNumbers: inputData.confirmationNumbers,
         messages: rows,
         threadSignals: inputData.threadSignals,
         from: inputData.from,
