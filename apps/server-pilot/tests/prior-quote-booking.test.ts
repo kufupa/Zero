@@ -734,6 +734,32 @@ describe('resolvePriorQuoteForBooking', () => {
     }
   });
 
+  it('does not restore a prepared quote after staff edits the board or room preference', async () => {
+    const revision = await freshRevision();
+    const editedAnalysis = analysis({
+      groups: [{ ...analysis().groups[0]!, board: 'bb', roomPreference: 'Queen' }],
+    });
+    const resolved = resolvePriorQuoteForBooking(
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        state: 'succeeded',
+        metrics: { quotePrepared: true, userId: null },
+        readResult: { status: 'ready', preparedProposal: { revision } },
+      },
+      {
+        transportId: 't1',
+        threadId: 'thread-1',
+        revisionRef: revision.id,
+        analysis: editedAnalysis,
+        now: new Date('2026-10-07T03:00:00Z'),
+      },
+    );
+
+    expect(analysisMatchesQuotedStay(editedAnalysis, revision)).toBe(true);
+    expect(resolved.status).toBe('unavailable');
+  });
+
   it('returns expired when the authored window has lapsed', async () => {
     const revision = await freshRevision();
     revision.authoredDate = '2026-09-01';
@@ -900,20 +926,18 @@ describe('prior-quote routes', () => {
     expect(result).toEqual({ status: 'unavailable', reason: 'not_found' });
   });
 
-  it.skipIf(!TEST_DB_AVAILABLE || !reachable)('lists an adopted prepared quote as a prior offer', async () => {
+  it.skipIf(!TEST_DB_AVAILABLE || !reachable)('does not list an unadopted prepared quote as a prior offer', async () => {
     await withSeededTestDb(async (db) => {
       __setDbForTests({ db, conn: null as never });
-      const { threadId, revision, runId } = await seedPreparedBookingRun(db);
+      const { threadId } = await seedPreparedBookingRun(db);
 
       const result = await caller().workstation.listThreadQuoteRevisions({ threadId });
 
-      expect(result.revisions).toEqual([
-        expect.objectContaining({ workflowRunId: runId, revisionRef: revision.id }),
-      ]);
+      expect(result.revisions).toEqual([]);
     });
   });
 
-  it.skipIf(!TEST_DB_AVAILABLE || !reachable)('reuses an adopted prepared quote for booking at its approved total', async () => {
+  it.skipIf(!TEST_DB_AVAILABLE || !reachable)('does not reuse an unadopted prepared quote for booking', async () => {
     await withSeededTestDb(async (db) => {
       __setDbForTests({ db, conn: null as never });
       const { threadId, messageId, revision, runId } = await seedPreparedBookingRun(db);
@@ -928,16 +952,7 @@ describe('prior-quote routes', () => {
         analysis: analysis(),
       });
 
-      expect(result).toMatchObject({
-        status: 'ready',
-        workflowRunId: runId,
-        revisionRef: revision.id,
-        totalMinor: 500_000,
-        onceExtras: true,
-      });
-      if (result.status === 'ready') {
-        expect(result.draft.flags).toContain('manual_rate_change');
-      }
+      expect(result).toEqual({ status: 'unavailable', reason: 'not_found' });
     });
   });
 

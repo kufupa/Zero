@@ -17,6 +17,7 @@ import { and, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import {
+  aiDraftGeneration,
   aiWorkflowRun,
   mailCategory,
   mailboxTransport,
@@ -2995,6 +2996,22 @@ async function latestStaffQuoteRunFor(
     ) {
       continue;
     }
+    if (!preparedRun.threadId) return [];
+    const [latestApproval] = await db
+      .select({ createdAt: aiDraftGeneration.createdAt })
+      .from(aiDraftGeneration)
+      .where(
+        and(
+          eq(aiDraftGeneration.transportId, preparedRun.transportId),
+          eq(aiDraftGeneration.threadId, preparedRun.threadId),
+          eq(aiDraftGeneration.requestedByUserId, userId),
+          eq(aiDraftGeneration.model, 'staff-approved-native'),
+          sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([messageId])}::jsonb`,
+        ),
+      )
+      .orderBy(desc(aiDraftGeneration.createdAt))
+      .limit(1);
+    if (latestApproval && latestApproval.createdAt >= preparedRun.createdAt) return [];
     return reusable(preparedRun) ? [preparedRun] : [];
   }
   return [];

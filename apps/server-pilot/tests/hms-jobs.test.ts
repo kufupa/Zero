@@ -621,6 +621,33 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(queued.run.metrics).toMatchObject({ userId: CENTURION_USER_ID });
     }));
 
+  it('starts a user quote when a newer staff approval makes the prepared price unexportable', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId, run } = await seedQuoteExtraction(db);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      await db.insert(aiDraftGeneration).values({
+        id: randomUUID(),
+        transportId: TRANSPORT_ID,
+        threadId,
+        requestedByUserId: CENTURION_USER_ID,
+        contextMessageIds: [messageId],
+        model: 'staff-approved-native',
+        promptVersion: 'staff-quote-v1',
+        createdAt: new Date(prepared!.createdAt.getTime() + 1_000),
+      });
+
+      const started = await hmsJobs.queueAutoStaffQuoteHmsJob({
+        ...autoStaffQuoteRequest(threadId, messageId),
+        request: { kind: 'staff_quote', input: preparedInputFromRun(prepared) },
+      }, db);
+
+      expect(started).toMatchObject({ created: true, run: { priority: HMS_JOB_PRIORITY_USER } });
+      expect(started.run.id).not.toBe(prepared!.id);
+    }));
+
   it('does not reuse a prepared result from a changed source message', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');

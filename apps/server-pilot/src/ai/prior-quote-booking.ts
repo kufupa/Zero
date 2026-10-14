@@ -102,8 +102,7 @@ function revisionsFromRun(run: PriorQuoteRun): QuoteRevision[] {
   const result = run.metrics?.reservationistResult as
     | { quoteRevisions?: QuoteRevision[]; quoteRevisionIds?: string[] }
     | undefined;
-  const prepared = preparedProposalFor(run)?.revision;
-  const listed = result?.quoteRevisions?.length ? result.quoteRevisions : prepared ? [prepared] : [];
+  const listed = result?.quoteRevisions?.length ? result.quoteRevisions : [];
   const ids = new Set(result?.quoteRevisionIds ?? listed.map((row) => row.id));
   return listed.filter((row) => ids.has(row.id));
 }
