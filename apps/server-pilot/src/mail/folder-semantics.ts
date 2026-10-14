@@ -105,3 +105,15 @@ export function buildMailFolderConditions(
 
   return conditions;
 }
+
+/** Workflow lists get membership from latestWorkflowThreads, not inbox/archive/spam state. */
+export function buildMailListConditions(
+  db: DB,
+  transportId: string,
+  folder: MailFolderValue,
+  workflowFolder?: string,
+): SQL[] {
+  return workflowFolder
+    ? [eq(mailThread.transportId, transportId)]
+    : buildMailFolderConditions(db, transportId, folder);
+}

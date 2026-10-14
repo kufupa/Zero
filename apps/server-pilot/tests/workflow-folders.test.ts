@@ -1,3 +1,4 @@
+import { and } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { __setDbForTests } from '../src/db/client.js';
@@ -8,6 +9,7 @@ import {
   workflowFolderListInputSchema,
   workflowFolderOffset,
 } from '../src/trpc/routes/workflow-folders.js';
+import { buildMailListConditions } from '../src/mail/folder-semantics.js';
 import {
   hasPrefilledData,
   mapWorkflowFolder,
@@ -190,6 +192,17 @@ describe('workflow folder mapping', () => {
     expect(hasPrefilledData({ contact: { name: null }, stays: [] })).toBe(false);
     expect(hasPrefilledData({ contact: { name: 'Taylor Guest' }, stays: [] })).toBe(true);
     expect(hasPrefilledData({ contact: {}, stays: [{ rows: [{ rooms: 2 }] }] })).toBe(true);
+  });
+});
+
+describe('workflow mail list conditions', () => {
+  it('uses workflow membership without Inbox state restrictions', () => {
+    const query = new PgDialect().sqlToQuery(
+      and(...buildMailListConditions({} as never, TRANSPORT, 'inbox', 'quotes'))!,
+    );
+
+    expect(query.sql).toBe('"mail_thread"."transport_id" = $1');
+    expect(query.params).toEqual([TRANSPORT]);
   });
 });
 

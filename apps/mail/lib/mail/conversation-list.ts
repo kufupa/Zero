@@ -28,16 +28,27 @@ function stubLabel(thread: ConversationAwareListThread | undefined): string {
   return 'Linked thread';
 }
 
-/** Hide non-primary linked threads; attach stub metadata from the full page set. */
+/** Show one row per conversation, falling back when its primary is outside the result set. */
 export function buildConversationPrimaryListRows(
   threads: readonly ConversationAwareListThread[],
 ): PrimaryConversationListRow[] {
   const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  const firstVisibleThreadByPrimaryId = new Map<string, string>();
   const primaryRows: PrimaryConversationListRow[] = [];
 
   for (const thread of threads) {
     const primaryId = thread.primaryThreadId ?? thread.id;
-    if (thread.id !== primaryId) continue;
+    if (!byId.has(primaryId) && !firstVisibleThreadByPrimaryId.has(primaryId)) {
+      firstVisibleThreadByPrimaryId.set(primaryId, thread.id);
+    }
+  }
+
+  for (const thread of threads) {
+    const primaryId = thread.primaryThreadId ?? thread.id;
+    const visiblePrimaryId = byId.has(primaryId)
+      ? primaryId
+      : firstVisibleThreadByPrimaryId.get(primaryId);
+    if (thread.id !== visiblePrimaryId) continue;
 
     const linkedStubs: LinkedThreadStub[] = (thread.linkedThreadIds ?? []).map((linkedId) => {
       const linked = byId.get(linkedId);

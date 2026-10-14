@@ -102,7 +102,7 @@ import {
   MAIL_FOLDER_VALUES,
   type MailFolderValue,
   clearExpiredSnoozes,
-  buildMailFolderConditions,
+  buildMailListConditions,
 } from '../../mail/folder-semantics.js';
 import {
   loadUnreadCounts,
@@ -370,7 +370,7 @@ export const mailRouter = tRouter({
       return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
     }
 
-    const conditions = buildMailFolderConditions(db, transportId, input.folder);
+    const conditions = buildMailListConditions(db, transportId, input.folder, input.workflowFolder);
     const workflowMembership = input.workflowFolder
       ? latestWorkflowThreads(db, transportId)
       : undefined;
