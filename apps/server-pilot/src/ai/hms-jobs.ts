@@ -611,14 +611,6 @@ export async function queueAutoStaffQuoteHmsJob(
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
         eq(aiWorkflowRun.executorLane, 'hms'),
         eq(aiWorkflowRun.triggerMessageId, input.triggerMessageId),
-        or(
-          sql`${aiWorkflowRun.metrics}->>'userId' = ${input.userId}`,
-          and(
-            eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
-            sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
-            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
-          ),
-        ),
       ),
       input.request.input.messageId,
       input.request.input,
@@ -1366,7 +1358,12 @@ async function countRecentPrefetches(
         eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
         // Staff batch rows share the prefetch priority but carry batchId: they neither use nor are capped by these budgets.
         sql`${aiWorkflowRun.metrics}->>'batchId' IS NULL`,
-        ...(kind === 'staff_quote' ? [sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`] : []),
+        ...(kind === 'staff_quote'
+          ? [
+              sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+              sql`${aiWorkflowRun.state} NOT IN ('dead_letter', 'superseded')`,
+            ]
+          : []),
         sql`${aiWorkflowRun.readRequest}->>'kind' = ${kind}`,
         gt(aiWorkflowRun.createdAt, since),
       ),
@@ -1374,7 +1371,7 @@ async function countRecentPrefetches(
   return Number(row?.n ?? 0);
 }
 
-/** Serializes prepared-quote cap checks/inserts across workers for one mailbox. Existing digests remain idempotent. */
+/** Serializes prepared-quote cap checks/inserts across workers for one mailbox. Live digests remain idempotent. */
 async function enqueuePreparedQuoteWithinCap(
   db: DB,
   input: Parameters<typeof enqueueHmsJob>[0],
@@ -1387,12 +1384,19 @@ async function enqueuePreparedQuoteWithinCap(
       ))`,
     );
     const scoped = tx as unknown as DB;
-    const [existing] = await scoped
-      .select({ id: aiWorkflowRun.id })
+    const existing = await scoped
+      .select({ id: aiWorkflowRun.id, idempotencyKey: aiWorkflowRun.idempotencyKey, state: aiWorkflowRun.state })
       .from(aiWorkflowRun)
-      .where(eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey))
-      .limit(1);
-    if (existing) return false;
+      .where(
+        and(
+          eq(aiWorkflowRun.transportId, input.transportId),
+          eq(aiWorkflowRun.triggerMessageId, input.triggerMessageId),
+          sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+          sql`left(${aiWorkflowRun.idempotencyKey}, length(${input.idempotencyKey})) = ${input.idempotencyKey}`,
+        ),
+      );
+    if (existing.some((run) => run.state !== 'dead_letter' && run.state !== 'superseded')) return false;
     const used = await countRecentPrefetches(
       scoped,
       input.transportId,
@@ -1400,7 +1404,10 @@ async function enqueuePreparedQuoteWithinCap(
       new Date(Date.now() - PREFETCH_WINDOW_MS),
     );
     if (used >= perHour) return false;
-    const queued = await enqueueHmsJob(input, scoped);
+    const retryInput = existing.length
+      ? { ...input, idempotencyKey: `${input.idempotencyKey}:retry:${randomUUID()}` }
+      : input;
+    const queued = await enqueueHmsJob(retryInput, scoped);
     return queued.created;
   });
 }
@@ -2565,6 +2572,24 @@ export async function executeHmsJob(input: {
     return 'dead_letter';
   }
   const request = parsed.data;
+  const metrics = objectRecord(run.metrics) as {
+    userId?: string | null;
+    owner?: string;
+    staffQuoteUser?: unknown;
+    quotePrepared?: boolean;
+  };
+  const systemPreparedQuote =
+    request.kind === 'staff_quote' &&
+    run.priority === HMS_JOB_PRIORITY_PREFETCH &&
+    metrics.userId == null &&
+    metrics.quotePrepared === true;
+  if (systemPreparedQuote && !quotePreparationEnabled()) {
+    await markAiRunDeadLetter(
+      { ...mark, lastError: 'quote_preparation_disabled', failureClass: 'POLICY_BLOCK' },
+      db,
+    );
+    return 'dead_letter';
+  }
   const background = run.priority < HMS_JOB_PRIORITY_USER;
   if (background && (await staffQuoteInFlight(db))) {
     // Yield without counting an attempt, so a quote in flight does not use up the job's retries.
@@ -2576,18 +2601,9 @@ export async function executeHmsJob(input: {
     });
   }
 
-  const metrics = objectRecord(run.metrics) as {
-    userId?: string | null;
-    owner?: string | null;
-    staffQuoteUser?: unknown;
-  };
   if (request.kind === 'staff_quote') {
     const user = staffQuoteUserFromMetrics(metrics);
-    const systemPrepared =
-      !user &&
-      run.priority === HMS_JOB_PRIORITY_PREFETCH &&
-      metrics.userId == null &&
-      run.metrics?.quotePrepared === true;
+    const systemPrepared = !user && systemPreparedQuote;
     if (!user && !systemPrepared) {
       await markAiRunDeadLetter(
         { ...mark, lastError: 'staff_quote_identity_unavailable', failureClass: 'SCHEMA_DRIFT' },
@@ -2859,20 +2875,23 @@ async function latestStaffQuoteRunFor(
 ): Promise<AiWorkflowRun[]> {
   const wanted = hmsRequestKey({ kind: 'staff_quote', input: quoteInput });
   const now = new Date();
+  const ownerScope = quotePreparationEnabled()
+    ? or(
+        sql`${aiWorkflowRun.metrics}->>'userId' = ${userId}`,
+        and(
+          eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+          sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
+          sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+        ),
+      )
+    : sql`${aiWorkflowRun.metrics}->>'userId' = ${userId}`;
   const rows = await db
     .select()
     .from(aiWorkflowRun)
     .where(
       and(
         scope,
-        or(
-          sql`${aiWorkflowRun.metrics}->>'userId' = ${userId}`,
-          and(
-            eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
-            sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
-            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
-          ),
-        ),
+        ownerScope,
         eq(aiWorkflowRun.triggerMessageId, messageId),
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
         sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${messageId}`,
@@ -2904,7 +2923,9 @@ async function latestStaffQuoteRunFor(
     if (
       preparedRun.priority !== HMS_JOB_PRIORITY_PREFETCH ||
       metrics.userId != null ||
-      metrics.quotePrepared !== true
+      metrics.quotePrepared !== true ||
+      preparedRun.state === 'dead_letter' ||
+      preparedRun.state === 'superseded'
     ) {
       continue;
     }
@@ -2998,11 +3019,15 @@ export async function readHmsJobView(
                         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
                         or(
                           sql`${aiWorkflowRun.metrics}->>'userId' = ${input.staffQuoteOwnerId}`,
-                          and(
-                            eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
-                            sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
-                            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
-                          ),
+                          ...(quotePreparationEnabled()
+                            ? [
+                                and(
+                                  eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+                                  sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
+                                  sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+                                ),
+                              ]
+                            : []),
                         ),
                         staffQuoteRunFreshness(new Date()),
                       ),

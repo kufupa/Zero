@@ -87,6 +87,7 @@ import {
   enqueueHmsJob,
   queueAutoStaffQuoteHmsJob,
   hmsJobQueueEnabled,
+  quotePreparationEnabled,
   HMS_JOB_PRIORITY_USER,
   HMS_JOB_PRIORITY_PREFETCH,
   readHmsJobView,
@@ -199,6 +200,7 @@ const qualifiedStayInput = z
     workflowRunId: z.string().min(1),
     revisionRef: z.string().min(1),
     factRefs: z.array(z.string().min(1)).max(32).default([]),
+    notes: z.string().trim().max(1000).optional(),
   })
   .strict();
 export const qualifiedProposalInput = z
@@ -213,6 +215,7 @@ export const qualifiedProposalInput = z
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),
     agency: z.string().max(256).default('Quote'),
+    notes: z.string().trim().max(1000).optional(),
     // Empty for one stay. A combined quote lists its other stays here; the first stay stays in the fields above.
     additionalStays: z.array(qualifiedStayInput).max(62).default([]),
   })
@@ -452,6 +455,7 @@ type ProposalStay = {
   revision: QuoteRevision;
   facts?: AuthorizedProposalFacts;
   staff?: StaffQuoteAttestation;
+  preparedNotes?: string;
   /** The row prices the approval recorded. The PDF and Excel price the rows with them, and the total agrees. */
   rowPrices?: RowPrice[];
 };
@@ -498,7 +502,12 @@ async function proposalStaysFor(
   resolveFailure: string,
 ): Promise<ProposalStay[]> {
   const requests = [
-    { workflowRunId: input.workflowRunId, revisionRef: input.revisionRef, factRefs: input.factRefs },
+    {
+      workflowRunId: input.workflowRunId,
+      revisionRef: input.revisionRef,
+      factRefs: input.factRefs,
+      notes: input.notes,
+    },
     ...input.additionalStays,
   ];
   if (new Set(requests.map((request) => request.workflowRunId)).size !== requests.length)
@@ -522,6 +531,11 @@ async function proposalStaysFor(
       const systemPrepared = run.run.priority === HMS_JOB_PRIORITY_PREFETCH &&
         run.run.metrics?.quotePrepared === true &&
         run.run.metrics.userId == null;
+      if (systemPrepared && !quotePreparationEnabled())
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This quote is no longer ready. Run it again.',
+        });
       if (!systemPrepared) {
         const [owner] = await db
           .select({ id: aiDraftGeneration.id })
@@ -621,14 +635,25 @@ async function proposalStaysFor(
     } catch {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
     }
-    stays.push({ ...resolved, staff, rowPrices });
+    stays.push({
+      ...resolved,
+      staff,
+      rowPrices,
+      ...(systemPrepared && request.notes ? { preparedNotes: request.notes } : {}),
+    });
   }
   return stays;
 }
 
 /** The staff notes approved with each stay, each kept once and one per line. */
 function stayNotes(stays: ProposalStay[]): string | undefined {
-  const notes = [...new Set(stays.map((stay) => stay.staff?.notes).filter((note): note is string => !!note))];
+  const notes = [
+    ...new Set(
+      stays
+        .map((stay) => (stay.staff ? stay.staff.notes : stay.preparedNotes))
+        .filter((note): note is string => !!note),
+    ),
+  ];
   return notes.length ? notes.join('\n') : undefined;
 }
 
@@ -1267,7 +1292,7 @@ export const workstationRouter = router({
             agency: input.agency,
             signerName: ctx.sessionUser.name ?? '',
             signerEmail: ctx.sessionUser.email,
-            // The note comes from the approved attestations, not from this request.
+            // Fresh staff runs use their attested note; prepared prices carry the pane's reviewed header note.
             notes: stayNotes(stays),
           },
           { url },
@@ -1311,7 +1336,7 @@ export const workstationRouter = router({
             signerName: ctx.sessionUser.name ?? '',
             signerEmail: ctx.sessionUser.email,
           },
-          // The note comes from the approved attestations, not from this request.
+          // Fresh staff runs use their attested note; prepared prices carry the pane's reviewed header note.
           note: stayNotes(stays),
         });
       } catch (error) {
@@ -1334,7 +1359,7 @@ export const workstationRouter = router({
   sourceQuoteProposalPdf: mailboxProcedure
     .input(
       qualifiedProposalInput
-        .omit({ additionalStays: true })
+        .omit({ additionalStays: true, notes: true })
         .extend({ kind: z.enum(['imported_offer', 'approved_override']) })
         .strict(),
     )

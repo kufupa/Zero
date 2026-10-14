@@ -223,10 +223,30 @@ describe('Prepare quote for a multi-stay quote', () => {
   });
 
   it('asks for one document: the first stay is the request and every other stay goes in as additionalStays', () => {
-    const request = combinedDocumentRequest(twoQuotedStays());
+    const both = twoQuotedStays();
+    const firstStay = both.staffQuotes[NOV.key]!;
+    const secondStay = both.staffQuotes[DEC.key]!;
+    const session = {
+      ...both,
+      staffQuotes: {
+        ...both.staffQuotes,
+        [NOV.key]: {
+          ...firstStay,
+          approvedHeader: { ...firstStay.approvedHeader!, notes: 'First stay note.' },
+        },
+        [DEC.key]: {
+          ...secondStay,
+          approvedHeader: { ...secondStay.approvedHeader!, notes: 'Second stay note.' },
+        },
+      },
+    };
+    const request = combinedDocumentRequest(session);
     if (request.status !== 'ok') throw new Error(request.reason);
     expect(request.input.revisionRef).toBe('rev-a');
-    expect(request.input.additionalStays?.map((stay) => stay.revisionRef)).toEqual(['rev-b']);
+    expect(request.input.notes).toBe('First stay note.');
+    expect(request.input.additionalStays).toEqual([
+      expect.objectContaining({ revisionRef: 'rev-b', notes: 'Second stay note.' }),
+    ]);
     expect(request.expectedTotalMinor).toBe(408000);
   });
 

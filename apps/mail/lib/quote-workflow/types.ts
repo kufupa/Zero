@@ -284,6 +284,7 @@ export type StaffQuoteAllocation = {
     attention: string;
     clientEmail: string;
     clientTelephone: string;
+    notes?: string;
   };
   /** True when this stay's run carried a single-charge extra (shuttle, per-trip or one-item "other"). */
   onceExtras?: boolean;

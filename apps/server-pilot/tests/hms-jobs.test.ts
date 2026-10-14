@@ -201,6 +201,12 @@ async function enqueueStaffQuoteJob(
   );
 }
 
+function preparedInputFromRun(run: AiWorkflowRun | undefined): StaffQuoteInput {
+  if (!run) throw new Error('expected a staff quote run');
+  const request = run.readRequest as { input?: unknown } | null;
+  return staffQuoteInput.parse(request?.input);
+}
+
 function autoStaffQuoteRequest(threadId: string, messageId: string) {
   return {
     transportId: TRANSPORT_ID,
@@ -460,6 +466,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it('prepares one future quote once, at prefetch priority and with no staff user', () =>
     withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
 
       expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
@@ -482,7 +490,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(prepared?.idempotencyKey).toMatch(new RegExp(`^hms-job:staff-quote-prepared:${TRANSPORT_ID}:${messageId}:[a-f0-9]{64}$`));
 
       const paneInput = staffQuoteInput.parse({
-        ...(prepared?.readRequest as { input: Record<string, unknown> }).input,
+        ...preparedInputFromRun(prepared),
         selectionEpoch: 51,
         inputRevision: 90,
       });
@@ -494,12 +502,63 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(reused.run.priority).toBe(HMS_JOB_PRIORITY_PREFETCH);
     }));
 
-  it('starts a user quote when the pane changes a prepared price field', () =>
-    withSeededTestDb(async (db) => {
+  it.each(['dead_letter', 'superseded'] as const)(
+    'starts a user quote instead of reusing a prepared %s run',
+    (state) => withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
       expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
       const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      const input = (prepared?.readRequest as { input: StaffQuoteInput }).input;
+      await db.update(aiWorkflowRun).set({ state, finishedAt: new Date(), updatedAt: new Date() })
+        .where(eq(aiWorkflowRun.id, prepared!.id));
+
+      const input = staffQuoteInput.parse({
+        ...preparedInputFromRun(prepared),
+        selectionEpoch: 99,
+        inputRevision: 100,
+      });
+      const started = await hmsJobs.queueAutoStaffQuoteHmsJob({
+        ...autoStaffQuoteRequest(threadId, messageId),
+        request: { kind: 'staff_quote', input },
+      }, db);
+
+      expect(started).toMatchObject({ created: true, run: { priority: HMS_JOB_PRIORITY_USER } });
+      expect(started.run.id).not.toBe(prepared!.id);
+    }),
+  );
+
+  it('starts a user quote instead of reusing a prepared run when quote preparation is disabled', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId, run } = await seedQuoteExtraction(db);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      const input = staffQuoteInput.parse({
+        ...preparedInputFromRun(prepared),
+        selectionEpoch: 99,
+        inputRevision: 100,
+      });
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'false');
+
+      const started = await hmsJobs.queueAutoStaffQuoteHmsJob({
+        ...autoStaffQuoteRequest(threadId, messageId),
+        request: { kind: 'staff_quote', input },
+      }, db);
+
+      expect(started).toMatchObject({ created: true, run: { priority: HMS_JOB_PRIORITY_USER } });
+      expect(started.run.id).not.toBe(prepared!.id);
+    }));
+
+  it('starts a user quote when the pane changes a prepared price field', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId, run } = await seedQuoteExtraction(db);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      const input = preparedInputFromRun(prepared);
       const differentPrice = staffQuoteInput.parse({
         ...input,
         groups: input.groups.map((group) => ({ ...group, quantity: group.quantity + 1 })),
@@ -518,10 +577,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it('does not reuse a prepared result from a changed source message', () =>
     withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
       expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
       const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      const input = (prepared?.readRequest as { input: StaffQuoteInput }).input;
+      const input = preparedInputFromRun(prepared);
       const changedSource = staffQuoteInput.parse({ ...input, sourceHash: 'e'.repeat(64) });
 
       const queued = await hmsJobs.queueAutoStaffQuoteHmsJob({
@@ -634,6 +695,25 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(await prefetchQuoteReadyForExtraction(first.run, db, env)).toBe(1);
       expect(await prefetchQuoteReadyForExtraction(second.run, db, env)).toBe(0);
     }));
+
+  it.each(['dead_letter', 'superseded'] as const)(
+    'allows a fresh preparation after a prepared %s run without charging the hourly cap',
+    (state) => withSeededTestDb(async (db) => {
+      const env = { ...QUOTE_PREPARE_ENV, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
+      const { messageId, run } = await seedQuoteExtraction(db);
+      expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBe(1);
+      const [first] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      await db.update(aiWorkflowRun).set({ state, finishedAt: new Date(), updatedAt: new Date() })
+        .where(eq(aiWorkflowRun.id, first!.id));
+
+      expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBe(1);
+      const prepared = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      expect(prepared).toHaveLength(2);
+      const retry = prepared.find((row) => row.id !== first!.id);
+      expect(retry).toMatchObject({ state: 'queued' });
+      expect(retry?.idempotencyKey).not.toBe(first!.idempotencyKey);
+    }),
+  );
 
   it.each(['queued', 'claimed', 'running', 'retry_wait'] as const)(
     'auto-start reuses a matching %s staff quote regardless of age and selection counters',
@@ -940,6 +1020,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it('runs a prepared quote without a staff identity and keeps only the userless priced snapshot', () =>
     withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       vi.stubEnv('HITL_LEDGER', 'on');
       const { threadId, messageId } = await seedThread(db, 'Quote request');
       const preparedInput = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId, selectionEpoch: 0, inputRevision: 0 });
@@ -1012,6 +1094,39 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         .from(hitlToolRun)
         .where(and(eq(hitlToolRun.transportId, TRANSPORT_ID), eq(hitlToolRun.messageId, messageId), eq(hitlToolRun.kind, 'quote')));
       expect(toolRun?.userId).toBeNull();
+    }));
+
+  it('dead-letters a queued prepared quote while quote preparation is disabled', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'false');
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      const { run } = await enqueueHmsJob({
+        transportId: TRANSPORT_ID,
+        threadId,
+        triggerMessageId: messageId,
+        workItemId: null,
+        userId: null,
+        request: {
+          kind: 'staff_quote',
+          input: staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId, selectionEpoch: 0, inputRevision: 0 }),
+        },
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: `hms-job:staff-quote-prepared:disabled:${randomUUID()}`,
+        extraMetrics: { quotePrepared: true },
+      }, db);
+
+      const claimed = await claimJob(db);
+      expect(claimed.id).toBe(run.id);
+      await expect(runClaimedJob(db, claimed)).resolves.toBe('dead_letter');
+
+      const [stopped] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(stopped).toMatchObject({
+        state: 'dead_letter',
+        lastError: 'quote_preparation_disabled',
+        failureClass: 'POLICY_BLOCK',
+      });
+      expect(staffQuoteRunner.run).not.toHaveBeenCalled();
     }));
 
   it('does not read back an expired staff quote result for matching inputs', () =>

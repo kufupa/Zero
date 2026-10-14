@@ -210,6 +210,7 @@ export type QualifiedStayRun = {
   workflowRunId: string;
   revisionRef: string;
   factRefs: string[];
+  notes?: string;
 };
 
 export type QualifiedStaffPdfInput = {
@@ -223,6 +224,7 @@ export type QualifiedStaffPdfInput = {
   clientEmail: string;
   clientTelephone: string;
   agency: string;
+  notes?: string;
   /** A combined quote: the other stays' runs. Absent for one stay. */
   additionalStays?: QualifiedStayRun[];
 };
@@ -1021,6 +1023,7 @@ function boundStaffQuoteResult(
       attention: built.header.attention,
       clientEmail: built.header.clientEmail,
       clientTelephone: built.header.clientTelephone,
+      ...(built.header.notes ? { notes: built.header.notes } : {}),
     },
     onceExtras: hasPerStaySingleChargeExtras(built.sent),
     runId: typeof result.runId === 'string' && result.runId.trim() ? result.runId : null,
@@ -1379,6 +1382,7 @@ export async function bindQualifiedStaffProposalPdf(args: {
       clientEmail: args.input.clientEmail,
       clientTelephone: args.input.clientTelephone,
       agency: args.input.agency,
+      ...(args.input.notes ? { notes: args.input.notes } : {}),
       ...(args.input.additionalStays?.length ? { additionalStays: args.input.additionalStays } : {}),
     });
     if (

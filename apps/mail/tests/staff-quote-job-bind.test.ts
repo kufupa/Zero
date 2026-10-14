@@ -102,7 +102,7 @@ describe('staff quote HMS job binding', () => {
       selectionEpoch: 3,
       inputRevision: 4,
       groups,
-      header: emptyStaffQuoteHeader(),
+      header: { ...emptyStaffQuoteHeader(), notes: '  Breakfast only on day two.  ' },
     });
     await vi.runAllTimersAsync();
     const result = await pending;
@@ -492,7 +492,7 @@ describe('staff quote HMS job binding', () => {
       selectionEpoch: 3,
       inputRevision: 4,
       groups,
-      header: emptyStaffQuoteHeader(),
+      header: { ...emptyStaffQuoteHeader(), notes: '  Breakfast only on day two.  ' },
     });
 
     expect(result).toMatchObject({
@@ -502,6 +502,7 @@ describe('staff quote HMS job binding', () => {
         inputRevision: 4,
         preparedByNava: true,
         preparedAt: asOf,
+        approvedHeader: { notes: 'Breakfast only on day two.' },
       },
     });
   });

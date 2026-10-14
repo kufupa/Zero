@@ -1707,6 +1707,7 @@ export function NavaPane({
           { attention: header.attention, clientEmail: header.clientEmail, clientTelephone: header.clientTelephone },
           documentContactRef.current,
         ),
+        ...(header.notes ? { notes: header.notes } : {}),
       },
       expectedTotalMinor: quote.totalMinor,
     }).then((remote) => {
