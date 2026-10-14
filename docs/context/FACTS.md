@@ -122,6 +122,18 @@ Source: `/home/orca/nava-research/reports/leftover-worktrees-20261014.md` (ADE).
 | `feat/action-classifier` (p2-classify, 3 commits, pushed, no PR) | One Luna-max classifier (needs action + action) with vision; eval writes per-message predictions | **Reuse for voucher reclassification**; do not build another classifier |
 | `feat/luna-v4-a` (5), `draft/ae1-multiroom-property-pool` (#168 closed, 3), `w4/greptile-*` (#152/#157/#158 merged), `park/w4-P-u5-local-20261014` | All pushed to origin | Kept on origin; local trees deletable |
 
+## 7. Mailboxes and Da Vinci intake (2026-10-14 night)
+
+| Fact | Source |
+|---|---|
+| Server ingest is ONE POP3 account (`navaai@legacyhotels.co.za`, hotel Zimbra via VPN). `transport-centurion` is a routing row matched on To-address aliases, not a mailbox connection. All other aliases land in quarantine; quarantine promotion is Centurion-only. | `/home/orca/nava-research/reports/M1-davinci-mailbox-20261014.md`; `pop3-client.ts:537-576`, `promote-quarantine.ts:26-31` |
+| Public MX for `legacyhotels.co.za` and `.com` = Vox Telecom gateway; M365 behind it is unverified. Da Vinci/Faith M365 is an owner claim. | M1 report §2 |
+| Da Vinci mail (5 aliases: shared `davinci@`, Ayanda, Faith, Khanyisile, Elizabeth) is already ingested into quarantine: 541 inbound + 2 archive-only, Oct 9–12 window. The shared alias sent 145, mostly to Elizabeth/Faith (central intake/distribution). One email often reaches several aliases. | Other-LLM analysis pasted by owner 2026-10-14; private corpus `.private/connected-mailbox-corpus/davinci-centurion-window-20261009-12-*.jsonl.gz` |
+| Da Vinci inbound rule-mix (one dominant label, estimate): billing 127, amend/cancel 113, OTA/channel 103, direct booking 51, quote/availability 36, F&B 32, groups 8, other 68. 298/541 matched several intents. | Same analysis; not adjudicated |
+| Da Vinci HMS: tenant `HMS_DAVINCI`, same Infor user NAVAAI as Centurion (`HMS_LEGACY`/HRCEN); property code unknown until first login. | Owner 2026-10-14 |
+| Prod runs ONE HMS process (`ai-worker`; pm2: http, worker, ai-worker, remote-http). The DB property lock covers Guest Stay only; group-block reads skip it. | pm2 read 2026-10-14; D1 audit |
+| HMS HTTP reads exist (`runtime.ts:3676` `postForm`: in-page fetch) but need a logged-in browser session; bare `page.request.post` bounced to login. | code |
+
 ## 5. Using these facts
 
 1. Reuse an existing source and its exact denominator/window before proposing a new study.
