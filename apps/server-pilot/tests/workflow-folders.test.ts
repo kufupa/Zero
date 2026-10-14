@@ -168,6 +168,50 @@ describe('workflow folder list pagination', () => {
     expect(input.cursor).toBe('');
     expect(workflowFolderOffset(input.cursor)).toBe(0);
   });
+
+  it('accepts React Query direction and the eval review set', () => {
+    expect(
+      workflowFolderListInputSchema.parse({
+        folder: 'quotes',
+        limit: 100,
+        cursor: '',
+        direction: 'forward',
+        set: 'eval',
+      }),
+    ).toMatchObject({
+      folder: 'quotes',
+      limit: 100,
+      cursor: '',
+      direction: 'forward',
+      set: 'eval',
+    });
+  });
+});
+
+describe('workflowFolders.setActionLabel input and access', () => {
+  it('rejects actions outside the shared action vocabulary', async () => {
+    const mutation = (
+      caller().workflowFolders as unknown as { setActionLabel?: (input: unknown) => Promise<unknown> }
+    ).setActionLabel;
+    expect(mutation).toBeTypeOf('function');
+    if (!mutation) throw new Error('setActionLabel mutation is missing');
+    await expect(mutation({ messageId: MESSAGE_ID, action: 'not-an-action' })).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
+  });
+
+  it('forbids member action marks before opening the database', async () => {
+    const mutation = (
+      caller('member').workflowFolders as unknown as {
+        setActionLabel?: (input: unknown) => Promise<unknown>;
+      }
+    ).setActionLabel;
+    expect(mutation).toBeTypeOf('function');
+    if (!mutation) throw new Error('setActionLabel mutation is missing');
+    await expect(mutation({ messageId: MESSAGE_ID, action: 'amend' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+  });
 });
 
 describe('workItems.adminReview', () => {

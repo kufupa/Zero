@@ -40,7 +40,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   //   const { mutateAsync: createMeet } = useMutation(trpc.meet.create.mutationOptions());
   const { data: unreadCounts } = useUnreadCounts();
   const location = useLocation();
-  const { data: workflowSummary } = useWorkflowFolderSummary(location.pathname.startsWith('/mail'));
+  const reviewSet = new URLSearchParams(location.search).get('set') === 'eval';
+  const { data: workflowSummary } = useWorkflowFolderSummary(
+    location.pathname.startsWith('/mail'),
+    reviewSet ? 'eval' : undefined,
+  );
   const { data: session } = useSession();
   const showAdminDashboard = isAdminDashboardEnabled(session);
   const capabilities = usePilotCapabilities();

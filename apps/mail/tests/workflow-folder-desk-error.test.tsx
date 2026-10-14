@@ -42,6 +42,7 @@ vi.mock('@/providers/query-provider', () => ({
       list: { infiniteQueryOptions: () => ({}) },
       thread: { queryOptions: () => ({}) },
       summary: { queryKey: () => ['workflowFolders', 'summary'] },
+      setActionLabel: { mutationOptions: () => ({}) },
     },
     workItems: { adminReview: { mutationOptions: () => ({}) } },
   }),
