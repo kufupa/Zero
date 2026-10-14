@@ -1,3 +1,4 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { __setDbForTests } from '../src/db/client.js';
 import { message } from '../src/db/schema/mail.js';
@@ -7,7 +8,11 @@ import {
   workflowFolderListInputSchema,
   workflowFolderOffset,
 } from '../src/trpc/routes/workflow-folders.js';
-import { hasPrefilledData, mapWorkflowFolder } from '../src/mail/workflow-folders.js';
+import {
+  hasPrefilledData,
+  mapWorkflowFolder,
+  workflowFolderMembershipSql,
+} from '../src/mail/workflow-folders.js';
 
 const TRANSPORT = 'transport-centurion';
 const USER = 'user-ropperman';
@@ -135,6 +140,23 @@ describe('workflow folder mapping', () => {
     );
   });
 
+  it('lets a saved owner action override the extraction action', () => {
+    expect(
+      mapWorkflowFolder({
+        ownerAction: 'amend',
+        action: 'quote_availability',
+        payload: { action: 'new_booking' },
+        kind: 'quote',
+      }),
+    ).toBe('amendments');
+    expect(
+      mapWorkflowFolder({ ownerAction: '', action: 'quote_availability', kind: 'booking' }),
+    ).toBe('quotes');
+    expect(mapWorkflowFolder({ ownerAction: 'no_action', action: 'quote_availability' })).toBe(
+      'not-for-nava',
+    );
+  });
+
   it.each([
     ['quote', 'quotes'],
     ['booking', 'new-bookings'],
@@ -153,6 +175,15 @@ describe('workflow folder mapping', () => {
     );
     expect(mapWorkflowFolder({ kind: 'booking', automatedChannel: true })).toBe('not-for-nava');
     expect(mapWorkflowFolder({ action: 'future_action', kind: 'spam' })).toBe('other-to-do');
+  });
+
+  it('builds SQL membership from the latest owner action before extraction action', () => {
+    const query = new PgDialect().sqlToQuery(workflowFolderMembershipSql(TRANSPORT));
+
+    expect(query.sql).toContain('"mail_action_label"."source" = \'owner\'');
+    expect(query.sql).toContain('"mail_action_label"."version" = \'owner\'');
+    expect(query.sql).toContain('order by "mail_action_label"."updated_at" desc');
+    expect(query.sql).toMatch(/coalesce\([\s\S]*?nullif\(btrim\(\([\s\S]*?select "mail_action_label"\."action"/);
   });
 
   it('counts a successful extraction as prefilled only when a displayable value exists', () => {

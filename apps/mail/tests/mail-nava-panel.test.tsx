@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 
 const mocks = vi.hoisted(() => ({
   threadId: null as string | null,
+  folder: 'inbox',
   wide: true,
   useWebPreview: vi.fn(),
 }));
@@ -46,7 +47,9 @@ vi.mock('../components/mail/thread-display', () => ({
   ThreadDisplay: () => <div data-testid="thread-display" />,
 }));
 
-vi.mock('../components/mail/mail-list', () => ({ MailList: () => null }));
+vi.mock('../components/mail/mail-list', () => ({
+  MailList: () => <div data-testid="standard-mail-list" />,
+}));
 vi.mock('../components/mail/mail-search-bar', () => ({ MailSearchBar: () => null }));
 vi.mock('../components/ui/sidebar-toggle', () => ({ SidebarToggle: () => null }));
 
@@ -85,7 +88,7 @@ vi.mock('react-router', () => ({
     </a>
   ),
   useNavigate: () => vi.fn(),
-  useParams: () => ({ folder: 'inbox' }),
+  useParams: () => ({ folder: mocks.folder }),
   useSearchParams: () => [new URLSearchParams('thread=thread-7')],
 }));
 vi.mock('nuqs', () => ({
@@ -100,8 +103,8 @@ vi.mock('@/paraglide/messages', () => ({
 }));
 vi.mock('@/providers/query-provider', () => ({
   useTRPC: () => ({ mail: { listThreads: { queryOptions: (input: unknown) => input } } }),
-  // The header's Needs-you control reads the list route. With no list route it reads as unavailable.
-  trpcClient: { workItems: {} },
+  // The header's Needs-you control reads this list route for its live status.
+  trpcClient: { workItems: { list: { query: async () => [] } } },
 }));
 vi.mock('@tanstack/react-query', () => ({
   useQuery: () => ({
@@ -140,6 +143,7 @@ const setNavaToggle = (open: boolean) => act(() => getDefaultStore().set(navaSid
 beforeEach(() => {
   localStorage.clear();
   mocks.threadId = null;
+  mocks.folder = 'inbox';
   mocks.wide = true;
   mocks.useWebPreview.mockReset();
   mocks.useWebPreview.mockImplementation(() => readyPreview());
@@ -239,6 +243,19 @@ describe('Nava pane beside the open thread', () => {
     expect(panelSize('mail-list-panel')).toBe('0.0');
     expect(panelSize('mail-thread-panel')).toBe('62.0');
     expect(panelSize('mail-nava-panel')).toBe('38.0');
+  });
+});
+
+describe('workflow folder mail routing', () => {
+  it('renders the standard mail list, thread view, and Nava pane', async () => {
+    mocks.folder = 'quotes';
+    mocks.threadId = 'thread-42';
+
+    render(<MailLayout />);
+
+    expect(screen.getByTestId('standard-mail-list')).toBeDefined();
+    expect(screen.getByTestId('thread-display')).toBeDefined();
+    expect(await screen.findByTestId('nava-pane')).toBeDefined();
   });
 });
 
