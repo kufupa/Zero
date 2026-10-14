@@ -2534,6 +2534,37 @@ describe('staff dinner B&B fallback', () => {
     expect(after.staffHeader.stayExtrasByKey?.['2026-11-12:2026-11-14']?.dinnerAllowanceGroupIds).toEqual(['g1']);
   });
 
+  it('keeps a staff-approved whole-stay dinner charge when the server retried only some rooms as B&B', () => {
+    let before = withStaffSource(analysisReady());
+    before = {
+      ...before,
+      staffHeader: {
+        ...before.staffHeader,
+        salesStrategy: 'BAR',
+        stayExtrasByKey: {
+          ...before.staffHeader.stayExtrasByKey,
+          [STAY_A]: {
+            ...defaultStaffStayExtras(before.staffHeader),
+            dinnerEnabled: true,
+            dinnerAllowanceMinor: 35_000,
+            dinnerAllowanceUnit: 'per_person_per_night',
+          },
+        },
+      },
+    };
+    const action = staffQuoteFor(STAY_A, 'rev-mixed', 85_000, before.inputRevision);
+    if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    const after = reduceQuoteSession(before, {
+      ...action,
+      staffQuote: {
+        ...action.staffQuote,
+        dinnerFallbackGroupIds: ['g1'],
+        dinnerAddOn: { label: 'Dinner add-on', amountMinor: 35_000, unit: 'per_person_per_night', totalMinor: 140_000 },
+      },
+    });
+    expect(after.staffHeader.stayExtrasByKey?.[STAY_A]?.dinnerAllowanceGroupIds).toBeUndefined();
+  });
+
   it.each([
     { name: 'short', qualifier: 'Set menu' },
     { name: '120-character', qualifier: 'x'.repeat(120) },

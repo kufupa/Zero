@@ -1499,9 +1499,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
               dinnerAllowanceMinor: dinnerAddOn?.amountMinor ?? existingDinner.dinnerAllowanceMinor,
               dinnerAllowanceUnit: dinnerAddOn?.unit ?? existingDinner.dinnerAllowanceUnit,
               dinnerAllowanceLabel: existingDinner.dinnerAllowanceLabel,
-              dinnerAllowanceGroupIds: fallbackGroupIds.length
-                ? fallbackGroupIds
-                : existingDinner.dinnerAllowanceGroupIds,
+              // A dinner charge staff already approved keeps its groups; fallback ids only scope a charge the fallback added.
+              dinnerAllowanceGroupIds:
+                existingDinner.dinnerEnabled || !fallbackGroupIds.length
+                  ? existingDinner.dinnerAllowanceGroupIds
+                  : fallbackGroupIds,
             },
           },
         };
