@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "kind": "read-only-observation",
+  "observedAt": "2026-10-14T18:03:56Z",
+  "deployedCheckoutCommit": "15e5bb63b9717eb5e52ae0916ddd0db346cb20af",
+  "remoteMainAtAudit": "00c10fd21ad708b8869fee04fd67dcdbd9503780",
+  "health": {
+    "adminHttpsStatus": 200,
+    "http8788": {
+      "ok": true,
+      "service": "server-pilot"
+    },
+    "remoteHttp8789": {
+      "ok": true,
+      "service": "server-pilot"
+    }
+  },
+  "processes": [
+    {
+      "name": "http",
+      "startedAt": "2026-10-14T16:17:20.681Z",
+      "actualStartupEnv": {
+        "PARTY_MATCH_V2": "true",
+        "HMS_QUOTE_PREPARE": "true",
+        "RESERVATIONIST_PANE_SAVE": null,
+        "NAVA_BUILD_COMMIT": "30b84b445bf0438c276467377095ea85e3680e66"
+      }
+    },
+    {
+      "name": "worker",
+      "startedAt": "2026-10-14T16:17:20.826Z",
+      "actualStartupEnv": {
+        "PARTY_MATCH_V2": "true",
+        "HMS_QUOTE_PREPARE": "true",
+        "RESERVATIONIST_PANE_SAVE": null,
+        "NAVA_BUILD_COMMIT": "30b84b445bf0438c276467377095ea85e3680e66"
+      }
+    },
+    {
+      "name": "ai-worker",
+      "startedAt": "2026-10-14T16:17:21.042Z",
+      "actualStartupEnv": {
+        "PARTY_MATCH_V2": "true",
+        "HMS_QUOTE_PREPARE": "true",
+        "RESERVATIONIST_PANE_SAVE": null,
+        "NAVA_BUILD_COMMIT": "30b84b445bf0438c276467377095ea85e3680e66"
+      }
+    },
+    {
+      "name": "remote-http",
+      "startedAt": "2026-10-14T16:17:21.570Z",
+      "actualStartupEnv": {
+        "PARTY_MATCH_V2": null,
+        "HMS_QUOTE_PREPARE": null,
+        "RESERVATIONIST_PANE_SAVE": null,
+        "NAVA_BUILD_COMMIT": "88943d74dd421d289ff1074f5be43d4d8b78c677"
+      }
+    }
+  ],
+  "deliveredAssets": {
+    "pane": "nava-pane-V247sRKy.js",
+    "mailLayout": "page-TbGlXVgy.js",
+    "paneGoldControlPresent": true,
+    "customWorkflowDeskPresent": true,
+    "method": "literal checks in fetched static JavaScript; not authenticated interaction proof"
+  },
+  "historicalMetrics": {
+    "source": "private overnight scoreboard, 2026-10-14 04:33Z",
+    "goldenAction": {
+      "v1Correct": 15,
+      "v2Correct": 24,
+      "sameRows": 26,
+      "createRows": 0,
+      "datesScored": false,
+      "illustrativeWilson95Percent": [75.9, 97.9],
+      "intervalLimit": "Selected small set, not representative independent production trials"
+    },
+    "classifier": {
+      "mediumAgreementPercent": 77,
+      "mediumFailurePercent": 0.5,
+      "maxAgreementPercent": 73.9,
+      "maxFailurePercent": 7.25,
+      "labelsPartlyModelAdjudicated": true
+    },
+    "partyPicker": {
+      "evaluatedEmails": 95,
+      "wrongBindsObserved": 0,
+      "autoBindPercent": 57.9,
+      "automaticBindDenominatorNotEstablishedHere": true,
+      "inferredAutomaticBindCount": 55,
+      "inferenceLimit": "Inferred from rounded 57.9% coverage, not observed count",
+      "conditionalZeroErrorUpper95Percent": 5.3
+    }
+  },
+  "limits": [
+    "No guest/mail bodies, credentials, raw transcripts or model responses included.",
+    "Process startup environment is not a live-code version attestation.",
+    "No current staff-adoption measurement or quote-price/writer proof was run.",
+    "Absent save flag is not authorization to enable it.",
+    "Historical evaluation metrics are not current full-product accuracy."
+  ]
+}
