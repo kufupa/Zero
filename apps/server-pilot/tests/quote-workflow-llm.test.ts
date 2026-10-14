@@ -246,6 +246,46 @@ describe('QUOTE_WORKFLOW_PROMPT_VERSION', () => {
 });
 
 describe('mapLlmDecision', () => {
+  it('anchors yearless quote dates to received time and preserves an explicit trip year', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, arrival: '2026-03-12', departure: '2026-03-15' }],
+        }),
+      ),
+      {
+        dateAnchor: {
+          receivedAt: '2026-12-20T12:00:00.000Z',
+          sourceText: 'Subject: Quote\nPlease quote 12-14 March.',
+        },
+      },
+    );
+    const explicit = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, arrival: '2027-03-12', departure: '2027-03-15' }],
+        }),
+      ),
+      {
+        dateAnchor: {
+          receivedAt: '2026-12-20T12:00:00.000Z',
+          sourceText: 'Subject: Quote\nPlease quote 12-14 March 2026.',
+        },
+      },
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      arrivalDate: '2027-03-12',
+      departureDate: '2027-03-15',
+    });
+    expect(explicit.groups[0]).toMatchObject({
+      arrivalDate: '2026-03-12',
+      departureDate: '2026-03-15',
+    });
+  });
+
   it('maps groups to editable stay groups without any price field', () => {
     const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis()));
     expect(mapped.intent).toBe('quote');

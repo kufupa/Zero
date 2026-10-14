@@ -27,6 +27,7 @@ import type {
   SyncedQuoteSelection,
 } from './quote-workflow-synced-selection.js';
 import { attachmentMattersForReview, unreadReasonWords } from './quote-attachment-review.js';
+import { stayDateSourceText } from './stay-date-anchoring.js';
 
 /**
  * Luna analyse of a synced mail, shared by the pane route and the inbound
@@ -452,7 +453,13 @@ export async function analyseSyncedSelection(
       flags,
       ...(treatAs ? { workflow: treatAs } : {}),
     };
-    const mapped = mapLlmDecision(luna, { treatAs });
+    const mapped = mapLlmDecision(luna, {
+      treatAs,
+      dateAnchor: {
+        receivedAt: synced.receivedAt,
+        sourceText: stayDateSourceText(synced),
+      },
+    });
     const payload = {
       status: 'ready' as const,
       intent: mapped.intent,

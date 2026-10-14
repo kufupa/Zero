@@ -15,6 +15,7 @@ import {
   type MailExtractionPayload,
   type MailKind,
 } from './schema.js';
+import { stayDateSourceText } from '../stay-date-anchoring.js';
 
 /** The model every inbound read requests. Same Azure deployment as the quote analyse route. */
 export const EXTRACTION_MODEL_ID = 'gpt-6-luna';
@@ -31,7 +32,7 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - For mail-kind mapping, these action/document rules take precedence over hotel workflow examples above: an invoice, folio, or other payment notice that is a payment document for an existing booking is voucher_pop when there is no reservation action.
 - kind: quote asks for accommodation rates, availability or a quotation. booking asks to make or confirms a stay. amendment changes an existing booking (dates, nights, room, late checkout). cancellation cancels one. other is anything else, including venue hire, event-only asks, invoice or folio requests that are not themselves payment documents for an existing booking, and payment questions that are not proof/remittance/payment documents for an existing booking.
 - spam is cold sales or promotions aimed at the hotel. Hotel-directed enquiries about rates, availability, groups, conferences or events are never spam, even if the wording resembles marketing; use quote for an accommodation rate or availability request. Cold sales/promotions aimed at the hotel remain spam.
-- stays: one stay per distinct date set. Two date sets in one mail are two stays. Dates are ISO yyyy-mm-dd. departure is the checkout day, so "26 to 27 Oct" is one night. A stated night count wins over a bare date pair: "26th and 27th Oct, 2 nights" lists the nights, so departure is 28 Oct. A year the mail states for the trip (in the subject or body, e.g. "Tour 2027" or "next year") wins. Otherwise a day and month without a year is its next occurrence after the received date.
+- stays: one stay per distinct date set. Two date sets in one mail are two stays. Dates are ISO yyyy-mm-dd. departure is the checkout day, so "26 to 27 Oct" is one night. A stated night count wins over a bare date pair: "26th and 27th Oct, 2 nights" lists the nights, so departure is 28 Oct. Anchor yearless day/month and relative weekday dates to the selected email's Received at date in Johannesburg local time, never today's date. If a day/month has passed in that received year, use the following year; "next Friday" is the first Friday strictly after receipt. An explicit trip year in the subject, body, thread or attachment wins, even if past. A year stated as "next year" means received year plus one.
 - rows: within a stay, one row per room type as written. "Single" and "Double/Twin" are separate rows. rooms is the count of identical rooms of that type. adultsPerRoom is the adults in EACH room: "6 adults in 3 rooms" is 2, one named guest in a room is 1, and a double or twin with no headcount is 2.
 - totalRooms is the stay's total rooms as stated. When the mail gives a total without a split per room type (e.g. "30 rooms, single and double/twin rates"), set totalRooms, keep one row per room type with rooms null, and list rooms in missing. Never split a total yourself.
 - requested is the stay the sender asks for now. booked is set only for amendment, cancellation and voucher_pop: the dates the mail or thread says are currently booked. Otherwise booked is null.
@@ -222,6 +223,10 @@ export async function extractInboundMail(input: {
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
+    dateAnchor: {
+      receivedAt: input.selection.receivedAt,
+      sourceText: stayDateSourceText(input.selection),
+    },
   });
   const kind = isSelfSentPreStayInformationMail({
     fromAddress: input.from,

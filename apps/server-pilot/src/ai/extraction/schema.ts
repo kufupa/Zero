@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { MAIL_KINDS } from '../../db/schema/work.js';
 import { maskCardNumbers } from '../card-mask.js';
 import { validIsoDate } from '../quote-workflow-llm.js';
+import { anchorStayDateRange, type StayDateAnchorContext } from '../stay-date-anchoring.js';
 
 /**
  * Inbound extraction (mail_extraction). The model fills `mailExtractionSchema`, which is lenient so one bad field
@@ -180,7 +181,7 @@ export function stableId(prefix: 's' | 'r', ...parts: string[]): string {
  */
 export function sanitizeExtraction(
   output: MailExtractionOutput,
-  input: { messageId: string; sourceText: string },
+  input: { messageId: string; sourceText: string; dateAnchor?: StayDateAnchorContext },
 ): SanitizedExtraction {
   const sourceLower = input.sourceText.toLowerCase();
   const email = cleanText(output.contact.email);
@@ -194,7 +195,7 @@ export function sanitizeExtraction(
     return {
       id,
       hotel: cleanText(stay.hotel),
-      requested: dateRangeOf(stay.requested),
+      requested: dateRangeOf(anchorStayDateRange(stay.requested, input.dateAnchor ?? {})),
       booked: stay.booked ? dateRangeOf(stay.booked) : null,
       totalRooms: countOf(stay.totalRooms, 1, 999),
       rows: stay.rows.slice(0, MAX_ROWS).map((row, rowIndex) => ({

@@ -9,6 +9,11 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { maskCardNumbers } from './card-mask.js';
 import { createHash } from 'node:crypto';
 import { matchKey } from './party-match.js';
+import {
+  anchorStayDateRange,
+  receivedDateAtHotel,
+  type StayDateAnchorContext,
+} from './stay-date-anchoring.js';
 
 const THREAD_MESSAGE_MAX = 8_000;
 const THREAD_TOTAL_MAX = 40_000;
@@ -191,8 +196,9 @@ export function buildQuoteWorkflowPrompt(
   if (staffNote) {
     parts.push(`Staff note (top-priority evidence):\n${maskCardNumbers(staffNote)}`);
   }
-  if (selection.receivedAt) {
-    parts.push(`Received at: ${selection.receivedAt.slice(0, 10)}`);
+  const receivedDate = receivedDateAtHotel(selection.receivedAt);
+  if (receivedDate) {
+    parts.push(`Received at (Johannesburg local date): ${receivedDate}`);
   }
   parts.push(`Subject:\n${maskCardNumbers(selection.subject)}`);
   parts.push(`Body:\n${maskCardNumbers(selection.bodyText)}`);
@@ -381,7 +387,7 @@ function groundedAmendmentFields(
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
 export function mapLlmDecision(
   analysis: LunaAnalysis,
-  options?: { treatAs?: QuoteTreatAs },
+  options?: { treatAs?: QuoteTreatAs; dateAnchor?: StayDateAnchorContext },
 ): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
   const staffQuote = Boolean(options?.treatAs);
@@ -401,8 +407,12 @@ export function mapLlmDecision(
     };
   }
   const groups = analysis.groups.map((group, index) => {
-    const arrivalDate = validIsoDate(group.arrival);
-    const departureDate = validIsoDate(group.departure);
+    const anchoredDates = anchorStayDateRange(
+      { arrival: group.arrival, departure: group.departure },
+      options?.dateAnchor ?? {},
+    );
+    const arrivalDate = validIsoDate(anchoredDates.arrival);
+    const departureDate = validIsoDate(anchoredDates.departure);
     if (group.arrival && !arrivalDate) {
       missing.push({
         field: 'arrivalDate',
