@@ -29,8 +29,11 @@ import {
   PANE_ATTACH_MAX_BYTES,
   paneHmsWriteLoaders,
   paneHmsWriteMode,
+  paneAmendPreviewDigest,
   prepareAmend,
   prepareHmsWriteSnapshot,
+  type PaneAmendSpawnInput,
+  type PaneAmendSpawnResult,
   type PaneAttachSpawnInput,
   type PaneAttachSpawnResult,
   runPaneHmsWriteOnce,
@@ -46,13 +49,21 @@ import { withIngestionDb } from './helpers/ingestion-db.js';
 const attachCli = (await import('../tooling/playwright-quote/attach-document.mjs' as string)) as {
   ATTACH_MAX_BYTES: number;
 };
+const amendCliRules = (await import('../tooling/playwright-quote/amend-stay-rules.mjs' as string)) as {
+  amendPreviewDigest(input: {
+    confirmation: string;
+    expectedLastName: string;
+    current: PaneStayFields;
+    fields: Record<string, string | number>;
+  }): string;
+};
 
 const TRANSPORT_ID = 'transport-centurion';
 const TRANSPORT_EMAIL = 'centurion@legacyhotels.co.za';
 const USER = 'user-ropperman';
 const CONFIRMATION = '57291630-1';
 const ARRIVAL = '2027-09-14';
-const ENV = { RESERVATIONIST_PANE_AMEND: 'lab' };
+const ENV = { RESERVATIONIST_PANE_SAVE: 'lab' };
 const PNG_BYTES = Buffer.concat([
   Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
   Buffer.from('proof'),
@@ -90,6 +101,20 @@ const LAB_STAY: PaneStayFields = {
   organization: null,
 };
 
+const AMEND_FIELDS = { adults: 2 };
+const AMEND_FORM = {
+  action: 'amend',
+  confirmation: CONFIRMATION,
+  arrival: ARRIVAL,
+  lastName: 'Labtest',
+  fields: AMEND_FIELDS,
+  previewDigest: amendCliRules.amendPreviewDigest({
+    confirmation: CONFIRMATION,
+    expectedLastName: 'Labtest',
+    current: LAB_STAY,
+    fields: AMEND_FIELDS,
+  }),
+};
 const ATTACH_FORM = {
   action: 'attach_document',
   confirmation: CONFIRMATION,
@@ -110,8 +135,10 @@ const CANCEL_FORM = {
 let hmsStay: PaneStayFields;
 let lookups: PaneStayLookupSpawnInput[];
 let attachCalls: { input: PaneAttachSpawnInput; bytes: Buffer }[];
+let amendCalls: PaneAmendSpawnInput[];
 let cancelCalls: PaneStayCancelSpawnInput[];
 let onAttach: (input: PaneAttachSpawnInput) => Promise<PaneAttachSpawnResult>;
+let onAmend: (input: PaneAmendSpawnInput) => Promise<PaneAmendSpawnResult>;
 let onCancel: (input: PaneStayCancelSpawnInput) => Promise<PaneStayCancelSpawnResult>;
 let storage: FakeS3Storage;
 const runDirs: string[] = [];
@@ -146,6 +173,17 @@ async function defaultAttach(): Promise<PaneAttachSpawnResult> {
   return { outcome: 'attached', uploadSent: true, screenshots: ['before.png', 'after.png'], runDir };
 }
 
+async function defaultAmend(input: PaneAmendSpawnInput): Promise<PaneAmendSpawnResult> {
+  const runDir = await runDirWithPngs(['before.png', 'after.png']);
+  return {
+    outcome: 'amended',
+    saveAttempted: true,
+    screenshots: [join(runDir, 'before.png'), join(runDir, 'after.png')],
+    changedFieldsReadback: input.fields,
+    runDir,
+  };
+}
+
 async function defaultCancel(): Promise<PaneStayCancelSpawnResult> {
   const runDir = await runDirWithPngs(['before.png', 'after.png']);
   return {
@@ -166,8 +204,10 @@ beforeEach(() => {
   hmsStay = { ...LAB_STAY };
   lookups = [];
   attachCalls = [];
+  amendCalls = [];
   cancelCalls = [];
   onAttach = defaultAttach;
+  onAmend = defaultAmend;
   onCancel = defaultCancel;
   paneStayLookupLoaders.enabled = () => true;
   paneStayLookupLoaders.spawn = async (input) => {
@@ -178,6 +218,10 @@ beforeEach(() => {
   paneHmsWriteLoaders.spawnAttach = async (input) => {
     attachCalls.push({ input, bytes: await readFile(input.file) });
     return onAttach(input);
+  };
+  paneHmsWriteLoaders.spawnAmend = async (input) => {
+    amendCalls.push(input);
+    return onAmend(input);
   };
   paneStayCancelLoaders.spawn = async (input) => {
     cancelCalls.push(input);
@@ -191,6 +235,7 @@ afterEach(async () => {
   paneStayLookupLoaders.spawn = null;
   paneHmsWriteLoaders.lock = null;
   paneHmsWriteLoaders.spawnAttach = null;
+  paneHmsWriteLoaders.spawnAmend = null;
   paneHmsWriteLoaders.readAttachment = null;
   paneStayCancelLoaders.spawn = null;
   await Promise.all(runDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -284,11 +329,12 @@ async function eventsOf(db: DB, workItemId: string, type: WorkEventType) {
 }
 
 describe('pane HMS write (U26)', () => {
-  it('pins the attach cap to the read path cap, and the amend gate is lab only', () => {
+  it('pins attach cap and keeps all pane HMS writes behind SAVE=lab', () => {
     expect(attachCli.ATTACH_MAX_BYTES).toBe(ARTIFACT_MAX_INPUT_BYTES);
     expect(PANE_ATTACH_MAX_BYTES).toBe(ARTIFACT_MAX_INPUT_BYTES);
-    expect(paneHmsWriteMode({ RESERVATIONIST_PANE_AMEND: 'lab' })).toBe('lab');
-    expect(paneHmsWriteMode({ RESERVATIONIST_PANE_AMEND: 'on' })).toBe('off');
+    expect(paneHmsWriteMode({ RESERVATIONIST_PANE_SAVE: 'lab' })).toBe('lab');
+    expect(paneHmsWriteMode({ RESERVATIONIST_PANE_SAVE: 'on' })).toBe('off');
+    expect(paneHmsWriteMode({ RESERVATIONIST_PANE_AMEND: 'lab' })).toBe('off');
     expect(paneHmsWriteMode({})).toBe('off');
   });
 
@@ -629,13 +675,55 @@ describe('pane HMS write (U26)', () => {
         status: 'stored',
         changes: ['roomType'],
         current: { roomType: 'DBL', adults: 1, arrival: ARRIVAL },
+        expectedLastName: 'Labtest',
         requested: { roomType: 'SUITE', adults: 1 },
+        fields: { roomType: 'SUITE' },
+        previewDigest: amendCliRules.amendPreviewDigest({
+          confirmation: CONFIRMATION,
+          expectedLastName: 'Labtest',
+          current: LAB_STAY,
+          fields: { roomType: 'SUITE' },
+        }),
       });
+      expect(prepared.status === 'stored' && prepared.previewDigest).toBe(
+        paneAmendPreviewDigest({
+          confirmation: CONFIRMATION,
+          expectedLastName: 'Labtest',
+          current: LAB_STAY,
+          fields: { roomType: 'SUITE' },
+        }),
+      );
       expect(attachCalls).toHaveLength(0);
+      expect(amendCalls).toHaveLength(0);
       expect(cancelCalls).toHaveLength(0);
       expect((await stateOf(db, workItemId)).hmsSnapshot).toMatchObject({
         digest: hmsStateDigest(LAB_STAY),
       });
+    });
+  });
+
+  it('dispatches a digest-bound amend only after approval and records screenshots', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedWriteItem(db, { state: AMEND_FORM });
+      await prepare(db, workItemId);
+      await approve(db, workItemId);
+      const run = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
+        status: 'succeeded',
+        action: 'amend',
+        outcome: 'amended',
+        evidence: ['before.png', 'after.png'],
+      });
+      expect(amendCalls).toEqual([
+        {
+          confirmation: CONFIRMATION,
+          expectedLastName: 'Labtest',
+          fields: AMEND_FIELDS,
+          previewDigest: AMEND_FORM.previewDigest,
+        },
+      ]);
+      expect(attachCalls).toHaveLength(0);
+      expect(cancelCalls).toHaveLength(0);
     });
   });
 
@@ -658,7 +746,7 @@ describe('pane HMS write (U26)', () => {
         transportEmail: TRANSPORT_EMAIL,
       } as never);
       __setDbForTests({ db, conn: sql } as never);
-      const previousMode = process.env.RESERVATIONIST_PANE_AMEND;
+      const previousMode = process.env.RESERVATIONIST_PANE_SAVE;
       try {
         await caller.hmsApproval.review({ workItemId, runId: run.runId, decision: 'flag', note: 'Wrong document' });
         expect((await stateOf(db, workItemId)).hmsSnapshot).toBeUndefined();
@@ -666,12 +754,12 @@ describe('pane HMS write (U26)', () => {
           refusal: 'snapshot_missing',
         });
 
-        delete process.env.RESERVATIONIST_PANE_AMEND;
+        delete process.env.RESERVATIONIST_PANE_SAVE;
         await expect(caller.hmsApproval.reread({ workItemId })).resolves.toEqual({
           status: 'refused',
           reason: 'refused_flag_off',
         });
-        process.env.RESERVATIONIST_PANE_AMEND = 'lab';
+        process.env.RESERVATIONIST_PANE_SAVE = 'lab';
         hmsStay = { ...LAB_STAY, departure: '2027-09-17' };
         const reread = await caller.hmsApproval.reread({ workItemId });
         expect(reread).toMatchObject({ status: 'stored' });
@@ -682,8 +770,8 @@ describe('pane HMS write (U26)', () => {
         const [grant] = await db.select().from(workEvent).where(eq(workEvent.id, again.grantId));
         expect(grant?.value).toMatchObject({ hmsBeforeDigest: hmsStateDigest(hmsStay) });
       } finally {
-        if (previousMode === undefined) delete process.env.RESERVATIONIST_PANE_AMEND;
-        else process.env.RESERVATIONIST_PANE_AMEND = previousMode;
+        if (previousMode === undefined) delete process.env.RESERVATIONIST_PANE_SAVE;
+        else process.env.RESERVATIONIST_PANE_SAVE = previousMode;
         __setDbForTests(null);
       }
     });
