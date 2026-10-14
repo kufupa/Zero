@@ -17,14 +17,16 @@ function statusCopy(selection: PreviewSelection): string {
   return '';
 }
 
-/** The Nava pane for one thread, read-only, fed by the thread's latest guest email. `onOpenThread` opens another thread (Needs you). */
+/** The selected-thread Nava pane; only the normal mail route enables gold-label writes. */
 export function WebPanePanel({
   threadId,
   onOpenThread,
+  goldLabelEnabled = false,
   hmsNoticesManagedByParent = false,
 }: {
   threadId: string;
   onOpenThread?: (threadId: string) => void;
+  goldLabelEnabled?: boolean;
   hmsNoticesManagedByParent?: boolean;
 }) {
   const { selection, bridge } = useWebPreview({ threadId });
@@ -66,6 +68,7 @@ export function WebPanePanel({
         bridge={bridge}
         preview
         onOpenThread={onOpenThread}
+        goldLabelEnabled={goldLabelEnabled}
         hmsNoticesManagedByParent={hmsNoticesManagedByParent}
       />
     </div>

@@ -8,6 +8,8 @@ import {
   type NavaWorkState,
 } from '@/lib/quote-workflow/workflow-vocabulary';
 import { paneFieldClass } from '@/components/nava-pane/pane-ui';
+import { WorkflowGoldLabel } from './workflow-gold-label';
+import type { MailAction } from '@/lib/workflow-action-labels';
 
 export type QuoteIntent = 'quote' | 'create_booking' | 'other';
 
@@ -24,6 +26,7 @@ export function WorkflowBadge({
   treatAs,
   workState,
   onIntentChange,
+  goldLabel,
 }: {
   analysis: QuoteAnalysis | null;
   kind?: string | null;
@@ -31,6 +34,12 @@ export function WorkflowBadge({
   treatAs?: 'quote' | 'create_booking' | null;
   workState?: NavaWorkState | null;
   onIntentChange?: (intent: 'quote' | 'create_booking') => void;
+  goldLabel?: {
+    messageKey: string;
+    messageId: string | null;
+    internetMessageId: string | null;
+    initialAction: MailAction;
+  };
 }) {
   const current = readAs ?? readAsForAnalysis(analysis, { kind, treatAs });
   if (!current) return null;
@@ -83,7 +92,15 @@ export function WorkflowBadge({
       {analysis?.aiUnavailable ? (
         <p className="text-[11px] text-[#64748b]">Check every field by hand.</p>
       ) : null}
-      {changeable ? (
+      {goldLabel ? (
+        <WorkflowGoldLabel
+          key={goldLabel.messageKey}
+          messageId={goldLabel.messageId}
+          internetMessageId={goldLabel.internetMessageId}
+          initialAction={goldLabel.initialAction}
+          onIntentChange={onIntentChange}
+        />
+      ) : changeable ? (
         <label className="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]">
           Change how Nava reads this email
           <select

@@ -87,6 +87,26 @@ export const workflowFoldersRouter = router({
       if (!result) throw new TRPCError({ code: 'NOT_FOUND', message: 'Workflow thread not found.' });
       return result;
     }),
+  getOwnerActionLabel: mailboxProcedure
+    .input(z.object({ messageId: z.string().min(1).max(998) }).strict())
+    .query(async ({ input, ctx }) => {
+      if (ctx.accessRole === 'member') {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Owner access required' });
+      }
+      const [label] = await getDb()
+        .select({ action: mailActionLabel.action })
+        .from(mailActionLabel)
+        .where(
+          and(
+            eq(mailActionLabel.messageId, input.messageId),
+            eq(mailActionLabel.transportId, ctx.activeTransportId),
+            eq(mailActionLabel.source, 'owner'),
+            eq(mailActionLabel.version, 'owner'),
+          ),
+        )
+        .limit(1);
+      return label?.action ?? null;
+    }),
   setActionLabel: mailboxProcedure
     .input(
       z

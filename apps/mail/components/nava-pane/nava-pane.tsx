@@ -129,6 +129,7 @@ import { useSystemCheck } from './use-system-check';
 import { classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
 import { isSelfSentPreStayInformationMail } from '../../../server-pilot/src/ai/existing-stay-information.js';
 import { readAsForAnalysis, workStateForStatus } from '@/lib/quote-workflow/workflow-vocabulary';
+import { GOLD_ACTION_FOR_READ_AS } from '@/lib/workflow-action-labels';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
 type SenderFallback = Pick<StoredContact, 'name' | 'email'>;
@@ -246,6 +247,8 @@ type NavaPaneProps = {
   preview?: boolean;
   /** Webmail only: opens a Needs-you row's thread in the webmail. Outlook passes nothing. */
   onOpenThread?: (threadId: string) => void;
+  /** Normal inbox only: allow owners to save this message's workflow as a gold label. */
+  goldLabelEnabled?: boolean;
   /** Webmail keeps notice state above its keyed thread panel so lookups survive email switches. */
   hmsNoticesManagedByParent?: boolean;
 };
@@ -254,6 +257,7 @@ export function NavaPane({
   bridge,
   preview = false,
   onOpenThread,
+  goldLabelEnabled = false,
   hmsNoticesManagedByParent = false,
 }: NavaPaneProps) {
   const noticeReporterRef = useRef<HmsJobNoticeReporter | null>(null);
@@ -1924,6 +1928,16 @@ export function NavaPane({
               readAs={readAs}
               treatAs={quoteSession.treatAs}
               workState={workState}
+              goldLabel={goldLabelEnabled && activeEmail ? {
+                messageKey: activeEmail.internetMessageId ?? activeEmail.entryId ?? 'selected',
+                messageId:
+                  activeEmail.internetMessageId &&
+                  quoteSession.binding?.internetMessageId === activeEmail.internetMessageId
+                    ? quoteSession.staffSource?.messageId ?? null
+                    : null,
+                internetMessageId: activeEmail.internetMessageId ?? null,
+                initialAction: GOLD_ACTION_FOR_READ_AS[readAs],
+              } : undefined}
               onIntentChange={isNonActionableMessage ? undefined : (treatAs) => {
                 suppressAutoStaffQuoteForCurrentEmail();
                 dispatchQuote({ type: 'treat_as', treatAs });
