@@ -399,6 +399,23 @@ describe('AmendLookupPanel', () => {
     expect(screen.getByTestId('amend-hms-facts').textContent).toContain('12 Oct 2026–14 Oct 2026');
   });
 
+  it('shows every changed requested date when HMS omits one booking date', async () => {
+    const findStay = vi.fn().mockResolvedValue(found({ arrival: null, departure: '2026-10-13' }));
+    const ask = {
+      ...AMEND,
+      requestedChange: null,
+      requestedArrival: '2026-10-11',
+      requestedDeparture: '2026-10-15',
+    };
+    render(<AmendLookupPanel session={sessionWith(ask)} trpc={lookupTrpc(findStay)} />);
+
+    await pressFind();
+    const changes = await screen.findByTestId('amend-changes');
+    expect(changes.textContent).toContain('Arrival: HMS: — → 11 Oct 2026');
+    expect(changes.textContent).toContain('Departure: 13 Oct 2026 → 15 Oct 2026');
+    expect(screen.getByTestId('amend-request-summary').textContent).toBe('Change requested in this email.');
+  });
+
   it('shows an unknown requested date as not stated, not the booked date, and finds no false match in HMS', async () => {
     // The guest moves the arrival but the read could not tell to when. The departure stays as booked.
     const findStay = vi.fn().mockResolvedValue(found({ arrival: '2026-10-12', departure: '2026-10-14' }));

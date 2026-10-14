@@ -641,11 +641,19 @@ function requestedChangeRows(
   diff: AmendDiff,
 ): Array<{ label: string; from: string; to: string }> {
   const rows: Array<{ label: string; from: string; to: string }> = [];
-  if (amendment.requestedArrival && diff.arrival) {
-    rows.push({ label: 'Arrival', from: shownDate(stay.arrival), to: diff.arrival });
+  if (amendment.requestedArrival && (diff.arrival || !stayText(stay.arrival))) {
+    rows.push({
+      label: 'Arrival',
+      from: stayText(stay.arrival) ? shownDate(stay.arrival) : 'HMS: —',
+      to: formatStayDate(amendment.requestedArrival),
+    });
   }
-  if (amendment.requestedDeparture && diff.departure) {
-    rows.push({ label: 'Departure', from: shownDate(stay.departure), to: diff.departure });
+  if (amendment.requestedDeparture && (diff.departure || !stayText(stay.departure))) {
+    rows.push({
+      label: 'Departure',
+      from: stayText(stay.departure) ? shownDate(stay.departure) : 'HMS: —',
+      to: formatStayDate(amendment.requestedDeparture),
+    });
   }
   return rows;
 }
