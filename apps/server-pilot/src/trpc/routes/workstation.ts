@@ -329,9 +329,15 @@ export function resolvePreparedLedgerProposal(
   const factRefs = Array.isArray(result?.factRefs) ? result.factRefs : null;
   const resultFactRefs = factRefs?.every((ref) => typeof ref === 'string') ? factRefs as string[] : null;
   const parties = parsedInput.success ? parsedInput.data.parties : undefined;
+  const samePartyName = (left: string, right: string) =>
+    left.replace(/\s+/g, ' ').trim().toLowerCase() === right.replace(/\s+/g, ' ').trim().toLowerCase();
   const boundPartyHeaderMatches = parsedInput.success &&
-    (!parties?.company || parsedInput.data.company === scope.party.company) &&
-    (!parties?.agency || parsedInput.data.agency === scope.party.agency);
+    (parties?.company
+      ? samePartyName(scope.party.company, parties.company.name)
+      : true) &&
+    (parties?.agency
+      ? samePartyName(scope.party.agency, parties.agency.name)
+      : true);
   const sourceStillCurrent = parsedInput.success &&
     parsedInput.data.messageId === scope.messageId &&
     parsedInput.data.sourceHash === scope.sourceHash &&
@@ -468,6 +474,16 @@ function attestedStaySpan(metrics: Record<string, unknown> | null | undefined): 
   return revision ? approvedStaySpan(revision) : null;
 }
 
+/** The stay a system-prepared quote covers, or null when its dates are unavailable. */
+function preparedStaySpan(readResult: Record<string, unknown> | null | undefined): string | null {
+  const prepared = readResult?.preparedProposal;
+  const revision =
+    prepared && typeof prepared === 'object' && !Array.isArray(prepared)
+      ? (prepared as { revision?: QuoteRevision }).revision
+      : undefined;
+  return readResult?.status === 'ready' && revision ? approvedStaySpan(revision) : null;
+}
+
 /** Every staff approval for this message, newest first, with the stay dates each one covers. */
 async function staffApprovalsFor(
   ctx: { activeTransportId: string; sessionUser: { id: string } },
@@ -475,7 +491,11 @@ async function staffApprovalsFor(
   messageId: string,
 ) {
   const rows = await getDb()
-    .select({ id: aiDraftGeneration.id, metrics: aiWorkflowRun.metrics })
+    .select({
+      id: aiDraftGeneration.id,
+      createdAt: aiDraftGeneration.createdAt,
+      metrics: aiWorkflowRun.metrics,
+    })
     .from(aiDraftGeneration)
     .leftJoin(aiWorkflowRun, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
     .where(
@@ -488,7 +508,11 @@ async function staffApprovalsFor(
       ),
     )
     .orderBy(desc(aiDraftGeneration.createdAt));
-  return rows.map((row) => ({ generationId: row.id, span: attestedStaySpan(row.metrics) }));
+  return rows.map((row) => ({
+    generationId: row.id,
+    createdAt: row.createdAt,
+    span: attestedStaySpan(row.metrics),
+  }));
 }
 
 /**
@@ -562,12 +586,21 @@ async function proposalStaysFor(
     .from(message)
     .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
     .limit(1);
-  const approvals = combined ? await staffApprovalsFor(ctx, threadId, input.messageId) : [];
+  const approvals = combined
+    ? [
+        ...(await staffApprovalsFor(ctx, threadId, input.messageId)),
+        ...runs.flatMap(({ run, systemPrepared }) =>
+          systemPrepared
+            ? [{ generationId: run.id, createdAt: run.createdAt, span: preparedStaySpan(run.readResult) }]
+            : [],
+        ),
+      ].sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
+    : [];
   const latest = combined
     ? undefined
     : (
         await db
-          .select({ id: aiDraftGeneration.id })
+          .select({ id: aiDraftGeneration.id, createdAt: aiDraftGeneration.createdAt })
           .from(aiDraftGeneration)
           .where(
             and(
@@ -586,29 +619,35 @@ async function proposalStaysFor(
     const staff = run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
     if (combined && !staff && !systemPrepared)
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Every stay needs its own approved quote' });
+    if (combined) {
+      const problem = combinedStayCurrencyProblem({
+        stay: {
+          generationId: systemPrepared ? run.id : run.generationId,
+          span: systemPrepared ? preparedStaySpan(run.readResult) : attestedStaySpan(run.metrics),
+        },
+        approvals,
+      });
+      if (problem) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: problem });
+    } else if (
+      systemPrepared &&
+      latest &&
+      latest.createdAt.getTime() >= run.createdAt.getTime()
+    ) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Newer stay inputs were approved; use the current quote',
+      });
+    }
     if (staff) {
       const party = { company: input.company, agency: input.agency };
-      const problem = combined
-        ? combinedStayCurrencyProblem({
-            stay: { generationId: run.generationId, span: attestedStaySpan(run.metrics) },
-            approvals,
-          }) ??
-          staffQuoteCurrencyProblem({
-            staff,
-            runGenerationId: run.generationId,
-            latestGenerationId: run.generationId,
-            currentMessage: current,
-            userId: ctx.sessionUser.id,
-            party,
-          })
-        : staffQuoteCurrencyProblem({
-            staff,
-            runGenerationId: run.generationId,
-            latestGenerationId: latest?.id,
-            currentMessage: current,
-            userId: ctx.sessionUser.id,
-            party,
-          });
+      const problem = staffQuoteCurrencyProblem({
+        staff,
+        runGenerationId: run.generationId,
+        latestGenerationId: combined ? run.generationId : latest?.id,
+        currentMessage: current,
+        userId: ctx.sessionUser.id,
+        party,
+      });
       if (problem) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: problem });
     }
     let resolved: ReturnType<typeof resolveLedgerProposal>;
@@ -906,6 +945,7 @@ export const workstationRouter = router({
           createdAt: aiWorkflowRun.createdAt,
           finishedAt: aiWorkflowRun.finishedAt,
           metrics: aiWorkflowRun.metrics,
+          readResult: aiWorkflowRun.readResult,
         })
         .from(aiWorkflowRun)
         .where(
@@ -963,6 +1003,7 @@ export const workstationRouter = router({
           createdAt: aiWorkflowRun.createdAt,
           finishedAt: aiWorkflowRun.finishedAt,
           metrics: aiWorkflowRun.metrics,
+          readResult: aiWorkflowRun.readResult,
         })
         .from(aiWorkflowRun)
         .where(

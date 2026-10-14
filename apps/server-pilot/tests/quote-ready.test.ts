@@ -199,6 +199,15 @@ describe('prepared quote reuse price fields', () => {
     ).toBe(true);
   });
 
+  it('requires the same pane row identity for reuse', () => {
+    expect(
+      staffQuoteInputsPriceEquivalent(base, {
+        ...base,
+        groups: [{ ...base.groups[0]!, id: 'row-copied' }],
+      }),
+    ).toBe(false);
+  });
+
   it.each([
     ['dates', { groups: [{ ...base.groups[0]!, arrivalDate: '2026-10-21' }] }],
     ['room count', { groups: [{ ...base.groups[0]!, quantity: 3 }] }],

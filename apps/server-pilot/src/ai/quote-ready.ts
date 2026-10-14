@@ -204,6 +204,7 @@ export function buildPreparedStaffQuotePlan(input: {
 function priceShape(input: StaffQuoteInput): unknown {
   return {
     groups: input.groups.map((group) => ({
+      id: group.id,
       arrivalDate: group.arrivalDate,
       departureDate: group.departureDate,
       quantity: group.quantity,
@@ -229,7 +230,7 @@ function priceShape(input: StaffQuoteInput): unknown {
   };
 }
 
-/** Pane counters and display headers do not affect a price; stay terms and paid extras do. */
+/** Pane counters and display headers do not affect a price; row identity, stay terms and paid extras do. */
 export function staffQuoteInputsPriceEquivalent(left: StaffQuoteInput, right: StaffQuoteInput): boolean {
   return JSON.stringify(priceShape(left)) === JSON.stringify(priceShape(right));
 }
