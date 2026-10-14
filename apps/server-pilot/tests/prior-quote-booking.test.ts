@@ -943,7 +943,10 @@ describe('prior-quote routes', () => {
         dates: [],
       },
     ]);
-    expect(legacy).toMatchObject({ dinnerAllowanceMinor: 12_500 });
+    expect(legacy).toMatchObject({
+      dinnerAllowanceMinor: 12_500,
+      dinnerAllowanceUnit: 'per_person_per_night',
+    });
     expect(legacy).not.toHaveProperty('notes');
     expect(legacy).not.toHaveProperty('other');
   });

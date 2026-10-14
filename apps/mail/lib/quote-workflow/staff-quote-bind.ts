@@ -265,6 +265,11 @@ function rejectionReason(error: unknown): string {
     : 'The request did not finish. Refresh the pane and try again.';
 }
 
+/** True for markup brackets or C0 control characters, which never belong in an HMS label. */
+function hasMarkupOrControl(value: string): boolean {
+  return [...value].some((character) => character === '<' || character === '>' || character.codePointAt(0)! <= 0x1f);
+}
+
 function shortRefusalReason(raw: string): string {
   const firstLine = raw.split(/\r?\n/, 1)[0]!;
   const cleaned = [...firstLine]
@@ -292,7 +297,7 @@ export function readQuoteRoomAlternatives(value: unknown): QuoteRoomAlternative[
     if (
       typeof row.groupId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(row.groupId) ||
       typeof row.roomCode !== 'string' || !/^[A-Z0-9_-]{1,16}$/.test(row.roomCode) ||
-      typeof row.roomLabel !== 'string' || !row.roomLabel.trim() || row.roomLabel.length > 120 || /[<>\u0000-\u001f]/.test(row.roomLabel) ||
+      typeof row.roomLabel !== 'string' || !row.roomLabel.trim() || row.roomLabel.length > 120 || hasMarkupOrControl(row.roomLabel) ||
       !Number.isSafeInteger(row.quantity) || (row.quantity as number) < 1 || (row.quantity as number) > 100
     ) continue;
     const key = `${row.groupId}|${row.roomCode}`;
@@ -676,6 +681,14 @@ export type BoundExecuteStaffQuote =
   | { status: 'unavailable'; reason: string; detail?: string; noMatchingRate?: boolean; alternatives?: QuoteRoomAlternative[] }
   | { status: 'ok'; offer: QuoteOffer; staffQuote: StaffQuoteAllocation; extrasReviewItems: string[] };
 
+export function isStaffQuoteRefusal(
+  result: Pick<Extract<BoundExecuteStaffQuote, { status: 'unavailable' }>, 'reason' | 'noMatchingRate'>,
+): boolean {
+  return result.noMatchingRate === true ||
+    /^HMS refused the search:/i.test(result.reason) ||
+    /^(?:only\s+\d+\b|hms has only\s+\d+\b)/i.test(result.reason);
+}
+
 export function allocationFromStaffQuote(
   result: ExecuteStaffQuoteResult,
   groups: readonly StayGroupRequirement[],
@@ -1027,7 +1040,7 @@ function readDinnerAddOn(value: unknown): StaffQuoteAllocation['dinnerAddOn'] | 
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
   if (
-    typeof raw.label !== 'string' || !raw.label.trim() || raw.label.length > 140 || /[<>\u0000-\u001f]/.test(raw.label) ||
+    typeof raw.label !== 'string' || !raw.label.trim() || raw.label.length > 140 || hasMarkupOrControl(raw.label) ||
     !Number.isSafeInteger(raw.amountMinor) || (raw.amountMinor as number) <= 0 ||
     !Number.isSafeInteger(raw.totalMinor) || (raw.totalMinor as number) <= 0 ||
     !['per_person_per_night', 'per_room_per_night', 'per_person'].includes(String(raw.unit))

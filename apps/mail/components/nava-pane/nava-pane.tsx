@@ -69,6 +69,7 @@ import {
   bindStaffActions,
   bindStaffQuoteSource,
   staffQuoteFromTrpc,
+  isStaffQuoteRefusal,
   canBuildStaffQuoteRequest,
   type BoundExecuteStaffQuote,
   type StaffQuoteJobQuery,
@@ -1446,8 +1447,7 @@ export function NavaPane({
           reason: remote.reason,
           detail: remote.detail,
           alternatives: remote.alternatives,
-          ...(!isMultiStay(quoteSession) &&
-          (remote.noMatchingRate === true || /^HMS refused the search:/i.test(remote.reason))
+          ...(!isMultiStay(quoteSession) && isStaffQuoteRefusal(remote)
             ? { declineReplyHtml: quoteDeclineReplyHtml() }
             : {}),
           selectionEpoch,

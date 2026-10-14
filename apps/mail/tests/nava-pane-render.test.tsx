@@ -1538,6 +1538,54 @@ describe('NavaPane screen states', () => {
     expect(await screen.findByText('Available')).toBeDefined();
   });
 
+  it('drafts a one-line decline for a queued inventory refusal and keeps alternatives staff-side', async () => {
+    sessionStorage.setItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>', '1');
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: STORED_READY.analysis.groups.map((group) => ({ ...group, roomCodes: ['SKNG'] })),
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.queueStaffQuoteMutation.mockResolvedValue({ runId: 'staff-job-queued' });
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(async (input: { runId?: string }) =>
+      input.runId
+        ? completedStaffQuoteJob({
+            ok: false,
+            code: 'PRECONDITION_FAILED',
+            message: 'Only 1 Standard King free for these dates.',
+            alternatives: [
+              { groupId: 'r_1', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 2 },
+            ],
+          })
+        : null,
+    );
+    quotePdfMutate.mockClear();
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await settle();
+    fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
+
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const declineHtml = '<p>Unfortunately, we are unable to accommodate your requested stay.</p>';
+    await waitFor(() => expect(reply.value).toBe(declineHtml));
+    expect(reply.value).not.toContain('Deluxe Twin');
+    expect(screen.getByText('Requested type not available — available instead: Deluxe Twin × 2')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Use this' })).toBeDefined();
+    expect(quotePdfMutate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Draft decline reply' }));
+    await waitFor(() =>
+      expect(sendCommandMock).toHaveBeenCalledWith(
+        'CREATE_REPLY_DRAFT',
+        expect.objectContaining({ htmlBody: declineHtml }),
+      ),
+    );
+    expect(sendCommandMock).not.toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything());
+  });
+
   it('saves a refused quote decline without attaching or mentioning staff alternatives', async () => {
     bridgeMockState.storedWork = {
       ...STORED_READY,

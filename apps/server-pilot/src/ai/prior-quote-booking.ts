@@ -229,6 +229,7 @@ function extrasHeaderFromFacts(
       if (qualifier) out.dinnerAllowanceLabel = qualifier;
     } else if (row.service === 'dinner_allowance' && row.unitKind === 'person_service') {
       out.dinnerAllowanceMinor = row.unitMinor;
+      out.dinnerAllowanceUnit = 'per_person_per_night';
       const qualifier = qualifierFromLabel(row.label, 'Dinner allowance');
       if (qualifier) out.dinnerAllowanceLabel = qualifier;
     } else if (row.service === 'lunch_allowance' && row.unitKind === 'person_service') {

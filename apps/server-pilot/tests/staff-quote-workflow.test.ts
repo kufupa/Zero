@@ -252,10 +252,22 @@ describe('staff-approved quotation beneath native guards', () => {
       scope,
       f.prepared,
       revision,
-      { dinnerGroupIds: ['single'] },
+      {
+        dinnerGroupIds: ['single'],
+        dinnerAddOn: {
+          amountMinor: 35_000,
+          unit: 'per_person_per_night',
+          label: 'Set menu',
+        },
+      },
     );
     expect(deriveAuthorizedExtraLines(revision, staffPriced.facts!)).toMatchObject([
-      { description: 'Dinner add-on (Voucher allowance)', quantity: 2, nights: 1, totalMinor: 50_000 },
+      {
+        description: 'Dinner add-on (Voucher allowance)',
+        quantity: 2,
+        nights: 1,
+        totalMinor: 50_000,
+      },
     ]);
   });
 

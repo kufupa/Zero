@@ -520,9 +520,9 @@ export function buildStaffProposalFacts(
   const dinnerGroupIds = allowanceGroups.map((group) => group.id);
   const hasDinnerAddOn = dinnerGroupIds.length > 0;
   const configured = options.dinnerAddOn;
-  const amountMinor = configured?.amountMinor ?? input.dinnerAllowanceMinor;
-  const unit = configured?.unit ?? input.dinnerAllowanceUnit;
-  const dinnerLabel = withQualifier('Dinner add-on', configured?.label ?? input.dinnerAllowanceLabel);
+  const amountMinor = input.dinnerAllowanceMinor ?? configured?.amountMinor;
+  const unit = input.dinnerAllowanceUnit ?? configured?.unit;
+  const dinnerLabel = withQualifier('Dinner add-on', input.dinnerAllowanceLabel ?? configured?.label);
   let dinnerAddOnRequired = false;
   // Person services print as guests x dates; the rate is per guest per date (night or day).
   const personService = (

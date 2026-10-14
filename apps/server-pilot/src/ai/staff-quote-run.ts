@@ -42,6 +42,10 @@ import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js'
 import { otherBoardContractNotes, type RateOption } from './rate-options.js';
 import { quoteWorkItemIdFor, recordRateEvents } from './work-events.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
+import {
+  staffQuoteRoomAlternatives,
+  type StaffQuoteRoomAlternative,
+} from './staff-quote-alternatives.js';
 import { beginQuoteRun } from '../hms/property-queue-state.js';
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
@@ -49,6 +53,8 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
+
+export { staffQuoteRoomAlternatives, type StaffQuoteRoomAlternative };
 
 const HMS_NOT_RESPONDED_MESSAGE =
   "HMS didn't respond as expected. Try again; if it fails twice, quote in HMS directly.";
@@ -93,36 +99,6 @@ export function staffExtrasOrBadRequest(
   }
 }
 
-export type StaffQuoteRoomAlternative = {
-  groupId: string;
-  roomCode: string;
-  roomLabel: string;
-  quantity: number;
-};
-
-/** Safe read of HMS alternatives; malformed, duplicate or untrusted labels never reach the pane. */
-export function staffQuoteRoomAlternatives(value: unknown): StaffQuoteRoomAlternative[] {
-  if (!Array.isArray(value)) return [];
-  const result: StaffQuoteRoomAlternative[] = [];
-  const seen = new Set<string>();
-  for (const raw of value) {
-    if (!raw || typeof raw !== 'object') continue;
-    const alternative = raw as Record<string, unknown>;
-    const { groupId, roomCode, roomLabel, quantity } = alternative;
-    if (
-      typeof groupId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(groupId) ||
-      typeof roomCode !== 'string' || !/^[A-Z0-9_-]{1,16}$/.test(roomCode) ||
-      typeof roomLabel !== 'string' || !roomLabel.trim() || roomLabel.length > 120 || /[<>\u0000-\u001f]/.test(roomLabel) ||
-      !Number.isSafeInteger(quantity) || (quantity as number) < 1 || (quantity as number) > 100
-    ) continue;
-    const key = `${groupId}|${roomCode}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push({ groupId, roomCode, roomLabel: roomLabel.trim(), quantity: quantity as number });
-  }
-  return result;
-}
-
 export function staffQuoteFailureCode(error: unknown): string {
   const raw = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
   const candidate = typeof raw === 'string' ? raw : error instanceof Error ? error.message : '';
@@ -149,7 +125,13 @@ const STAFF_QUOTE_CAUSE_TRANSIENT_CODES = new Set([
 ]);
 
 /** Cause metadata is safe for tRPC logging and retains only codes needed for queue classification. */
-function staffQuoteCauseSummary(error: unknown): { name: string; code: string; message: string; alternatives?: StaffQuoteRoomAlternative[] } {
+export function staffQuoteCauseSummary(error: unknown): {
+  name: string;
+  code: string;
+  message: string;
+  staffQuoteRefusal?: true;
+  alternatives?: StaffQuoteRoomAlternative[];
+} {
   if (isPropertyReadLockDeadline(error)) {
     return {
       name: 'Error',
@@ -196,7 +178,7 @@ function staffQuoteCauseSummary(error: unknown): { name: string; code: string; m
     name: /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(rawName) ? rawName : 'Error',
     code: transientCode ?? (/^[A-Za-z0-9_.:-]{1,120}$/.test(rawCode) ? rawCode : 'unknown'),
     message: 'Staff quote execution failed.',
-    ...(alternatives.length ? { alternatives } : {}),
+    ...(alternatives.length ? { staffQuoteRefusal: true, alternatives } : {}),
   };
 }
 
