@@ -1,45 +1,58 @@
-# Active context (read first, every session)
+# Active context
 
-Auto-loaded via `CLAUDE.md`. Keep under 120 lines. Update at the end of every work block: current focus, next steps, new mistakes. Task history goes in `docs/context/ledger/`, durable lessons in `docs/context/MISTAKES.md`.
+Updated 2026-10-14 after the product assessment. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
 
-**Product spec:** `PRODUCT.md` (owner-edited). This file is the run, not the spec.
+## Read without rediscovering
 
-## Product in one paragraph
-Nava is an AI reservationist for Legacy Hotels' Centurion property. Staff work in classic Outlook. The VSTO add-in (`kufupa/nava-outlook-addin`) hosts a WebView2 side pane served from our EC2 (`apps/mail` route `/outlook-pane`). The pane analyses the selected email (Luna = the model, never shown to staff; staff-facing name is "Nava"). It pre-fills fields and runs deterministic Infor HMS tools through Playwright (`apps/server-pilot/tooling/playwright-quote/`): quote, PDF, party lookup, stay lookup, create (flagged), cancel (lab only). Human in the loop on every write.
+1. `PRODUCT.md`: owner specification and hard rules.
+2. This file, then `docs/context/OWNER-ASKS.md`: current focus, decisions and unresolved asks.
+3. `docs/research/README.md`: conclusions and exact evidence pointers; open only relevant reports.
+4. `AGENT.md`: commands and layout. Check current branch/remote revision before any claim.
 
-## Current focus (2026-10-14 overnight run)
-- **Scoreboard:** `/tmp/p2/SCOREBOARD.md` on the VPS (outside repo): golden-set score + per-item state, last-good SHA, rollback.
-- Items: #214 dinner + alternatives; #211 pane clarity; channel skip (Profitroom, Tiket.com, H-Pay); party v2 live-picker eval (0 wrong binds, 57.9% auto-bind on 95 emails); quote ready on open (`HMS_QUOTE_PREPARE`); Luna-max classifier budget fix + 400-email eval; golden set v1 (~30 real emails, PRODUCT.md "Done").
-- Research library: `docs/research/2026-10-13/README.md`. Do not redo it.
-- Prod flags on: `PARTY_MATCH_V2`. Owner rules 2026-10-13/14: never Nova Lite; OTA/channel/system skipped at the door; travel agents stay in scope.
+Long assessment: [2026-10-14 product and delivery assessment](../research/2026-10-14-product-assessment.md).
+Evidence/methods: [2026-10-14 source index](../research/2026-10-14/README.md).
+Historical entry snapshot: [SESSION-ENTRY-2026-10-14.md](SESSION-ENTRY-2026-10-14.md).
 
-## Non-negotiable rules
-- Never ask client staff to run scripts, PowerShell or terminals. Fix it in the product.
-- Diagnostics first: for remote failures, ship error visibility before a fix. No fix without a confirmed causal chain.
-- No real-guest HMS writes unless `RESERVATIONIST_PANE_SAVE=on` was set by the owner. The bot never accepts cancellation penalty dialogs.
-- Before vitest: `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL`. Never run tests against pilot RDS. Never print secrets or `postgres://` URLs.
-- One HMS browser owner at a time (property lock). Subagents never run live HMS.
-- P0/P1 review findings are fixed before merge. Check the latest Greptile run is on the PR head SHA.
-- Deploy only from `.worktrees/recover-parse-failure` (`git pull --ff-only origin main`), via `apps/server-pilot/deploy/ops-deploy.sh`.
-- Every pane change is checked in a real browser (viewer run), not only with fake-client unit tests.
-- A pane deploy reaches staff only when the pane reloads. Check her bundle load in nginx before claiming a fix is live.
-- Never use `--no-verify`. A failing hook is a signal to fix, not skip.
-- Unit tests cannot see the HMS DOM. Live-probe every HMS runner on EC2 before calling it done.
+## Product and focus
 
-## Models
-- Opus drives: briefs, merges, deploys, live HMS steps, user-facing claims, review of write paths, migrations and auth.
-- GPT-6 Luna max implements in separate worktrees (codex exec); Haiku 5.5 max or Opus reviews critical hunks; Greptile on every PR.
+Nava is the live AI reservationist for Centurion. The same pane runs in classic Outlook and webmail. Infor HMS remains the system of record. Reads can prepare in the background; consequential writes require explicit authority, staff approval and result review.
 
-## Where things are
-| Thing | Path |
-|---|---|
-| Pane route | `apps/mail/app/(routes)/outlook-pane/page.tsx` (being extracted to `apps/mail/components/nava-pane/`) |
-| Quote workflow UI/state | `apps/mail/components/quote-workflow/`, `apps/mail/lib/quote-workflow/` |
-| Server routes | `apps/server-pilot/src/trpc/routes/{quote-workflow,workstation}.ts` |
-| HMS runners | `apps/server-pilot/tooling/playwright-quote/*.mjs` |
-| Deploy + SSM | `apps/server-pilot/deploy/{ops-deploy.sh,ssm-run-command.sh}` |
-| Gotchas | `docs/solutions/` |
-| Vocabulary | `CONCEPTS.md` |
+Full roadmap: quote, create, amend, cancel; then voucher/payment-proof/billing, grouped rooms and repeatable next-hotel onboarding. Email-only; OTA booking operations remain outside current scope. Sequencing is not deleting eventual features.
 
-## Next steps
-The overnight scoreboard (`/tmp/p2/SCOREBOARD.md`) is the working queue until the owner reviews it on 2026-10-14. The 2026-10-09 v8 handoff is history.
+**Owner correction:** same familiar folders and mail experience, with different action triage behind them. Not a new inbox-reuse/redesign project. Keep reply actions and the same pane; do not add another review desk.
+
+Recommended next slice, not yet built: make one action meaning feed existing folder/mail behavior, saved owner correction and actual routing evaluation. Expose waiting/failed-extraction mail rather than hiding it. Then close date/rate/bookability/prepared-quote parity gaps and prove the complete quote workflow.
+
+No new product work is running from the assessment. Current source-backed gaps:
+
+- Gold save stores owner labels, but live action-folder membership does not consult them. Quote/New booking selection can switch pane intent; folder membership is separate.
+- Current action-folder query requires successful extraction. That view is not a representative all-inbound review set.
+- Amendment prepares a diff; save is not wired. Cancellation preview is disabled in the pane. Create is guarded, not production-proven.
+- Raw nightly stock is not full-stay bookability. Check minimum/maximum stay and other restrictions separately.
+- Labeling false positives in Quotes misses false negatives elsewhere. Unreviewed predictions are not gold; action, extracted facts and quote/write outcomes need separate judgments.
+
+## Last observed runtime, not a current permission
+
+Read-only check 2026-10-14 18:03:56Z: EC2 checkout `15e5bb63b`; remote main at audit `00c10fd21` added handoff docs only. Admin HTTPS and both backend health endpoints responded; four processes were online. Runtime evidence: [evidence.json](../research/2026-10-14/evidence.json).
+
+- Actual startup environment had `HMS_QUOTE_PREPARE=true` on http/worker/ai-worker, absent on remote-http. Prepared-quote HTTP access checks it; this is a source-backed parity gap.
+- `PARTY_MATCH_V2` is worker-side; its absence on remote-http is not the same defect. Older build-stamp labels do not prove stale loaded code.
+- `RESERVATIONIST_PANE_SAVE` was absent on all observed startup environments. Do not infer permission to enable writes.
+- Current staff adoption, representative quote-price accuracy, safe live writes and next-hotel readiness were not proved. The handoff's two outbound warnings were not re-counted.
+
+Historical scores: 24/26 action rows, no create rows, dates unscored; classifier agreement 77% at medium effort; party picker no observed wrong binds on 95 evaluated emails, 57.9% auto-bind. These are dated, narrow metrics, not current full-product accuracy.
+
+## Operating rules to retain
+
+- Read the required context in one bounded pass. Inspect relevant changes since the checkpoint. Do not rescan transcripts/corpora or rerun a full retro unless new scope, a contradiction or an explicit research request needs it.
+- Discuss settled product direction while independent verification runs. One coordinator owns closure; workers own named outputs/files. Keep one acceptance-tested workflow increment active.
+- User voice-dictates. Parse/log asks; do not require repeated specifications. Their flat usage-counter question was a status check, not a request to rush or lower quality.
+- Luna handles implementation and large local corpora. Fresh Haiku max handles bounded review. The previous broad Haiku reads were cheap but took over forty minutes; do not repeat that startup pattern.
+- Local gateway repurposes Sonnet slot to GPT-6 Luna and Fable slot to GPT-6.1 Sol. Verify routed model; do not trust a CLI label for accounting. No new memory framework is needed for continuity.
+- Never ask client staff to run scripts. Diagnostics before a remote fix. No HMS write authority invented; never accept cancellation-penalty dialogs. Never send email independently.
+- Before Vitest: unset `DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL`. DB tests only on the approved disposable local DB. Never expose credentials.
+- Local targeted tests/typecheck/oxlint plus adjudicated Greptile findings. No GitHub Actions beyond the authorized Outlook installer; no new GitHub checks without approval.
+- One live HMS browser owner. Deploy only through the authorized SSM path from `recover-parse-failure`, warn before live-user changes, and prove both relevant surfaces after the last fix.
+- Use a current checkout, not parked worktree/index contents as production source. Nothing in a dated context file authorizes a flag flip, guest write or cleanup.
+
+At handoff: update this short file with verified state, next acceptance check and open holds. Put detailed evidence in a dated report/source index. Keep owner requirements in `PRODUCT.md` and original asks in the ledger. Documents improve discovery; they are not a new enforcement hook.
