@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
-import { requireMultiOptionDraft, type CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
+import { completedDateOptions, requireMultiOptionDraft, type CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
 import { missingQuoteDetailsReplyOnly, quoteDeclineReplyOnly } from '@/lib/quote-workflow/session';
 import { currentPaneOwner, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
@@ -68,6 +68,24 @@ export type ReplyDraftScope = 'selected' | 'all' | 'saved';
 
 /** A reply and its PDFs: what Insert puts into Outlook and what Save reply stores as the thread's draft. */
 export type ReviewedReply = { html: string; attachments: Array<{ fileName: string; pdfBase64: string }> };
+type ReplyKind = 'quote' | 'decline' | 'missing_details' | 'other';
+type PreparedQuoteRef = { workflowRunId: string; revisionRef: string };
+
+function quoteReplyKind(scope: ReplyDraftScope, session: QuoteSession, reply: ReviewedReply): ReplyKind {
+  if (scope !== 'saved' && quoteDeclineReplyOnly(session)) return 'decline';
+  if (scope !== 'saved' && missingQuoteDetailsReplyOnly(session)) return 'missing_details';
+  return reply.attachments.some(({ pdfBase64 }) => pdfBase64.length > 0) ? 'quote' : 'other';
+}
+
+function preparedQuoteRefs(session: QuoteSession, scope: ReplyDraftScope): PreparedQuoteRef[] {
+  const runs = scope === 'all'
+    ? completedDateOptions(session).map(({ quote }) => quote)
+    : scope === 'selected' && session.staffQuote
+      ? [session.staffQuote]
+      : [];
+  return runs.map(({ workflowRunId, revisionRef }) => ({ workflowRunId, revisionRef }))
+    .filter(({ workflowRunId, revisionRef }) => workflowRunId.length > 0 && revisionRef.length > 0);
+}
 
 /** Reply subject as the webmail composer makes it: "Re: " once, never "Re: Re:". */
 function replySubject(subject: string): string {
@@ -85,6 +103,14 @@ function pdfUploadInput(pdf: { fileName: string; pdfBase64: string }) {
     lastModified: Date.now(),
     base64: pdf.pdfBase64,
   };
+}
+
+async function sha256Base64(base64: string): Promise<string> {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 type PendingReplyOperation = {
@@ -436,6 +462,35 @@ export function useInsertAiDraft({
         attempt.attachmentsAdded = index + 1;
         if (!sameStaffScope()) return;
       }
+      const outcomeRoute = (trpcClient as unknown as {
+        workItems?: { recordQuoteOutcome?: { mutate?: (input: unknown) => Promise<unknown> } };
+      }).workItems?.recordQuoteOutcome;
+      const replyKind = quoteReplyKind(scope, quoteSession, { html: quotationHtml, attachments: pdfs });
+      const preparedVersions = preparedQuoteRefs(quoteSession, scope);
+      if (replyKind === 'quote' && preparedVersions.length > 0 && quoteSession.staffSource?.messageId &&
+        typeof outcomeRoute?.mutate === 'function') {
+        try {
+          const attachments = await Promise.all(pdfs.map(async (pdf) => ({
+            fileName: pdf.fileName,
+            mimeType: 'application/pdf',
+            sizeBytes: pdfUploadInput(pdf).size,
+            sha256: await sha256Base64(pdf.pdfBase64),
+          })));
+          if (!sameStaffScope()) return;
+          await outcomeRoute.mutate({
+            sourceMessageId: quoteSession.staffSource.messageId,
+            replyHtml: quotationHtml,
+            insertedAt: new Date().toISOString(),
+            replyKind,
+            preparedVersions,
+            attachments,
+          });
+          if (!sameStaffScope()) return;
+        } catch {
+          if (!sameStaffScope()) return;
+          toast.warning('Draft inserted, but Nava could not save quote outcome for review.');
+        }
+      }
       replyRetries.current.delete(key);
       // A successful draft for B does not resolve an expired or unknown
       // outcome for A. Those per-message sets are in memory only; preserve
@@ -539,6 +594,8 @@ export function useInsertAiDraft({
       toast.error('Make the PDF and finish the reply before saving it. Sample rates are never used.');
       return;
     }
+    const replyKind = quoteReplyKind(scope, quoteSession, reviewedDraft);
+    const preparedVersions = replyKind === 'quote' ? preparedQuoteRefs(quoteSession, scope) : [];
     const saveDraft = (replaceDraft?: string) =>
       trpcClient.drafts.saveReply.mutate({
         threadId: staffSource.threadId,
@@ -546,6 +603,8 @@ export function useInsertAiDraft({
         to: activeEmail.senderEmail ? [activeEmail.senderEmail] : [],
         subject: replySubject(activeEmail.subject),
         html: reviewedDraft.html,
+        replyKind,
+        preparedVersions,
         attachments: reviewedDraft.attachments.map(pdfUploadInput),
         ...(replaceDraft === undefined ? {} : { replaceDraft }),
       });
