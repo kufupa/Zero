@@ -61,6 +61,8 @@ R1's 313/5,204 quote-ask detector count (6.0%) paired 93 same-thread staff-outpu
 
 A **Da Vinci reservations staff** interview on 2026-10-14 describes operational voucher work: staff attach vouchers, check that each booking/company details are present, and follow up with agents for prepayment when a same-day arrival has no voucher; when a voucher is present, they attach it and check overnight-hold coverage. Staff say agents send vouchers directly. Short verbatim excerpts (no guest/agency identifiers): “and then vouchers and all of that, and I attach them” (transcript L93, 05:21–05:23); “Or if we have a voucher, if it's attached and stuff” (L108–109, 06:02–06:10); “we get them directly from the agents themselves” (L126–128, 06:56–07:13). Source: `/home/orca/nava-research/davinci/2026-10-14-interview/extracted/interview-2026-10-14-handoff/transcript.txt`, lines 84–132. This is Da Vinci staff evidence, **not** Centurion workflow and **not** an owner quote. The interview says agent credit-card details are kept in a restricted shared folder for POPI reasons, not attached to the booking (L128–132); do not turn that into a generic instruction to handle card data.
 
+**Profitroom vs Infor (Da Vinci staff, 2026-10-14 interview; staff evidence, not owner policy):** Profitroom bookings sometimes arrive only as a notification and have not downloaded into Infor; staff "go to Profit Room and push it", then hand-enter company names, because the download omits them (transcript L99–L105). Staff check every GDS booking for company, notes and an attached voucher (L106–L124). Asked whether payment is tracked in Profitroom or Infor, staff answered that it is tracked in Infor, because that is where the deposit due date lives (L435–L445). **Owner, 2026-10-14 ~21:40Z:** "vouchers can actually mean a few different things"; at Centurion, a travel-agent voucher with a receipt is sometimes a booking request. That matches R3 (24/35 also requested a booking). Open: Profitroom is an excluded host in `PRODUCT.md` line 92, so a Profitroom computer-use agent would be a scope change that needs owner approval.
+
 ## 3. Party, company, and agency lookup
 
 The strongest prior matching evaluation is **R2 party truth**, a local snapshot of 1,179 confirmation PDFs. Only 30 contained a named company/agency candidate; just one of those 30 joined to an eligible earlier inbound. There were **zero verified private-guest/`none` negatives**. Exact, normalized-name, first-token, trigram-fuzzy, and combined strategies each scored 1/1 on the single paired positive; domain matching scored 0/1. The positive name was in a sender footer/signature, not the booking request. Thus all 100% figures are **n=1**, false-positive rate is unmeasured, and comparative strategy lift is not established. Source: `docs/research/2026-10-13/r2-party-truth.md` lines 5–18, 40–70, 74–85. Do not claim safe automatic company/agency binding from this evaluation; the report explicitly recommends keeping auto-bind off absent verified negatives (line 98).
@@ -84,6 +86,40 @@ Staff describe a manual lookup workflow: read the email, check availability/date
 | Critical-error rubric. | Separates material-fact failures and action/recipient safety failures, such as wrong guest/property, invented completion, unauthorized disclosure, or unproven attachments; critical errors are not averaged away. Source: `docs/superpowers/plans/2026-09-06-reservation-revenue-triage-drafting-plan.md` lines 398–413. | Rubric only, no historical error counts. |
 
 **Settled evidence gap:** prior public research docs do **not** publish class-by-class counts of major quote/booking errors (for example, wrong party *n*, wrong dates *n*, wrong rate *n*). Use the categories above as a taxonomy, not as measured prevalence. Existing aggregate pass rates and gate counts are not substitutes for that missing breakdown.
+
+## 6. Leftover worktree harvest (2026-10-14 ~21:45Z)
+
+Source: `/home/orca/nava-research/reports/leftover-worktrees-20261014.md` (ADE). Each uncommitted tree was snapshotted to a pushed `park/*` branch (not for merge; a tree is safe to delete once its snapshot is on origin). Blob check: dirty files whose content appears in **no** commit.
+
+| Tree | Content | Unique vs any commit | Decision |
+|---|---|---|---|
+| `extract-v2` | Extraction v2 fields `guest`, `specialRequests`, `externalRefs`, `requestedChange`, `mealAndPayer` (+235/−2, 4 files). `externalRefs` and `mealAndPayer` are not on main. | 4/4 | **Parked** `park/extract-v2-20261014`. Feeds "every ask covered" and meal-basis evidence; revive as a small PR after the quote pilot. |
+| `d1-prestay` | `ownMailboxPreStayConfirmation()` (own mailbox + "Pre stay … confirmation no. N"), triage edits, tests (+361/−26). Main already has `isSelfSentPreStayInformationMail` (`existing-stay-information.ts`) plus an HRCEN-specific `isPreStayNotification`. | 10/10 | **Parked** `park/d1-prestay-20261014`. Its generic subject regex beats the HRCEN string on main, which matters for multi-hotel; revive with Da Vinci. |
+| `w4-S` | Mid-rebase (REBASE_HEAD f898294e5) on `w4/u24-needs-you` (PR #134 merged). 66 files, mostly −7,047 lines = stale rollback state. | 5 (nava-pane.tsx, backend-bind.ts, work-items.ts, snapshot, test), all deletions | **Parked** `park/w4-S-20261014`. No new feature; L6/#246 is not overwriting real work. |
+| `w4-UI` | `w4/u22-save-reply` (PR #139 merged). 76 files, −9,580 lines; unique: reply-body.tsx ("Draft option X only"), nava-pane.tsx, use-insert-ai-draft.ts. `completedDateOptions` already on main. | 3 | **Parked** `park/w4-UI-20261014`. Only the per-option draft button might be worth reviving. |
+| `quote-mvp-live` | Plans 13-001/002/003, an `HMS_JOB_QUEUE` allowlist line in `write-ec2-remote-env.sh`, HTML fixtures. | yes | **Parked** `park/quote-mvp-live-20261014`. Plans are ingested below. |
+| `p2-gate`, `w4-ae4diag` | 2 pane HTML fixtures; a 204-line diagnostic test. | trivial | **Parked** (`park/p2-gate-20261014`, `park/w4-ae4diag-20261014`). |
+
+### Quote facts from `quote-mvp-live` plans (2026-10-12; verified against main 2026-10-14)
+
+- **Gold wrapper** (5 lines): "Good day {name}," / "Thank you for Choosing The Centurion Hotel." / "Please see attached quotation." / sign-and-return + "no rooms are currently being held" / "Kind regards,". Main has it in `apps/mail/lib/quote-proposal/copy.ts`, used by `nava-pane.tsx`; #245 aligns the wording.
+- **SKNG/EXKNG room-label bug: fixed on main.** `apps/mail/config/room-types.js` maps SKNG = Standard King and EXKNG = Executive King.
+- **30-night cap is still on main** (`apps/server-pilot/src/hms/quote-stay-candidate.ts:10`). 5/48 gold PDFs were 18+ nights. Keep the cap with a clear refusal.
+- **48 gold PDFs:** 1 line 69%, 2 lines 19%; B&B 53% / DBB 44%; Single 65%, Deluxe 11%, Twin 8%; groups (5+ qty) 25%; party named 70%.
+- **Baseline:** 126-thread old-pipeline backtest, 70.6% deterministic pass / 34.9% good-or-acceptable. No measured 98% exists. The 11 generalisation test shapes in `2026-10-13-003` are the self-test checklist; do not invent a new audit.
+- **Staff UI feedback** (`2026-10-13-002`): 29 asks + 10 pane rules (contact first, room rows by type with a totals row, one Find hidden after it runs, 30 s "still working" flag, no "Coming soon", no raw errors). This is the L6 checklist.
+
+### Open PRs and branches not from tonight's lanes (do not duplicate)
+
+| PR / branch | What | State |
+|---|---|---|
+| #189 `feat/needs-you-run-hms` | Read-only "Run HMS" chip on Needs-you rows (same 2 commits as `extract-v2` HEAD) | Open, conflicting |
+| #218 `feat/golden-set` | Golden set of real past mail: select by staff evidence, merge HMS answers, score per class | Open, mergeable. **Reuse for evals; #244 must not fork it.** |
+| #223 `docs/overnight-20261014` | Overnight results + lessons | Open, conflicting |
+| #48 `feat/luna-v5-b` | Agency/company picker for contract rates | Draft, conflicting; superseded by P1 party v3 |
+| #196 `fix/mail-typecheck-baseline` | Runnable apps/mail typecheck baseline | Open; input to the remote typecheck runner |
+| `feat/action-classifier` (p2-classify, 3 commits, pushed, no PR) | One Luna-max classifier (needs action + action) with vision; eval writes per-message predictions | **Reuse for voucher reclassification**; do not build another classifier |
+| `feat/luna-v4-a` (5), `draft/ae1-multiroom-property-pool` (#168 closed, 3), `w4/greptile-*` (#152/#157/#158 merged), `park/w4-P-u5-local-20261014` | All pushed to origin | Kept on origin; local trees deletable |
 
 ## 5. Using these facts
 

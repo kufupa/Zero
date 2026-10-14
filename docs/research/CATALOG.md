@@ -32,6 +32,10 @@ The source set spans local research reports, repo plans/research, and owner retr
 | `/home/orca/retros/2026-10-11.md`; `/home/orca/retros/2026-10-11.v0.md`; `/home/orca/retros/2026-10-11.v1.md` | 2026-10-11 versions | What did the daily retro versions report? | Versions range from zero to 19 shipped changes, with ~$195–$878 cost estimates. | Different evidence windows/baselines; not comparable invoices or runs. |
 | `/home/orca/retros/2026-10-13-overnight-quote-pilot-retro.md` | 2026-10-12–13 | Why did the overnight quote pilot miss live proof? | PR was locally green; review/integration consumed 3.5 hours, leaving no deployment proof. | One run; operational result, not quote-product efficacy. |
 | `/home/orca/retros/2026-10-14-overnight-retro.md` | 2026-10-13–14 | Why did the overnight run miss its target, and what work suits overnight? | 4/6 goals proved; quote-ready lacked proof; classifier’s 77% missed its 90% gate. | Post-run synthesis; some metrics inferred or model-adjudicated. |
+| `/home/orca/nava-research/reports/leftover-worktrees-20261014.md` | 2026-10-14 | Which worktrees hold unharvested work? | 7 dirty trees parked to `park/*`; 4 old PRs + classifier branch listed. | Point-in-time; FACTS §6 has the harvest decisions. |
+| `/home/orca/nava-research/reports/from-quote-mvp-live/2026-10-13-002-staff-ui-feedback.md` | 2026-10-12 | What did staff ask of the pane? | 29 asks (5 done/11 partial/11 not) + 10 pane rules. | Against main a2816a753; recheck before claiming done. |
+| `/home/orca/nava-research/reports/from-quote-mvp-live/2026-10-13-003-quote-corpus-notes.md` | 2026-10-12 | What does a gold quote look like? | 5-line wrapper, 48-PDF mix, 11 test shapes, 70.6%/34.9% baseline. | Room-label bug since fixed on main; 30-night cap remains. |
+| `/home/orca/nava-research/reports/R1-agent-framework-exa-20261014.md` + Exa run `agent_run_b4b38088…` | 2026-10-14 | Which OSS staff workflow builder fits? | Langflow first; Sim copilot needs sim.ai key; Mastra Agent Builder EE. | Medium confidence; R4 verifies at source. |
 
 ## Related reproducibility and source pointers
 
