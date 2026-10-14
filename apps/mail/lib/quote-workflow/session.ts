@@ -1480,7 +1480,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         : session.staffHeader;
       const existingDinner = staffStayExtrasFor(staffHeader, stayKey);
       const dinnerAddOn = staffQuote.dinnerAddOn;
-      if (fallbackGroupIds.length || (existingDinner.dinnerAllowanceRequired && dinnerAddOn)) {
+      if (
+        fallbackGroupIds.length ||
+        staffQuote.dinnerAddOnRequired === true ||
+        (existingDinner.dinnerAllowanceRequired && dinnerAddOn)
+      ) {
         staffHeader = {
           ...staffHeader,
           stayExtrasByKey: {

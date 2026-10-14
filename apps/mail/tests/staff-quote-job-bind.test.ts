@@ -218,6 +218,27 @@ describe('staff quote HMS job binding', () => {
     });
   });
 
+  it('preserves an unpriced dinner requirement without fallback group ids', async () => {
+    const result = await bindExecuteStaffQuote({
+      queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
+      staffQuoteJob: vi.fn(async () => view('done', {
+        ...READY,
+        dinnerAddOnRequired: true,
+      })),
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups: groups.map((group) => ({ ...group, board: 'bb' as const })),
+      header: { ...emptyStaffQuoteHeader(), dinnerAllowanceMinor: 25_000 },
+    });
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      staffQuote: { dinnerAddOnRequired: true },
+    });
+    if (result.status === 'ok') expect(result.staffQuote.dinnerFallbackGroupIds).toBeUndefined();
+  });
+
   it('surfaces the exact business refusal stored by the worker', async () => {
     const refusal = 'HMS has no rate for this meal plan under BAR. Try another meal plan.';
     const queue = vi.fn(async () => ({ runId: 'staff-job-1' }));

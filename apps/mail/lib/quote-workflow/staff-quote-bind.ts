@@ -1003,7 +1003,9 @@ function boundStaffQuoteResult(
     totalMinor: result.totalMinor,
     currency: result.currency,
     quoteRequestKey: `${result.arrivalDate}:${result.departureDate}`,
-    ...(dinnerFallbackGroupIds.length ? { dinnerAddOnRequired: result.dinnerAddOnRequired === true } : {}),
+    ...(typeof result.dinnerAddOnRequired === 'boolean'
+      ? { dinnerAddOnRequired: result.dinnerAddOnRequired }
+      : {}),
     ...(dinnerFallbackGroupIds.length ? { dinnerFallbackGroupIds } : {}),
     ...(dinnerAddOn ? { dinnerAddOn } : {}),
     approvedHeader: {

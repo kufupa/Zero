@@ -2419,6 +2419,35 @@ describe('staff dinner B&B fallback', () => {
     expect(workbookRequestFor(after).status).toBe('ok');
   });
 
+  it('blocks documents when a normal B&B result requires a dinner unit without fallback group ids', () => {
+    let before = withStaffSource(analysisReady());
+    before = reduceQuoteSession(before, {
+      type: 'patch_staff_stay_extras',
+      stayKey: STAY_A,
+      extras: { dinnerEnabled: true, dinnerAllowanceMinor: 45_000 },
+    });
+    const action = staffQuoteFor(STAY_A, 'rev-dinner-unit', 850_000, before.inputRevision);
+    if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    const after = reduceQuoteSession(before, {
+      ...action,
+      staffQuote: { ...action.staffQuote, dinnerAddOnRequired: true },
+    });
+
+    expect(after.staffQuote).toMatchObject({ dinnerAddOnRequired: true });
+    expect(after.staffQuote?.dinnerFallbackGroupIds).toBeUndefined();
+    expect(after.staffHeader.stayExtrasByKey?.[STAY_A]).toMatchObject({
+      dinnerEnabled: true,
+      dinnerAllowanceRequired: true,
+      dinnerAllowanceMinor: 45_000,
+    });
+    expect(pdfBlockReason(after)).toBe('Choose how the dinner price is charged.');
+    expect(canCreatePdf(after)).toBe(false);
+    expect(workbookRequestFor(after)).toEqual({
+      status: 'unavailable',
+      reason: 'Choose how the dinner price is charged.',
+    });
+  });
+
   it('treats a quote run as current only while its selection epoch and input revision are still the session', () => {
     const session = {
       ...initialQuoteSession(),

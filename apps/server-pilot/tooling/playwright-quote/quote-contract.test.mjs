@@ -390,6 +390,40 @@ test('available room alternatives keep only observed, usable rooms on the reques
   ]);
 });
 
+test('available room alternatives recognize native HMS board labels', () => {
+  const request = {
+    propertyCode: 'HRCEN',
+    arrivalDate: '2026-09-24',
+    departureDate: '2026-09-25',
+    requestedCurrency: 'ZAR',
+    rooms: [{
+      id: 'requested',
+      quantity: 1,
+      adults: 1,
+      children: 0,
+      childAges: [],
+      required: { roomCodes: ['STQN'], boardBases: ['breakfast'] },
+    }],
+  };
+  const groups = [{
+    id: 'requested',
+    options: [{
+      room: { code: 'DLXTWN', label: 'Deluxe Twin' },
+      rate: { code: 'BAR' },
+      board: 'Bed & Breakfast R',
+      matchStatus: 'alternative',
+      eligibility: 'verified',
+      availability: 'available',
+      held: false,
+      nightly: [{ date: '2026-09-24', inventory: 1 }],
+    }],
+  }];
+
+  assert.deepEqual(availableRoomAlternatives(groups, request), [
+    { groupId: 'requested', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 1 },
+  ]);
+});
+
 test('v2 rooms require ids; rate context accepts exactly one of code, name or nativeId', () => {
   const noId = normalizeQuoteRequest(v2([{ quantity: 1, adults: 1, children: 0, childAges: [] }]));
   assert.equal(noId.ok, false);
