@@ -27,7 +27,6 @@ import {
   proposalFactRefsForRevision,
   quotedTotalWithStoredExtras,
   resolvePriorQuoteForBooking,
-  storedRowPrices,
 } from '../../ai/prior-quote-booking.js';
 import { lunaAnalysisSchema } from '../../ai/reservationist-decision.js';
 // Outlook sends the raw Message-ID; ingest stores the canonical form, as analyseSelection already matches.
@@ -43,18 +42,13 @@ import {
 import {
   deriveQuoteLines,
   deriveAuthorizedExtraLines,
-  pricedRoomTotal,
-  rowRatesFor,
   type AuthorizedProposalFacts,
-  type RowPrice,
 } from '../../quote-proposal/quote-lines.js';
 import {
   quoteWorkbookForStays,
   quoteWorkbookFileName,
   WorkbookRefusalError,
 } from '../../quote-proposal/quote-workbook.js';
-import { quoteWorkItemIdFor, recordRateEvents } from '../../ai/work-events.js';
-import { snapshotRowPrices } from './rates.js';
 import {
   getInstalledStaffQuoteServices,
   readInstalledStaffQuoteConfiguration,
@@ -412,7 +406,7 @@ export function resolveLedgerProposal(
   if (matches.length !== 1 || !result.quoteRevisionIds?.includes(scope.revisionRef))
     throw new Error('revision_missing');
   const revision = matches[0];
-  deriveQuoteLines(revision, storedRowPrices(run, revision.id));
+  deriveQuoteLines(revision);
   assertReservationistResultFreshForAction({ version: 1, quoteRevisions: [revision] }, new Date());
   const selectedBundles =
     result.proposalFacts?.filter((bundle) => bundle.facts?.revisionId === revision.id) ?? [];
@@ -495,13 +489,7 @@ export function resolveLedgerSourceProposal(
 }
 
 /** A stay of a proposal request, resolved to its approved revision and, when attested, its staff approval. */
-type ProposalStay = {
-  revision: QuoteRevision;
-  facts?: AuthorizedProposalFacts;
-  staff?: StaffQuoteAttestation;
-  /** The row prices the approval recorded. The PDF and Excel price the rows with them, and the total agrees. */
-  rowPrices?: RowPrice[];
-};
+type ProposalStay = { revision: QuoteRevision; facts?: AuthorizedProposalFacts; staff?: StaffQuoteAttestation };
 
 /** The dates an approval covers, read from the revision its run attested. Null when unknown. */
 function attestedStaySpan(metrics: Record<string, unknown> | null | undefined): string | null {
@@ -638,7 +626,7 @@ async function proposalStaysFor(
     } catch {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
     }
-    stays.push({ ...resolved, staff, rowPrices: storedRowPrices(run, resolved.revision.id) });
+    stays.push({ ...resolved, staff });
   }
   return stays;
 }
@@ -811,8 +799,6 @@ export const workstationRouter = router({
     };
     const signal = AbortSignal.timeout(20 * 60000);
     const signer = { signerName: ctx.sessionUser.name ?? '', signerEmail: ctx.sessionUser.email };
-    // Saved rates are read before any HMS call or generation row, so an archived rate fails cleanly here.
-    const rowPrices = await snapshotRowPrices(db, ctx.activeTransportId, input);
     // A picked company or agency is re-checked in HMS before any rate is bound. The lookup runs before the quote lock,
     // which the same property lock would otherwise block. With the switch off no lookup runs and no party rate is sent.
     const notes: string[] = [];
@@ -1001,7 +987,7 @@ export const workstationRouter = router({
       let proposal: ReturnType<typeof buildStaffProposalFacts>;
       let extraTotal: number;
       try {
-        attestation = attestStaffQuote(input, scope, prepared, revision, rowPrices);
+        attestation = attestStaffQuote(input, scope, prepared, revision);
         ({ proposal, extraTotal } = staffExtrasOrBadRequest(input, scope, prepared, revision));
         if (!(await stillCurrent()))
           throw new TRPCError({
@@ -1044,22 +1030,6 @@ export const workstationRouter = router({
             ...(runId ? { staffQuoteEvidence: { runId } } : {}),
           },
         });
-          // ponytail: U4 creates the quote's work item. Until it does, the approval is recorded and no rate event is written.
-          const workItemId = rowPrices.length
-            ? await quoteWorkItemIdFor(tx, {
-                transportId: scope.transportId,
-                threadId: scope.threadId,
-                messageId: mail.id,
-              })
-            : null;
-          if (workItemId)
-            await recordRateEvents(tx, {
-              workItemId,
-              actorUserId: scope.userId,
-              workflowRunId,
-              revision,
-              rowPrices,
-            });
         });
       const summary = async () => ({
         status: 'ready' as const,
@@ -1073,15 +1043,13 @@ export const workstationRouter = router({
         selectionEpoch: input.selectionEpoch,
         inputRevision: input.inputRevision,
         inputDigest: prepared.inputDigest,
-        totalMinor: pricedRoomTotal(revision, rowPrices) + extraTotal,
+        totalMinor: revision.totalMinor + extraTotal,
         currency: revision.currency,
         arrivalDate: revision.groups[0].arrivalDate,
         departureDate: revision.groups.at(-1)!.departureDate,
-        description: deriveQuoteLines(revision, rowPrices)
+        description: deriveQuoteLines(revision)
           .map((l) => l.description)
           .join('; '),
-        // Per row: the HMS rate, the rate charged, and for an override the code and note for "Copy for HMS comments".
-        rowRates: rowRatesFor(revision, rowPrices),
         runId,
         screenshots: runId ? await listQuoteRunScreenshots(config.outputDir, runId) : [],
       });
@@ -1163,16 +1131,13 @@ export const workstationRouter = router({
           factRefs: proposalFactRefsForRevision(bound.run, input.revisionRef),
         });
         const cloned = structuredClone(revision);
-        const rowPrices = storedRowPrices(bound.run, cloned.id);
-        const extraTotalMinor =
-          quotedTotalWithStoredExtras(cloned, bound.run) - pricedRoomTotal(cloned, rowPrices);
+        const extraTotalMinor = quotedTotalWithStoredExtras(cloned, bound.run) - cloned.totalMinor;
         const draft = await buildBookingDrafts({
           analysis: input.analysis,
           revision: cloned,
           defaults: bookingCodeDefaults(partyClassFromRevision(cloned, staff)),
           messageId: input.messageId,
           extraTotalMinor,
-          rowPrices,
         });
         return {
           status: 'ready' as const,
@@ -1281,16 +1246,14 @@ export const workstationRouter = router({
       const staff = run.metrics?.staffQuoteAttestation as
         | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
         | undefined;
-      const rowPrices = storedRowPrices(run, resolved.revision.id);
       const extraTotalMinor =
-        quotedTotalWithStoredExtras(resolved.revision, run) - pricedRoomTotal(resolved.revision, rowPrices);
+        quotedTotalWithStoredExtras(resolved.revision, run) - resolved.revision.totalMinor;
       const draft = await buildBookingDrafts({
         analysis: input.analysis,
         revision: structuredClone(resolved.revision),
         defaults: bookingCodeDefaults(partyClassFromRevision(resolved.revision, staff)),
         messageId: input.messageId,
         extraTotalMinor,
-        rowPrices,
       });
       return {
         status: 'ready' as const,
@@ -1447,7 +1410,7 @@ export const workstationRouter = router({
               revisionRef: revision.id,
               factRefs,
               totalMinor:
-                pricedRoomTotal(revision, storedRowPrices(run, revision.id)) +
+                revision.totalMinor +
                 (facts
                   ? deriveAuthorizedExtraLines(revision, facts).reduce(
                       (sum, line) => sum + line.totalMinor,
@@ -1457,7 +1420,7 @@ export const workstationRouter = router({
               currency: revision.currency,
               arrivalDate: revision.groups[0].arrivalDate,
               departureDate: revision.groups.at(-1)!.departureDate,
-              description: deriveQuoteLines(revision, storedRowPrices(run, revision.id))
+              description: deriveQuoteLines(revision)
                 .map((l) => l.description)
                 .join('; '),
             });

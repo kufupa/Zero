@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { AttachmentRead } from '../src/ai/extraction/extract.js';
 import { EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
 import type { MailExtractionPayload } from '../src/ai/extraction/schema.js';
@@ -10,9 +10,9 @@ import {
   ensureWorkItemForMessage,
   formStays,
   listWorkItems,
+  needsYouChip,
   parseFieldPath,
   recordFieldEvent,
-  storedTranslation,
   storedWorkFor,
   validFieldValue,
 } from '../src/ai/work-items.js';
@@ -114,8 +114,6 @@ async function insertRead(
     payload?: MailExtractionPayload | null;
     attachments?: AttachmentRead[] | null;
     usage?: Record<string, unknown> | null;
-    language?: string | null;
-    translation?: Record<string, unknown> | null;
   },
 ): Promise<string> {
   const [row] = await db
@@ -128,8 +126,6 @@ async function insertRead(
       payload: read.payload ?? null,
       attachments: read.attachments ?? null,
       usage: read.usage ?? null,
-      language: read.language ?? null,
-      translation: read.translation ?? null,
     })
     .returning({ id: mailExtraction.id });
   return row!.id;
@@ -293,75 +289,6 @@ describe('stored read for the pane', () => {
       expect(work.analysis.groups[0]).toMatchObject({ id: STAY_ONE, arrivalDate: '2027-12-01' });
       expect(work.refs[STAY_ONE]).toEqual({ stayId: STAY_ONE, rowId: null });
     }));
-});
-
-describe('stored read for the pane: contact and translation', () => {
-  it('carries the contact block, with the company as the sender agency and the end client as named', () =>
-    withDb(async (db) => {
-      const messageId = await seedMail(db, 'c1');
-      await insertRead(db, messageId, {
-        version: 'extract-v1',
-        payload: {
-          ...payload(),
-          contact: { name: 'Priya Naidoo', email: 'priya@example.com', phone: null },
-          endClient: 'Tailormade Africa',
-        },
-      });
-
-      const work = await readyWork(db, 'c1');
-      expect(work.contact).toEqual({
-        name: 'Priya Naidoo',
-        company: 'Horizon Trail Tours',
-        endClient: 'Tailormade Africa',
-        email: 'priya@example.com',
-        phone: null,
-      });
-      expect(work.language).toBeNull();
-      expect(work.translation).toBeNull();
-    }));
-
-  it('shows a non-English read with its translation, and a failed translation as failed', () =>
-    withDb(async (db) => {
-      const french = await seedMail(db, 'c2');
-      await insertRead(db, french, {
-        version: 'extract-v1',
-        payload: payload(),
-        language: 'fr',
-        translation: {
-          status: 'succeeded',
-          sourceLanguage: 'fr',
-          truncated: false,
-          segments: [{ clean: 'Hello.', literal: 'Good day.' }],
-        },
-      });
-      const failed = await seedMail(db, 'c3');
-      await insertRead(db, failed, {
-        version: 'extract-v1',
-        payload: payload(),
-        language: 'fr',
-        translation: { status: 'failed', sourceLanguage: 'fr', reason: 'timeout' },
-      });
-
-      expect(await readyWork(db, 'c2')).toMatchObject({
-        language: 'fr',
-        translation: { status: 'succeeded', segments: [{ clean: 'Hello.', literal: 'Good day.' }], truncated: false },
-      });
-      expect(await readyWork(db, 'c3')).toMatchObject({ language: 'fr', translation: { status: 'failed' } });
-    }));
-
-  it('reads a stored translation as succeeded, failed, or none, and drops a segment with no text', () => {
-    expect(storedTranslation(null)).toBeNull();
-    expect(storedTranslation({ status: 'pending' })).toBeNull();
-    expect(storedTranslation({ status: 'failed', reason: 'misaligned' })).toEqual({ status: 'failed' });
-    expect(
-      storedTranslation({
-        status: 'succeeded',
-        sourceLanguage: 'fr',
-        truncated: true,
-        segments: [{ clean: 'A', literal: 'B' }, { clean: 3 }],
-      }),
-    ).toEqual({ status: 'succeeded', segments: [{ clean: 'A', literal: 'B' }], truncated: true });
-  });
 });
 
 describe('work item upsert', () => {
@@ -613,118 +540,6 @@ describe('field events', () => {
     }));
 });
 
-describe('contact edits', () => {
-  it('logs a phone edit with no AI value, and shows her value on reopen', () =>
-    withDb(async (db) => {
-      const messageId = await seedMail(db, 'k1');
-      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
-      const work = await readyWork(db, 'k1');
-      expect(work.contact.phone).toBeNull();
-
-      const result = await recordFieldEvent(db, {
-        transportId: CENTURION,
-        workItemId: work.workItemId,
-        userId: USER,
-        type: 'field.edit',
-        fieldPath: 'contact.phone',
-        value: '+27 82 555 0100',
-        msSinceOpen: 700,
-      });
-      expect(result).toEqual({ status: 'recorded', aiValue: null, value: '+27 82 555 0100' });
-      const [logged] = await eventsFor(db, work.workItemId);
-      expect(logged).toMatchObject({
-        type: 'field.edit',
-        fieldPath: 'contact.phone',
-        aiValue: null,
-        value: '+27 82 555 0100',
-        aiSource: 'extract-v1',
-        msSinceOpen: 700,
-      });
-      expect((await readyWork(db, 'k1')).contact.phone).toBe('+27 82 555 0100');
-    }));
-
-  it('pairs a company edit with the agency the read named, and clears a field to null', () =>
-    withDb(async (db) => {
-      const messageId = await seedMail(db, 'k2');
-      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
-      const work = await readyWork(db, 'k2');
-
-      expect(
-        await recordFieldEvent(db, {
-          transportId: CENTURION,
-          workItemId: work.workItemId,
-          userId: USER,
-          type: 'field.edit',
-          fieldPath: 'contact.company',
-          value: 'New Frontiers Tours',
-        }),
-      ).toEqual({ status: 'recorded', aiValue: 'Horizon Trail Tours', value: 'New Frontiers Tours' });
-      expect(
-        await recordFieldEvent(db, {
-          transportId: CENTURION,
-          workItemId: work.workItemId,
-          userId: USER,
-          type: 'field.edit',
-          fieldPath: 'contact.company',
-          value: null,
-        }),
-      ).toEqual({ status: 'recorded', aiValue: 'Horizon Trail Tours', value: null });
-      expect((await readyWork(db, 'k2')).contact.company).toBeNull();
-    }));
-
-  it('keeps her contact value through a re-extraction, and takes the read value for a field she did not edit', () =>
-    withDb(async (db) => {
-      const messageId = await seedMail(db, 'k3');
-      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
-      const before = await readyWork(db, 'k3');
-      await recordFieldEvent(db, {
-        transportId: CENTURION,
-        workItemId: before.workItemId,
-        userId: USER,
-        type: 'field.edit',
-        fieldPath: 'contact.email',
-        value: 'buyer@example.com',
-      });
-      await insertRead(db, messageId, {
-        version: 'extract-v2',
-        payload: { ...payload(), contact: { name: 'Priya Naidoo', email: 'priya@example.com', phone: '+27 11 000 0000' } },
-      });
-
-      const after = await readyWork(db, 'k3');
-      expect(after.workItemId).toBe(before.workItemId);
-      expect(after.contact).toEqual({
-        name: 'Priya Naidoo',
-        company: 'Horizon Trail Tours',
-        endClient: null,
-        email: 'buyer@example.com',
-        phone: '+27 11 000 0000',
-      });
-    }));
-
-  it('refuses a contact path that is not a field, and a value that is not short text', () =>
-    withDb(async (db) => {
-      const messageId = await seedMail(db, 'k4');
-      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
-      const work = await readyWork(db, 'k4');
-      const edit = (fieldPath: string, value: unknown) =>
-        recordFieldEvent(db, {
-          transportId: CENTURION,
-          workItemId: work.workItemId,
-          userId: USER,
-          type: 'field.edit',
-          fieldPath,
-          value: value as string,
-        });
-
-      expect(await edit('contact.passport', 'AB123')).toEqual({ status: 'invalid_path' });
-      expect(await edit('contact.phone; drop', '1')).toEqual({ status: 'invalid_path' });
-      expect(await edit('contact.phone', 'x'.repeat(201))).toEqual({ status: 'invalid_value' });
-      expect(await edit('contact.phone', 42)).toEqual({ status: 'invalid_value' });
-      expect(await edit('contact.phone', true)).toEqual({ status: 'invalid_value' });
-      expect(await eventsFor(db, work.workItemId)).toHaveLength(0);
-    }));
-});
-
 describe('field paths and values', () => {
   it('parses stay and row paths and refuses anything else', () => {
     expect(parseFieldPath(`stays[${STAY_ONE}].requested.arrival`)).toEqual({
@@ -822,48 +637,6 @@ describe('work item route', () => {
       expect((await centurionCaller().workItems.list({})).map((item) => item.id)).toEqual([work.workItemId]);
     }));
 
-  it('records a contact edit through the route', () =>
-    withDb(async (db) => {
-      const messageId = await seedMail(db, 'rc1');
-      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
-      const work = await readyWork(db, 'rc1');
-      expect(
-        await centurionCaller().workItems.recordEvent({
-          workItemId: work.workItemId,
-          type: 'field.edit',
-          fieldPath: 'contact.email',
-          value: 'buyer@example.com',
-        }),
-      ).toEqual({ aiValue: null, value: 'buyer@example.com' });
-    }));
-
-  it('retries a translation only for the transport that holds the item, and makes no call while the flag is off', () =>
-    withDb(async (db) => {
-      await addOtherTransport(db);
-      const messageId = await seedMail(db, 'tr1');
-      await insertRead(db, messageId, {
-        version: 'extract-v1',
-        payload: payload(),
-        language: 'fr',
-        translation: { status: 'failed', sourceLanguage: 'fr', reason: 'timeout' },
-      });
-      const work = await readyWork(db, 'tr1');
-      await expect(
-        centurionCaller(OTHER).workItems.retryTranslation({ workItemId: work.workItemId }),
-      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
-
-      vi.stubEnv('INBOUND_EXTRACTION', 'off');
-      try {
-        expect(await centurionCaller().workItems.retryTranslation({ workItemId: work.workItemId })).toEqual({
-          status: 'disabled',
-          translation: null,
-        });
-      } finally {
-        vi.unstubAllEnvs();
-      }
-      expect((await readyWork(db, 'tr1')).translation).toEqual({ status: 'failed' });
-    }));
-
   it('records an edit through the route, and refuses another transport', () =>
     withDb(async (db) => {
       await addOtherTransport(db);
@@ -895,6 +668,19 @@ describe('work item route', () => {
     }));
 });
 
+describe('chip from the latest linked run', () => {
+  it('maps the run state and the item status to one chip', () => {
+    expect(needsYouChip('needs_you', null)).toBe('needs_you');
+    expect(needsYouChip('needs_you', 'succeeded')).toBe('needs_you');
+    expect(needsYouChip('needs_you', 'dead_letter')).toBe('needs_you');
+    expect(needsYouChip('needs_you', 'queued')).toBe('queued');
+    expect(needsYouChip('review', 'retry_wait')).toBe('queued');
+    expect(needsYouChip('needs_you', 'claimed')).toBe('in_hms');
+    expect(needsYouChip('review', 'running')).toBe('in_hms');
+    expect(needsYouChip('review', null)).toBe('review');
+  });
+});
+
 describe('needs-you list', () => {
   /** A quote read for a new mail, received at `receivedAt`, with its work item. Returns the work item id. */
   async function openItem(db: DB, id: string, receivedAt: string): Promise<string> {
@@ -910,7 +696,7 @@ describe('needs-you list', () => {
     return listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
   }
 
-  it('lists needs you before review, and the oldest mail first within a chip', () =>
+  it('lists needs you before review, and the oldest mail first within a status', () =>
     withDb(async (db) => {
       const newer = await openItem(db, 'o-new', '2026-10-08T09:00:00Z');
       const older = await openItem(db, 'o-old', '2026-10-05T09:00:00Z');
@@ -929,7 +715,7 @@ describe('needs-you list', () => {
       expect(rows[0]!.receivedAt?.toISOString()).toBe('2026-10-05T09:00:00.000Z');
     }));
 
-  it('leaves out spam, trashed and deleted threads, spam reads, and done or dismissed items', () =>
+  it('leaves out spam threads, spam reads, and done or dismissed items', () =>
     withDb(async (db) => {
       const kept = await openItem(db, 'k1', '2026-10-05T09:00:00Z');
 
@@ -950,12 +736,6 @@ describe('needs-you list', () => {
         kind: 'spam',
       });
 
-      await openItem(db, 'tr1', '2026-10-05T09:00:00Z');
-      await db.update(mailThread).set({ trashedAt: new Date() }).where(eq(mailThread.id, 'thread-tr1'));
-      // A deleted thread leaves its work item behind with no thread (SET NULL).
-      await openItem(db, 'del1', '2026-10-05T09:00:00Z');
-      await db.delete(mailThread).where(eq(mailThread.id, 'thread-del1'));
-
       const done = await openItem(db, 'dn1', '2026-10-05T09:00:00Z');
       await db.update(workItem).set({ status: 'done' }).where(eq(workItem.id, done));
       const dismissed = await openItem(db, 'dm1', '2026-10-05T09:00:00Z');
@@ -969,24 +749,20 @@ describe('needs-you list', () => {
       const addRun = async (
         workItemId: string,
         id: string,
-        state: 'queued' | 'retry_wait' | 'claimed' | 'running' | 'succeeded' | 'dead_letter',
+        state: 'queued' | 'retry_wait' | 'claimed' | 'running' | 'succeeded',
         createdAt = new Date(),
-        lane: { runKind: 'read_tool' | 'hms_write' | 'quote_followup'; executorLane: 'hms' | 'default' } = {
-          runKind: 'read_tool',
-          executorLane: 'hms',
-        },
       ) => {
         await db.insert(aiWorkflowRun).values({
           id: randomUUID(),
           transportId: CENTURION,
           threadId: `thread-${id}`,
           triggerMessageId: `msg-${id}`,
-          runKind: lane.runKind,
+          runKind: 'read_tool',
           idempotencyKey: `test-run:${randomUUID()}`,
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: HMS_JOB_PROMPT_VERSION,
           state,
-          executorLane: lane.executorLane,
+          executorLane: 'hms',
           workItemId,
           createdAt,
           updatedAt: createdAt,
@@ -999,9 +775,6 @@ describe('needs-you list', () => {
       const finished = await openItem(db, 'c-done-run', '2026-10-05T09:00:00Z');
       const reviewed = await openItem(db, 'c-review', '2026-10-06T09:00:00Z');
       const reviewedQueued = await openItem(db, 'c-review-queued', '2026-10-07T09:00:00Z');
-      const followUp = await openItem(db, 'c-followup', '2026-10-08T09:00:00Z');
-      const deadWrite = await openItem(db, 'c-dead-write', '2026-10-09T09:00:00Z');
-      const writing = await openItem(db, 'c-writing', '2026-10-10T09:00:00Z');
       await db.update(workItem).set({ status: 'review' }).where(eq(workItem.id, reviewed));
       await db.update(workItem).set({ status: 'review' }).where(eq(workItem.id, reviewedQueued));
 
@@ -1012,24 +785,6 @@ describe('needs-you list', () => {
       await addRun(finished, 'c-done-run', 'queued', new Date(Date.now() - 60_000));
       await addRun(finished, 'c-done-run', 'succeeded');
       await addRun(reviewedQueued, 'c-review-queued', 'queued');
-      // Only HMS-lane runs move the chip: a queued follow-up on the default lane is not "Queued".
-      await addRun(followUp, 'c-followup', 'queued', new Date(), {
-        runKind: 'quote_followup',
-        executorLane: 'default',
-      });
-      // A dead write needs her. A running write is In HMS, even with a newer default-lane run.
-      await addRun(deadWrite, 'c-dead-write', 'dead_letter', new Date(), {
-        runKind: 'hms_write',
-        executorLane: 'hms',
-      });
-      await addRun(writing, 'c-writing', 'running', new Date(Date.now() - 60_000), {
-        runKind: 'hms_write',
-        executorLane: 'hms',
-      });
-      await addRun(writing, 'c-writing', 'queued', new Date(), {
-        runKind: 'quote_followup',
-        executorLane: 'default',
-      });
 
       const rows = await openList(db);
       expect(Object.fromEntries(rows.map((row) => [row.id, row.chip]))).toEqual({
@@ -1040,23 +795,7 @@ describe('needs-you list', () => {
         [finished]: 'needs_you',
         [reviewed]: 'review',
         [reviewedQueued]: 'queued',
-        [followUp]: 'needs_you',
-        [deadWrite]: 'needs_you',
-        [writing]: 'in_hms',
       });
-      // Sorted by chip (Needs you, Review, Queued, In HMS), then the oldest mail first.
-      expect(rows.map((row) => row.id)).toEqual([
-        bare,
-        finished,
-        followUp,
-        deadWrite,
-        reviewed,
-        queued,
-        retried,
-        reviewedQueued,
-        running,
-        writing,
-      ]);
 
       const routeRows = await centurionCaller().workItems.list({});
       expect(routeRows.find((row) => row.id === queued)).toMatchObject({

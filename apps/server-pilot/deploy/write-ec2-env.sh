@@ -178,20 +178,12 @@ fi
 append_env QUOTE_WORKFLOW_LLM "${QUOTE_WORKFLOW_LLM:-}"
 # Scanned voucher PDF vision read: off unless ops set SCANNED_PDF_VISION=on.
 append_env SCANNED_PDF_VISION "${SCANNED_PDF_VISION:-}"
-# Quote follow-up drafts (R10): off unless ops set QUOTE_FOLLOWUPS=on.
-append_env QUOTE_FOLLOWUPS "${QUOTE_FOLLOWUPS:-}"
-# ISO instant: only quotes sent at or after it get follow-ups. Set it when turning QUOTE_FOLLOWUPS on (else: process start).
-append_env QUOTE_FOLLOWUPS_SINCE "${QUOTE_FOLLOWUPS_SINCE:-}"
 # Queued pane HMS lookups (ai-worker claims pane jobs): off unless ops set HMS_JOB_QUEUE=on.
 # Prefetch also needs HMS_PREFETCH_ENABLED=1; HMS_LANE_PAUSED=1 stops every hms lane claim.
 append_env HMS_JOB_QUEUE "${HMS_JOB_QUEUE:-}"
 append_env HMS_LANE_PAUSED "${HMS_LANE_PAUSED:-}"
 append_env HMS_PREFETCH_ENABLED "${HMS_PREFETCH_ENABLED:-}"
 append_env HMS_PREFETCH_PER_HOUR "${HMS_PREFETCH_PER_HOUR:-}"
-# Availability probe per quote stay (U10): off unless ops set HMS_AVAILABILITY_PREFETCH=on. Needs HMS_JOB_QUEUE=on.
-# HMS_AVAILABILITY_PER_HOUR caps probes apart from confirmation prefetch (default 6).
-append_env HMS_AVAILABILITY_PREFETCH "${HMS_AVAILABILITY_PREFETCH:-}"
-append_env HMS_AVAILABILITY_PER_HOUR "${HMS_AVAILABILITY_PER_HOUR:-}"
 unset AZURE_LUNA_PARSED AZURE_OPENAI_BASE_URL AZURE_FOUNDRY_API_KEY
 # Intentionally omitted (must never appear): HMS_MUTATION_ENABLED, HMS_WRITE_ENABLED,
 # HMS_WRITE_ADAPTERS, HMS_ALLOW_LIVE_WRITE, HMS_LIVE_MUTATION, INFOR_HMS_WRITE.

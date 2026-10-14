@@ -86,8 +86,6 @@ import { DiagnosticsScreen } from './screens/diagnostics';
 import { TourScreen } from './screens/tour';
 import { NeedsYouEntry, NeedsYouView } from './screens/needs-you';
 import { SelectedEmailBlock } from './blocks/selected-email';
-import { ContactBlock } from './blocks/contact-block';
-import { TranslationBox } from './blocks/translation-box';
 import { BookingVoucherCard } from './blocks/booking-voucher-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
 import { SystemCheckResultsBlock } from './blocks/system-check-results';
@@ -521,8 +519,6 @@ export function NavaPane({
   });
   // Preview starts on the quoting tool; the welcome, connection and tour screens never show there.
   const shownScreen: PaneScreen = preview && currentScreen !== 'needs-you' ? 'tool' : currentScreen;
-  // Bumped when the list closes, so the entry remounts and its count takes in any dismiss made on the list.
-  const [needsYouVisit, setNeedsYouVisit] = useState(0);
   const [tourSlideIndex, setTourSlideIndex] = useState(0);
   const [pingState, setPingState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [serverPingTimeStr, setServerPingTimeStr] = useState<string | null>(null);
@@ -1173,10 +1169,7 @@ export function NavaPane({
           <NeedsYouView
             trpc={trpcClient}
             host={preview ? 'web' : 'outlook'}
-            onBack={() => {
-              setNeedsYouVisit((visit) => visit + 1);
-              setCurrentScreen('tool');
-            }}
+            onBack={() => setCurrentScreen('tool')}
             onOpenThread={onOpenThread}
           />
         )}
@@ -1189,33 +1182,11 @@ export function NavaPane({
           >
             {/* The open count from the Needs-you list. Shows "Needs you" alone until the list has loaded. */}
             <div className="flex justify-end">
-              <NeedsYouEntry
-                key={needsYouVisit}
-                trpc={trpcClient}
-                onOpen={() => setCurrentScreen('needs-you')}
-              />
+              <NeedsYouEntry trpc={trpcClient} onOpen={() => setCurrentScreen('needs-you')} />
             </div>
 
             {/* Email context for the selected email; until one is selected, an empty state. */}
             <SelectedEmailBlock activeEmail={activeEmail} />
-
-            {/* Contact block (U16): the core details, pre-filled. Then the translation, only for mail not in English. */}
-            {activeEmail ? (
-              <ContactBlock
-                key={`${activeEmail.internetMessageId ?? ''}|${storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : ''}`}
-                contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
-                onEdit={storedWork.recordContact}
-              />
-            ) : null}
-            {storedWork.pane.state === 'ready' ? (
-              <TranslationBox
-                key={storedWork.pane.workItemId}
-                language={storedWork.pane.language}
-                translation={storedWork.pane.translation}
-                busy={storedWork.translationBusy}
-                onRetry={storedWork.retryTranslation}
-              />
-            ) : null}
 
             {/* Booking and voucher block: a change or cancellation card, then the Find the booking card. */}
             <BookingVoucherCard

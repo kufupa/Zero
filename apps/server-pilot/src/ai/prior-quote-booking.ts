@@ -3,15 +3,9 @@ import type { LunaAnalysis } from './reservationist-decision.js';
 import { occupiedDates, type Board, type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import {
   deriveAuthorizedExtraLines,
-  pricedRoomTotal,
   type AuthorizedProposalFacts,
-  type RowPrice,
 } from '../quote-proposal/quote-lines.js';
-import type {
-  OtherChargeUnit,
-  StaffQuoteAttestation,
-  StaffRowPriceInput,
-} from './staff-quote-workflow.js';
+import type { OtherChargeUnit, StaffQuoteAttestation } from './staff-quote-workflow.js';
 
 export type PriorStaffQuoteRequoteGroup = {
   id: string;
@@ -40,7 +34,6 @@ export type PriorStaffQuoteRequotePayload = {
   shuttleTrips?: number;
   other?: { label: string; amountMinor: number; unit: OtherChargeUnit };
   notes?: string;
-  rowPrices?: StaffRowPriceInput[];
 };
 
 export type ThreadQuoteRevisionSummary = {
@@ -169,30 +162,17 @@ export function proposalFactRefsForRevision(run: PriorQuoteRun, revisionId: stri
     .map((row) => row.ref);
 }
 
-/** The row prices a staff approval recorded for this revision. Empty when HMS priced every row. */
-export function storedRowPrices(run: { metrics: Record<string, unknown> | null }, revisionId: string): RowPrice[] {
-  const staff = run.metrics?.staffQuoteAttestation as
-    | Pick<StaffQuoteAttestation, 'revisionIds' | 'rowPrices'>
-    | undefined;
-  return staff?.revisionIds?.includes(revisionId) ? (staff.rowPrices ?? []) : [];
-}
-
-/**
- * The approved total: the priced rooms plus the stored extras. Equal to the HMS total when no row is priced.
- * Booking drafts check rate claims against the priced rooms and flag manual_rate_change, because HMS books at its own rate.
- */
 export function quotedTotalWithStoredExtras(revision: QuoteRevision, run: PriorQuoteRun): number {
-  const rooms = pricedRoomTotal(revision, storedRowPrices(run, revision.id));
   const facts = proposalFactsForRevision(run, revision.id);
-  if (!facts) return rooms;
+  if (!facts) return revision.totalMinor;
   try {
     const extra = deriveAuthorizedExtraLines(revision, facts).reduce(
       (sum, line) => sum + line.totalMinor,
       0,
     );
-    return rooms + extra;
+    return revision.totalMinor + extra;
   } catch {
-    return rooms;
+    return revision.totalMinor;
   }
 }
 
@@ -240,19 +220,6 @@ function extrasHeaderFromFacts(
   return out;
 }
 
-/** A stored row price in the input shape, so a re-quote asks for the same price again. */
-function rowPriceInputFor(price: RowPrice): StaffRowPriceInput {
-  if (price.source === 'saved') return { groupId: price.groupId, source: 'saved', customRateId: price.customRateId };
-  if (price.source === 'one_off') return { groupId: price.groupId, source: 'one_off', oneOffRate: price.amountMinor };
-  return {
-    groupId: price.groupId,
-    source: 'override',
-    rateCode: price.rateCode,
-    overrideRate: price.amountMinor,
-    note: price.note,
-  };
-}
-
 /** Stored revision + attestation inputs for executeStaffQuote when freshness expired. */
 export function priorStaffQuoteRequotePayload(
   run: PriorQuoteRun,
@@ -291,7 +258,6 @@ export function priorStaffQuoteRequotePayload(
       stay ? occupiedDates(stay.arrivalDate, stay.departureDate).length : 0,
     ),
     ...(staff.notes ? { notes: staff.notes } : {}),
-    ...(staff.rowPrices?.length ? { rowPrices: staff.rowPrices.map(rowPriceInputFor) } : {}),
   };
 }
 

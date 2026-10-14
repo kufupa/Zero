@@ -19,9 +19,6 @@ import type { LunaAnalysis } from './reservationist-decision.js';
  * `stays[s_x].rows[r_y].count`), so deleting one stay never shifts another stay's AI value. A path on an id the
  * extraction does not have is a stay or row the person added, and `stays[s_x].removed` / `...rows[r_y].removed`
  * (true) is one she deleted. Both come back on reopen.
- *
- * The contact block (U16) uses `contact.name`, `contact.company`, `contact.endClient`, `contact.email` and
- * `contact.phone`. `contact.company` reads the extraction's agency. The other fields read their extraction values.
  */
 
 export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childAges', 'board'] as const;
@@ -52,56 +49,6 @@ export function parseFieldPath(path: string): FieldPath | null {
   if (dateField) return { stayId, rowId: null, field: dateField as 'arrival' | 'departure' };
   if (stayRemoved) return { stayId, rowId: null, field: 'removed' };
   return { stayId, rowId: rowId ?? '', field: rowField as RowField | 'removed' };
-}
-
-/**
- * The contact block's fields (U16). Paths are `contact.<field>`. `company` is the sender's organisation, which the
- * extraction calls the agency, so its AI value is `agency`.
- */
-export const CONTACT_FIELDS = ['name', 'company', 'endClient', 'email', 'phone'] as const;
-export type ContactField = (typeof CONTACT_FIELDS)[number];
-export type StoredContact = Record<ContactField, string | null>;
-const CONTACT_PATH = new RegExp(`^contact\\.(${CONTACT_FIELDS.join('|')})$`);
-
-export function contactFieldOf(path: string): ContactField | null {
-  const match = CONTACT_PATH.exec(path);
-  return match ? (match[1] as ContactField) : null;
-}
-
-function contactAiValue(payload: MailExtractionPayload | null | undefined, field: ContactField): string | null {
-  if (!payload) return null;
-  switch (field) {
-    case 'name':
-      return payload.contact.name;
-    case 'company':
-      return payload.agency;
-    case 'endClient':
-      return payload.endClient;
-    case 'email':
-      return payload.contact.email;
-    case 'phone':
-      return payload.contact.phone;
-  }
-}
-
-/** A contact value is text up to the extraction's cap, or null to clear it. */
-function validContactValue(value: unknown): boolean {
-  return value === null || (typeof value === 'string' && value.length <= 200);
-}
-
-/** The contact block's values: her value where she has set one, else the read's. */
-export function storedContact(payload: MailExtractionPayload, state: WorkState): StoredContact {
-  const valueOf = (field: ContactField): string | null => {
-    const key = `contact.${field}`;
-    return Object.hasOwn(state, key) ? (state[key] as string | null) : contactAiValue(payload, field);
-  };
-  return {
-    name: valueOf('name'),
-    company: valueOf('company'),
-    endClient: valueOf('endClient'),
-    email: valueOf('email'),
-    phone: valueOf('phone'),
-  };
 }
 
 function isInt(value: unknown, min: number, max: number): boolean {
@@ -135,8 +82,6 @@ export function validFieldValue(field: FieldPath['field'], value: unknown): bool
  * The extraction never removes, so `removed` on a stay or row it has reads false.
  */
 export function aiValueAt(payload: MailExtractionPayload | null | undefined, path: string): unknown {
-  const contact = contactFieldOf(path);
-  if (contact) return contactAiValue(payload, contact);
   const parsed = parseFieldPath(path);
   const stay = parsed ? payload?.stays.find((item) => item.id === parsed.stayId) : undefined;
   if (!parsed || !stay) return null;
@@ -390,8 +335,6 @@ async function latestSucceededRead(db: DB, messageId: string) {
     kind: row.kind as MailKind,
     payload: row.payload as MailExtractionPayload,
     attachments: row.attachments as AttachmentRead[] | null,
-    language: row.language,
-    translation: row.translation,
   };
 }
 
@@ -419,24 +362,6 @@ export async function ensureWorkItemForMessage(
   });
 }
 
-/** What the pane shows of a stored translation (U16). A translation that is neither succeeded nor failed reads as none. */
-export type StoredTranslation =
-  | { status: 'succeeded'; segments: Array<{ clean: string; literal: string }>; truncated: boolean }
-  | { status: 'failed' }
-  | null;
-
-export function storedTranslation(raw: unknown): StoredTranslation {
-  const stored = raw as { status?: unknown; segments?: unknown; truncated?: unknown } | null;
-  if (stored?.status === 'failed') return { status: 'failed' };
-  if (stored?.status !== 'succeeded' || !Array.isArray(stored.segments)) return null;
-  const segments = stored.segments.flatMap((item: { clean?: unknown; literal?: unknown } | null) =>
-    typeof item?.clean === 'string' && typeof item.literal === 'string'
-      ? [{ clean: item.clean, literal: item.literal }]
-      : [],
-  );
-  return { status: 'succeeded', segments, truncated: stored.truncated === true };
-}
-
 export type StoredWork =
   | { status: 'none' }
   | { status: 'failed'; reason: string }
@@ -447,10 +372,6 @@ export type StoredWork =
       extractionId: string;
       refs: Record<string, GroupRef>;
       analysis: StoredAnalysis;
-      contact: StoredContact;
-      /** The read's source language (ISO 639-1), or null when unclear. */
-      language: string | null;
-      translation: StoredTranslation;
     };
 
 async function failureFor(db: DB, messageId: string): Promise<StoredWork> {
@@ -501,9 +422,6 @@ export async function storedWorkFor(
     extractionId: latest.id,
     refs: stored.refs,
     analysis: stored.analysis,
-    contact: storedContact(latest.payload, item.state),
-    language: latest.language,
-    translation: storedTranslation(latest.translation),
   };
 }
 
@@ -530,12 +448,12 @@ export async function recordFieldEvent(
     msSinceOpen?: number;
   },
 ): Promise<FieldEventResult> {
-  const contact = contactFieldOf(input.fieldPath);
-  const path = contact ? null : parseFieldPath(input.fieldPath);
-  if (!contact && !path) return { status: 'invalid_path' };
+  const path = parseFieldPath(input.fieldPath);
+  if (!path) return { status: 'invalid_path' };
   const personValue = input.value ?? null;
-  const fits = contact ? validContactValue(personValue) : path !== null && validFieldValue(path.field, personValue);
-  if (input.type !== 'field.accept' && !fits) return { status: 'invalid_value' };
+  if (input.type !== 'field.accept' && !validFieldValue(path.field, personValue)) {
+    return { status: 'invalid_value' };
+  }
   return db.transaction(async (tx) => {
     const [item] = await tx
       .select({ extractionId: workItem.extractionId, state: workItem.state })
@@ -604,25 +522,29 @@ export async function dismissWorkItem(
   });
 }
 
-/** The chips on a Needs-you row (KTD14), in list order: the list sorts by this index, then by age. */
-export const NEEDS_YOU_CHIPS = ['needs_you', 'review', 'queued', 'in_hms'] as const;
-export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
+/** The chip on a Needs-you row (KTD14). */
+export type NeedsYouChip = 'needs_you' | 'queued' | 'in_hms' | 'review';
 
 /**
- * Work items in this transport with the given statuses, the Needs-you list. Spam, trashed and deleted threads are left
- * out. Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run
- * never moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
- * NEEDS_YOU_CHIPS order, then the oldest mail first.
+ * Queued and In HMS come from the item's latest linked run, so the run is the one state machine. Otherwise a review
+ * item shows Review, and anything else needs her.
+ */
+export function needsYouChip(status: string, runState: string | null): NeedsYouChip {
+  if (runState === 'queued' || runState === 'retry_wait') return 'queued';
+  if (runState === 'claimed' || runState === 'running') return 'in_hms';
+  return status === 'review' ? 'review' : 'needs_you';
+}
+
+/**
+ * Work items in this transport with the given statuses, the Needs-you list. Needs you comes before review, then the
+ * oldest mail first. Spam is left out, a spam thread and a spam read alike. Each row carries its chip.
  */
 export async function listWorkItems(
   db: DB,
   input: { transportId: string; statuses: readonly string[]; limit: number },
 ) {
   if (input.statuses.length === 0) return [];
-  const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.workItemId} = ${workItem.id} and ${aiWorkflowRun.executorLane} = 'hms' order by ${aiWorkflowRun.createdAt} desc limit 1)`;
-  const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
-    .mapWith(Number)
-    .as('chip_rank');
+  const latestRunState = sql<string | null>`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.workItemId} = ${workItem.id} order by ${aiWorkflowRun.createdAt} desc limit 1)`;
   const rows = await db
     .select({
       id: workItem.id,
@@ -634,28 +556,23 @@ export async function listWorkItems(
       sender: message.fromAddress,
       subject: message.subject,
       receivedAt: message.receivedAt,
-      chipRank,
+      runState: latestRunState,
     })
     .from(workItem)
-    .innerJoin(mailThread, eq(mailThread.id, workItem.threadId))
     .leftJoin(message, eq(message.id, workItem.sourceMessageId))
+    .leftJoin(mailThread, eq(mailThread.id, workItem.threadId))
     .where(
       and(
         eq(workItem.transportId, input.transportId),
         inArray(workItem.status, [...input.statuses]),
         ne(workItem.kind, 'spam'),
         isNull(mailThread.spamAt),
-        isNull(mailThread.trashedAt),
       ),
     )
     .orderBy(
-      sql`chip_rank`,
+      sql`case when ${workItem.status} = 'needs_you' then 0 else 1 end`,
       asc(sql`coalesce(${message.receivedAt}, ${workItem.createdAt})`),
-      asc(workItem.id),
     )
     .limit(input.limit);
-  return rows.map(({ chipRank: rank, ...row }) => ({
-    ...row,
-    chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
-  }));
+  return rows.map(({ runState, ...row }) => ({ ...row, chip: needsYouChip(row.status, runState) }));
 }

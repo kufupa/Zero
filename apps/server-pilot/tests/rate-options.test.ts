@@ -196,14 +196,3 @@ describe('the note for a contract on another board', () => {
     expect(otherBoardContractNotes(['Woolworths'], [option({})])).toEqual([]);
   });
 });
-
-describe('HMS event rates (U13)', () => {
-  it('marks GNC3B and GNC4B with a hint and leaves every other card as it was', () => {
-    const cards = buildRateOptions(
-      source([row({ id: 'gnc', rate: 'GNC3B', scope: 'contextual' }), row({ id: 'bar', rate: 'BAR' })], ROOM_ONLY),
-      [],
-    );
-    expect(cards.find((card) => card.rateCode === 'GNC3B')?.hint).toBe('event_rate');
-    expect(cards.find((card) => card.rateCode === 'BAR')).not.toHaveProperty('hint');
-  });
-});

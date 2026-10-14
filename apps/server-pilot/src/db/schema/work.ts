@@ -41,13 +41,9 @@ export const WORK_EVENT_TYPES = [
   'field.reject',
   'approval.granted',
   'approval.consumed',
-  'write.evidence',
   'review.ok',
   'review.flag',
   'status.changed',
-  'rate.saved',
-  'rate.one_off',
-  'rate.override',
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
 

@@ -41,8 +41,6 @@ const BOOKING_FLAG_COPY: Record<string, string | undefined> = {
     'Company rate not applied: the booking has no company attached. Check the rate in HMS before booking.',
   joint_inventory_unproven:
     'Rooms for all stays are not proven to be free together. Check availability in HMS before booking.',
-  manual_rate_change:
-    'This quote used a saved, one-off or override rate. HMS books at its own rate: change the room rate in HMS to the quoted rate.',
 };
 
 const RATE_CHECK_REASON_COPY: Record<string, string | undefined> = {

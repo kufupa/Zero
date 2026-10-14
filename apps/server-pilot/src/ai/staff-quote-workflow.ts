@@ -14,7 +14,6 @@ import {
   deriveAuthorizedExtraLines,
   deriveQuoteLines,
   type AuthorizedProposalFacts,
-  type RowPrice,
 } from '../quote-proposal/quote-lines.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
 import { PARTY_NO_CONTRACT_CODE, PARTY_SEARCH_INCOMPLETE_CODE, isPartyRateFailure } from './party-rate-failure.js';
@@ -46,28 +45,6 @@ const staffLabel = z.string().trim().max(120);
 /** Largest accepted amount for one extra unit: R1,000,000 in cents. Keeps every total far from unsafe integers. */
 export const MAX_EXTRA_AMOUNT_MINOR = 100_000_000;
 const extraAmount = z.number().int().positive().max(MAX_EXTRA_AMOUNT_MINOR);
-/**
- * Staff row prices (KTD6). A row with no entry is priced by HMS. A saved rate is named by id only: the server reads its name
- * and amount. An override needs its rate code, its per-night rate and a note saying who approved it and why.
- */
-export const staffRowPriceInput = z.discriminatedUnion('source', [
-  z
-    .object({ groupId: z.string().min(1).max(64), source: z.literal('saved'), customRateId: z.string().uuid() })
-    .strict(),
-  z
-    .object({ groupId: z.string().min(1).max(64), source: z.literal('one_off'), oneOffRate: extraAmount })
-    .strict(),
-  z
-    .object({
-      groupId: z.string().min(1).max(64),
-      source: z.literal('override'),
-      rateCode: z.string().regex(/^[A-Z0-9_-]{1,16}$/),
-      overrideRate: extraAmount,
-      note: z.string().trim().min(1, 'The override needs a note: who approved it and why').max(500),
-    })
-    .strict(),
-]);
-export type StaffRowPriceInput = z.infer<typeof staffRowPriceInput>;
 /** Prices, native party IDs and qualification flags are deliberately not client inputs. */
 /** The HMS id a picked party carries: plain characters, as HMS shows them. */
 const partyNativeId = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
@@ -124,8 +101,6 @@ export const staffQuoteInput = z
     notes: z.string().trim().max(1000).optional(),
     // The HMS company and/or agency the pane's Find in HMS picker chose. Absent means public rates, as before.
     parties: staffQuoteParties.optional(),
-    // Row prices staff chose instead of HMS's nightly rate. Part of the approved input digest, so an approval binds them.
-    rowPrices: z.array(staffRowPriceInput).max(8).optional(),
   })
   .strict();
 export type StaffQuoteInput = z.infer<typeof staffQuoteInput>;
@@ -241,8 +216,6 @@ export type StaffQuoteAttestation = {
   header: Pick<RevisionProposalHeader, 'company' | 'agency'>;
   /** Staff note approved with the quote; the PDF prints this stored copy, never a later client value. */
   notes?: string;
-  /** Row prices approved with the quote, snapshotted when it ran. Old quotes keep these even after a rate is archived. */
-  rowPrices?: RowPrice[];
 };
 export function staffQuoteSourceHash(mail: {
   id: string;
@@ -657,12 +630,9 @@ export function attestStaffQuote(
   scope: StaffQuoteScope,
   prepared: ReturnType<typeof prepareStaffQuote>,
   revision: QuoteRevision,
-  rowPrices: RowPrice[] = [],
 ): StaffQuoteAttestation {
   if (revision.authorizationId !== prepared.authorizationId)
     throw new Error('staff_quote_attestation_mismatch');
-  // Validates the prices against this revision before they are approved, so a bad row never reaches the stored attestation.
-  deriveQuoteLines(revision, rowPrices);
   return {
     version: 1,
     kind: 'staff_approved_quote',
@@ -678,6 +648,5 @@ export function attestStaffQuote(
     revisionIds: [revision.id],
     header: { company: prepared.header.company, agency: prepared.header.agency },
     ...(input.notes ? { notes: input.notes } : {}),
-    ...(rowPrices.length ? { rowPrices } : {}),
   };
 }

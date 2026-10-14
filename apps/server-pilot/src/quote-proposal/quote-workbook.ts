@@ -2,12 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { unzipSync, zipSync } from 'fflate';
 import { HOTEL_TELEPHONE } from './filename.js';
-import {
-  deriveAuthorizedExtraLines,
-  deriveQuoteLines,
-  type AuthorizedProposalFacts,
-  type RowPrice,
-} from './quote-lines.js';
+import { deriveAuthorizedExtraLines, deriveQuoteLines, type AuthorizedProposalFacts } from './quote-lines.js';
 import type { QuoteRevision } from './quote-revision.js';
 
 const TEMPLATE_PATH = fileURLToPath(new URL('../../fixtures/centurion-quotation-template.xlsx', import.meta.url));
@@ -77,8 +72,8 @@ type WorkbookItem = {
   departure: string;
 };
 
-/** One resolved stay: its revision, the authorised extras attached to it, and the row prices its approval recorded. */
-export type WorkbookStay = { revision: QuoteRevision; facts?: AuthorizedProposalFacts; rowPrices?: RowPrice[] };
+/** One resolved stay: its revision and the authorised extras attached to it. */
+export type WorkbookStay = { revision: QuoteRevision; facts?: AuthorizedProposalFacts };
 
 /** A quote the proposal Excel cannot hold. The message tells staff what to do instead. */
 export class WorkbookRefusalError extends Error {}
@@ -139,7 +134,7 @@ export function workbookLinesForStays(stays: WorkbookStay[]): { lines: WorkbookL
   }
   const items: Array<WorkbookItem & { stay: number }> = [];
   stays.forEach((stay, index) => {
-    const rooms = deriveQuoteLines(stay.revision, stay.rowPrices).map(
+    const rooms = deriveQuoteLines(stay.revision).map(
       (line): WorkbookItem => ({
         service: 'room',
         extra: false,
@@ -446,15 +441,10 @@ export function quoteWorkbookForStays(args: {
 export function quoteWorkbookForRevision(args: {
   revision: QuoteRevision;
   facts?: AuthorizedProposalFacts;
-  rowPrices?: RowPrice[];
   header: WorkbookHeader;
   note?: string;
 }): { bytes: Uint8Array; totalMinor: number } {
-  return quoteWorkbookForStays({
-    stays: [{ revision: args.revision, facts: args.facts, rowPrices: args.rowPrices }],
-    header: args.header,
-    note: args.note,
-  });
+  return quoteWorkbookForStays({ stays: [{ revision: args.revision, facts: args.facts }], header: args.header, note: args.note });
 }
 
 /** "Quote - <Company or Guest> - <arrival>.xlsx" with path-unsafe characters removed. */

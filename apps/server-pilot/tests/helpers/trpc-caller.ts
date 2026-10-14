@@ -41,7 +41,6 @@ export async function callerFor(
   mail: RootCaller['mail'];
   drafts: RootCaller['drafts'];
   labels: RootCaller['labels'];
-  rates: RootCaller['rates'];
   settings: RootCaller['settings'];
   connections: RootCaller['connections'];
   user: RootCaller['user'];
@@ -72,7 +71,6 @@ export async function callerFor(
     mail: caller.mail,
     drafts: caller.drafts,
     labels: caller.labels,
-    rates: caller.rates,
     settings: caller.settings,
     connections: caller.connections,
     user: caller.user,

@@ -66,13 +66,8 @@ export type PaneStayCancelResult = {
 
 // Operator-facing text per outcome. cancel_unconfirmed: the status did not read Cancelled within 60 s after OK, but HMS
 // may have applied the cancel, so the operator checks HMS before anything else.
-// cancel_penalty_pending: a charge opened after the OK. It is needs check, so the operator reads the charge in HMS first.
 export const PANE_CANCEL_MESSAGES: ReadonlyMap<string, string> = new Map([
   ['cancel_unconfirmed', 'HMS may have cancelled this booking. Check HMS before trying again.'],
-  [
-    'cancel_penalty_pending',
-    'A cancellation penalty is pending on this booking. Check HMS before anything else.',
-  ],
 ]);
 
 export function paneCancelMessage(outcome: string): string | null {
