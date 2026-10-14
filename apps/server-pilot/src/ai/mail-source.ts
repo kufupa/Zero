@@ -26,6 +26,8 @@ type MailSourceRule = {
   forwardedSubjectPatterns?: readonly RegExp[];
   otaChip?: boolean;
   bookingPhrase?: string;
+  /** Subjects a vendor uses to relay a person's own enquiry (e.g. a website contact form); that mail stays direct. */
+  directSubjectPatterns?: readonly RegExp[];
 };
 
 /**
@@ -141,7 +143,6 @@ export const MAIL_SOURCE_RULES: readonly MailSourceRule[] = [
     kind: 'channel',
     source: 'Tiket.com',
     domains: ['tiket.com'],
-    forwardedSubjectPatterns: [/^tiket(?:\.com)?\b/i],
     otaChip: true,
     bookingPhrase: String.raw`tiket(?:\.com)?`,
   },
@@ -150,8 +151,7 @@ export const MAIL_SOURCE_RULES: readonly MailSourceRule[] = [
     kind: 'channel',
     source: 'Profitroom',
     domains: ['profitroom.com'],
-    forwardedSubjectPatterns: [/^profitroom\b/i],
-    otaChip: true,
+    directSubjectPatterns: [/\bcontact\s+form\b/i],
   },
   {
     id: 'h-pay',
@@ -235,6 +235,14 @@ function matchedSource(
   return { kind: rule.kind, source: rule.source, reason };
 }
 
+function relaysDirectEnquiry(rule: MailSourceRule, subject: string | null | undefined): boolean {
+  return Boolean(rule.directSubjectPatterns?.some((pattern) => pattern.test(subject ?? '')));
+}
+
+function relayedEnquiry(rule: MailSourceRule): MailSourceClassification {
+  return { kind: 'direct', source: null, reason: `relayed_enquiry:${rule.id}` };
+}
+
 function plainTextBody(bodyText: string): string {
   if (!HTML_TAG.test(bodyText)) return bodyText;
   return bodyText
@@ -290,12 +298,14 @@ export function classifyMailSource(input: {
   const senderDomain = extractDomain(input.fromAddress);
   const senderMatch = ruleForDomain(senderDomain);
   if (senderMatch) {
+    if (relaysDirectEnquiry(senderMatch.rule, input.subject)) return relayedEnquiry(senderMatch.rule);
     return matchedSource(senderMatch.rule, `sender_domain:${senderMatch.registeredDomain}`);
   }
 
   if (isInternalForwardSender(senderDomain)) {
     const forwardedSender = originalForwardSender(plainTextBody(input.bodyText ?? ''));
     if (forwardedSender) {
+      if (relaysDirectEnquiry(forwardedSender.rule, input.subject)) return relayedEnquiry(forwardedSender.rule);
       return matchedSource(forwardedSender.rule, `forwarded_sender:${forwardedSender.domain}`);
     }
 

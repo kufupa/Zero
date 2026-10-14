@@ -236,6 +236,27 @@ const directExamples = [
 ] as const;
 
 describe('classifyMailSource', () => {
+  it('keeps a Profitroom website contact form direct, sent or forwarded', () => {
+    expect(
+      classifyMailSource({ fromAddress: 'noreply@profitroom.com', subject: 'Default contact form', bodyText: '' }),
+    ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
+    expect(
+      classifyMailSource({
+        fromAddress: 'reservations@legacyhotels.co.za',
+        subject: 'FW: Default contact form',
+        bodyText: 'From: Profitroom <noreply@profitroom.com>\nSent: today\nSubject: Default contact form',
+      }),
+    ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
+  });
+
+  it('does not skip an internal forward on a brand-prefixed subject alone', () => {
+    for (const subject of ['Fwd: Profitroom request to change dates', 'Fwd: Tiket special request']) {
+      expect(
+        classifyMailSource({ fromAddress: 'reservations@legacyhotels.co.za', subject, bodyText: 'Please help.' }).kind,
+      ).toBe('direct');
+    }
+  });
+
   it.each(channelExamples)('matches channel source: $name', ({ input, kind, source, reason }) => {
     expect(classifyMailSource(input)).toEqual({ kind, source, reason });
   });
