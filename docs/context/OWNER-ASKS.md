@@ -192,4 +192,4 @@ Assessment closure: full product/scoping/retro/ETA/testing/model/session-continu
 
 | #   | Ask                                              | Status | Where answered                                     | Next step |
 | --- | ------------------------------------------------ | ------ | -------------------------------------------------- | --------- |
-| 75  | Fix Greptile date/bookability feedback on PR #242 | ✅     | PR https://github.com/kufupa/Zero/pull/242; fix commit | —         |
+| 75  | Fix Greptile date/bookability feedback on PR #242 | ✅     | PR https://github.com/kufupa/Zero/pull/242; commit `c1f64d5a7` | —         |
