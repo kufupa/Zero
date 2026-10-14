@@ -14,6 +14,8 @@ export type QuoteOutcomeVersion = {
   lines: Array<{ groupId: string; totalMinor: number; rateMinor: number; nights: number }>;
   totalMinor: number; currency: string;
 };
+export type QuoteOutcomePreparedRef = { workflowRunId: string; revisionRef: string };
+export type QuoteReplyKind = 'quote' | 'decline' | 'missing_details' | 'other';
 export type QuoteOutcomeFinalOutput = { replyHtml: string;
   attachments: Array<{ fileName: string; mimeType: string; sizeBytes: number; sha256: string }>;
   insertedAt: string };
@@ -97,7 +99,7 @@ export function scoreQuoteOutcomes(cases: readonly QuoteOutcomeCase[]) {
   const occupancy: boolean[] = [];
   const party: boolean[] = [];
   const contact: boolean[] = [];
-  const lineTotals: boolean[] = [];
+  const roomLineTotals: boolean[] = [];
   const actions = new Map<string, boolean>();
   let finalOutputCaptured = 0;
   for (const item of cases) {
@@ -108,18 +110,19 @@ export function scoreQuoteOutcomes(cases: readonly QuoteOutcomeCase[]) {
     for (const kind of ['company', 'agency'] as const) {
       const before = partyName(item.prepared, kind);
       const after = normalized(item.staffFinal.party?.[kind]?.name ?? null);
-      if (before && after) party.push(before === after);
+      if (before) party.push(before === after);
     }
     for (const key of ['name', 'email', 'phone'] as const) {
       const before = normalized(item.prepared.fields.contact[key]);
       const after = normalized(item.staffFinal.fields.contact[key]);
-      if (before && after) contact.push(before === after);
+      if (before) contact.push(before === after);
     }
-    if (item.prepared.lines.length || item.staffFinal.lines.length) {
-      lineTotals.push(
-        item.prepared.totalMinor === item.staffFinal.totalMinor &&
-          canonical(item.prepared.lines.map((line) => ({ groupId: line.groupId, totalMinor: line.totalMinor }))) ===
-          canonical(item.staffFinal.lines.map((line) => ({ groupId: line.groupId, totalMinor: line.totalMinor }))),
+    const preparedRoomLines = item.prepared.lines.filter((line) => !line.groupId.startsWith('extra:'));
+    const staffRoomLines = item.staffFinal.lines.filter((line) => !line.groupId.startsWith('extra:'));
+    if (preparedRoomLines.length || staffRoomLines.length) {
+      roomLineTotals.push(
+        canonical(preparedRoomLines.map((line) => ({ groupId: line.groupId, totalMinor: line.totalMinor }))) ===
+          canonical(staffRoomLines.map((line) => ({ groupId: line.groupId, totalMinor: line.totalMinor }))),
       );
     }
     if (item.action?.model && item.action.owner)
@@ -133,7 +136,7 @@ export function scoreQuoteOutcomes(cases: readonly QuoteOutcomeCase[]) {
     occupancy: agreement(occupancy),
     contact: agreement(contact),
     party: agreement(party),
-    lineTotals: agreement(lineTotals),
+    roomLineTotals: agreement(roomLineTotals),
     finalOutput: { n: cases.length, captured: finalOutputCaptured, pct: cases.length ? Math.round((finalOutputCaptured / cases.length) * 10000) / 100 : null },
   };
 }
@@ -202,38 +205,82 @@ export async function recordPreparedQuoteOutcome(
   });
 }
 
+type PreparedQuoteOutcomeEvent = { id: string; aiValue: unknown; value: unknown; aiSource: string | null };
+export type MatchedPreparedQuote = {
+  event: PreparedQuoteOutcomeEvent; prepared: QuoteOutcomeVersion; staffFinal: QuoteOutcomeVersion;
+};
+
+export function selectPreparedQuoteOutcomes(
+  events: readonly PreparedQuoteOutcomeEvent[], sourceMessageId: string, refs: readonly QuoteOutcomePreparedRef[],
+): MatchedPreparedQuote[] | null {
+  if (!refs.length || refs.length > 32) return null;
+  const keys = refs.map(({ workflowRunId, revisionRef }) => `${workflowRunId}\0${revisionRef}`);
+  if (new Set(keys).size !== keys.length) return null;
+  const selected = refs.map((ref) => {
+    const matches = events.flatMap((event) => {
+      const prepared = finalQuoteVersion(event.aiValue);
+      const staffFinal = finalQuoteVersion(event.value);
+      return prepared?.sourceMessageId === sourceMessageId &&
+        prepared.workflowRunId === ref.workflowRunId && prepared.revisionRef === ref.revisionRef &&
+        staffFinal?.sourceMessageId === sourceMessageId &&
+        staffFinal.workflowRunId === ref.workflowRunId && staffFinal.revisionRef === ref.revisionRef &&
+        event.aiSource === ref.workflowRunId
+        ? [{ event, prepared, staffFinal }]
+        : [];
+    });
+    return matches.length === 1 ? matches[0]! : null;
+  });
+  return selected.some((quote) => quote === null)
+    ? null
+    : selected as MatchedPreparedQuote[];
+}
+
 /** Persist exact reviewed output and link it back to the prepared/final quote snapshots. */
 export async function recordFinalQuoteOutcome(
   db: DB,
-  input: { workItemId: string; sourceMessageId: string; userId: string; output: QuoteOutcomeFinalOutput },
+  input: {
+    workItemId: string; sourceMessageId: string; userId: string;
+    preparedVersions: readonly QuoteOutcomePreparedRef[]; output: QuoteOutcomeFinalOutput;
+  },
 ): Promise<boolean> {
   const [item] = await db.select({ id: workItem.id, sourceMessageId: workItem.sourceMessageId })
     .from(workItem).where(eq(workItem.id, input.workItemId)).limit(1);
   if (!item || item.sourceMessageId !== input.sourceMessageId) return false;
-  const [prepared] = await db.select({ id: workEvent.id, aiValue: workEvent.aiValue, value: workEvent.value, aiSource: workEvent.aiSource })
-    .from(workEvent).where(and(eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'quote.prepared')))
-    .orderBy(desc(workEvent.at), desc(workEvent.id)).limit(1);
-  if (!prepared) return false;
-  const finalVersion = { version: 1, staffQuote: prepared.value, output: input.output };
-  const payloadHash = createHash('sha256').update(stableJson({ preparedId: prepared.id, finalVersion })).digest('hex');
+  const preparedEvents = await db.select({ id: workEvent.id, aiValue: workEvent.aiValue, value: workEvent.value, aiSource: workEvent.aiSource })
+    .from(workEvent).where(and(eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'quote.prepared')));
+  const selected = selectPreparedQuoteOutcomes(preparedEvents, input.sourceMessageId, input.preparedVersions);
+  if (!selected) return false;
+  const preparedEventIds = selected.map(({ event }) => event.id);
+  const outputIdentity = { replyHtml: input.output.replyHtml, attachments: input.output.attachments };
+  const finalVersion = {
+    version: 1 as const,
+    staffQuote: selected[0]!.staffFinal,
+    quotes: selected.map(({ event, prepared, staffFinal }) => ({
+      preparedEventId: event.id, prepared, staffFinal,
+    })),
+    output: input.output,
+  };
+  const payloadHash = createHash('sha256').update(stableJson({ preparedEventIds, output: outputIdentity })).digest('hex');
   const [seen] = await db.select({ id: workEvent.id }).from(workEvent).where(and(
     eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'quote.finalized'), eq(workEvent.payloadHash, payloadHash),
   )).limit(1);
   if (seen) return true;
-  const preparedValue = prepared.aiValue as QuoteOutcomeVersion;
+  const diffs = selected.flatMap(({ prepared, staffFinal }) =>
+    quoteOutcomeDiff(prepared, staffFinal).map((path) => `${prepared.workflowRunId}:${prepared.revisionRef}.${path}`));
   await db.insert(workEvent).values({
     workItemId: input.workItemId,
     actorKind: 'user',
     actorUserId: input.userId,
     type: 'quote.finalized',
-    aiValue: prepared.aiValue,
+    aiValue: selected[0]!.prepared,
     value: finalVersion,
-    aiSource: prepared.aiSource,
+    aiSource: selected[0]!.event.aiSource,
     payloadHash,
     evidence: {
-      preparedEventId: prepared.id,
+      preparedEventId: preparedEventIds[0],
+      preparedEventIds,
       sourceMessageId: input.sourceMessageId,
-      diff: [...quoteOutcomeDiff(preparedValue, prepared.value), 'output'],
+      diff: [...new Set([...diffs, 'output'])].sort(),
     },
   });
   return true;
@@ -242,6 +289,35 @@ export async function recordFinalQuoteOutcome(
 export function finalQuoteVersion(value: unknown): QuoteOutcomeVersion | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const row = value as Partial<QuoteOutcomeVersion>;
-  return row.version === 1 && typeof row.sourceMessageId === 'string' && Array.isArray(row.fields?.groups) &&
-    Array.isArray(row.lines) && Number.isSafeInteger(row.totalMinor) ? row as QuoteOutcomeVersion : null;
+  const fields = row.fields as { groups?: unknown; contact?: unknown } | null | undefined;
+  const contact = fields?.contact;
+  const validContact = Boolean(contact && typeof contact === 'object' && !Array.isArray(contact) &&
+    ['name', 'email', 'phone'].every((key) => typeof (contact as Record<string, unknown>)[key] === 'string'));
+  const validGroups = Array.isArray(fields?.groups) && fields.groups.every((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const group = raw as Record<string, unknown>;
+    return typeof group.id === 'string' && typeof group.arrivalDate === 'string' &&
+      typeof group.departureDate === 'string' && Number.isSafeInteger(group.quantity) &&
+      Number.isSafeInteger(group.adults) && Array.isArray(group.childAges) &&
+      group.childAges.every((age) => Number.isSafeInteger(age)) && typeof group.roomCode === 'string' &&
+      typeof group.board === 'string';
+  });
+  const validLines = Array.isArray(row.lines) && row.lines.every((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const line = raw as Record<string, unknown>;
+    return typeof line.groupId === 'string' && Number.isSafeInteger(line.totalMinor) &&
+      Number.isSafeInteger(line.rateMinor) && Number.isSafeInteger(line.nights);
+  });
+  const validParty = row.party === null || Boolean(row.party && typeof row.party === 'object' && !Array.isArray(row.party) &&
+    (['company', 'agency'] as const).every((kind) => {
+      const party = row.party?.[kind];
+      return party === undefined || (typeof party.nativeId === 'string' && typeof party.name === 'string');
+    }));
+  return row.version === 1 && typeof row.sourceMessageId === 'string' && row.sourceMessageId.length > 0 &&
+    typeof row.workflowRunId === 'string' && row.workflowRunId.length > 0 &&
+    typeof row.revisionRef === 'string' && row.revisionRef.length > 0 && row.action === 'quote_availability' &&
+    row.fields !== undefined && validContact && validGroups && validLines && validParty &&
+    Number.isSafeInteger(row.totalMinor) && typeof row.currency === 'string'
+    ? row as QuoteOutcomeVersion
+    : null;
 }

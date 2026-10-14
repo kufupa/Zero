@@ -31,7 +31,7 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
-import { recordFinalQuoteOutcome } from '../../ai/quote-outcomes.js';
+import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
   EvidenceRefSchema,
   isEvidenceFresh,
@@ -132,13 +132,17 @@ async function persistStaffAttachments(
 }
 async function recordSavedQuoteReply(db: DB, input: {
   transportId: string; sourceMessageId: string; userId: string; html: string;
+  replyKind: QuoteReplyKind; preparedVersions: readonly QuoteOutcomePreparedRef[];
   attachments: ReturnType<typeof decodeStaffAttachments>;
 }): Promise<void> {
+  if (input.replyKind !== 'quote' || !input.preparedVersions.length ||
+    !input.attachments.some(({ file, body }) => file.type === 'application/pdf' && body.length > 0)) return;
   const [item] = await db.select({ id: workItem.id }).from(workItem).where(and(
     eq(workItem.transportId, input.transportId), eq(workItem.kind, 'quote'), eq(workItem.sourceMessageId, input.sourceMessageId),
   )).limit(1);
   if (item) await recordFinalQuoteOutcome(db, { workItemId: item.id, sourceMessageId: input.sourceMessageId,
-    userId: input.userId, output: { replyHtml: input.html, insertedAt: new Date().toISOString(),
+    userId: input.userId, preparedVersions: input.preparedVersions,
+    output: { replyHtml: input.html, insertedAt: new Date().toISOString(),
       attachments: input.attachments.map(({ file, body, sourceHash }) => ({
         fileName: file.name, mimeType: file.type, sizeBytes: body.length, sha256: sourceHash,
       })) },
@@ -1801,6 +1805,8 @@ export const draftsRouter = tRouter({
         to: z.array(z.string()).max(50).default([]),
         subject: z.string().max(998).default(''),
         html: z.string(),
+        replyKind: z.enum(['quote', 'decline', 'missing_details', 'other']).default('other'),
+        preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(32).default([]),
         attachments: z.array(serializedAttachmentInput).max(32).default([]),
         replaceDraft: z.string().max(200).optional(),
       }),
@@ -1919,6 +1925,8 @@ export const draftsRouter = tRouter({
             sourceMessageId: input.replyToMessageId,
             userId: ctx.sessionUser.id,
             html,
+            replyKind: input.replyKind,
+            preparedVersions: input.preparedVersions,
             attachments: decodedAttachments,
           });
           return { id: draftId, replaced: prior !== undefined && !untouchedSavedReply };

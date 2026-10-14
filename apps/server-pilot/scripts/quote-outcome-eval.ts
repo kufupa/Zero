@@ -50,23 +50,52 @@ export function parseQuoteOutcomeFixture(jsonl: string): QuoteOutcomeCase[] {
 export function formatQuoteOutcomeSummary(result: ReturnType<typeof scoreQuoteOutcomes>): string {
   return JSON.stringify({ cases: result.cases, judgments: {
     action: result.action, dates: result.dates, occupancy: result.occupancy, contact: result.contact,
-    party: result.party, lineTotals: result.lineTotals, finalOutput: result.finalOutput,
+    party: result.party, roomLineTotals: result.roomLineTotals, finalOutput: result.finalOutput,
   } }, null, 2);
 }
 
-async function readFinalizedQuoteRows(db: DB, transportId: string): Promise<QuoteRow[]> {
-  const rows = await db.select({ sourceMessageId: workItem.sourceMessageId, aiValue: workEvent.aiValue, value: workEvent.value })
+export function quoteOutcomeCases(
+  preparedRows: Array<{ eventId: string; sourceMessageId: string | null; aiValue: unknown; staffValue: unknown }>,
+  finalizedRows: Array<{ value: unknown; evidence: unknown }>,
+): QuoteRow[] {
+  const outputByPreparedEvent = new Map<string, QuoteOutcomeFinalOutput>();
+  for (const row of finalizedRows) {
+    const value = row.value as {
+      quotes?: Array<{ preparedEventId?: unknown }>;
+      output?: QuoteOutcomeFinalOutput;
+    } | null;
+    const evidence = row.evidence as { preparedEventId?: unknown } | null;
+    const eventIds = Array.isArray(value?.quotes)
+      ? value.quotes.map((quote) => quote.preparedEventId)
+      : [evidence?.preparedEventId];
+    if (!eventIds.length || eventIds.some((id) => typeof id !== 'string') || typeof value?.output?.replyHtml !== 'string')
+      throw new Error('invalid_quote_outcome_event');
+    for (const eventId of eventIds as string[]) outputByPreparedEvent.set(eventId, value!.output!);
+  }
+  return preparedRows.map((row) => {
+    const prepared = finalQuoteVersion(row.aiValue);
+    const staffFinal = finalQuoteVersion(row.staffValue);
+    if (!prepared || !staffFinal || !row.sourceMessageId) throw new Error('invalid_quote_outcome_event');
+    const finalOutput = outputByPreparedEvent.get(row.eventId);
+    return {
+      prepared, staffFinal, sourceMessageId: row.sourceMessageId,
+      ...(finalOutput ? { finalOutput } : {}),
+    };
+  });
+}
+
+async function readQuoteOutcomeRows(db: DB, transportId: string): Promise<QuoteRow[]> {
+  const preparedRows = await db.select({
+    eventId: workEvent.id, sourceMessageId: workItem.sourceMessageId,
+    aiValue: workEvent.aiValue, staffValue: workEvent.value,
+  }).from(workEvent).innerJoin(workItem, eq(workEvent.workItemId, workItem.id)).where(and(
+    eq(workEvent.type, 'quote.prepared'), eq(workItem.transportId, transportId), isNotNull(workItem.sourceMessageId),
+  ));
+  const finalizedRows = await db.select({ value: workEvent.value, evidence: workEvent.evidence })
     .from(workEvent).innerJoin(workItem, eq(workEvent.workItemId, workItem.id)).where(and(
       eq(workEvent.type, 'quote.finalized'), eq(workItem.transportId, transportId), isNotNull(workItem.sourceMessageId),
     ));
-  return rows.map((row) => {
-    const prepared = finalQuoteVersion(row.aiValue);
-    const value = row.value as { staffQuote?: unknown; output?: QuoteOutcomeFinalOutput } | null;
-    const staffFinal = finalQuoteVersion(value?.staffQuote);
-    if (!prepared || !staffFinal || typeof value?.output?.replyHtml !== 'string' || !row.sourceMessageId)
-      throw new Error('invalid_quote_outcome_event');
-    return { prepared, staffFinal, finalOutput: value.output, sourceMessageId: row.sourceMessageId };
-  });
+  return quoteOutcomeCases(preparedRows, finalizedRows);
 }
 
 function addActionLabels(cases: QuoteRow[], labels: Awaited<ReturnType<typeof readActionLabelEvalRows>>,
@@ -91,7 +120,7 @@ async function main(): Promise<void> {
   const { getDb, closeDb } = await import('../src/db/client.js');
   try {
     const db = getDb(), scope = { transportId: options.transportId!, version: options.version! };
-    const rows = await readFinalizedQuoteRows(db, scope.transportId);
+    const rows = await readQuoteOutcomeRows(db, scope.transportId);
     const labels = await readActionLabelEvalRows(db, scope);
     console.log(formatQuoteOutcomeSummary(scoreQuoteOutcomes(addActionLabels(rows, labels, scope))));
   } finally { await closeDb(); }

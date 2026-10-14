@@ -69,6 +69,8 @@ const paneActionEvent = z
 
 const quoteOutcomeInput = z.object({
   sourceMessageId: z.string().min(1).max(998), replyHtml: z.string().max(400_000), insertedAt: z.string().datetime(),
+  replyKind: z.enum(['quote', 'decline', 'missing_details', 'other']),
+  preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(32),
   attachments: z.array(z.object({ fileName: z.string().min(1).max(255), mimeType: z.string().min(1).max(128),
     sizeBytes: z.number().int().min(0).max(32 * 1024 * 1024), sha256: z.string().regex(/^[a-f0-9]{64}$/),
   }).strict()).max(32),
@@ -253,6 +255,8 @@ export const workItemsRouter = router({
     }),
   /** Exact inserted reply/PDF identity; reply body remains private in work_event. */
   recordQuoteOutcome: mailboxProcedure.input(quoteOutcomeInput).mutation(async ({ input, ctx }) => {
+    if (input.replyKind !== 'quote' || !input.attachments.some((file) => file.mimeType === 'application/pdf' && file.sizeBytes > 0) ||
+      !input.preparedVersions.length) return { recorded: false };
     const db = getDb();
     const [item] = await db.select({ id: workItem.id }).from(workItem)
       .innerJoin(workEvent, and(eq(workEvent.workItemId, workItem.id), eq(workEvent.type, 'quote.prepared')))
@@ -260,7 +264,8 @@ export const workItemsRouter = router({
       .orderBy(desc(workEvent.at), desc(workEvent.id)).limit(1);
     if (!item) throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
     const recorded = await recordFinalQuoteOutcome(db, { workItemId: item.id, sourceMessageId: input.sourceMessageId,
-      userId: ctx.sessionUser.id, output: { replyHtml: input.replyHtml, insertedAt: input.insertedAt, attachments: input.attachments },
+      userId: ctx.sessionUser.id, preparedVersions: input.preparedVersions,
+      output: { replyHtml: input.replyHtml, insertedAt: input.insertedAt, attachments: input.attachments },
     });
     return { recorded };
   }),
