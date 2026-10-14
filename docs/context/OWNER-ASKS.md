@@ -213,3 +213,4 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 91  | Profitroom computer-use agent? | ⬜ | FACTS §2 Profitroom note (Profitroom is an excluded host) | Owner decides whether it's a scope change |
 | 92  | L6 pane UI cleanup: remove warning/repeated read-as and booking facts; show request + changed rows; use Edit/Done controls; no HMS writes or deploy | ✅ | PR https://github.com/kufupa/Zero/pull/246 | — |
 | 93  | Fix four Greptile P1s on PR #246; targeted tests only; reply with fix SHAs | ✅ | PR https://github.com/kufupa/Zero/pull/246; fixes `25ec195fd` | — |
+| 94  | Fix Greptile P1: keep every requested date visible when HMS omits a booking date; add a focused test; merge main and resolve the thread | ✅ | PR https://github.com/kufupa/Zero/pull/246; fix `1cd908e5e937def3770784f24eec43b87e147b02` | — |
