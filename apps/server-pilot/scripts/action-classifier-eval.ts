@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { inArray, eq } from 'drizzle-orm';
@@ -21,7 +21,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_LABELS_PATH = resolve(here, '../eval/action-labels-r3.tsv');
 
 type Label = { messageId: string; expected: ActionPrediction };
-type CliOptions = { limit?: number; concurrency: number; repeat: number; labelsPath: string; deadlineMs?: number };
+type CliOptions = {
+  limit?: number;
+  concurrency: number;
+  repeat: number;
+  labelsPath: string;
+  deadlineMs?: number;
+  /** Per-message ids and labels only, for adjudicating disagreements; never mail content. */
+  predictionsPath?: string;
+};
 
 function positiveInteger(name: string, raw: string, maximum = Number.MAX_SAFE_INTEGER): number {
   const value = Number(raw);
@@ -37,7 +45,7 @@ function parseArgs(args: string[]): CliOptions | 'help' {
     const arg = args[index]!;
     if (arg === '--help' || arg === '-h') return 'help';
     const [rawName, inlineValue] = arg.startsWith('--') ? arg.slice(2).split('=', 2) : ['', undefined];
-    if (!['limit', 'concurrency', 'repeat', 'labels', 'deadline-ms'].includes(rawName)) {
+    if (!['limit', 'concurrency', 'repeat', 'labels', 'deadline-ms', 'predictions'].includes(rawName)) {
       throw new Error(`unknown option: ${arg}`);
     }
     const value = inlineValue ?? args[++index];
@@ -48,6 +56,7 @@ function parseArgs(args: string[]): CliOptions | 'help' {
     }
     if (rawName === 'repeat') options.repeat = positiveInteger(rawName, value, 10);
     if (rawName === 'labels') options.labelsPath = resolve(value);
+    if (rawName === 'predictions') options.predictionsPath = resolve(value);
     if (rawName === 'deadline-ms') options.deadlineMs = positiveInteger(rawName, value, 600_000);
   }
   return options;
@@ -113,7 +122,7 @@ function help(): void {
   console.log(
     [
       'Read-only action-classifier eval. Run from apps/server-pilot on EC2 with the production mailbox read env.',
-      '  pnpm exec tsx scripts/action-classifier-eval.ts [--limit N] [--concurrency N] [--repeat N] [--labels PATH] [--deadline-ms N]',
+      '  pnpm exec tsx scripts/action-classifier-eval.ts [--limit N] [--concurrency N] [--repeat N] [--labels PATH] [--deadline-ms N] [--predictions PATH]',
       'Defaults: --concurrency 4, --repeat 2. No extraction or work-item rows are written.',
     ].join('\n'),
   );
@@ -222,6 +231,12 @@ export async function runActionClassifierEval(options: CliOptions): Promise<void
         ? { ...metrics.stability, percent: percent(metrics.stability.rate) }
         : null,
     };
+    if (options.predictionsPath) {
+      const lines = scored.map((item, index) =>
+        JSON.stringify({ messageId: labels[index]!.messageId, expected: item.expected, predictions: item.predictions }),
+      );
+      await writeFile(options.predictionsPath, `${lines.join('\n')}\n`, { mode: 0o600 });
+    }
     console.log(JSON.stringify(report, null, 2));
   } finally {
     await closeDb();
