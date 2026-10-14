@@ -20,6 +20,7 @@ export function outlookSyncLabel(status: SyncStatusV1 | null, error: string | nu
 }
 export function OutlookSyncProgress({
   status,
+  notApplicable = false,
   mailbox,
   onControl,
   error = null,
@@ -28,6 +29,7 @@ export function OutlookSyncProgress({
   emptyLabel,
 }: {
   status: SyncStatusV1 | null;
+  notApplicable?: boolean;
   mailbox: string;
   onControl: (operation: SyncControlOperation) => void;
   error?: string | null;
@@ -37,9 +39,9 @@ export function OutlookSyncProgress({
   /** Copy for a read-only surface when the mailbox has no activated sync source yet. */
   emptyLabel?: string;
 }) {
-  const [open, setOpen] = useState(false),
-    id = useId(),
-    label = !status && !error && emptyLabel ? emptyLabel : outlookSyncLabel(status, error),
+  const [open, setOpen] = useState(false), id = useId();
+  if (notApplicable && !error) return null;
+  const label = !status && !error && emptyLabel ? emptyLabel : outlookSyncLabel(status, error),
     paused = Boolean(status?.userPaused),
     disabled = busy || !status || status.state === 'sign-in-required' || error === 'access-removed';
   return (

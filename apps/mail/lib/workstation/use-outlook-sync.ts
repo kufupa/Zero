@@ -1,5 +1,8 @@
 import type { SyncControlOperation } from '@/components/workstation/outlook-sync-progress';
-import type { SyncStatusV1 } from '@zero/server/outlook-sync-contracts';
+import type {
+  ActiveMailboxSyncStatus,
+  SyncStatusV1,
+} from '@zero/server/outlook-sync-contracts';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { trpcClient } from '@/providers/query-provider';
 
@@ -33,7 +36,9 @@ export type OutlookSyncClientInput = {
 type ActiveMailboxSyncStatusClient = {
   workstation: {
     outlookSync: {
-      statusForActiveMailbox: { query: (input: Record<string, never>) => Promise<SyncStatusV1 | null> };
+      statusForActiveMailbox: {
+        query: (input: Record<string, never>) => Promise<ActiveMailboxSyncStatus>;
+      };
     };
   };
 };
@@ -92,13 +97,14 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
   const [snapshot, setSnapshot] = useState<{
     key: string | null;
     status: SyncStatusV1 | null;
+    notApplicable: boolean;
     error: string | null;
-  }>({ key: null, status: null, error: null });
+  }>({ key: null, status: null, notApplicable: false, error: null });
   const readStatus = useCallback(async (k: string, id: string) => {
     const revision = ++statusRevision.current;
     const result = await trpcClient.workstation.outlookSync.status.query({ sourceId: id });
     if (owner.current === k && statusRevision.current === revision)
-      setSnapshot({ key: k, status: result, error: null });
+      setSnapshot({ key: k, status: result, notApplicable: false, error: null });
     return result;
   }, []);
   useEffect(() => {
@@ -179,6 +185,7 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
         setSnapshot((previous) => ({
           key: k,
           status: previous.key === k ? previous.status : null,
+          notApplicable: false,
           error: code === 'FORBIDDEN' ? 'access-removed' : 'offline',
         }));
         if (code !== 'FORBIDDEN') timer = setTimeout(tick, 5000);
@@ -204,13 +211,25 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
         const status = await (trpcClient as unknown as ActiveMailboxSyncStatusClient)
           .workstation.outlookSync.statusForActiveMailbox.query({});
         if (!mounted || readOnlyOwner.current !== ownerKey) return;
-        setSnapshot({ key: ownerKey, status, error: null });
+        const notApplicable = status?.state === 'not_applicable';
+        setSnapshot({
+          key: ownerKey,
+          status: status?.state === 'not_applicable' ? null : status,
+          notApplicable,
+          error: null,
+        });
+        if (notApplicable) return;
         const pending = status !== null && status.discovered > status.committed && !status.userPaused;
         timer = setTimeout(tick, pending ? 5000 : 30000);
       } catch (error) {
         if (!mounted || readOnlyOwner.current !== ownerKey) return;
         const code = (error as { data?: { code?: string } })?.data?.code;
-        setSnapshot({ key: ownerKey, status: null, error: code === 'FORBIDDEN' ? 'access-removed' : 'offline' });
+        setSnapshot({
+          key: ownerKey,
+          status: null,
+          notApplicable: false,
+          error: code === 'FORBIDDEN' ? 'access-removed' : 'offline',
+        });
         if (code !== 'FORBIDDEN') timer = setTimeout(tick, 5000);
       }
     }
@@ -278,6 +297,7 @@ export function useOutlookSync(input: OutlookSyncClientInput) {
   );
   return {
     status: snapshot.key === statusKey ? snapshot.status : null,
+    notApplicable: snapshot.key === statusKey && snapshot.notApplicable,
     error: snapshot.key === statusKey ? snapshot.error : null,
     statusLoaded: Boolean(statusKey && snapshot.key === statusKey),
     busy: pendingControl?.key === key && pendingControl.revision === scopeRevision.current,

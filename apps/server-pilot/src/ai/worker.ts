@@ -84,6 +84,8 @@ import {
   mailboxTransport,
   message,
 } from '../db/schema/mail.js';
+import { mailExtraction } from '../db/schema/work.js';
+import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import {
   isMailSourceClassification,
 } from './mail-source.js';
@@ -190,7 +192,7 @@ import type { IndexableMessage } from '../mail/conversation-signals.js';
 import { LocalModelRouteUnavailableError } from './bedrock/local.js';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
-import { and, asc, eq, inArray, lt, lte, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, lte, or } from 'drizzle-orm';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { normalizeEmailAddress } from './never-spam.js';
@@ -4359,6 +4361,34 @@ export async function executeAiRun(
             .filter((row) => row.id === run.triggerMessageId)
             .map(fromSnapshot)
         : await db.select().from(message).where(eq(message.id, run.triggerMessageId)).limit(1);
+      const [mailbox] = await db
+        .select({ email: mailboxTransport.email })
+        .from(mailboxTransport)
+        .where(eq(mailboxTransport.id, run.transportId))
+        .limit(1);
+      const [storedExtraction] = trigger
+        ? await db
+            .select({ payload: mailExtraction.payload })
+            .from(mailExtraction)
+            .where(
+              and(
+                eq(mailExtraction.messageId, run.triggerMessageId),
+                eq(mailExtraction.status, 'succeeded'),
+              ),
+            )
+            .orderBy(desc(mailExtraction.createdAt))
+            .limit(1)
+        : [];
+      const rawConfirmationNumbers = storedExtraction?.payload?.confirmationNumbers;
+      const confirmationNumbers = Array.isArray(rawConfirmationNumbers)
+        ? rawConfirmationNumbers.filter((value): value is string => typeof value === 'string')
+        : [];
+      const existingStayInformation = isSelfSentPreStayInformationMail({
+        fromAddress: trigger?.fromAddress,
+        mailboxAddress: mailbox?.email,
+        subject: trigger?.subject,
+        confirmationNumbers,
+      });
 
       const threadMessages = admissionSnapshot
         ? admissionSnapshot.threadMessages.map(fromSnapshot)
@@ -4469,6 +4499,7 @@ export async function executeAiRun(
         ? initialRunMetrics.mailSourceDecision
         : null;
       const routeAsAutomatedChannel =
+        !existingStayInformation &&
         !externalSentAnalyticsOnly &&
         mailSourceDecision !== null &&
         mailSourceDecision.kind !== 'direct';
@@ -4570,6 +4601,8 @@ export async function executeAiRun(
             transportId: run.transportId,
             threadId: run.threadId,
             triggerMessageId: run.triggerMessageId,
+            mailboxAddress: mailbox?.email ?? undefined,
+            confirmationNumbers,
             subject: trigger?.subject ?? undefined,
             from: trigger?.fromAddress ?? '',
             to: trigger?.toAddresses ?? [],

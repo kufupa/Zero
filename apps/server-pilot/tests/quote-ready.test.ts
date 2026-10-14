@@ -48,6 +48,13 @@ function build(overrides: Parameters<typeof payload>[0] = {}, now = new Date('20
   });
 }
 
+function buildWithRoomType(roomType: string) {
+  const stay = payload().stays[0]!;
+  return build({
+    stays: [{ ...stay, rows: [{ ...stay.rows[0]!, roomType }] }],
+  });
+}
+
 describe('prepared quote input from stored extraction', () => {
   it('defaults unspecified board to B&B and uses the single-row total without inventing occupancy', () => {
     const plan = build();
@@ -85,6 +92,33 @@ describe('prepared quote input from stored extraction', () => {
 
     expect(plan.inputs[0]?.groups[0]?.board).toBe('dinner_bb');
     expect(plan.inputs[0]).not.toHaveProperty('dinnerAllowanceMinor');
+  });
+
+  it.each([
+    ['1 x Standard Queen', 'STQN'],
+    ['2x Deluxe-Twins!', 'DLXTWN'],
+    ['3 rooms: Executive Kings', 'EXKNG'],
+    ['StandardKing', 'SKNG'],
+  ])('resolves normalized room phrase %s to its unique configured code', (roomType, code) => {
+    const plan = buildWithRoomType(roomType);
+
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.inputs[0]?.groups[0]?.roomCodes).toEqual([code]);
+  });
+
+  it.each([
+    '1 x double',
+    '1 x single',
+    '1 x queen',
+    '1 x king',
+    '1 x twin',
+    '1 x standard',
+    '1 x deluxe',
+  ])('leaves ambiguous room phrase %s unresolved', (roomType) => {
+    const plan = buildWithRoomType(roomType);
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.stays[0]?.reason).toBe('room_type_unresolved');
   });
 
   it.each([

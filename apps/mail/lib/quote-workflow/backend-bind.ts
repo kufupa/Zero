@@ -195,6 +195,8 @@ export type StoredWork =
       status: 'ready';
       /** The stored mail kind, used to keep the selected-email classification in the shared pane vocabulary. */
       kind: string;
+      existingStayInformation?: boolean;
+      confirmationNumbers?: string[];
       workItemId: string | null;
       workItemStatus: string | null;
       extractionId: string;
@@ -292,7 +294,15 @@ export async function bindStoredWork(args: {
   } catch {
     return { status: 'unavailable' };
   }
-  if (stored.status !== 'ready' || stored.workItemId || !args.open || args.isStale?.()) return stored;
+  if (
+    stored.status !== 'ready' ||
+    stored.workItemId ||
+    stored.existingStayInformation ||
+    !args.open ||
+    args.isStale?.()
+  ) {
+    return stored;
+  }
   args.onRead?.();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<StoredWork>((resolve) => {

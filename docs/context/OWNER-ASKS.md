@@ -1,0 +1,138 @@
+# Owner asks ledger (2026-10-14)
+
+**Every session reads this file first.** When the owner sends a new ask, add a row in the same turn, then answer rows by number. A long voice note becomes several rows. Never drop a row: close it as done, dropped (with the reason) or parked.
+
+Status key: ✅ done · 🟡 partial · ⬜ open · ⏸ parked (owner OK'd waiting) · ✖ dropped
+
+## 1. Asks
+
+| # | Ask (owner's words, short) | Status | Where answered | Next step |
+|---|---|---|---|---|
+| 1 | Read the handoff + the Oct 13 5–10 pm "teach me" chat | ✅ | `~/retros/2026-10-14-overnight-retro.md` §3 | — |
+| 2 | Fat retro: what went well and badly, owner and agent | ✅ | retro §7–8 | — |
+| 3 | Why did we miss 07:30Z? | ✅ | retro §2 | — |
+| 4 | Were 16 Greptile rounds worth it? | ✅ | retro §4 (rounds 1–5 yes, 12–16 self-inflicted) | — |
+| 5 | Was overnight autonomy right? | ✅ | retro §5; `RUN-CONTRACT.md` | — |
+| 6 | Cost by model | ✅ | retro §6 (~$74 overnight) | Live tracker: see #28 |
+| 7 | Full TODO | 🟡 | retro §12 | This file replaces it as the live list |
+| 8 | Latest Claude Code features, `/goal` vs `/loop` | ✅ | retro §9; `RUN-CONTRACT.md` | — |
+| 9 | How do I become a 10x / 100x dev? | 🟡 | retro §10 was generic | §4 below is owner-specific |
+| 10 | Use Exa + cheap subagents | ✅ | retro lanes (Luna max, Haiku max) | — |
+| 11 | Update PRODUCT.md / AGENTS.md | 🟡 | PR #225, not merged | Merge after Greptile triage |
+| 12 | `/95-exa-agent` on that message | 🟡 | Missed at first; ran later on the memory question | Treat any `/95…` as "run it now" (memory saved) |
+| 13 | Another LLM's cache table | ✅ | retro §9: 1 h cache, no 4.5-min ping needed | — |
+| 14 | Hindsight vs gbrain / mem0 / Zep / Tencent | 🟡 | Researched (`plan-20261014/r-meta.out`) but **never put to you as a decision** | §5 below: decision proposed |
+| 15 | Assume Haiku runs ~300k; stop capping at 100k | ✅ | memory `feedback-model-routing` | — |
+| 16 | Smaller PRs, more often, always; orchestrator plans the slices | ✅ | AGENTS.md limits; plan §2; PRs #227, #228 are small | Keep it |
+| 17 | Commit + push the doc changes | ✅ | PR #225 | — |
+| 18 | Factor in the other session's work | ✅ | Ownership split sent 11:24Z; `/tmp/p2/lanes/HANDBACK.md` | `-70` lands f4, f5, F3 |
+| 19 | Plan the full one-click product (quote, create, amend, cancel, payment) | 🟡 | `docs/plans/2026-10-14-002-one-click-case-card-plan.md` | C1/C3/I1 building; see #34 |
+| 20 | Teach me AI coding: sessions, handoffs, parallelism, agent teams, Sol, Wayfinder | 🟡 | Sol price and Wayfinder (skip) noted in chat only | §4 below |
+| 21 | "Who says cap of 3 Luna writes?" | ✅ | It was a mistranscription; there's no cap | — |
+| 22 | Run more lanes, but be careful with full mail typechecks | ✅ | Lanes run targeted tests only | I1 serializes heavy checks |
+| 23 | Local CI/CD with shared state, no GitHub Actions | 🟡 | Lane I1 building `scripts/ci/` | PR ~12:15Z |
+| 24 | Is "use exa and research" enough? What access can I give you? | 🟡 | r-meta: a prompt alone isn't enforcement | §4 habit 8 |
+| 25 | Why is the merge gate slow? Speed it up | 🟡 | r-meta: local status + `gate.sh` → auto-merge | **Decision needed:** required status `local-ci/presubmit` (it's a GitHub check) |
+| 26 | Save the research for future sessions | 🟡 | Private: `/home/orca/nava-research/reports/plan-20261014/`. Repo: this file | — |
+| 27 | One-click = hierarchical: party/rates before stay, prices + availability per room type; replace Infor | 🟡 | Plan §1 decision order | Validate the order with staff (#34) |
+| 28 | No budget cap, but track spend; cheapest and fastest | 🟡 | Cost in the retro only | Add a per-run $ line to every handoff |
+| 29 | Outbound + no-reply are strong label signals; I'll label manually too | 🟡 | Same-thread outbound: 401/5,371 threads. No-reply isn't a safe label: no reply headers in the snapshot, and recent mail may still get a reply | You label in nava-admin once F3 ships (#229 merged) |
+| 30 | Enable the `/95` skills for you | ✅ | `disable-model-invocation: false` | — |
+| 31 | Doc: research, what went well/bad, how to become 10x, which skills/research to prompt for | ✅ | This file | — |
+| 32 | Merge PRs freely | ✅ | §2 decision | Merge after local tests + Greptile triage |
+| 33 | Don't deploy every PR; batch, unless it can run in parallel | ✅ | §2 decision | One batch after HMS returns (~13:05Z) |
+| 34 | Is the case-card order right? Do product research; don't just assume | ⬜ | — | Staff review of the 12:05Z demo + 2 questions on the order |
+| 35 | Find + install forward-deployed / product-design / UX skills (proven, high stars) | ⬜ | §6 | **Your OK** to install the top 2 |
+| 36 | Which skills are installed vs actually used? | 🟡 | §6 | — |
+| 37 | Research bar: proven, open source or very cheap, tens of thousands of stars; Exa credits OK | ✅ | §4 habit 8 | — |
+| 38 | C7 decision (grouped create, partial failure) | ⏸ | §2 | Deferred: low ROI now |
+| 39 | C8 decision (amend fields, cancel) | ✅ | §2 | Draft staff questions (§3) |
+| 40 | Cancellation questions for staff, pre- and post-research | ✅ | §3 | You email the pre-research list |
+| 41 | Highest ROI: classifier coverage + quote UI | ⬜ | — | After the demo: classifier labels (F3) + C1/C5 |
+| 42 | Use the ~2 h HMS-down window well | 🟡 | Offline slices C1, C3, I1 running | — |
+| 43 | Staff demo on hermes with real Centurion mail, questions under the mail, by 12:05–12:10 | 🟡 | Main session building | Link at ~12:05Z |
+| 44 | Explain the C-questions with context | ✅ | §2 | — |
+| 45 | What is `-70`? | ✅ | The other Claude Code window, named `centurion-dashboard-tools-70`, which runs its own Luna lanes | — |
+| 46 | Use Stagehand to diagnose failed creates | ⏸ | Parked with C7 | Revisit when C7 is unparked |
+
+## 2. Owner decisions recorded today
+
+| ID | What it is (plain words) | Decision |
+|---|---|---|
+| C7 | "Create" books several rooms in one click. What if room 2 of 3 fails in HMS? | Keep what was created. Retry the failed room once. Still try room 3. Show a big error in nava-admin and the pane naming the failed room and its current HMS state. **Deferred:** low ROI now. |
+| C8 amend | Which fields Nava may change on an existing booking | Whatever the guest asked for, as long as gold staff outbound shows staff make that change |
+| C8 cancel | When Nava may cancel live | The owner asks staff by email first; Nava drafts the questions (§3) |
+| Deploys | How often | Batch. Not per PR, unless it runs in parallel with other work |
+| Merging | Who may merge | Agent merges after local tests pass and Greptile P0/P1 are triaged |
+
+## 3. Cancellation questions for staff
+
+**Corpus counts (aggregate only, regex upper bounds, because policy footers also say "cancel"):**
+- Messages mentioning "cancel": 1,260 of 8,892 inbound and 243 of 3,541 outbound.
+- "Release": 80 inbound and 22 outbound, across 77 threads.
+- "Cancel" plus fee/penalty/no-show words: 187 threads.
+
+**Pre-research: ask today**
+1. When an agent writes "please release" rooms, do you cancel the reservation in Infor, or release an allocation/block? Which screen do you use?
+2. Do travel agents or corporate accounts ever actually pay the cancellation fee? If so, who decides, and when is it charged: at cancel time or at billing?
+3. Before you cancel, what do you check? For example: inside the free-cancel window, deposit paid, guarantee type.
+4. What does your reply contain: the Infor cancellation number, a template, anything else?
+5. If a guest cancels 1 of 3 rooms or 1 of 4 nights, do you treat it as an amend or a cancel?
+6. Who may waive a penalty, and do you record the waiver anywhere?
+
+**Post-research: ask after we check gold outbound + HMS (when HMS is back)**
+1. In the cancellations we checked, staff replied with a cancellation number and no fee posted. Is "no fee for travel agents" the rule, or did these happen to be inside the free window?
+2. Are the "please release" mails always for group/allocation holds with a release date? Should Nava release on that date by itself, with your approval?
+3. HMS shows a penalty posted on some cancelled stays. Does Infor post it automatically, or does a person?
+4. No-shows and cancellations after the arrival date: is that reservations' job or front office's?
+5. Which cancellations need a manager's OK before you act?
+6. After you click cancel, may Nava send the confirmation email, or do staff always write it?
+
+## 4. How to be a 10x AI-assisted dev (from today's mistakes)
+
+**The lever isn't more agents. It's fewer dropped asks, one focus, small PRs, and proof you can read.**
+
+| # | Habit | What went wrong today | Do this instead | Prompt to give Claude |
+|---|---|---|---|---|
+| 1 | One asks ledger | Hindsight vs mem0, the teaching doc and skills were asked and never closed | Every session reads this file first. End voice notes with "log my asks" | "Add my asks to OWNER-ASKS.md, then answer each one by number." |
+| 2 | WIP = 1 for your attention | One message mixed ~15 topics: demo, 10x, C7/C8, memory, skills, cancellation | Name today's one thing; everything else goes in the ledger | "Today's one thing is X. Park everything else in OWNER-ASKS." |
+| 3 | "Decision needed" vs "FYI" | C7/C8 were asked without context, so you couldn't answer | Every decision gets: what it is, options, my pick, the cost of waiting | "For each decision: plain words, options, your pick, what waiting costs." |
+| 4 | 1-line status + ETA | You had to ask "what's the time, why so long" and "did the lanes land" | First line of every reply: now / next / ETA (UTC) | "Start every reply with now / next / ETA." |
+| 5 | `/goal` with printed proof | Overnight `/goal` had no turn cap; its judge only reads the transcript | Overnight = measurable grind only; print the score; cap turns | `/goal <score> ≥ <bar>, print the command + exit code + score each turn, or stop after 40 turns` |
+| 6 | Small PRs, batched deploys | #214: 3.4k lines, 16 Greptile rounds, ~5 h of critical path | PRs ≤ ~500 lines; merge main before review; 2 rounds then validate; deploy in one batch | "Slice into PRs of ≤500 lines. Merge on local tests + Greptile triage. Deploy once at <time>." |
+| 7 | One primary session | `-70` and this session both built pre-stay; one lane was killed | One primary owns the plan; others own named files and write `HANDBACK.md`. Fresh session + handoff at ~150k context or each new phase | "You're primary. List every running session and lane before launching anything." |
+| 8 | Research on purpose | "Use exa and research" alone didn't produce a decision | Research only for consequential or contested choices. Bar: proven, open source or very cheap, ≥10k stars, 2026-dated sources; end with one pick | "/95-exa-agent <question>. End with one recommendation and what would change it." |
+
+**Your 3 jobs:** set the bar, give labels and examples, and look at 10 real results. Everything else is the agent's job.
+
+## 5. Memory tool decision (proposed, owner confirms)
+
+Source: `plan-20261014/r-meta.out` (2026-10-14). No new research.
+
+| Tool | Fit here | Evidence | Verdict |
+|---|---|---|---|
+| Repo docs + this ledger | Canonical: versioned, reviewed, every session reads them | Rules held overnight when they were read | **Canonical** |
+| Hindsight (installed, Oct 4) | Local, Claude + Codex integration; it injected useful notes into today's Luna lanes | Vendor benchmark only; `retainSessions=true` is a privacy risk | **Keep.** Run the privacy canary (retain off until checked), then score 8/10 on synthetic recall |
+| mem0 | MCP for Claude/Codex | Vendor figures only; local storage ≠ local model calls | Trial only if asks still get lost after a week of the ledger habit |
+| gbrain | Local PGLite mode, light; installed at `/home/ubuntu/.gbrain`, not wired | Project-run recall eval, not independent | Fallback if Hindsight fails its canary |
+| Zep / Graphiti | Temporal graph; MCP is experimental | No matched retrieval evidence | Skip |
+| Tencent DB Agent Memory | Beta, more services | No independent results; heavy for a 4-core VPS | Skip |
+
+**Why:** the asks lost today weren't a memory-retrieval problem. They were never written down. The ledger fixes that, and no memory tool would have.
+
+## 6. Skills
+
+**Design/UX skills checked 2026-10-14 (Exa):**
+
+| Skill | Adoption | What it adds | Proposal |
+|---|---|---|---|
+| [pbakaus/impeccable](https://github.com/pbakaus/impeccable) | ~81k stars, Apache-2.0, release 2026-10-09 | 24 commands (`critique`, `audit`, `polish`, `shape`, `harden`…) + 59 deterministic slop detectors | **Install for Claude Code: proposed, owner OK.** Today it's only on the Hermes agent (`/home/ubuntu/.hermes/hermes-agent/optional-skills/creative/impeccable`), not in Claude Code |
+| [anthropics/skills `frontend-design`](https://github.com/anthropics/skills) | repo ~180k stars | Official base design skill; Impeccable grew from it | Install with Impeccable: proposed, owner OK |
+| hueyexe/frontend-agent-skills | small, unverified | IA, forms, UX writing | Skip (below the bar) |
+
+- **"Forward-deployed engineer" skill:** no proven, high-star skill found. The closest installed ones are `product-office-hours-lite`, `gstack-design-consultation`, `gstack-plan-design-review` and `gstack-design-review`. The real FDE move is the staff demo + questions (#43).
+- **Installed vs used:**
+  - ~150 skills in `~/.claude/skills`.
+  - Used today: `95-exa-agent`, `caveman`/`adhd`, `claude-api`, codex lanes, `ce-*` via lanes.
+  - Installed but unused on UI work: `gstack-design-review`, `gstack-plan-design-review`, `design-shotgun`, `gstack-design-html`.
+  - **Use `gstack-plan-design-review` before every UI slice (C1, C5).**

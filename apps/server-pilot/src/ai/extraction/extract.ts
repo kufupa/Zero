@@ -3,6 +3,7 @@ import type { ModelAdapter, ModelInvokeResult } from '../bedrock/adapter.js';
 import { maskCardNumbers } from '../card-mask.js';
 import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
 import { buildQuoteWorkflowPrompt } from '../quote-workflow-llm.js';
+import { isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
 import type {
   SyncedQuoteAttachment,
   SyncedQuoteSelection,
@@ -222,5 +223,13 @@ export async function extractInboundMail(input: {
     messageId: input.messageId,
     sourceText: prompt.user,
   });
-  return { ok: true, ...sanitized, usage };
+  const kind = isSelfSentPreStayInformationMail({
+    fromAddress: input.from,
+    mailboxAddress: input.mailbox,
+    subject: input.selection.subject,
+    confirmationNumbers: sanitized.payload.confirmationNumbers,
+  })
+    ? 'other'
+    : sanitized.kind;
+  return { ok: true, ...sanitized, kind, usage };
 }
