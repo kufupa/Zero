@@ -362,32 +362,41 @@ const PREVIEW_OK: CancelRun = cancelRun({
 });
 
 describe('AmendLookupPanel', () => {
-  it('shows what the guest asked, each labelled from the email, with the footer note', () => {
+  it('shows one request summary and one email confirmation before HMS returns a match', () => {
     const findStay = vi.fn(NEVER_SETTLES);
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     expect(screen.getByText('Change to an existing booking')).toBeTruthy();
-    expect(screen.getByText('What the guest asked')).toBeTruthy();
-    expect(screen.getByText('Extend the stay by two nights')).toBeTruthy();
+    expect(screen.getByTestId('amend-request-summary').textContent).toBe(AMEND.requestedChange);
+    expect(screen.getByText('Booking in HMS now')).toBeTruthy();
     expect(screen.getByText(CONFIRMATION)).toBeTruthy();
-    expect(screen.getByText('Mokoena')).toBeTruthy();
-    expect(screen.getByText('12 Oct 2026')).toBeTruthy();
-    expect(screen.getByText('14 Oct 2026')).toBeTruthy();
-    expect(screen.getAllByText('From the email')).toHaveLength(5);
-    expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
+    expect(document.querySelectorAll('[data-field="confirmation"]')).toHaveLength(1);
+    expect(screen.queryByTestId('amend-changes')).toBeNull();
+    expect(screen.queryByText('What the guest asked')).toBeNull();
+    expect(screen.queryByText('From the email')).toBeNull();
+    expect(screen.queryByText(AMEND_FIND_COPY.footer)).toBeNull();
   });
 
-  it('shows the requested stay as what the guest asked, and finds the booking by its booked arrival (AE2)', async () => {
+  it('shows requested date changes in the request summary before lookup, then as changed rows beside HMS facts (AE2)', async () => {
     // Booked 12–14 Oct; the guest adds the night of 11 Oct and checks out on 15 Oct.
     const findStay = vi.fn().mockResolvedValue(found({ arrival: '2026-10-12', departure: '2026-10-14' }));
-    const ask = { ...AMEND, requestedArrival: '2026-10-11', requestedDeparture: '2026-10-15' };
+    const ask = {
+      ...AMEND,
+      requestedChange: 'Extend the stay and move the guest to a quieter room',
+      requestedArrival: '2026-10-11',
+      requestedDeparture: '2026-10-15',
+    };
     render(<AmendLookupPanel session={sessionWith(ask)} trpc={lookupTrpc(findStay)} />);
-    expect(screen.getByText('11 Oct 2026')).toBeTruthy();
-    expect(screen.getByText('15 Oct 2026')).toBeTruthy();
+    const request = screen.getByTestId('amend-request-summary');
+    expect(request.textContent).toContain(ask.requestedChange);
+    expect(request.textContent).toContain('Change arrival 12 Oct 2026 → 11 Oct 2026');
+    expect(request.textContent).toContain('Change departure 14 Oct 2026 → 15 Oct 2026');
     await pressFind();
     await waitFor(() => expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' }));
-    await waitFor(() => expect(screen.getByText('Guest wants: 11 Oct 2026')).toBeTruthy());
-    expect(screen.getByText('Guest wants: 15 Oct 2026')).toBeTruthy();
-    expect(document.querySelector('[data-field="arrival"]')?.getAttribute('data-differs')).toBe('true');
+    const changes = await screen.findByTestId('amend-changes');
+    expect(screen.getByTestId('amend-request-summary').textContent).toBe(ask.requestedChange);
+    expect(changes.textContent).toContain('Arrival: 12 Oct 2026 → 11 Oct 2026');
+    expect(changes.textContent).toContain('Departure: 14 Oct 2026 → 15 Oct 2026');
+    expect(screen.getByTestId('amend-hms-facts').textContent).toContain('12 Oct 2026–14 Oct 2026');
   });
 
   it('shows an unknown requested date as not stated, not the booked date, and finds no false match in HMS', async () => {
@@ -395,8 +404,8 @@ describe('AmendLookupPanel', () => {
     const findStay = vi.fn().mockResolvedValue(found({ arrival: '2026-10-12', departure: '2026-10-14' }));
     const ask = { ...AMEND, requestedArrival: null, requestedDeparture: '2026-10-14' };
     render(<AmendLookupPanel session={sessionWith(ask)} trpc={lookupTrpc(findStay)} />);
-    expect(screen.getByText('Not stated')).toBeTruthy();
-    expect(screen.queryByText('12 Oct 2026')).toBeNull();
+    expect(screen.getByTestId('amend-request-summary').textContent).toBe(AMEND.requestedChange);
+    expect(screen.queryByTestId('amend-changes')).toBeNull();
     expect(askedDates(ask)).toEqual({ arrival: null, departure: '2026-10-14' });
     // An older payload without the requested pair, and a cancellation, show the booking as stated.
     expect(askedDates(AMEND)).toEqual({ arrival: '2026-10-12', departure: '2026-10-14' });
@@ -460,7 +469,7 @@ describe('AmendLookupPanel', () => {
       />,
     );
     expect(screen.getByText('Cancellation request')).toBeTruthy();
-    expect(screen.getByText('Not stated')).toBeTruthy();
+    expect(screen.getByTestId('amend-request-summary').textContent).toBe('Cancel this booking');
   });
 
   it('renders nothing when the analysis carries no amendment', () => {
@@ -616,20 +625,21 @@ describe('AmendLookupPanel', () => {
     expect(await screen.findByTestId('amend-hms-result-card')).toBeTruthy();
   });
 
-  it('shows the booking HMS returns and highlights the field that differs', async () => {
+  it('shows compact HMS facts and keeps an email-to-HMS date mismatch separate', async () => {
     const findStay = vi.fn().mockResolvedValue(found({ departure: '2026-10-13' }));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     await pressFind();
-    await waitFor(() => expect(screen.getByText('Guest wants: 14 Oct 2026')).toBeTruthy());
-    expect(screen.queryByText('Matched on')).toBeNull();
-    expect(screen.getAllByText(/^Guest wants:/)).toHaveLength(1);
-    expect(screen.getByTestId('amend-hms-result-card').textContent).toContain(
-      `Booking found in HMS: ${CONFIRMATION} · Thabo Mokoena · 12 Oct 2026–13 Oct 2026 · Deluxe King`,
-    );
-    expect(screen.getByTestId('amend-hms-result-card').textContent).toContain('Confirmed');
-    expect(document.querySelector('[data-field="departure"]')?.getAttribute('data-differs')).toBe('true');
-    expect(document.querySelector('[data-field="arrival"]')?.getAttribute('data-differs')).toBe('false');
-    expect(document.querySelector('[data-field="guest"]')?.getAttribute('data-differs')).toBe('false');
+    const facts = await screen.findByTestId('amend-hms-facts');
+    expect(facts.querySelector('[data-field="confirmation"]')?.textContent).toContain(CONFIRMATION);
+    expect(facts.querySelector('[data-field="guest"]')?.textContent).toContain('Thabo Mokoena');
+    expect(facts.querySelector('[data-field="dates"]')?.textContent).toContain('12 Oct 2026–13 Oct 2026');
+    expect(facts.textContent).toContain('Confirmed');
+    const warning = screen.getByTestId('amend-match-warning');
+    expect(warning.textContent).toContain("Doesn't match HMS");
+    expect(warning.textContent).toContain('Email departure 14 Oct 2026; HMS departure 13 Oct 2026');
+    expect(warning.className).not.toMatch(/amber|orange/);
+    expect(screen.queryByTestId('amend-changes')).toBeNull();
+    expect(screen.queryByText(/Guest wants:/)).toBeNull();
   });
 
   it('labels a cancelled stay when HMS returns it', async () => {
@@ -640,7 +650,7 @@ describe('AmendLookupPanel', () => {
     expect(screen.getByTestId('amend-hms-result-card').textContent).toContain('Cancelled');
   });
 
-  it('says what the guest mentioned and when HMS holds the booking, when the arrivals differ', async () => {
+  it('keeps the reported arrival mismatch in a neutral match-warning line', async () => {
     const findStay = vi.fn().mockResolvedValue({
       ...found({ arrival: '2026-10-13', departure: '2026-10-14' }),
       arrivalMismatch: true,
@@ -649,27 +659,38 @@ describe('AmendLookupPanel', () => {
     });
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     await pressFind();
-    await waitFor(() =>
-      expect(
-        screen.getByText('The guest mentioned 12 Oct 2026; the booking in HMS arrives 13 Oct 2026.'),
-      ).toBeTruthy(),
-    );
+    const warning = await screen.findByTestId('amend-match-warning');
+    expect(warning.textContent).toContain("Doesn't match HMS");
+    expect(warning.textContent).toContain('The guest mentioned 12 Oct 2026; the booking in HMS arrives 13 Oct 2026.');
+    expect(warning.className).not.toMatch(/amber|orange/);
   });
 
-  it('shows rate plan, meal plan and grand total when HMS shows them', async () => {
+  it('keeps a guest-name mismatch out of requested changes', async () => {
+    const findStay = vi.fn().mockResolvedValue(found({ lastName: 'Other' }));
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    await pressFind();
+    const warning = await screen.findByTestId('amend-match-warning');
+    expect(warning.textContent).toContain("Doesn't match HMS");
+    expect(warning.textContent).toContain('Email surname Mokoena; HMS guest Thabo Other');
+    expect(screen.getByTestId('amend-request-summary').textContent).toBe(AMEND.requestedChange);
+    expect(screen.queryByTestId('amend-changes')).toBeNull();
+  });
+
+  it('shows rate plan when HMS shows it, and keeps nonessential facts out of the compact card', async () => {
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     await pressFind();
     await expectFoundBooking();
-    expect(screen.getByText('Rate plan')).toBeTruthy();
-    expect(screen.getByText('BAR')).toBeTruthy();
-    expect(screen.getByText('Meal plan')).toBeTruthy();
-    expect(screen.getByText('Bed & breakfast')).toBeTruthy();
-    expect(screen.getByText('Grand total')).toBeTruthy();
-    expect(screen.getByText('R1 360,00')).toBeTruthy();
+    const facts = screen.getByTestId('amend-hms-facts');
+    expect(within(facts).getByText('Rate plan')).toBeTruthy();
+    expect(within(facts).getByText('BAR')).toBeTruthy();
+    expect(within(facts).getByText('Status')).toBeTruthy();
+    expect(within(facts).getByText('Confirmed')).toBeTruthy();
+    expect(screen.queryByText('Meal plan')).toBeNull();
+    expect(screen.queryByText('Grand total')).toBeNull();
   });
 
-  it('shows the commercial company and booking agency when HMS provides them', async () => {
+  it('keeps nonessential commercial details out of the compact HMS facts', async () => {
     const findStay = vi.fn().mockResolvedValue({
       ...found(),
       commercial: {
@@ -680,18 +701,19 @@ describe('AmendLookupPanel', () => {
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     await pressFind();
     await expectFoundBooking();
-    expect(screen.getByText('Company')).toBeTruthy();
-    expect(screen.getByText('Northstar Conference Group')).toBeTruthy();
-    expect(screen.getByText('Booking agency')).toBeTruthy();
-    expect(screen.getByText('Harbor Travel')).toBeTruthy();
+    expect(screen.queryByText('Company')).toBeNull();
+    expect(screen.queryByText('Northstar Conference Group')).toBeNull();
+    expect(screen.queryByText('Booking agency')).toBeNull();
+    expect(screen.queryByText('Harbor Travel')).toBeNull();
   });
 
-  it('hides rate plan, meal plan and grand total when HMS does not show them', async () => {
+  it('shows a missing rate plan as Not shown and omits extra facts', async () => {
     const findStay = vi.fn().mockResolvedValue(found({ ratePlan: null, mealPlan: null, grandTotal: null }));
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     await pressFind();
     await expectFoundBooking();
-    expect(screen.queryByText('Rate plan')).toBeNull();
+    const ratePlan = screen.getByTestId('amend-hms-facts').querySelector('[data-field="rate-plan"] dd');
+    expect(ratePlan?.textContent).toBe('Not shown');
     expect(screen.queryByText('Meal plan')).toBeNull();
     expect(screen.queryByText('Grand total')).toBeNull();
   });
@@ -895,7 +917,11 @@ describe('AmendLookupPanel with the job queue off', () => {
     const { trpc, jobStatus } = syncTrpc(findStay);
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={trpc} />);
     await pressFind();
-    await waitFor(() => expect(screen.getByText('Guest wants: 14 Oct 2026')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId('amend-match-warning').textContent).toContain(
+        'Email departure 14 Oct 2026; HMS departure 13 Oct 2026',
+      ),
+    );
     expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
     expect(jobStatus.mock.calls.some(([input]) => 'runId' in input)).toBe(false);
     expect(screen.queryByTestId('hms-as-of')).toBeNull();
@@ -1153,7 +1179,7 @@ describe('AmendLookupPanel guest-name search', () => {
     expect(screen.queryByText('Takes about 1–2 minutes. Quotes wait while it runs.')).toBeNull();
   });
 
-  it('shows the requested dates from the email beside the booked dates from HMS (AE2)', async () => {
+  it('shows email-to-HMS booking-date mismatches separately, not as requested changes (AE2)', async () => {
     const amend = { ...AMEND, arrival: '2026-10-31', departure: '2026-11-07' };
     const findStay = vi
       .fn()
@@ -1161,14 +1187,12 @@ describe('AmendLookupPanel guest-name search', () => {
     render(<AmendLookupPanel session={sessionWith(amend)} trpc={lookupTrpc(findStay)} />);
     await pressFind();
     await expectFoundBooking();
-    expect(screen.getByText('31 Oct 2026')).toBeTruthy();
-    expect(screen.getByText('7 Nov 2026')).toBeTruthy();
-    const arrival = document.querySelector('[data-field="arrival"]');
-    const departure = document.querySelector('[data-field="departure"]');
-    expect(arrival?.textContent).toContain('1 Nov 2026');
-    expect(arrival?.getAttribute('data-differs')).toBe('true');
-    expect(departure?.textContent).toContain('6 Nov 2026');
-    expect(departure?.getAttribute('data-differs')).toBe('true');
+    const facts = screen.getByTestId('amend-hms-facts');
+    expect(facts.querySelector('[data-field="dates"]')?.textContent).toContain('1 Nov 2026–6 Nov 2026');
+    const warning = screen.getByTestId('amend-match-warning');
+    expect(warning.textContent).toContain('Email arrival 31 Oct 2026; HMS arrival 1 Nov 2026');
+    expect(warning.textContent).toContain('Email departure 7 Nov 2026; HMS departure 6 Nov 2026');
+    expect(screen.queryByTestId('amend-changes')).toBeNull();
   });
 });
 
@@ -1303,12 +1327,19 @@ async function renderCancel(mocks: CancelMocks) {
 }
 
 describe('AmendLookupPanel marks guest details for the preview gate (H6b)', () => {
-  it('marks the booking number and guest names, from the email and from HMS', async () => {
+  it('marks request text, booking number and HMS guest details as PII', async () => {
+    const amendment = { ...AMEND, requestedChange: 'Please update Mokoena’s booking' };
     const findStay = vi.fn().mockResolvedValue(found({ lastName: 'Mokoena-Dube' }));
-    const { container } = render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
-    expect(screen.getByText('Mokoena').hasAttribute('data-pii')).toBe(true);
+    const { container } = render(
+      <AmendLookupPanel session={sessionWith(amendment)} trpc={lookupTrpc(findStay)} />,
+    );
+    const request = screen.getByTestId('amend-request-summary');
+    expect(request.textContent).toContain('Mokoena');
+    expect(request.hasAttribute('data-pii')).toBe(true);
+    expect(document.querySelector('[data-field="confirmation"] dd')?.hasAttribute('data-pii')).toBe(true);
     await pressFind();
-    await expectFoundBooking();
+    await screen.findByTestId('amend-hms-facts');
+    expect(document.querySelector('[data-field="guest"] dd')?.hasAttribute('data-pii')).toBe(true);
     expect(unmaskedPii(container, [CONFIRMATION, 'Mokoena', 'Thabo'])).toEqual([]);
   });
 
@@ -1390,10 +1421,12 @@ describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
     expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
   });
 
-  it('keeps the look-up footer on amend mail even when the pane save flag is on', () => {
+  it('shows disabled Run instead of the removed look-up footer on amend mail', () => {
     capabilities.paneSave = true;
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(vi.fn(NEVER_SETTLES))} />);
-    expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
+    expect(screen.getByTestId('amend-run-placeholder')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Run' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(AMEND_FIND_COPY.footer)).toBeNull();
     expect(screen.queryByText(/Nava can preview the cancellation/)).toBeNull();
   });
 });

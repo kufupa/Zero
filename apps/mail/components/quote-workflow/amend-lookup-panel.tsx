@@ -14,6 +14,7 @@ import {
 } from '@/lib/quote-workflow/amend-cancel';
 import {
   AMEND_FIND_COPY,
+  arrivalMismatchNote,
   amendDiffs,
   amendFindClientFromTrpc,
   findRequestFor,
@@ -215,9 +216,23 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     });
   };
 
-  const requestLine = requestSummary(amendment);
   const requestedRows = stay && amendment.kind === 'amend' ? requestedChangeRows(amendment, stay, diff) : [];
+  const requestLine = requestSummary(amendment, requestedRows.length === 0);
   const ratePlan = stayText(stay?.ratePlan);
+  const matchWarningParts =
+    stay && amendment.kind === 'amend'
+      ? [
+          diff.guest ? `Email surname ${amendment.guestLastName}; HMS guest ${stayGuest(stay) ?? 'not shown'}` : null,
+          found?.arrivalMismatch
+            ? arrivalMismatchNote(found.arrivalMismatch)
+            : amendment.requestedArrival === undefined && diff.arrival
+              ? `Email arrival ${shownDate(amendment.arrival)}; HMS arrival ${shownDate(stay.arrival)}`
+              : null,
+          amendment.requestedDeparture === undefined && diff.departure
+            ? `Email departure ${shownDate(amendment.departure)}; HMS departure ${shownDate(stay.departure)}`
+            : null,
+        ].filter((part): part is string => Boolean(part))
+      : [];
 
   return (
     <section id="quote-booking" aria-labelledby="amend-lookup-title" data-testid="amend-lookup-panel" className={panelClass}>
@@ -243,6 +258,12 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
                 <HmsFact field="status" label="Status" value={hmsStatus ?? 'Not shown'} />
                 <HmsFact field="rate-plan" label="Rate plan" value={ratePlan ?? 'Not shown'} />
               </dl>
+              {matchWarningParts.length ? (
+                <p data-testid="amend-match-warning" data-pii className="text-[10.5px] text-[#64748b]">
+                  <span className="font-semibold">Doesn't match HMS: </span>
+                  {matchWarningParts.join(' · ')}
+                </p>
+              ) : null}
               {handoffNumber ? (
                 <HmsLinkActions
                   confirmation={handoffNumber}
@@ -595,7 +616,7 @@ function displayedStatus(value: string | null): string | null {
   return status;
 }
 
-function requestSummary(amendment: QuoteAmendment): string {
+function requestSummary(amendment: QuoteAmendment, includeStructuredDates = true): string {
   const request = stayText(amendment.requestedChange);
   if (amendment.kind === 'cancel') return request ?? 'Cancel this booking';
 
@@ -609,7 +630,9 @@ function requestSummary(amendment: QuoteAmendment): string {
     const to = formatStayDate(requested);
     changes.push(current ? `Change ${label} ${formatStayDate(current)} → ${to}` : `Change ${label} to ${to}`);
   }
-  return changes.length ? changes.join('; ') : request ?? 'No change requested in this email.';
+  if (request) return includeStructuredDates && changes.length ? `${request} · ${changes.join('; ')}` : request;
+  if (changes.length) return includeStructuredDates ? changes.join('; ') : 'Change requested in this email.';
+  return 'No change requested in this email.';
 }
 
 function requestedChangeRows(
@@ -623,9 +646,6 @@ function requestedChangeRows(
   }
   if (amendment.requestedDeparture && diff.departure) {
     rows.push({ label: 'Departure', from: shownDate(stay.departure), to: diff.departure });
-  }
-  if (stayText(amendment.requestedChange) && diff.guest) {
-    rows.push({ label: 'Guest', from: stayGuest(stay) ?? 'Not shown', to: diff.guest });
   }
   return rows;
 }

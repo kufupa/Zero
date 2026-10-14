@@ -2356,9 +2356,7 @@ describe('NavaPane screen states', () => {
     const changes = await within(card).findByTestId('amend-changes');
     const rows = changes.querySelectorAll('[data-testid="amend-diff-row"]');
 
-    expect(screen.getByTestId('amend-request-summary').textContent).toBe(
-      'Change departure 18 Oct 2026 → 19 Oct 2026',
-    );
+    expect(screen.getByTestId('amend-request-summary').textContent).toBe('Change requested in this email.');
     expect(rows).toHaveLength(1);
     expect(rows[0]?.textContent).toBe('Departure: 18 Oct 2026 → 19 Oct 2026');
     expect(changes.textContent).not.toContain('Arrival:');
