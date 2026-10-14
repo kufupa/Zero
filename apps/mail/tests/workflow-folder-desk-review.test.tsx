@@ -145,6 +145,22 @@ function row(
   };
 }
 
+function detailMessage(item: ReturnType<typeof row>) {
+  return {
+    messageId: item.sourceMessageId,
+    sender: item.sender,
+    subject: item.subject,
+    receivedAt: item.receivedAt,
+    isRead: false,
+    extraction: null,
+    review: null,
+    workItemStatus: null,
+    predictedAction: item.predictedAction,
+    ownerAction: item.ownerAction,
+    markedAt: item.markedAt,
+  };
+}
+
 function setRows(rows: Array<ReturnType<typeof row>>) {
   mocks.rows = rows;
   mocks.details = Object.fromEntries(
@@ -154,21 +170,7 @@ function setRows(rows: Array<ReturnType<typeof row>>) {
         threadId: item.threadId,
         folder: 'quotes',
         defaultMessageId: item.sourceMessageId,
-        messages: [
-          {
-            messageId: item.sourceMessageId,
-            sender: item.sender,
-            subject: item.subject,
-            receivedAt: item.receivedAt,
-            isRead: false,
-            extraction: null,
-            review: null,
-            workItemStatus: null,
-            predictedAction: item.predictedAction,
-            ownerAction: item.ownerAction,
-            markedAt: item.markedAt,
-          },
-        ],
+        messages: [detailMessage(item)],
         runs: [],
       },
     ]),
@@ -314,6 +316,43 @@ describe('workflow folder desk review set', () => {
 
     expect(screen.queryByText('Marked: Amendment')).toBeTruthy();
     expect(screen.queryByText('Marked 2 / 4')).toBeTruthy();
+  });
+
+  it('reopens a marked message with its saved action and Enter saves that action', () => {
+    const marked = row('message-marked', 'cancel', { ownerAction: 'amend' });
+    setRows([marked]);
+    selectRow(marked);
+
+    render(<WorkflowFolderDesk />);
+
+    const actionSelect = screen.getByLabelText('Correct action') as HTMLSelectElement;
+    expect(actionSelect.value).toBe('amend');
+
+    fireEvent.keyDown(window, { key: 'Enter' });
+
+    expect(mocks.actionMutate).toHaveBeenCalledWith({
+      messageId: 'message-marked',
+      action: 'amend',
+    });
+  });
+
+  it('offers only messages predicted into the current review-set folder', () => {
+    const quote = row('message-quote', 'quote_availability', { threadId: 'shared-thread' });
+    const cancellation = row('message-cancel', 'cancel', { threadId: 'shared-thread' });
+    setRows([quote]);
+    mocks.details[quote.threadId] = {
+      threadId: quote.threadId,
+      folder: 'quotes',
+      defaultMessageId: quote.sourceMessageId,
+      messages: [detailMessage(quote), detailMessage(cancellation)],
+      runs: [],
+    };
+    selectRow(quote);
+
+    render(<WorkflowFolderDesk />);
+
+    const picker = screen.getByLabelText('Inbound email in thread') as HTMLSelectElement;
+    expect(Array.from(picker.options, (option) => option.value)).toEqual(['message-quote']);
   });
 
   it('shows mutation errors and does not advance', () => {

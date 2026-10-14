@@ -168,9 +168,9 @@ export function WorkflowFolderDesk() {
 
   useEffect(() => {
     if (selectedSourceMessage?.predictedAction) {
-      setSelectedAction(selectedSourceMessage.predictedAction);
+      setSelectedAction(selectedSourceMessage.ownerAction ?? selectedSourceMessage.predictedAction);
     }
-  }, [selectedMessageId, selectedSourceMessage?.predictedAction]);
+  }, [selectedMessageId, selectedSourceMessage?.ownerAction, selectedSourceMessage?.predictedAction]);
 
   useEffect(() => {
     if (listQuery.isLoading) return;
@@ -399,7 +399,14 @@ export function WorkflowFolderDesk() {
                       className="max-w-40 rounded-md border bg-background px-2 py-1 text-xs"
                     >
                       {detailQuery.data?.messages
-                        .filter((message) => !reviewMode || message.predictedAction)
+                        .filter(
+                          (message) =>
+                            !reviewMode ||
+                            rows.some(
+                              (row) =>
+                                row.threadId === threadId && row.sourceMessageId === message.messageId,
+                            ),
+                        )
                         .map((message) => (
                           <option key={message.messageId} value={message.messageId}>
                             {formatMailTime(message.receivedAt)} · {message.subject}
