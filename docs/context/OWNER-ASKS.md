@@ -219,3 +219,14 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 96  | Expand into first builder slice, SynXis workflow, Da Vinci | 🟡 | Grill round 2026-10-14 | Owner answers |
 | 97  | What does the perfect product need: ROI + ETA | ✅ | Coordinator reply 2026-10-14 ~23:55Z; `WORKSTREAMS.md` | Refresh after answers |
 | 98  | Grill the owner for scope/decisions before sleep; no questions the context already answers | 🟡 | Grill round 2026-10-14 | — |
+| 99  | Merge when threads are resolved + remote type check shows 0 new + tests green, without waiting for Greptile re-review; a post-merge review lane lands fix PRs; small frequent PRs; Greptile Apex only for big PRs (credits) | ✅ | Q9 answer 2026-10-14; PR1 lane on #246/#249 | Apply to every PR |
+| 100 | Da Vinci HMS: tenant `HMS_DAVINCI`, user NAVAAI (same user as Centurion `HMS_LEGACY`); behind the Infor LAN | 🟡 | D1 lane; secret `infor-hms-read` holds Centurion only | Coordinator read-only login probe; property code from the picker |
+| 101 | Check whether Da Vinci/Faith mailboxes are M365 (Centurion = older Outlook/Exchange) and plan the mailbox connection | 🟡 | M1 lane | M1 report |
+| 102 | Da Vinci "live" = quotes ASAP; first users = whoever sends the most quotes | 🟡 | — | Quote pipeline first |
+| 103 | Two concurrent NAVAAI logins may have caused past HMS errors; per-property parallel HMS without one-Chrome bottleneck | 🟡 | D1 lane (hypothesis + lock design) | D1 report |
+| 104 | SynXis read-only v1 (HMS lookup + field diff; staff choose amend/create), in parallel; coordinate HMS login | 🟡 | S1 report | Build lane after D1 lock design |
+| 105 | Staff-taught rule approver: deferred | ⏸ | Q12 | Later |
+| 106 | Licence barely blocks (Commons Clause/small commercial OK); vendor-API lock and tiny/dead repos do block; fit = non-technical staff, agentic, recent; write up everything considered/excluded and why | 🟡 | R8 + B1 lanes | Builder decision doc |
+| 107 | FlowWeaver = 0/10 (1★); OpenSail too small; never test them | ✅ | B1 re-scoped | — |
+| 108 | Research Agno | 🟡 | R8 lane (Agno section) | R8 report |
+| 109 | Create starts the moment #242 merges | 🟡 | — | After #242 |
