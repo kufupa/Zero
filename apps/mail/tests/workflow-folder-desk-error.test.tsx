@@ -21,7 +21,8 @@ vi.mock('react-router', () => ({
 }));
 
 vi.mock('nuqs', () => ({
-  useQueryState: () => [null, vi.fn()],
+  parseAsString: {},
+  useQueryStates: () => [{ threadId: null, sourceMessageId: null }, vi.fn()],
 }));
 
 vi.mock('@/hooks/use-threads', () => ({
@@ -42,7 +43,6 @@ vi.mock('@/providers/query-provider', () => ({
       list: { infiniteQueryOptions: () => ({}) },
       thread: { queryOptions: () => ({}) },
       summary: { queryKey: () => ['workflowFolders', 'summary'] },
-      setActionLabel: { mutationOptions: () => ({}) },
     },
     workItems: { adminReview: { mutationOptions: () => ({}) } },
   }),
