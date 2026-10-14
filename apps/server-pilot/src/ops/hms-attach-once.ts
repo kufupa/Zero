@@ -7,10 +7,10 @@
  *
  *   1. The work item's state is the attach form: {action:'attach_document', confirmation, arrival, lastName:'Labtest',
  *      attachmentId, documentName}. attachmentId names a PDF on the item's source message, or any id when --file is used.
- *   2. Snapshot:  RESERVATIONIST_PANE_AMEND=lab node --import tsx src/ops/hms-attach-once.ts prepare \
+ *   2. Snapshot:  RESERVATIONIST_PANE_SAVE=lab node --import tsx src/ops/hms-attach-once.ts prepare \
  *                   --transport <transportId> --work-item <workItemId>
  *   3. Approve in the pane (hmsApproval.approve, actor = session user) within 30 minutes. It prints the runId.
- *   4. Attach:    RESERVATIONIST_PANE_AMEND=lab ATTACH_VERIFIED=true HMS_LANE_PAUSED= \
+ *   4. Attach:    RESERVATIONIST_PANE_SAVE=lab ATTACH_VERIFIED=true HMS_LANE_PAUSED= \
  *                   node --import tsx src/ops/hms-attach-once.ts run --transport <transportId> --work-item <workItemId> \
  *                   --run <runId> --confirmation <conf> [--file <local test.pdf>]
  *

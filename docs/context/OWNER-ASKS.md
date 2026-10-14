@@ -187,6 +187,7 @@ Assessment closure: full product/scoping/retro/ETA/testing/model/session-continu
 | #   | Ask                                                                                                          | Status | Where answered                                                                                                                                               | Next step                                                                                              |
 | --- | ------------------------------------------------------------------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
 | 74  | Commit/save short current context and longer evidence-backed Markdown research so fresh agents do not rescan | ✅     | Versioned short ACTIVE, long assessment, evidence/source index and JSON; normal hooks and local docs gate passed; PR https://github.com/kufupa/Zero/pull/241 | Reviewed documentation publication; no raw transcripts, product code, runtime settings or guest writes |
+| 75  | L4: capture prepared vs staff-final quote outcomes, deterministic eval, easy party eval, verify and open PR; no HMS/deploy/merge | 🟡     | [pushed branch](https://github.com/kufupa/Zero/tree/feat/eval-capture-quote-outcomes); code and tests complete | PR opening blocked: `.github/workflows/ci.yml` runs non-installer `autofix.ci` on pull requests; get owner direction before triggering it |
 
 ## 9. Quote pilot night (2026-10-14 ~20:30–22:15Z, session 6d18957a)
 
@@ -211,7 +212,10 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 89  | Check all running agents are on the roadmap; kill stragglers | ✅ | LANES "Agent audit" | Re-check at each lane event |
 | 90  | Pause; update every MD/ledger; admit and log mistakes | ✅ | `docs/context/MISTAKES.md` 2026-10-14 rows | — |
 | 91  | Profitroom computer-use agent? | ⬜ | FACTS §2 Profitroom note (Profitroom is an excluded host) | Owner decides whether it's a scope change |
-| 92  | L6 pane UI cleanup: remove warning/repeated read-as and booking facts; show request + changed rows; use Edit/Done controls; no HMS writes or deploy | ✅ | PR https://github.com/kufupa/Zero/pull/246 | — |
-| 93  | Fix four Greptile P1s on PR #246; targeted tests only; reply with fix SHAs | ✅ | PR https://github.com/kufupa/Zero/pull/246; fixes `25ec195fd` | — |
-| 94  | Fix Greptile P1: keep every requested date visible when HMS omits a booking date; add a focused test; merge main and resolve the thread | ✅ | PR https://github.com/kufupa/Zero/pull/246; fix `1cd908e5e937def3770784f24eec43b87e147b02` | — |
-| 95  | Fix Greptile P1: align contact and amendment tests with new UI; run full apps/mail Vitest | ✅ | PR https://github.com/kufupa/Zero/pull/246; fix `2a2d2f509ec330790dae5c9d25219c4085c434c2`; two suites 31/31; full suite 2040 passed, 13 failed, 19 pending | Triage unrelated full-suite failures separately |
+| 92  | Veto proposed stack ADR #253 (CopilotKit + React Flow + own compiler); more research into OSS chat→workflow-graph builders; open to swapping Mastra | 🟡 | #253 closed; R6 lane running | R6 → recommendation |
+| 93  | Merge, deploy, then self-test quote mails one at a time; post each result in the coordinator chat | 🟡 | #244, #245 merged | Merge #242, #243, #246, #249 after Greptile → deploy → per-mail results in chat |
+| 94  | Luna max for lanes; coordinator chat stays on Opus 5.5 | ✅ | Gateway activated 2026-10-14 22:43Z; Opus slot unchanged | — |
+| 95  | Delete old worktrees | ✅ | Done by another session; verified gone | — |
+| 96  | Expand into first builder slice, SynXis workflow, Da Vinci | 🟡 | Grill round 2026-10-14 | Owner answers |
+| 97  | What does the perfect product need: ROI + ETA | ✅ | Coordinator reply 2026-10-14 ~23:55Z; `WORKSTREAMS.md` | Refresh after answers |
+| 98  | Grill the owner for scope/decisions before sleep; no questions the context already answers | 🟡 | Grill round 2026-10-14 | — |
