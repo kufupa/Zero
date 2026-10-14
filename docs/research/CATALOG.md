@@ -35,7 +35,9 @@ The source set spans local research reports, repo plans/research, and owner retr
 | `/home/orca/nava-research/reports/leftover-worktrees-20261014.md` | 2026-10-14 | Which worktrees hold unharvested work? | 7 dirty trees parked to `park/*`; 4 old PRs + classifier branch listed. | Point-in-time; FACTS §6 has the harvest decisions. |
 | `/home/orca/nava-research/reports/from-quote-mvp-live/2026-10-13-002-staff-ui-feedback.md` | 2026-10-12 | What did staff ask of the pane? | 29 asks (5 done/11 partial/11 not) + 10 pane rules. | Against main a2816a753; recheck before claiming done. |
 | `/home/orca/nava-research/reports/from-quote-mvp-live/2026-10-13-003-quote-corpus-notes.md` | 2026-10-12 | What does a gold quote look like? | 5-line wrapper, 48-PDF mix, 11 test shapes, 70.6%/34.9% baseline. | Room-label bug since fixed on main; 30-night cap remains. |
-| `/home/orca/nava-research/reports/R1-agent-framework-exa-20261014.md` + Exa run `agent_run_b4b38088…` | 2026-10-14 | Which OSS staff workflow builder fits? | Langflow first; Sim copilot needs sim.ai key; Mastra Agent Builder EE. | Medium confidence; R4 verifies at source. |
+| `/home/orca/nava-research/reports/R1-agent-framework-exa-20261014.md` | 2026-10-14 | Keep Mastra or swap? | Keep Mastra core; add a governed, versioned playbook layer; Parlant = challenger. | Its migration-weeks estimate assumed human devs; ignore it. |
+| `/home/orca/nava-research/reports/R1b-workflow-builder-exa-20261014.md` | 2026-10-14 | Which OSS staff workflow builder fits (Exa, medium confidence)? | Langflow first; Sim copilot needs sim.ai key; Mastra Agent Builder EE. | Superseded on Langflow isolation and Sim licence by R4. |
+| `/home/orca/nava-research/reports/R4-workflow-builder-verify-20261014.md` | 2026-10-14 | Do Sim/Langflow/Windmill/Activepieces/Kestra/Flowise pass no-paywall + NL build + evals + per-hotel? | None pass all four; build a Nava-native builder; Windmill = benchmark. | Verified at source; no product tested on Nava mail; its 8–12 engineer-week figure assumes human devs. |
 
 ## Related reproducibility and source pointers
 
