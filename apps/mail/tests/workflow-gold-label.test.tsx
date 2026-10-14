@@ -4,6 +4,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { MailAction } from '../lib/workflow-action-labels';
 
 const mocks = vi.hoisted(() => ({
   sourceResult: {
@@ -13,6 +14,8 @@ const mocks = vi.hoisted(() => ({
     sourceHash: 'source-hash',
   },
   sourceInputs: [] as Array<{ internetMessageId: string }>,
+  ownerActionResult: null as MailAction | null,
+  ownerActionInputs: [] as Array<{ messageId: string }>,
   saveActionLabel: vi.fn(async (input: { messageId: string; action: string }) => ({
     action: input.action,
     markedAt: new Date('2026-10-14T12:00:00.000Z'),
@@ -34,6 +37,17 @@ vi.mock('@/providers/query-provider', () => ({
       },
     },
     workflowFolders: {
+      getOwnerActionLabel: {
+        queryOptions: (input: { messageId: string }, options: Record<string, unknown> = {}) => {
+          mocks.ownerActionInputs.push(input);
+          return {
+            queryKey: ['workflowFolders', 'getOwnerActionLabel', input.messageId],
+            queryFn: async () => mocks.ownerActionResult,
+            ...options,
+          };
+        },
+        queryKey: () => ['workflowFolders', 'getOwnerActionLabel'],
+      },
       setActionLabel: {
         mutationOptions: (options: Record<string, unknown> = {}) => ({
           mutationKey: ['workflowFolders', 'setActionLabel'],
@@ -50,7 +64,10 @@ vi.mock('@/providers/query-provider', () => ({
 
 import { WorkflowGoldLabel } from '../components/quote-workflow/workflow-gold-label';
 
-function renderGoldLabel() {
+function renderGoldLabel(
+  initialAction: MailAction = 'quote_availability',
+  onIntentChange?: (intent: 'quote' | 'create_booking') => void,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -58,7 +75,8 @@ function renderGoldLabel() {
     <QueryClientProvider client={queryClient}>
       <WorkflowGoldLabel
         internetMessageId='<internet-message-1@example.invalid>'
-        initialAction="quote_availability"
+        initialAction={initialAction}
+        onIntentChange={onIntentChange}
       />
     </QueryClientProvider>,
   );
@@ -67,10 +85,33 @@ function renderGoldLabel() {
 afterEach(() => cleanup());
 beforeEach(() => {
   mocks.sourceInputs.length = 0;
+  mocks.ownerActionInputs.length = 0;
+  mocks.ownerActionResult = null;
   mocks.saveActionLabel.mockClear();
 });
 
 describe('WorkflowGoldLabel', () => {
+  it('switches a cancellation reading to the quote workflow when the owner picks Quote', async () => {
+    const onIntentChange = vi.fn();
+    renderGoldLabel('cancel', onIntentChange);
+
+    const picker = await screen.findByRole('combobox', { name: 'Nava reads this as' });
+    fireEvent.change(picker, { target: { value: 'quote_availability' } });
+
+    expect(onIntentChange).toHaveBeenCalledWith('quote');
+  });
+
+  it('restores an existing owner label and saved indicator when the message is reopened', async () => {
+    mocks.ownerActionResult = 'cancel';
+    renderGoldLabel();
+
+    const picker = await screen.findByRole('combobox', { name: 'Nava reads this as' }) as HTMLSelectElement;
+    await waitFor(() => expect(picker.value).toBe('cancel'));
+
+    expect(screen.getByText('Saved as gold · Cancellation')).toBeDefined();
+    expect(mocks.ownerActionInputs).toContainEqual({ messageId: 'db-message-1' });
+  });
+
   it('offers every action and saves the synced message id and selected gold label', async () => {
     renderGoldLabel();
 

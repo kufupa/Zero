@@ -3,6 +3,26 @@
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../components/quote-workflow/workflow-gold-label', () => ({
+  WorkflowGoldLabel: ({
+    onIntentChange,
+  }: {
+    onIntentChange?: (intent: 'quote' | 'create_booking') => void;
+  }) => (
+    <select
+      aria-label="Nava reads this as"
+      defaultValue="cancel"
+      onChange={(event) => {
+        if (event.target.value === 'quote_availability') onIntentChange?.('quote');
+      }}
+    >
+      <option value="cancel">Cancellation</option>
+      <option value="quote_availability">Quote</option>
+    </select>
+  ),
+}));
+
 import { WorkflowBadge } from '../components/quote-workflow/workflow-badge';
 import { NAVA_READ_AS_LABEL, readAsForAnalysis, readAsForKind } from '../lib/quote-workflow/workflow-vocabulary';
 import type { LunaAnalysisWire, QuoteAmendment, QuoteAnalysis } from '../lib/quote-workflow/types';
@@ -95,6 +115,30 @@ describe('shared Nava read-as vocabulary', () => {
 });
 
 describe('WorkflowBadge', () => {
+  it('uses one gold picker for the reading control and forwards its workflow correction', () => {
+    const onIntentChange = vi.fn();
+    render(
+      <WorkflowBadge
+        analysis={analysis('other')}
+        readAs="cancellation"
+        onIntentChange={onIntentChange}
+        goldLabel={{
+          messageKey: 'message-1',
+          messageId: 'message-1',
+          internetMessageId: null,
+          initialAction: 'cancel',
+        }}
+      />,
+    );
+
+    expect(screen.getAllByRole('combobox')).toHaveLength(1);
+    expect(screen.queryByLabelText('Change how Nava reads this email')).toBeNull();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Nava reads this as' }), {
+      target: { value: 'quote_availability' },
+    });
+    expect(onIntentChange).toHaveBeenCalledWith('quote');
+  });
+
   it('shows one read-as banner and a separate work-state chip', () => {
     render(<WorkflowBadge analysis={analysis('quote')} workState="queued" />);
     const banner = screen.getByRole('status', { name: 'Nava reads this as: Quote' });

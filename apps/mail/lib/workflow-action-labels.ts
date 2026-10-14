@@ -27,3 +27,7 @@ export const GOLD_ACTION_FOR_READ_AS: Record<NavaReadAs, MailAction> = {
   not_for_nava: 'no_action',
 };
 
+export const READ_AS_FOR_GOLD_ACTION = Object.fromEntries(
+  Object.entries(GOLD_ACTION_FOR_READ_AS).map(([readAs, action]) => [action, readAs]),
+) as Partial<Record<MailAction, NavaReadAs>>;
+

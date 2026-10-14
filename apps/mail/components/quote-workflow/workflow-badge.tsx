@@ -98,6 +98,7 @@ export function WorkflowBadge({
           messageId={goldLabel.messageId}
           internetMessageId={goldLabel.internetMessageId}
           initialAction={goldLabel.initialAction}
+          onIntentChange={onIntentChange}
         />
       ) : changeable ? (
         <label className="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]">
