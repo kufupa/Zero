@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -49,8 +50,8 @@ import {
 } from './run-ledger.js';
 
 /**
- * Write runner for the pane's HMS actions on our own Labtest booking (U26): attach a document, cancel a stay, and amend
- * as a prepare-only read. Every write goes through the U25 approval gate. Policy is checked before the grant is consumed.
+ * Write runner for the pane's HMS actions on our own Labtest booking (U26): attach a document, cancel a stay, or amend it.
+ * Every write goes through the U25 approval gate. Policy is checked before the grant is consumed.
  * The consume, the stay read, the identity check and the pre-Save check all run under the property lock. Only then
  * does a CLI run send anything to HMS.
  */
@@ -58,6 +59,9 @@ import {
 const execFileAsync = promisify(execFile);
 const ATTACH_DOCUMENT = fileURLToPath(
   new URL('../../tooling/playwright-quote/attach-document.mjs', import.meta.url),
+);
+const AMEND_STAY = fileURLToPath(
+  new URL('../../tooling/playwright-quote/amend-stay.mjs', import.meta.url),
 );
 const ATTACH_TIMEOUT_MS = 10 * 60_000;
 const READ_ATTACHMENT_TIMEOUT_MS = 60_000;
@@ -70,9 +74,9 @@ const EVIDENCE_NAMES = ['before.png', 'after.png'] as const;
 /** The caller already holds the property lock, so findStay's own acquisition is passed through. */
 const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
-/** The amend gate. Off unless RESERVATIONIST_PANE_AMEND is lab. Labtest only in that mode. */
+/** This runner stays Labtest-only until the shared RESERVATIONIST_PANE_SAVE gate is exactly lab. */
 export function paneHmsWriteMode(env: NodeJS.Dict<string> = process.env): 'off' | 'lab' {
-  return env.RESERVATIONIST_PANE_AMEND === 'lab' ? 'lab' : 'off';
+  return env.RESERVATIONIST_PANE_SAVE === 'lab' ? 'lab' : 'off';
 }
 
 const CONFIRMATION = /^\d+-\d+$/;
@@ -103,10 +107,24 @@ const cancelFormSchema = z.object({
   reason: z.string().max(200),
 });
 
-const hmsWriteFormSchema = z.discriminatedUnion('action', [attachFormSchema, cancelFormSchema]);
+const amendFieldsSchema = z.object({
+  arrival: z.string().regex(ISO_DATE).optional(), departure: z.string().regex(ISO_DATE).optional(),
+  adults: z.number().int().min(1).max(16).optional(), children: z.number().int().min(0).max(16).optional(),
+  roomType: z.enum(['STQN', 'STWN', 'SKNG', 'EXKNG', 'LUXKNG', 'SUITE', 'DLXKNG', 'DLXQN', 'DLXTWN']).optional(),
+}).strict().refine((fields) => Object.keys(fields).length > 0)
+  .refine((fields) => !fields.arrival || fields.arrival >= '2027-01-01')
+  .refine((fields) => !fields.arrival || !fields.departure || fields.departure > fields.arrival);
+
+const amendFormSchema = z.object({
+  action: z.literal('amend'), confirmation: z.string().regex(CONFIRMATION), arrival: z.string().regex(ISO_DATE),
+  lastName: z.string().trim().min(1).max(100), fields: amendFieldsSchema, previewDigest: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+const hmsWriteFormSchema = z.discriminatedUnion('action', [attachFormSchema, cancelFormSchema, amendFormSchema]);
 export type AttachForm = z.infer<typeof attachFormSchema>;
 export type CancelForm = z.infer<typeof cancelFormSchema>;
-export type HmsWriteForm = AttachForm | CancelForm;
+export type AmendForm = z.infer<typeof amendFormSchema>;
+export type HmsWriteForm = AttachForm | CancelForm | AmendForm;
 
 /** The approved form is the work item's state. The schema ignores the snapshot key the reader writes. */
 export function parseHmsWriteForm(state: Record<string, unknown>): HmsWriteForm | null {
@@ -124,6 +142,7 @@ function formRefusal(form: HmsWriteForm): string | null {
   if (shape) return shape;
   if (!/^labtest$/i.test(form.lastName)) return 'refused_not_lab';
   if (form.action === 'attach_document') return null;
+  if (form.action === 'amend') return form.fields.arrival && form.fields.arrival < '2027-01-01' ? 'refused_not_lab' : null;
   const reason = squash(form.reason);
   return reason && !reason.startsWith('-') ? null : 'refused_reason_missing';
 }
@@ -227,19 +246,32 @@ export async function prepareHmsWriteSnapshot(input: {
   return { status: 'stored', readAt: readAt.toISOString(), stay };
 }
 
-/** Fields an amend may change. Prepare only: no Save is wired, so the list is what the prepare reads and compares. */
-// ponytail: a short fixed list until the record Save is verified on a live Labtest stay (U28-H5).
+/** Fixed Labtest amend fields; selector writability and Save behavior remain TODO-LIVE-PROBE. */
 export const AMEND_FIELDS = ['arrival', 'departure', 'roomType', 'adults', 'children'] as const;
 export type AmendField = (typeof AMEND_FIELDS)[number];
 export type AmendRequest = Partial<Record<AmendField, string | number>>;
+
+export function paneAmendPreviewDigest(input: {
+  confirmation: string;
+  expectedLastName: string;
+  current: PaneStayFields;
+  fields: AmendRequest;
+}): string {
+  const current = Object.fromEntries((['confirmation', 'lastName', 'status', 'arrival', 'departure', 'adults', 'children', 'roomType'] as const)
+    .map((key) => [key, input.current[key]]));
+  return createHash('sha256').update(canonicalJson({ version: 1, action: 'amend', ...input, current })).digest('hex');
+}
 
 export type PaneAmendPrepareResult =
   | {
       status: 'stored';
       readAt: string;
       current: Record<AmendField, string | number | null>;
+      expectedLastName: string;
       requested: AmendRequest;
+      fields: AmendRequest;
       changes: AmendField[];
+      previewDigest: string;
     }
   | { status: 'refused'; reason: string };
 
@@ -249,15 +281,12 @@ export async function prepareAmend(
 ): Promise<PaneAmendPrepareResult> {
   const prepared = await prepareHmsWriteSnapshot(input);
   if (prepared.status === 'refused') return prepared;
-  const current = Object.fromEntries(
-    AMEND_FIELDS.map((field) => [field, prepared.stay[field]]),
-  ) as Record<AmendField, string | number | null>;
-  const changes = AMEND_FIELDS.filter(
-    (field) =>
-      input.requested[field] !== undefined &&
-      String(input.requested[field]) !== String(current[field] ?? ''),
-  );
-  return { status: 'stored', readAt: prepared.readAt, current, requested: input.requested, changes };
+  const current = Object.fromEntries(AMEND_FIELDS.map((field) => [field, prepared.stay[field]])) as Record<AmendField, string | number | null>;
+  const changes = AMEND_FIELDS.filter((field) => input.requested[field] !== undefined && String(input.requested[field]) !== String(current[field] ?? ''));
+  const fields = Object.fromEntries(changes.map((field) => [field, input.requested[field]])) as AmendRequest;
+  const expectedLastName = prepared.stay.lastName ?? '';
+  const previewDigest = paneAmendPreviewDigest({ confirmation: input.confirmation, expectedLastName, current: prepared.stay, fields });
+  return { status: 'stored', readAt: prepared.readAt, current, expectedLastName, requested: input.requested, fields, changes, previewDigest };
 }
 
 export type PaneAttachSpawnInput = {
@@ -277,9 +306,25 @@ export type PaneAttachSpawnResult = {
   runDir?: string;
 };
 
+export type PaneAmendSpawnInput = {
+  confirmation: string;
+  expectedLastName: string;
+  fields: AmendRequest;
+  previewDigest: string;
+};
+
+export type PaneAmendSpawnResult = {
+  outcome: string;
+  saveAttempted: boolean;
+  screenshots: string[];
+  runDir?: string;
+  changedFieldsReadback?: Record<string, unknown> | null;
+};
+
 export const paneHmsWriteLoaders: {
   lock: PaneStayLock | null;
   spawnAttach: ((input: PaneAttachSpawnInput) => Promise<PaneAttachSpawnResult>) | null;
+  spawnAmend: ((input: PaneAmendSpawnInput) => Promise<PaneAmendSpawnResult>) | null;
   /**
    * Replaces the attachment read. Only the ops entry for the U28-H2 live test sets it (src/ops/hms-attach-once.ts), to
    * upload a local test PDF. The PDF and size checks still run on what it returns.
@@ -288,6 +333,7 @@ export const paneHmsWriteLoaders: {
 } = {
   lock: null,
   spawnAttach: null,
+  spawnAmend: null,
   readAttachment: null,
 };
 
@@ -359,10 +405,35 @@ export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<
   };
 }
 
+const AMEND_TIMEOUT_MS = 10 * 60_000;
+
+/** Runs amend-stay.mjs. Its result is read even after a nonzero exit so a post-Save uncertainty stays explicit. */
+export async function spawnAmendStay(input: PaneAmendSpawnInput): Promise<PaneAmendSpawnResult> {
+  const dir = await mkdtemp(join(tmpdir(), 'pane-amend-'));
+  const requestPath = join(dir, 'request.json');
+  await writeFile(requestPath, `${JSON.stringify({ confirmation: input.confirmation, expectedLastName: input.expectedLastName, fields: input.fields })}\n`, { mode: 0o600 });
+  let runError: unknown = null;
+  try {
+    await execFileAsync('node', [AMEND_STAY, '--request', requestPath, '--mode', 'commit', '--digest', input.previewDigest, '--out', dir],
+      { timeout: AMEND_TIMEOUT_MS, env: paneStaySpawnEnv() });
+  } catch (error) { runError = error; }
+  let result: { outcome?: string; saveAttempted?: boolean; screenshots?: string[]; changedFieldsReadback?: Record<string, unknown> | null };
+  try { result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as typeof result; }
+  catch {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    throw runError ?? new Error('pane_amend_no_result');
+  }
+  const outcome = result.outcome ?? 'execution_failure';
+  if (outcome === 'execution_failure') warnPaneStaySpawnFailed('amend', runError ?? new Error(outcome));
+  return { outcome, saveAttempted: result.saveAttempted === true, screenshots: result.screenshots ?? [],
+    changedFieldsReadback: result.changedFieldsReadback ?? null, runDir: dir };
+}
+
 type SaveOutcome = {
   outcome: string;
   clickedOk: boolean;
   uploadSent: boolean;
+  saveAttempted?: boolean;
   screenshots: string[];
   runDir?: string;
 };
@@ -386,6 +457,22 @@ async function saveCancel(form: CancelForm, approvedStay: PaneStayFields): Promi
     screenshots: result.screenshots,
     runDir: result.runDir,
   };
+}
+
+const amendRefusal = (outcome: string): SaveOutcome => ({ outcome, clickedOk: false, uploadSent: false, saveAttempted: false, screenshots: [] });
+
+async function saveAmend(form: AmendForm, stay: PaneStayFields): Promise<SaveOutcome> {
+  if (stay.status !== 'Reserved' && stay.status !== 'Confirmed') return amendRefusal('refused_status_unsupported');
+  const fields = Object.fromEntries(AMEND_FIELDS.filter((field) => form.fields[field] !== undefined &&
+    String(form.fields[field]) !== String(stay[field] ?? '')).map((field) => [field, form.fields[field]])) as AmendRequest;
+  if (!Object.keys(fields).length) return amendRefusal('no_changes');
+  const previewDigest = paneAmendPreviewDigest({ confirmation: form.confirmation, expectedLastName: form.lastName, current: stay, fields });
+  if (previewDigest !== form.previewDigest) return amendRefusal('refused_digest_mismatch');
+  const result = await (paneHmsWriteLoaders.spawnAmend ?? spawnAmendStay)({
+    confirmation: form.confirmation, expectedLastName: form.lastName, fields, previewDigest,
+  });
+  return { outcome: result.outcome, clickedOk: false, uploadSent: false, saveAttempted: result.saveAttempted,
+    screenshots: result.screenshots, runDir: result.runDir };
 }
 
 async function saveAttach(form: AttachForm, file: string | null): Promise<SaveOutcome> {
@@ -414,9 +501,9 @@ function classifySave(
   action: HmsWriteForm['action'],
   saved: SaveOutcome,
 ): { ok: true; outcome: string } | { ok: false; failureClass: AiFailureClass; reason: string } {
-  const done = action === 'cancel' ? saved.outcome === 'cancelled' : saved.outcome === 'attached';
+  const done = saved.outcome === (action === 'cancel' ? 'cancelled' : action === 'amend' ? 'amended' : 'attached');
   if (done) return { ok: true, outcome: saved.outcome };
-  const mayHaveWritten = action === 'cancel' ? saved.clickedOk : saved.uploadSent;
+  const mayHaveWritten = action === 'cancel' ? saved.clickedOk : action === 'amend' ? saved.saveAttempted === true : saved.uploadSent;
   return { ok: false, failureClass: mayHaveWritten ? 'UNKNOWN' : 'NEEDS_CHECK', reason: saved.outcome };
 }
 
@@ -524,9 +611,8 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   }, HEARTBEAT_MS);
   let saved: SaveOutcome;
   try {
-    saved = approved.action === 'cancel'
-      ? await saveCancel(approved, stay)
-      : await saveAttach(approved, input.file);
+    saved = approved.action === 'cancel' ? await saveCancel(approved, stay)
+      : approved.action === 'amend' ? await saveAmend(approved, stay) : await saveAttach(approved, input.file);
   } catch (error) {
     clearInterval(beat);
     // The CLI may have reached Save before it failed, so the outcome is unknown until the booking is read back.
