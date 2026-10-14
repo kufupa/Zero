@@ -102,6 +102,7 @@ import {
   MAIL_FOLDER_VALUES,
   type MailFolderValue,
   clearExpiredSnoozes,
+  buildMailFolderConditions,
   buildMailListConditions,
 } from '../../mail/folder-semantics.js';
 import {
