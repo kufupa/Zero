@@ -12,7 +12,7 @@ import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
 import { occupiedDates, type Board } from '../src/quote-proposal/quote-revision.js';
 import { deriveAuthorizedExtraLines } from '../src/quote-proposal/quote-lines.js';
-import { resolveLedgerProposal } from '../src/trpc/routes/workstation.js';
+import { resolveLedgerProposal, resolvePreparedLedgerProposal } from '../src/trpc/routes/workstation.js';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const scope = {
@@ -110,7 +110,13 @@ async function fixture(confirmed = input()) {
                     : r.required?.boardBases?.[0] === 'dinner_bed_breakfast'
                       ? 'Dinner Bed & Breakfast R'
                       : 'Room Only R',
-                appliedContext: {},
+                appliedContext: Object.fromEntries(
+                  Object.entries(normalized.rateContext ?? {}).map(([kind, party]: [string, any]) => [
+                    kind,
+                    { id: party.nativeId, name: party.name },
+                  ]),
+                ),
+                rateScope: normalized.rateContext ? 'contextual' : 'public',
                 eligibility: 'verified',
                 availability: 'available',
                 matchStatus: 'match',
@@ -472,6 +478,131 @@ describe('staff-approved quotation beneath native guards', () => {
       factRefs: [],
     };
     expect(resolveLedgerProposal(run, selected).revision.id).toBe(revision.id);
+
+    const preparedRun = {
+      transportId: scope.transportId,
+      threadId: scope.threadId,
+      triggerMessageId: scope.messageId,
+      runKind: 'read_tool',
+      promptVersion: 'hms-job/1',
+      executorLane: 'hms',
+      priority: 0,
+      generationId: null,
+      state: 'succeeded',
+      metrics: { quotePrepared: true, userId: null },
+      readRequest: { kind: 'staff_quote', input: f.confirmed },
+      readResultExpiresAt: new Date(Date.now() + 60_000),
+      readResult: {
+        kind: 'staff_quote',
+        status: 'ready',
+        asOf: new Date().toISOString(),
+        workflowRunId: 'prepared-run-1',
+        messageId: scope.messageId,
+        threadId: scope.threadId,
+        revisionRef: revision.id,
+        factRefs: [],
+        inputDigest: f.prepared.inputDigest,
+        freshUntil: revision.sourceFreshness?.expiresAt,
+        preparedProposal: {
+          version: 1,
+          inputDigest: f.prepared.inputDigest,
+          authorizationId: f.prepared.authorizationId,
+          sourceHash: scope.sourceHash,
+          revision,
+          rowPrices: [],
+        },
+      },
+    };
+    expect(
+      resolvePreparedLedgerProposal(preparedRun, {
+        transportId: scope.transportId,
+        messageId: scope.messageId,
+        revisionRef: revision.id,
+        factRefs: [],
+        sourceHash: scope.sourceHash,
+        party: { company: '', agency: '' },
+      }).revision.id,
+    ).toBe(revision.id);
+    expect(() =>
+      resolvePreparedLedgerProposal(preparedRun, {
+        transportId: scope.transportId,
+        messageId: scope.messageId,
+        revisionRef: revision.id,
+        factRefs: [],
+        sourceHash: 'e'.repeat(64),
+        party: { company: '', agency: '' },
+      }),
+    ).toThrow(/proposal_not_ready/);
+
+    const contractInput = staffQuoteInput.parse({
+        ...f.confirmed,
+        company: 'Example Company',
+        parties: { company: { kind: 'company', nativeId: 'co-17', name: 'Example Company' } },
+      }),
+      contractPrepared = prepareStaffQuote(
+        contractInput,
+        scope,
+        { signerName: 'Staff', signerEmail: 'staff@example.test' },
+        new AbortController().signal,
+      ),
+      contractOptions = { ...f.options, authorizationId: contractPrepared.authorizationId },
+      contractRun = structuredClone(preparedRun);
+    const contractRevision = await executeStaffQuote(
+      contractPrepared,
+      createReservationistBusinessServices(contractOptions, contractPrepared.approval),
+      async () => true,
+    );
+    contractRun.readRequest = { kind: 'staff_quote', input: contractInput };
+    contractRun.readResult = {
+      ...contractRun.readResult!,
+      revisionRef: contractRevision.id,
+      inputDigest: contractPrepared.inputDigest,
+      freshUntil: contractRevision.sourceFreshness?.expiresAt,
+      preparedProposal: {
+        ...contractRun.readResult!.preparedProposal as object,
+        inputDigest: contractPrepared.inputDigest,
+        authorizationId: contractPrepared.authorizationId,
+        revision: contractRevision,
+      },
+    };
+    expect(
+      resolvePreparedLedgerProposal(contractRun, {
+        transportId: scope.transportId,
+        messageId: scope.messageId,
+        revisionRef: contractRevision.id,
+        factRefs: [],
+        sourceHash: scope.sourceHash,
+        party: { company: 'Example Company', agency: '' },
+      }).revision.id,
+    ).toBe(contractRevision.id);
+    expect(resolvePreparedLedgerProposal(contractRun, {
+      transportId: scope.transportId,
+      messageId: scope.messageId,
+      revisionRef: contractRevision.id,
+      factRefs: [],
+      sourceHash: scope.sourceHash,
+      party: { company: 'Example Company', agency: 'Quote' },
+    }).revision.id).toBe(contractRevision.id);
+    expect(() => resolvePreparedLedgerProposal(contractRun, {
+      transportId: scope.transportId,
+      messageId: scope.messageId,
+      revisionRef: contractRevision.id,
+      factRefs: [],
+      sourceHash: scope.sourceHash,
+      party: { company: 'Different Company', agency: '' },
+    })).toThrow(/proposal_not_ready/);
+    expect(() => resolvePreparedLedgerProposal({
+      ...preparedRun,
+      readResult: { ...preparedRun.readResult!, dinnerAddOnRequired: true },
+    }, {
+      transportId: scope.transportId,
+      messageId: scope.messageId,
+      revisionRef: revision.id,
+      factRefs: [],
+      sourceHash: scope.sourceHash,
+      party: { company: '', agency: '' },
+    })).toThrow(/proposal_not_ready/);
+
     expect(() =>
       resolveLedgerProposal(
         {

@@ -63,6 +63,7 @@ export type PriorQuoteRun = {
   createdAt?: Date | string;
   finishedAt?: Date | string | null;
   metrics: Record<string, unknown> | null;
+  readResult?: Record<string, unknown> | null;
 };
 
 export type PriorQuoteResolveResult =
@@ -84,11 +85,24 @@ function partyNameFromRevision(revision: QuoteRevision): string | null {
   return null;
 }
 
+function preparedProposalFor(run: Pick<PriorQuoteRun, 'readResult'>): {
+  revision?: QuoteRevision;
+  facts?: AuthorizedProposalFacts;
+  rowPrices?: RowPrice[];
+} | undefined {
+  const result = run.readResult;
+  if (result?.status !== 'ready') return undefined;
+  const prepared = result.preparedProposal;
+  return prepared && typeof prepared === 'object' && !Array.isArray(prepared)
+    ? (prepared as { revision?: QuoteRevision; facts?: AuthorizedProposalFacts; rowPrices?: RowPrice[] })
+    : undefined;
+}
+
 function revisionsFromRun(run: PriorQuoteRun): QuoteRevision[] {
   const result = run.metrics?.reservationistResult as
     | { quoteRevisions?: QuoteRevision[]; quoteRevisionIds?: string[] }
     | undefined;
-  const listed = result?.quoteRevisions ?? [];
+  const listed = result?.quoteRevisions?.length ? result.quoteRevisions : [];
   const ids = new Set(result?.quoteRevisionIds ?? listed.map((row) => row.id));
   return listed.filter((row) => ids.has(row.id));
 }
@@ -160,7 +174,14 @@ function proposalBundles(run: PriorQuoteRun): Array<{ ref: string; facts: Author
   const result = run.metrics?.reservationistResult as
     | { proposalFacts?: Array<{ ref: string; facts: AuthorizedProposalFacts }> }
     | undefined;
-  return result?.proposalFacts ?? [];
+  if (result?.proposalFacts) return result.proposalFacts;
+  const facts = preparedProposalFor(run)?.facts;
+  const factRefs = run.readResult?.factRefs;
+  const ref =
+    Array.isArray(factRefs) && factRefs.length === 1 && typeof factRefs[0] === 'string'
+      ? factRefs[0]
+      : undefined;
+  return facts && ref ? [{ ref, facts }] : [];
 }
 
 function proposalFactsForRevision(
@@ -176,12 +197,17 @@ export function proposalFactRefsForRevision(run: PriorQuoteRun, revisionId: stri
     .map((row) => row.ref);
 }
 
-/** The row prices a staff approval recorded for this revision. Empty when HMS priced every row. */
-export function storedRowPrices(run: { metrics: Record<string, unknown> | null }, revisionId: string): RowPrice[] {
+/** The row prices an approval recorded for this revision. Empty when HMS priced every row. */
+export function storedRowPrices(
+  run: Pick<PriorQuoteRun, 'metrics' | 'readResult'>,
+  revisionId: string,
+): RowPrice[] {
   const staff = run.metrics?.staffQuoteAttestation as
     | Pick<StaffQuoteAttestation, 'revisionIds' | 'rowPrices'>
     | undefined;
-  return staff?.revisionIds?.includes(revisionId) ? (staff.rowPrices ?? []) : [];
+  if (staff?.revisionIds?.includes(revisionId)) return staff.rowPrices ?? [];
+  const prepared = preparedProposalFor(run);
+  return prepared?.revision?.id === revisionId ? (prepared.rowPrices ?? []) : [];
 }
 
 /**

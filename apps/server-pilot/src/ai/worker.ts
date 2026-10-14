@@ -170,7 +170,8 @@ import {
   executeHmsJob,
   hmsJobQueueEnabled,
   scheduleAvailabilityPrefetch,
-  schedulePartyPrefetch,
+  scheduleQuotePreparationAfterPartyMatch,
+  scheduleQuotePreparationForExtraction,
   schedulePrefetchForInbound,
   type HmsRecoveryGate,
 } from './hms-jobs.js';
@@ -4246,7 +4247,16 @@ export async function executeAiRun(
 
     // Pane HMS jobs run through the CLI under the property lock, so they do not need the read service.
     if (run.runKind === 'read_tool' && run.promptVersion === HMS_JOB_PROMPT_VERSION) {
-      return { runId, state: await executeHmsJob({ run, fence, signal }) };
+      const state = await executeHmsJob({ run, fence, signal });
+      const request = run.readRequest as { kind?: unknown; matchVersion?: unknown } | null;
+      if (
+        request?.kind === 'party' &&
+        request.matchVersion === 2 &&
+        (state === 'succeeded' || state === 'dead_letter')
+      ) {
+        scheduleQuotePreparationAfterPartyMatch(run);
+      }
+      return { runId, state };
     }
 
     if (run.runKind === 'read_tool') {
@@ -4506,6 +4516,7 @@ export async function executeAiRun(
             throw new Error(`failed to mark deterministic mail-source triage succeeded: ${runId}`);
           }
         });
+        scheduleQuotePreparationForExtraction(runWithFence);
         return { runId, state: 'succeeded' };
       }
 
@@ -4523,7 +4534,10 @@ export async function executeAiRun(
             ...(mailSourceDecision ? { mailSourceDecision } : {}),
           },
         });
-        if (retired) schedulePrefetchForInbound(runWithFence);
+        if (retired) {
+          schedulePrefetchForInbound(runWithFence);
+          scheduleQuotePreparationForExtraction(runWithFence);
+        }
         return { runId, state: retired ? 'succeeded' : 'retry_wait' };
       }
       let output: WorkflowTriageOutput;
@@ -4729,6 +4743,7 @@ export async function executeAiRun(
       });
 
       schedulePrefetchForInbound(runWithFence);
+      scheduleQuotePreparationForExtraction(runWithFence);
       return { runId, state: 'succeeded' };
     }
 
@@ -5359,7 +5374,7 @@ export async function executeAiRun(
       // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
       if (extracted.state === 'succeeded') {
         scheduleAvailabilityPrefetch(runWithFence);
-        schedulePartyPrefetch(runWithFence);
+        scheduleQuotePreparationForExtraction(runWithFence);
         // U3 reads the committed extraction; the scheduler waits for matching triage too when that run exists.
         schedulePrefetchForInbound(runWithFence);
       }

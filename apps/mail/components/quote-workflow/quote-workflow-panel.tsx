@@ -1506,9 +1506,19 @@ export function QuoteWorkflowPanel({
                 const countedInStay = sameDateStays.length > 1 && sameDateStays[0] !== stayIndex + 1 ? sameDateStays[0] : null;
                 // This stay's own HMS result. The selected stay's result is also session.staffQuote.
                 const selectedQuote = session.selectedStayKey === stayKey ? session.staffQuote : null;
-                const stayFound = Boolean(session.staffQuotes[stayKey] ?? selectedQuote);
+                const stayQuote = session.staffQuotes[stayKey] ?? selectedQuote;
+                const stayFound = Boolean(stayQuote);
+                const preparedAt = stayQuote?.preparedAt ? new Date(stayQuote.preparedAt) : null;
+                const preparedAtLabel = preparedAt && Number.isFinite(preparedAt.getTime())
+                  ? preparedAt.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+                  : null;
                 return (
                   <article key={`${stay.id}-search`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
+                    {stayQuote?.preparedByNava ? (
+                      <p className="text-[12px] font-semibold text-[#475569]">
+                        Prepared by Nava{preparedAtLabel ? ` · ${preparedAtLabel}` : ''}
+                      </p>
+                    ) : null}
                     <div className="flex flex-col gap-0.5">
                       <div className="flex flex-wrap items-center gap-2">
                         <h4 className="text-[13px] font-bold text-[#1e293b]">Availability for this date range</h4>

@@ -28,6 +28,7 @@ const input: QualifiedStaffPdfInput = {
   clientEmail: 'guest@example.com',
   clientTelephone: '',
   agency: 'CIDB',
+  notes: 'Breakfast only on day two.',
 };
 const xlsxBase64 = btoa(String.fromCharCode(0x50, 0x4b, 0x03, 0x04, 0, 0));
 const serverResult = (overrides: Partial<QualifiedStaffWorkbookResult> = {}): QualifiedStaffWorkbookResult => ({
@@ -64,6 +65,7 @@ describe('Excel download request', () => {
             attention: 'David Miller',
             clientEmail: 'guest@example.com',
             clientTelephone: '',
+            notes: 'Breakfast only on day two.',
           },
         },
       },

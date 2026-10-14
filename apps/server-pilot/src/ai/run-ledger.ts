@@ -705,6 +705,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             ? 1
             : undefined;
 
+      // Prepared quotes get the staff budget too: the read takes minutes, and they already yield to staff work.
       const requestDeadlineMs =
         candidate.runKind === 'read_tool' &&
         candidate.executorLane === 'hms' &&

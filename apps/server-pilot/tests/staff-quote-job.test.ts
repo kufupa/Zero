@@ -27,6 +27,7 @@ const quoteRunMocks = vi.hoisted(() => ({
 }));
 
 const workflowMocks = vi.hoisted(() => ({ executeStaffQuote: vi.fn() }));
+const quoteQueueMocks = vi.hoisted(() => ({ staffQuoteInFlight: vi.fn() }));
 const quoteLineMocks = vi.hoisted(() => ({
   deriveQuoteLines: vi.fn(),
   pricedRoomTotal: vi.fn(),
@@ -42,6 +43,11 @@ vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => ({
     return /^[A-Za-z0-9_.:-]{1,120}$/.test(candidate) ? candidate : 'unknown';
   },
   staffQuoteFailureMessage: () => 'Staff quote could not be completed.',
+}));
+
+vi.mock('../src/hms/property-queue-state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/hms/property-queue-state.js')>()),
+  staffQuoteInFlight: quoteQueueMocks.staffQuoteInFlight,
 }));
 
 vi.mock('../src/ai/staff-quote-installation.js', () => ({
@@ -134,6 +140,14 @@ function fixture(metrics: Record<string, unknown> = { userId: user.id, staffQuot
   return { run, fence, request };
 }
 
+function preparedFixture() {
+  vi.stubEnv('HMS_JOB_QUEUE', 'on');
+  vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+  const prepared = fixture({ userId: null, quotePrepared: true });
+  prepared.run.priority = 0;
+  return prepared;
+}
+
 beforeEach(async () => {
   jobMocks.markSucceeded.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markRetry.mockReset().mockResolvedValue({ id: 'job-1' });
@@ -142,6 +156,7 @@ beforeEach(async () => {
     '../src/ai/staff-quote-workflow.js',
   );
   workflowMocks.executeStaffQuote.mockReset().mockImplementation(workflow.executeStaffQuote);
+  quoteQueueMocks.staffQuoteInFlight.mockReset().mockResolvedValue(false);
   quoteLineMocks.deriveQuoteLines.mockReset().mockReturnValue([{ description: 'Synthetic room' }]);
   quoteLineMocks.pricedRoomTotal
     .mockReset()
@@ -298,6 +313,7 @@ async function provisionalWorkerQuote(
   finished: Promise<void>,
   onError?: (error: unknown) => void,
   inputOverrides: Partial<StaffQuoteInput> = {},
+  prepared = false,
 ) {
   const actualRun = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
     '../src/ai/staff-quote-run.js',
@@ -327,7 +343,7 @@ async function provisionalWorkerQuote(
     ...inputOverrides,
     sourceHash: staffQuoteSourceHash(mail),
   });
-  const { run, fence } = fixture();
+  const { run, fence } = prepared ? preparedFixture() : fixture();
   run.readRequest = { kind: 'staff_quote', input } as unknown as AiWorkflowRun['readRequest'];
   const quoteDb = staffQuoteRunDb(mail);
   quoteRunMocks.readConfiguration.mockReturnValue({
@@ -531,6 +547,99 @@ describe('staff_quote HMS job execution', () => {
       db,
     );
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a prepared quote after a transient reader failure', async () => {
+    const { run, fence } = preparedFixture();
+    jobMocks.runStaffQuote.mockRejectedValue(new Error('Target page, context or browser has been closed'));
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
+
+    expect(jobMocks.runStaffQuote).toHaveBeenCalledOnce();
+    expect(jobMocks.markDeadLetter).toHaveBeenCalledWith(
+      expect.objectContaining({ failureClass: 'TRANSIENT_NETWORK', lastError: 'staff quote execution failed' }),
+      db,
+    );
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
+  it('does not execute an already-attempted prepared quote again', async () => {
+    const { run, fence } = preparedFixture();
+    run.attempts = 1;
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
+
+    expect(jobMocks.runStaffQuote).not.toHaveBeenCalled();
+    expect(jobMocks.markDeadLetter).toHaveBeenCalledWith(
+      expect.objectContaining({ lastError: 'prepared_quote_attempt_exhausted' }),
+      db,
+    );
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
+  it('tries the property lock once for a prepared quote and requeues a busy lock uncharged', async () => {
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {}, true);
+    const withLock = vi.fn(async (_callback: () => Promise<unknown>, _options: unknown) => {
+      throw new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE);
+    });
+    quoteRunMocks.createPropertyReadLock.mockReturnValue({ withLock });
+
+    await expect(executeHmsJob({ run: { ...run, createdAt: new Date() }, fence, db: quoteDb })).resolves.toBe('retry_wait');
+
+    expect(withLock).toHaveBeenCalledOnce();
+    expect(withLock).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ tryOnce: true, deadlineAt: fence.deadlineAt.getTime() }),
+    );
+    expect(jobMocks.markRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ attempts: 0, failureClass: 'HMS_LOCK_BUSY', resetDeadline: true }),
+      quoteDb,
+    );
+    expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['before the quote read', [false, true], 0],
+    ['after resolving a quote task', [false, false, true], 1],
+  ])('aborts a prepared quote when a user quote queues %s', async (_boundary, activeChecks, quoteCalls) => {
+    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(
+      Promise.resolve(),
+      undefined,
+      {},
+      true,
+    );
+    for (const active of activeChecks) quoteQueueMocks.staffQuoteInFlight.mockResolvedValueOnce(active);
+    quoteRunMocks.createPropertyReadLock.mockReturnValue({
+      withLock: (callback: () => Promise<unknown>) => callback(),
+    });
+    quoteRunMocks.getServices.mockReturnValue({ resolveQuoteTask: async () => ({}) });
+    workflowMocks.executeStaffQuote.mockImplementation(async (
+      prepared: { authorizationId: string; context: unknown },
+      services: { resolveQuoteTask?: (context: unknown) => Promise<unknown> },
+    ) => {
+      await services.resolveQuoteTask?.(prepared.context);
+      return {
+        id: 'revision-1',
+        authorizationId: prepared.authorizationId,
+        totalMinor: 240_000,
+        currency: 'ZAR',
+        groups: [{ arrivalDate: '2026-11-12', departureDate: '2026-11-14', context: {} }],
+      };
+    });
+
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('dead_letter');
+
+    expect(quoteQueueMocks.staffQuoteInFlight).toHaveBeenCalledTimes(activeChecks.length);
+    expect(workflowMocks.executeStaffQuote).toHaveBeenCalledTimes(quoteCalls);
+    expect(jobMocks.markDeadLetter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        failureClass: 'STAFF_QUOTE_ACTIVE',
+        lastError: 'prepared_quote_yielded_to_staff_quote',
+      }),
+      quoteDb,
+    );
+    expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
+    expect(inserted.filter((entry) => entry.table === aiWorkflowRun)).toHaveLength(0);
   });
 
   it('keeps the worker deadline-bounded approval context and retries an unknown reader failure', async () => {

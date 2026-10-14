@@ -262,6 +262,10 @@ export type StaffQuoteAllocation = {
   selectionEpoch: number;
   inputRevision: number;
   inputDigest: string;
+  /** A completed background quote prepared by Nava before staff opened this email. */
+  preparedByNava?: boolean;
+  /** The saved result's as-of time, displayed next to the preparation label. */
+  preparedAt?: string;
   totalMinor: number;
   currency: string;
   quoteRequestKey: string;
@@ -280,6 +284,7 @@ export type StaffQuoteAllocation = {
     attention: string;
     clientEmail: string;
     clientTelephone: string;
+    notes?: string;
   };
   /** True when this stay's run carried a single-charge extra (shuttle, per-trip or one-item "other"). */
   onceExtras?: boolean;

@@ -59,6 +59,7 @@ export function workbookRequestFor(session: QuoteSession): WorkbookRequest {
       attention: header.attention,
       clientEmail: header.clientEmail,
       clientTelephone: header.clientTelephone,
+      ...(header.notes ? { notes: header.notes } : {}),
     },
     expectedTotalMinor: quote.totalMinor,
   };
@@ -93,10 +94,12 @@ export function combinedDocumentRequest(session: QuoteSession): WorkbookRequest 
       attention: header.attention,
       clientEmail: header.clientEmail,
       clientTelephone: header.clientTelephone,
+      ...(header.notes ? { notes: header.notes } : {}),
       additionalStays: runs.slice(1).map((run) => ({
         workflowRunId: run.workflowRunId,
         revisionRef: run.revisionRef,
         factRefs: run.factRefs,
+        ...(run.approvedHeader.notes ? { notes: run.approvedHeader.notes } : {}),
       })),
     },
     expectedTotalMinor: runs.reduce((sum, run) => sum + run.totalMinor, 0),
@@ -142,6 +145,7 @@ export async function bindQualifiedStaffWorkbook(args: {
       clientEmail: args.input.clientEmail,
       clientTelephone: args.input.clientTelephone,
       agency: args.input.agency,
+      ...(args.input.notes ? { notes: args.input.notes } : {}),
       ...(args.input.additionalStays?.length ? { additionalStays: args.input.additionalStays } : {}),
     });
     const bytes = bytesFromBase64(result?.xlsxBase64 ?? '');

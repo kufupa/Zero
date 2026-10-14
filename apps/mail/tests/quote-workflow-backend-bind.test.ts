@@ -776,10 +776,12 @@ describe('staff quote execute/PDF header bind', () => {
         attention: '',
         clientEmail: '',
         clientTelephone: '',
+        notes: 'Breakfast only on day two.',
       },
       expectedTotalMinor: 850000,
     });
     expect(pdf.status).toBe('ok');
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ notes: 'Breakfast only on day two.' }));
     const mismatched = await bindQualifiedStaffProposalPdf({
       mutate: vi.fn(async () => ({
         revisionId: 'rev-1',

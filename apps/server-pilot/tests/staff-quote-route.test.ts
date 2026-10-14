@@ -2,11 +2,13 @@ import { createReservationistBusinessServices } from '../src/ai/reservationist-b
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { occupiedDates, type QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 import { staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
+import { enqueueHmsJob, HMS_JOB_PRIORITY_PREFETCH } from '../src/ai/hms-jobs.js';
 import { ReservationistTaskEvidenceUnavailable } from '../src/ai/reservationist-execution.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
+import { findParty, panePartyLookupLoaders, resetPartyCacheForTests } from '../src/ai/pane-party-lookup.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
 import { randomUUID } from 'node:crypto';
 import { unzipSync } from 'fflate';
@@ -176,8 +178,98 @@ function pdfInput(quote: { workflowRunId: string; revisionRef: string; messageId
   };
 }
 
+async function seedPreparedQuote(
+  db: DB,
+  request: Awaited<ReturnType<typeof seedRequest>>,
+  quote: {
+    workflowRunId: string;
+    revisionRef: string;
+    messageId: string;
+    threadId: string;
+    factRefs: string[];
+    inputDigest: string;
+    totalMinor: number;
+    currency: string;
+    arrivalDate: string;
+    departureDate: string;
+  },
+) {
+  const [sourceRun] = await db
+    .select()
+    .from(aiWorkflowRun)
+    .where(eq(aiWorkflowRun.id, quote.workflowRunId));
+  const reservationistResult = sourceRun?.metrics?.reservationistResult as
+    | { quoteRevisions?: Array<Record<string, unknown>>; proposalFacts?: Array<{ ref: string; facts: unknown }> }
+    | undefined;
+  const revision = reservationistResult?.quoteRevisions?.find((item) => item.id === quote.revisionRef);
+  if (!sourceRun || !revision || typeof revision.authorizationId !== 'string') {
+    throw new Error('expected the staff quote revision to be persisted');
+  }
+  const freshness = revision.sourceFreshness as { expiresAt?: unknown } | undefined;
+  if (typeof freshness?.expiresAt !== 'string' || Date.parse(freshness.expiresAt) <= Date.now()) {
+    throw new Error('expected a fresh quote revision');
+  }
+  const factBundle = reservationistResult?.proposalFacts?.find((bundle) => quote.factRefs.includes(bundle.ref));
+  const preparedInput = { ...request.input, selectionEpoch: 0, inputRevision: 0 };
+  const { run } = await enqueueHmsJob({
+    transportId: request.mail.transportId,
+    threadId: request.mail.threadId,
+    triggerMessageId: request.mail.id,
+    workItemId: null,
+    userId: null,
+    request: { kind: 'staff_quote', input: preparedInput },
+    priority: HMS_JOB_PRIORITY_PREFETCH,
+    idempotencyKey: `hms-job:staff-quote-prepared:route-test:${randomUUID()}`,
+    extraMetrics: { quotePrepared: true },
+  }, db);
+  const now = new Date();
+  const readResult = {
+    ...quote,
+    status: 'ready',
+    kind: 'staff_quote',
+    workflowRunId: run.id,
+    asOf: now.toISOString(),
+    freshUntil: freshness.expiresAt,
+    preparedProposal: {
+      version: 1,
+      inputDigest: quote.inputDigest,
+      authorizationId: revision.authorizationId,
+      sourceHash: request.input.sourceHash,
+      revision,
+      ...(factBundle ? { facts: factBundle.facts } : {}),
+      rowPrices: [],
+    },
+  };
+  await db
+    .update(aiWorkflowRun)
+    .set({
+      state: 'succeeded',
+      readResult,
+      readResultExpiresAt: new Date(freshness.expiresAt),
+      finishedAt: now,
+      updatedAt: now,
+    })
+    .where(eq(aiWorkflowRun.id, run.id));
+  return { workflowRunId: run.id, revisionRef: quote.revisionRef, messageId: quote.messageId };
+}
+
+function workbookSheet(base64: string): string {
+  const sheet = unzipSync(Buffer.from(base64, 'base64'))['xl/worksheets/sheet1.xml'];
+  if (!sheet) throw new Error('expected the proposal workbook sheet');
+  return new TextDecoder().decode(sheet);
+}
+
+function staffNote(html: string): string | null {
+  const note = /<p class="staff-note"><strong>Note:<\/strong> ([\s\S]*?)<\/p>/.exec(html)?.[1];
+  return note?.replace(/<br>/g, '\n') ?? null;
+}
+
 afterEach(() => {
   __setDbForTests(null);
+  panePartyLookupLoaders.spawn = null;
+  panePartyLookupLoaders.lock = null;
+  panePartyLookupLoaders.enabled = null;
+  resetPartyCacheForTests();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
@@ -335,6 +427,196 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           }),
         );
         expect(pdf).toMatchObject({ revisionId: quote.revisionRef, totalMinor: 220002 });
+      });
+    });
+
+    it('exports a reused prepared quote with the same header note as a fresh staff quote', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+        vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+        vi.stubEnv('QUOTE_PDF_RENDERER', 'html');
+        const request = await seedRequest(db),
+          api = caller();
+        const headerNote = 'Breakfast only on day two.';
+        const fresh = await api.workstation.executeStaffQuote({ ...request.input, notes: headerNote });
+        const htmlDocuments: string[] = [];
+        vi.mocked(fetch).mockImplementation(async (_url, init) => {
+          if (init?.body instanceof FormData) {
+            const file = init.body.get('files');
+            if (file instanceof Blob) htmlDocuments.push(await file.text());
+          }
+          return new Response('%PDF-1.4 synthetic fixture', {
+            headers: { 'content-type': 'application/pdf' },
+          });
+        });
+        const freshInput = pdfInput({
+          workflowRunId: fresh.workflowRunId,
+          revisionRef: fresh.revisionRef,
+          messageId: fresh.messageId,
+        });
+        const freshPdf = await api.workstation.qualifiedQuoteProposalPdf(freshInput);
+        const freshWorkbook = await api.workstation.quoteWorkbook(freshInput);
+        const prepared = await seedPreparedQuote(db, request, fresh);
+        const preparedInput = { ...pdfInput(prepared), notes: headerNote };
+        const preparedPdf = await api.workstation.qualifiedQuoteProposalPdf(preparedInput);
+        const preparedWorkbook = await api.workstation.quoteWorkbook(preparedInput);
+
+        expect(freshPdf.totalMinor).toBe(fresh.totalMinor);
+        expect(preparedPdf.totalMinor).toBe(freshPdf.totalMinor);
+        expect(htmlDocuments).toHaveLength(2);
+        expect(staffNote(htmlDocuments[0]!)).toBe(headerNote);
+        expect(staffNote(htmlDocuments[1]!)).toBe(headerNote);
+        expect(workbookSheet(freshWorkbook.xlsxBase64)).toContain(headerNote);
+        expect(workbookSheet(preparedWorkbook.xlsxBase64)).toBe(workbookSheet(freshWorkbook.xlsxBase64));
+      });
+    });
+
+    it('exports prepared quotes when matched party name differs from extracted case', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+        vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+        const request = await seedRequest(db),
+          api = caller();
+        const preparedInput = {
+          ...request.input,
+          agency: 'Acme Lodging Holdings',
+          parties: {
+            agency: {
+              kind: 'agency' as const,
+              nativeId: 'agency-17',
+              name: 'ACME LODGING HOLDINGS',
+            },
+          },
+        };
+        panePartyLookupLoaders.enabled = () => true;
+        panePartyLookupLoaders.lock = { withLock: async <T>(run: () => Promise<T>) => run() };
+        panePartyLookupLoaders.spawn = async () => ({
+          outcome: 'resolved',
+          candidates: [
+            {
+              kind: 'bookingAgency',
+              nativeId: 'agency-17',
+              displayName: 'ACME LODGING HOLDINGS',
+              matchedOn: ['store'],
+            },
+          ],
+          truncated: false,
+        });
+        await findParty({ name: preparedInput.agency, kind: 'agency' });
+        const fresh = await api.workstation.executeStaffQuote(preparedInput);
+        const prepared = await seedPreparedQuote(db, { ...request, input: preparedInput }, fresh);
+        const exportInput = { ...pdfInput(prepared), agency: 'ACME LODGING HOLDINGS' };
+        const results = await Promise.allSettled([
+          api.workstation.qualifiedQuoteProposalPdf(exportInput),
+          api.workstation.quoteWorkbook(exportInput),
+        ]);
+
+        expect(results.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
+        if (results[0]?.status === 'fulfilled') expect(results[0].value.totalMinor).toBe(fresh.totalMinor);
+        if (results[1]?.status === 'fulfilled') expect(results[1].value.totalMinor).toBe(fresh.totalMinor);
+      });
+    });
+
+    it('refuses prepared exports after a newer approval changes the same stay', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+        vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+        const request = await seedRequest(db),
+          api = caller();
+        const stayOn = (inputRevision: number, arrivalDate: string, departureDate: string, quantity = 2) =>
+          api.workstation.executeStaffQuote({
+            ...request.input,
+            inputRevision,
+            groups: [{ ...request.input.groups[0]!, arrivalDate, departureDate, quantity }],
+          });
+        const october = await stayOn(1, '2026-10-26', '2026-10-27');
+        const november = await stayOn(2, '2026-11-17', '2026-11-18');
+        const octoberRequest = {
+          ...request,
+          input: { ...request.input, groups: [{ ...request.input.groups[0]!, arrivalDate: '2026-10-26', departureDate: '2026-10-27' }] },
+        };
+        const novemberRequest = {
+          ...request,
+          input: { ...request.input, groups: [{ ...request.input.groups[0]!, arrivalDate: '2026-11-17', departureDate: '2026-11-18' }] },
+        };
+        const octoberPrepared = await seedPreparedQuote(db, octoberRequest, october);
+        const novemberPrepared = await seedPreparedQuote(db, novemberRequest, november);
+        const oldCombined = {
+          ...pdfInput(octoberPrepared),
+          additionalStays: [
+            { workflowRunId: novemberPrepared.workflowRunId, revisionRef: novemberPrepared.revisionRef, factRefs: [] },
+          ],
+        };
+        const currentOctober = await stayOn(3, '2026-10-26', '2026-10-27', 3);
+
+        await expect(api.workstation.qualifiedQuoteProposalPdf(pdfInput(octoberPrepared))).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+        });
+        await expect(api.workstation.quoteWorkbook(pdfInput(octoberPrepared))).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+        });
+        await expect(api.workstation.qualifiedQuoteProposalPdf(oldCombined)).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          message: 'Newer stay inputs were approved; use the current quote',
+        });
+        await expect(api.workstation.quoteWorkbook(oldCombined)).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+        });
+        const currentCombined = {
+          ...pdfInput({
+            workflowRunId: currentOctober.workflowRunId,
+            revisionRef: currentOctober.revisionRef,
+            messageId: currentOctober.messageId,
+          }),
+          additionalStays: [
+            { workflowRunId: novemberPrepared.workflowRunId, revisionRef: novemberPrepared.revisionRef, factRefs: [] },
+          ],
+        };
+        await expect(api.workstation.qualifiedQuoteProposalPdf(currentCombined)).resolves.toMatchObject({
+          totalMinor: currentOctober.totalMinor + november.totalMinor,
+        });
+        await expect(api.workstation.quoteWorkbook(currentCombined)).resolves.toMatchObject({
+          totalMinor: currentOctober.totalMinor + november.totalMinor,
+        });
+      });
+    });
+
+    it('disables prepared PDF and Excel exports without disabling fresh staff quotes', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+        vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+        const request = await seedRequest(db),
+          api = caller();
+        const fresh = await api.workstation.executeStaffQuote(request.input);
+        const prepared = await seedPreparedQuote(db, request, fresh);
+        vi.stubEnv('HMS_QUOTE_PREPARE', 'false');
+        const preparedInput = pdfInput(prepared);
+
+        await expect(api.workstation.qualifiedQuoteProposalPdf(preparedInput)).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+        });
+        await expect(api.workstation.quoteWorkbook(preparedInput)).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+        });
+        expect(fetch).not.toHaveBeenCalled();
+        await expect(
+          api.workstation.qualifiedQuoteProposalPdf(pdfInput({
+            workflowRunId: fresh.workflowRunId,
+            revisionRef: fresh.revisionRef,
+            messageId: fresh.messageId,
+          })),
+        ).resolves.toMatchObject({ totalMinor: fresh.totalMinor });
+        await expect(
+          api.workstation.quoteWorkbook(pdfInput({
+            workflowRunId: fresh.workflowRunId,
+            revisionRef: fresh.revisionRef,
+            messageId: fresh.messageId,
+          })),
+        ).resolves.toMatchObject({ totalMinor: fresh.totalMinor });
       });
     });
 

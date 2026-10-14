@@ -265,7 +265,8 @@ export async function quoteWithPartyFallback<T, P>(options: {
 }
 export type StaffQuoteScope = {
   transportId: string;
-  userId: string;
+  /** Null only for a system-prepared price; that path has no approving actor or signer. */
+  userId: string | null;
   threadId: string;
   messageId: string;
   sourceHash: string;
@@ -320,7 +321,6 @@ export function prepareStaffQuote(
     input.messageId !== scope.messageId ||
     input.sourceHash !== scope.sourceHash ||
     !scope.transportId ||
-    !scope.userId ||
     !scope.threadId ||
     !scope.propertyCode ||
     !Number.isFinite(Date.parse(scope.messageAt))
@@ -777,6 +777,7 @@ export function attestStaffQuote(
   rowPrices: RowPrice[] = [],
   options: { dinnerAddOnRequired?: boolean } = {},
 ): StaffQuoteAttestation {
+  if (!scope.userId) throw new Error('staff_quote_user_approval_required');
   if (revision.authorizationId !== prepared.authorizationId)
     throw new Error('staff_quote_attestation_mismatch');
   // Validates the prices against this revision before they are approved, so a bad row never reaches the stored attestation.

@@ -16,10 +16,19 @@ import { TRPCError } from '@trpc/server';
 import { and, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
-import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import {
+  aiDraftGeneration,
+  aiWorkflowRun,
+  mailCategory,
+  mailboxTransport,
+  mailThread,
+  mailThreadCategory,
+  message,
+} from '../db/schema/mail.js';
 import { aiAgentRun } from '../db/schema/hitl.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
+import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
 import {
   acquisitionWithin,
@@ -71,7 +80,17 @@ import {
 import { normalizeEmailAddress } from './never-spam.js';
 import { extractVoucherGuest } from './voucher-find.js';
 import { isStaffSender, knownSenders } from './work-items.js';
-import { staffQuoteInput, type StaffQuoteInput } from './staff-quote-workflow.js';
+import {
+  staffQuoteInput,
+  staffQuoteSourceHash,
+  type StaffQuoteInput,
+} from './staff-quote-workflow.js';
+import {
+  buildPreparedStaffQuotePlan,
+  confidentPartyFromV2Result,
+  staffQuoteInputsPriceEquivalent,
+  type PreparedStaffQuotePlan,
+} from './quote-ready.js';
 import {
   runStaffQuote,
   staffQuoteFailureCode,
@@ -98,6 +117,22 @@ import {
  */
 export function hmsJobQueueEnabled(env: NodeJS.Dict<string> = process.env): boolean {
   return env.HMS_JOB_QUEUE === 'on';
+}
+
+/** Default-off quote preparation. It can enqueue only when the persisted HMS queue is enabled. */
+export function quotePreparationEnabled(env: NodeJS.Dict<string> = process.env): boolean {
+  return (
+    env.HMS_QUOTE_PREPARE === 'true' ||
+    env.HMS_QUOTE_PREPARE === '1' ||
+    env.HMS_QUOTE_PREPARE === 'on'
+  ) && hmsJobQueueEnabled(env);
+}
+
+/** System-prepared quote jobs per transport/hour. Invalid direct test input fails back to the safe default. */
+export function quotePreparationPerHour(env: NodeJS.Dict<string> = process.env): number {
+  const raw = env.HMS_QUOTE_PREPARE_PER_HOUR?.trim();
+  const parsed = raw ? Number(raw) : Number.NaN;
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 6;
 }
 
 /** Availability probes for quote stays (U10). Off (the default) unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on. */
@@ -581,10 +616,10 @@ export async function queueAutoStaffQuoteHmsJob(
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
         eq(aiWorkflowRun.executorLane, 'hms'),
         eq(aiWorkflowRun.triggerMessageId, input.triggerMessageId),
-        sql`${aiWorkflowRun.metrics}->>'userId' = ${input.userId}`,
       ),
       input.request.input.messageId,
       input.request.input,
+      input.userId,
     );
     if (existing) return { run: existing, created: false };
     return enqueueHmsJob({ ...input, idempotencyKey: `hms-job:staff-quote:${randomUUID()}` }, scoped);
@@ -1315,7 +1350,7 @@ export async function enqueueHmsBatch(
 async function countRecentPrefetches(
   db: DB,
   transportId: string,
-  kind: 'find' | 'search_guest' | 'party' | 'availability',
+  kind: 'find' | 'search_guest' | 'party' | 'availability' | 'staff_quote',
   since: Date,
 ): Promise<number> {
   const [row] = await db
@@ -1328,11 +1363,57 @@ async function countRecentPrefetches(
         eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
         // Staff batch rows share the prefetch priority but carry batchId: they neither use nor are capped by these budgets.
         sql`${aiWorkflowRun.metrics}->>'batchId' IS NULL`,
+        ...(kind === 'staff_quote'
+          ? [
+              sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+            ]
+          : []),
         sql`${aiWorkflowRun.readRequest}->>'kind' = ${kind}`,
         gt(aiWorkflowRun.createdAt, since),
       ),
     );
   return Number(row?.n ?? 0);
+}
+
+/** Serializes prepared-quote cap checks/inserts across workers for one mailbox. Live digests remain idempotent. */
+async function enqueuePreparedQuoteWithinCap(
+  db: DB,
+  input: Parameters<typeof enqueueHmsJob>[0],
+  perHour: number,
+): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(
+        ${'hms-prefetch:staff_quote:' + input.transportId}, 0
+      ))`,
+    );
+    const scoped = tx as unknown as DB;
+    const existing = await scoped
+      .select({ id: aiWorkflowRun.id, idempotencyKey: aiWorkflowRun.idempotencyKey, state: aiWorkflowRun.state })
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.transportId, input.transportId),
+          eq(aiWorkflowRun.triggerMessageId, input.triggerMessageId),
+          sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+          sql`left(${aiWorkflowRun.idempotencyKey}, length(${input.idempotencyKey})) = ${input.idempotencyKey}`,
+        ),
+      );
+    if (existing.some((run) => run.state !== 'dead_letter' && run.state !== 'superseded')) return false;
+    const used = await countRecentPrefetches(
+      scoped,
+      input.transportId,
+      'staff_quote',
+      new Date(Date.now() - PREFETCH_WINDOW_MS),
+    );
+    if (used >= perHour) return false;
+    const retryInput = existing.length
+      ? { ...input, idempotencyKey: `${input.idempotencyKey}:retry:${randomUUID()}` }
+      : input;
+    const queued = await enqueueHmsJob(retryInput, scoped);
+    return queued.created;
+  });
 }
 
 /** Serializes the guest-search count and insert per transport so concurrent extractions cannot overspend the cap. */
@@ -1478,7 +1559,7 @@ export async function prefetchHmsConfirmations(
   const from = normalizeEmailAddress(source.fromAddress);
   const mailbox = normalizeEmailAddress(source.mailboxEmail);
   if (from === mailbox) return 0;
-  if (isStaffSender(source.fromAddress, source.mailboxEmail)) {
+  if (source.fromAddress && isStaffSender(source.fromAddress, source.mailboxEmail)) {
     const sentFrom = await knownSenders(db, run.transportId, [source.fromAddress]);
     if (sentFrom.has(from)) return 0;
   }
@@ -1730,6 +1811,285 @@ export function schedulePartyPrefetch(
   void prefetchPartyForExtraction(run).catch(() => undefined);
 }
 
+type QuoteReadyMessageSource = {
+  extractionStatus: string;
+  kind: string;
+  payload: unknown;
+  messageId: string;
+  transportId: string;
+  threadId: string;
+  subject: string | null;
+  textBody: string | null;
+  htmlBody: string | null;
+  direction: string;
+  historyOnly: boolean;
+  fromAddress: string | null;
+  threadHistoryOnly: boolean;
+  spamAt: Date | null;
+  mailboxEmail: string;
+};
+
+export type QuoteReadyMessageEvaluation = {
+  messageId: string;
+  transportId: string | null;
+  threadId: string | null;
+  preparationEnabled: boolean;
+  plan: PreparedStaffQuotePlan | null;
+  reason: string | null;
+};
+
+async function quoteReadySourceForMessage(
+  db: DB,
+  messageId: string,
+  transportId?: string,
+): Promise<QuoteReadyMessageSource | null> {
+  const [source] = await db
+    .select({
+      extractionStatus: mailExtraction.status,
+      kind: mailExtraction.kind,
+      payload: mailExtraction.payload,
+      messageId: message.id,
+      transportId: message.transportId,
+      threadId: message.threadId,
+      subject: message.subject,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
+      direction: message.direction,
+      historyOnly: message.historyOnly,
+      fromAddress: message.fromAddress,
+      threadHistoryOnly: mailThread.historyOnly,
+      spamAt: mailThread.spamAt,
+      mailboxEmail: mailboxTransport.email,
+    })
+    .from(mailExtraction)
+    .innerJoin(message, eq(message.id, mailExtraction.messageId))
+    .innerJoin(mailThread, eq(mailThread.id, message.threadId))
+    .innerJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
+    .where(
+      and(
+        eq(mailExtraction.messageId, messageId),
+        ...(transportId ? [eq(message.transportId, transportId)] : []),
+      ),
+    )
+    .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
+    .limit(1);
+  return (source as QuoteReadyMessageSource | undefined) ?? null;
+}
+
+async function threadIsAutomatedChannel(db: DB, source: QuoteReadyMessageSource): Promise<boolean> {
+  const [category] = await db
+    .select({ threadId: mailThreadCategory.threadId })
+    .from(mailThreadCategory)
+    .innerJoin(mailCategory, eq(mailCategory.id, mailThreadCategory.categoryId))
+    .where(
+      and(
+        eq(mailThreadCategory.threadId, source.threadId),
+        eq(mailThreadCategory.transportId, source.transportId),
+        eq(mailCategory.transportId, source.transportId),
+        eq(mailCategory.slug, 'automated-channel'),
+      ),
+    )
+    .limit(1);
+  return Boolean(category);
+}
+
+function sourceDecisionIsAutomated(value: unknown): boolean {
+  return isMailSourceClassification(value) && value.kind !== 'direct';
+}
+
+async function inboundTriagePendingOrAutomated(
+  db: DB,
+  source: QuoteReadyMessageSource,
+): Promise<'pending' | 'automated' | null> {
+  const [triage] = await db
+    .select({ state: aiWorkflowRun.state, metrics: aiWorkflowRun.metrics })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.transportId, source.transportId),
+        eq(aiWorkflowRun.threadId, source.threadId),
+        eq(aiWorkflowRun.triggerMessageId, source.messageId),
+        eq(aiWorkflowRun.runKind, 'inbound_triage'),
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+    .limit(1);
+  if (!triage) return null;
+  if (sourceDecisionIsAutomated(objectRecord(triage.metrics).mailSourceDecision)) return 'automated';
+  return ['queued', 'claimed', 'running', 'retry_wait'].includes(triage.state) ? 'pending' : null;
+}
+
+async function latestPartyMatchV2ForMessage(
+  db: DB,
+  source: QuoteReadyMessageSource,
+): Promise<AiWorkflowRun | null> {
+  const [run] = await db
+    .select()
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.transportId, source.transportId),
+        eq(aiWorkflowRun.threadId, source.threadId),
+        eq(aiWorkflowRun.triggerMessageId, source.messageId),
+        eq(aiWorkflowRun.runKind, 'read_tool'),
+        eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+        eq(aiWorkflowRun.executorLane, 'hms'),
+        eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+        sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
+        sql`${aiWorkflowRun.readRequest}->>'kind' = 'party'`,
+        sql`${aiWorkflowRun.readRequest}->>'matchVersion' = '2'`,
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+    .limit(1);
+  return run ?? null;
+}
+
+/** Read-only evaluation shared by the worker and quote-ready-eval.ts. No message text leaves this function. */
+export async function evaluateQuoteReadyForMessage(
+  input: { messageId: string; transportId?: string },
+  db: DB = getDb(),
+  env: NodeJS.Dict<string> = process.env,
+  now: Date = new Date(),
+): Promise<QuoteReadyMessageEvaluation> {
+  const preparationEnabled = quotePreparationEnabled(env);
+  const empty = (reason: string, source?: QuoteReadyMessageSource): QuoteReadyMessageEvaluation => ({
+    messageId: input.messageId,
+    transportId: source?.transportId ?? input.transportId ?? null,
+    threadId: source?.threadId ?? null,
+    preparationEnabled,
+    plan: null,
+    reason,
+  });
+  const source = await quoteReadySourceForMessage(db, input.messageId, input.transportId);
+  if (!source) return empty('source_not_found');
+  if (source.extractionStatus !== 'succeeded') return empty('extraction_not_succeeded', source);
+  if (source.kind !== 'quote') return empty('not_quote', source);
+  if (source.direction !== 'inbound') return empty('not_inbound', source);
+  if (source.historyOnly || source.threadHistoryOnly) return empty('history_copy', source);
+  if (source.spamAt) return empty('spam', source);
+  const payload = objectRecord(source.payload);
+  if (payload.origin === 'system_notice') return empty('system_notice', source);
+  const sourceClassification = classifyMailSource({
+    fromAddress: source.fromAddress,
+    subject: source.subject,
+    bodyText: source.textBody ?? source.htmlBody,
+  });
+  if (sourceClassification.kind !== 'direct') return empty('channel_or_ota', source);
+  if (await threadIsAutomatedChannel(db, source)) return empty('channel_or_ota', source);
+  const triage = await inboundTriagePendingOrAutomated(db, source);
+  if (triage === 'pending') return empty('triage_pending', source);
+  if (triage === 'automated') return empty('channel_or_ota', source);
+  if (!source.fromAddress) return empty('missing_sender', source);
+
+  const from = normalizeEmailAddress(source.fromAddress);
+  const mailbox = normalizeEmailAddress(source.mailboxEmail);
+  if (from === mailbox) return empty('mailbox_sender', source);
+  if (isStaffSender(source.fromAddress, source.mailboxEmail)) {
+    const sentFrom = await knownSenders(db, source.transportId, [source.fromAddress]);
+    if (sentFrom.has(from)) return empty('staff_sender', source);
+  }
+
+  const partyRun = await latestPartyMatchV2ForMessage(db, source);
+  if (partyRun && ['queued', 'claimed', 'running', 'retry_wait'].includes(partyRun.state)) {
+    return empty('party_match_pending', source);
+  }
+  let parties;
+  if (partyRun?.state === 'succeeded') {
+    const quoteLlmParty = await existingQuoteWorkflowParty(db, source.transportId, source.messageId);
+    parties = confidentPartyFromV2Result({
+      payload: source.payload,
+      fromAddress: source.fromAddress,
+      subject: source.subject,
+      body: source.textBody ?? source.htmlBody,
+      quoteLlmParty,
+      result: partyRun.readResult,
+    });
+  }
+  const plan = buildPreparedStaffQuotePlan({
+    messageId: source.messageId,
+    sourceHash: staffQuoteSourceHash({
+      id: source.messageId,
+      subject: source.subject,
+      textBody: source.textBody,
+      htmlBody: source.htmlBody,
+    }),
+    payload: source.payload,
+    ...(parties ? { parties } : {}),
+    now,
+  });
+  return {
+    messageId: source.messageId,
+    transportId: source.transportId,
+    threadId: source.threadId,
+    preparationEnabled,
+    plan,
+    reason: plan.reason,
+  };
+}
+
+/** Creates one userless, low-priority staff-quote read for each complete future stay. */
+export async function prefetchQuoteReadyForExtraction(
+  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
+  db: DB = getDb(),
+  env: NodeJS.Dict<string> = process.env,
+  now: Date = new Date(),
+): Promise<number> {
+  if (run.runKind !== 'inbound_extraction' || !quotePreparationEnabled(env)) return 0;
+  const evaluation = await evaluateQuoteReadyForMessage(
+    { messageId: run.triggerMessageId, transportId: run.transportId },
+    db,
+    env,
+    now,
+  );
+  if (!evaluation.plan?.inputs.length || !evaluation.transportId || !evaluation.threadId) return 0;
+  const workItemId = await latestWorkItemId(db, evaluation.transportId, evaluation.threadId);
+  const perHour = quotePreparationPerHour(env);
+  let created = 0;
+  for (const quoteInput of evaluation.plan.inputs) {
+    const digest = createHash('sha256').update(JSON.stringify(quoteInput)).digest('hex');
+    const queued = await enqueuePreparedQuoteWithinCap(
+      db,
+      {
+        transportId: evaluation.transportId,
+        threadId: evaluation.threadId,
+        triggerMessageId: evaluation.messageId,
+        workItemId,
+        userId: null,
+        request: { kind: 'staff_quote', input: quoteInput },
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: `hms-job:staff-quote-prepared:${evaluation.transportId}:${evaluation.messageId}:${digest}`,
+        extraMetrics: { quotePrepared: true },
+      },
+      perHour,
+    );
+    if (queued) created += 1;
+  }
+  return created;
+}
+
+/** Sequences party matching before quote preparation so an available V2 bind is never raced by a public-rate quote. */
+export function scheduleQuotePreparationForExtraction(
+  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
+): void {
+  const extraction = { ...run, runKind: 'inbound_extraction' as const };
+  void (async () => {
+    const db = getDb();
+    const env = parseEnv(process.env as Record<string, string | undefined>);
+    await prefetchPartyForExtraction(extraction, db, env).catch(() => 0);
+    await prefetchQuoteReadyForExtraction(extraction, db, process.env);
+  })().catch(() => undefined);
+}
+
+/** A terminal V2 party result unblocks its waiting public-or-contract quote preparation. */
+export function scheduleQuotePreparationAfterPartyMatch(
+  run: Pick<AiWorkflowRun, 'transportId' | 'triggerMessageId'>,
+): void {
+  void prefetchQuoteReadyForExtraction(
+    { runKind: 'inbound_extraction', transportId: run.transportId, triggerMessageId: run.triggerMessageId },
+  ).catch(() => undefined);
+}
+
 type PartyMatchV2JobResult = PanePartyFindResult & {
   matchVersion: 2;
   matchStatus: 'bound' | 'needs_pick';
@@ -1968,15 +2328,18 @@ async function requeueRun(
   return 'retry_wait';
 }
 
+const PREPARED_QUOTE_LOCK_WAIT_MS = 15 * 60_000;
+
 async function retryOrFail(
   db: DB,
   run: AiWorkflowRun,
   mark: Mark,
   failureClass: AiFailureClass,
   lastError: string,
+  maxAttempts = JOB_MAX_ATTEMPTS,
 ): Promise<'retry_wait' | 'dead_letter'> {
   const attempts = run.attempts + 1;
-  if (attempts >= JOB_MAX_ATTEMPTS) {
+  if (attempts >= maxAttempts) {
     await markAiRunDeadLetter({ ...mark, lastError, failureClass }, db);
     return 'dead_letter';
   }
@@ -2102,6 +2465,19 @@ function staffQuoteLockBusy(error: unknown): boolean {
   return false;
 }
 
+function preparedQuoteYielded(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    if (typeof current === 'object') {
+      if ('code' in current && current.code === 'STAFF_QUOTE_ACTIVE') return true;
+      current = 'cause' in current ? current.cause : null;
+    } else {
+      current = null;
+    }
+  }
+  return false;
+}
+
 function staffQuoteUserFromMetrics(metrics: Record<string, unknown>): StaffQuoteRunIdentity['user'] | null {
   const user = objectRecord(metrics.staffQuoteUser);
   if (
@@ -2216,6 +2592,31 @@ export async function executeHmsJob(input: {
     return 'dead_letter';
   }
   const request = parsed.data;
+  const metrics = objectRecord(run.metrics) as {
+    userId?: string | null;
+    owner?: string;
+    staffQuoteUser?: unknown;
+    quotePrepared?: boolean;
+  };
+  const systemPreparedQuote =
+    request.kind === 'staff_quote' &&
+    run.priority === HMS_JOB_PRIORITY_PREFETCH &&
+    metrics.userId == null &&
+    metrics.quotePrepared === true;
+  if (systemPreparedQuote && !quotePreparationEnabled()) {
+    await markAiRunDeadLetter(
+      { ...mark, lastError: 'quote_preparation_disabled', failureClass: 'POLICY_BLOCK' },
+      db,
+    );
+    return 'dead_letter';
+  }
+  if (systemPreparedQuote && run.attempts > 0) {
+    await markAiRunDeadLetter(
+      { ...mark, lastError: 'prepared_quote_attempt_exhausted', failureClass: 'TRANSIENT_NETWORK' },
+      db,
+    );
+    return 'dead_letter';
+  }
   const background = run.priority < HMS_JOB_PRIORITY_USER;
   if (background && (await staffQuoteInFlight(db))) {
     // Yield without counting an attempt, so a quote in flight does not use up the job's retries.
@@ -2227,14 +2628,10 @@ export async function executeHmsJob(input: {
     });
   }
 
-  const metrics = objectRecord(run.metrics) as {
-    userId?: string | null;
-    owner?: string | null;
-    staffQuoteUser?: unknown;
-  };
   if (request.kind === 'staff_quote') {
     const user = staffQuoteUserFromMetrics(metrics);
-    if (!user) {
+    const systemPrepared = !user && systemPreparedQuote;
+    if (!user && !systemPrepared) {
       await markAiRunDeadLetter(
         { ...mark, lastError: 'staff_quote_identity_unavailable', failureClass: 'SCHEMA_DRIFT' },
         db,
@@ -2247,18 +2644,19 @@ export async function executeHmsJob(input: {
           kind: 'quote',
           transportId: run.transportId,
           messageId: request.input.messageId,
-          userId: user.id,
+          userId: user?.id ?? null,
           input: ledgerQuoteInput(request.input),
           inputDigest: quoteDigest(request.input),
         },
         () =>
           runStaffQuote(
             request.input,
-            { transportId: run.transportId, user },
+            { transportId: run.transportId, ...(user ? { user } : {}) },
             db,
             {
               signal: input.signal,
               deadlineAt: fence.deadlineAt.getTime(),
+              ...(systemPrepared ? { preparedRunId: run.id } : {}),
               commitQueuedResult: async (quoteResult, transaction) =>
                 (await storeStaffQuoteResult({
                   db: transaction,
@@ -2274,6 +2672,17 @@ export async function executeHmsJob(input: {
       );
       return 'succeeded';
     } catch (error) {
+      if (systemPreparedQuote && preparedQuoteYielded(error)) {
+        await markAiRunDeadLetter(
+          {
+            ...mark,
+            lastError: 'prepared_quote_yielded_to_staff_quote',
+            failureClass: 'STAFF_QUOTE_ACTIVE',
+          },
+          db,
+        );
+        return 'dead_letter';
+      }
       if (
         input.signal?.aborted &&
         input.signal.reason &&
@@ -2290,13 +2699,43 @@ export async function executeHmsJob(input: {
         });
       }
       if (isPropertyReadLockDeadline(error)) {
+        // A prepared quote waits out a busy lock for a while, then gives up so staff never stay pinned to it.
+        if (systemPreparedQuote && Date.now() - run.createdAt.getTime() >= PREPARED_QUOTE_LOCK_WAIT_MS) {
+          await markAiRunDeadLetter(
+            { ...mark, lastError: 'prepared_quote_lock_busy', failureClass: 'HMS_LOCK_BUSY' },
+            db,
+          );
+          return 'dead_letter';
+        }
+        if (systemPreparedQuote) {
+          return requeueRun(db, mark, {
+            attempts: run.attempts,
+            delayMs: JOB_YIELD_MS,
+            failureClass: 'HMS_LOCK_BUSY',
+            lastError: 'property lock busy',
+          });
+        }
         return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'property lock busy');
       }
       if (staffQuoteLockBusy(error)) {
-        return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'party verification lock busy');
+        return retryOrFail(
+          db,
+          run,
+          mark,
+          'HMS_LOCK_BUSY',
+          'party verification lock busy',
+          systemPreparedQuote ? 1 : JOB_MAX_ATTEMPTS,
+        );
       }
       if (staffQuoteTransientFailure(error)) {
-        return retryOrFail(db, run, mark, 'TRANSIENT_NETWORK', 'staff quote execution failed');
+        return retryOrFail(
+          db,
+          run,
+          mark,
+          'TRANSIENT_NETWORK',
+          'staff quote execution failed',
+          systemPreparedQuote ? 1 : JOB_MAX_ATTEMPTS,
+        );
       }
       const refusal = staffQuoteRefusal(error, request.input);
       return storeStaffQuoteResult({
@@ -2500,15 +2939,27 @@ async function latestStaffQuoteRunFor(
   scope: ReturnType<typeof and>,
   messageId: string,
   quoteInput: StaffQuoteInput,
+  userId: string,
 ): Promise<AiWorkflowRun[]> {
   const wanted = hmsRequestKey({ kind: 'staff_quote', input: quoteInput });
   const now = new Date();
+  const ownerScope = quotePreparationEnabled()
+    ? or(
+        sql`${aiWorkflowRun.metrics}->>'userId' = ${userId}`,
+        and(
+          eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+          sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
+          sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+        ),
+      )
+    : sql`${aiWorkflowRun.metrics}->>'userId' = ${userId}`;
   const rows = await db
     .select()
     .from(aiWorkflowRun)
     .where(
       and(
         scope,
+        ownerScope,
         eq(aiWorkflowRun.triggerMessageId, messageId),
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
         sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${messageId}`,
@@ -2517,19 +2968,63 @@ async function latestStaffQuoteRunFor(
       ),
     )
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
-  // Only the newest staff quote on this message holds the current approval. An older job with the same inputs was
-  // superseded by a later quote, so its documents would be refused; the pane must quote again instead.
-  const [newest] = rows;
-  if (!newest) return [];
-  if (
-    newest.state === 'succeeded' &&
-    (!newest.readResultExpiresAt ||
-      newest.readResultExpiresAt <= now ||
-      !staffQuoteResultReusable(newest.readResult, now))
-  )
-    return [];
-  const parsed = hmsJobRequestSchema.safeParse(newest.readRequest);
-  return parsed.success && hmsRequestKey(parsed.data) === wanted ? [newest] : [];
+  const reusable = (run: AiWorkflowRun) =>
+    run.state !== 'succeeded' ||
+    Boolean(
+      run.readResultExpiresAt &&
+        run.readResultExpiresAt > now &&
+        staffQuoteResultReusable(run.readResult, now),
+    );
+  // A later user quote still supersedes an older user quote on this message, even when its input changed.
+  const newestUserRun = rows.find((run) => objectRecord(run.metrics).userId === userId);
+  if (newestUserRun && reusable(newestUserRun)) {
+    const parsed = hmsJobRequestSchema.safeParse(newestUserRun.readRequest);
+    if (parsed.success && parsed.data.kind === 'staff_quote' && hmsRequestKey(parsed.data) === wanted) {
+      return [newestUserRun];
+    }
+  }
+
+  // System-prepared quotes are independent per stay. Look for the newest prepared price for these terms rather than
+  // letting a different stay's more recently enqueued job hide a valid match.
+  for (const preparedRun of rows) {
+    const metrics = objectRecord(preparedRun.metrics);
+    if (
+      preparedRun.priority !== HMS_JOB_PRIORITY_PREFETCH ||
+      metrics.userId != null ||
+      metrics.quotePrepared !== true ||
+      preparedRun.state === 'dead_letter' ||
+      preparedRun.state === 'superseded'
+    ) {
+      continue;
+    }
+    const parsed = hmsJobRequestSchema.safeParse(preparedRun.readRequest);
+    if (
+      !parsed.success ||
+      parsed.data.kind !== 'staff_quote' ||
+      parsed.data.input.sourceHash !== quoteInput.sourceHash ||
+      !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput)
+    ) {
+      continue;
+    }
+    if (!preparedRun.threadId) return [];
+    const [latestApproval] = await db
+      .select({ createdAt: aiDraftGeneration.createdAt })
+      .from(aiDraftGeneration)
+      .where(
+        and(
+          eq(aiDraftGeneration.transportId, preparedRun.transportId),
+          eq(aiDraftGeneration.threadId, preparedRun.threadId),
+          eq(aiDraftGeneration.requestedByUserId, userId),
+          eq(aiDraftGeneration.model, 'staff-approved-native'),
+          sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([messageId])}::jsonb`,
+        ),
+      )
+      .orderBy(desc(aiDraftGeneration.createdAt))
+      .limit(1);
+    if (latestApproval && latestApproval.createdAt >= preparedRun.createdAt) return [];
+    return reusable(preparedRun) ? [preparedRun] : [];
+  }
+  return [];
 }
 
 function staffQuoteRunFreshness(now: Date) {
@@ -2578,11 +3073,13 @@ export async function readHmsJobView(
       },
   db: DB = getDb(),
 ): Promise<HmsJobView | null> {
+  const staffQuoteByInput = 'kind' in input && input.kind === 'staff_quote';
+  const staffQuoteByOwner = 'staffQuoteOwnerId' in input && Boolean(input.staffQuoteOwnerId);
   const scope = and(
     eq(aiWorkflowRun.transportId, input.transportId),
     eq(aiWorkflowRun.runKind, 'read_tool'),
     eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
-    ...('userId' in input && input.userId
+    ...('userId' in input && input.userId && !staffQuoteByInput && !staffQuoteByOwner
       ? [sql`${aiWorkflowRun.metrics}->>'userId' = ${input.userId}`]
       : []),
   );
@@ -2600,7 +3097,19 @@ export async function readHmsJobView(
                     or(
                       sql`${aiWorkflowRun.readRequest}->>'kind' IS DISTINCT FROM 'staff_quote'`,
                       and(
-                        sql`${aiWorkflowRun.metrics}->>'userId' = ${input.staffQuoteOwnerId}`,
+                        sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+                        or(
+                          sql`${aiWorkflowRun.metrics}->>'userId' = ${input.staffQuoteOwnerId}`,
+                          ...(quotePreparationEnabled()
+                            ? [
+                                and(
+                                  eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+                                  sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
+                                  sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+                                ),
+                              ]
+                            : []),
+                        ),
                         staffQuoteRunFreshness(new Date()),
                       ),
                     ),
@@ -2610,7 +3119,7 @@ export async function readHmsJobView(
           )
           .limit(1)
       : input.kind === 'staff_quote'
-        ? await latestStaffQuoteRunFor(db, scope, input.messageId, input.input)
+        ? await latestStaffQuoteRunFor(db, scope, input.messageId, input.input, input.userId)
         : await db
           .select()
           .from(aiWorkflowRun)
