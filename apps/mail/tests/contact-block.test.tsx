@@ -69,7 +69,7 @@ describe('ContactBlock', () => {
     }
     expect(screen.queryAllByRole('button', { name: /^Copy / })).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Correct' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     for (const label of ['Name', 'Email', 'Phone']) {
       expect(screen.getByLabelText(label)).toBeDefined();
     }
@@ -80,7 +80,7 @@ describe('ContactBlock', () => {
   it('shows a missing phone as an empty field she can type into, and reports the change with its field', () => {
     const onEdit = vi.fn();
     render(<ContactBlock contact={{ ...PRIYA, phone: null }} onEdit={onEdit} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Correct' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     const phone = screen.getByLabelText('Phone') as HTMLInputElement;
     expect(phone.value).toBe('');
     expect(phone.disabled).toBe(false);
@@ -92,7 +92,7 @@ describe('ContactBlock', () => {
   it('reports a cleared field as null, and a blank one as null too', () => {
     const onEdit = vi.fn();
     render(<ContactBlock contact={PRIYA} onEdit={onEdit} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Correct' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: '   ' } });
     expect(onEdit).toHaveBeenLastCalledWith('email', null);
   });
@@ -101,7 +101,7 @@ describe('ContactBlock', () => {
     render(<ContactBlock contact={null} onEdit={vi.fn()} />);
     expect(screen.getAllByText('—').length).toBe(3);
     expect(screen.queryByLabelText('Name')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Correct' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
   });
 });
@@ -123,9 +123,9 @@ describe('contact edits through the stored work', () => {
     const { trpc, mutate } = fakeTrpc({ status: 'none' });
     render(<Harness trpc={trpc} />);
     // The lookup answers "none" at once, so the pane is reading live before she types.
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Correct' })).toBeDefined());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit' })).toBeDefined());
     await new Promise((resolve) => setTimeout(resolve, 20));
-    fireEvent.click(screen.getByRole('button', { name: 'Correct' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
     fireEvent.change(screen.getByLabelText('Phone'), { target: { value: '+27 82 555 0100' } });
     await new Promise((resolve) => setTimeout(resolve, WORK_EVENT_DEBOUNCE_MS + 100));
     expect((screen.getByLabelText('Phone') as HTMLInputElement).value).toBe('+27 82 555 0100');

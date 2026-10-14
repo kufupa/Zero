@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import {
   AMEND_CANCEL_COPY,
   amendCancelClientFromTrpc,
@@ -14,10 +14,9 @@ import {
 } from '@/lib/quote-workflow/amend-cancel';
 import {
   AMEND_FIND_COPY,
-  amendDiffs,
-  askedDates,
-  amendFindClientFromTrpc,
   arrivalMismatchNote,
+  amendDiffs,
+  amendFindClientFromTrpc,
   findRequestFor,
   findRunFromJob,
   formatStayDate,
@@ -42,7 +41,7 @@ import {
 } from '@/lib/quote-workflow/amend-find';
 import { amendmentOf } from '@/lib/quote-workflow/session';
 import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types';
-import type { QuoteSession } from '@/lib/quote-workflow/types';
+import type { QuoteAmendment, QuoteSession } from '@/lib/quote-workflow/types';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
@@ -54,7 +53,6 @@ const panelClass =
 const headingClass = 'text-[10px] font-semibold uppercase tracking-wide text-[#64748b]';
 const captionClass = 'text-[10px] text-[#94a3b8]';
 const valueClass = 'text-[12.5px] text-[#1e293b]';
-const differClass = 'rounded-xs border border-amber-300 bg-amber-50 px-1.5 py-1';
 const buttonClass =
   'rounded-sm border border-[#0066cc] bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8]';
 const infoNoteClass =
@@ -218,49 +216,54 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     });
   };
 
-  // The guest's column shows the stay they want. The booked dates stay on amendment.arrival/departure for the lookup.
-  const asked = askedDates(amendment);
+  const requestedRows = stay && amendment.kind === 'amend' ? requestedChangeRows(amendment, stay, diff) : [];
+  const requestLine = requestSummary(amendment, requestedRows.length === 0);
   const ratePlan = stayText(stay?.ratePlan);
-  const mealPlan = stayText(stay?.mealPlan);
-  const grandTotal = stayText(stay?.grandTotal);
-  const bookedCompany = stayText(found?.commercial?.company?.name);
-  const bookingAgency = stayText(found?.commercial?.agency?.name);
+  const matchWarningParts =
+    stay && amendment.kind === 'amend'
+      ? [
+          diff.guest ? `Email surname ${amendment.guestLastName}; HMS guest ${stayGuest(stay) ?? 'not shown'}` : null,
+          found?.arrivalMismatch
+            ? arrivalMismatchNote(found.arrivalMismatch)
+            : amendment.requestedArrival === undefined && diff.arrival
+              ? `Email arrival ${shownDate(amendment.arrival)}; HMS arrival ${shownDate(stay.arrival)}`
+              : null,
+          amendment.requestedDeparture === undefined && diff.departure
+            ? `Email departure ${shownDate(amendment.departure)}; HMS departure ${shownDate(stay.departure)}`
+            : null,
+        ].filter((part): part is string => Boolean(part))
+      : [];
 
   return (
     <section id="quote-booking" aria-labelledby="amend-lookup-title" data-testid="amend-lookup-panel" className={panelClass}>
       <h3 id="amend-lookup-title" className="text-[13px] font-semibold text-[#1e293b]">
         {amendment.kind === 'cancel' ? 'Cancellation request' : 'Change to an existing booking'}
       </h3>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-2">
-          <p className={headingClass}>What the guest asked</p>
-          <AskRow label="Request" value={amendment.requestedChange ?? 'Not stated'} />
-          <AskRow
-            label="Confirmation"
-            value={amendment.confirmationNumber ?? 'Not in the email'}
-            actions={
-              handoffNumber && !stay ? (
-                <HmsLinkActions
-                  confirmation={handoffNumber}
-                  guestSurname={amendment.guestLastName}
-                  arrival={amendment.arrival}
-                  handoff
-                />
-              ) : null
-            }
-            pii
-          />
-          <AskRow label="Guest last name" value={amendment.guestLastName ?? 'Not in the email'} pii />
-          <AskRow label="Arrival" value={asked.arrival ? formatStayDate(asked.arrival) : 'Not stated'} />
-          <AskRow label="Departure" value={asked.departure ? formatStayDate(asked.departure) : 'Not stated'} />
-        </div>
-        <div data-testid={stay ? 'amend-hms-result-card' : undefined} className="flex flex-col gap-2">
+      <p data-testid="amend-request-summary" data-pii title="Request from this email" className={valueClass}>
+        {requestLine}
+      </p>
+      <div className={`grid ${requestedRows.length ? 'grid-cols-2' : 'grid-cols-1'} gap-3`}>
+        <div
+          data-testid={stay ? 'amend-hms-result-card' : undefined}
+          className="flex min-w-0 flex-col gap-2"
+        >
           <p className={headingClass}>Booking in HMS now</p>
           {stay ? (
             <>
-              <p data-pii className={infoNoteClass}>
-                {`Booking found in HMS: ${foundNumber ?? 'Confirmation not shown'} · ${stayGuest(stay) ?? 'Name not shown'} · ${stayDateRange(stay)} · ${roomType ?? 'Room type not shown'}`}
-              </p>
+              <dl data-testid="amend-hms-facts" className="grid grid-cols-2 gap-x-2.5 gap-y-1.5">
+                <HmsFact field="confirmation" label="Confirmation" value={foundNumber ?? 'Not shown'} pii />
+                <HmsFact field="guest" label="Guest" value={stayGuest(stay) ?? 'Not shown'} pii />
+                <HmsFact field="dates" label="Dates" value={stayDateRange(stay)} />
+                <HmsFact field="room" label="Room" value={roomType ?? 'Not shown'} />
+                <HmsFact field="status" label="Status" value={hmsStatus ?? 'Not shown'} />
+                <HmsFact field="rate-plan" label="Rate plan" value={ratePlan ?? 'Not shown'} />
+              </dl>
+              {matchWarningParts.length ? (
+                <p data-testid="amend-match-warning" data-pii className="text-[10.5px] text-[#64748b]">
+                  <span className="font-semibold">Doesn't match HMS: </span>
+                  {matchWarningParts.join(' · ')}
+                </p>
+              ) : null}
               {handoffNumber ? (
                 <HmsLinkActions
                   confirmation={handoffNumber}
@@ -268,21 +271,6 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
                   arrival={amendment.arrival}
                 />
               ) : null}
-              <HmsRow field="guest" label="Guest" value={stayGuest(stay) ?? 'Not shown'} wants={diff.guest} pii />
-              <HmsRow field="arrival" label="Arrival" value={shownDate(stay.arrival)} wants={diff.arrival} />
-              <HmsRow field="departure" label="Departure" value={shownDate(stay.departure)} wants={diff.departure} />
-              {found?.arrivalMismatch ? (
-                <p className="text-[11px] font-semibold text-amber-900">
-                  {arrivalMismatchNote(found.arrivalMismatch)}
-                </p>
-              ) : null}
-              {hmsStatus ? <HmsRow field="status" label="Status" value={hmsStatus} /> : null}
-              <HmsRow field="room" label="Room" value={roomType ?? 'Not shown'} />
-              {ratePlan ? <HmsRow field="rate-plan" label="Rate plan" value={ratePlan} /> : null}
-              {mealPlan ? <HmsRow field="meal-plan" label="Meal plan" value={mealPlan} /> : null}
-              {bookedCompany ? <HmsRow field="company" label="Company" value={bookedCompany} /> : null}
-              {bookingAgency ? <HmsRow field="agency" label="Booking agency" value={bookingAgency} /> : null}
-              {grandTotal ? <HmsRow field="grand-total" label="Grand total" value={grandTotal} /> : null}
               {found ? (
                 <RunScreenshot
                   load={client?.screenshot ?? null}
@@ -295,9 +283,38 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
               {findView?.status === 'done' ? <HmsAsOf asOf={findView.asOf} /> : null}
             </>
           ) : (
-            <p className="text-[11.5px] text-[#64748b]">{running ? 'Looking up…' : 'Nothing shown yet.'}</p>
+            <>
+              {handoffNumber ? (
+                <>
+                  <dl className="grid grid-cols-2 gap-x-2.5 gap-y-1.5">
+                    <HmsFact
+                      field="confirmation"
+                      label="Confirmation"
+                      value={handoffNumber}
+                      title="From the email"
+                      pii
+                    />
+                  </dl>
+                  <HmsLinkActions
+                    confirmation={handoffNumber}
+                    guestSurname={amendment.guestLastName}
+                    arrival={amendment.arrival}
+                    handoff
+                  />
+                </>
+              ) : null}
+              <p className="text-[11.5px] text-[#64748b]">{running ? 'Looking up…' : 'Nothing shown yet.'}</p>
+            </>
           )}
         </div>
+        {requestedRows.length ? (
+          <div data-testid="amend-changes" className="flex min-w-0 flex-col gap-2">
+            <p className={headingClass}>Requested changes</p>
+            {requestedRows.map((row) => (
+              <RequestedChangeRow key={row.label} {...row} />
+            ))}
+          </div>
+        ) : null}
       </div>
       {bookedMissing ? (
         <p data-testid="booked-dates-missing" className={warnNoteClass}>
@@ -392,7 +409,15 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           }}
         />
       ) : null}
-      <p className={captionClass}>{footer}</p>
+      {amendment.kind === 'amend' ? (
+        <div data-testid="amend-run-placeholder" className="flex justify-end border-t border-[#e2e8f0] pt-2">
+          <button type="button" className={buttonClass} disabled title="Amend save not enabled yet">
+            Run
+          </button>
+        </div>
+      ) : (
+        <p className={captionClass}>{footer}</p>
+      )}
     </section>
   );
 }
@@ -591,62 +616,77 @@ function displayedStatus(value: string | null): string | null {
   return status;
 }
 
-/** `pii`: the value names the guest or their booking, so the preview gate masks it (data-pii). */
-function AskRow({
-  label,
-  value,
-  actions,
-  pii = false,
-}: {
-  label: string;
-  value: string;
-  actions?: ReactNode;
-  pii?: boolean;
-}) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <p className={headingClass}>{label}</p>
-      <p data-pii={pii || undefined} className={valueClass}>
-        {value}
-      </p>
-      {actions ? <div className="pt-0.5">{actions}</div> : null}
-      <p className={captionClass}>From the email</p>
-    </div>
-  );
+function requestSummary(amendment: QuoteAmendment, includeStructuredDates = true): string {
+  const request = stayText(amendment.requestedChange);
+  if (amendment.kind === 'cancel') return request ?? 'Cancel this booking';
+
+  const changes: string[] = [];
+  const dateChanges = [
+    { label: 'arrival', current: amendment.arrival, requested: amendment.requestedArrival },
+    { label: 'departure', current: amendment.departure, requested: amendment.requestedDeparture },
+  ];
+  for (const { label, current, requested } of dateChanges) {
+    if (!requested || (current && isoDayOf(current) === isoDayOf(requested))) continue;
+    const to = formatStayDate(requested);
+    changes.push(current ? `Change ${label} ${formatStayDate(current)} → ${to}` : `Change ${label} to ${to}`);
+  }
+  if (request) return includeStructuredDates && changes.length ? `${request} · ${changes.join('; ')}` : request;
+  if (changes.length) return includeStructuredDates ? changes.join('; ') : 'Change requested in this email.';
+  return 'No change requested in this email.';
 }
 
-function HmsRow({
+function requestedChangeRows(
+  amendment: QuoteAmendment,
+  stay: StayRecordWire,
+  diff: AmendDiff,
+): Array<{ label: string; from: string; to: string }> {
+  const rows: Array<{ label: string; from: string; to: string }> = [];
+  if (amendment.requestedArrival && (diff.arrival || !stayText(stay.arrival))) {
+    rows.push({
+      label: 'Arrival',
+      from: stayText(stay.arrival) ? shownDate(stay.arrival) : 'HMS: —',
+      to: formatStayDate(amendment.requestedArrival),
+    });
+  }
+  if (amendment.requestedDeparture && (diff.departure || !stayText(stay.departure))) {
+    rows.push({
+      label: 'Departure',
+      from: stayText(stay.departure) ? shownDate(stay.departure) : 'HMS: —',
+      to: formatStayDate(amendment.requestedDeparture),
+    });
+  }
+  return rows;
+}
+
+/** `pii`: values naming the guest or reservation are masked in preview snapshots. */
+function HmsFact({
   field,
   label,
   value,
-  wants,
-  actions,
+  title,
   pii = false,
 }: {
   field: string;
   label: string;
   value: string;
-  wants?: string;
-  actions?: ReactNode;
+  title?: string;
   pii?: boolean;
 }) {
   return (
-    <div
-      data-field={field}
-      data-differs={wants ? 'true' : 'false'}
-      className={`flex flex-col gap-0.5 ${wants ? differClass : ''}`}
-    >
-      <p className={headingClass}>{label}</p>
-      <p data-pii={pii || undefined} className={valueClass}>
+    <div data-field={field} className="flex min-w-0 flex-col gap-0.5">
+      <dt className={headingClass}>{label}</dt>
+      <dd data-pii={pii || undefined} title={title} className="break-words text-[12.5px] text-[#1e293b]">
         {value}
-      </p>
-      {actions ? <div className="pt-0.5">{actions}</div> : null}
-      {wants ? (
-        <p data-pii={pii || undefined} className="text-[11px] font-semibold text-amber-900">
-          {`Guest wants: ${wants}`}
-        </p>
-      ) : null}
+      </dd>
     </div>
+  );
+}
+
+function RequestedChangeRow({ label, from, to }: { label: string; from: string; to: string }) {
+  return (
+    <p data-testid="amend-diff-row" data-pii={label === 'Guest' || undefined} className={valueClass}>
+      {`${label}: ${from} → ${to}`}
+    </p>
   );
 }
 
