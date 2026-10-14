@@ -244,20 +244,39 @@ function requestedNightDates(request?: AvailabilityRequest): string[] {
   return Array.from({ length: nights }, (_, index) => new Date(start + index * 86_400_000).toISOString().slice(0, 10));
 }
 
-function stockStatusOf(night: QuoteNight, availableCount: number | null, optionAvailability: string): AvailabilityStockStatus {
+function stockStatusOf(
+  night: QuoteNight,
+  date: string,
+  request: AvailabilityRequest | undefined,
+  availableCount: number | null,
+  optionAvailability: string,
+): AvailabilityStockStatus {
   if (availableCount === 0) return 'sold';
   const restrictions = record(night?.restrictions);
   if (
     night?.restricted === true ||
     night?.rateAvailable === false ||
     restrictions?.combClosed === true ||
-    restrictions?.combClosedToArrival === true ||
-    restrictions?.combClosedToDeparture === true
+    (date === request?.arrival && restrictions?.combClosedToArrival === true) ||
+    (date === request?.departure && restrictions?.combClosedToDeparture === true)
   ) {
     return 'restricted';
   }
-  if (availableCount === null || optionAvailability === 'restricted' || optionAvailability === 'unknown') return 'unknown';
-  if ((night?.restricted === false && night?.rateAvailable === true) || optionAvailability === 'available') return 'available';
+  if (
+    availableCount !== null &&
+    night?.restricted === false &&
+    night?.rateAvailable === true
+  ) {
+    return 'available';
+  }
+  if (
+    availableCount === null ||
+    optionAvailability === 'restricted' ||
+    optionAvailability === 'unknown'
+  ) {
+    return 'unknown';
+  }
+  if (optionAvailability === 'available') return 'available';
   return 'unknown';
 }
 
@@ -268,6 +287,7 @@ function nightFactOf(
   ratePlan: string | null,
   ratePlanLabel: string | null,
   optionAvailability: string,
+  request: AvailabilityRequest | undefined,
 ): AvailabilityNightFact {
   const sourcePrice = record(night?.price);
   const amount = text(sourcePrice?.amount);
@@ -278,7 +298,7 @@ function nightFactOf(
     date,
     availableCount,
     requestedCount,
-    stockStatus: stockStatusOf(night, availableCount, optionAvailability),
+    stockStatus: stockStatusOf(night, date, request, availableCount, optionAvailability),
     price: {
       status: priceKnown ? 'known' : 'unknown',
       amount,
@@ -296,6 +316,7 @@ function nightlyFactsOf(
   ratePlan: string | null,
   ratePlanLabel: string | null,
   optionAvailability: string,
+  request: AvailabilityRequest | undefined,
 ): AvailabilityNightFact[] | undefined {
   const sourceNights = Array.isArray(option?.nightly) ? (option.nightly as QuoteNight[]) : undefined;
   if (dates.length > 0) {
@@ -312,13 +333,33 @@ function nightlyFactsOf(
       }
     }
     return dates.map((date) =>
-      nightFactOf(ambiguousDates.has(date) ? null : (byDate.get(date) ?? null), date, requestedCount, ratePlan, ratePlanLabel, optionAvailability),
+      nightFactOf(
+        ambiguousDates.has(date) ? null : (byDate.get(date) ?? null),
+        date,
+        requestedCount,
+        ratePlan,
+        ratePlanLabel,
+        optionAvailability,
+        request,
+      ),
     );
   }
   if (!sourceNights) return undefined;
   return sourceNights.flatMap((night) => {
     const date = text(night?.date);
-    return date ? [nightFactOf(night, date, requestedCount, ratePlan, ratePlanLabel, optionAvailability)] : [];
+    return date
+      ? [
+          nightFactOf(
+            night,
+            date,
+            requestedCount,
+            ratePlan,
+            ratePlanLabel,
+            optionAvailability,
+            request,
+          ),
+        ]
+      : [];
   });
 }
 
@@ -340,7 +381,15 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
         const rate = text(option?.rate?.code);
         const rateLabel = text(option?.rate?.label);
         const availability = text(option?.availability) ?? 'unknown';
-        const nightly = nightlyFactsOf(option, requestedDates, requestedCount, rate, rateLabel, availability);
+        const nightly = nightlyFactsOf(
+          option,
+          requestedDates,
+          requestedCount,
+          rate,
+          rateLabel,
+          availability,
+          request,
+        );
         const roomLabel = text(option?.room?.label);
         const eligibility = text(option?.eligibility);
         const hasNightlyFacts = nightly !== undefined;

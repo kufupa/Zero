@@ -479,6 +479,75 @@ describe('U10 availability probe (pure)', () => {
     });
   });
 
+  it('ignores arrival and departure restrictions on stay-through nights', () => {
+    const snapshot = availabilitySnapshotOf(
+      {
+        outcome: 'quote',
+        groups: [
+          {
+            id: 'group-1',
+            outcome: 'quote',
+            options: [
+              {
+                availability: 'available',
+                nightly: nightlyDates.map((date, index) => ({
+                  date,
+                  inventory: 3,
+                  restricted: false,
+                  rateAvailable: true,
+                  restrictions:
+                    index === 1
+                      ? { combClosedToArrival: true, combClosedToDeparture: true }
+                      : {},
+                })),
+              },
+            ],
+          },
+        ],
+      },
+      NIGHTLY_REQUEST,
+    );
+
+    expect(snapshot.groups[0]!.options[0]!.nightly?.map((night) => night.stockStatus)).toEqual([
+      'available',
+      'available',
+      'available',
+    ]);
+  });
+
+  it('preserves known open-night stock when another night restricts the option', () => {
+    const snapshot = availabilitySnapshotOf(
+      {
+        outcome: 'partial',
+        groups: [
+          {
+            id: 'group-1',
+            outcome: 'partial',
+            request: { quantity: 2 },
+            options: [
+              {
+                availability: 'restricted',
+                nightly: [
+                  { date: '2026-09-24', inventory: 3, restricted: false, rateAvailable: true },
+                  { date: '2026-09-25', inventory: 3, restricted: true, rateAvailable: false },
+                  { date: '2026-09-26', inventory: 3, restricted: false, rateAvailable: true },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      NIGHTLY_REQUEST,
+    );
+
+    expect(snapshot.groups[0]!.options[0]!.nightly).toMatchObject([
+      { availableCount: 3, requestedCount: 2, stockStatus: 'available' },
+      { availableCount: 3, requestedCount: 2, stockStatus: 'restricted' },
+      { availableCount: 3, requestedCount: 2, stockStatus: 'available' },
+    ]);
+    expect(snapshot.availableOptions).toBe(0);
+  });
+
   it('reads under the property lock, and maps busy, unavailable, refused and failed reads to job outcomes', async () => {
     const [request] = availabilityRequestsFor(PAYLOAD) as AvailabilityRequest[];
     const acquisition = { tryOnce: true };
