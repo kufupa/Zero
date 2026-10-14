@@ -1,5 +1,5 @@
 import { mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
-import { storedWorkFor, openStoredWork } from '../src/ai/work-items.js';
+import { listWorkItems, storedWorkFor, openStoredWork } from '../src/ai/work-items.js';
 import { TEST_DB_AVAILABLE, withTestDb } from './helpers/test-db.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
@@ -86,6 +86,53 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
             and(eq(workItem.transportId, TRANSPORT_ID), eq(workItem.sourceMessageId, MESSAGE_ID)),
           );
         expect(items).toHaveLength(0);
+      });
+    });
+
+    it('keeps a booking item opened before the rule out of Needs You, but not real booking work', async () => {
+      await withTestDb(async (db) => {
+        await seedExistingStayMail(db);
+        const [extraction] = await db
+          .select({ id: mailExtraction.id })
+          .from(mailExtraction)
+          .where(eq(mailExtraction.messageId, MESSAGE_ID));
+        await db.insert(workItem).values({
+          transportId: TRANSPORT_ID,
+          threadId: THREAD_ID,
+          sourceMessageId: MESSAGE_ID,
+          extractionId: extraction!.id,
+          kind: 'booking',
+          status: 'needs_you',
+        });
+        await db.insert(message).values({
+          id: 'work-items-existing-stay-db-guest-message',
+          transportId: TRANSPORT_ID,
+          threadId: THREAD_ID,
+          direction: 'inbound',
+          fromAddress: 'guest@example.invalid',
+          toAddresses: [MAILBOX_ADDRESS],
+          subject: 'Pre Stay booking request Confirmation No 57291630-2',
+          textBody: 'Synthetic guest request.',
+          ownerHeaderValue: MAILBOX_ADDRESS,
+          messageIdHeader: 'work-items-existing-stay-db-guest@example.invalid',
+        });
+        await db.insert(workItem).values({
+          transportId: TRANSPORT_ID,
+          threadId: THREAD_ID,
+          sourceMessageId: 'work-items-existing-stay-db-guest-message',
+          kind: 'booking',
+          status: 'needs_you',
+        });
+
+        const listed = await listWorkItems(db, {
+          transportId: TRANSPORT_ID,
+          statuses: ['needs_you'],
+          limit: 10,
+        });
+
+        expect(listed.map((row) => row.sourceMessageId)).toEqual([
+          'work-items-existing-stay-db-guest-message',
+        ]);
       });
     });
   },

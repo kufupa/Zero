@@ -1580,6 +1580,7 @@ export async function listWorkItems(
       sender: message.fromAddress,
       subject: message.subject,
       receivedAt: message.receivedAt,
+      confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
       chipRank,
     })
     .from(workItem)
@@ -1603,8 +1604,26 @@ export async function listWorkItems(
       asc(workItem.id),
     )
     .limit(input.limit);
-  return rows.map(({ chipRank: rank, ...row }) => ({
-    ...row,
-    chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
-  }));
+  const [mailbox] = await db
+    .select({ email: mailboxTransport.email })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.id, input.transportId))
+    .limit(1);
+  // Items opened before the pre-stay rule stay out of Needs You: the mail is about a stay already booked.
+  return rows
+    .filter(
+      (row) =>
+        !isSelfSentPreStayInformationMail({
+          fromAddress: row.sender,
+          mailboxAddress: mailbox?.email,
+          subject: row.subject,
+          confirmationNumbers: Array.isArray(row.confirmationNumbers)
+            ? row.confirmationNumbers.filter((value): value is string => typeof value === 'string')
+            : [],
+        }),
+    )
+    .map(({ chipRank: rank, confirmationNumbers: _confirmationNumbers, ...row }) => ({
+      ...row,
+      chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
+    }));
 }
