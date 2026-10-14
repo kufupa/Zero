@@ -1,11 +1,12 @@
 -- Hand-written, additive. Shadow model predictions, agent labels and owner action marks.
 -- Mirrors mailActionLabel in apps/server-pilot/src/db/schema/mail.ts; keep names, types and CHECK lists in sync.
--- Labels are derived data: they go with the message and its mailbox transport.
+-- Labels go with their mailbox transport. message_id has no foreign key on purpose: owner and agent
+-- marks are gold labels that must survive a permanent delete of the email (no lock on message either).
 -- One label per (message, source, version); owner writers use version 'owner' and upsert on re-mark.
 CREATE TABLE IF NOT EXISTS "mail_action_label" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
   "transport_id" text NOT NULL REFERENCES "mailbox_transport"("id") ON DELETE cascade,
-  "message_id" text NOT NULL REFERENCES "message"("id") ON DELETE cascade,
+  "message_id" text NOT NULL,
   "source" text NOT NULL,
   "action" text NOT NULL,
   "needs_action" boolean NOT NULL,

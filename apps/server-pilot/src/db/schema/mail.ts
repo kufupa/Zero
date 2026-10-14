@@ -382,8 +382,8 @@ export const message = pgTable(
 
 /**
  * Model predictions, agent gold labels and owner action marks without creating work items.
- * Hand-written migration: drizzle/0049_mail_action_label.sql. Labels go with their message
- * and transport. Owner writers use version 'owner' and upsert the same row on re-mark.
+ * Hand-written migration: drizzle/0049_mail_action_label.sql. Labels go with their transport; messageId has
+ * no foreign key so owner and agent gold labels survive a permanent delete of the email. Owner writers use version 'owner' and upsert the same row on re-mark.
  */
 export const mailActionLabel = pgTable(
   'mail_action_label',
@@ -392,9 +392,7 @@ export const mailActionLabel = pgTable(
     transportId: text('transport_id')
       .notNull()
       .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
-    messageId: text('message_id')
-      .notNull()
-      .references(() => message.id, { onDelete: 'cascade' }),
+    messageId: text('message_id').notNull(),
     source: text('source').$type<MailActionLabelSource>().notNull(),
     action: text('action').$type<MailAction>().notNull(),
     needsAction: boolean('needs_action').notNull(),
@@ -426,9 +424,7 @@ export const attachment = pgTable(
   'attachment',
   {
     id: text('id').primaryKey(),
-    messageId: text('message_id')
-      .notNull()
-      .references(() => message.id, { onDelete: 'cascade' }),
+    messageId: text('message_id').notNull(),
     filename: text('filename').notNull(),
     mimeType: text('mime_type').notNull(),
     sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
@@ -449,9 +445,7 @@ export const messageReaction = pgTable(
   'message_reaction',
   {
     id: text('id').primaryKey(),
-    messageId: text('message_id')
-      .notNull()
-      .references(() => message.id, { onDelete: 'cascade' }),
+    messageId: text('message_id').notNull(),
     transportId: text('transport_id')
       .notNull()
       .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
@@ -657,9 +651,7 @@ export const outboundSendQueue = pgTable(
     transportId: text('transport_id')
       .notNull()
       .references(() => mailboxTransport.id, { onDelete: 'cascade' }),
-    messageId: text('message_id')
-      .notNull()
-      .references(() => message.id, { onDelete: 'cascade' }),
+    messageId: text('message_id').notNull(),
     sendAt: timestamp('send_at', { withTimezone: true }).notNull(),
     status: text('status').notNull().default('pending'),
     smtpPayload: jsonb('smtp_payload').$type<Record<string, unknown>>().notNull(),

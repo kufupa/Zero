@@ -105,7 +105,6 @@ describe('mail_action_label schema and migration', () => {
       }),
     ).toEqual([
       ['transport_id', 'mailbox_transport', 'cascade'],
-      ['message_id', 'message', 'cascade'],
     ]);
     expect(
       table.indexes.map(({ config }) => [
@@ -156,9 +155,7 @@ describe('mail_action_label schema and migration', () => {
     expect(normalized).toContain(
       'transport_id text not null references mailbox_transport(id) on delete cascade',
     );
-    expect(normalized).toContain(
-      'message_id text not null references message(id) on delete cascade',
-    );
+    expect(normalized).toContain('message_id text not null,');
     expect(normalized).toContain(
       'create unique index if not exists mail_action_label_message_source_version_uidx on mail_action_label (message_id, source, version)',
     );
@@ -403,7 +400,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)('mail_action_label PostgreSQL constraints', 
     },
   );
 
-  it('deletes all source labels when their message is deleted', async () => {
+  it('keeps every source label when its message is permanently deleted', async () => {
     await withTestDb(async (db) => {
       const ids = await seedMessage(db);
       await db.insert(schema.mailActionLabel).values(
@@ -421,7 +418,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)('mail_action_label PostgreSQL constraints', 
           .select()
           .from(schema.mailActionLabel)
           .where(eq(schema.mailActionLabel.messageId, ids.messageId)),
-      ).toEqual([]);
+      ).toHaveLength(EXPECTED_SOURCES.length);
     });
   });
 
