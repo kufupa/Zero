@@ -56,14 +56,21 @@ else
   exit 1
 fi
 
-# pnpm keeps each workspace package's direct deps in its own node_modules; link those too.
+# Copy package link trees so relative workspace links resolve inside the target worktree.
 package_links=0
 for package_json in "$worktree"/apps/*/package.json "$worktree"/packages/*/package.json; do
   [[ -f $package_json ]] || continue
   package_dir=$(dirname "$package_json")
   shared_package_modules="$main_checkout/${package_dir#"$worktree"/}/node_modules"
-  if [[ ! -e $package_dir/node_modules && ! -L $package_dir/node_modules && -d $shared_package_modules ]]; then
-    ln -s "$shared_package_modules" "$package_dir/node_modules"
+  package_node_modules="$package_dir/node_modules"
+  if [[ -L $package_node_modules ]] && \
+    [[ $(readlink "$package_node_modules") == "$shared_package_modules" ]]; then
+    rm -f -- "$package_node_modules"
+  fi
+  if [[ ! -e $package_node_modules && ! -L $package_node_modules ]] && \
+    [[ -d $shared_package_modules ]]; then
+    mkdir -p "$package_node_modules"
+    cp -a -- "$shared_package_modules/." "$package_node_modules/"
     package_links=$((package_links + 1))
   fi
 done

@@ -74,6 +74,17 @@ if ! git -C "$worktree" rev-parse --verify "${base_ref}^{commit}" >/dev/null 2>&
   exit 2
 fi
 
+worktree_is_clean() {
+  local status
+  status=$(git -C "$worktree" status --porcelain --untracked-files=all 2>/dev/null) || return 1
+  [[ -z $status ]]
+}
+
+if ! worktree_is_clean; then
+  printf 'local-ci: worktree is not clean; refusing to test uncommitted changes\n' >&2
+  exit 2
+fi
+
 safe_branch=$(printf '%s' "$branch" | sed -E 's#[^A-Za-z0-9._-]+#-#g; s#^-+|-+$##g')
 if [[ -z $safe_branch ]]; then
   safe_branch=detached
@@ -284,7 +295,8 @@ run_changed_checks() {
   run_step 'entity guard' node apps/server-pilot/scripts/check-entity-literals.mjs
 
   if ((${#lint_files[@]})); then
-    run_step 'oxlint changed files' pnpm exec oxlint --deny-warnings --ignore-pattern 'external/**' "${lint_files[@]}"
+    run_step 'oxlint changed files' "$worktree/apps/mail/node_modules/.bin/oxlint" \
+      --deny-warnings --ignore-pattern 'external/**' "${lint_files[@]}"
   else
     skip_step 'oxlint changed files' 'no changed JavaScript or TypeScript files'
   fi
@@ -412,6 +424,10 @@ post_github_status() {
   current_sha=$(git -C "$worktree" rev-parse --verify HEAD 2>/dev/null || true)
   if [[ $current_sha != "$head_sha" ]]; then
     github_status=skipped-head-changed
+    return
+  fi
+  if ! worktree_is_clean; then
+    github_status=skipped-worktree-changed
     return
   fi
   if ! command -v gh >/dev/null 2>&1; then

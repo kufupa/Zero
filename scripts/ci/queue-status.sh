@@ -25,7 +25,9 @@ if ((${#state_files[@]} == 0)); then
 fi
 
 for state_file in "${state_files[@]}"; do
-  mapfile -d '' -t fields < "$state_file"
+  if ! mapfile -d '' -t fields 2>/dev/null < "$state_file"; then
+    continue
+  fi
   if ((${#fields[@]} < 7)); then
     printf 'STALE state=%q reason=malformed\n' "$state_file"
     continue
