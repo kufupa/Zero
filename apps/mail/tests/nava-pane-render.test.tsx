@@ -2373,18 +2373,23 @@ describe('NavaPane contact and translation on both surfaces', () => {
     ['the Outlook pane', false],
     ['the webmail panel', true],
   ] as const) {
-    it(`${surface}: keeps the four numbered quote steps in guided order`, async () => {
+    it(`${surface}: keeps the six numbered quote sections in reservationist order`, async () => {
       bridgeMockState.storedWork = STORED_FRENCH;
       const { container } = render(<NavaPane bridge={fakeBridge} preview={preview} />);
       await waitFor(() => expect(container.querySelector('#quote-quote')).not.toBeNull(), { timeout: 5000 });
-      const steps = ['quote-stay', 'quote-party', 'quote-rates', 'quote-quote'].map((id) =>
-        container.querySelector(`#${id}`),
-      );
+      const steps = [
+        'quote-party',
+        'quote-authority',
+        'quote-stay',
+        'quote-rates',
+        'quote-extras',
+        'quote-quote',
+      ].map((id) => container.querySelector(`#${id}`));
       expect(steps.every(Boolean)).toBe(true);
       for (let index = 1; index < steps.length; index += 1) {
         expect(steps[index - 1]!.compareDocumentPosition(steps[index]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       }
-      expect(within(steps[3] as HTMLElement).getByText('Reply text · PDF · Excel')).toBeDefined();
+      expect(within(steps[5] as HTMLElement).getByText('Reply text · PDF · Excel')).toBeDefined();
     });
 
     it(`${surface}: shows mailbox and selected email first, with the quote contact before translation`, async () => {

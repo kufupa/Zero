@@ -61,6 +61,7 @@ export function DocumentReview({
   onPreparePdf,
   onDownloadWorkbook,
   workbookPending,
+  primaryAction,
 }: {
   session: QuoteSession;
   onReplyChange?: (html: string) => void;
@@ -68,6 +69,8 @@ export function DocumentReview({
   onDownloadWorkbook?: () => void;
   /** An Excel export is being made. The button stays disabled until it settles. */
   workbookPending?: boolean;
+  /** The pane may keep this as the secondary PDF action while an earlier quote blocker is active. */
+  primaryAction?: boolean;
 }) {
   const pdfReady = canCreatePdf(session);
   const nativeReady = canCreateNativeDraft(session);
@@ -82,11 +85,17 @@ export function DocumentReview({
         : null;
   const pdfButtonLabel = isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF';
   const replyOnly = missingQuoteDetailsReplyOnly(session) || quoteDeclineReplyOnly(session);
+  const PdfActionButton = (primaryAction ?? !session.pdf) ? PrimaryButton : SecondaryButton;
   return (
     <div className="flex flex-col gap-3.5">
-      <PrimaryButton disabled={!pdfReady || !onPreparePdf} disabledReason={pdfReason ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null)} onClick={onPreparePdf}>
+      <PdfActionButton
+        className="w-full"
+        disabled={!pdfReady || !onPreparePdf}
+        disabledReason={pdfReason ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null)}
+        onClick={onPreparePdf}
+      >
         {pdfButtonLabel}
-      </PrimaryButton>
+      </PdfActionButton>
       {session.pdf ? (
         <p className="text-[12.5px] text-[#1e293b]">
           {isMultiStay(session)

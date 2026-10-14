@@ -1276,6 +1276,366 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
         <div
           class="flex flex-col gap-3.5"
         >
+          <div
+            class="flex flex-col gap-2"
+          >
+            <div
+              aria-label="Needs your answer"
+              class="flex flex-col gap-1.5 rounded-[3px] border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2 text-[13px] text-[#475569]"
+            >
+              <p
+                class="font-semibold"
+              >
+                Needs your answer
+              </p>
+              <p>
+                Add this information to the fields above.
+              </p>
+              <p
+                class="mt-1"
+              >
+                What arrival and departure dates should be quoted?
+              </p>
+            </div>
+            <div
+              class="flex flex-col gap-1"
+            >
+              <button
+                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                type="button"
+              >
+                Add stay dates
+              </button>
+            </div>
+          </div>
+          <section
+            aria-label="Party + contact"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-party"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  1
+                </span>
+                Party + contact
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
+                data-testid="quote-step-state"
+              >
+                Optional
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <div
+                class="flex flex-col gap-2.5"
+              >
+                <p
+                  class="text-[13px] text-[#64748b]"
+                >
+                  Optional if none in email. Company is the end client; Agency is the travel agent. Confirm an HMS result before using its contract rate.
+                </p>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-agency"
+                    >
+                      <span>
+                        Agency (travel agent)
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Agency (travel agent)"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-agency"
+                    value=""
+                  />
+                  <div
+                    aria-label="Agency lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-company"
+                    >
+                      <span>
+                        Company (end client)
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Company (end client)"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-company"
+                    value=""
+                  />
+                  <div
+                    aria-label="Company lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-attention"
+                    >
+                      <span>
+                        Attention
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Attention"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-attention"
+                    value=""
+                  />
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-client-email"
+                    >
+                      <span>
+                        Client email
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Client email"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-client-email"
+                    value=""
+                  />
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-client-telephone"
+                    >
+                      <span>
+                        Client telephone
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Client telephone"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-client-telephone"
+                    value=""
+                  />
+                </div>
+              </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                Continue to Rate authority
+              </button>
+            </div>
+          </section>
+          <section
+            aria-label="Rate authority"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-authority"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  2
+                </span>
+                Rate authority
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#eaf4ee] text-[#1a4332]"
+                data-testid="quote-step-state"
+              >
+                Done
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <div
+                class="flex flex-col gap-3"
+              >
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-rate-plan"
+                    >
+                      <span>
+                        Rate plan
+                      </span>
+                    </label>
+                  </div>
+                  <select
+                    aria-label="Rate plan"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-rate-plan"
+                  >
+                    <option
+                      value="all"
+                    >
+                      All rates
+                    </option>
+                    <optgroup
+                      label="Public"
+                    >
+                      <option
+                        value="public"
+                      >
+                        All public rates (BAR)
+                      </option>
+                    </optgroup>
+                    <optgroup
+                      label="Government"
+                    >
+                      <option
+                        value="government"
+                      >
+                        All government rates
+                      </option>
+                    </optgroup>
+                  </select>
+                  <span
+                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
+                  >
+                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
+                  </span>
+                </div>
+                <details
+                  class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
+                >
+                  <summary
+                    class="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[13px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden"
+                  >
+                    <span>
+                      HMS notes (optional)
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      class="transition-transform group-open:rotate-180"
+                    >
+                      ▾
+                    </span>
+                  </summary>
+                  <div
+                    class="flex flex-col gap-3 p-2.5"
+                  >
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="quote-hms-notes"
+                        >
+                          <span>
+                            Notes for HMS
+                          </span>
+                        </label>
+                      </div>
+                      <textarea
+                        aria-label="Notes for HMS"
+                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                        id="quote-hms-notes"
+                        placeholder="Add a staff note for the HMS handoff"
+                      />
+                    </div>
+                  </div>
+                </details>
+              </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                Continue to Stay
+              </button>
+            </div>
+          </section>
           <section
             aria-label="Stay"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
@@ -1290,7 +1650,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  1
+                  3
                 </span>
                 Stay
               </h3>
@@ -1519,7 +1879,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r94»-arrival"
+                                for="«r96»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -1529,7 +1889,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r94»-arrival"
+                              id="«r96»-arrival"
                               type="date"
                               value=""
                             />
@@ -1542,7 +1902,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r94»-departure"
+                                for="«r96»-departure"
                               >
                                 <span>
                                   Departure
@@ -1552,7 +1912,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r94»-departure"
+                              id="«r96»-departure"
                               type="date"
                               value=""
                             />
@@ -1569,7 +1929,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r93»-meal-plan"
+                        for="«r95»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -1582,7 +1942,7 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r93»-meal-plan"
+                      id="«r95»-meal-plan"
                     >
                       <option
                         value="all"
@@ -1871,219 +2231,10 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                   Each date range is searched and priced independently.
                 </p>
               </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
-                  type="button"
-                >
-                  Continue to Company/agency
-                </button>
-              </div>
             </div>
           </section>
           <section
-            aria-label="Company/agency on the quote (sets contract rate)"
-            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-            id="quote-party"
-          >
-            <div
-              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-            >
-              <h3
-                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
-              >
-                <span
-                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
-                >
-                  2
-                </span>
-                Company/agency on the quote (sets contract rate)
-              </h3>
-              <span
-                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
-                data-testid="quote-step-state"
-              >
-                Optional
-              </span>
-            </div>
-            <div
-              class="flex flex-col gap-3.5 p-3"
-            >
-              <div
-                class="flex flex-col gap-2.5"
-              >
-                <p
-                  class="text-[13px] text-[#64748b]"
-                >
-                  Optional if none in email. Company is the end client; Agency is the travel agent. Confirm an HMS result before using its contract rate.
-                </p>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-agency"
-                    >
-                      <span>
-                        Agency (travel agent)
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Agency (travel agent)"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-agency"
-                    value=""
-                  />
-                  <div
-                    aria-label="Agency lookup in HMS"
-                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
-                    role="group"
-                  >
-                    <div
-                      class="flex flex-wrap items-center gap-2"
-                    >
-                      <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
-                        disabled=""
-                        type="button"
-                      >
-                        Find in HMS
-                      </button>
-                      <span>
-                        Runs in the background. You can keep working.
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-company"
-                    >
-                      <span>
-                        Company (end client)
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Company (end client)"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-company"
-                    value=""
-                  />
-                  <div
-                    aria-label="Company lookup in HMS"
-                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
-                    role="group"
-                  >
-                    <div
-                      class="flex flex-wrap items-center gap-2"
-                    >
-                      <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
-                        disabled=""
-                        type="button"
-                      >
-                        Find in HMS
-                      </button>
-                      <span>
-                        Runs in the background. You can keep working.
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-attention"
-                    >
-                      <span>
-                        Attention
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Attention"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-attention"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-client-email"
-                    >
-                      <span>
-                        Client email
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Client email"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-client-email"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-client-telephone"
-                    >
-                      <span>
-                        Client telephone
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Client telephone"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-client-telephone"
-                    value=""
-                  />
-                </div>
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
-                  type="button"
-                >
-                  Continue to Rates
-                </button>
-              </div>
-            </div>
-          </section>
-          <section
-            aria-label="Rates"
+            aria-label="Availability & rates"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-rates"
           >
@@ -2096,9 +2247,9 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  3
+                  4
                 </span>
-                Rates
+                Availability & rates
               </h3>
               <span
                 class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
@@ -2110,103 +2261,6 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
             <div
               class="flex flex-col gap-3.5 p-3"
             >
-              <div
-                class="flex flex-col gap-3"
-              >
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-rate-plan"
-                    >
-                      <span>
-                        Rate plan
-                      </span>
-                    </label>
-                  </div>
-                  <select
-                    aria-label="Rate plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-rate-plan"
-                  >
-                    <option
-                      value="all"
-                    >
-                      All rates
-                    </option>
-                    <optgroup
-                      label="Public"
-                    >
-                      <option
-                        value="public"
-                      >
-                        All public rates (BAR)
-                      </option>
-                    </optgroup>
-                    <optgroup
-                      label="Government"
-                    >
-                      <option
-                        value="government"
-                      >
-                        All government rates
-                      </option>
-                    </optgroup>
-                  </select>
-                  <span
-                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
-                  >
-                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
-                  </span>
-                </div>
-                <details
-                  class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
-                >
-                  <summary
-                    class="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[13px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden"
-                  >
-                    <span>
-                      HMS notes (optional)
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      class="transition-transform group-open:rotate-180"
-                    >
-                      ▾
-                    </span>
-                  </summary>
-                  <div
-                    class="flex flex-col gap-3 p-2.5"
-                  >
-                    <div
-                      class="flex flex-col gap-1"
-                    >
-                      <div
-                        class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                      >
-                        <label
-                          class="flex items-center gap-1.5"
-                          for="quote-hms-notes"
-                        >
-                          <span>
-                            Notes for HMS
-                          </span>
-                        </label>
-                      </div>
-                      <textarea
-                        aria-label="Notes for HMS"
-                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-                        id="quote-hms-notes"
-                        placeholder="Add a staff note for the HMS handoff"
-                      />
-                    </div>
-                  </div>
-                </details>
-              </div>
               <h4
                 class="text-[13px] font-semibold text-[#475569]"
               >
@@ -2216,37 +2270,16 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 class="flex flex-col gap-1"
               >
                 <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                  class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                   disabled=""
                   type="button"
                 >
                   Search availability
                 </button>
                 <p
-                  class="flex items-center justify-center gap-1.5 text-[13px] text-[#334155]"
+                  class="text-center text-[11px] text-[#64748b]"
                 >
-                  <svg
-                    aria-hidden="true"
-                    class="h-3.5 w-3.5 shrink-0"
-                    fill="none"
-                    viewBox="0 0 16 16"
-                  >
-                    <circle
-                      cx="8"
-                      cy="8"
-                      r="6.5"
-                      stroke="currentColor"
-                    />
-                    <path
-                      d="M8 7v4M8 4.75h.01"
-                      stroke="currentColor"
-                      stroke-linecap="round"
-                      stroke-width="1.5"
-                    />
-                  </svg>
-                  <span>
-                    Add arrival and departure dates first.
-                  </span>
+                  Add arrival and departure dates first.
                 </p>
               </div>
               <article
@@ -2366,6 +2399,69 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                     Search availability to calculate
                   </span>
                 </div>
+              </article>
+              <div
+                aria-label="Quotation total"
+                class="flex flex-col gap-1 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-3"
+              >
+                <div
+                  class="flex flex-wrap items-center justify-between gap-2"
+                >
+                  <h3
+                    class="text-[13px] font-bold text-[#1e293b]"
+                  >
+                    Quotation total (all stays)
+                  </h3>
+                  <span
+                    class="text-[14px] font-extrabold text-[#1e293b]"
+                  >
+                    Not ready
+                  </span>
+                </div>
+                <p
+                  class="text-[13px] text-[#64748b]"
+                >
+                  0 of 1 stays rated. Search each date range for the complete total.
+                </p>
+              </div>
+            </div>
+          </section>
+          <section
+            aria-label="Extras & alternatives"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-extras"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  5
+                </span>
+                Extras & alternatives
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
+                data-testid="quote-step-state"
+              >
+                Optional
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <article
+                class="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3"
+              >
+                <h4
+                  class="text-[13px] font-semibold text-[#475569]"
+                >
+                  Stay 1
+                </h4>
                 <section
                   aria-label="Extras for Stay 1"
                   class="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5"
@@ -2514,34 +2610,10 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                   </div>
                 </section>
               </article>
-              <div
-                aria-label="Quotation total"
-                class="flex flex-col gap-1 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-3"
-              >
-                <div
-                  class="flex flex-wrap items-center justify-between gap-2"
-                >
-                  <h3
-                    class="text-[13px] font-bold text-[#1e293b]"
-                  >
-                    Quotation total (all stays)
-                  </h3>
-                  <span
-                    class="text-[14px] font-extrabold text-[#1e293b]"
-                  >
-                    Not ready
-                  </span>
-                </div>
-                <p
-                  class="text-[13px] text-[#64748b]"
-                >
-                  0 of 1 stays rated. Search each date range for the complete total.
-                </p>
-              </div>
             </div>
           </section>
           <section
-            aria-label="Quote review"
+            aria-label="Documents"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-quote"
           >
@@ -2554,9 +2626,9 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  4
+                  6
                 </span>
-                Quote review
+                Documents
               </h3>
               <span
                 class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
@@ -2580,37 +2652,16 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                   class="flex flex-col gap-1"
                 >
                   <button
-                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                     disabled=""
                     type="button"
                   >
                     Prepare PDF
                   </button>
                   <p
-                    class="flex items-center justify-center gap-1.5 text-[13px] text-[#334155]"
+                    class="text-center text-[11px] text-[#64748b]"
                   >
-                    <svg
-                      aria-hidden="true"
-                      class="h-3.5 w-3.5 shrink-0"
-                      fill="none"
-                      viewBox="0 0 16 16"
-                    >
-                      <circle
-                        cx="8"
-                        cy="8"
-                        r="6.5"
-                        stroke="currentColor"
-                      />
-                      <path
-                        d="M8 7v4M8 4.75h.01"
-                        stroke="currentColor"
-                        stroke-linecap="round"
-                        stroke-width="1.5"
-                      />
-                    </svg>
-                    <span>
-                      Add the missing arrival and departure dates before preparing quote documents.
-                    </span>
+                    Add the missing arrival and departure dates before preparing quote documents.
                   </p>
                 </div>
                 <div
@@ -3303,6 +3354,366 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
         <div
           class="flex flex-col gap-3.5"
         >
+          <div
+            class="flex flex-col gap-2"
+          >
+            <div
+              aria-label="Needs your answer"
+              class="flex flex-col gap-1.5 rounded-[3px] border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2 text-[13px] text-[#475569]"
+            >
+              <p
+                class="font-semibold"
+              >
+                Needs your answer
+              </p>
+              <p>
+                Add this information to the fields above.
+              </p>
+              <p
+                class="mt-1"
+              >
+                What arrival and departure dates should be quoted?
+              </p>
+            </div>
+            <div
+              class="flex flex-col gap-1"
+            >
+              <button
+                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                type="button"
+              >
+                Add stay dates
+              </button>
+            </div>
+          </div>
+          <section
+            aria-label="Party + contact"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-party"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  1
+                </span>
+                Party + contact
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
+                data-testid="quote-step-state"
+              >
+                Optional
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <div
+                class="flex flex-col gap-2.5"
+              >
+                <p
+                  class="text-[13px] text-[#64748b]"
+                >
+                  Optional if none in email. Company is the end client; Agency is the travel agent. Confirm an HMS result before using its contract rate.
+                </p>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-agency"
+                    >
+                      <span>
+                        Agency (travel agent)
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Agency (travel agent)"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-agency"
+                    value=""
+                  />
+                  <div
+                    aria-label="Agency lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-company"
+                    >
+                      <span>
+                        Company (end client)
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Company (end client)"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-company"
+                    value=""
+                  />
+                  <div
+                    aria-label="Company lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-attention"
+                    >
+                      <span>
+                        Attention
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Attention"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-attention"
+                    value=""
+                  />
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-client-email"
+                    >
+                      <span>
+                        Client email
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Client email"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-client-email"
+                    value=""
+                  />
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-client-telephone"
+                    >
+                      <span>
+                        Client telephone
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Client telephone"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-client-telephone"
+                    value=""
+                  />
+                </div>
+              </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                Continue to Rate authority
+              </button>
+            </div>
+          </section>
+          <section
+            aria-label="Rate authority"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-authority"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  2
+                </span>
+                Rate authority
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#eaf4ee] text-[#1a4332]"
+                data-testid="quote-step-state"
+              >
+                Done
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <div
+                class="flex flex-col gap-3"
+              >
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-rate-plan"
+                    >
+                      <span>
+                        Rate plan
+                      </span>
+                    </label>
+                  </div>
+                  <select
+                    aria-label="Rate plan"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-rate-plan"
+                  >
+                    <option
+                      value="all"
+                    >
+                      All rates
+                    </option>
+                    <optgroup
+                      label="Public"
+                    >
+                      <option
+                        value="public"
+                      >
+                        All public rates (BAR)
+                      </option>
+                    </optgroup>
+                    <optgroup
+                      label="Government"
+                    >
+                      <option
+                        value="government"
+                      >
+                        All government rates
+                      </option>
+                    </optgroup>
+                  </select>
+                  <span
+                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
+                  >
+                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
+                  </span>
+                </div>
+                <details
+                  class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
+                >
+                  <summary
+                    class="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[13px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden"
+                  >
+                    <span>
+                      HMS notes (optional)
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      class="transition-transform group-open:rotate-180"
+                    >
+                      ▾
+                    </span>
+                  </summary>
+                  <div
+                    class="flex flex-col gap-3 p-2.5"
+                  >
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="quote-hms-notes"
+                        >
+                          <span>
+                            Notes for HMS
+                          </span>
+                        </label>
+                      </div>
+                      <textarea
+                        aria-label="Notes for HMS"
+                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                        id="quote-hms-notes"
+                        placeholder="Add a staff note for the HMS handoff"
+                      />
+                    </div>
+                  </div>
+                </details>
+              </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                Continue to Stay
+              </button>
+            </div>
+          </section>
           <section
             aria-label="Stay"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
@@ -3317,7 +3728,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  1
+                  3
                 </span>
                 Stay
               </h3>
@@ -3546,7 +3957,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r5h»-arrival"
+                                for="«r5j»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -3556,7 +3967,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r5h»-arrival"
+                              id="«r5j»-arrival"
                               type="date"
                               value=""
                             />
@@ -3569,7 +3980,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r5h»-departure"
+                                for="«r5j»-departure"
                               >
                                 <span>
                                   Departure
@@ -3579,7 +3990,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r5h»-departure"
+                              id="«r5j»-departure"
                               type="date"
                               value=""
                             />
@@ -3596,7 +4007,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r5g»-meal-plan"
+                        for="«r5i»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -3609,7 +4020,7 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r5g»-meal-plan"
+                      id="«r5i»-meal-plan"
                     >
                       <option
                         value="all"
@@ -3898,219 +4309,10 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                   Each date range is searched and priced independently.
                 </p>
               </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
-                  type="button"
-                >
-                  Continue to Company/agency
-                </button>
-              </div>
             </div>
           </section>
           <section
-            aria-label="Company/agency on the quote (sets contract rate)"
-            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-            id="quote-party"
-          >
-            <div
-              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-            >
-              <h3
-                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
-              >
-                <span
-                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
-                >
-                  2
-                </span>
-                Company/agency on the quote (sets contract rate)
-              </h3>
-              <span
-                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
-                data-testid="quote-step-state"
-              >
-                Optional
-              </span>
-            </div>
-            <div
-              class="flex flex-col gap-3.5 p-3"
-            >
-              <div
-                class="flex flex-col gap-2.5"
-              >
-                <p
-                  class="text-[13px] text-[#64748b]"
-                >
-                  Optional if none in email. Company is the end client; Agency is the travel agent. Confirm an HMS result before using its contract rate.
-                </p>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-agency"
-                    >
-                      <span>
-                        Agency (travel agent)
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Agency (travel agent)"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-agency"
-                    value=""
-                  />
-                  <div
-                    aria-label="Agency lookup in HMS"
-                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
-                    role="group"
-                  >
-                    <div
-                      class="flex flex-wrap items-center gap-2"
-                    >
-                      <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
-                        disabled=""
-                        type="button"
-                      >
-                        Find in HMS
-                      </button>
-                      <span>
-                        Runs in the background. You can keep working.
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-company"
-                    >
-                      <span>
-                        Company (end client)
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Company (end client)"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-company"
-                    value=""
-                  />
-                  <div
-                    aria-label="Company lookup in HMS"
-                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
-                    role="group"
-                  >
-                    <div
-                      class="flex flex-wrap items-center gap-2"
-                    >
-                      <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
-                        disabled=""
-                        type="button"
-                      >
-                        Find in HMS
-                      </button>
-                      <span>
-                        Runs in the background. You can keep working.
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-attention"
-                    >
-                      <span>
-                        Attention
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Attention"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-attention"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-client-email"
-                    >
-                      <span>
-                        Client email
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Client email"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-client-email"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-client-telephone"
-                    >
-                      <span>
-                        Client telephone
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Client telephone"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-client-telephone"
-                    value=""
-                  />
-                </div>
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
-                  type="button"
-                >
-                  Continue to Rates
-                </button>
-              </div>
-            </div>
-          </section>
-          <section
-            aria-label="Rates"
+            aria-label="Availability & rates"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-rates"
           >
@@ -4123,9 +4325,9 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  3
+                  4
                 </span>
-                Rates
+                Availability & rates
               </h3>
               <span
                 class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
@@ -4137,103 +4339,6 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
             <div
               class="flex flex-col gap-3.5 p-3"
             >
-              <div
-                class="flex flex-col gap-3"
-              >
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-rate-plan"
-                    >
-                      <span>
-                        Rate plan
-                      </span>
-                    </label>
-                  </div>
-                  <select
-                    aria-label="Rate plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-rate-plan"
-                  >
-                    <option
-                      value="all"
-                    >
-                      All rates
-                    </option>
-                    <optgroup
-                      label="Public"
-                    >
-                      <option
-                        value="public"
-                      >
-                        All public rates (BAR)
-                      </option>
-                    </optgroup>
-                    <optgroup
-                      label="Government"
-                    >
-                      <option
-                        value="government"
-                      >
-                        All government rates
-                      </option>
-                    </optgroup>
-                  </select>
-                  <span
-                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
-                  >
-                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
-                  </span>
-                </div>
-                <details
-                  class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
-                >
-                  <summary
-                    class="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[13px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden"
-                  >
-                    <span>
-                      HMS notes (optional)
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      class="transition-transform group-open:rotate-180"
-                    >
-                      ▾
-                    </span>
-                  </summary>
-                  <div
-                    class="flex flex-col gap-3 p-2.5"
-                  >
-                    <div
-                      class="flex flex-col gap-1"
-                    >
-                      <div
-                        class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                      >
-                        <label
-                          class="flex items-center gap-1.5"
-                          for="quote-hms-notes"
-                        >
-                          <span>
-                            Notes for HMS
-                          </span>
-                        </label>
-                      </div>
-                      <textarea
-                        aria-label="Notes for HMS"
-                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-                        id="quote-hms-notes"
-                        placeholder="Add a staff note for the HMS handoff"
-                      />
-                    </div>
-                  </div>
-                </details>
-              </div>
               <h4
                 class="text-[13px] font-semibold text-[#475569]"
               >
@@ -4243,37 +4348,16 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 class="flex flex-col gap-1"
               >
                 <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                  class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                   disabled=""
                   type="button"
                 >
                   Search availability
                 </button>
                 <p
-                  class="flex items-center justify-center gap-1.5 text-[13px] text-[#334155]"
+                  class="text-center text-[11px] text-[#64748b]"
                 >
-                  <svg
-                    aria-hidden="true"
-                    class="h-3.5 w-3.5 shrink-0"
-                    fill="none"
-                    viewBox="0 0 16 16"
-                  >
-                    <circle
-                      cx="8"
-                      cy="8"
-                      r="6.5"
-                      stroke="currentColor"
-                    />
-                    <path
-                      d="M8 7v4M8 4.75h.01"
-                      stroke="currentColor"
-                      stroke-linecap="round"
-                      stroke-width="1.5"
-                    />
-                  </svg>
-                  <span>
-                    Add arrival and departure dates first.
-                  </span>
+                  Add arrival and departure dates first.
                 </p>
               </div>
               <article
@@ -4393,6 +4477,69 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                     Search availability to calculate
                   </span>
                 </div>
+              </article>
+              <div
+                aria-label="Quotation total"
+                class="flex flex-col gap-1 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-3"
+              >
+                <div
+                  class="flex flex-wrap items-center justify-between gap-2"
+                >
+                  <h3
+                    class="text-[13px] font-bold text-[#1e293b]"
+                  >
+                    Quotation total (all stays)
+                  </h3>
+                  <span
+                    class="text-[14px] font-extrabold text-[#1e293b]"
+                  >
+                    Not ready
+                  </span>
+                </div>
+                <p
+                  class="text-[13px] text-[#64748b]"
+                >
+                  0 of 1 stays rated. Search each date range for the complete total.
+                </p>
+              </div>
+            </div>
+          </section>
+          <section
+            aria-label="Extras & alternatives"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-extras"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  5
+                </span>
+                Extras & alternatives
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
+                data-testid="quote-step-state"
+              >
+                Optional
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <article
+                class="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3"
+              >
+                <h4
+                  class="text-[13px] font-semibold text-[#475569]"
+                >
+                  Stay 1
+                </h4>
                 <section
                   aria-label="Extras for Stay 1"
                   class="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5"
@@ -4541,34 +4688,10 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                   </div>
                 </section>
               </article>
-              <div
-                aria-label="Quotation total"
-                class="flex flex-col gap-1 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-3"
-              >
-                <div
-                  class="flex flex-wrap items-center justify-between gap-2"
-                >
-                  <h3
-                    class="text-[13px] font-bold text-[#1e293b]"
-                  >
-                    Quotation total (all stays)
-                  </h3>
-                  <span
-                    class="text-[14px] font-extrabold text-[#1e293b]"
-                  >
-                    Not ready
-                  </span>
-                </div>
-                <p
-                  class="text-[13px] text-[#64748b]"
-                >
-                  0 of 1 stays rated. Search each date range for the complete total.
-                </p>
-              </div>
             </div>
           </section>
           <section
-            aria-label="Quote review"
+            aria-label="Documents"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-quote"
           >
@@ -4581,9 +4704,9 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  4
+                  6
                 </span>
-                Quote review
+                Documents
               </h3>
               <span
                 class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
@@ -4607,37 +4730,16 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                   class="flex flex-col gap-1"
                 >
                   <button
-                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                     disabled=""
                     type="button"
                   >
                     Prepare PDF
                   </button>
                   <p
-                    class="flex items-center justify-center gap-1.5 text-[13px] text-[#334155]"
+                    class="text-center text-[11px] text-[#64748b]"
                   >
-                    <svg
-                      aria-hidden="true"
-                      class="h-3.5 w-3.5 shrink-0"
-                      fill="none"
-                      viewBox="0 0 16 16"
-                    >
-                      <circle
-                        cx="8"
-                        cy="8"
-                        r="6.5"
-                        stroke="currentColor"
-                      />
-                      <path
-                        d="M8 7v4M8 4.75h.01"
-                        stroke="currentColor"
-                        stroke-linecap="round"
-                        stroke-width="1.5"
-                      />
-                    </svg>
-                    <span>
-                      Add the missing arrival and departure dates before preparing quote documents.
-                    </span>
+                    Add the missing arrival and departure dates before preparing quote documents.
                   </p>
                 </div>
                 <div
@@ -5654,6 +5756,366 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
         <div
           class="flex flex-col gap-3.5"
         >
+          <div
+            class="flex flex-col gap-2"
+          >
+            <div
+              aria-label="Needs your answer"
+              class="flex flex-col gap-1.5 rounded-[3px] border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2 text-[13px] text-[#475569]"
+            >
+              <p
+                class="font-semibold"
+              >
+                Needs your answer
+              </p>
+              <p>
+                Add this information to the fields above.
+              </p>
+              <p
+                class="mt-1"
+              >
+                What arrival and departure dates should be quoted?
+              </p>
+            </div>
+            <div
+              class="flex flex-col gap-1"
+            >
+              <button
+                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                type="button"
+              >
+                Add stay dates
+              </button>
+            </div>
+          </div>
+          <section
+            aria-label="Party + contact"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-party"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  1
+                </span>
+                Party + contact
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
+                data-testid="quote-step-state"
+              >
+                Optional
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <div
+                class="flex flex-col gap-2.5"
+              >
+                <p
+                  class="text-[13px] text-[#64748b]"
+                >
+                  Optional if none in email. Company is the end client; Agency is the travel agent. Confirm an HMS result before using its contract rate.
+                </p>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-agency"
+                    >
+                      <span>
+                        Agency (travel agent)
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Agency (travel agent)"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-agency"
+                    value=""
+                  />
+                  <div
+                    aria-label="Agency lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-company"
+                    >
+                      <span>
+                        Company (end client)
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Company (end client)"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-company"
+                    value=""
+                  />
+                  <div
+                    aria-label="Company lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-attention"
+                    >
+                      <span>
+                        Attention
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Attention"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-attention"
+                    value=""
+                  />
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-client-email"
+                    >
+                      <span>
+                        Client email
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Client email"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-client-email"
+                    value=""
+                  />
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-client-telephone"
+                    >
+                      <span>
+                        Client telephone
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Client telephone"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-client-telephone"
+                    value=""
+                  />
+                </div>
+              </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                Continue to Rate authority
+              </button>
+            </div>
+          </section>
+          <section
+            aria-label="Rate authority"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-authority"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  2
+                </span>
+                Rate authority
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#eaf4ee] text-[#1a4332]"
+                data-testid="quote-step-state"
+              >
+                Done
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <div
+                class="flex flex-col gap-3"
+              >
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-rate-plan"
+                    >
+                      <span>
+                        Rate plan
+                      </span>
+                    </label>
+                  </div>
+                  <select
+                    aria-label="Rate plan"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-rate-plan"
+                  >
+                    <option
+                      value="all"
+                    >
+                      All rates
+                    </option>
+                    <optgroup
+                      label="Public"
+                    >
+                      <option
+                        value="public"
+                      >
+                        All public rates (BAR)
+                      </option>
+                    </optgroup>
+                    <optgroup
+                      label="Government"
+                    >
+                      <option
+                        value="government"
+                      >
+                        All government rates
+                      </option>
+                    </optgroup>
+                  </select>
+                  <span
+                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
+                  >
+                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
+                  </span>
+                </div>
+                <details
+                  class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
+                >
+                  <summary
+                    class="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[13px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden"
+                  >
+                    <span>
+                      HMS notes (optional)
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      class="transition-transform group-open:rotate-180"
+                    >
+                      ▾
+                    </span>
+                  </summary>
+                  <div
+                    class="flex flex-col gap-3 p-2.5"
+                  >
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="quote-hms-notes"
+                        >
+                          <span>
+                            Notes for HMS
+                          </span>
+                        </label>
+                      </div>
+                      <textarea
+                        aria-label="Notes for HMS"
+                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                        id="quote-hms-notes"
+                        placeholder="Add a staff note for the HMS handoff"
+                      />
+                    </div>
+                  </div>
+                </details>
+              </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                Continue to Stay
+              </button>
+            </div>
+          </section>
           <section
             aria-label="Stay"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
@@ -5668,7 +6130,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  1
+                  3
                 </span>
                 Stay
               </h3>
@@ -5897,7 +6359,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r8c»-arrival"
+                                for="«r8e»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -5907,7 +6369,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r8c»-arrival"
+                              id="«r8e»-arrival"
                               type="date"
                               value=""
                             />
@@ -5920,7 +6382,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r8c»-departure"
+                                for="«r8e»-departure"
                               >
                                 <span>
                                   Departure
@@ -5930,7 +6392,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r8c»-departure"
+                              id="«r8e»-departure"
                               type="date"
                               value=""
                             />
@@ -5947,7 +6409,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r8b»-meal-plan"
+                        for="«r8d»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -5960,7 +6422,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r8b»-meal-plan"
+                      id="«r8d»-meal-plan"
                     >
                       <option
                         value="all"
@@ -6249,219 +6711,10 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                   Each date range is searched and priced independently.
                 </p>
               </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
-                  type="button"
-                >
-                  Continue to Company/agency
-                </button>
-              </div>
             </div>
           </section>
           <section
-            aria-label="Company/agency on the quote (sets contract rate)"
-            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-            id="quote-party"
-          >
-            <div
-              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-            >
-              <h3
-                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
-              >
-                <span
-                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
-                >
-                  2
-                </span>
-                Company/agency on the quote (sets contract rate)
-              </h3>
-              <span
-                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
-                data-testid="quote-step-state"
-              >
-                Optional
-              </span>
-            </div>
-            <div
-              class="flex flex-col gap-3.5 p-3"
-            >
-              <div
-                class="flex flex-col gap-2.5"
-              >
-                <p
-                  class="text-[13px] text-[#64748b]"
-                >
-                  Optional if none in email. Company is the end client; Agency is the travel agent. Confirm an HMS result before using its contract rate.
-                </p>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-agency"
-                    >
-                      <span>
-                        Agency (travel agent)
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Agency (travel agent)"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-agency"
-                    value=""
-                  />
-                  <div
-                    aria-label="Agency lookup in HMS"
-                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
-                    role="group"
-                  >
-                    <div
-                      class="flex flex-wrap items-center gap-2"
-                    >
-                      <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
-                        disabled=""
-                        type="button"
-                      >
-                        Find in HMS
-                      </button>
-                      <span>
-                        Runs in the background. You can keep working.
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-company"
-                    >
-                      <span>
-                        Company (end client)
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Company (end client)"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-company"
-                    value=""
-                  />
-                  <div
-                    aria-label="Company lookup in HMS"
-                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
-                    role="group"
-                  >
-                    <div
-                      class="flex flex-wrap items-center gap-2"
-                    >
-                      <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
-                        disabled=""
-                        type="button"
-                      >
-                        Find in HMS
-                      </button>
-                      <span>
-                        Runs in the background. You can keep working.
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-attention"
-                    >
-                      <span>
-                        Attention
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Attention"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-attention"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-client-email"
-                    >
-                      <span>
-                        Client email
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Client email"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-client-email"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-client-telephone"
-                    >
-                      <span>
-                        Client telephone
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Client telephone"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-client-telephone"
-                    value=""
-                  />
-                </div>
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
-                  type="button"
-                >
-                  Continue to Rates
-                </button>
-              </div>
-            </div>
-          </section>
-          <section
-            aria-label="Rates"
+            aria-label="Availability & rates"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-rates"
           >
@@ -6474,9 +6727,9 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  3
+                  4
                 </span>
-                Rates
+                Availability & rates
               </h3>
               <span
                 class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
@@ -6488,103 +6741,6 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
             <div
               class="flex flex-col gap-3.5 p-3"
             >
-              <div
-                class="flex flex-col gap-3"
-              >
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-rate-plan"
-                    >
-                      <span>
-                        Rate plan
-                      </span>
-                    </label>
-                  </div>
-                  <select
-                    aria-label="Rate plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-rate-plan"
-                  >
-                    <option
-                      value="all"
-                    >
-                      All rates
-                    </option>
-                    <optgroup
-                      label="Public"
-                    >
-                      <option
-                        value="public"
-                      >
-                        All public rates (BAR)
-                      </option>
-                    </optgroup>
-                    <optgroup
-                      label="Government"
-                    >
-                      <option
-                        value="government"
-                      >
-                        All government rates
-                      </option>
-                    </optgroup>
-                  </select>
-                  <span
-                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
-                  >
-                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
-                  </span>
-                </div>
-                <details
-                  class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
-                >
-                  <summary
-                    class="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[13px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden"
-                  >
-                    <span>
-                      HMS notes (optional)
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      class="transition-transform group-open:rotate-180"
-                    >
-                      ▾
-                    </span>
-                  </summary>
-                  <div
-                    class="flex flex-col gap-3 p-2.5"
-                  >
-                    <div
-                      class="flex flex-col gap-1"
-                    >
-                      <div
-                        class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                      >
-                        <label
-                          class="flex items-center gap-1.5"
-                          for="quote-hms-notes"
-                        >
-                          <span>
-                            Notes for HMS
-                          </span>
-                        </label>
-                      </div>
-                      <textarea
-                        aria-label="Notes for HMS"
-                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-                        id="quote-hms-notes"
-                        placeholder="Add a staff note for the HMS handoff"
-                      />
-                    </div>
-                  </div>
-                </details>
-              </div>
               <h4
                 class="text-[13px] font-semibold text-[#475569]"
               >
@@ -6594,37 +6750,16 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 class="flex flex-col gap-1"
               >
                 <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                  class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                   disabled=""
                   type="button"
                 >
                   Search availability
                 </button>
                 <p
-                  class="flex items-center justify-center gap-1.5 text-[13px] text-[#334155]"
+                  class="text-center text-[11px] text-[#64748b]"
                 >
-                  <svg
-                    aria-hidden="true"
-                    class="h-3.5 w-3.5 shrink-0"
-                    fill="none"
-                    viewBox="0 0 16 16"
-                  >
-                    <circle
-                      cx="8"
-                      cy="8"
-                      r="6.5"
-                      stroke="currentColor"
-                    />
-                    <path
-                      d="M8 7v4M8 4.75h.01"
-                      stroke="currentColor"
-                      stroke-linecap="round"
-                      stroke-width="1.5"
-                    />
-                  </svg>
-                  <span>
-                    Add arrival and departure dates first.
-                  </span>
+                  Add arrival and departure dates first.
                 </p>
               </div>
               <article
@@ -6744,6 +6879,69 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                     Search availability to calculate
                   </span>
                 </div>
+              </article>
+              <div
+                aria-label="Quotation total"
+                class="flex flex-col gap-1 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-3"
+              >
+                <div
+                  class="flex flex-wrap items-center justify-between gap-2"
+                >
+                  <h3
+                    class="text-[13px] font-bold text-[#1e293b]"
+                  >
+                    Quotation total (all stays)
+                  </h3>
+                  <span
+                    class="text-[14px] font-extrabold text-[#1e293b]"
+                  >
+                    Not ready
+                  </span>
+                </div>
+                <p
+                  class="text-[13px] text-[#64748b]"
+                >
+                  0 of 1 stays rated. Search each date range for the complete total.
+                </p>
+              </div>
+            </div>
+          </section>
+          <section
+            aria-label="Extras & alternatives"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-extras"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  5
+                </span>
+                Extras & alternatives
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
+                data-testid="quote-step-state"
+              >
+                Optional
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <article
+                class="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3"
+              >
+                <h4
+                  class="text-[13px] font-semibold text-[#475569]"
+                >
+                  Stay 1
+                </h4>
                 <section
                   aria-label="Extras for Stay 1"
                   class="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5"
@@ -6892,34 +7090,10 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                   </div>
                 </section>
               </article>
-              <div
-                aria-label="Quotation total"
-                class="flex flex-col gap-1 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-3"
-              >
-                <div
-                  class="flex flex-wrap items-center justify-between gap-2"
-                >
-                  <h3
-                    class="text-[13px] font-bold text-[#1e293b]"
-                  >
-                    Quotation total (all stays)
-                  </h3>
-                  <span
-                    class="text-[14px] font-extrabold text-[#1e293b]"
-                  >
-                    Not ready
-                  </span>
-                </div>
-                <p
-                  class="text-[13px] text-[#64748b]"
-                >
-                  0 of 1 stays rated. Search each date range for the complete total.
-                </p>
-              </div>
             </div>
           </section>
           <section
-            aria-label="Quote review"
+            aria-label="Documents"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-quote"
           >
@@ -6932,9 +7106,9 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  4
+                  6
                 </span>
-                Quote review
+                Documents
               </h3>
               <span
                 class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
@@ -6958,37 +7132,16 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                   class="flex flex-col gap-1"
                 >
                   <button
-                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                     disabled=""
                     type="button"
                   >
                     Prepare PDF
                   </button>
                   <p
-                    class="flex items-center justify-center gap-1.5 text-[13px] text-[#334155]"
+                    class="text-center text-[11px] text-[#64748b]"
                   >
-                    <svg
-                      aria-hidden="true"
-                      class="h-3.5 w-3.5 shrink-0"
-                      fill="none"
-                      viewBox="0 0 16 16"
-                    >
-                      <circle
-                        cx="8"
-                        cy="8"
-                        r="6.5"
-                        stroke="currentColor"
-                      />
-                      <path
-                        d="M8 7v4M8 4.75h.01"
-                        stroke="currentColor"
-                        stroke-linecap="round"
-                        stroke-width="1.5"
-                      />
-                    </svg>
-                    <span>
-                      Add the missing arrival and departure dates before preparing quote documents.
-                    </span>
+                    Add the missing arrival and departure dates before preparing quote documents.
                   </p>
                 </div>
                 <div
@@ -7581,6 +7734,366 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
         <div
           class="flex flex-col gap-3.5"
         >
+          <div
+            class="flex flex-col gap-2"
+          >
+            <div
+              aria-label="Needs your answer"
+              class="flex flex-col gap-1.5 rounded-[3px] border border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-2 text-[13px] text-[#475569]"
+            >
+              <p
+                class="font-semibold"
+              >
+                Needs your answer
+              </p>
+              <p>
+                Add this information to the fields above.
+              </p>
+              <p
+                class="mt-1"
+              >
+                What arrival and departure dates should be quoted?
+              </p>
+            </div>
+            <div
+              class="flex flex-col gap-1"
+            >
+              <button
+                class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                type="button"
+              >
+                Add stay dates
+              </button>
+            </div>
+          </div>
+          <section
+            aria-label="Party + contact"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-party"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  1
+                </span>
+                Party + contact
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
+                data-testid="quote-step-state"
+              >
+                Optional
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <div
+                class="flex flex-col gap-2.5"
+              >
+                <p
+                  class="text-[13px] text-[#64748b]"
+                >
+                  Optional if none in email. Company is the end client; Agency is the travel agent. Confirm an HMS result before using its contract rate.
+                </p>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-agency"
+                    >
+                      <span>
+                        Agency (travel agent)
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Agency (travel agent)"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-agency"
+                    value=""
+                  />
+                  <div
+                    aria-label="Agency lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-company"
+                    >
+                      <span>
+                        Company (end client)
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Company (end client)"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-company"
+                    value=""
+                  />
+                  <div
+                    aria-label="Company lookup in HMS"
+                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
+                    role="group"
+                  >
+                    <div
+                      class="flex flex-wrap items-center gap-2"
+                    >
+                      <button
+                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
+                        disabled=""
+                        type="button"
+                      >
+                        Find in HMS
+                      </button>
+                      <span>
+                        Runs in the background. You can keep working.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-attention"
+                    >
+                      <span>
+                        Attention
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Attention"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-attention"
+                    value=""
+                  />
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-client-email"
+                    >
+                      <span>
+                        Client email
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Client email"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-client-email"
+                    value=""
+                  />
+                </div>
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-client-telephone"
+                    >
+                      <span>
+                        Client telephone
+                      </span>
+                    </label>
+                  </div>
+                  <input
+                    aria-label="Client telephone"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-client-telephone"
+                    value=""
+                  />
+                </div>
+              </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                Continue to Rate authority
+              </button>
+            </div>
+          </section>
+          <section
+            aria-label="Rate authority"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-authority"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  2
+                </span>
+                Rate authority
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#eaf4ee] text-[#1a4332]"
+                data-testid="quote-step-state"
+              >
+                Done
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <div
+                class="flex flex-col gap-3"
+              >
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-rate-plan"
+                    >
+                      <span>
+                        Rate plan
+                      </span>
+                    </label>
+                  </div>
+                  <select
+                    aria-label="Rate plan"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-rate-plan"
+                  >
+                    <option
+                      value="all"
+                    >
+                      All rates
+                    </option>
+                    <optgroup
+                      label="Public"
+                    >
+                      <option
+                        value="public"
+                      >
+                        All public rates (BAR)
+                      </option>
+                    </optgroup>
+                    <optgroup
+                      label="Government"
+                    >
+                      <option
+                        value="government"
+                      >
+                        All government rates
+                      </option>
+                    </optgroup>
+                  </select>
+                  <span
+                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
+                  >
+                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
+                  </span>
+                </div>
+                <details
+                  class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
+                >
+                  <summary
+                    class="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[13px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden"
+                  >
+                    <span>
+                      HMS notes (optional)
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      class="transition-transform group-open:rotate-180"
+                    >
+                      ▾
+                    </span>
+                  </summary>
+                  <div
+                    class="flex flex-col gap-3 p-2.5"
+                  >
+                    <div
+                      class="flex flex-col gap-1"
+                    >
+                      <div
+                        class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                      >
+                        <label
+                          class="flex items-center gap-1.5"
+                          for="quote-hms-notes"
+                        >
+                          <span>
+                            Notes for HMS
+                          </span>
+                        </label>
+                      </div>
+                      <textarea
+                        aria-label="Notes for HMS"
+                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                        id="quote-hms-notes"
+                        placeholder="Add a staff note for the HMS handoff"
+                      />
+                    </div>
+                  </div>
+                </details>
+              </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                Continue to Stay
+              </button>
+            </div>
+          </section>
           <section
             aria-label="Stay"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
@@ -7595,7 +8108,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  1
+                  3
                 </span>
                 Stay
               </h3>
@@ -7824,7 +8337,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r8o»-arrival"
+                                for="«r8q»-arrival"
                               >
                                 <span>
                                   Arrival
@@ -7834,7 +8347,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             <input
                               aria-label="Arrival"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r8o»-arrival"
+                              id="«r8q»-arrival"
                               type="date"
                               value=""
                             />
@@ -7847,7 +8360,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             >
                               <label
                                 class="flex items-center gap-1.5"
-                                for="«r8o»-departure"
+                                for="«r8q»-departure"
                               >
                                 <span>
                                   Departure
@@ -7857,7 +8370,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                             <input
                               aria-label="Departure"
                               class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                              id="«r8o»-departure"
+                              id="«r8q»-departure"
                               type="date"
                               value=""
                             />
@@ -7874,7 +8387,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                     >
                       <label
                         class="flex items-center gap-1.5"
-                        for="«r8n»-meal-plan"
+                        for="«r8p»-meal-plan"
                       >
                         <span>
                           Meal plan
@@ -7887,7 +8400,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                     <select
                       aria-label="Meal plan"
                       class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                      id="«r8n»-meal-plan"
+                      id="«r8p»-meal-plan"
                     >
                       <option
                         value="all"
@@ -8176,219 +8689,10 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                   Each date range is searched and priced independently.
                 </p>
               </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
-                  type="button"
-                >
-                  Continue to Company/agency
-                </button>
-              </div>
             </div>
           </section>
           <section
-            aria-label="Company/agency on the quote (sets contract rate)"
-            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
-            id="quote-party"
-          >
-            <div
-              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
-            >
-              <h3
-                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
-              >
-                <span
-                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
-                >
-                  2
-                </span>
-                Company/agency on the quote (sets contract rate)
-              </h3>
-              <span
-                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
-                data-testid="quote-step-state"
-              >
-                Optional
-              </span>
-            </div>
-            <div
-              class="flex flex-col gap-3.5 p-3"
-            >
-              <div
-                class="flex flex-col gap-2.5"
-              >
-                <p
-                  class="text-[13px] text-[#64748b]"
-                >
-                  Optional if none in email. Company is the end client; Agency is the travel agent. Confirm an HMS result before using its contract rate.
-                </p>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-agency"
-                    >
-                      <span>
-                        Agency (travel agent)
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Agency (travel agent)"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-agency"
-                    value=""
-                  />
-                  <div
-                    aria-label="Agency lookup in HMS"
-                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
-                    role="group"
-                  >
-                    <div
-                      class="flex flex-wrap items-center gap-2"
-                    >
-                      <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
-                        disabled=""
-                        type="button"
-                      >
-                        Find in HMS
-                      </button>
-                      <span>
-                        Runs in the background. You can keep working.
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-company"
-                    >
-                      <span>
-                        Company (end client)
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Company (end client)"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-company"
-                    value=""
-                  />
-                  <div
-                    aria-label="Company lookup in HMS"
-                    class="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
-                    role="group"
-                  >
-                    <div
-                      class="flex flex-wrap items-center gap-2"
-                    >
-                      <button
-                        class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] "
-                        disabled=""
-                        type="button"
-                      >
-                        Find in HMS
-                      </button>
-                      <span>
-                        Runs in the background. You can keep working.
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-attention"
-                    >
-                      <span>
-                        Attention
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Attention"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-attention"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-client-email"
-                    >
-                      <span>
-                        Client email
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Client email"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-client-email"
-                    value=""
-                  />
-                </div>
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-client-telephone"
-                    >
-                      <span>
-                        Client telephone
-                      </span>
-                    </label>
-                  </div>
-                  <input
-                    aria-label="Client telephone"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-client-telephone"
-                    value=""
-                  />
-                </div>
-              </div>
-              <div
-                class="flex flex-col gap-1"
-              >
-                <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
-                  type="button"
-                >
-                  Continue to Rates
-                </button>
-              </div>
-            </div>
-          </section>
-          <section
-            aria-label="Rates"
+            aria-label="Availability & rates"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-rates"
           >
@@ -8401,9 +8705,9 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  3
+                  4
                 </span>
-                Rates
+                Availability & rates
               </h3>
               <span
                 class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
@@ -8415,103 +8719,6 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
             <div
               class="flex flex-col gap-3.5 p-3"
             >
-              <div
-                class="flex flex-col gap-3"
-              >
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-rate-plan"
-                    >
-                      <span>
-                        Rate plan
-                      </span>
-                    </label>
-                  </div>
-                  <select
-                    aria-label="Rate plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-rate-plan"
-                  >
-                    <option
-                      value="all"
-                    >
-                      All rates
-                    </option>
-                    <optgroup
-                      label="Public"
-                    >
-                      <option
-                        value="public"
-                      >
-                        All public rates (BAR)
-                      </option>
-                    </optgroup>
-                    <optgroup
-                      label="Government"
-                    >
-                      <option
-                        value="government"
-                      >
-                        All government rates
-                      </option>
-                    </optgroup>
-                  </select>
-                  <span
-                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
-                  >
-                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
-                  </span>
-                </div>
-                <details
-                  class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
-                >
-                  <summary
-                    class="flex cursor-pointer select-none items-center justify-between bg-[#f8fafc] px-2.5 py-[7px] text-[13px] font-semibold text-[#475569] [&::-webkit-details-marker]:hidden"
-                  >
-                    <span>
-                      HMS notes (optional)
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      class="transition-transform group-open:rotate-180"
-                    >
-                      ▾
-                    </span>
-                  </summary>
-                  <div
-                    class="flex flex-col gap-3 p-2.5"
-                  >
-                    <div
-                      class="flex flex-col gap-1"
-                    >
-                      <div
-                        class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                      >
-                        <label
-                          class="flex items-center gap-1.5"
-                          for="quote-hms-notes"
-                        >
-                          <span>
-                            Notes for HMS
-                          </span>
-                        </label>
-                      </div>
-                      <textarea
-                        aria-label="Notes for HMS"
-                        class="min-h-16 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-                        id="quote-hms-notes"
-                        placeholder="Add a staff note for the HMS handoff"
-                      />
-                    </div>
-                  </div>
-                </details>
-              </div>
               <h4
                 class="text-[13px] font-semibold text-[#475569]"
               >
@@ -8521,37 +8728,16 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 class="flex flex-col gap-1"
               >
                 <button
-                  class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                  class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                   disabled=""
                   type="button"
                 >
                   Search availability
                 </button>
                 <p
-                  class="flex items-center justify-center gap-1.5 text-[13px] text-[#334155]"
+                  class="text-center text-[11px] text-[#64748b]"
                 >
-                  <svg
-                    aria-hidden="true"
-                    class="h-3.5 w-3.5 shrink-0"
-                    fill="none"
-                    viewBox="0 0 16 16"
-                  >
-                    <circle
-                      cx="8"
-                      cy="8"
-                      r="6.5"
-                      stroke="currentColor"
-                    />
-                    <path
-                      d="M8 7v4M8 4.75h.01"
-                      stroke="currentColor"
-                      stroke-linecap="round"
-                      stroke-width="1.5"
-                    />
-                  </svg>
-                  <span>
-                    Add arrival and departure dates first.
-                  </span>
+                  Add arrival and departure dates first.
                 </p>
               </div>
               <article
@@ -8671,6 +8857,69 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                     Search availability to calculate
                   </span>
                 </div>
+              </article>
+              <div
+                aria-label="Quotation total"
+                class="flex flex-col gap-1 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-3"
+              >
+                <div
+                  class="flex flex-wrap items-center justify-between gap-2"
+                >
+                  <h3
+                    class="text-[13px] font-bold text-[#1e293b]"
+                  >
+                    Quotation total (all stays)
+                  </h3>
+                  <span
+                    class="text-[14px] font-extrabold text-[#1e293b]"
+                  >
+                    Not ready
+                  </span>
+                </div>
+                <p
+                  class="text-[13px] text-[#64748b]"
+                >
+                  0 of 1 stays rated. Search each date range for the complete total.
+                </p>
+              </div>
+            </div>
+          </section>
+          <section
+            aria-label="Extras & alternatives"
+            class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
+            id="quote-extras"
+          >
+            <div
+              class="flex items-center justify-between border-b border-[#e2e8f0] bg-[#f8fafc] px-3 py-[9px]"
+            >
+              <h3
+                class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
+              >
+                <span
+                  class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
+                >
+                  5
+                </span>
+                Extras & alternatives
+              </h3>
+              <span
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
+                data-testid="quote-step-state"
+              >
+                Optional
+              </span>
+            </div>
+            <div
+              class="flex flex-col gap-3.5 p-3"
+            >
+              <article
+                class="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3"
+              >
+                <h4
+                  class="text-[13px] font-semibold text-[#475569]"
+                >
+                  Stay 1
+                </h4>
                 <section
                   aria-label="Extras for Stay 1"
                   class="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5"
@@ -8819,34 +9068,10 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                   </div>
                 </section>
               </article>
-              <div
-                aria-label="Quotation total"
-                class="flex flex-col gap-1 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-3"
-              >
-                <div
-                  class="flex flex-wrap items-center justify-between gap-2"
-                >
-                  <h3
-                    class="text-[13px] font-bold text-[#1e293b]"
-                  >
-                    Quotation total (all stays)
-                  </h3>
-                  <span
-                    class="text-[14px] font-extrabold text-[#1e293b]"
-                  >
-                    Not ready
-                  </span>
-                </div>
-                <p
-                  class="text-[13px] text-[#64748b]"
-                >
-                  0 of 1 stays rated. Search each date range for the complete total.
-                </p>
-              </div>
             </div>
           </section>
           <section
-            aria-label="Quote review"
+            aria-label="Documents"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-quote"
           >
@@ -8859,9 +9084,9 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 <span
                   class="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-[#1a4332] text-[10.5px] text-white"
                 >
-                  4
+                  6
                 </span>
-                Quote review
+                Documents
               </h3>
               <span
                 class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
@@ -8885,37 +9110,16 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                   class="flex flex-col gap-1"
                 >
                   <button
-                    class="flex h-[38px] w-full items-center justify-center gap-2 rounded-[3px] text-[13px] font-bold text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:bg-[#cbd5e1] disabled:text-[#64748b]  bg-[#0066cc] hover:bg-[#0052a3]"
+                    class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                     disabled=""
                     type="button"
                   >
                     Prepare PDF
                   </button>
                   <p
-                    class="flex items-center justify-center gap-1.5 text-[13px] text-[#334155]"
+                    class="text-center text-[11px] text-[#64748b]"
                   >
-                    <svg
-                      aria-hidden="true"
-                      class="h-3.5 w-3.5 shrink-0"
-                      fill="none"
-                      viewBox="0 0 16 16"
-                    >
-                      <circle
-                        cx="8"
-                        cy="8"
-                        r="6.5"
-                        stroke="currentColor"
-                      />
-                      <path
-                        d="M8 7v4M8 4.75h.01"
-                        stroke="currentColor"
-                        stroke-linecap="round"
-                        stroke-width="1.5"
-                      />
-                    </svg>
-                    <span>
-                      Add the missing arrival and departure dates before preparing quote documents.
-                    </span>
+                    Add the missing arrival and departure dates before preparing quote documents.
                   </p>
                 </div>
                 <div
