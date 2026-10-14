@@ -36,6 +36,8 @@ export type StoredPane =
       analysis: QuoteAnalysis;
       /** The mail kind and current work-item state, shared with the pane's read-as and work-state banners. */
       kind: string;
+      existingStayInformation?: boolean;
+      confirmationNumbers?: string[];
       workItemStatus: string | null;
       /** Null when the read has no work item (it could not be opened): the read shows, edits are not logged. */
       workItemId: string | null;
@@ -393,6 +395,8 @@ export function useStoredWork(args: {
       state: 'ready',
       analysis: quoteAnalysisOf(stored.analysis),
       kind: stored.kind,
+      existingStayInformation: stored.existingStayInformation === true,
+      confirmationNumbers: stored.confirmationNumbers ?? [],
       workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,
       contact: stored.contact,

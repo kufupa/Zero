@@ -127,6 +127,7 @@ import { useInsertAiDraft } from './use-insert-ai-draft';
 import { useSavedReply } from './use-saved-reply';
 import { useSystemCheck } from './use-system-check';
 import { classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
+import { isSelfSentPreStayInformationMail } from '../../../server-pilot/src/ai/existing-stay-information.js';
 import { readAsForAnalysis, workStateForStatus } from '@/lib/quote-workflow/workflow-vocabulary';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
@@ -154,6 +155,30 @@ function externalSenderFallback(
     name: displayName && displayName.toLowerCase() !== sender.normalized ? displayName : null,
     email: sender.display,
   };
+}
+
+function ExistingStayInformationCard({ confirmationNumbers }: { confirmationNumbers: string[] }) {
+  return (
+    <section
+      role="status"
+      aria-label="Existing stay information — no booking or quote action"
+      data-testid="existing-stay-information"
+      className="flex flex-col gap-2 rounded-[4px] border border-[#e2e8f0] bg-[#f8fafc] px-3 py-2.5"
+    >
+      <p className="text-[13px] leading-5 text-[#475569]">
+        <span className="font-semibold text-[#1e293b]">Existing stay information</span> — this confirmation is for a
+        reservation already on file. Nava takes no booking or quote action.
+      </p>
+      {confirmationNumbers.length ? (
+        <p className="text-[13px] leading-5 text-[#475569]">
+          <span className="font-semibold text-[#1e293b]">
+            {confirmationNumbers.length === 1 ? 'Confirmation number' : 'Confirmation numbers'}
+          </span>
+          : {confirmationNumbers.join(', ')}
+        </p>
+      ) : null}
+    </section>
+  );
 }
 
 // One client for the pane's life, so screenshot loaders keep their identity across renders.
@@ -258,14 +283,6 @@ export function NavaPane({
     refreshAuthorization,
     activateMailboxSync,
   } = bridge;
-  const sourceClassification = classifyMailSource({
-    fromAddress: activeEmail?.senderEmail,
-    subject: activeEmail?.subject,
-    bodyText: activeEmail?.bodyText,
-  });
-  const nonActionableMailSource =
-    sourceClassification.kind === 'direct' ? null : sourceClassification;
-  const isNonActionableMailSource = nonActionableMailSource !== null;
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
   const partyJobThreadId = quoteSession.staffSource?.threadId ?? null;
   const partyJobTransport = useMemo(
@@ -374,6 +391,20 @@ export function NavaPane({
   const { data: session, isLoading } = useSession();
   const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
+  const sourceClassification = classifyMailSource({
+    fromAddress: activeEmail?.senderEmail,
+    subject: activeEmail?.subject,
+    bodyText: activeEmail?.bodyText,
+  });
+  const nonActionableMailSource =
+    sourceClassification.kind === 'direct' ? null : sourceClassification;
+  const isNonActionableMailSource = nonActionableMailSource !== null;
+  const selfSentPreStayBySubject = isSelfSentPreStayInformationMail({
+    fromAddress: activeEmail?.senderEmail,
+    mailboxAddress: activeConnection?.email,
+    subject: activeEmail?.subject,
+  });
+  const isNonActionableBySourceOrSubject = isNonActionableMailSource || selfSentPreStayBySubject;
   useEffect(() => {
     let alive = true;
     if (!session?.user?.id) {
@@ -451,7 +482,7 @@ export function NavaPane({
   });
   // The thread's saved reply (Save reply on the webmail panel), offered for Insert in Outlook.
   const savedReplyThreadId =
-    preview || isNonActionableMailSource ? null : (quoteSession.staffSource?.threadId ?? null);
+    preview || isNonActionableBySourceOrSubject ? null : (quoteSession.staffSource?.threadId ?? null);
   const savedReply = useSavedReply(
     (input) => trpcClient.drafts.savedReply.query(input),
     savedReplyThreadId,
@@ -522,9 +553,13 @@ export function NavaPane({
   const storedWork = useStoredWork({
     trpc: trpcClient,
     internetMessageId: activeEmail?.internetMessageId ?? null,
-    openMissingWorkItem: !isNonActionableMailSource,
+    openMissingWorkItem: !isNonActionableBySourceOrSubject,
     scope: currentScope,
   });
+  const isExistingStayInformation =
+    selfSentPreStayBySubject ||
+    (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
+  const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
   const senderFallback =
     storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
   // The contact the quotation's client lines fall back to: the read's contact, else the external sender.
@@ -559,7 +594,7 @@ export function NavaPane({
   // With a treat-as or note the read is live, so only Retry read (its count) re-runs it, not a stored-read change.
   const storedGate = storedOverridden ? `override|${storedWork.retryCount}` : storedWork.key;
   useEffect(() => {
-    if (isNonActionableMailSource) return;
+    if (isNonActionableMessage) return;
     const binding = quoteSession.binding;
     if (!binding || !quoteAdmissionKey) return;
     // The binding follows the selected mail one render later. Until then it names the previous mail.
@@ -654,7 +689,7 @@ export function NavaPane({
     };
     // Admission key is the selection identity. Body/subject are no longer read on the client.
     // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
-  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMailSource]);
+  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage]);
 
   useEffect(() => {
     const fields = missingQuoteReplyFieldsForGroups(quoteSession.groups);
@@ -699,7 +734,7 @@ export function NavaPane({
     Object.keys(quoteSession.bookingDrafts).join(','),
   ].join(':');
   useEffect(() => {
-    if (isNonActionableMailSource) return;
+    if (isNonActionableMessage) return;
     const luna = quoteSession.analysis?.luna;
     const source = quoteSession.staffSource;
     const binding = quoteSession.binding;
@@ -956,7 +991,7 @@ export function NavaPane({
         staffQuoteReadBackInFlight.current = false;
       }
     };
-  }, [priorQuoteKey, isNonActionableMailSource]);
+  }, [priorQuoteKey, isNonActionableMessage]);
 
   useEffect(() => {
     if (staffQuoteQueueMode !== 'on') return;
@@ -969,7 +1004,7 @@ export function NavaPane({
     isLoading,
     session?.user?.id,
     requiresRelogin,
-    isNonActionableMailSource,
+    isNonActionableMessage,
   ]);
 
   // Onboarding & Screen State
@@ -989,10 +1024,14 @@ export function NavaPane({
   // One list for the header entry and the screen, so a dismiss on the screen moves the entry count at once.
   const needsYou = useNeedsYou(trpcClient);
   const selectedReadKind = storedWork.pane.state === 'ready' ? storedWork.pane.kind : null;
-  const classifiedReadAs = readAsForAnalysis(quoteSession.analysis, {
-    kind: selectedReadKind,
-    treatAs: quoteSession.treatAs,
-  });
+  const existingStayConfirmationNumbers =
+    storedWork.pane.state === 'ready' ? (storedWork.pane.confirmationNumbers ?? []) : [];
+  const classifiedReadAs = isExistingStayInformation
+    ? 'not_for_nava'
+    : readAsForAnalysis(quoteSession.analysis, {
+        kind: selectedReadKind,
+        treatAs: quoteSession.treatAs,
+      });
   // Channel/system mail never opens the quote flow. A stored payment kind may still show its read-only voucher lookup.
   const readAs = isNonActionableMailSource
     ? (classifiedReadAs === 'payment' ? 'payment' : 'not_for_nava')
@@ -1299,7 +1338,7 @@ export function NavaPane({
     });
 
   const runQuoteStep = (stepId: string, autoStart = false, readBack = false) => {
-    if (isNonActionableMailSource) return;
+    if (isNonActionableMessage) return;
     if ((autoStart || readBack) && (staffQuoteQueueMode !== 'on' || isQuoteFixturePreview())) return;
     const step = quoteSession.steps.find((item) => item.id === stepId);
     const maySearchAgain = step?.kind === 'quote_stay' && step.status === 'succeeded' && !quoteSession.runningStepId;
@@ -1533,7 +1572,7 @@ export function NavaPane({
 
   const autoStartStaffQuoteStep = () => {
     if (
-      isNonActionableMailSource ||
+      isNonActionableMessage ||
       staffQuoteQueueMode !== 'on' ||
       isLoading ||
       !session?.user ||
@@ -1734,7 +1773,8 @@ export function NavaPane({
   };
 
   // Only quote and booking mail gets Nava's suggestions and the numbered reply step. Other mail gets neither.
-  const quoteOrBookingEmail = quoteSession.analysis?.intent === 'quote';
+  const quoteOrBookingEmail =
+    !isExistingStayInformation && quoteSession.analysis?.intent === 'quote';
   const draftStatusMessage = draftStatus && draftStatus.key === selectedKey ? draftStatus.message : null;
   const replyBody = (
     <ReplyBody
@@ -1884,7 +1924,7 @@ export function NavaPane({
               readAs={readAs}
               treatAs={quoteSession.treatAs}
               workState={workState}
-              onIntentChange={isNonActionableMailSource ? undefined : (treatAs) => {
+              onIntentChange={isNonActionableMessage ? undefined : (treatAs) => {
                 suppressAutoStaffQuoteForCurrentEmail();
                 dispatchQuote({ type: 'treat_as', treatAs });
               }}
@@ -1987,7 +2027,13 @@ export function NavaPane({
             style={shownScreen === 'tool' ? undefined : { display: 'none' }}
             className="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5"
           >
-            {nonActionableMailSource ? (
+            {isExistingStayInformation ? (
+              <div className="flex flex-col gap-3.5">
+                {shownScreen === 'tool' ? (
+                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} />
+                ) : null}
+              </div>
+            ) : nonActionableMailSource ? (
               <div className="flex flex-col gap-3.5">
                 {shownScreen === 'tool' ? mailSourceNoActionNotice : null}
                 {readAs === 'payment' && activeEmail?.internetMessageId ? (
