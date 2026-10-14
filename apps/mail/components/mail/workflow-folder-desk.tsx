@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useParams } from 'react-router';
 import { useQueryState } from 'nuqs';
 import { useThread } from '@/hooks/use-threads';
@@ -9,8 +9,21 @@ import { WORKFLOW_FOLDER_NAV_ITEMS, isWorkflowFolderNavId } from '@/config/workf
 import { useWorkflowFolderSummary } from '@/hooks/use-workflow-folder-summary';
 import { Field, Notice, Section } from '@/components/nava-pane/pane-ui';
 import { Button } from '@/components/ui/button';
+import { MAIL_ACTIONS, type MailAction } from '../../../server-pilot/src/mail/action-labels.js';
 
 const PAGE_SIZE = 100;
+
+const MAIL_ACTION_LABELS: Record<MailAction, string> = {
+  quote_availability: 'Quote',
+  new_booking: 'New booking',
+  amend: 'Amendment',
+  cancel: 'Cancellation',
+  payment_proof: 'Payment proof',
+  billing: 'Billing',
+  group_event: 'Group/event',
+  other_actionable: 'Other to do',
+  no_action: 'Not for Nava',
+};
 
 const REVIEW_BUTTONS = [
   { value: 'right', title: 'Right', className: 'border-emerald-700 bg-emerald-700 hover:bg-emerald-800' },
@@ -29,13 +42,23 @@ export function WorkflowFolderDesk() {
   const queryClient = useQueryClient();
   const [threadId, setThreadId] = useQueryState('threadId');
   const [sourceMessageParam, setSourceMessageParam] = useQueryState('sourceMessageId');
+  const [setParam, setSetParam] = useQueryState('set');
+  const reviewMode = setParam === 'eval';
   const [reviewNote, setReviewNote] = useState('');
+  const [selectedAction, setSelectedAction] = useState<MailAction>('quote_availability');
   const isDemo = isFrontendOnlyDemo();
-  const { data: workflowSummary } = useWorkflowFolderSummary(Boolean(validFolder) && !isDemo);
+  const { data: workflowSummary } = useWorkflowFolderSummary(
+    Boolean(validFolder) && !isDemo,
+    reviewMode ? 'eval' : undefined,
+  );
 
   const listQuery = useInfiniteQuery(
     trpc.workflowFolders.list.infiniteQueryOptions(
-      { folder: validFolder ?? 'quotes', limit: PAGE_SIZE },
+      {
+        folder: validFolder ?? 'quotes',
+        limit: PAGE_SIZE,
+        ...(reviewMode ? { set: 'eval' as const } : {}),
+      },
       {
         initialCursor: '',
         getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
@@ -49,10 +72,31 @@ export function WorkflowFolderDesk() {
     () => listQuery.data?.pages.flatMap((page) => page.rows) ?? [],
     [listQuery.data?.pages],
   );
-  const currentRow = rows.find((row) => row.threadId === threadId);
+  const currentRow = reviewMode
+    ? rows.find((row) => row.threadId === threadId && row.sourceMessageId === sourceMessageParam) ??
+      rows.find((row) => row.threadId === threadId)
+    : rows.find((row) => row.threadId === threadId);
+  const activeMessageId = sourceMessageParam ?? currentRow?.sourceMessageId;
+  const openThread = useCallback(
+    async (id: string, sourceMessageId?: string) => {
+      await setSourceMessageParam(reviewMode ? sourceMessageId ?? null : null);
+      await setThreadId(id);
+    },
+    [reviewMode, setSourceMessageParam, setThreadId],
+  );
+
   const detailQuery = useQuery(
     trpc.workflowFolders.thread.queryOptions(
-      { folder: validFolder ?? 'quotes', threadId: threadId ?? '' },
+      {
+        folder: validFolder ?? 'quotes',
+        threadId: threadId ?? '',
+        ...(reviewMode
+          ? {
+              set: 'eval' as const,
+              ...(activeMessageId ? { messageId: activeMessageId } : {}),
+            }
+          : {}),
+      },
       { enabled: Boolean(validFolder && threadId) && !isDemo, staleTime: 20_000 },
     ),
   );
@@ -68,6 +112,11 @@ export function WorkflowFolderDesk() {
   const payload = extraction?.payload ?? null;
   const runs = detailQuery.data?.runs.filter((run) => run.triggerMessageId === selectedMessageId) ?? [];
   const selectedStats = validFolder ? workflowSummary?.[validFolder] : undefined;
+  const liveStats = selectedStats && 'threads' in selectedStats ? selectedStats : undefined;
+  const evalStats = selectedStats && 'total' in selectedStats ? selectedStats : undefined;
+  const folderCount = reviewMode
+    ? evalStats?.total ?? rows.length
+    : liveStats?.threads ?? rows.length;
 
   const reviewMutation = useMutation(
     trpc.workItems.adminReview.mutationOptions({
@@ -82,9 +131,46 @@ export function WorkflowFolderDesk() {
     }),
   );
 
+  const actionMutation = useMutation(
+    trpc.workflowFolders.setActionLabel.mutationOptions({
+      onSuccess: async (_result, variables) => {
+        const findNextUnmarked = (items: typeof rows) => {
+          const currentIndex = items.findIndex((row) => row.sourceMessageId === variables.messageId);
+          const afterCurrent =
+            currentIndex < 0
+              ? items
+              : [...items.slice(currentIndex + 1), ...items.slice(0, currentIndex)];
+          return afterCurrent.find(
+            (row) => row.sourceMessageId !== variables.messageId && !row.ownerAction,
+          );
+        };
+        let next = findNextUnmarked(rows);
+        let nextPage = listQuery;
+        while (!next && nextPage.hasNextPage) {
+          nextPage = await nextPage.fetchNextPage();
+          const loadedRows = nextPage.data?.pages.flatMap((page) => page.rows) ?? rows;
+          next = findNextUnmarked(loadedRows);
+        }
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: trpc.workflowFolders.summary.queryKey() }),
+          queryClient.invalidateQueries({ queryKey: trpc.workflowFolders.list.infiniteQueryKey() }),
+          queryClient.invalidateQueries({ queryKey: trpc.workflowFolders.thread.queryKey() }),
+        ]);
+        if (next) await openThread(next.threadId, next.sourceMessageId);
+      },
+    }),
+  );
+  const { mutate: mutateActionLabel, isPending: isActionPending } = actionMutation;
+
   useEffect(() => {
     setReviewNote('');
   }, [selectedMessageId]);
+
+  useEffect(() => {
+    if (selectedSourceMessage?.predictedAction) {
+      setSelectedAction(selectedSourceMessage.ownerAction ?? selectedSourceMessage.predictedAction);
+    }
+  }, [selectedMessageId, selectedSourceMessage?.ownerAction, selectedSourceMessage?.predictedAction]);
 
   useEffect(() => {
     if (listQuery.isLoading) return;
@@ -105,11 +191,6 @@ export function WorkflowFolderDesk() {
     })();
   }, [detailQuery.error, listQuery.isLoading, rows, setSourceMessageParam, setThreadId, threadId]);
 
-  const openThread = async (id: string) => {
-    await setSourceMessageParam(null);
-    await setThreadId(id);
-  };
-
   const recordReview = (decision: ReviewDecision) => {
     if (!selectedSourceMessage || !extraction) return;
     reviewMutation.mutate({
@@ -119,6 +200,73 @@ export function WorkflowFolderDesk() {
       ...(reviewNote.trim() ? { note: reviewNote.trim() } : {}),
     });
   };
+
+  const recordAction = useCallback(
+    (action: MailAction = selectedAction) => {
+      if (!reviewMode || !selectedSourceMessage?.predictedAction || isActionPending) return;
+      mutateActionLabel({ messageId: selectedSourceMessage.messageId, action });
+    },
+    [
+      isActionPending,
+      mutateActionLabel,
+      reviewMode,
+      selectedAction,
+      selectedSourceMessage?.messageId,
+      selectedSourceMessage?.predictedAction,
+    ],
+  );
+
+  const toggleReviewSet = async () => {
+    await setSourceMessageParam(null);
+    await setThreadId(null);
+    await setSetParam(reviewMode ? null : 'eval');
+  };
+
+  useEffect(() => {
+    if (!reviewMode) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"]'))
+      ) {
+        return;
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        recordAction();
+        return;
+      }
+      if (/^[1-9]$/.test(event.key)) {
+        event.preventDefault();
+        const action = MAIL_ACTIONS[Number(event.key) - 1];
+        if (action) {
+          setSelectedAction(action);
+          recordAction(action);
+        }
+        return;
+      }
+      if (event.key === 'j' || event.key === 'k') {
+        const selectedId = selectedMessageId ?? currentRow?.sourceMessageId;
+        const currentIndex = rows.findIndex((row) => row.sourceMessageId === selectedId);
+        const nextIndex = currentIndex + (event.key === 'j' ? 1 : -1);
+        const next = rows[nextIndex];
+        if (next) {
+          event.preventDefault();
+          void openThread(next.threadId, next.sourceMessageId);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    currentRow?.sourceMessageId,
+    openThread,
+    recordAction,
+    reviewMode,
+    rows,
+    selectedMessageId,
+  ]);
 
   if (!validFolder) {
     return <div className="p-8 text-sm text-muted-foreground">Workflow folder not found.</div>;
@@ -131,8 +279,21 @@ export function WorkflowFolderDesk() {
           <h1 className="truncate text-lg font-semibold">Quote Desk</h1>
           <p className="text-muted-foreground truncate text-xs">{folderTitle} · Nava workflow review</p>
         </div>
-        <div className="text-muted-foreground shrink-0 text-xs tabular-nums">
-          {selectedStats?.threads ?? rows.length} threads
+        <div className="flex shrink-0 items-center gap-3">
+          <Button
+            type="button"
+            size="sm"
+            variant={reviewMode ? 'default' : 'outline'}
+            aria-pressed={reviewMode}
+            onClick={() => void toggleReviewSet()}
+          >
+            Review set
+          </Button>
+          <span className="text-muted-foreground text-xs tabular-nums">
+            {reviewMode
+              ? `Marked ${evalStats?.marked ?? 0} / ${evalStats?.total ?? 0}`
+              : `${liveStats?.threads ?? rows.length} threads`}
+          </span>
         </div>
       </header>
 
@@ -141,7 +302,7 @@ export function WorkflowFolderDesk() {
           <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
             <h2 className="text-sm font-semibold">{folderTitle}</h2>
             <span className="text-muted-foreground text-xs tabular-nums">
-              {selectedStats?.threads ?? rows.length}
+              {folderCount}
             </span>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -152,17 +313,21 @@ export function WorkflowFolderDesk() {
                 Could not load this workflow folder: {folderErrorReason(listQuery.error?.message)}
               </Notice>
             ) : rows.length === 0 ? (
-              <p className="text-muted-foreground p-4 text-sm">No extracted emails in this folder yet.</p>
+              <p className="text-muted-foreground p-4 text-sm">
+                {reviewMode ? 'No messages in this review set yet.' : 'No extracted emails in this folder yet.'}
+              </p>
             ) : (
               <div className="divide-y">
                 {rows.map((row) => {
-                  const active = row.threadId === threadId;
+                  const active =
+                    row.threadId === threadId &&
+                    (!reviewMode || row.sourceMessageId === activeMessageId);
                   const chip = row.review?.decision ?? (row.prefilled ? 'To review' : 'Read');
                   return (
                     <button
                       key={`${row.threadId}:${row.sourceMessageId}`}
                       type="button"
-                      onClick={() => void openThread(row.threadId)}
+                      onClick={() => void openThread(row.threadId, row.sourceMessageId)}
                       aria-current={active ? 'true' : undefined}
                       className={`block w-full px-3 py-3 text-left transition-colors hover:bg-muted/60 ${active ? 'bg-muted' : ''}`}
                     >
@@ -174,10 +339,22 @@ export function WorkflowFolderDesk() {
                       </div>
                       <p className="mt-1 truncate text-[13px]">{row.subject}</p>
                       <div className="mt-2 flex items-center gap-1.5">
-                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${reviewChipClass(chip)}`}>
-                          {chip}
-                        </span>
-                        {row.action || row.kind ? (
+                        {reviewMode ? (
+                          row.ownerAction ? (
+                            <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
+                              Marked: {MAIL_ACTION_LABELS[row.ownerAction]}
+                            </span>
+                          ) : (
+                            <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                              Unmarked
+                            </span>
+                          )
+                        ) : (
+                          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${reviewChipClass(chip)}`}>
+                            {chip}
+                          </span>
+                        )}
+                        {!reviewMode && (row.action || row.kind) ? (
                           <span className="text-muted-foreground truncate text-[10px]">
                             {row.action ?? row.kind}
                           </span>
@@ -221,12 +398,21 @@ export function WorkflowFolderDesk() {
                       onChange={(event) => void setSourceMessageParam(event.target.value)}
                       className="max-w-40 rounded-md border bg-background px-2 py-1 text-xs"
                     >
-                      {detailQuery.data?.messages.map((message) => (
-                        <option key={message.messageId} value={message.messageId}>
-                          {formatMailTime(message.receivedAt)} · {message.subject}
-                          {message.extraction ? '' : ' · no read'}
-                        </option>
-                      ))}
+                      {detailQuery.data?.messages
+                        .filter(
+                          (message) =>
+                            !reviewMode ||
+                            rows.some(
+                              (row) =>
+                                row.threadId === threadId && row.sourceMessageId === message.messageId,
+                            ),
+                        )
+                        .map((message) => (
+                          <option key={message.messageId} value={message.messageId}>
+                            {formatMailTime(message.receivedAt)} · {message.subject}
+                            {message.extraction ? '' : ' · no read'}
+                          </option>
+                        ))}
                     </select>
                   </label>
                 </div>
@@ -257,7 +443,7 @@ export function WorkflowFolderDesk() {
 
         <aside aria-label="Nava result and review" className="flex min-h-0 flex-col bg-slate-50/70">
           <div className="shrink-0 border-b px-4 py-3">
-            <h2 className="text-sm font-semibold">Nava’s result</h2>
+            <h2 className="text-sm font-semibold">{reviewMode ? 'Action review' : 'Nava’s result'}</h2>
             {selectedSourceMessage ? (
               <p className="text-muted-foreground mt-1 truncate text-[11px]">
                 {selectedSourceMessage.sender} · {formatMailTime(selectedSourceMessage.receivedAt)}
@@ -265,7 +451,25 @@ export function WorkflowFolderDesk() {
             ) : null}
           </div>
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-            {selectedSourceMessage ? (
+            {reviewMode ? (
+              selectedSourceMessage?.predictedAction ? (
+                <ReviewSetActionSection
+                  messageId={selectedSourceMessage.messageId}
+                  predictedAction={selectedSourceMessage.predictedAction}
+                  selectedAction={selectedAction}
+                  isPending={actionMutation.isPending}
+                  error={actionMutation.error?.message ?? null}
+                  onActionChange={setSelectedAction}
+                  onRight={() => recordAction()}
+                />
+              ) : (
+                <Notice>
+                  {selectedSourceMessage
+                    ? 'No Nava action is available for this message.'
+                    : 'Choose a message from the review set.'}
+                </Notice>
+              )
+            ) : selectedSourceMessage ? (
               <>
                 <ReadAsSection extraction={extraction ?? null} workItemStatus={selectedSourceMessage.workItemStatus} />
                 <ExtractedFieldsSection payload={payload} />
@@ -291,11 +495,59 @@ export function WorkflowFolderDesk() {
       </div>
 
       <footer className="text-muted-foreground shrink-0 border-t bg-background px-4 py-2 text-xs tabular-nums">
-        {selectedStats?.read ?? 0} read · {selectedStats?.prefilled ?? 0} prefilled ·{' '}
-        {selectedStats?.reviewedRight ?? 0} reviewed right / {selectedStats?.reviewedWrong ?? 0} reviewed wrong ·{' '}
-        {selectedStats?.reviewedEdited ?? 0} edited
+        {reviewMode
+          ? 'Enter = Right · 1–9 = choose and save · j/k = previous/next'
+          : `${liveStats?.read ?? 0} read · ${liveStats?.prefilled ?? 0} prefilled · ${liveStats?.reviewedRight ?? 0} reviewed right / ${liveStats?.reviewedWrong ?? 0} reviewed wrong · ${liveStats?.reviewedEdited ?? 0} edited`}
       </footer>
     </main>
+  );
+}
+
+function ReviewSetActionSection({
+  messageId,
+  predictedAction,
+  selectedAction,
+  isPending,
+  error,
+  onActionChange,
+  onRight,
+}: {
+  messageId: string;
+  predictedAction: MailAction;
+  selectedAction: MailAction;
+  isPending: boolean;
+  error: string | null;
+  onActionChange: (action: MailAction) => void;
+  onRight: () => void;
+}) {
+  return (
+    <Section title="Review action">
+      <p className="text-sm font-medium">Nava says: {MAIL_ACTION_LABELS[predictedAction]}</p>
+      <label className="flex flex-col gap-1 text-xs font-medium text-slate-700">
+        Correct action
+        <select
+          aria-label="Correct action"
+          value={selectedAction}
+          onChange={(event) => onActionChange(event.target.value as MailAction)}
+          className="rounded-md border bg-white px-2 py-1.5 text-xs"
+        >
+          {MAIL_ACTIONS.map((action) => (
+            <option key={action} value={action}>
+              {MAIL_ACTION_LABELS[action]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <Button type="button" disabled={isPending} onClick={onRight} className="w-full">
+        Right
+      </Button>
+      {error ? (
+        <Notice tone="error" role="alert">
+          Could not save review-set action: {error}
+        </Notice>
+      ) : null}
+      <p className="text-muted-foreground text-[10px]">Message {messageId}</p>
+    </Section>
   );
 }
 
