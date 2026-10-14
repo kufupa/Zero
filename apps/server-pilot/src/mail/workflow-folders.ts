@@ -189,7 +189,17 @@ function latestModelActionLabels(db: DB, transportId: string, version?: string) 
     eq(mailActionLabel.transportId, transportId),
     eq(mailActionLabel.source, 'model'),
   ];
-  if (version) conditions.push(eq(mailActionLabel.version, version));
+  // One model version at a time, so the desk shows exactly the set the eval report scores.
+  conditions.push(
+    version
+      ? eq(mailActionLabel.version, version)
+      : sql`${mailActionLabel.version} = (
+          select newest.version from ${mailActionLabel} newest
+          where newest.transport_id = ${transportId} and newest.source = 'model'
+          order by newest.created_at desc, newest.id desc
+          limit 1
+        )`,
+  );
 
   return db.$with('workflow_review_set_labels').as(
     db

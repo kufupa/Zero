@@ -306,6 +306,40 @@ describe.skipIf(!TEST_DB_AVAILABLE)('workflow folder review set (disposable Post
     });
   });
 
+  it('does not mix versions when a newer model run covers fewer messages', async () => {
+    await withTestDb(async (db) => {
+      await seedTransport(db);
+      const threadId = 'review-set-partial-thread';
+      await seedThread(db, threadId);
+      await seedMessage(db, { messageId: 'review-set-partial-both', threadId });
+      await seedMessage(db, { messageId: 'review-set-partial-v1-only', threadId });
+      await seedModelLabel(db, {
+        messageId: 'review-set-partial-both',
+        action: 'cancel',
+        version: 'v1',
+        createdAt: new Date('2026-10-12T09:00:00.000Z'),
+      });
+      await seedModelLabel(db, {
+        messageId: 'review-set-partial-v1-only',
+        action: 'cancel',
+        version: 'v1',
+        createdAt: new Date('2026-10-12T09:00:00.000Z'),
+      });
+      await seedModelLabel(db, {
+        messageId: 'review-set-partial-both',
+        action: 'cancel',
+        version: 'v2',
+        createdAt: new Date('2026-10-12T10:00:00.000Z'),
+      });
+
+      const list = await listWorkflowFolderRows(db, TRANSPORT_ID, 'cancellations', 0, 10, {
+        set: 'eval',
+      });
+
+      expect(list.rows.map((row) => row.sourceMessageId)).toEqual(['review-set-partial-both']);
+    });
+  });
+
   it('uses the newest model version by default and supports an explicit version', async () => {
     await withTestDb(async (db) => {
       await seedTransport(db);
