@@ -6,7 +6,7 @@ import {
   mailboxTransport,
   message,
 } from '../src/db/schema/mail.js';
-import { mailExtraction } from '../src/db/schema/work.js';
+import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import {
   getWorkflowFolderSummary,
   getWorkflowFolderThread,
@@ -114,6 +114,32 @@ describe.skipIf(!TEST_DB_AVAILABLE)('workflow folders (disposable PostgreSQL)', 
       expect(summary.quotes.threads).toBe(1);
       expect(thread?.defaultMessageId).toBe(messageId);
       expect(thread?.messages[0]?.messageId).toBe(messageId);
+    });
+  });
+
+  it('counts a saved review of the shown extraction in the summary and list', async () => {
+    await withTestDb(async (db) => {
+      const threadId = 'workflow-folders-db-review-thread';
+      const messageId = 'workflow-folders-db-review-message';
+      await seedWorkflowThread(db, { threadId, messageId, kind: 'quote' });
+      const [extraction] = await db.select({ id: mailExtraction.id }).from(mailExtraction);
+      const [item] = await db
+        .insert(workItem)
+        .values({ transportId: TRANSPORT_ID, threadId, sourceMessageId: messageId, kind: 'quote' })
+        .returning({ id: workItem.id });
+      await db.insert(workEvent).values({
+        workItemId: item!.id,
+        actorKind: 'user',
+        type: 'admin_review',
+        value: { decision: 'wrong' },
+        evidence: { sourceMessageId: messageId, extractionId: extraction!.id, kind: 'quote', action: null },
+      });
+
+      const summary = await getWorkflowFolderSummary(db, TRANSPORT_ID);
+      const list = await listWorkflowFolderRows(db, TRANSPORT_ID, 'quotes', 0, 10);
+
+      expect(summary.quotes).toMatchObject({ threads: 1, reviewedWrong: 1, reviewedRight: 0 });
+      expect(list.rows[0]?.review?.decision).toBe('wrong');
     });
   });
 });
