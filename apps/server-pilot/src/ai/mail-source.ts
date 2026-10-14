@@ -151,8 +151,11 @@ function originalForwardSender(
     const domain = extractDomain(header[1]);
     const match = ruleForDomain(domain);
     if (!match) return null;
+    // HTML forwards put blank lines between header fields, so only non-blank lines count toward the lookahead.
     const subjectLine = lines
-      .slice(index + 1, index + 1 + FORWARD_SUBJECT_LOOKAHEAD_LINES)
+      .slice(index + 1)
+      .filter((candidate) => candidate.trim() !== '')
+      .slice(0, FORWARD_SUBJECT_LOOKAHEAD_LINES)
       .map((candidate) => FORWARDED_SUBJECT_LINE.exec(candidate)?.[1])
       .find((subject) => subject !== undefined);
     return { rule: match.rule, domain: match.registeredDomain, subject: subjectLine ?? null };

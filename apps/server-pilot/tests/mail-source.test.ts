@@ -264,6 +264,17 @@ describe('classifyMailSource', () => {
     ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
   });
 
+  it('reads the original Subject of an HTML forward whose header fields are blank-line separated', () => {
+    const result = classifyMailSource({
+      fromAddress: 'reservations@legacyhotels.co.za',
+      subject: 'FW: please check',
+      bodyText:
+        'From: H-Pay <noreply@hospitality.cloud>\n\nSent: Monday\n\nTo: reservations\n\nCc: finance\n\nSubject: Secure payment link\n\nHello',
+    });
+    expect(result.kind).toBe('system');
+    expect(result.source).toBe('H-Pay');
+  });
+
   it('skips only H-Pay payment-link notices; other H-Pay mail stays direct for finance triage', () => {
     expect(
       classifyMailSource({ fromAddress: 'finance@hospitality.cloud', subject: 'Payment confirmation', bodyText: '' }),
