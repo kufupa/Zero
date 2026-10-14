@@ -56,6 +56,18 @@ else
   exit 1
 fi
 
+# pnpm keeps each workspace package's direct deps in its own node_modules; link those too.
+package_links=0
+for package_json in "$worktree"/apps/*/package.json "$worktree"/packages/*/package.json; do
+  [[ -f $package_json ]] || continue
+  package_dir=$(dirname "$package_json")
+  shared_package_modules="$main_checkout/${package_dir#"$worktree"/}/node_modules"
+  if [[ ! -e $package_dir/node_modules && ! -L $package_dir/node_modules && -d $shared_package_modules ]]; then
+    ln -s "$shared_package_modules" "$package_dir/node_modules"
+    package_links=$((package_links + 1))
+  fi
+done
+
 hooks_path=$(git -C "$worktree" config --get core.hooksPath || true)
 if [[ $hooks_path != .husky/_ || ! -x "$worktree/.husky/_/pre-commit" ]]; then
   if ! (cd "$worktree" && pnpm exec husky >/dev/null 2>&1); then
@@ -70,4 +82,4 @@ if [[ $hooks_path != .husky/_ || ! -x "$worktree/.husky/_/pre-commit" ]]; then
   exit 1
 fi
 
-printf 'worktree-bootstrap PASS %q (node_modules=%s hooks=ready)\n' "$worktree" "$node_modules_action"
+printf 'worktree-bootstrap PASS %q (node_modules=%s package_links=%d hooks=ready)\n' "$worktree" "$node_modules_action" "$package_links"

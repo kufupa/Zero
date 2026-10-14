@@ -16,7 +16,7 @@ Each run writes a machine-readable result and a text summary under `<git-common-
 
 `--status` posts `local-ci/presubmit` with `gh api` only if the tested HEAD SHA is still current. `LOCAL_CI_DRY=1` skips memory gating, all real checks, and GitHub calls, but still exercises the shared lock and writes result reports. Tests can supply `LOCAL_CI_DRY_COMMAND` as a shell snippet to assert queue behavior; use only synthetic commands and fixtures.
 
-`worktree-bootstrap.sh` links the main checkout's existing `node_modules` into a worktree when absent, then runs `pnpm exec husky` if the worktree lacks a working `.husky/_/pre-commit` shim. It never runs `pnpm install` or postinstall. Re-running it leaves an existing dependency directory/link and hook shim intact.
+`worktree-bootstrap.sh` links the main checkout's existing root and per-package (`apps/*`, `packages/*`) `node_modules` into a worktree when absent, then runs `pnpm exec husky` if the worktree lacks a working `.husky/_/pre-commit` shim. It never runs `pnpm install` or postinstall. Re-running it leaves an existing dependency directory/link and hook shim intact. The links share the main checkout's install, so a branch that adds a dependency still needs that dependency installed in the main checkout.
 
 Run the targeted plain-bash test with:
 
