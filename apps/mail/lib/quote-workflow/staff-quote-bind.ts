@@ -270,6 +270,11 @@ function hasMarkupOrControl(value: string): boolean {
   return [...value].some((character) => character === '<' || character === '>' || character.codePointAt(0)! <= 0x1f);
 }
 
+// Staff labels such as "Children < 12" are plain text and every renderer escapes them, so only control characters fail.
+function hasControl(value: string): boolean {
+  return [...value].some((character) => character.codePointAt(0)! <= 0x1f);
+}
+
 function shortRefusalReason(raw: string): string {
   const firstLine = raw.split(/\r?\n/, 1)[0]!;
   const cleaned = [...firstLine]
@@ -1042,7 +1047,7 @@ function readDinnerAddOn(value: unknown): StaffQuoteAllocation['dinnerAddOn'] | 
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
   if (
-    typeof raw.label !== 'string' || !raw.label.trim() || raw.label.length > 140 || hasMarkupOrControl(raw.label) ||
+    typeof raw.label !== 'string' || !raw.label.trim() || raw.label.length > 140 || hasControl(raw.label) ||
     !Number.isSafeInteger(raw.amountMinor) || (raw.amountMinor as number) <= 0 ||
     !Number.isSafeInteger(raw.totalMinor) || (raw.totalMinor as number) <= 0 ||
     !['per_person_per_night', 'per_room_per_night', 'per_person'].includes(String(raw.unit))

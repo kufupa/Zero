@@ -188,10 +188,10 @@ describe('staff quote HMS job binding', () => {
     expect(result).toMatchObject({ status: 'ok', staffQuote: { workflowRunId: 'workflow-1' } });
   });
 
-  it('labels a server-priced dinner fallback as B&B and carries the verified add-on', async () => {
+  it.each(['Dinner buffet', 'Dinner buffet (Children < 12)'])('labels a server-priced dinner fallback as B&B and carries the verified add-on: %s', async (label) => {
     const dinnerGroups = groups.map((group) => ({ ...group, board: 'dinner_bb' as const }));
     const dinnerAddOn = {
-      label: 'Dinner buffet',
+      label,
       amountMinor: 25_000,
       unit: 'per_person_per_night' as const,
       totalMinor: 50_000,

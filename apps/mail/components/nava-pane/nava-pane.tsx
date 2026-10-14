@@ -664,7 +664,7 @@ export function NavaPane({
       const greetingName = senderName.toLowerCase() === senderEmail ? '' : senderName;
       const html = missingQuoteDetailsWrapperHtml(greetingName, fields, staffSignerName);
       if (
-        !quoteSession.reviewedReplyHtml.trim() ||
+        (!quoteSession.reviewedReplyHtml.trim() && !quoteSession.reviewedReplyEdited) ||
         (quoteSession.reviewedReplySource === 'missing_quote_details' && quoteSession.reviewedReplyHtml !== html)
       ) {
         dispatchQuote({ type: 'set_reviewed_reply', html, source: 'missing_quote_details' });
@@ -679,6 +679,7 @@ export function NavaPane({
     activeEmail?.senderName,
     quoteSession.analysis,
     quoteSession.groups,
+    quoteSession.reviewedReplyEdited,
     quoteSession.reviewedReplyHtml,
     quoteSession.reviewedReplySource,
     staffSignerName,
