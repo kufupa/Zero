@@ -41,6 +41,37 @@ const LANE_OWNER = 'hms-ai-worker-111';
 const normalizer = (await import('../tooling/playwright-quote/quote-contract.mjs' as string)) as {
   normalizeQuoteRequest: (input: unknown) => { ok: boolean; issues: unknown[] };
 };
+type ReaderRequest = {
+  propertyCode: string;
+  arrivalDate: string;
+  departureDate: string;
+  rooms: Array<{ id: string; quantity: number; adults: number; children: number; childAges: number[] }>;
+};
+type ReaderNight = {
+  date: string;
+  inventory: number;
+  price?: { amount: string; currency: string } | null;
+  restricted?: boolean;
+  rateAvailable?: boolean;
+  restrictions?: Record<string, unknown>;
+};
+type ReaderOption = {
+  room: { code: string; label?: string };
+  rate: { code: string; label: string };
+  availability: string;
+  eligibility?: string;
+  nightly: ReaderNight[];
+};
+const quoteFixtureTool = (await import('../tooling/playwright-quote/fetch-quote.mjs' as string)) as {
+  extractOptions: (
+    request: ReaderRequest,
+    room: ReaderRequest['rooms'][number],
+    windows: Array<{ data: unknown; calendar: unknown }>,
+  ) => { options: ReaderOption[]; completeness: Record<string, unknown> };
+};
+const quoteFixtures = (await import('../tooling/playwright-quote/fetch-quote-fixtures.mjs' as string)) as {
+  manyRoomSource: (additionalRoomCount: number) => { data: unknown; calendar: unknown };
+};
 
 afterEach(() => {
   paneStayLookupLoaders.lock = null;
@@ -101,6 +132,69 @@ const QUOTE_RESULT: QuoteEnvelope = {
     { id: 'group-2', outcome: 'unavailable', options: [] },
   ],
 };
+
+// Reuse the sanitized multi-room/night source fixture from fetch-quote-fixtures.mjs.
+const NIGHTLY_REQUEST: AvailabilityRequest = {
+  kind: 'availability',
+  arrival: '2026-09-24',
+  departure: '2026-09-27',
+  rooms: [{ roomType: 'All room types', quantity: 2, adults: 1, childAges: [] }],
+};
+const nightlyDates = ['2026-09-24', '2026-09-25', '2026-09-26'];
+const NIGHTLY_TOOL_REQUEST = quoteRequestFor(NIGHTLY_REQUEST) as unknown as ReaderRequest;
+
+function nightlyQuoteResultFromSavedFixture(): QuoteEnvelope {
+  const source = quoteFixtures.manyRoomSource(24);
+  const extraction = quoteFixtureTool.extractOptions(NIGHTLY_TOOL_REQUEST, NIGHTLY_TOOL_REQUEST.rooms[0]!, [
+    { data: source.data, calendar: source.calendar },
+  ]);
+  const options = extraction.options.map((option) => ({
+    room: option.room,
+    rate: option.rate,
+    availability: option.availability,
+    eligibility: option.eligibility,
+    nightly: option.nightly.map((night) => ({ ...night })),
+  }));
+  const twin = options.find((option) => option.room.code === 'STWN');
+  if (!twin) throw new Error('saved availability fixture is missing its twin row');
+  const firstNight = twin.nightly.find((night) => night.date === '2026-09-24');
+  const restrictedNight = twin.nightly.find((night) => night.date === '2026-09-26');
+  if (!firstNight || !restrictedNight) throw new Error('saved availability fixture is missing a requested night');
+  // Isolate explicit unknown, sold, and restricted cases from the saved source projection.
+  firstNight.inventory = 0;
+  firstNight.price = null;
+  twin.nightly = twin.nightly.filter((night) => night.date !== '2026-09-25');
+  restrictedNight.restricted = true;
+  restrictedNight.rateAvailable = false;
+  twin.availability = 'restricted';
+  twin.eligibility = 'conditional';
+
+  const completeness = {
+    ...extraction.completeness,
+    search: 'partial',
+    requiredFacts: 'partial',
+    returnedOptions: options.length,
+    detailOptions: 0,
+    matchingRowsUnseen: false,
+  };
+  return {
+    outcome: 'partial',
+    observedAt: '2026-09-27T09:00:00.000Z',
+    searchCompleteness: { status: 'partial', searchCount: 1, distinctSignatures: 1 },
+    groups: [
+      {
+        id: 'group-1',
+        request: NIGHTLY_TOOL_REQUEST.rooms[0],
+        requestedOccupancy: NIGHTLY_TOOL_REQUEST.rooms[0],
+        outcome: 'partial',
+        completeness,
+        options,
+      },
+    ],
+  };
+}
+
+const NIGHTLY_QUOTE_RESULT = nightlyQuoteResultFromSavedFixture();
 
 function lockWith(acquired: boolean): PaneStayLock {
   const lock = createPropertyReadLock({
@@ -299,18 +393,117 @@ describe('U10 availability probe (pure)', () => {
     expect(bare.groups[0]!.options[0]).toEqual({ room: 'X', rate: null, availability: 'unknown' });
   });
 
+  it('keeps every reader room and night with stock, requested count, nightly price and completeness', () => {
+    const snapshot = availabilitySnapshotOf(NIGHTLY_QUOTE_RESULT, NIGHTLY_REQUEST);
+    expect(snapshot).toMatchObject({
+      observedAt: '2026-09-27T09:00:00.000Z',
+      searchCompleteness: { status: 'partial', searchCount: 1, distinctSignatures: 1 },
+      groups: [
+        {
+          requestedCount: 2,
+          completeness: {
+            search: 'partial',
+            requiredFacts: 'partial',
+            sourceOptions: 26,
+            returnedOptions: 26,
+            matchingRowsUnseen: false,
+          },
+        },
+      ],
+    });
+
+    const group = snapshot.groups[0]!;
+    expect(group.options).toHaveLength(26);
+    expect(group.options.every((option) => option.nightly?.length === nightlyDates.length)).toBe(true);
+
+    const queen = group.options.find((option) => option.room === 'STQN')!;
+    expect(queen).toMatchObject({
+      roomLabel: 'Standard Queen',
+      rateLabel: 'Best Available Rate',
+      eligibility: 'verified',
+      nightly: nightlyDates.map((date) => ({
+        date,
+        availableCount: 3,
+        requestedCount: 2,
+        stockStatus: 'available',
+        price: {
+          status: 'known',
+          amount: '1780.00',
+          currency: 'ZAR',
+          ratePlan: 'BAR',
+          ratePlanLabel: 'Best Available Rate',
+        },
+      })),
+    });
+
+    const twin = group.options.find((option) => option.room === 'STWN')!;
+    expect(twin).toMatchObject({
+      rate: 'BAR',
+      rateLabel: 'Best Available Rate',
+      eligibility: 'conditional',
+      nightly: [
+        {
+          date: '2026-09-24',
+          availableCount: 0,
+          requestedCount: 2,
+          stockStatus: 'sold',
+          price: {
+            status: 'unknown',
+            amount: null,
+            currency: null,
+            ratePlan: 'BAR',
+            ratePlanLabel: 'Best Available Rate',
+          },
+        },
+        {
+          date: '2026-09-25',
+          availableCount: null,
+          requestedCount: 2,
+          stockStatus: 'unknown',
+          price: { status: 'unknown', amount: null, currency: null },
+        },
+        {
+          date: '2026-09-26',
+          availableCount: 3,
+          requestedCount: 2,
+          stockStatus: 'restricted',
+          price: {
+            status: 'known',
+            amount: '1780.00',
+            currency: 'ZAR',
+            ratePlan: 'BAR',
+            ratePlanLabel: 'Best Available Rate',
+          },
+        },
+      ],
+    });
+  });
+
   it('reads under the property lock, and maps busy, unavailable, refused and failed reads to job outcomes', async () => {
     const [request] = availabilityRequestsFor(PAYLOAD) as AvailabilityRequest[];
     const acquisition = { tryOnce: true };
-    const spawn = vi.fn(async () => QUOTE_RESULT);
+    const spawn = vi.fn(async () => NIGHTLY_QUOTE_RESULT);
     availabilityProbeLoaders.spawn = spawn;
     const passThrough = { withLock: async (fn: () => Promise<unknown>) => fn() } as unknown as PaneStayLock;
-    expect(await probeAvailability(request!, { lock: () => passThrough, acquisition })).toMatchObject({
+    const probeRead = await probeAvailability(NIGHTLY_REQUEST, { lock: () => passThrough, acquisition });
+    expect(probeRead).toMatchObject({
       outcome: 'read',
       searchOutcome: 'partial',
-      availableOptions: 1,
+      availableOptions: 25,
+      observedAt: '2026-09-27T09:00:00.000Z',
     });
-    expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ propertyCode: 'HRCEN' }));
+    expect('groups' in probeRead).toBe(true);
+    if ('groups' in probeRead) {
+      expect(probeRead.groups[0]?.requestedCount).toBe(2);
+      expect(probeRead.groups[0]?.options.find((option) => option.room === 'STQN')?.nightly?.[0]).toMatchObject({
+        date: '2026-09-24',
+        availableCount: 3,
+        requestedCount: 2,
+      });
+    }
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ propertyCode: 'HRCEN', arrivalDate: '2026-09-24', departureDate: '2026-09-27' }),
+    );
 
     expect(await probeAvailability(request!, { lock: () => null, acquisition })).toEqual({
       outcome: 'refused_lock_unavailable',
