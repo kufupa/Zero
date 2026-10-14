@@ -92,6 +92,7 @@ export const READ_PROCEDURES: ReadonlySet<string> = new Set([
   'workstation.hmsQueueStatus',
   'workstation.listThreadQuoteRevisions',
   'workstation.outlookSync.status',
+  'workstation.outlookSync.statusForActiveMailbox',
   'workstation.quoteRunScreenshot',
   'workstation.staffQuoteJob',
   'workstation.staffQuoteSource',
@@ -115,6 +116,8 @@ export const KNOWN_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
   'paneStayLookup.queueBatch',
   'paneStayLookup.queueParty',
   'workItems.acceptFields',
+  // Owner console review mark (admin only); never from the staff pane.
+  'workItems.adminReview',
   'workItems.recordActions',
   'workstation.queueStaffQuote',
   'drafts.saveReply',
