@@ -260,8 +260,7 @@ function stockStatusOf(
     night?.rateAvailable === false ||
     restrictions?.combClosed === true ||
     (date === request?.arrival && restrictions?.combClosedToArrival === true) ||
-    (date === request?.departure && restrictions?.combClosedToDeparture === true) ||
-    optionAvailability === 'restricted'
+    (date === request?.departure && restrictions?.combClosedToDeparture === true)
   ) {
     return 'restricted';
   }
