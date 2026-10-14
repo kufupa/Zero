@@ -121,7 +121,11 @@ const systemExamples = [
   },
   {
     name: 'H-Pay payment notice sender',
-    input: { fromAddress: 'notifications@hospitality.cloud', subject: 'Payment received', bodyText: '' },
+    input: {
+      fromAddress: 'no-reply@hospitality.cloud',
+      subject: 'The Centurion Hotel Booking Secure Payment Link',
+      bodyText: '',
+    },
     kind: 'system',
     source: 'H-Pay',
     reason: 'sender_domain:hospitality.cloud',
@@ -247,6 +251,23 @@ describe('classifyMailSource', () => {
         bodyText: 'From: Profitroom <noreply@profitroom.com>\nSent: today\nSubject: Default contact form',
       }),
     ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
+  });
+
+  it('keeps a renamed forward of a Profitroom contact form direct, from its original Subject line', () => {
+    expect(
+      classifyMailSource({
+        fromAddress: 'reservations@legacyhotels.co.za',
+        subject: 'FW: Guest enquiry',
+        bodyText:
+          'From: Profitroom <noreply@profitroom.com>\nSent: Monday\nTo: reservations\nSubject: Default contact form\n\nHello',
+      }),
+    ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
+  });
+
+  it('skips only H-Pay payment-link notices; other H-Pay mail stays direct for finance triage', () => {
+    expect(
+      classifyMailSource({ fromAddress: 'finance@hospitality.cloud', subject: 'Payment confirmation', bodyText: '' }),
+    ).toEqual({ kind: 'direct', source: null, reason: 'unskipped_subject:h-pay' });
   });
 
   it('does not skip an internal forward on a brand-prefixed subject alone', () => {

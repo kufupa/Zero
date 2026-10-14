@@ -28,6 +28,8 @@ type MailSourceRule = {
   bookingPhrase?: string;
   /** Subjects a vendor uses to relay a person's own enquiry (e.g. a website contact form); that mail stays direct. */
   directSubjectPatterns?: readonly RegExp[];
+  /** When set, only these subjects are skipped; other mail from the sender stays direct for triage to route. */
+  skipSubjectPatterns?: readonly RegExp[];
 };
 
 /**
@@ -158,6 +160,8 @@ export const MAIL_SOURCE_RULES: readonly MailSourceRule[] = [
     kind: 'system',
     source: 'H-Pay',
     domains: ['hospitality.cloud'],
+    // Payment-link notices only; H-Pay finance mail still reaches money-billing triage.
+    skipSubjectPatterns: [/\bsecure\s+payment\s+link\b/i],
   },
   {
     id: 'reviewpro',
@@ -199,6 +203,9 @@ export const MAIL_SOURCE_RULES: readonly MailSourceRule[] = [
 const INTERNAL_FORWARD_DOMAINS = ['legacyhotels.co.za'] as const;
 const FORWARD_SUBJECT_PREFIX = /^(?:(?:fw|fwd|forwarded)\s*:\s*)+/i;
 const FORWARDED_HEADER_LINE = /^\s*(?:>\s*)*(?:from|sender)\s*:\s*(.*?)\s*$/i;
+const FORWARDED_SUBJECT_LINE = /^\s*(?:>\s*)*subject\s*:\s*(.*?)\s*$/i;
+/** Header lines after the forwarded From line that may hold its Subject (Sent, To, Cc, Subject). */
+const FORWARD_SUBJECT_LOOKAHEAD_LINES = 6;
 const EMAIL_ADDRESS = /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z0-9-]{2,63}/i;
 const HTML_TAG = /<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*)?\s*\/?>/i;
 const HTML_BLOCK_TAG = /<\/?(?:address|article|aside|blockquote|body|br|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|html|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)(?:\s+[^<>]*)?\s*\/?>/gi;
@@ -235,12 +242,20 @@ function matchedSource(
   return { kind: rule.kind, source: rule.source, reason };
 }
 
-function relaysDirectEnquiry(rule: MailSourceRule, subject: string | null | undefined): boolean {
-  return Boolean(rule.directSubjectPatterns?.some((pattern) => pattern.test(subject ?? '')));
-}
-
-function relayedEnquiry(rule: MailSourceRule): MailSourceClassification {
-  return { kind: 'direct', source: null, reason: `relayed_enquiry:${rule.id}` };
+/** A known sender's mail stays direct when it relays a person's enquiry, or falls outside the rule's skip subjects. */
+function directExemption(
+  rule: MailSourceRule,
+  subjects: readonly (string | null | undefined)[],
+): MailSourceClassification | null {
+  const matches = (patterns: readonly RegExp[] | undefined) =>
+    subjects.some((subject) => patterns?.some((pattern) => pattern.test(subject ?? '')));
+  if (matches(rule.directSubjectPatterns)) {
+    return { kind: 'direct', source: null, reason: `relayed_enquiry:${rule.id}` };
+  }
+  if (rule.skipSubjectPatterns && !matches(rule.skipSubjectPatterns)) {
+    return { kind: 'direct', source: null, reason: `unskipped_subject:${rule.id}` };
+  }
+  return null;
 }
 
 function plainTextBody(bodyText: string): string {
@@ -268,14 +283,21 @@ function plainTextBody(bodyText: string): string {
     });
 }
 
-function originalForwardSender(bodyText: string): { rule: MailSourceRule; domain: string } | null {
-  const firstPart = bodyText.slice(0, MAX_FORWARD_HEADER_CHARS);
-  for (const line of firstPart.split(/\r?\n/)) {
+function originalForwardSender(
+  bodyText: string,
+): { rule: MailSourceRule; domain: string; subject: string | null } | null {
+  const lines = bodyText.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
     const header = FORWARDED_HEADER_LINE.exec(line);
     if (!header) continue;
     const domain = extractDomain(header[1]);
     const match = ruleForDomain(domain);
-    return match ? { rule: match.rule, domain: match.registeredDomain } : null;
+    if (!match) return null;
+    const subjectLine = lines
+      .slice(index + 1, index + 1 + FORWARD_SUBJECT_LOOKAHEAD_LINES)
+      .map((candidate) => FORWARDED_SUBJECT_LINE.exec(candidate)?.[1])
+      .find((subject) => subject !== undefined);
+    return { rule: match.rule, domain: match.registeredDomain, subject: subjectLine ?? null };
   }
   return null;
 }
@@ -298,14 +320,16 @@ export function classifyMailSource(input: {
   const senderDomain = extractDomain(input.fromAddress);
   const senderMatch = ruleForDomain(senderDomain);
   if (senderMatch) {
-    if (relaysDirectEnquiry(senderMatch.rule, input.subject)) return relayedEnquiry(senderMatch.rule);
+    const exemption = directExemption(senderMatch.rule, [input.subject]);
+    if (exemption) return exemption;
     return matchedSource(senderMatch.rule, `sender_domain:${senderMatch.registeredDomain}`);
   }
 
   if (isInternalForwardSender(senderDomain)) {
     const forwardedSender = originalForwardSender(plainTextBody(input.bodyText ?? ''));
     if (forwardedSender) {
-      if (relaysDirectEnquiry(forwardedSender.rule, input.subject)) return relayedEnquiry(forwardedSender.rule);
+      const exemption = directExemption(forwardedSender.rule, [input.subject, forwardedSender.subject]);
+      if (exemption) return exemption;
       return matchedSource(forwardedSender.rule, `forwarded_sender:${forwardedSender.domain}`);
     }
 
