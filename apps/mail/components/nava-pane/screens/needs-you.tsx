@@ -481,6 +481,11 @@ export function NeedsYouWebControl({
 }) {
   const list = useNeedsYou(trpc);
   const [open, setOpen] = useState(false);
+  // Mail can arrive while the dialog is closed, so opening it re-reads the list as well as closing it.
+  const show = () => {
+    setOpen(true);
+    list.reload();
+  };
   const close = () => {
     setOpen(false);
     list.reload();
@@ -489,7 +494,7 @@ export function NeedsYouWebControl({
   return (
     <>
       <Button
-        onClick={() => setOpen(true)}
+        onClick={show}
         variant="ghost"
         size="sm"
         className="hover:bg-accent/50 h-10 shrink-0 rounded-lg border-none bg-transparent px-3 text-sm font-medium"
@@ -499,7 +504,7 @@ export function NeedsYouWebControl({
       <Dialog
         open={open}
         onOpenChange={(next) => {
-          if (next) setOpen(true);
+          if (next) show();
           else close();
         }}
       >

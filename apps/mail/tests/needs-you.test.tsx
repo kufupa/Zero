@@ -528,6 +528,14 @@ describe('Needs-you webmail control', () => {
     expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
   });
 
+  it('opening the dialog re-reads the list, so mail that arrived while it was closed shows', async () => {
+    render(<NeedsYouWebControl trpc={trpcClient} onOpenThread={() => {}} />);
+    const button = await screen.findByRole('button', { name: 'Needs you (2)' });
+    listQuery.mockResolvedValue([...TWO_OPEN, row({ id: 'wi-new', subject: 'New arrival' })]);
+    fireEvent.click(button);
+    expect(await screen.findByRole('button', { name: 'Open New arrival' })).toBeDefined();
+  });
+
   it('a full list reads 200+ on the webmail count', async () => {
     listQuery.mockResolvedValue(
       Array.from({ length: 200 }, (_, i) => row({ id: `wi-${i}`, subject: `Item ${i}` })),
