@@ -202,6 +202,7 @@ function fallbackLunaCarrier(treatAs: QuoteTreatAs, analysis: QuoteWorkflowAnaly
     groups: analysis.groups.map((group) => ({
       arrival: group.arrivalDate ?? null,
       departure: group.departureDate ?? null,
+      dateEvidence: null,
       rooms: group.quantity ?? null,
       adultsPerRoom: group.adults ?? null,
       childAges: [...group.childrenAges],
