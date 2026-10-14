@@ -233,3 +233,7 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 107 | FlowWeaver = 0/10 (1★); OpenSail too small; never test them | ✅ | B1 re-scoped | — |
 | 108 | Research Agno | 🟡 | R8 lane (Agno section) | R8 report |
 | 109 | Create starts the moment #242 merges | 🟡 | — | After #242 |
+| 110 | Split every ingested mailbox (Da Vinci 5 aliases + others in quarantine) into its own scoped inbox: inbound + outbound per mailbox, mirrored locally; later logins see only granted mailboxes (no logins now) | 🟡 | M2 lane; FACTS §7 | Design note + slice-1 PR + prod dry-run |
+| 111 | Dedup the same email across inboxes so extraction/HMS prefill/prefetch run once | 🟡 | M2 lane | Canonical message + per-mailbox membership |
+| 112 | Builder recency bar = commit in the past week; Heym too confusing for staff; Sim only if our own key works; Langflow/Dify only if staff can use them via chat | ✅ | R8 + B1 re-scoped | Builder decision |
+| 113 | Wrap up what's needed from the owner before sleep | ✅ | Coordinator reply 2026-10-15 ~00:40Z | — |
