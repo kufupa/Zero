@@ -126,6 +126,22 @@ describe('golden offer PDF parsing', () => {
     });
   });
 
+  it('collects every room entry on a line before deriving the total', () => {
+    const answer = parseOfferPdfAnswer('2 x Standard Queen, 1 x Deluxe Twin');
+
+    expect(answer.rooms).toEqual([
+      { count: 2, room_type: 'Standard Queen' },
+      { count: 1, room_type: 'Deluxe Twin' },
+    ]);
+    expect(answer.room_count).toBe(3);
+  });
+
+  it('leaves the room count unknown when a room entry on a line is only partly parsed', () => {
+    const answer = parseOfferPdfAnswer('2 x Standard Queen, 1 x Rollaway');
+
+    expect(answer.room_count).toBeNull();
+  });
+
   it('collects every fully labelled stay from an offer PDF', () => {
     const answer = parseOfferPdfAnswer(
       [
@@ -879,6 +895,27 @@ describe('cancellation evidence matching', () => {
     expect(
       resolveCancellationEvidence(request.body, [replyEvidence]),
     ).toEqual({ conf, staff_message_ids: [reply.id], confirmed: true });
+  });
+
+  it('does not count a denied cancellation as completion evidence', async () => {
+    const module = await import('../scripts/golden-set.js');
+    const cancellationReplyEvidence = Reflect.get(module, 'cancellationReplyEvidence');
+    expect(cancellationReplyEvidence).toBeTypeOf('function');
+    if (typeof cancellationReplyEvidence !== 'function') return;
+
+    const conf = '12345678-1';
+    const evidence = cancellationReplyEvidence({
+      id: 'cancel-denied-reply',
+      thread_id: 'cancel-denied-thread',
+      direction: 'outbound',
+      body: `Reservation ${conf} has not been cancelled.`,
+      body_is_html: false,
+    });
+
+    expect(evidence).toBeNull();
+    expect(
+      resolveCancellationEvidence(`Please cancel ${conf}`, evidence ? [evidence] : []),
+    ).toBeNull();
   });
 });
 

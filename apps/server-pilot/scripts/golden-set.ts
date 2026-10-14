@@ -408,26 +408,55 @@ export function parseOfferPdfAnswer(
     '(?:(?:standard|deluxe|superior|executive|classic|luxury|accessible|family)\\s+)?(?:single|double|twin|king|queen|suite|family)';
   const rooms: GoldenRoom[] = [];
   let explicitRoomCount: number | null = null;
+  let hasPartialRoomEntry = false;
   for (const line of lines) {
-    const countFirst =
-      new RegExp(String.raw`\b(\d{1,3})\s*[x×]?\s*(${roomTypePattern})\s+rooms?\b`, 'iu').exec(
-        line,
-      ) ?? new RegExp(String.raw`\b(\d{1,3})\s*[x×]\s*(${roomTypePattern})\b`, 'iu').exec(line);
-    const typeFirst = new RegExp(
+    const countFirstPattern = new RegExp(
+      String.raw`\b(\d{1,3})\s*[x×]\s*(${roomTypePattern})\b`,
+      'giu',
+    );
+    const countFirstMatches = [...line.matchAll(countFirstPattern)];
+    const countFirstRoomsPattern = new RegExp(
+      String.raw`\b(\d{1,3})\s+(${roomTypePattern})\s+rooms?\b`,
+      'giu',
+    );
+    const countFirstRoomsMatches = [...line.matchAll(countFirstRoomsPattern)];
+    const typeFirstPattern = new RegExp(
       String.raw`\b(${roomTypePattern})\s*(?:rooms?\s*)?[x×:]\s*(\d{1,3})\b`,
-      'iu',
-    ).exec(line);
+      'giu',
+    );
+    const typeFirstMatches = [...line.matchAll(typeFirstPattern)];
     const labeledType = new RegExp(
       String.raw`(?:room|accommodation)\s+(?:type|category)\s*[:=\-]\s*(${roomTypePattern})\b`,
       'iu',
     ).exec(line);
-    if (countFirst?.[1] && countFirst[2]) {
-      rooms.push({ count: Number(countFirst[1]), room_type: titleCaseRoomType(countFirst[2]) });
-      continue;
+    for (const match of countFirstMatches) {
+      if (match[1] && match[2]) {
+        rooms.push({ count: Number(match[1]), room_type: titleCaseRoomType(match[2]) });
+      }
     }
-    if (typeFirst?.[1] && typeFirst[2]) {
-      rooms.push({ count: Number(typeFirst[2]), room_type: titleCaseRoomType(typeFirst[1]) });
-      continue;
+    for (const match of countFirstRoomsMatches) {
+      if (match[1] && match[2]) {
+        rooms.push({ count: Number(match[1]), room_type: titleCaseRoomType(match[2]) });
+      }
+    }
+    for (const match of typeFirstMatches) {
+      if (match[1] && match[2]) {
+        rooms.push({ count: Number(match[2]), room_type: titleCaseRoomType(match[1]) });
+      }
+    }
+    const countFirstMarkers = line.match(/\b\d{1,3}\s*[x×]/giu) ?? [];
+    const countFirstRoomsMarkers =
+      line.match(/\b\d{1,3}\s+(?![x×]\s)[^,;|]{1,50}?\s+rooms?\b/giu) ?? [];
+    const typeFirstMarkers = line.match(/[x×:]\s*\d{1,3}\b/giu) ?? [];
+    const hasRoomContext =
+      /\brooms?\b/iu.test(line) ||
+      new RegExp(String.raw`\b${roomTypePattern}\b`, 'iu').test(line);
+    if (
+      countFirstMarkers.length > countFirstMatches.length ||
+      countFirstRoomsMarkers.length > countFirstRoomsMatches.length ||
+      (hasRoomContext && typeFirstMarkers.length > typeFirstMatches.length)
+    ) {
+      hasPartialRoomEntry = true;
     }
     const roomCount = /\b(?:total\s+)?(?:no\.?\s+of\s+)?rooms?\s*[:=-]\s*(\d{1,3})\b/iu.exec(line);
     if (roomCount?.[1]) explicitRoomCount = Number(roomCount[1]);
@@ -440,9 +469,13 @@ export function parseOfferPdfAnswer(
     rooms.push({ count: explicitRoomCount, room_type: null });
   }
   const knownRoomCounts = rooms.map((room) => room.count);
+  const hasCompleteRoomCounts =
+    !hasPartialRoomEntry &&
+    knownRoomCounts.length > 0 &&
+    knownRoomCounts.every((count) => count !== null);
   const roomCount =
     explicitRoomCount ??
-    (knownRoomCounts.length && knownRoomCounts.every((count) => count !== null)
+    (hasCompleteRoomCounts
       ? knownRoomCounts.reduce<number>((total, count) => total + (count ?? 0), 0)
       : null);
 
@@ -1731,6 +1764,13 @@ function looksLikeChangeConfirmation(message: CorpusMessage): boolean {
   );
 }
 
+const CANCELLATION_DENIAL_PATTERN = new RegExp(
+  String.raw`\b(?:${CHANGE_REFUSAL_TERMS}|not|never|does\s+not|doesn't|did\s+not|didn't|` +
+    String.raw`(?:has|have|had|is|are|was|were)n['’]t)\b[\s\S]{0,100}\b` +
+    String.raw`(?:cancel(?:l?ed|lation)?|process(?:ed)?|confirm(?:ed|ation)?|complet(?:e|ed))\b`,
+  'iu',
+);
+
 export function cancellationReplyEvidence(
   message: CorpusMessage,
 ): CancellationReplyEvidence | null {
@@ -1738,7 +1778,9 @@ export function cancellationReplyEvidence(
   if (
     !/\b(?:cancell?ed|cancellation (?:has been )?(?:processed|confirmed|completed)|reservation (?:has been )?cancell?ed)\b/iu.test(
       text,
-    ) || /\b(?:cannot|can't|unable|not possible|not yet|please cancel)\b/iu.test(text)
+    ) ||
+    CANCELLATION_DENIAL_PATTERN.test(text) ||
+    /\b(?:cannot|can't|unable|not possible|not yet|please cancel)\b/iu.test(text)
   ) {
     return null;
   }
