@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as quote from './fetch-quote.mjs';
+import { multipleSource, selectionFixture } from './fetch-quote-fixtures.mjs';
 import { composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 const { validateRequest, stayDates, displayDate } = quote;
 const request = {propertyCode:'HRCEN',arrivalDate:'2026-09-24',departureDate:'2026-09-27',rooms:[{quantity:2,adults:1,children:0,childAges:[]}]};
@@ -131,16 +132,6 @@ test('cold-login readiness tolerates an absent document body during navigation',
   assert.equal(reads,2);
 });
 
-function selectionFixture() {
-  const column={value:1780,israteavailable:true,restricted:false,combClosed:false,combClosedToArrival:false,combClosedToDeparture:false,
-    combMinLOSToArrival:0,combMinLOSToDeparture:0,combMaxLOSToArrival:null,combMinLOSToThrough:null,combMaxLOSToThrough:null};
-  const columns=Object.fromEntries([1,2,3,4].map(n=>[`col${n}`,{...column}]));
-  const rate={code:'BAR',desc:'Best Available Rate',currency:'ZAR',restricted:false,columns};
-  const room={code:'STQN',desc:'Standard Queen',children:[rate],columns:Object.fromEntries([1,2,3,4].map(n=>[`col${n}`,{value:3}]))};
-  return {data:{datesList:['09/24/2026','09/25/2026','09/26/2026','09/27/2026'],children:[{isprop:true,issummary:false,code:'HRCEN',children:[room]}]},
-    calendar:{headers:['24-SEP-2026Thursday','25-SEP-2026Friday','26-SEP-2026Saturday','27-SEP-2026Sunday'],
-      options:[{room:{code:'STQN',inventory:['3','3','3','3']},rate:'BAR: Best Available Rate',board:'Bed & Breakfast R',prices:['R1,780.00','R1,780.00','R1,780.00','R1,780.00']}]},rate};
-}
 test('selection requires source-matched prices for every requested night',()=>{
   const f=selectionFixture();
   assert.equal(quote.selectOption(request,request.rooms[0],f.data,f.calendar).available,true);
@@ -173,24 +164,6 @@ test('invalid preferences and non-string native codes are rejected before browse
     assert.ok(quote.validateRequest({...request,...delta}).length);
 });
 
-// Compact projection of the 2026-09-18 Hotel Availability response. No guest,
-// organization or session data; identities/amounts below are sanitized.
-function multipleSource() {
-  const f=selectionFixture();
-  const room=f.data.children[0].children[0];
-  const column={restricted:false,israteavailable:true,combClosed:false,combClosedToArrival:false,
-    combClosedToDeparture:false,combMinLOSToArrival:0,combMinLOSToDeparture:0,
-    combMaxLOSToArrival:null,combMinLOSToThrough:null,combMaxLOSToThrough:null,value:1780};
-  f.rate.columns=Object.fromEntries([1,2,3,4].map(n=>[`col${n}`,{...column}]));
-  Object.assign(f.rate,{isNegotiatedRate:false,minLOS:null,maxLOS:null,minLeadTime:null,maxLeadTime:null,haspolicies:true});
-  room.buildingCode='MAIN';
-  const second=structuredClone(room); second.code='STWN'; second.desc='Standard Twin';
-  f.data.children[0].currency='ZAR';
-  f.data.children[0].children.push(second);
-  const visible=structuredClone(f.calendar.options[0]);visible.room.code='STWN';
-  f.calendar.options.push(visible);
-  return f;
-}
 test('multiple source rows survive extraction without a Standard/first-row winner',()=>{
   const f=multipleSource();
   const result=quote.extractOptions?.(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]);

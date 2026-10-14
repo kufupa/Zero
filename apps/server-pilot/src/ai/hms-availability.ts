@@ -27,7 +27,6 @@ const QUOTE_TOOL = fileURLToPath(new URL('../../tooling/playwright-quote/fetch-q
 const QUOTE_ROOT = fileURLToPath(new URL('../../../../.private/playwright-quote/', import.meta.url));
 // A summary read opens the availability screen and reads the grid. Same bound as the pane lookups.
 const PROBE_TIMEOUT_MS = 5 * 60_000;
-const OPTIONS_KEPT_PER_GROUP = 25;
 
 // Limits of the quote tool's v2 request (quote-contract.mjs): 8 occupancy groups, 30 nights, child ages up to 99.
 const MAX_ROOM_GROUPS = 8;
@@ -119,9 +118,53 @@ export function quoteRequestFor(request: AvailabilityRequest): Record<string, un
 }
 
 // The parts of the quote tool's result.json the snapshot reads. Everything else stays in the run folder.
-type QuoteOption = { room?: { code?: unknown } | null; rate?: { code?: unknown } | null; availability?: unknown } | null;
-type QuoteGroup = { id?: unknown; outcome?: unknown; options?: QuoteOption[] } | null;
-export type QuoteEnvelope = { outcome?: unknown; observedAt?: unknown; groups?: QuoteGroup[] };
+type QuoteNight = {
+  date?: unknown;
+  inventory?: unknown;
+  price?: unknown;
+  restricted?: unknown;
+  rateAvailable?: unknown;
+  restrictions?: unknown;
+} | null;
+type QuoteOption = {
+  room?: { code?: unknown; label?: unknown } | null;
+  rate?: { code?: unknown; label?: unknown } | null;
+  availability?: unknown;
+  eligibility?: unknown;
+  nightly?: unknown;
+} | null;
+type QuoteGroup = {
+  id?: unknown;
+  outcome?: unknown;
+  options?: QuoteOption[];
+  request?: { quantity?: unknown; [key: string]: unknown } | null;
+  requestedOccupancy?: { quantity?: unknown; [key: string]: unknown } | null;
+  completeness?: unknown;
+} | null;
+export type QuoteEnvelope = {
+  schemaVersion?: unknown;
+  outcome?: unknown;
+  observedAt?: unknown;
+  searchCompleteness?: unknown;
+  groups?: QuoteGroup[];
+};
+
+export type AvailabilityCompleteness = Record<string, string | number | boolean | null>;
+export type AvailabilityStockStatus = 'available' | 'sold' | 'restricted' | 'unknown';
+export type AvailabilityNightPrice = {
+  status: 'known' | 'unknown';
+  amount: string | null;
+  currency: string | null;
+  ratePlan: string | null;
+  ratePlanLabel: string | null;
+};
+export type AvailabilityNightFact = {
+  date: string;
+  availableCount: number | null;
+  requestedCount: number | null;
+  stockStatus: AvailabilityStockStatus;
+  price: AvailabilityNightPrice;
+};
 
 export type AvailabilitySnapshot = {
   /**
@@ -131,12 +174,25 @@ export type AvailabilitySnapshot = {
   roomScope: 'all_room_types';
   /** The quote tool's outcome for the search: quote, partial, no_match, unavailable, input_gap or execution_failure. */
   searchOutcome: string;
+  /** The reader's observed-at/read-at timestamp; use it as this snapshot's freshness marker. */
   observedAt: string | null;
   availableOptions: number;
+  /** Quote-tool search coverage flags, when the reader returned them. */
+  searchCompleteness?: AvailabilityCompleteness;
   groups: Array<{
     id: string | null;
     outcome: string | null;
-    options: Array<{ room: string | null; rate: string | null; availability: string }>;
+    requestedCount?: number;
+    completeness?: AvailabilityCompleteness;
+    options: Array<{
+      room: string | null;
+      rate: string | null;
+      availability: string;
+      roomLabel?: string;
+      rateLabel?: string;
+      eligibility?: string;
+      nightly?: AvailabilityNightFact[];
+    }>;
   }>;
 };
 
@@ -148,29 +204,218 @@ function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
-/** The snapshot the job stores: outcome per group and the options with their availability. No evidence or screenshots. */
-export function availabilitySnapshotOf(result: QuoteEnvelope): AvailabilitySnapshot {
-  const groups = (Array.isArray(result.groups) ? result.groups : []).map((group) => {
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function completeness(value: unknown): AvailabilityCompleteness | undefined {
+  const source = record(value);
+  if (!source) return undefined;
+  const flags: AvailabilityCompleteness = {};
+  for (const [key, flag] of Object.entries(source)) {
+    if (
+      flag === null ||
+      typeof flag === 'string' ||
+      typeof flag === 'boolean' ||
+      (typeof flag === 'number' && Number.isFinite(flag))
+    ) {
+      flags[key] = flag;
+    }
+  }
+  return Object.keys(flags).length > 0 ? flags : undefined;
+}
+
+function positiveCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function inventoryCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function requestedNightDates(request?: AvailabilityRequest): string[] {
+  if (!request || !isRealIsoDay(request.arrival) || !isRealIsoDay(request.departure)) return [];
+  const start = Date.parse(`${request.arrival}T00:00:00Z`);
+  const end = Date.parse(`${request.departure}T00:00:00Z`);
+  const nights = (end - start) / 86_400_000;
+  if (!(nights >= 1 && nights <= MAX_NIGHTS)) return [];
+  return Array.from({ length: nights }, (_, index) => new Date(start + index * 86_400_000).toISOString().slice(0, 10));
+}
+
+function stockStatusOf(
+  night: QuoteNight,
+  date: string,
+  request: AvailabilityRequest | undefined,
+  availableCount: number | null,
+  optionAvailability: string,
+): AvailabilityStockStatus {
+  if (availableCount === 0) return 'sold';
+  const restrictions = record(night?.restrictions);
+  if (
+    night?.restricted === true ||
+    night?.rateAvailable === false ||
+    restrictions?.combClosed === true ||
+    (date === request?.arrival && restrictions?.combClosedToArrival === true) ||
+    (date === request?.departure && restrictions?.combClosedToDeparture === true)
+  ) {
+    return 'restricted';
+  }
+  if (
+    availableCount !== null &&
+    night?.restricted === false &&
+    night?.rateAvailable === true
+  ) {
+    return 'available';
+  }
+  if (
+    availableCount === null ||
+    optionAvailability === 'restricted' ||
+    optionAvailability === 'unknown'
+  ) {
+    return 'unknown';
+  }
+  if (optionAvailability === 'available') return 'available';
+  return 'unknown';
+}
+
+function nightFactOf(
+  night: QuoteNight,
+  date: string,
+  requestedCount: number | null,
+  ratePlan: string | null,
+  ratePlanLabel: string | null,
+  optionAvailability: string,
+  request: AvailabilityRequest | undefined,
+): AvailabilityNightFact {
+  const sourcePrice = record(night?.price);
+  const amount = text(sourcePrice?.amount);
+  const currency = text(sourcePrice?.currency);
+  const priceKnown = amount !== null && currency !== null;
+  const availableCount = inventoryCount(night?.inventory);
+  return {
+    date,
+    availableCount,
+    requestedCount,
+    stockStatus: stockStatusOf(night, date, request, availableCount, optionAvailability),
+    price: {
+      status: priceKnown ? 'known' : 'unknown',
+      amount,
+      currency,
+      ratePlan,
+      ratePlanLabel,
+    },
+  };
+}
+
+function nightlyFactsOf(
+  option: QuoteOption,
+  dates: string[],
+  requestedCount: number | null,
+  ratePlan: string | null,
+  ratePlanLabel: string | null,
+  optionAvailability: string,
+  request: AvailabilityRequest | undefined,
+): AvailabilityNightFact[] | undefined {
+  const sourceNights = Array.isArray(option?.nightly) ? (option.nightly as QuoteNight[]) : undefined;
+  if (dates.length > 0) {
+    const byDate = new Map<string, QuoteNight>();
+    const ambiguousDates = new Set<string>();
+    for (const night of sourceNights ?? []) {
+      const date = text(night?.date);
+      if (!date) continue;
+      if (byDate.has(date)) {
+        ambiguousDates.add(date);
+        byDate.delete(date);
+      } else if (!ambiguousDates.has(date)) {
+        byDate.set(date, night);
+      }
+    }
+    return dates.map((date) =>
+      nightFactOf(
+        ambiguousDates.has(date) ? null : (byDate.get(date) ?? null),
+        date,
+        requestedCount,
+        ratePlan,
+        ratePlanLabel,
+        optionAvailability,
+        request,
+      ),
+    );
+  }
+  if (!sourceNights) return undefined;
+  return sourceNights.flatMap((night) => {
+    const date = text(night?.date);
+    return date
+      ? [
+          nightFactOf(
+            night,
+            date,
+            requestedCount,
+            ratePlan,
+            ratePlanLabel,
+            optionAvailability,
+            request,
+          ),
+        ]
+      : [];
+  });
+}
+
+/** The snapshot the job stores: outcome per group and the options with their nightly facts. No evidence or screenshots. */
+export function availabilitySnapshotOf(result: QuoteEnvelope, request?: AvailabilityRequest): AvailabilitySnapshot {
+  const requestedDates = requestedNightDates(request);
+  const groups = (Array.isArray(result.groups) ? result.groups : []).map((group, groupIndex) => {
     const options = Array.isArray(group?.options) ? group.options : [];
+    const requestRoomCount = positiveCount(request?.rooms[groupIndex]?.quantity);
+    const requestedCount =
+      requestRoomCount ?? positiveCount(group?.request?.quantity) ?? positiveCount(group?.requestedOccupancy?.quantity);
+    const groupCompleteness = completeness(group?.completeness);
     return {
       id: text(group?.id),
       outcome: text(group?.outcome),
-      options: options.slice(0, OPTIONS_KEPT_PER_GROUP).map((option) => ({
-        room: text(option?.room?.code),
-        rate: text(option?.rate?.code),
-        availability: text(option?.availability) ?? 'unknown',
-      })),
+      ...(requestedCount === null ? {} : { requestedCount }),
+      ...(groupCompleteness ? { completeness: groupCompleteness } : {}),
+      options: options.map((option) => {
+        const rate = text(option?.rate?.code);
+        const rateLabel = text(option?.rate?.label);
+        const availability = text(option?.availability) ?? 'unknown';
+        const nightly = nightlyFactsOf(
+          option,
+          requestedDates,
+          requestedCount,
+          rate,
+          rateLabel,
+          availability,
+          request,
+        );
+        const roomLabel = text(option?.room?.label);
+        const eligibility = text(option?.eligibility);
+        const hasNightlyFacts = nightly !== undefined;
+        return {
+          room: text(option?.room?.code),
+          rate,
+          availability,
+          ...(hasNightlyFacts && roomLabel ? { roomLabel } : {}),
+          ...(hasNightlyFacts && rateLabel ? { rateLabel } : {}),
+          ...(hasNightlyFacts && eligibility ? { eligibility } : {}),
+          ...(hasNightlyFacts ? { nightly } : {}),
+        };
+      }),
     };
   });
   const availableOptions = groups.reduce(
     (count, group) => count + group.options.filter((option) => option.availability === 'available').length,
     0,
   );
+  const searchCompleteness = completeness(result.searchCompleteness);
   return {
     roomScope: 'all_room_types',
     searchOutcome: text(result.outcome) ?? 'execution_failure',
     observedAt: text(result.observedAt),
     availableOptions,
+    ...(searchCompleteness ? { searchCompleteness } : {}),
     groups,
   };
 }
@@ -245,5 +490,5 @@ export async function probeAvailability(
   const searchOutcome = text(result.outcome);
   if (searchOutcome === 'input_gap') return { outcome: 'refused_input_invalid' };
   if (!searchOutcome || searchOutcome === 'execution_failure') return { outcome: 'execution_failure' };
-  return { outcome: 'read', ...availabilitySnapshotOf(result) };
+  return { outcome: 'read', ...availabilitySnapshotOf(result, request) };
 }
