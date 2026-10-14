@@ -57,6 +57,7 @@ type WorkflowMappingInput = {
   kind?: string | null;
   origin?: unknown;
   automatedChannel?: boolean;
+  ownerAction?: unknown;
 };
 
 type WorkflowSourceRow = {
@@ -72,6 +73,7 @@ type WorkflowSourceRow = {
   extractionId: string;
   kind: string | null;
   action: string | null;
+  ownerAction?: string | null;
   payload: Record<string, unknown> | null;
   extractorVersion: string;
   extractionCreatedAt: Date;
@@ -244,7 +246,8 @@ export function mapWorkflowFolder(input: WorkflowMappingInput): WorkflowFolderId
   const origin = cleanString(input.origin) ?? cleanString(payload.origin);
   if (input.automatedChannel || origin === 'system_notice') return 'not-for-nava';
 
-  const action = cleanString(input.action) ?? cleanString(payload.action);
+  const action =
+    cleanString(input.ownerAction) ?? cleanString(input.action) ?? cleanString(payload.action);
   if (action) return ACTION_FOLDERS[action] ?? 'other-to-do';
 
   const kind = cleanString(input.kind);
@@ -318,6 +321,28 @@ const effectiveAction = sql<string | null>`coalesce(
   nullif(btrim(${payloadAction}), '')
 )`;
 const payloadOrigin = sql<string | null>`${mailExtraction.payload}->>'origin'`;
+
+function ownerActionSql(transportId: string): SQL<string | null> {
+  return sql<string | null>`(
+    select ${mailActionLabel.action}
+    from ${mailActionLabel}
+    where ${mailActionLabel.messageId} = ${message.id}
+      and ${mailActionLabel.transportId} = ${transportId}
+      and ${mailActionLabel.source} = 'owner'
+      and ${mailActionLabel.version} = 'owner'
+    order by ${mailActionLabel.updatedAt} desc, ${mailActionLabel.id} desc
+    limit 1
+  )`;
+}
+
+export function workflowFolderMembershipSql(transportId: string): SQL<WorkflowFolderId> {
+  const action = sql<string | null>`coalesce(
+    nullif(btrim(${ownerActionSql(transportId)}), ''),
+    ${effectiveAction}
+  )`;
+  return mapWorkflowFolderSql(action);
+}
+
 const automatedChannel = sql<boolean>`exists (
   select 1
   from ${mailThreadCategory} mtc
@@ -329,7 +354,7 @@ const automatedChannel = sql<boolean>`exists (
 )`;
 
 /** SQL form used by the paged list/summary queries. It shares the same mapping tables as mapWorkflowFolder. */
-function mapWorkflowFolderSql(): SQL<WorkflowFolderId> {
+function mapWorkflowFolderSql(action: SQL<unknown> = effectiveAction): SQL<WorkflowFolderId> {
   const actionCases = Object.entries(ACTION_FOLDERS).map(
     ([action, folder]) => sql`when ${action} then ${folder}`,
   );
@@ -338,7 +363,7 @@ function mapWorkflowFolderSql(): SQL<WorkflowFolderId> {
   );
   return sql<WorkflowFolderId>`case
     when ${automatedChannel} or ${payloadOrigin} = 'system_notice' then 'not-for-nava'
-    when ${effectiveAction} is not null then case ${effectiveAction}
+    when ${action} is not null then case ${action}
       ${sql.join(actionCases, sql` `)}
       else 'other-to-do'
     end
@@ -409,7 +434,8 @@ function hasPrefilledDataSql(): SQL<boolean> {
   )`;
 }
 
-function latestWorkflowThreads(db: DB, transportId: string) {
+export function latestWorkflowThreads(db: DB, transportId: string) {
+  const ownerAction = ownerActionSql(transportId);
   return db.$with('workflow_latest_threads').as(
     db
       .selectDistinctOn([message.threadId], {
@@ -425,12 +451,13 @@ function latestWorkflowThreads(db: DB, transportId: string) {
         extractionId: sql<string>`${mailExtraction.id}`.as('latest_extraction_id'),
         kind: mailExtraction.kind,
         action: actionColumn.as('action'),
+        ownerAction: ownerAction.as('owner_action'),
         payload: mailExtraction.payload,
         extractorVersion: mailExtraction.extractorVersion,
         extractionCreatedAt: sql<Date>`${mailExtraction.createdAt}`.mapWith(mailExtraction.createdAt).as('extraction_created_at'),
         origin: payloadOrigin.as('origin'),
         automatedChannel: automatedChannel.as('automated_channel'),
-        folder: mapWorkflowFolderSql().as('folder'),
+        folder: workflowFolderMembershipSql(transportId).as('folder'),
         prefilled: hasPrefilledDataSql().as('prefilled'),
       })
       .from(mailExtraction)
@@ -503,6 +530,7 @@ function latestSucceededExtractions(db: DB, transportId: string, threadId?: stri
       extractionId: mailExtraction.id,
       kind: mailExtraction.kind,
       action: actionColumn,
+      ownerAction: ownerActionSql(transportId),
       payload: mailExtraction.payload,
       extractorVersion: mailExtraction.extractorVersion,
       extractionCreatedAt: mailExtraction.createdAt,
@@ -613,6 +641,7 @@ function toWorkflowFolderRow(
     extractionId: row.extractionId,
     folder: row.folder ?? mapWorkflowFolder({
       action: row.action,
+      ownerAction: row.ownerAction,
       payload: row.payload,
       kind: row.kind,
       origin: row.origin,
@@ -1023,6 +1052,7 @@ export async function getWorkflowFolderThread(
       !latestForThread ||
       mapWorkflowFolder({
         action: latestForThread.action,
+        ownerAction: latestForThread.ownerAction,
         payload: latestForThread.payload,
         kind: latestForThread.kind,
         origin: latestForThread.origin,
@@ -1047,6 +1077,7 @@ export async function getWorkflowFolderThread(
       extractionId: mailExtraction.id,
       kind: mailExtraction.kind,
       action: actionColumn,
+      ownerAction: ownerActionSql(input.transportId),
       payload: mailExtraction.payload,
       extractorVersion: mailExtraction.extractorVersion,
       extractionCreatedAt: mailExtraction.createdAt,
@@ -1098,6 +1129,7 @@ export async function getWorkflowFolderThread(
           action: cleanString(row.action) ?? cleanString(asRecord(row.payload).action),
           folder: mapWorkflowFolder({
             action: row.action,
+            ownerAction: row.ownerAction,
             payload: row.payload,
             kind: row.kind,
             origin: row.origin,

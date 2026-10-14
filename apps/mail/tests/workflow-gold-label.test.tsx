@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/providers/query-provider', () => ({
   useTRPC: () => ({
+    mail: {
+      listThreads: { infiniteQueryKey: () => ['mail', 'listThreads'] },
+    },
     workstation: {
       staffQuoteSource: {
         queryOptions: (input: { internetMessageId: string }, options: Record<string, unknown> = {}) => {
@@ -135,6 +138,25 @@ describe('WorkflowGoldLabel', () => {
 
     expect(await screen.findByText('Saved as gold · Cancellation')).toBeDefined();
     expect(mocks.saveActionLabel).toHaveBeenCalledWith({ messageId: 'db-message-1', action: 'cancel' });
+  });
+
+  it('invalidates the normal thread list after saving a folder correction', async () => {
+    const invalidateQueries = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+    try {
+      renderGoldLabel();
+      await waitFor(() =>
+        expect((screen.getByRole('button', { name: 'Save as gold' }) as HTMLButtonElement).disabled).toBe(false),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Save as gold' }));
+      await screen.findByText('Saved as gold · Quote');
+      await waitFor(() =>
+        expect(invalidateQueries).toHaveBeenCalledWith({
+          queryKey: ['mail', 'listThreads'],
+        }),
+      );
+    } finally {
+      invalidateQueries.mockRestore();
+    }
   });
 
   it('lets the owner replace a saved gold label', async () => {

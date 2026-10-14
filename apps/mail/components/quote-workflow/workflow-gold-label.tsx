@@ -47,6 +47,7 @@ export function WorkflowGoldLabel({
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: trpc.workflowFolders.summary.queryKey() }),
           queryClient.invalidateQueries({ queryKey: trpc.workflowFolders.list.infiniteQueryKey() }),
+          queryClient.invalidateQueries({ queryKey: trpc.mail.listThreads.infiniteQueryKey() }),
           queryClient.invalidateQueries({ queryKey: trpc.workflowFolders.thread.queryKey() }),
           queryClient.invalidateQueries({ queryKey: trpc.workflowFolders.getOwnerActionLabel.queryKey() }),
         ]);

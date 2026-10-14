@@ -16,13 +16,13 @@ import { useMediaQuery } from '../../hooks/use-media-query';
 import useCategoryIds from '@/hooks/use-category-ids';
 import * as CustomIcons from '@/components/icons/icons';
 import { MailList } from '@/components/mail/mail-list';
-import { WorkflowFolderDesk } from '@/components/mail/workflow-folder-desk';
 import { MailSearchBar } from '@/components/mail/mail-search-bar';
 import { useNavigate, useParams } from 'react-router';
 import { useMail } from '@/components/mail/use-mail';
 import { SidebarToggle } from '../ui/sidebar-toggle';
 import { clearBulkSelectionAtom } from './use-mail';
 import { useThreads } from '@/hooks/use-threads';
+import { isWorkflowFolderNavId } from '@/config/workflow-folders';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
@@ -52,7 +52,6 @@ import {
 import { trpcClient } from '@/providers/query-provider';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { runComposeLeaveFlush } from '@/lib/mail/draft-persistence';
-import { isWorkflowFolderNavId } from '@/config/workflow-folders';
 import type { ImperativePanelHandle } from 'react-resizable-panels';
 const ThreadDisplay = lazy(() =>
   import('@/components/mail/thread-display').then((module) => ({
@@ -366,8 +365,6 @@ const MAIL_SEARCH_FOLDER_TITLES: Record<string, string> = {
 // };
 
 export function MailLayout() {
-  const { folder } = useParams<{ folder: string }>();
-  if (isWorkflowFolderNavId(folder)) return <WorkflowFolderDesk />;
   return <StandardMailLayout />;
 }
 
@@ -409,11 +406,15 @@ function MailLayoutContent() {
     }
   }, [navigate, session?.user, isPending]);
 
-  const [{ isFetching, refetch: refetchThreads }] = useThreads();
+  const [{ isFetching, refetch: refetchThreads }, , , , searchList] = useThreads();
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const isWideSplit = useMediaQuery('(min-width: 1024px)');
 
   const [threadId, setThreadId] = useQueryState('threadId');
+  const sourceThreadId =
+    isWorkflowFolderNavId(folder.toLowerCase()) && searchList?.isValid === true && searchList.folder !== 'all'
+      ? threadId ?? undefined
+      : undefined;
   const [, setMode] = useQueryState('mode');
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
@@ -748,6 +749,7 @@ function MailLayoutContent() {
                     <WebPanePanel
                       key={threadId}
                       threadId={threadId}
+                      sourceThreadId={sourceThreadId}
                       onOpenThread={openListThread}
                       goldLabelEnabled
                       hmsNoticesManagedByParent

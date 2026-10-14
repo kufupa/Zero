@@ -91,6 +91,7 @@ import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { markThreadRead } from '../../mail/thread-read.js';
 import { assertHmsDraftFreshForAction } from './drafts.js';
+import { latestWorkflowThreads, WORKFLOW_FOLDER_IDS } from '../../mail/workflow-folders.js';
 import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
 import { TRPCError } from '@trpc/server';
@@ -102,6 +103,7 @@ import {
   type MailFolderValue,
   clearExpiredSnoozes,
   buildMailFolderConditions,
+  buildMailListConditions,
 } from '../../mail/folder-semantics.js';
 import {
   loadUnreadCounts,
@@ -198,6 +200,7 @@ export const markFolderAsReadInput = z.object({
 
 export const listThreadsInput = z.object({
   folder: z.enum(MAIL_FOLDER_VALUES).default('inbox'),
+  workflowFolder: z.enum(WORKFLOW_FOLDER_IDS).optional(),
   q: z.string().max(512).optional(),
   labelIds: z.array(z.string()).optional(),
   filters: z
@@ -368,7 +371,21 @@ export const mailRouter = tRouter({
       return { threads: [] as { id: string; transportId: string }[], nextPageToken: null };
     }
 
-    const conditions = buildMailFolderConditions(db, transportId, input.folder);
+    const conditions = buildMailListConditions(db, transportId, input.folder, input.workflowFolder);
+    const workflowMembership = input.workflowFolder
+      ? latestWorkflowThreads(db, transportId)
+      : undefined;
+    if (workflowMembership && input.workflowFolder) {
+      conditions.push(
+        inArray(
+          mailThread.id,
+          db
+            .select({ threadId: workflowMembership.threadId })
+            .from(workflowMembership)
+            .where(eq(workflowMembership.folder, input.workflowFolder)),
+        ),
+      );
+    }
 
     if (input.labelIds && input.labelIds.length > 0) {
       conditions.push(
@@ -441,23 +458,28 @@ export const mailRouter = tRouter({
       }
     }
 
-    let rows = await db
-      .select({
-        id: mailThread.id,
-        transportId: mailThread.transportId,
-        subject: mailThread.subject,
-        snippet: mailThread.snippet,
-        isArchived: mailThread.isArchived,
-        isStarred: mailThread.isStarred,
-        isRead: mailThread.isRead,
-        labelIds: mailThread.labelIds,
-        snoozedUntil: mailThread.snoozedUntil,
-        trashedAt: mailThread.trashedAt,
-        latestMessageAt: mailThread.latestMessageAt,
-        updatedAt: mailThread.updatedAt,
-      })
-      .from(mailThread)
-      .where(and(...conditions))
+    const threadSelection = {
+      id: mailThread.id,
+      transportId: mailThread.transportId,
+      subject: mailThread.subject,
+      snippet: mailThread.snippet,
+      isArchived: mailThread.isArchived,
+      isStarred: mailThread.isStarred,
+      isRead: mailThread.isRead,
+      labelIds: mailThread.labelIds,
+      snoozedUntil: mailThread.snoozedUntil,
+      trashedAt: mailThread.trashedAt,
+      latestMessageAt: mailThread.latestMessageAt,
+      updatedAt: mailThread.updatedAt,
+    };
+    const listQuery = workflowMembership
+      ? db
+          .with(workflowMembership)
+          .select(threadSelection)
+          .from(mailThread)
+          .where(and(...conditions))
+      : db.select(threadSelection).from(mailThread).where(and(...conditions));
+    let rows = await listQuery
       .orderBy(descNullsLast(mailThread.latestMessageAt), desc(mailThread.id))
       .limit(limit + 1);
 

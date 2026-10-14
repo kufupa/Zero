@@ -40,6 +40,21 @@ describe('buildConversationPrimaryListRows', () => {
     expect(primaryRows.map((entry) => entry.id)).toEqual(['primary', 'solo']);
   });
 
+  it('keeps a workflow-matching linked thread when its primary is outside results', () => {
+    const threads = [
+      row('workflow-thread-b', {
+        conversationId: 'conv-1',
+        primaryThreadId: 'newer-thread-a',
+        linkedThreadIds: ['newer-thread-a'],
+        subject: 'Workflow thread B',
+      }),
+    ];
+
+    expect(buildConversationPrimaryListRows(threads).map((entry) => entry.id)).toEqual([
+      'workflow-thread-b',
+    ]);
+  });
+
   it('builds linked stubs from hidden sibling rows', () => {
     const threads = [
       row('primary', {

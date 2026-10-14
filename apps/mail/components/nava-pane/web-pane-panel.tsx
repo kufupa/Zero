@@ -20,16 +20,21 @@ function statusCopy(selection: PreviewSelection): string {
 /** The selected-thread Nava pane; only the normal mail route enables gold-label writes. */
 export function WebPanePanel({
   threadId,
+  sourceThreadId,
   onOpenThread,
   goldLabelEnabled = false,
   hmsNoticesManagedByParent = false,
 }: {
   threadId: string;
+  sourceThreadId?: string;
   onOpenThread?: (threadId: string) => void;
   goldLabelEnabled?: boolean;
   hmsNoticesManagedByParent?: boolean;
 }) {
-  const { selection, bridge } = useWebPreview({ threadId });
+  const { selection, bridge } = useWebPreview({
+    threadId,
+    ...(sourceThreadId ? { sourceThreadId } : {}),
+  });
   const reporter = useHmsJobNoticeReporter();
   const activeEmail = selection.status === 'ready' ? selection.email : null;
   const emailKey = activeEmail?.internetMessageId?.trim() || activeEmail?.entryId || threadId;
