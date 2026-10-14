@@ -9,8 +9,9 @@ import { useInsertAiDraft } from '../components/nava-pane/use-insert-ai-draft';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import type { QuoteSession } from '../lib/quote-workflow/types';
 
-const { saveReplyMutate, reviewedDraftRef } = vi.hoisted(() => ({
+const { saveReplyMutate, recordQuoteOutcomeMutate, reviewedDraftRef } = vi.hoisted(() => ({
   saveReplyMutate: vi.fn(),
+  recordQuoteOutcomeMutate: vi.fn(),
   reviewedDraftRef: {
     current: {
       html: '<p>Quote for you</p>',
@@ -24,7 +25,10 @@ vi.mock('sonner', () => ({
 }));
 
 vi.mock('../providers/query-provider', () => ({
-  trpcClient: { drafts: { saveReply: { mutate: saveReplyMutate } } },
+  trpcClient: {
+    drafts: { saveReply: { mutate: saveReplyMutate } },
+    workItems: { recordQuoteOutcome: { mutate: recordQuoteOutcomeMutate } },
+  },
 }));
 
 // The reviewed reply and PDF come from the quote workflow. This test checks what the save and insert send.
@@ -51,6 +55,8 @@ const activeEmail = {
 
 const quoteSession = {
   staffSource: { messageId: 'message-db-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
+  staffQuote: { workflowRunId: 'run-1', revisionRef: 'revision-1' },
+  reviewedReplyHtml: '',
   groups: [],
 } as unknown as QuoteSession;
 
@@ -90,6 +96,7 @@ beforeEach(() => {
     pdf: { fileName: 'Quotation.pdf', pdfBase64: 'JVBERi0xLjQ=' },
   };
   saveReplyMutate.mockReset();
+  recordQuoteOutcomeMutate.mockReset().mockResolvedValue({ recorded: true });
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.error).mockClear();
 });
@@ -116,6 +123,8 @@ describe('Save reply on the webmail panel', () => {
       to: ['guest@example.com'],
       subject: 'Re: Quote request',
       html: '<p>Quote for you</p>',
+      replyKind: 'quote',
+      preparedVersions: [{ workflowRunId: 'run-1', revisionRef: 'revision-1' }],
       attachments: [
         {
           name: 'Quotation.pdf',
@@ -155,6 +164,8 @@ describe('Save reply on the webmail panel', () => {
         threadId: 'thread-1',
         replyToMessageId: 'message-db-1',
         html,
+        replyKind: 'missing_details',
+        preparedVersions: [],
         attachments: [],
       }),
     ));
@@ -250,6 +261,37 @@ describe('Insert saved reply in Outlook', () => {
       expect.objectContaining({ entryId: 'entry-1', htmlBody: SAVED_HTML, replyAll: false }),
     );
     expect(saveReplyMutate).not.toHaveBeenCalled();
+  });
+
+  it('does not record a missing-details Outlook reply as a quote outcome', async () => {
+    const sendCommand = outlookSendCommand();
+    const requestOnlySession = {
+      ...quoteSession,
+      analysis: { intent: 'quote', missingQuoteReplyFields: ['Arrival date'] },
+      groups: [{ arrivalDate: null, departureDate: '2026-11-14' }],
+      reviewedReplyHtml: '<p>Please confirm the arrival date.</p>',
+    } as unknown as QuoteSession;
+    const { result } = renderInsertHook(sendCommand, requestOnlySession);
+
+    act(() => result.current.trackedDraft('selected'));
+
+    await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything()));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(recordQuoteOutcomeMutate).not.toHaveBeenCalled();
+  });
+
+  it('records quote insert with the exact prepared run and revision', async () => {
+    const { result } = renderInsertHook(outlookSendCommand());
+
+    act(() => result.current.trackedDraft('selected'));
+
+    await waitFor(() => expect(recordQuoteOutcomeMutate).toHaveBeenCalledWith(expect.objectContaining({
+      sourceMessageId: 'message-db-1',
+      replyHtml: '<p>Quote for you</p>',
+      replyKind: 'quote',
+      preparedVersions: [{ workflowRunId: 'run-1', revisionRef: 'revision-1' }],
+      attachments: [expect.objectContaining({ fileName: 'Quotation.pdf', mimeType: 'application/pdf' })],
+    })));
   });
 
   it('a double click reads and inserts the saved reply once, with the button off from the click', async () => {
