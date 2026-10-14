@@ -30,6 +30,8 @@ import {
   mailDraftRevision,
   message,
 } from '../../db/schema/mail.js';
+import { workItem } from '../../db/schema/work.js';
+import { recordFinalQuoteOutcome } from '../../ai/quote-outcomes.js';
 import {
   EvidenceRefSchema,
   isEvidenceFresh,
@@ -127,6 +129,20 @@ async function persistStaffAttachments(
     }
   }
   return result;
+}
+async function recordSavedQuoteReply(db: DB, input: {
+  transportId: string; sourceMessageId: string; userId: string; html: string;
+  attachments: ReturnType<typeof decodeStaffAttachments>;
+}): Promise<void> {
+  const [item] = await db.select({ id: workItem.id }).from(workItem).where(and(
+    eq(workItem.transportId, input.transportId), eq(workItem.kind, 'quote'), eq(workItem.sourceMessageId, input.sourceMessageId),
+  )).limit(1);
+  if (item) await recordFinalQuoteOutcome(db, { workItemId: item.id, sourceMessageId: input.sourceMessageId,
+    userId: input.userId, output: { replyHtml: input.html, insertedAt: new Date().toISOString(),
+      attachments: input.attachments.map(({ file, body, sourceHash }) => ({
+        fileName: file.name, mimeType: file.type, sizeBytes: body.length, sha256: sourceHash,
+      })) },
+  });
 }
 async function verifyGeneratedAttachments(
   attachments: (typeof mailDraft.$inferSelect)['attachments'],
@@ -1897,6 +1913,13 @@ export const draftsRouter = tRouter({
             textBody: html,
             htmlBody: html,
             attachments,
+          });
+          await recordSavedQuoteReply(tx as unknown as DB, {
+            transportId,
+            sourceMessageId: input.replyToMessageId,
+            userId: ctx.sessionUser.id,
+            html,
+            attachments: decodedAttachments,
           });
           return { id: draftId, replaced: prior !== undefined && !untouchedSavedReply };
         });

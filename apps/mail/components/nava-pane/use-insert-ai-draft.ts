@@ -87,6 +87,14 @@ function pdfUploadInput(pdf: { fileName: string; pdfBase64: string }) {
   };
 }
 
+async function sha256Base64(base64: string): Promise<string> {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 type PendingReplyOperation = {
   operationId: string;
   startedAt: number;
@@ -435,6 +443,26 @@ export function useInsertAiDraft({
         await sendCommand('ADD_ATTACHMENT_TO_DRAFT', payload);
         attempt.attachmentsAdded = index + 1;
         if (!sameStaffScope()) return;
+      }
+      const outcomeRoute = (trpcClient as unknown as {
+        workItems?: { recordQuoteOutcome?: { mutate?: (input: unknown) => Promise<unknown> } };
+      }).workItems?.recordQuoteOutcome;
+      if (quoteSession.staffSource?.messageId && typeof outcomeRoute?.mutate === 'function') {
+        try {
+          await outcomeRoute.mutate({
+            sourceMessageId: quoteSession.staffSource.messageId,
+            replyHtml: quotationHtml,
+            insertedAt: new Date().toISOString(),
+            attachments: await Promise.all(pdfs.map(async (pdf) => ({
+              fileName: pdf.fileName,
+              mimeType: 'application/pdf',
+              sizeBytes: pdfUploadInput(pdf).size,
+              sha256: await sha256Base64(pdf.pdfBase64),
+            }))),
+          });
+        } catch {
+          toast.warning('Draft inserted, but Nava could not save quote outcome for review.');
+        }
       }
       replyRetries.current.delete(key);
       // A successful draft for B does not resolve an expired or unknown

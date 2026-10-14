@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { parseNeedsYouSince } from '../../env.js';
 import { getDb } from '../../db/client.js';
 import { mailThread, message } from '../../db/schema/mail.js';
-import { MAIL_KINDS, mailExtraction, workEvent, WORK_ITEM_STATUSES } from '../../db/schema/work.js';
+import { MAIL_KINDS, mailExtraction, workEvent, workItem, WORK_ITEM_STATUSES } from '../../db/schema/work.js';
 import { retryInboundTranslation } from '../../ai/extraction/inbound-run.js';
 import {
   acceptUneditedFields,
@@ -26,6 +26,7 @@ import {
   recordPaneActions,
 } from '../../ai/work-events.js';
 import type { MailKind } from '../../ai/extraction/schema.js';
+import { recordFinalQuoteOutcome } from '../../ai/quote-outcomes.js';
 import {
   dismissFollowUpDraft,
   followUpForMessage,
@@ -65,6 +66,13 @@ const paneActionEvent = z
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['field'], message: 'Field is only for contact copy.' });
     }
   });
+
+const quoteOutcomeInput = z.object({
+  sourceMessageId: z.string().min(1).max(998), replyHtml: z.string().max(400_000), insertedAt: z.string().datetime(),
+  attachments: z.array(z.object({ fileName: z.string().min(1).max(255), mimeType: z.string().min(1).max(128),
+    sizeBytes: z.number().int().min(0).max(32 * 1024 * 1024), sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict()).max(32),
+}).strict();
 
 // Field edits and accept/reject only. approve and review have their own procedures (U25, U18), so they are not here.
 const fieldEventInput = z
@@ -243,6 +251,19 @@ export const workItemsRouter = router({
       if (result === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
       return { recorded: input.events.length };
     }),
+  /** Exact inserted reply/PDF identity; reply body remains private in work_event. */
+  recordQuoteOutcome: mailboxProcedure.input(quoteOutcomeInput).mutation(async ({ input, ctx }) => {
+    const db = getDb();
+    const [item] = await db.select({ id: workItem.id }).from(workItem)
+      .innerJoin(workEvent, and(eq(workEvent.workItemId, workItem.id), eq(workEvent.type, 'quote.prepared')))
+      .where(and(eq(workItem.transportId, ctx.activeTransportId), eq(workItem.sourceMessageId, input.sourceMessageId)))
+      .orderBy(desc(workEvent.at), desc(workEvent.id)).limit(1);
+    if (!item) throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+    const recorded = await recordFinalQuoteOutcome(db, { workItemId: item.id, sourceMessageId: input.sourceMessageId,
+      userId: ctx.sessionUser.id, output: { replyHtml: input.replyHtml, insertedAt: input.insertedAt, attachments: input.attachments },
+    });
+    return { recorded };
+  }),
   /**
    * The fields the pane showed when a person proceeded with the read (B2). The server skips any field she edited and any
    * with no AI value, so a repeat call adds nothing. Accepted fields log the AI value.
