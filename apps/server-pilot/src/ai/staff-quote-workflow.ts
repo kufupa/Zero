@@ -103,7 +103,7 @@ export const staffQuoteInput = z
     dinnerAllowanceMinor: extraAmount.optional(),
     dinnerAllowanceLabel: staffLabel.optional(),
     dinnerAllowanceUnit: z.enum(['per_person_per_night', 'per_room_per_night', 'per_person']).optional(),
-    // The groups that took the B&B fallback. The allowance charges only these groups' guests; absent means every group.
+    // Staff-approved dinner charge scope. Omitted on a manual dinner charge means every group.
     dinnerAllowanceGroupIds: z.array(z.string().min(1).max(64)).max(8).optional(),
     lunchAllowanceMinor: extraAmount.optional(),
     lunchAllowanceLabel: staffLabel.optional(),
@@ -137,7 +137,7 @@ export type StaffQuoteDinnerAddOn = {
   label: string;
 };
 
-/** The exact dinner groups to retry on B&B; keeps stay/party/strategy inputs, but drops a code pinned to the dinner board. */
+/** Retry metadata for dinner groups changed to B&B; approved dinner-charge scope stays on the input. */
 export function staffQuoteDinnerFallback(
   input: StaffQuoteInput,
   requestedGroupIds?: readonly string[],
@@ -161,7 +161,6 @@ export function staffQuoteDinnerFallback(
         delete fallbackGroup.rateCode;
         return fallbackGroup;
       }),
-      dinnerAllowanceGroupIds: groupIds,
     },
   };
 }
@@ -496,7 +495,13 @@ export function buildStaffProposalFacts(
   scope: { messageId: string; sourceHash: string },
   prepared: { authorizationId: string },
   revision: QuoteRevision,
-  options: { dinnerGroupIds?: string[]; dinnerAddOn?: StaffQuoteDinnerAddOn } = {},
+  options: {
+    /** Staff-approved dinner charge groups. */
+    dinnerGroupIds?: string[];
+    /** Retry metadata only; keeps an unpriced or uncovered dinner fallback from becoming ready. */
+    dinnerFallbackGroupIds?: string[];
+    dinnerAddOn?: StaffQuoteDinnerAddOn;
+  } = {},
 ): StaffProposalFactsBuild {
   input = staffQuoteInput.parse(input);
   if (revision.authorizationId !== prepared.authorizationId)
@@ -506,19 +511,22 @@ export function buildStaffProposalFacts(
   const first = input.groups[0]!;
   const nights = occupiedDates(first.arrivalDate, first.departureDate);
   const allowanceIds = options.dinnerGroupIds ?? input.dinnerAllowanceGroupIds;
+  const dinnerFallbackGroupIds = options.dinnerFallbackGroupIds ?? [];
   const hasManualDinnerRequest =
     input.dinnerAllowanceMinor !== undefined ||
     input.dinnerAllowanceLabel !== undefined ||
     input.dinnerAllowanceUnit !== undefined;
-  const allowanceGroups = allowanceIds
-    ? input.groups.filter((group) => allowanceIds.includes(group.id))
-    : hasManualDinnerRequest
-      ? input.groups
-      : [];
+  const allowanceGroups =
+    allowanceIds !== undefined
+      ? input.groups.filter((group) => allowanceIds.includes(group.id))
+      : hasManualDinnerRequest
+        ? input.groups
+        : input.groups.filter((group) => dinnerFallbackGroupIds.includes(group.id));
   const allowancePersons = buildStayPersons({ ...input, groups: allowanceGroups });
   const stayPersons = buildStayPersons(input);
   const dinnerGroupIds = allowanceGroups.map((group) => group.id);
-  const hasDinnerAddOn = dinnerGroupIds.length > 0;
+  const hasDinnerAddOn = dinnerGroupIds.length > 0 || dinnerFallbackGroupIds.length > 0;
+  const hasUncoveredDinnerFallback = dinnerFallbackGroupIds.some((id) => !dinnerGroupIds.includes(id));
   const configured = options.dinnerAddOn;
   const amountMinor = input.dinnerAllowanceMinor ?? configured?.amountMinor;
   const unit = input.dinnerAllowanceUnit ?? configured?.unit;
@@ -553,6 +561,10 @@ export function buildStaffProposalFacts(
     if (!amountMinor || !unit) {
       dinnerAddOnRequired = true;
       extrasReviewItems.push('Dinner price — enter amount');
+    } else if (!allowanceGroups.length) {
+      // Retry IDs prove a dinner board was changed to B&B; they do not authorize charging those guests.
+      dinnerAddOnRequired = true;
+      extrasReviewItems.push('Dinner allowance — confirm charge groups');
     } else if (unit === 'per_person_per_night' || unit === 'per_person') {
       personService(
         'dinner-add-on',
@@ -581,6 +593,10 @@ export function buildStaffProposalFacts(
         chargeUnit: 'per_room_per_night',
         groupIds: dinnerGroupIds,
       });
+    }
+    if (hasUncoveredDinnerFallback && allowanceGroups.length) {
+      dinnerAddOnRequired = true;
+      extrasReviewItems.push('Dinner allowance — confirm charge groups');
     }
   }
   if (input.lunchAllowanceMinor) {

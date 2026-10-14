@@ -37,6 +37,7 @@ import {
   staffStayExtrasFor,
 } from '../lib/quote-workflow/types';
 import { approvedExecuteHeader, staffHeaderForStay } from '../lib/quote-workflow/staff-quote-bind';
+import { workbookRequestFor } from '../lib/quote-workflow/quote-workbook-download';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
 import type {
   LunaAnalysisWire,
@@ -2376,6 +2377,46 @@ describe('staff dinner B&B fallback', () => {
     expect(reduceQuoteSession(before, { type: 'staff_dinner_bb_fallback', groupIds: [] })).toBe(
       before,
     );
+  });
+
+  it('clears the required allowance after a priced B&B quote with no fallback group ids', () => {
+    const analysis = {
+      ...quoteAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+    };
+    let before = withStaffSource(analysisReady(analysis));
+    before = reduceQuoteSession(before, { type: 'staff_dinner_bb_fallback', groupIds: ['g1'] });
+    before = reduceQuoteSession(before, {
+      type: 'patch_staff_stay_extras',
+      stayKey: STAY_A,
+      extras: { dinnerAllowanceMinor: 45_000, dinnerAllowanceUnit: 'per_person_per_night' },
+    });
+
+    const action = staffQuoteFor(STAY_A, 'rev-dinner-bb', 850_000, before.inputRevision);
+    if (action.type !== 'staff_quote_ready') throw new Error('expected a staff run');
+    const after = reduceQuoteSession(before, {
+      ...action,
+      staffQuote: {
+        ...action.staffQuote,
+        dinnerAddOn: {
+          label: 'Dinner add-on',
+          amountMinor: 45_000,
+          unit: 'per_person_per_night',
+          totalMinor: 90_000,
+        },
+      },
+    });
+
+    expect(after.staffHeader.stayExtrasByKey?.[STAY_A]).toMatchObject({
+      dinnerEnabled: true,
+      dinnerAllowanceRequired: false,
+      dinnerAllowanceMinor: 45_000,
+      dinnerAllowanceUnit: 'per_person_per_night',
+      dinnerAllowanceGroupIds: ['g1'],
+    });
+    expect(dinnerAllowanceStillRequired(after)).toBe(false);
+    expect(canCreatePdf(after)).toBe(true);
+    expect(workbookRequestFor(after).status).toBe('ok');
   });
 
   it('treats a quote run as current only while its selection epoch and input revision are still the session', () => {

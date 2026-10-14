@@ -1478,21 +1478,23 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       let staffHeader = action.approvedHeader
         ? { ...session.staffHeader, ...action.approvedHeader }
         : session.staffHeader;
-      if (fallbackGroupIds.length) {
-        const existing = staffStayExtrasFor(staffHeader, stayKey);
-        const dinnerAddOn = staffQuote.dinnerAddOn;
+      const existingDinner = staffStayExtrasFor(staffHeader, stayKey);
+      const dinnerAddOn = staffQuote.dinnerAddOn;
+      if (fallbackGroupIds.length || (existingDinner.dinnerAllowanceRequired && dinnerAddOn)) {
         staffHeader = {
           ...staffHeader,
           stayExtrasByKey: {
             ...staffHeader.stayExtrasByKey,
             [stayKey]: {
-              ...existing,
+              ...existingDinner,
               dinnerEnabled: true,
               dinnerAllowanceRequired: staffQuote.dinnerAddOnRequired === true || !dinnerAddOn,
-              dinnerAllowanceMinor: dinnerAddOn?.amountMinor ?? existing.dinnerAllowanceMinor,
-              dinnerAllowanceUnit: dinnerAddOn?.unit ?? existing.dinnerAllowanceUnit,
-              dinnerAllowanceLabel: existing.dinnerAllowanceLabel,
-              dinnerAllowanceGroupIds: fallbackGroupIds,
+              dinnerAllowanceMinor: dinnerAddOn?.amountMinor ?? existingDinner.dinnerAllowanceMinor,
+              dinnerAllowanceUnit: dinnerAddOn?.unit ?? existingDinner.dinnerAllowanceUnit,
+              dinnerAllowanceLabel: existingDinner.dinnerAllowanceLabel,
+              dinnerAllowanceGroupIds: fallbackGroupIds.length
+                ? fallbackGroupIds
+                : existingDinner.dinnerAllowanceGroupIds,
             },
           },
         };

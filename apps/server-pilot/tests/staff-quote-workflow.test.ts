@@ -8,7 +8,7 @@ import {
   buildStaffProposalFacts,
 } from '../src/ai/staff-quote-workflow.js';
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
-import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
+import { occupiedDates, type Board } from '../src/quote-proposal/quote-revision.js';
 import { deriveAuthorizedExtraLines } from '../src/quote-proposal/quote-lines.js';
 import { resolveLedgerProposal } from '../src/trpc/routes/workstation.js';
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -42,15 +42,14 @@ const input = () =>
       },
     ],
   });
-async function fixture() {
-  const confirmed = input(),
-    prepared = prepareStaffQuote(
-      confirmed,
-      scope,
-      { signerName: 'Staff', signerEmail: 'staff@example.test' },
-      new AbortController().signal,
-    ),
-    calls: any[] = [];
+async function fixture(confirmed = input()) {
+  const prepared = prepareStaffQuote(
+    confirmed,
+    scope,
+    { signerName: 'Staff', signerEmail: 'staff@example.test' },
+    new AbortController().signal,
+  );
+  const calls: any[] = [];
   const options = {
     authorizationId: prepared.authorizationId,
     authorizeContext: async () => true,
@@ -77,7 +76,12 @@ async function fixture() {
                 id: 'option',
                 room: { code: 'SKNG', label: 'Standard King', buildingCode: 'MAIN' },
                 rate: { code: 'BARRO', label: 'Room Only' },
-                board: 'Room Only R',
+                board:
+                  r.required?.boardBases?.[0] === 'breakfast'
+                    ? 'Bed & Breakfast R'
+                    : r.required?.boardBases?.[0] === 'dinner_bed_breakfast'
+                      ? 'Dinner Bed & Breakfast R'
+                      : 'Room Only R',
                 appliedContext: {},
                 eligibility: 'verified',
                 availability: 'available',
@@ -100,12 +104,12 @@ async function fixture() {
         },
       };
     },
-    resolvePolicy: async () => ({
+    resolvePolicy: async (_propertyCode: string, _rateCode: string, board: Board) => ({
       ref: 'policy',
       propertyCode: 'HRCEN',
       sourceHashes: ['c'.repeat(64)],
       authoredDates: ['2026-09-08'],
-      families: [{ rateCode: 'BARRO', board: 'room_only' as const }],
+      families: [{ rateCode: 'BARRO', board }],
       vat: 'included' as const,
       levy: 'included' as const,
     }),
@@ -132,7 +136,6 @@ describe('staff-approved quotation beneath native guards', () => {
       input: {
         ...source,
         groups: [{ ...fallbackGroup, board: 'bb' }],
-        dinnerAllowanceGroupIds: ['single'],
       },
       groupIds: ['single'],
     });
@@ -194,7 +197,110 @@ describe('staff-approved quotation beneath native guards', () => {
     expect(retry?.input.groups[0]).toMatchObject({ id: 'single', board: 'bb' });
     expect(retry?.input.groups[0]).not.toHaveProperty('rateCode');
     expect(retry?.input.groups[1]).toEqual(source.groups[1]);
-    expect(retry?.input.dinnerAllowanceGroupIds).toEqual(['single']);
+    expect(retry?.input.dinnerAllowanceGroupIds).toBeUndefined();
+  });
+
+  it.each([
+    ['omitted', false],
+    ['explicit whole-stay', true],
+  ])(
+    'prices a manual dinner add-on across mixed B&B groups after retry (%s scope)',
+    async (_scope, explicit) => {
+      const source = input();
+      const group = source.groups[0]!;
+      source.groups = [
+        { ...group, id: 'bb', quantity: 1, adults: 2, board: 'bb' },
+        { ...group, id: 'dinner', quantity: 1, adults: 1, board: 'dinner_bb' },
+      ];
+      source.dinnerAllowanceMinor = 12_500;
+      source.dinnerAllowanceUnit = 'per_person_per_night';
+      if (explicit) source.dinnerAllowanceGroupIds = ['bb', 'dinner'];
+
+      const retry = staffQuoteDinnerFallback(source)!;
+      expect(retry.groupIds).toEqual(['dinner']);
+      const f = await fixture(retry.input);
+      const revision = await executeStaffQuote(
+        f.prepared,
+        createReservationistBusinessServices(f.options, f.prepared.approval),
+        async () => true,
+      );
+      const proposal = buildStaffProposalFacts(retry.input, scope, f.prepared, revision, {
+        dinnerFallbackGroupIds: retry.groupIds,
+      });
+
+      expect(proposal.facts?.extras[0]).toMatchObject({
+        units: 9,
+        groupIds: ['bb', 'dinner'],
+      });
+      expect(deriveAuthorizedExtraLines(revision, proposal.facts!)).toEqual([
+        expect.objectContaining({ quantity: 3, nights: 3, units: 9, totalMinor: 112_500 }),
+      ]);
+    },
+  );
+
+  it('prices configured dinner only for mixed-stay groups retried from dinner board', async () => {
+    const source = input();
+    const group = source.groups[0]!;
+    source.groups = [
+      { ...group, id: 'bb', quantity: 1, adults: 2, board: 'bb' },
+      { ...group, id: 'dinner', quantity: 1, adults: 1, board: 'dinner_bb' },
+    ];
+
+    const retry = staffQuoteDinnerFallback(source)!;
+    expect(retry.groupIds).toEqual(['dinner']);
+    const f = await fixture(retry.input);
+    const revision = await executeStaffQuote(
+      f.prepared,
+      createReservationistBusinessServices(f.options, f.prepared.approval),
+      async () => true,
+    );
+    const proposal = buildStaffProposalFacts(retry.input, scope, f.prepared, revision, {
+      dinnerFallbackGroupIds: retry.groupIds,
+      dinnerAddOn: {
+        amountMinor: 12_500,
+        unit: 'per_person_per_night',
+        label: 'Set menu',
+      },
+    });
+
+    expect(proposal.dinnerAddOnRequired).toBe(false);
+    expect(proposal.facts?.extras[0]).toMatchObject({
+      units: 3,
+      groupIds: ['dinner'],
+      unitMinor: 12_500,
+    });
+    expect(deriveAuthorizedExtraLines(revision, proposal.facts!)).toEqual([
+      expect.objectContaining({ quantity: 1, nights: 3, units: 3, totalMinor: 37_500 }),
+    ]);
+  });
+
+  it('keeps a dinner-board retry blocked when no dinner price was approved', async () => {
+    const source = input();
+    source.groups[0]!.board = 'dinner_bb';
+    const retry = staffQuoteDinnerFallback(source)!;
+    const retryInput = { ...retry.input };
+    delete retryInput.dinnerAllowanceGroupIds;
+    const f = await fixture(retryInput);
+    const revision = await executeStaffQuote(
+      f.prepared,
+      createReservationistBusinessServices(f.options, f.prepared.approval),
+      async () => true,
+    );
+    const proposalOptions = {
+      dinnerGroupIds: undefined,
+      dinnerFallbackGroupIds: retry.groupIds,
+    };
+    const proposal = buildStaffProposalFacts(
+      retryInput,
+      scope,
+      f.prepared,
+      revision,
+      proposalOptions,
+    );
+
+    expect(proposal.facts).toBeNull();
+    expect(proposal.dinnerAddOnRequired).toBe(true);
+    expect(proposal.extrasReviewItems).toContain('Dinner price — enter amount');
   });
 
   it('keeps a dinner add-on unpriced until a staff amount and unit, or installed hotel config, supply them', async () => {
