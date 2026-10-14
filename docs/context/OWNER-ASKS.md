@@ -212,3 +212,10 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 89  | Check all running agents are on the roadmap; kill stragglers | ✅ | LANES "Agent audit" | Re-check at each lane event |
 | 90  | Pause; update every MD/ledger; admit and log mistakes | ✅ | `docs/context/MISTAKES.md` 2026-10-14 rows | — |
 | 91  | Profitroom computer-use agent? | ⬜ | FACTS §2 Profitroom note (Profitroom is an excluded host) | Owner decides whether it's a scope change |
+| 92  | Veto proposed stack ADR #253 (CopilotKit + React Flow + own compiler); more research into OSS chat→workflow-graph builders; open to swapping Mastra | 🟡 | #253 closed; R6 lane running | R6 → recommendation |
+| 93  | Merge, deploy, then self-test quote mails one at a time; post each result in the coordinator chat | 🟡 | #244, #245 merged | Merge #242, #243, #246, #249 after Greptile → deploy → per-mail results in chat |
+| 94  | Luna max for lanes; coordinator chat stays on Opus 5.5 | ✅ | Gateway activated 2026-10-14 22:43Z; Opus slot unchanged | — |
+| 95  | Delete old worktrees | ✅ | Done by another session; verified gone | — |
+| 96  | Expand into first builder slice, SynXis workflow, Da Vinci | 🟡 | Grill round 2026-10-14 | Owner answers |
+| 97  | What does the perfect product need: ROI + ETA | ✅ | Coordinator reply 2026-10-14 ~23:55Z; `WORKSTREAMS.md` | Refresh after answers |
+| 98  | Grill the owner for scope/decisions before sleep; no questions the context already answers | 🟡 | Grill round 2026-10-14 | — |
