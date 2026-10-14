@@ -89,7 +89,8 @@ it('matches staff BAR B&B proposal structure in offline HTML fallback', async ()
   expect(html).toContain('Terms and Conditions:');
   expect(html).toContain('No booking has been made and is subjected to availability on acceptance of this quotation');
   expect(html).toContain('Prices are subject to change without notice');
-  expect(html).toContain('For full terms and conditions, please click HERE');
+  expect(html).toContain('For full terms and conditions, please click <a href="https://www.legacyhotels.co.za">HERE</a>');
+  expect(html).toContain('<a href="https://www.legacyhotels.co.za">The Centurion Hotel Website</a>');
   expect(html).toContain('Accepted By:');
   expect(html).toContain('Reservations Team:');
   expect((html.match(/class="proposal-page(?: terms-page)?"/g) ?? []).length).toBe(2);
