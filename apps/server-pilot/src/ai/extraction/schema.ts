@@ -89,6 +89,44 @@ export const mailExtractionSchema = z.object({
       question: z.string(),
     }),
   ),
+  // The v2 fields are lenient like the rest: a malformed value becomes undefined instead of failing the whole read.
+  guest: z
+    .object({
+      firstName: nullableText,
+      lastName: nullableText,
+    })
+    .optional()
+    .catch(undefined)
+    .describe(
+      'The named person the stay or booking is for, as written, given name and surname separately. When someone writes for a traveller, the traveller is the guest, not the sender, booker or agency contact. Never hotel staff. Null if no guest is named.',
+    ),
+  specialRequests: z
+    .array(z.string())
+    .optional()
+    .catch(undefined)
+    .describe(
+      'Requests about the stay itself, one per item, as written, e.g. "cot", "sea view", "early check-in". Not invoice or payment notes and not booking terms. Empty list if none.',
+    ),
+  externalRefs: z
+    .array(z.object({ channel: nullableText, reference: z.string() }))
+    .optional()
+    .catch(undefined)
+    .describe(
+      'Agency or online travel agency (OTA) reference numbers exactly as written, each with its channel name. Context only. Empty list if none.',
+    ),
+  requestedChange: nullableText
+    .optional()
+    .catch(undefined)
+    .describe(
+      'Amendment or cancellation only: one short plain-English line on what the sender wants changed, e.g. "Late check-out on 18 Nov". Null otherwise.',
+    ),
+  mealAndPayer: z
+    .object({ mealPlan: nullableText, payer: nullableText })
+    .optional()
+    .catch(undefined)
+    .describe(
+      'mealPlan = board or meal plan as written (e.g. "half board"). payer = who pays, with any bill-to or payer-limit note (e.g. "company pays room only"). Null when not stated.',
+    ),
 });
 export type MailExtractionOutput = z.infer<typeof mailExtractionSchema>;
 
@@ -130,6 +168,11 @@ export const mailExtractionPayloadSchema = z.object({
   confirmationNumbers: mailExtractionSchema.shape.confirmationNumbers,
   stays: z.array(storedExtractionStaySchema),
   missing: mailExtractionSchema.shape.missing,
+  guest: mailExtractionSchema.shape.guest,
+  specialRequests: mailExtractionSchema.shape.specialRequests,
+  externalRefs: mailExtractionSchema.shape.externalRefs,
+  requestedChange: mailExtractionSchema.shape.requestedChange,
+  mealAndPayer: mailExtractionSchema.shape.mealAndPayer,
 });
 
 /** The stored payload (mail_extraction.payload). Every string is card-masked and capped. */
@@ -174,6 +217,21 @@ export function stableId(prefix: 's' | 'r', ...parts: string[]): string {
   return `${prefix}_${createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 8)}`;
 }
 
+const REQUEST_STOP_WORDS = new Set([
+  'about', 'also', 'from', 'have', 'into', 'need', 'needed', 'please', 'request', 'requested', 'that', 'their', 'them',
+  'they', 'this', 'will', 'with', 'your',
+]);
+
+/**
+ * A special request is free text, so it must share a content word (4+ letters) with the source. A request with no such
+ * word (e.g. "cot") must appear verbatim. This drops invented requests without rejecting paraphrases.
+ */
+function requestInSource(request: string, sourceLower: string): boolean {
+  const words = (request.toLowerCase().match(/[a-z]{4,}/g) ?? []).filter((word) => !REQUEST_STOP_WORDS.has(word));
+  if (!words.length) return sourceLower.includes(request.toLowerCase());
+  return words.some((word) => sourceLower.includes(word));
+}
+
 /**
  * Validates and grounds the model output. Confirmation numbers must be digits-dash-digits and appear verbatim
  * in the text the model read. The contact email must appear in that text too. Anything else is dropped to null.
@@ -189,6 +247,24 @@ export function sanitizeExtraction(
   ]
     .filter((value) => CONFIRMATION_PATTERN.test(value) && input.sourceText.includes(value))
     .slice(0, MAX_CONFIRMATIONS);
+  const guestName = (value: string | null | undefined) => {
+    const name = cleanText(value);
+    return name && sourceLower.includes(name.toLowerCase()) ? name : null;
+  };
+  const specialRequests = [
+    ...new Set(
+      (output.specialRequests ?? [])
+        .map((item) => cleanText(item, 120))
+        .filter((item): item is string => item !== null && requestInSource(item, sourceLower)),
+    ),
+  ].slice(0, 10);
+  const seenExternalRefs = new Set<string>();
+  const externalRefs = (output.externalRefs ?? []).flatMap((item) => {
+    const reference = item.reference.trim();
+    if (!reference || !input.sourceText.includes(reference) || seenExternalRefs.has(reference)) return [];
+    seenExternalRefs.add(reference);
+    return [{ channel: cleanText(item.channel, 60), reference }];
+  }).slice(0, 10);
   const stays = output.stays.slice(0, MAX_STAYS).map((stay, stayIndex): ExtractionStay => {
     const id = stableId('s', input.messageId, String(stayIndex));
     return {
@@ -227,6 +303,20 @@ export function sanitizeExtraction(
         name: cleanText(output.contact.name),
         email: email && sourceLower.includes(email.toLowerCase()) ? email : null,
         phone: cleanText(output.contact.phone),
+      },
+      guest: {
+        firstName: guestName(output.guest?.firstName),
+        lastName: guestName(output.guest?.lastName),
+      },
+      specialRequests,
+      externalRefs,
+      requestedChange:
+        output.kind === 'amendment' || output.kind === 'cancellation'
+          ? cleanText(output.requestedChange)
+          : null,
+      mealAndPayer: {
+        mealPlan: cleanText(output.mealAndPayer?.mealPlan),
+        payer: cleanText(output.mealAndPayer?.payer),
       },
       agency: cleanText(output.agency),
       endClient: cleanText(output.endClient),
