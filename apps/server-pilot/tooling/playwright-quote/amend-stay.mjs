@@ -9,6 +9,7 @@ import { login, playwright, readSecret, displayDate } from './fetch-quote.mjs';
 import { findOnOpenGuestStay } from './stay-lookup.mjs';
 import { readSaveSnapshot, SAVE_POLL_MS, SAVE_WAIT_MS } from './save-wait.mjs';
 import {
+  amendCommitAllowed,
   amendPreviewDigest,
   compareChangedFields,
   dangerousDialogKind,
@@ -129,6 +130,11 @@ async function run(ctx, request) {
   let browser = null;
   let context = null;
   try {
+    if (!amendCommitAllowed(ctx.args.mode, process.env)) {
+      ctx.result.outcome = 'refused_flag_off';
+      ctx.result.reason = 'refused_flag_off';
+      return;
+    }
     const cdp = checkCdpEnv(process.env);
     if (!cdp.ok) throw new Error(cdp.error);
     const secret = await readSecret();

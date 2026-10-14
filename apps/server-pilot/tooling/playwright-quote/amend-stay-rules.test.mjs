@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
+  amendCommitAllowed,
   amendPreviewDigest,
   compareChangedFields,
   dangerousDialogKind,
@@ -156,4 +162,42 @@ test('compareChangedFields reports exact fresh matches and per-field mismatches'
     matches: false,
     diff: { arrival: { expected: '2027-09-15', actual: null }, adults: { expected: 2, actual: null } },
   });
+});
+
+test('pane save gate allows preview but permits commit only in lab mode', () => {
+  assert.equal(amendCommitAllowed('preview', {}), true);
+  assert.equal(amendCommitAllowed('commit', {}), false);
+  assert.equal(amendCommitAllowed('commit', { RESERVATIONIST_PANE_SAVE: 'off' }), false);
+  assert.equal(amendCommitAllowed('commit', { RESERVATIONIST_PANE_SAVE: 'on' }), false);
+  assert.equal(amendCommitAllowed('commit', { RESERVATIONIST_PANE_SAVE: 'lab' }), true);
+});
+
+test('amend CLI refuses commit before HMS access when pane save gate is off', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'amend-gate-test-'));
+  const requestPath = join(dir, 'request.json');
+  const outDir = join(dir, 'proof');
+  await writeFile(requestPath, JSON.stringify({
+    confirmation: '57291630-1',
+    expectedLastName: 'Labtest',
+    fields: { adults: 2 },
+  }));
+  try {
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./amend-stay.mjs', import.meta.url)),
+      '--request', requestPath,
+      '--mode', 'commit',
+      '--digest', 'a'.repeat(64),
+      '--out', outDir,
+    ], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', HOME: dir, TMPDIR: dir, RESERVATIONIST_PANE_SAVE: 'off' },
+    });
+    assert.equal(result.status, 2, result.stderr || result.error?.message);
+    const report = JSON.parse(await readFile(join(outDir, 'result.json'), 'utf8'));
+    assert.equal(report.outcome, 'refused_flag_off');
+    assert.equal(report.reason, 'refused_flag_off');
+    assert.equal(report.saveAttempted, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
