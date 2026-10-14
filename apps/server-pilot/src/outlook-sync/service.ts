@@ -11,6 +11,7 @@ import {
 } from './authorization.js';
 import {
   activateInput,
+  type ActiveMailboxSyncStatus,
   controlInput,
   nativeActivateInput,
   nativeClaimInput,
@@ -18,6 +19,7 @@ import {
   type SyncReadLeaseV1,
   type SyncStatusV1,
 } from './contracts.js';
+import { resolveAuthSessionProfile } from '../lib/auth-profile.js';
 import {
   outlookSyncSource,
   outlookSyncScan,
@@ -398,7 +400,8 @@ export async function activeTransportStatus(
   auth: SyncAuth,
   headers: Headers,
   transportId: string,
-): Promise<SyncStatusV1 | null> {
+): Promise<ActiveMailboxSyncStatus> {
+  if (resolveAuthSessionProfile() === 'remote') return { state: 'not_applicable' };
   return db.transaction(async (tx) => {
     const t = tx as DB;
     const staff = await authenticatedStaff(t, auth, headers);

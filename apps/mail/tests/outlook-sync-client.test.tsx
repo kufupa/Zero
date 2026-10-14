@@ -1,7 +1,8 @@
 /** @vitest-environment happy-dom */
-import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
+import { act, cleanup, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { useOutlookSync } from '../lib/workstation/use-outlook-sync';
+import { OutlookSyncProgress } from '../components/workstation/outlook-sync-progress';
 const mocks = vi.hoisted(() => ({
   activate: vi.fn(),
   status: vi.fn(),
@@ -125,6 +126,62 @@ describe('automatic source scoped hosted sync', () => {
     await act(async () => resolveStatus(null));
     await waitFor(() => expect(result.current.statusLoaded).toBe(true));
     expect(result.current.status).toBeNull();
+  });
+  it('hides not-applicable webmail status and stops polling it', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.statusForActiveMailbox.mockResolvedValue({ state: 'not_applicable' });
+      const hook = renderHook(() =>
+        useOutlookSync({
+          ...baseline,
+          deviceId: null,
+          capabilityVersion: undefined,
+          readRoots: [],
+          readOnlyStatus: true,
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(hook.result.current.status).toBeNull();
+      expect(hook.result.current.notApplicable).toBe(true);
+      expect(hook.result.current.error).toBeNull();
+
+      const view = render(
+        <OutlookSyncProgress
+          status={hook.result.current.status}
+          notApplicable={hook.result.current.notApplicable}
+          mailbox="shared@example.test"
+          onControl={vi.fn()}
+          controlsEnabled={false}
+        />,
+      );
+      expect(view.container.firstChild).toBeNull();
+      await act(async () => vi.advanceTimersByTimeAsync(60_000));
+      expect(mocks.statusForActiveMailbox).toHaveBeenCalledTimes(1);
+      hook.unmount();
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('keeps a genuine Outlook FORBIDDEN response visible as access removed', async () => {
+    mocks.activate.mockRejectedValueOnce(Object.assign(new Error('denied'), {
+      data: { code: 'FORBIDDEN' },
+    }));
+    const hook = renderHook(() => useOutlookSync({ ...baseline, sessionId: 'forbidden' }));
+    await waitFor(() => expect(hook.result.current.error).toBe('access-removed'));
+    render(
+      <OutlookSyncProgress
+        status={hook.result.current.status}
+        mailbox="shared@example.test"
+        onControl={vi.fn()}
+        error={hook.result.current.error}
+      />,
+    );
+    expect(screen.getByText('Access removed — contact Ansh')).toBeDefined();
+    hook.unmount();
   });
   it('deduplicates concurrent mounts and retries response loss with one bounded idempotency key', async () => {
     const a = renderHook(() => useOutlookSync({ ...baseline, sessionId: 'parallel' }));
