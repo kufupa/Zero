@@ -221,8 +221,8 @@ function toInt(name: string, raw: string): number {
 
 function toBool(name: string, raw: string, acceptOn = false): boolean {
   if (raw === 'true' || raw === '1' || (acceptOn && raw === 'on')) return true;
-  if (raw === 'false' || raw === '0') return false;
-  const acceptedValues = acceptOn ? 'true|false|1|0|on' : 'true|false|1|0';
+  if (raw === 'false' || raw === '0' || (acceptOn && raw === 'off')) return false;
+  const acceptedValues = acceptOn ? 'true|false|1|0|on|off' : 'true|false|1|0';
   throw new Error(`env ${name} must be boolean (${acceptedValues}), got: ${raw}`);
 }
 

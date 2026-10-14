@@ -1089,6 +1089,36 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       });
     }));
 
+  it.each([
+    [1, 'retry_wait'],
+    [20, 'dead_letter'],
+  ] as const)('a prepared quote %i minutes old that meets a busy property lock ends %s', (ageMinutes, outcome) =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      const preparedInput = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId, selectionEpoch: 0, inputRevision: 0 });
+      const { run } = await enqueueHmsJob({
+        transportId: TRANSPORT_ID,
+        threadId,
+        triggerMessageId: messageId,
+        workItemId: null,
+        userId: null,
+        request: { kind: 'staff_quote', input: preparedInput },
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: `hms-job:staff-quote-prepared:test:${randomUUID()}`,
+        extraMetrics: { quotePrepared: true },
+      }, db);
+      const claimed = await claimJob(db);
+      staffQuoteRunner.run.mockRejectedValueOnce(new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE));
+
+      // An earlier lock wait left it claimable again; only its age decides whether it waits once more.
+      const createdAt = new Date(Date.now() - ageMinutes * 60_000);
+      expect(await runClaimedJob(db, { ...claimed, createdAt })).toBe(outcome);
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(stored).toMatchObject({ state: outcome, attempts: 0, failureClass: 'HMS_LOCK_BUSY' });
+    }));
+
   it('runs a prepared quote without a staff identity and keeps only the userless priced snapshot', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
@@ -1540,6 +1570,25 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect((await readHmsJobView({ transportId: TRANSPORT_ID, runId: queued.run.id }, db))?.runId).toBe(
         queued.run.id,
       );
+    }));
+
+  it('a party search shared by dedupe stays readable by run id for another staff member', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      const shared = await queueUserPartyHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          threadId,
+          request: { kind: 'party', name: 'Horizon Trail Tours', partyKind: 'company' },
+        },
+        db,
+      );
+      const view = await readHmsJobView(
+        { transportId: TRANSPORT_ID, runId: shared!.id, staffQuoteOwnerId: 'another-staff-user' },
+        db,
+      );
+      expect(view?.runId).toBe(shared?.id);
     }));
 
   it('deduplicates user party searches per transport, normalized name, kind and day; a new field Find preserves jobs shared with another thread', () =>

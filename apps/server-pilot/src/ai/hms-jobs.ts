@@ -2328,6 +2328,8 @@ async function requeueRun(
   return 'retry_wait';
 }
 
+const PREPARED_QUOTE_LOCK_WAIT_MS = 15 * 60_000;
+
 async function retryOrFail(
   db: DB,
   run: AiWorkflowRun,
@@ -2697,6 +2699,14 @@ export async function executeHmsJob(input: {
         });
       }
       if (isPropertyReadLockDeadline(error)) {
+        // A prepared quote waits out a busy lock for a while, then gives up so staff never stay pinned to it.
+        if (systemPreparedQuote && Date.now() - run.createdAt.getTime() >= PREPARED_QUOTE_LOCK_WAIT_MS) {
+          await markAiRunDeadLetter(
+            { ...mark, lastError: 'prepared_quote_lock_busy', failureClass: 'HMS_LOCK_BUSY' },
+            db,
+          );
+          return 'dead_letter';
+        }
         if (systemPreparedQuote) {
           return requeueRun(db, mark, {
             attempts: run.attempts,
@@ -3085,10 +3095,7 @@ export async function readHmsJobView(
               ...(input.staffQuoteOwnerId
                 ? [
                     or(
-                      and(
-                        sql`${aiWorkflowRun.readRequest}->>'kind' IS DISTINCT FROM 'staff_quote'`,
-                        sql`${aiWorkflowRun.metrics}->>'userId' = ${input.staffQuoteOwnerId}`,
-                      ),
+                      sql`${aiWorkflowRun.readRequest}->>'kind' IS DISTINCT FROM 'staff_quote'`,
                       and(
                         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
                         or(

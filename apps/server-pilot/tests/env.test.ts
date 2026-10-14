@@ -192,6 +192,10 @@ describe('env', () => {
     expect(parseEnv(baseEnv({ HMS_QUOTE_PREPARE: value })).HMS_QUOTE_PREPARE).toBe(true);
   });
 
+  it.each(['false', '0', 'off'])('parses HMS_QUOTE_PREPARE=%s as disabled', (value) => {
+    expect(parseEnv(baseEnv({ HMS_QUOTE_PREPARE: value })).HMS_QUOTE_PREPARE).toBe(false);
+  });
+
   it('accepts only the explicit approved-local model route marker', () => {
     expect(parseEnv(baseEnv({ AI_MODEL_ROUTE: 'approved-local' })).AI_MODEL_ROUTE).toBe(
       'approved-local',

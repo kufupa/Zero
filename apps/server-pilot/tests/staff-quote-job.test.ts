@@ -584,7 +584,7 @@ describe('staff_quote HMS job execution', () => {
     });
     quoteRunMocks.createPropertyReadLock.mockReturnValue({ withLock });
 
-    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('retry_wait');
+    await expect(executeHmsJob({ run: { ...run, createdAt: new Date() }, fence, db: quoteDb })).resolves.toBe('retry_wait');
 
     expect(withLock).toHaveBeenCalledOnce();
     expect(withLock).toHaveBeenCalledWith(
