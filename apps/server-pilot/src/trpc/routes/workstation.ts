@@ -1386,12 +1386,11 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Excel could not be built from this quote' });
       }
       await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
-      // The file is named for the earliest arrival across the stays.
-      const arrival = stays
-        .map((stay) => stay.revision.groups[0]?.arrivalDate ?? stay.revision.authoredDate)
-        .sort()[0]!;
+      const groups = stays.flatMap((stay) => stay.revision.groups);
+      const arrival = groups.map((group) => group.arrivalDate).sort()[0] ?? stays[0]!.revision.authoredDate;
+      const departure = groups.map((group) => group.departureDate).sort().at(-1) ?? arrival;
       return {
-        fileName: quoteWorkbookFileName(input.company, arrival),
+        fileName: quoteWorkbookFileName(input.agency.trim() || input.company, arrival, departure),
         xlsxBase64: Buffer.from(workbook.bytes).toString('base64'),
         totalMinor: workbook.totalMinor,
         revisionId: documentIdFor(stays),

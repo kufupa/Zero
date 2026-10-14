@@ -7,37 +7,22 @@ export type DinnerAddOnReplyLine = {
   totalMinor: number;
 };
 
-function zar(minor: number): string {
-  return `R${(minor / 100).toFixed(2)}`;
-}
-
 export function quoteWrapperHtml(
   guestName: string,
   signerName = '',
-  options?: { dinnerAddOn?: DinnerAddOnReplyLine; totalMinor?: number },
+  _options?: { dinnerAddOn?: DinnerAddOnReplyLine; totalMinor?: number },
 ): string {
   const name = escapeHtml(guestName.trim() || 'Guest');
   const signer = signerName.trim() ? `${escapeHtml(signerName.trim())}<br />` : '';
-  const dinner = options?.dinnerAddOn;
-  const units = {
-    per_person_per_night: 'per person per night',
-    per_room_per_night: 'per room per night',
-    per_person: 'per person',
-  };
-  const addOnCopy = dinner && Number.isSafeInteger(dinner.amountMinor) && Number.isSafeInteger(dinner.totalMinor)
-    ? `<p><strong>${escapeHtml(dinner.label)}</strong>: ${zar(dinner.amountMinor)} ${units[dinner.unit]}; add-on total ${zar(dinner.totalMinor)}.</p>${
-        Number.isSafeInteger(options?.totalMinor)
-          ? `<p><strong>Quotation total including dinner add-on: ${zar(options!.totalMinor!)}</strong></p>`
-          : ''
-      }`
-    : '';
+  // Staff keep all amounts in the attached proposal; the cover reply stays unpriced.
   return `
       <div style="font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1e293b; line-height: 1.5;">
         <p>Good day ${name},</p>
-        <p>Thank you for choosing The Centurion Hotel.</p>
+        <p>Thank you for Choosing The Centurion Hotel.</p>
         <p>Please see attached quotation.</p>
-        ${addOnCopy}
-        <p>Kindly sign and return the quotation to confirm. Please note that no rooms are currently being held.</p>
+        <p>Should you wish to proceed, please sign and return the attached quotation so that we can confirm and secure your reservation.</p>
+        <p>Please note that no rooms are currently being held, and bookings will only be confirmed once we have received the signed quotation.</p>
+        <p>Please feel free to contact me should you require any further information</p>
         <p>Kind regards,</p>
         <p>${signer}Reservations<br />The Centurion Hotel</p>
       </div>
