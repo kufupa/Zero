@@ -653,6 +653,20 @@ export function missingQuoteReplyFieldsForGroups(groups: readonly StayGroupRequi
   return fields;
 }
 
+/** The regex fallback supplies deterministic stays, not the Luna request-field list. */
+function withFallbackMissingQuoteReplyFields(analysis: QuoteAnalysis): QuoteAnalysis {
+  if (analysis.source !== 'regex_fallback' || analysis.intent !== 'quote') return analysis;
+  const hasIncompleteDates = analysis.groups.some(
+    (group) => !group.arrivalDate || !group.departureDate,
+  );
+  return {
+    ...analysis,
+    missingQuoteReplyFields: hasIncompleteDates
+      ? missingQuoteReplyFieldsForGroups(analysis.groups)
+      : [],
+  };
+}
+
 export function canCreateNativeDraft(session: QuoteSession): boolean {
   // A combined quote's reply is the multi-stay draft, which checks its own PDF. The single-stay reply never applies.
   if (isMultiStay(session)) return Boolean(session.pdf) && canCreatePdf(session);
@@ -1187,6 +1201,10 @@ export function quoteStayRunIsCurrent(
 }
 
 export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAction): QuoteSession {
+  if (action.type === 'analysis_ready') {
+    const analysis = withFallbackMissingQuoteReplyFields(action.analysis);
+    if (analysis !== action.analysis) action = { ...action, analysis };
+  }
   switch (action.type) {
     case 'reset':
       return initialQuoteSession();

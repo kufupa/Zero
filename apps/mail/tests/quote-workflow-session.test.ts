@@ -1150,6 +1150,46 @@ describe('mixed complete and incomplete quote dates', () => {
     expect(missingQuoteDetailsReplyOnly(session)).toBe(false);
   });
 
+  it('derives missing reply fields from deterministic groups when the Luna read falls back', () => {
+    const analysis = twoDateAnalysis();
+    const fallback = analysisReady({
+      ...analysis,
+      groups: [
+        {
+          ...analysis.groups[0]!,
+          arrivalDate: undefined,
+          quantity: undefined,
+          adults: undefined,
+          fields: { arrivalDate: 'missing', adults: 'missing' },
+        },
+        {
+          ...analysis.groups[1]!,
+          departureDate: undefined,
+          quantity: 2,
+          adults: undefined,
+          fields: {
+            ...analysis.groups[1]!.fields,
+            departureDate: 'missing',
+            quantity: 'extracted',
+            adults: 'missing',
+          },
+        },
+      ],
+      source: 'regex_fallback',
+      fallbackReason: 'error',
+      aiUnavailable: true,
+      luna: null,
+    });
+
+    expect(fallback.analysis?.missingQuoteReplyFields).toEqual([
+      'Arrival date for stay 1',
+      'Number of rooms and occupancy per room for stay 1',
+      'Departure date for stay 2',
+      'Number of guests per room for stay 2',
+    ]);
+    expect(missingQuoteDetailsReplyOnly(fallback)).toBe(true);
+  });
+
   it('derives only the quote details that remain missing from the current groups', () => {
     const group = {
       ...quoteAnalysis.groups[0]!,
