@@ -364,10 +364,9 @@ export const READ_PANE_JS = `(threadId) => {
   const status = panel ? panel.querySelector('[data-preview-status]') : null;
   const row = document.querySelector('aside a[data-thread-id="' + CSS.escape(threadId) + '"]');
   const text = panel ? clean(panel.innerText) : '';
-  // The type picker (workflow-badge.tsx). Its chosen option is the intent; an empty value means none is chosen yet.
-  const typeSelect = panel ? panel.querySelector('select[aria-label="Nava reads this as"]') : null;
-  const picked = typeSelect && typeSelect.value ? typeSelect.options[typeSelect.selectedIndex] : null;
-  const amendment = panel ? panel.querySelector('[data-amendment-kind]') : null;
+  // The read-as chip (workflow-badge.tsx). Its label is the intent; amendments and cancellations are its kind.
+  const readAs = panel ? panel.querySelector('[data-read-as]') : null;
+  const readAsKind = readAs ? clean(readAs.getAttribute('data-read-as')) : '';
   const alerts = panel
     ? Array.from(panel.querySelectorAll('[role="alert"], [role="status"]')).map((el) => clean(el.textContent))
     : [];
@@ -387,8 +386,8 @@ export const READ_PANE_JS = `(threadId) => {
     paneStatus: status ? status.getAttribute('data-preview-status') : 'missing',
     unsyncedReason: status ? status.getAttribute('data-preview-reason') : null,
     analysing: new RegExp(${JSON.stringify(ANALYSING_TEXT.source)}).test(text),
-    intent: picked ? clean(picked.textContent) : null,
-    amendment: amendment ? clean(amendment.getAttribute('data-amendment-kind')) || null : null,
+    intent: readAs ? clean(readAs.textContent) || null : null,
+    amendment: readAsKind === 'amendment' || readAsKind === 'cancellation' ? readAsKind : null,
     voucher: Boolean(panel && panel.querySelector(${JSON.stringify(VOUCHER_CARD_SELECTOR)})),
     aiUnavailable: /Read without AI/.test(text),
     alerts: alerts.concat(toasts).filter(Boolean),
@@ -421,7 +420,7 @@ export type PaneRead = {
 };
 
 /**
- * A thread has settled when the pane shows an intent (the type picker has a choice), an amendment, the voucher card,
+ * A thread has settled when the pane shows an intent (the read-as chip), an amendment, the voucher card,
  * an alert, or a fallback notice. 'intent' means the pane read the email.
  */
 export function outcomeOf(read: PaneRead): Outcome | null {
