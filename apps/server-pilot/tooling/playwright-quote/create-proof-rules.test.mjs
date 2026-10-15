@@ -71,6 +71,46 @@ test('confirmed save reads by confirmation and skips guest/date reconciliation',
   });
 });
 
+test('confirmed save retains confirmation when readback throws', async () => {
+  const result = await rules.reconcileCreateSave({
+    save: { confirmed: true, confirmationNumber: '61143613-1' },
+    expected: EXPECTED,
+    existingRows: [],
+    readByConfirmation: async () => { throw new Error('readback unavailable'); },
+    searchByGuestDates: async () => {
+      throw new Error('confirmed save must not search guest dates');
+    },
+  });
+  assert.equal(result.confNo, '61143613-1');
+  assert.equal(result.readbackMatch, null);
+  assert.deepEqual(result.mismatches, [{
+    field: 'reservation',
+    expected: 'found active confirmation',
+    actual: 'readback_error',
+  }]);
+  assert.equal(result.unknownOutcome, 'unresolved');
+});
+
+test('confirmed save retains confirmation when readback cannot find it', async () => {
+  const result = await rules.reconcileCreateSave({
+    save: { confirmed: true, confirmationNumber: '61143613-1' },
+    expected: EXPECTED,
+    existingRows: [],
+    readByConfirmation: async () => ({ outcome: 'not_found' }),
+    searchByGuestDates: async () => {
+      throw new Error('confirmed save must not search guest dates');
+    },
+  });
+  assert.equal(result.confNo, '61143613-1');
+  assert.equal(result.readbackMatch, null);
+  assert.deepEqual(result.mismatches, [{
+    field: 'reservation',
+    expected: 'found active confirmation',
+    actual: 'not_found',
+  }]);
+  assert.equal(result.unknownOutcome, 'unresolved');
+});
+
 test('unknown save searches guest/dates once, then reads the found record by confirmation', async () => {
   const calls = [];
   assert.equal(typeof rules.reconcileCreateSave, 'function');
@@ -247,7 +287,7 @@ test('confirmed save stays unresolved when confirmation readback is canceled', a
       throw new Error('confirmed save must not search guest dates');
     },
   });
-  assert.equal(result.confNo, null);
+  assert.equal(result.confNo, '61143613-2');
   assert.equal(result.readbackMatch, null);
   assert.equal(result.unknownOutcome, 'unresolved');
 });

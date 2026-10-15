@@ -80,6 +80,7 @@ export async function reconcileCreateSave({
     possibleExistingRows.map((stay) => String(stay.confirmation).trim()),
   );
   let confNo = save?.confirmed === true ? String(save.confirmationNumber ?? '').trim() : '';
+  if (confNo) result.confNo = confNo;
 
   if (!confNo) {
     let search;
