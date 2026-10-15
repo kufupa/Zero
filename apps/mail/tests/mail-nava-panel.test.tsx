@@ -64,7 +64,7 @@ vi.mock('../hooks/use-threads', () => ({
     [],
     false,
     vi.fn(),
-    { folder: mocks.searchListFolder },
+    { isValid: true, folder: mocks.searchListFolder },
   ],
 }));
 vi.mock('../hooks/use-connections', () => ({
