@@ -2668,10 +2668,7 @@ export async function executeHmsJob(input: {
       messageId: run.triggerMessageId,
     });
     if (!origin.ok) {
-      await markAiRunDeadLetter(
-        { ...mark, lastError: 'davinci_origin_refused', failureClass: 'POLICY_BLOCK' },
-        db,
-      );
+      await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
       return 'dead_letter';
     }
   }

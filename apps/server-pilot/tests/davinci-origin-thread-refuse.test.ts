@@ -27,6 +27,7 @@ vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => ({
 
 const runLedger = vi.hoisted(() => ({
   markAiRunDeadLetter: vi.fn(),
+  markAiRunPolicyRefused: vi.fn(),
   markAiRunRetry: vi.fn(),
   markAiRunSucceeded: vi.fn(),
 }));
@@ -259,6 +260,7 @@ beforeEach(() => {
   stubMixedOrigin();
   staffQuoteRunner.run.mockReset();
   runLedger.markAiRunDeadLetter.mockReset().mockResolvedValue({ id: RUN_ID });
+  runLedger.markAiRunPolicyRefused.mockReset().mockResolvedValue({ id: RUN_ID });
   runLedger.markAiRunRetry.mockReset().mockResolvedValue({ id: RUN_ID });
   runLedger.markAiRunSucceeded.mockReset().mockResolvedValue({ id: RUN_ID });
   panePartyLookupLoaders.enabled = () => true;
@@ -367,11 +369,8 @@ describe('Da Vinci mixed-origin thread refuse', () => {
       metrics: { hmsJob: true, userId: null },
     } as AiWorkflowRun;
     await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
-    expect(runLedger.markAiRunDeadLetter).toHaveBeenCalledWith(
-      expect.objectContaining({
-        lastError: 'refused_origin_mismatch',
-        failureClass: 'POLICY_BLOCK',
-      }),
+    expect(runLedger.markAiRunPolicyRefused).toHaveBeenCalledWith(
+      expect.objectContaining({ lastError: 'refused_origin_mismatch' }),
       db,
     );
     expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
@@ -406,8 +405,8 @@ describe('Da Vinci mixed-origin thread refuse', () => {
       metrics: { hmsJob: true, userId: 'user-1' },
     } as unknown as AiWorkflowRun;
     await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
-    expect(runLedger.markAiRunDeadLetter).toHaveBeenCalledWith(
-      expect.objectContaining({ lastError: 'davinci_origin_refused', failureClass: 'POLICY_BLOCK' }),
+    expect(runLedger.markAiRunPolicyRefused).toHaveBeenCalledWith(
+      expect.objectContaining({ lastError: 'davinci_origin_refused' }),
       db,
     );
     expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
