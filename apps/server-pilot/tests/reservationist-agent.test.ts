@@ -94,5 +94,10 @@ describe('reservationist agent', () => {
     const instructions = await agent.getInstructions({ requestContext: ctx(false) });
     expect(String(instructions)).toContain('HRCEN');
     expect(String(instructions)).toContain(CENTURION_HOTEL_RULES);
+    expect(String(instructions)).toMatch(/Never claim an HMS action was done/);
+    expect(String(instructions)).toMatch(/Do not call tools for holding moves/);
+    expect(String(instructions)).toMatch(/forward_to_partner/);
+    expect(String(instructions)).toMatch(/send_document/);
+    expect(String(instructions)).toMatch(/hms_todo/);
   });
 });
