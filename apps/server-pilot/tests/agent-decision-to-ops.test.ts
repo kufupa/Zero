@@ -5,8 +5,9 @@ import {
   snapshotRowToAgentCase,
   type SnapshotRow,
 } from '../src/ai/agent-decision-to-ops.js';
+import { staffMoveToOperations } from '../src/ai/gold-pair-join.js';
 import type { ReservationistDecision } from '../src/ai/reservationist-decision.js';
-import type { GoldOperation } from '../src/ai/same-move-ops.js';
+import { opsMatch, type GoldOperation } from '../src/ai/same-move-ops.js';
 
 function decision(workflow: ReservationistDecision['workflow']): ReservationistDecision {
   return { workflow, stayAsk: null, missing: [], replyDraft: '', rationale: '' };
@@ -57,22 +58,19 @@ describe('decisionToOperations', () => {
     expect(decisionToOperations(decision('other'), [])).toEqual([notNeededOp('unknown', 'other')]);
   });
 
-  it('adds a read op when party_lookup was called', () => {
-    expect(
-      decisionToOperations(decision('quote'), [{ toolName: 'party_lookup' }]),
-    ).toEqual([
-      requiredOp('quote', 'hms_quote_stay'),
-      requiredOp('read', 'hms_read_reservation'),
-    ]);
+  it('does not add read for party_lookup; gold priced_quote stays quote-only', () => {
+    const predicted = decisionToOperations(decision('quote'), [{ toolName: 'party_lookup' }]);
+    expect(predicted).toEqual([requiredOp('quote', 'hms_quote_stay')]);
+    expect(opsMatch(predicted, staffMoveToOperations('priced_quote'))).toBe(true);
   });
 
-  it('dedupes by operation when party_lookup is repeated', () => {
+  it('ignores repeated party_lookup when mapping create', () => {
     const ops = decisionToOperations(decision('create'), [
       { toolName: 'party_lookup' },
       { toolName: 'quote_stay' },
       { toolName: 'party_lookup' },
     ]);
-    expect(ops.map((row) => row.operation)).toEqual(['create', 'read']);
+    expect(ops.map((row) => row.operation)).toEqual(['create']);
   });
 });
 
@@ -162,5 +160,73 @@ describe('snapshotRowToAgentCase', () => {
 
     expect(built.trigger.text).not.toMatch(/<style|<p>|<\/p>|<html>/i);
     expect(agentThreadPrompt(built)).toContain(request);
+  });
+
+  it('drops context not strictly earlier than inbound received/sent time', () => {
+    const built = snapshotRowToAgentCase({
+      inbound: mail({
+        id: 'msg-in-1',
+        received_at: '2026-10-02T09:00:00Z',
+        sent_at: '2026-10-02T08:59:00Z',
+        body: 'Please quote 12 October.',
+        subject: 'October stay',
+      }),
+      context: [
+        mail({
+          id: 'msg-ctx-earlier',
+          direction: 'outbound',
+          from_address: 'hotel@example.com',
+          received_at: '2026-10-02T08:00:00Z',
+          subject: 'Earlier reply',
+          body: 'We can look at dates.',
+        }),
+        mail({
+          id: 'msg-ctx-same',
+          direction: 'outbound',
+          from_address: 'hotel@example.com',
+          received_at: '2026-10-02T09:00:00Z',
+          subject: 'Same-instant leak',
+          body: 'Same-time staff note.',
+        }),
+        mail({
+          id: 'msg-ctx-later',
+          direction: 'outbound',
+          from_address: 'hotel@example.com',
+          received_at: '2026-10-02T10:00:00Z',
+          subject: 'ANSWER-KEY-SUBJECT',
+          body: 'ANSWER-KEY-BODY 450 ZAR B&B',
+        }),
+        mail({
+          id: 'msg-ctx-sent-only-earlier',
+          direction: 'outbound',
+          from_address: 'hotel@example.com',
+          received_at: null,
+          sent_at: '2026-10-02T08:30:00Z',
+          subject: 'Sent-only earlier',
+          body: 'Prior staff note via sent_at.',
+        }),
+        mail({
+          id: 'msg-ctx-sent-only-later',
+          direction: 'outbound',
+          from_address: 'hotel@example.com',
+          received_at: null,
+          sent_at: '2026-10-02T10:30:00Z',
+          subject: 'Sent-only leak',
+          body: 'Later staff quote via sent_at.',
+        }),
+      ],
+    });
+
+    expect(built.context.map((row) => row.id)).toEqual([
+      'msg-ctx-earlier',
+      'msg-ctx-sent-only-earlier',
+    ]);
+    const prompt = agentThreadPrompt(built);
+    expect(prompt).toContain('Earlier reply');
+    expect(prompt).toContain('Sent-only earlier');
+    expect(prompt).not.toMatch(/ANSWER-KEY/);
+    expect(prompt).not.toContain('450 ZAR');
+    expect(prompt).not.toContain('Same-instant leak');
+    expect(prompt).not.toContain('Sent-only leak');
   });
 });
