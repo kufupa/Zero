@@ -35,12 +35,17 @@ if ! [[ "$AWS_REGION" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]$ ]] ||
   exit 10
 fi
 
+ALLOW_ROLLBACK=0
+if [ "${1:-}" = "--allow-rollback" ]; then
+  ALLOW_ROLLBACK=1
+  shift
+fi
 if [ "$#" -eq 0 ]; then
   MODE="bundle-sync"
 elif [ "$#" -eq 2 ] && [ "$1" = "--plan-snapshot" ]; then
   MODE="plan-snapshot"
 else
-  echo "usage: $0 [--plan-snapshot mail-artifact-reservation-chain]" >&2
+  echo "usage: $0 [--allow-rollback] [--plan-snapshot mail-artifact-reservation-chain]" >&2
   exit 2
 fi
 
@@ -481,20 +486,41 @@ if ! git check-ref-format --branch "$GIT_BRANCH" >/dev/null 2>&1; then
   exit 1
 fi
 
-# The bundle ships local refs/heads/$GIT_BRANCH, not origin. A stale or unpushed
-# local branch would deploy the wrong commit, so it must match origin first.
+# Bundle ships local refs/heads/$GIT_BRANCH. Fetch origin first; refuse a stale
+# or unpushed local tip (17:45 shipped older-than-prod main and reset EC2).
+LOCAL_COMMIT="$(git rev-parse --verify --quiet "refs/heads/$GIT_BRANCH^{commit}" || true)"
 if [ "${ALLOW_UNPUSHED_DEPLOY:-0}" != "1" ]; then
   if ! GIT_TERMINAL_PROMPT=0 git fetch -q origin "+refs/heads/$GIT_BRANCH:refs/remotes/origin/$GIT_BRANCH"; then
     echo "error: cannot fetch origin/$GIT_BRANCH to check the deploy branch (ALLOW_UNPUSHED_DEPLOY=1 skips this check)" >&2
-    exit 1
+    exit 2
   fi
-  LOCAL_COMMIT="$(git rev-parse --verify --quiet "refs/heads/$GIT_BRANCH^{commit}" || true)"
   ORIGIN_COMMIT="$(git rev-parse --verify --quiet "refs/remotes/origin/$GIT_BRANCH^{commit}" || true)"
   if [ -z "$LOCAL_COMMIT" ] || [ "$LOCAL_COMMIT" != "$ORIGIN_COMMIT" ]; then
     echo "error: local $GIT_BRANCH (${LOCAL_COMMIT:0:9}) does not match origin/$GIT_BRANCH (${ORIGIN_COMMIT:0:9})" >&2
     echo "  update it first: git fetch origin $GIT_BRANCH:$GIT_BRANCH (ALLOW_UNPUSHED_DEPLOY=1 skips this check)" >&2
-    exit 1
+    exit 2
   fi
+fi
+EC2_RAW="$(
+  SSM_MAX_POLL_SECONDS=45 SSM_DELIVERY_TIMEOUT_SECONDS=30 SSM_EXECUTION_TIMEOUT_SECONDS=30 \
+    bash "$SCRIPT_DIR/ssm-run-command.sh" \
+      "git -C $(printf '%q' "$EC2_REPO_PATH") rev-parse HEAD" 2>/dev/null || true
+)"
+EC2_COMMIT="$(node -e '
+const raw = process.argv[1] || "";
+let text = raw;
+try { const j = JSON.parse(raw); if (j && typeof j === "object") text = String(j.Stdout ?? raw); } catch {}
+const m = String(text).match(/\b([0-9a-f]{7,40})\b/i);
+if (m) process.stdout.write(m[1].toLowerCase());
+' "$EC2_RAW" 2>/dev/null || true)"
+echo "shipping SHA: ${LOCAL_COMMIT}"
+echo "EC2 SHA: ${EC2_COMMIT:-unread}"
+if [ "$ALLOW_ROLLBACK" != "1" ] && [ -n "$EC2_COMMIT" ] && [ -n "$LOCAL_COMMIT" ] &&
+  [ "$LOCAL_COMMIT" != "$EC2_COMMIT" ] &&
+  git merge-base --is-ancestor "$LOCAL_COMMIT" "$EC2_COMMIT" 2>/dev/null; then
+  echo "error: shipping SHA ${LOCAL_COMMIT} is an ancestor of the EC2 SHA ${EC2_COMMIT} (rollback)" >&2
+  echo "  pass --allow-rollback to override" >&2
+  exit 2
 fi
 
 echo "Creating git bundle for $GIT_BRANCH..."

@@ -25,7 +25,7 @@ for arg in "$@"; do
   esac
 done
 
-echo "== ops-deploy: sync bundle =="
+echo "== ops-deploy: sync bundle (prints shipping SHA and EC2 SHA) =="
 bash "${SCRIPT_DIR}/sync-ec2-git-bundle.sh"
 
 REMOTE_NVM='export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; export PATH="$HOME/.local/share/pnpm:$PATH"'
