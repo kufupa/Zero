@@ -179,7 +179,8 @@ function agentError(startedAt: number): AnalyseSelectionWithAgentResult {
 export async function analyseSelectionWithAgent(input: {
   selection: SyncedQuoteSelection;
   model: NonNullable<Parameters<typeof createReservationistAgent>[0]['model']>;
-  runners: ReservationistRunners;
+  /** Omitted in the live pane: the agent classifies with no tools (no HMS from analysis). */
+  runners?: ReservationistRunners;
   deadlineMs?: number;
   treatAs?: QuoteTreatAs;
   staffNote?: string;
@@ -192,7 +193,7 @@ export async function analyseSelectionWithAgent(input: {
     const agent = createReservationistAgent({
       model: input.model,
       runners: input.runners,
-      tools: paneAnalysisTools(input.runners),
+      tools: input.runners ? paneAnalysisTools(input.runners) : {},
     });
     const requestContext = new RequestContext<ReservationistContext>([
       ['propertyCode', 'HRCEN'],

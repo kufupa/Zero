@@ -9,13 +9,13 @@ import { analyseQuoteSources, type QuoteWorkflowAnalysis } from './quote-workflo
 import { buildHmsTodoCard, type HmsTodoCardInput } from './hms-todo-card.js';
 import {
   amendmentFromAnalysis,
-  analyseQuoteSelection,
   mapLlmDecision,
   type MappedQuoteDecision,
   type QuoteTreatAs,
   type QuoteWorkflowFallbackReason,
   type QuoteWorkflowTelemetry,
 } from './quote-workflow-llm.js';
+import { analyseWithPaneBrain } from './pane-brain.js';
 import {
   analyseInputKey,
   recordAgentRunCapped,
@@ -487,7 +487,7 @@ export async function analyseSyncedSelection(
   const unread = unreadAttachments(synced.attachments);
   const attachmentReviews = documentFailureItems(synced.attachments);
   const resolved = resolveAdapter(options.llmEnabled(), options.adapter);
-  const llm = await analyseQuoteSelection({
+  const llm = await analyseWithPaneBrain({
     selection: synced,
     adapter: resolved.adapter,
     enabled: resolved.enabled,
