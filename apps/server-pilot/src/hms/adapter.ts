@@ -23,6 +23,10 @@ import {
 } from './contracts.js';
 import type { HmsPage, HmsReadSession } from './runtime.js';
 import { isSentinelGuestName } from '../ops/hms-find-match-compare.js';
+import {
+  confirmationMatches,
+  confirmationSearchValues,
+} from './confirmation-match.js';
 
 export const HMS_FIND_RESERVATION_TOOL_ID = 'hms_find_reservation';
 export const HMS_QUOTE_STAY_TOOL_ID = 'hms_quote_stay';
@@ -164,6 +168,24 @@ export function rebaseManifestOrigin(
   });
 }
 
+function rowsMatchingCandidate(
+  rows: ReservationObservation[],
+  candidate: LookupCandidate,
+): ReservationObservation[] {
+  if (candidate.kind === 'confirmation') {
+    return rows.filter((row) =>
+      confirmationMatches(candidate.value, row.confirmationNumber ?? ''),
+    );
+  }
+  if (candidate.kind === 'external_reference') {
+    return rows.filter(
+      (row) =>
+        (row.externalReference ?? '').toUpperCase() === candidate.value.toUpperCase(),
+    );
+  }
+  return rows;
+}
+
 function emptyReservationData(): ReservationReadData {
   return reservationReadDataSchema.parse({
     matches: [],
@@ -252,41 +274,58 @@ export class InforReadAdapter implements HmsReadAdapter {
       });
     }
 
-    const fields = this.#searchFields(candidate);
-    await this.#page.postForm(
-      new URL(selectors.searchPath, this.#origin).toString(),
-      fields,
-    );
-    this.#onNavigate?.(selectors.searchPath);
-    assertNotAborted(signal);
-
-    if (this.#terminal() || this.#violation()) {
-      return this.#reservationResult({
-        status: 'manual_required',
-        data: emptyReservationData(),
-        unresolvedFields: ['request_policy'],
-        observedAt,
-        claimKeys: [],
-        sourceSeed: 'policy-violation-search',
-      });
-    }
-
-    const html = await this.#page.content();
-    const parsed = this.#parseReservationRows(html);
-    const correlated =
+    const attempts =
       candidate.kind === 'confirmation'
-        ? parsed.rows.filter(
-            (row) =>
-              (row.confirmationNumber ?? '').toUpperCase() ===
-              candidate.value.toUpperCase(),
-          )
-        : candidate.kind === 'external_reference'
-          ? parsed.rows.filter(
-              (row) =>
-                (row.externalReference ?? '').toUpperCase() ===
-                candidate.value.toUpperCase(),
-            )
-          : parsed.rows;
+        ? confirmationSearchValues(candidate.value)
+        : [
+            {
+              searchValue: candidate.kind === 'external_reference' ? candidate.value : '',
+              matchedBy:
+                candidate.kind === 'external_reference'
+                  ? ('external_reference' as const)
+                  : ('surname_dates' as const),
+            },
+          ];
+
+    let html = '';
+    let parsed: { rows: ReservationObservation[]; totalFound: number } = {
+      rows: [],
+      totalFound: 0,
+    };
+    let correlated: ReservationObservation[] = [];
+    let matchedBy: ReservationReadData['matchedBy'];
+
+    for (const attempt of attempts) {
+      const searchCandidate: LookupCandidate =
+        candidate.kind === 'confirmation'
+          ? { ...candidate, value: attempt.searchValue }
+          : candidate;
+      await this.#page.postForm(
+        new URL(selectors.searchPath, this.#origin).toString(),
+        this.#searchFields(searchCandidate),
+      );
+      this.#onNavigate?.(selectors.searchPath);
+      assertNotAborted(signal);
+
+      if (this.#terminal() || this.#violation()) {
+        return this.#reservationResult({
+          status: 'manual_required',
+          data: emptyReservationData(),
+          unresolvedFields: ['request_policy'],
+          observedAt,
+          claimKeys: [],
+          sourceSeed: 'policy-violation-search',
+        });
+      }
+
+      html = await this.#page.content();
+      parsed = this.#parseReservationRows(html);
+      correlated = rowsMatchingCandidate(parsed.rows, candidate);
+      if (correlated.length > 0) {
+        matchedBy = attempt.matchedBy;
+        break;
+      }
+    }
     // Cap/ambiguity are correlation-scoped, not raw list length.
     const capped = correlated.length > RESERVATION_MATCH_CAP;
     const matches = correlated.slice(0, RESERVATION_MATCH_CAP);
@@ -315,6 +354,7 @@ export class InforReadAdapter implements HmsReadAdapter {
           matches: minimized,
           matchCount: correlated.length,
           capped,
+          matchedBy,
         }),
         unresolvedFields: ['match_selection'],
         observedAt,
@@ -364,9 +404,9 @@ export class InforReadAdapter implements HmsReadAdapter {
       .map((el) => $(el))
       .find((node) => {
         if (candidate.kind === 'confirmation') {
-          return (
-            (attrOrNull(node, selectors.confirmationAttr) ?? '').toUpperCase() ===
-            candidate.value.toUpperCase()
+          return confirmationMatches(
+            candidate.value,
+            attrOrNull(node, selectors.confirmationAttr) ?? '',
           );
         }
         if (candidate.kind === 'external_reference') {
@@ -427,6 +467,7 @@ export class InforReadAdapter implements HmsReadAdapter {
         matches: [matchedRow],
         matchCount: 1,
         capped: false,
+        matchedBy,
       }),
       unresolvedFields: [...new Set(unresolvedFields)],
       observedAt,

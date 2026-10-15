@@ -457,6 +457,14 @@ export const reservationReadDataSchema = z
     matches: z.array(reservationObservationSchema).max(20),
     matchCount: z.number().int().nonnegative(),
     capped: z.boolean(),
+    matchedBy: z
+      .enum([
+        'confirmation',
+        'confirmation_leg_retry',
+        'external_reference',
+        'surname_dates',
+      ])
+      .optional(),
   })
   .strict();
 

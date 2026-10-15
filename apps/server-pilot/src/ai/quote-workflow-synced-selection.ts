@@ -16,6 +16,7 @@ import {
   type ReservationistOfficeConverter,
 } from './reservationist-attachment-input.js';
 import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from './quote-attachment-review.js';
+import { confirmationBase } from '../hms/confirmation-match.js';
 
 export type SyncedQuoteAttachment = {
   id: string;
@@ -48,6 +49,7 @@ export type SyncedQuoteSelection = {
 
 const HMS_CONFIRMATION = /^\d{6,10}-\d{1,2}$/;
 const DASHED_CONFIRMATION = /(?<![0-9])(\d{6,10}-\d{1,2})(?![0-9])/g;
+const BARE_CONFIRMATION_BASE = /(?<![0-9])(\d{8,10})(?![0-9-])/g;
 
 export const THREAD_CONFIRMATION_AMBIGUOUS =
   'This thread has more than one booking number on its confirmation files. Check HMS for the right one.';
@@ -61,16 +63,37 @@ export function isHmsConfirmation(value: string): boolean {
   return HMS_CONFIRMATION.test(value);
 }
 
+function collectConfirmationTokens(
+  text: string,
+  dashed: Set<string>,
+  bare: Set<string>,
+): void {
+  for (const match of text.matchAll(DASHED_CONFIRMATION)) dashed.add(match[1]!);
+  for (const match of text.matchAll(BARE_CONFIRMATION_BASE)) {
+    const token = match[1]!;
+    if (/^0\d+$/.test(token)) continue;
+    if (/^(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$/.test(token)) continue;
+    bare.add(token);
+  }
+}
+
 export function resolveThreadConfirmationEvidence(
   sources: Array<{ filename: string; text?: string }>,
 ): ThreadConfirmationResolution {
-  const found = new Set<string>();
+  const dashed = new Set<string>();
+  const bare = new Set<string>();
   for (const source of sources) {
-    for (const match of source.filename.matchAll(DASHED_CONFIRMATION)) found.add(match[1]!);
-    if (source.text) for (const match of source.text.matchAll(DASHED_CONFIRMATION)) found.add(match[1]!);
+    collectConfirmationTokens(source.filename, dashed, bare);
+    if (source.text) collectConfirmationTokens(source.text, dashed, bare);
   }
-  if (found.size === 1) return { confirmation: [...found][0]!, reason: null };
-  if (found.size > 1) return { confirmation: null, reason: THREAD_CONFIRMATION_AMBIGUOUS };
+  const dashedBases = new Set([...dashed].map((value) => confirmationBase(value)));
+  for (const base of dashedBases) bare.delete(base);
+  if (dashed.size === 1 && bare.size === 0) {
+    return { confirmation: [...dashed][0]!, reason: null };
+  }
+  if (dashed.size > 1 || (dashed.size === 1 && bare.size > 0)) {
+    return { confirmation: null, reason: THREAD_CONFIRMATION_AMBIGUOUS };
+  }
   return { confirmation: null, reason: null };
 }
 
