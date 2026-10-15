@@ -1,0 +1,17 @@
+# Local MIT CLI only. Ops JSON — no mail bodies. Do not share to Promptfoo Cloud.
+# Generate 25-row slices with:
+#   pnpm --filter @zero/server exec tsx evals/agent/provider.ts --labels <private> --pairs <private> --split dev --limit 25 --offset 0 --out /tmp/agent-tests.json
+description: Centurion reservationist agent replay (ops JSON; local only)
+sharing: false
+commandLineOptions:
+  share: false
+  cache: false
+prompts:
+  - 'replay {{messageId}}'
+providers:
+  - file://provider.mjs
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://asserts.js
+tests: []
