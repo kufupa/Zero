@@ -61,6 +61,15 @@ describe('matchPaymentProof', () => {
     expect(result.confirmationNumber).toBeNull();
   });
 
+  it('treats a long numeric leg as a stated confirmation, never as soft-scored', () => {
+    const result = matchPaymentProof({
+      pop: pop({ reference: 'EFT 9999901-123', amount: 2400, payerName: 'Jones Contoso Agency' }),
+      candidates: [{ ...stay, confirmationNumber: '9999901-123' }, other],
+    });
+    expect(result.confirmationNumber).not.toBe('9999902-1');
+    expect(result.candidates).toContain('9999901-123');
+  });
+
   it('does not treat a confirmation number as a digit substring of the reference', () => {
     const result = matchPaymentProof({
       pop: pop({ reference: 'EFT 0123456' }),
