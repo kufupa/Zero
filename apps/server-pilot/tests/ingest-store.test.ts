@@ -23,6 +23,7 @@ import {
 } from './helpers/test-db';
 import type { DB } from '../src/db/client';
 import { readFixture } from './helpers/fixtures';
+import { DAVINCI_MAILBOX_IDENTITIES } from '../src/hms/mailbox-hms-origin-bind';
 
 const reachable = await probeTestDb();
 
@@ -59,6 +60,30 @@ async function seedCenturionAliases(db: DB): Promise<void> {
       },
     })
     .where(eq(mailboxTransport.id, 'transport-centurion'));
+}
+
+async function seedDavinciIdentities(db: DB): Promise<void> {
+  const [email, ...aliases] = DAVINCI_MAILBOX_IDENTITIES;
+  await db
+    .insert(mailboxTransport)
+    .values({
+      id: 'transport-davinci',
+      email,
+      ownerHeaderValue: email,
+      mailboxType: 'personal',
+      displayName: 'Da Vinci Hotel Reservations',
+      isActive: true,
+      sendFromConfig: { aliases: [...aliases] },
+    })
+    .onConflictDoUpdate({
+      target: mailboxTransport.id,
+      set: {
+        email,
+        ownerHeaderValue: email,
+        sendFromConfig: { aliases: [...aliases] },
+        isActive: true,
+      },
+    });
 }
 
 /** Missing X-Zero-Mailbox, To not a known transport — quarantine path. */
@@ -523,6 +548,108 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           expect(result.kind).toBe('stored');
           if (result.kind !== 'stored') return;
           expect(result.transportId).toBe('transport-centurion');
+          expect(stored?.direction).toBe('inbound');
+        });
+      },
+      30000,
+    );
+
+    it.each([...DAVINCI_MAILBOX_IDENTITIES])(
+      'Da Vinci From %s to guest is hotel-sent outbound on transport-davinci',
+      async (fromAddress) => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            `From: ${fromAddress}`,
+            'To: guest@example.com',
+            'Subject: davinci outbound copy',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'Hotel sent copy on sink.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const { result, stored } = await withSeededTestDb(async (db) => {
+            await seedDavinciIdentities(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            const r = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: `uidl-davinci-from-${fromAddress}`,
+                messageId,
+              },
+              { db, storage },
+            );
+            if (r.kind !== 'stored') {
+              return { result: r, stored: undefined };
+            }
+            const messages = await db
+              .select()
+              .from(message)
+              .where(eq(message.id, r.messageId));
+            return { result: r, stored: messages[0] };
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe('transport-davinci');
+          expect(stored?.direction).toBe('outbound');
+        });
+      },
+      30000,
+    );
+
+    it(
+      'R6: pmbobo@ From to Da Vinci is inbound, not hotel-sent outbound',
+      async () => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            'From: pmbobo@legacyhotels.co.za',
+            `To: ${DAVINCI_MAILBOX_IDENTITIES[0]}`,
+            'Subject: staff note to davinci inbox',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'Not a Da Vinci hotel-sent outbound.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const { result, stored } = await withSeededTestDb(async (db) => {
+            await seedDavinciIdentities(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            const r = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-r6-pmbobo-davinci',
+                messageId,
+              },
+              { db, storage },
+            );
+            if (r.kind !== 'stored') {
+              return { result: r, stored: undefined };
+            }
+            const messages = await db
+              .select()
+              .from(message)
+              .where(eq(message.id, r.messageId));
+            return { result: r, stored: messages[0] };
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe('transport-davinci');
           expect(stored?.direction).toBe('inbound');
         });
       },
