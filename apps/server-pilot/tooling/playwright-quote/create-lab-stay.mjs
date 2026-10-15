@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { displayDate, login, playwright, readSecret } from './fetch-quote.mjs';
 import { loadCreateRequest, loadCreateToolSchema, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
 import { readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
+import { proofModeRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
 
 const REQUIRED = [
   'arrivaldate',
@@ -171,8 +173,61 @@ async function observeBlankForm(page, dir) {
   return notes;
 }
 
+async function withReadOnlyGuestStay(browser, secret, dir, args, read) {
+  const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
+  try {
+    await installReadOnlyGuard(context);
+    const page = await context.newPage();
+    page.setDefaultTimeout(20000);
+    await login(page, secret);
+    await openGuestStayScreen(page);
+    await page.waitForTimeout(1500);
+    return await read({ args, dir, page, result: null, started: Date.now() });
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+async function runProofReadback(browser, secret, stay, dir, save, savedScreenshot) {
+  const proof = await reconcileCreateSave({
+    save,
+    expected: stay,
+    readByConfirmation: async (confirmation) => {
+      const { findOnOpenGuestStay } = await import('./stay-lookup.mjs');
+      return withReadOnlyGuestStay(browser, secret, dir, {
+        mode: 'find', confirmation, arrival: null, departure: null, lastName: stay.lastName, debugHtml: false,
+      }, async (ctx) => {
+        const found = await findOnOpenGuestStay(ctx, { captureScreenshots: false });
+        return {
+          outcome: found.outcome,
+          stay: found.stay,
+          screenshot: await shot(ctx.page, dir, 'readback.png').catch(() => null),
+        };
+      });
+    },
+    searchByGuestDates: async (expected) => {
+      const { searchGuestOnOpenGuestStay } = await import('./stay-lookup.mjs');
+      return withReadOnlyGuestStay(browser, secret, dir, {
+        mode: 'search-guest', confirmation: null, lastName: expected.lastName,
+        arrival: expected.arrival, departure: expected.departure, debugHtml: false,
+      }, async (ctx) => {
+        const found = await searchGuestOnOpenGuestStay(ctx);
+        return { outcome: found.outcome, matches: found.matches, screenshot: found.screenshots.at(-1) ?? null };
+      });
+    },
+  });
+  return {
+    confNo: proof.confNo,
+    readbackMatch: proof.readbackMatch,
+    mismatches: proof.mismatches,
+    screenshot: proof.screenshot ?? savedScreenshot,
+    unknownOutcome: proof.unknownOutcome,
+  };
+}
+
 async function main() {
   const argv = process.argv.slice(2);
+  const proofMode = argv.includes('--proof');
   const stop = parseStopBefore(argv);
   if (!stop.ok) {
     process.stderr.write(`${stop.error}\n`);
@@ -194,6 +249,19 @@ async function main() {
     return;
   }
   const stay = loaded.request;
+  if (proofMode && shopMode) {
+    process.stderr.write('proof_incompatible_with_shop\n');
+    process.exitCode = 2;
+    return;
+  }
+  if (proofMode) {
+    const refusal = proofModeRefusal({ request: stay, paneCommit: stop.paneCommit, env: process.env });
+    if (refusal) {
+      process.stderr.write(`${refusal}\n`);
+      process.exitCode = 2;
+      return;
+    }
+  }
   const dir = out.outDir ?? defaultOutDir();
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const url = new URL(process.env.HMS_STAGEHAND_CDP_URL);
@@ -202,6 +270,7 @@ async function main() {
   }
   if (process.env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') throw new Error('BORROWED_REQUIRED');
   const secret = await readSecret();
+  if (proofMode && secret.expectedPropertyCode !== 'HRCEN') throw new Error('PROOF_PROPERTY_HRCEN_REQUIRED');
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: 20000 });
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
@@ -288,17 +357,55 @@ async function main() {
       process.stdout.write(`${result.outcome}\n`);
       return;
     }
-    await clickTip(page, '^Save');
+    let saveClickUnknown = false;
+    try {
+      await clickTip(page, '^Save');
+      result.clickedSave = true;
+    } catch (error) {
+      if (!proofMode || !saveClickMayHaveFired(error)) throw error;
+      result.clickedSave = true;
+      result.saveError = String(error.message || error);
+      saveClickUnknown = true;
+    }
     // HMS masks the record while it saves. Read the number only once the mask is gone. A missing number is
     // save_unconfirmed, never a failed save: HMS may already have booked the stay.
-    const save = await waitForSaveConfirmation(page);
-    result.clickedSave = true;
+    let save;
+    if (saveClickUnknown) {
+      save = { confirmed: false, confirmationNumber: null, reason: 'save_click_unconfirmed' };
+    } else {
+      try {
+        save = await waitForSaveConfirmation(page);
+      } catch (error) {
+        if (!proofMode) throw error;
+        result.saveError = String(error.message || error);
+        save = { confirmed: false, confirmationNumber: null, reason: 'save_observation_error' };
+      }
+    }
     result.confirmationNumber = save.confirmationNumber;
     result.saved = save.confirmed;
     result.saveReason = save.reason;
-    if (save.confirmed) result.statusAfterSave = await readSettledStatus(page);
-    result.message = await readMessage(page);
-    await shot(page, dir, 'saved.png');
+    if (save.confirmed) {
+      result.statusAfterSave = proofMode
+        ? await readSettledStatus(page).catch(() => null)
+        : await readSettledStatus(page);
+    }
+    result.message = proofMode ? await readMessage(page).catch(() => null) : await readMessage(page);
+    const savedScreenshot = proofMode
+      ? await shot(page, dir, 'saved.png').catch(() => null)
+      : await shot(page, dir, 'saved.png');
+    if (proofMode) {
+      const proof = await runProofReadback(browser, secret, stay, dir, save, savedScreenshot);
+      result.confirmationNumber = proof.confNo;
+      result.saved = proof.confNo ? true : null;
+      result.proof = proof;
+      result.outcome = proof.readbackMatch === true ? 'readback_match'
+        : proof.unknownOutcome === 'not_found' ? 'unknown_not_found'
+          : proof.unknownOutcome ? `unknown_${proof.unknownOutcome}` : 'readback_mismatch';
+      result.cancelled = false;
+      process.stdout.write(`${JSON.stringify(proof)}\n`);
+      if (proof.readbackMatch !== true) process.exitCode = 1;
+      return;
+    }
     if (!result.saved) {
       result.outcome = 'save_unconfirmed';
       await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
@@ -337,7 +444,7 @@ async function main() {
   } finally {
     await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
     await context.close().catch(() => {});
-    await browser.close().catch(() => {});
+    if (typeof browser.disconnect === 'function') browser.disconnect();
   }
   process.stdout.write(`${result.outcome}\n`);
   if (result.outcome !== 'saved_then_cancelled') process.exitCode = 2;

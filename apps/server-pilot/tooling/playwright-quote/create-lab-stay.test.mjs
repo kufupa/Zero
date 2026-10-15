@@ -190,6 +190,28 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   assert.equal(source.includes('Labcancel'), false);
 });
 
+test('proof mode is guarded before browser work and wires read-only reconciliation', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const proofGuard = source.indexOf('proofModeRefusal({');
+  const createDir = source.indexOf('await mkdir(dir');
+  const browserCall = source.indexOf('connectOverCDP');
+  assert.ok(proofGuard !== -1 && proofGuard < createDir && createDir < browserCall);
+  assert.match(source, /argv\.includes\('--proof'\)/);
+  assert.match(source, /PROOF_PROPERTY_HRCEN_REQUIRED/);
+  assert.match(source, /installReadOnlyGuard/);
+  assert.match(source, /await import\('\.\/stay-lookup\.mjs'\)/);
+  assert.doesNotMatch(source, /import \{ findOnOpenGuestStay, searchGuestOnOpenGuestStay \} from '\.\/stay-lookup\.mjs'/);
+  assert.match(source, /findOnOpenGuestStay/);
+  assert.match(source, /searchGuestOnOpenGuestStay/);
+  assert.match(source, /reconcileCreateSave/);
+  assert.match(source, /saveClickMayHaveFired\(error\)/);
+  assert.match(source, /save_click_unconfirmed/);
+  assert.match(source, /result\.saved = proof\.confNo \? true : null/);
+  for (const field of ['confNo', 'readbackMatch', 'mismatches', 'screenshot']) {
+    assert.match(source, new RegExp(`${field}:`));
+  }
+});
+
 test('childAges passes and --shop returns BAR rows without a row click', async () => {
   assert.equal(parseShop(['--request', 'x.json', '--shop']), true);
   assert.equal(parseShop(['--request', 'x.json']), false);
