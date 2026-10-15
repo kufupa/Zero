@@ -13,13 +13,16 @@
  *                                  set and no HMS.
  *   score --run-id ID              field-level accuracy per split and the overfit alarm (dev - holdout > 10 points).
  *                                  For a dataset run: the label gates (label-scorers.ts). Exit 1 when a gate fails.
+ *   replay-ops --snapshot FILE --out FILE [--limit N] [--concurrency 4]
+ *                                  offline replay of the production agent on a snapshot JSONL. Stub HMS runners
+ *                                  (quote/party unavailable). Writes predicted GoldOperation JSONL. Ignores outbound.
  *
  * Input: apps/server-pilot/.private/reservationist-backtest/golden-set.jsonl (gitignored). It is not exported from
  * prod by this script; a missing file fails with the expected path. Traces and scores land in <run-id>/ beside it.
  */
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { RequestContext } from '@mastra/core/request-context';
@@ -32,12 +35,20 @@ import { mailboxTransport } from '../src/db/schema/mail.js';
 import { createAzureLunaModel, lunaProviderOptions } from '../src/ai/bedrock/luna.js';
 import {
   CENTURION_HOTEL_RULES,
+  QUOTE_UNAVAILABLE,
   createDefaultRunners,
   createReservationistAgent,
   reservationistDecisionSchema,
   type ReservationistContext,
   type ReservationistDecision,
+  type ReservationistRunners,
 } from '../src/ai/reservationist-agent.js';
+import {
+  agentThreadPrompt,
+  decisionToOperations,
+  snapshotRowToAgentCase,
+  type SnapshotRow,
+} from '../src/ai/agent-decision-to-ops.js';
 import { resolveAdapter } from '../src/ai/quote-workflow-analyse-selection.js';
 import {
   BACKTEST_TARGETS,
@@ -56,7 +67,6 @@ import {
   tally,
   validateGoldenSet,
   type BacktestTarget,
-  type CaseMessage,
   type GoldenRow,
   type GoldenTrace,
   type ToolCall,
@@ -75,9 +85,8 @@ const GOLDEN_SET = join(ROOT, 'golden-set.jsonl');
 const REASONING = 'medium' as const;
 const CONCURRENCY = 8;
 const MAX_STEPS = 10;
-const MAX_MESSAGE_CHARS = 20_000;
 const USAGE =
-  'usage: run-reservationist-backtest.ts check | run [--target pane|extract|agent] [--subset 30] [--run-id ID] | run --target extract --dataset FILE [--run-id ID] | score --run-id ID';
+  'usage: run-reservationist-backtest.ts check | run [--target pane|extract|agent] [--subset 30] [--run-id ID] | run --target extract --dataset FILE [--run-id ID] | score --run-id ID | replay-ops --snapshot FILE --out FILE [--limit N] [--concurrency 4]';
 
 type Trace = GoldenTrace & {
   id: string;
@@ -102,16 +111,8 @@ function latestTraces(path: string): Trace[] {
   return [...new Map(rows.map((trace) => [trace.id, trace])).values()];
 }
 
-function emailBlock(m: CaseMessage) {
-  return `<email direction="${m.direction}" at="${m.eventAt}" from="${m.from}" subject="${m.subject}">
-${m.text.slice(0, MAX_MESSAGE_CHARS)}
-</email>`;
-}
-
 function threadPrompt(row: GoldenRow) {
-  return `Thread messages oldest first. Handle the LAST message (asOf ${row.trigger.eventAt}); earlier ones are context.
-
-${[...row.context, row.trigger].map(emailBlock).join('\n\n')}`;
+  return agentThreadPrompt(row);
 }
 
 /** Runs `fn` over `items` with at most `limit` in flight. */
@@ -451,11 +452,130 @@ async function scoreDataset(runId: string, manifest: Manifest): Promise<number> 
   return gates.pass ? 0 : 1;
 }
 
+type PredictedOpsRow = {
+  kind: 'predicted';
+  message_id: string;
+  operations: ReturnType<typeof decisionToOperations>;
+  workflow: ReservationistDecision['workflow'] | null;
+  tools: string[];
+  error: string | null;
+};
+
+function unavailableRunners(): ReservationistRunners {
+  return {
+    quote: async () => ({ status: QUOTE_UNAVAILABLE }),
+    party: async () => ({ outcome: 'no_match', candidates: [] }),
+    pdf: async () => ({ fileName: 'unavailable.pdf', path: '', bytes: 0 }),
+    validateCreate: async () => ({ ok: false, errors: ['unavailable'] }),
+  };
+}
+
+function predictedError(messageId: string, error: string): PredictedOpsRow {
+  return {
+    kind: 'predicted',
+    message_id: messageId,
+    operations: [],
+    workflow: null,
+    tools: [],
+    error,
+  };
+}
+
+function loadSnapshotJobs(path: string, limit?: number): Array<{ messageId: string; row?: SnapshotRow; error?: string }> {
+  const lines = readFileSync(path, 'utf8')
+    .split('\n')
+    .filter((line) => line.trim());
+  const picked = limit === undefined ? lines : lines.slice(0, limit);
+  return picked.map((line) => {
+    try {
+      const row = JSON.parse(line) as SnapshotRow;
+      const messageId = row.inbound?.id;
+      if (!messageId) return { messageId: 'unknown', error: 'snapshot row missing inbound.id' };
+      return { messageId, row };
+    } catch (err) {
+      return { messageId: 'unknown', error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+}
+
+async function replayOps(args: {
+  snapshot: string;
+  out: string;
+  limit?: number;
+  concurrency: number;
+}): Promise<number> {
+  const jobs = loadSnapshotJobs(args.snapshot, args.limit);
+  const model = createAzureLunaModel();
+  const runners = unavailableRunners();
+  const requestContext = new RequestContext<ReservationistContext>([
+    ['propertyCode', 'HRCEN'],
+    ['hotelRules', CENTURION_HOTEL_RULES],
+    ['liveQuoteOk', true],
+  ]);
+  const outputs: PredictedOpsRow[] = new Array(jobs.length);
+  const indexed = jobs.map((job, index) => ({ job, index }));
+  await mapLimit(indexed, args.concurrency, async ({ job, index }) => {
+    if (job.error || !job.row) {
+      outputs[index] = predictedError(job.messageId, job.error ?? 'snapshot row invalid');
+      return;
+    }
+    try {
+      const agent = createReservationistAgent({ model, runners });
+      const res = await agent.generate(agentThreadPrompt(snapshotRowToAgentCase(job.row)), {
+        maxSteps: MAX_STEPS,
+        requestContext,
+        providerOptions: lunaProviderOptions(REASONING),
+        structuredOutput: { schema: reservationistDecisionSchema },
+      });
+      const decision = (res.object as ReservationistDecision | undefined) ?? null;
+      if (!decision) {
+        outputs[index] = predictedError(job.messageId, 'agent returned no decision');
+        return;
+      }
+      const tools = res.steps.flatMap((step) =>
+        step.toolResults.map(({ payload }) => payload.toolName as string),
+      );
+      outputs[index] = {
+        kind: 'predicted',
+        message_id: job.messageId,
+        operations: decisionToOperations(
+          decision,
+          tools.map((toolName) => ({ toolName })),
+        ),
+        workflow: decision.workflow,
+        tools,
+        error: null,
+      };
+    } catch (err) {
+      outputs[index] = predictedError(job.messageId, err instanceof Error ? err.message : String(err));
+    }
+  });
+  mkdirSync(dirname(args.out), { recursive: true });
+  writeFileSync(args.out, `${outputs.map((row) => JSON.stringify(row)).join('\n')}${outputs.length ? '\n' : ''}`);
+  const ok = outputs.filter((row) => row.error === null).length;
+  const errors = outputs.length - ok;
+  const workflows = tally(
+    outputs.filter((row): row is PredictedOpsRow & { workflow: string } => Boolean(row.workflow)),
+    (row) => row.workflow,
+  );
+  console.log(`replay-ops n=${outputs.length} ok=${ok} errors=${errors} workflows=${JSON.stringify(workflows)}`);
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { subset: { type: 'string' }, 'run-id': { type: 'string' }, target: { type: 'string' }, dataset: { type: 'string' } },
+    options: {
+      subset: { type: 'string' },
+      'run-id': { type: 'string' },
+      target: { type: 'string' },
+      dataset: { type: 'string' },
+      snapshot: { type: 'string' },
+      out: { type: 'string' },
+      limit: { type: 'string' },
+      concurrency: { type: 'string' },
+    },
   });
   const [command, ...extra] = positionals;
   if (extra.length) {
@@ -484,6 +604,23 @@ async function main(argv: string[]): Promise<number> {
     const runId = validateRunId(values['run-id']);
     const manifest = readManifest(join(ROOT, runId));
     return manifest?.dataset ? scoreDataset(runId, manifest) : score(runId);
+  }
+  if (command === 'replay-ops') {
+    const snapshot = values.snapshot;
+    const out = values.out;
+    const limit = values.limit === undefined ? undefined : Number(values.limit);
+    const concurrency = values.concurrency === undefined ? 4 : Number(values.concurrency);
+    if (
+      !snapshot ||
+      !out ||
+      (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) ||
+      !Number.isInteger(concurrency) ||
+      concurrency < 1
+    ) {
+      console.error(USAGE);
+      return 2;
+    }
+    return replayOps({ snapshot, out, limit, concurrency });
   }
   console.error(USAGE);
   return 2;
