@@ -16,6 +16,9 @@
  *   replay-ops --snapshot FILE --out FILE [--limit N] [--concurrency 4]
  *                                  offline replay of the production agent on a snapshot JSONL. Stub HMS runners
  *                                  (quote/party unavailable). Writes predicted GoldOperation JSONL. Ignores outbound.
+ *   replay-pane-ops --snapshot FILE --out FILE [--concurrency 8]
+ *                                  same snapshot as replay-ops, production pane analysis (analyseQuoteSelection via
+ *                                  resolveAdapter / createAzureLunaModel). No HMS. Writes predicted GoldOperation JSONL.
  *
  * Input: apps/server-pilot/.private/reservationist-backtest/golden-set.jsonl (gitignored). It is not exported from
  * prod by this script; a missing file fails with the expected path. Traces and scores land in <run-id>/ beside it.
@@ -49,7 +52,9 @@ import {
   snapshotRowToAgentCase,
   type SnapshotRow,
 } from '../src/ai/agent-decision-to-ops.js';
+import { paneAnalysisToOperations } from '../src/ai/pane-analysis-to-ops.js';
 import { resolveAdapter } from '../src/ai/quote-workflow-analyse-selection.js';
+import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
 import {
   BACKTEST_TARGETS,
   GOLDEN_TARGETS,
@@ -86,7 +91,7 @@ const REASONING = 'medium' as const;
 const CONCURRENCY = 8;
 const MAX_STEPS = 10;
 const USAGE =
-  'usage: run-reservationist-backtest.ts check | run [--target pane|extract|agent] [--subset 30] [--run-id ID] | run --target extract --dataset FILE [--run-id ID] | score --run-id ID | replay-ops --snapshot FILE --out FILE [--limit N] [--concurrency 4]';
+  'usage: run-reservationist-backtest.ts check | run [--target pane|extract|agent] [--subset 30] [--run-id ID] | run --target extract --dataset FILE [--run-id ID] | score --run-id ID | replay-ops --snapshot FILE --out FILE [--limit N] [--concurrency 4] | replay-pane-ops --snapshot FILE --out FILE [--concurrency 8]';
 
 type Trace = GoldenTrace & {
   id: string;
@@ -579,6 +584,82 @@ async function replayOps(args: {
   return 0;
 }
 
+type PanePredictedOpsRow = {
+  kind: 'predicted';
+  message_id: string;
+  operations: ReturnType<typeof paneAnalysisToOperations>;
+  workflow: LunaAnalysis['workflow'] | null;
+  error: string | null;
+};
+
+function panePredictedError(messageId: string, error: string): PanePredictedOpsRow {
+  return { kind: 'predicted', message_id: messageId, operations: [], workflow: null, error };
+}
+
+function loadPanePredictedOps(path: string): PanePredictedOpsRow[] {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as PanePredictedOpsRow);
+}
+
+async function replayPaneOps(args: {
+  snapshot: string;
+  out: string;
+  concurrency: number;
+}): Promise<number> {
+  const jobs = loadSnapshotJobs(args.snapshot);
+  const latestPrior = new Map(loadPanePredictedOps(args.out).map((row) => [row.message_id, row]));
+  const { adapter } = resolveAdapter(true, null);
+  if (!adapter) throw new Error('AZURE_OPENAI_BASE_URL and AZURE_FOUNDRY_API_KEY required');
+  mkdirSync(dirname(args.out), { recursive: true });
+  const outputs: PanePredictedOpsRow[] = new Array(jobs.length);
+  for (const [index, job] of jobs.entries()) {
+    const existing = latestPrior.get(job.messageId);
+    if (existing && existing.error === null) outputs[index] = existing;
+  }
+  const indexed = jobs
+    .map((job, index) => ({ job, index }))
+    .filter(({ index }) => outputs[index] === undefined);
+  await mapLimit(indexed, args.concurrency, async ({ job, index }) => {
+    let row: PanePredictedOpsRow;
+    if (job.error || !job.row) {
+      row = panePredictedError(job.messageId, job.error ?? 'snapshot row invalid');
+    } else {
+      try {
+        const res = await runProductionTarget('pane', snapshotRowToAgentCase(job.row), adapter);
+        if (res.target !== 'pane' || !res.analysis) {
+          row = panePredictedError(
+            job.messageId,
+            res.error ?? 'pane analysis returned no result',
+          );
+        } else {
+          row = {
+            kind: 'predicted',
+            message_id: job.messageId,
+            operations: paneAnalysisToOperations(res.analysis),
+            workflow: res.analysis.workflow,
+            error: null,
+          };
+        }
+      } catch (err) {
+        row = panePredictedError(job.messageId, err instanceof Error ? err.message : String(err));
+      }
+    }
+    outputs[index] = row;
+    appendPrivate(args.out, row);
+  });
+  const ok = outputs.filter((row) => row.error === null).length;
+  const errors = outputs.length - ok;
+  const workflows = tally(
+    outputs.filter((row): row is PanePredictedOpsRow & { workflow: string } => Boolean(row.workflow)),
+    (row) => row.workflow,
+  );
+  console.log(`replay-pane-ops n=${outputs.length} ok=${ok} errors=${errors} workflows=${JSON.stringify(workflows)}`);
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   const { positionals, values } = parseArgs({
     args: argv,
@@ -638,6 +719,16 @@ async function main(argv: string[]): Promise<number> {
       return 2;
     }
     return replayOps({ snapshot, out, limit, concurrency });
+  }
+  if (command === 'replay-pane-ops') {
+    const snapshot = values.snapshot;
+    const out = values.out;
+    const concurrency = values.concurrency === undefined ? 8 : Number(values.concurrency);
+    if (!snapshot || !out || !Number.isInteger(concurrency) || concurrency < 1) {
+      console.error(USAGE);
+      return 2;
+    }
+    return replayPaneOps({ snapshot, out, concurrency });
   }
   console.error(USAGE);
   return 2;
