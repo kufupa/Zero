@@ -115,25 +115,28 @@ export function missingAliases(existing: unknown, wanted: readonly string[]): st
   return missing;
 }
 
+function addressMatches(key: string, email: string, aliases: readonly string[]): boolean {
+  return email.toLowerCase() === key || aliases.some((a) => a.toLowerCase() === key);
+}
+
 function otherOwnsAlias(
   alias: string,
   transportId: string,
   rows: Array<{ id: string; email: string; sendFromConfig?: unknown }>,
   creating: readonly ProvisionTransportSpec[],
+  pendingAdds: ReadonlyArray<{ transportId: string; aliases: readonly string[] }>,
 ): string | undefined {
   const key = alias.toLowerCase();
   const row = rows.find(
-    (t) =>
-      t.id !== transportId &&
-      (t.email.toLowerCase() === key ||
-        readAliases(t.sendFromConfig).some((a) => a.toLowerCase() === key)),
+    (t) => t.id !== transportId && addressMatches(key, t.email, readAliases(t.sendFromConfig)),
   );
   if (row) return row.id;
-  return creating.find(
-    (t) =>
-      t.id !== transportId &&
-      (t.email.toLowerCase() === key || t.aliases.some((a) => a.toLowerCase() === key)),
-  )?.id;
+  const created = creating.find((t) => t.id !== transportId && addressMatches(key, t.email, t.aliases));
+  if (created) return created.id;
+  return pendingAdds.find(
+    (entry) =>
+      entry.transportId !== transportId && entry.aliases.some((a) => a.toLowerCase() === key),
+  )?.transportId;
 }
 
 function resolveSpecUsers(spec: ProvisionSpec, rows: Array<{ id: string; email: string }>): {
@@ -241,7 +244,13 @@ export async function planProvision(db: DB, spec: ProvisionSpec): Promise<Provis
   }
   for (const entry of aliasesToAdd) {
     for (const alias of entry.aliases) {
-      const owner = otherOwnsAlias(alias, entry.transportId, transportRows, transportsToCreate);
+      const owner = otherOwnsAlias(
+        alias,
+        entry.transportId,
+        transportRows,
+        transportsToCreate,
+        aliasesToAdd,
+      );
       if (owner) {
         throw new Error(
           `provision plan error: ${entry.transportId} alias already belongs to ${owner} (ambiguous_transport)`,
@@ -280,7 +289,7 @@ function insertOrStale<T>(rows: T[]): void {
 const executeRowCount = (result: unknown): number =>
   Array.isArray(result) ? result.length : ((result as { rows?: unknown[] }).rows?.length ?? 0);
 
-function fencedAliasAppendSql(transportId: string, aliases: string[]) {
+export function fencedAliasAppendSql(transportId: string, aliases: string[]) {
   const wanted = sql`ARRAY[${sql.join(
     aliases.map((alias) => sql`${alias}`),
     sql`, `,
