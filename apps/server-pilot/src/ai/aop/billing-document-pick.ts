@@ -118,9 +118,10 @@ function rowHasConf(row: BillingDocumentRow, stated: StatedConf): boolean {
     const escaped = stated.raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`, 'i').test(text);
   }
-  for (const m of text.matchAll(/(?<![A-Za-z0-9])(\d{6,10})(?:-(\d+))?(?![A-Za-z0-9])/g)) {
-    if (m[1] !== stated.base) continue;
-    if (stated.leg === null || m[2] === stated.leg) return true;
+  for (const m of text.matchAll(/(?<![A-Za-z0-9]|\d-)(\d{6,10}-\d+|\d{6,10})(?![A-Za-z0-9]|-[A-Za-z0-9])/g)) {
+    const [base, leg = null] = m[1]!.split('-');
+    if (base !== stated.base) continue;
+    if (stated.leg === null || leg === stated.leg) return true;
   }
   return false;
 }
