@@ -6,8 +6,14 @@ import {
   readAuthorizedArtifactBytes,
   sniffImageBytes,
   type AttachmentLocator,
+  type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
+import { convertDocxWithGotenberg } from '../quote-proposal/gotenberg.js';
+import {
+  extractReservationistOfficeText,
+  type ReservationistOfficeConverter,
+} from './reservationist-attachment-input.js';
 import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from './quote-attachment-review.js';
 
 export type SyncedQuoteAttachment = {
@@ -59,6 +65,17 @@ export type QuoteAttachmentReader = (
 export const QUOTE_ATTACHMENT_MAX_FILES = 3;
 export const QUOTE_ATTACHMENT_MAX_TOTAL_BYTES = 5 * 1024 * 1024;
 const OVER_LIMIT = 'over the 3 file / 5 MB analysis limit';
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+type ArtifactReaderOptions = {
+  revalidateOffice?: (row: QuoteAttachmentRow) => Promise<boolean>;
+  officeConverter?: ReservationistOfficeConverter;
+  runner?: SandboxRunner;
+};
+
+function isDocxAttachment(row: Pick<QuoteAttachmentRow, 'mimeType'>): boolean {
+  return row.mimeType.split(';')[0]?.trim().toLowerCase() === DOCX_MIME;
+}
 
 function reviewFacts(row: QuoteAttachmentRow) {
   return {
@@ -71,21 +88,25 @@ function reviewFacts(row: QuoteAttachmentRow) {
 
 /**
  * Signatures, invites, inline parts and tiny files are dropped here, so they never reach the reader or the review
- * rows. PDFs are read within the file/byte caps. A part of unknown type is read the same way, and is dropped when its
- * bytes are an image (a logo). Other kinds are listed as not read.
+ * rows. PDFs and DOCX request files are read within the file/byte caps. A part of unknown type is read the same way,
+ * and is dropped when its bytes are an image (a logo). Other kinds are listed as not read.
  */
 export async function readQuoteAttachments(
   rows: QuoteAttachmentRow[],
   reader: QuoteAttachmentReader,
 ): Promise<SyncedQuoteAttachment[]> {
   const matters = rows.filter((row) => attachmentMattersForReview(reviewFacts(row)));
-  // PDFs claim the file and byte caps first, so an unknown part cannot push a voucher out of them.
-  const claimOrder = [...matters.filter(isPdfAttachment), ...matters.filter((row) => !isPdfAttachment(row))];
+  // PDFs then DOCX claim the caps before unknown parts, so a logo cannot push a request document out.
+  const claimOrder = [
+    ...matters.filter((row) => isPdfAttachment(row) && !isDocxAttachment(row)),
+    ...matters.filter(isDocxAttachment),
+    ...matters.filter((row) => !isPdfAttachment(row) && !isDocxAttachment(row)),
+  ];
   let files = 0;
   let bytes = 0;
   const failures = new Map<string, string>();
   for (const row of claimOrder) {
-    if (!isPdfAttachment(row) && !isGenericAttachment(row)) {
+    if (!isPdfAttachment(row) && !isGenericAttachment(row) && !isDocxAttachment(row)) {
       failures.set(row.id, 'not a PDF');
     } else if (files >= QUOTE_ATTACHMENT_MAX_FILES || bytes + row.sizeBytes > QUOTE_ATTACHMENT_MAX_TOTAL_BYTES) {
       failures.set(row.id, OVER_LIMIT);
@@ -114,7 +135,11 @@ export async function readQuoteAttachments(
 }
 
 /** Locators come only from this mailbox's attachment rows; the caller never supplies keys. */
-export function createArtifactReader(rows: QuoteAttachmentRow[], signal: AbortSignal): QuoteAttachmentReader {
+export function createArtifactReader(
+  rows: QuoteAttachmentRow[],
+  signal: AbortSignal,
+  options: ArtifactReaderOptions = {},
+): QuoteAttachmentReader {
   const s3 = getS3Storage();
   const byId = new Map(rows.map((row) => [row.id, row]));
   const authorizedAttachmentIds = new Set(byId.keys());
@@ -132,6 +157,39 @@ export function createArtifactReader(rows: QuoteAttachmentRow[], signal: AbortSi
   };
   return async (row) => {
     const common = { attachmentId: row.id, authorizedAttachmentIds, s3, signal, resolveLocator };
+    if (isDocxAttachment(row)) {
+      if (!options.revalidateOffice || !/^[a-f0-9]{64}$/.test(row.sha256 ?? '')) {
+        return { text: null, reason: 'identity or authorization changed' };
+      }
+      const expectedLocator = await resolveLocator(row.id);
+      if (!expectedLocator) return { text: null, reason: 'identity or authorization changed' };
+      const raw = await readAuthorizedArtifactBytes({
+        ...common,
+        allowOffice: true,
+        expectedLocator,
+        expectedSha256: row.sha256!,
+        revalidate: () => options.revalidateOffice!(row),
+      });
+      if (!raw) return { text: null, reason: 'identity or authorization changed' };
+      const officeConverter =
+        options.officeConverter ??
+        ((docx: Uint8Array, convertSignal: AbortSignal) =>
+          convertDocxWithGotenberg(docx, {
+            url: process.env.GOTENBERG_URL?.trim() ?? '',
+            signal: convertSignal,
+          }));
+      const extracted = await extractReservationistOfficeText({
+        body: raw.body,
+        attachmentId: row.id,
+        signal,
+        officeConverter,
+        runner: options.runner,
+        revalidate: () => options.revalidateOffice!(row),
+      });
+      return extracted.pages
+        ? { text: extracted.pages.join('\n') }
+        : { text: null, reason: extracted.reason.replaceAll('_', ' ') };
+    }
     if (!isPdfAttachment(row)) {
       // A part of unknown type is a logo or a file Nava does not read. Its magic bytes say which; no text is read.
       const raw = await readAuthorizedArtifactBytes({ ...common, allowSniff: true });
@@ -145,6 +203,50 @@ export function createArtifactReader(rows: QuoteAttachmentRow[], signal: AbortSi
     }
     return { text: null, reason: result.data.reason.replaceAll('_', ' ') };
   };
+}
+
+async function revalidateOfficeAttachment(row: QuoteAttachmentRow, transportId: string): Promise<boolean> {
+  let db;
+  try {
+    db = getDb();
+    const [currentAttachments, parentMessages] = await Promise.all([
+      db
+        .select({
+          id: attachment.id,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          isInline: attachment.isInline,
+          contentId: attachment.contentId,
+          sha256: attachment.sha256,
+          s3Key: attachment.s3Key,
+          messageId: attachment.messageId,
+        })
+        .from(attachment)
+        .where(eq(attachment.id, row.id))
+        .limit(2),
+      db
+        .select({ id: message.id })
+        .from(message)
+        .where(and(eq(message.id, row.messageId), eq(message.transportId, transportId)))
+        .limit(2),
+    ]);
+    if (currentAttachments.length !== 1 || parentMessages.length !== 1) return false;
+    const current = currentAttachments[0]!;
+    return (
+      current.id === row.id &&
+      current.filename === row.filename &&
+      current.mimeType === row.mimeType &&
+      current.sizeBytes === row.sizeBytes &&
+      current.isInline === row.isInline &&
+      current.contentId === (row.contentId ?? null) &&
+      current.sha256 === (row.sha256 ?? null) &&
+      current.s3Key === row.s3Key &&
+      current.messageId === row.messageId
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -178,8 +280,8 @@ export function orderCausalPreceding(
  * Bind targets on this branch (`origin/main`):
  * - `message` rows for `ctx.activeTransportId` + `messageIdHeader`
  * - preceding same-thread messages with `receivedAt <= selected.receivedAt`, oldest first
- * - non-inline PDF attachments of that message, read via `readAuthorizedArtifact`
- *   (pdftotext) with locators from those rows only; failures become `readFailure`.
+ * - non-inline PDF and DOCX attachments of that message, read via the authorized artifact path
+ *   (pdftotext, or existing DOCX→PDF→pdftotext) with locators from those rows only; failures become `readFailure`.
  *
  * Not bound (must not be faked as analysis-only):
  * - `ai.enqueueHmsRead` / `hms_quote_stay`
@@ -253,7 +355,9 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   const signal = input.signal ?? AbortSignal.timeout(15_000);
   let reader: QuoteAttachmentReader;
   try {
-    reader = createArtifactReader(rows, signal);
+    reader = createArtifactReader(rows, signal, {
+      revalidateOffice: (officeRow) => revalidateOfficeAttachment(officeRow, input.transportId),
+    });
   } catch {
     reader = async () => ({ text: null, reason: 'storage unavailable' });
   }

@@ -57,6 +57,25 @@ export type AttachmentAdmission = {
 };
 export type ReservationistOfficeConverter = (originalDocx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>;
 const DOCX_MIME='application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+export async function extractReservationistOfficeText(input:{body:Uint8Array;attachmentId:string;signal:AbortSignal;officeConverter:ReservationistOfficeConverter;runner?:SandboxRunner;revalidate:()=>Promise<boolean>}):Promise<{reason:string;pdfBody:Buffer|null;pages:readonly string[]|null;pageCount:number|null}>{
+ const fail=(reason:string)=>({reason,pdfBody:null,pages:null,pageCount:null});
+ const stillAuthorized=async()=>{try{return await input.revalidate();}catch{return false;}};
+ const original=Buffer.from(input.body);
+ if(original.length>ARTIFACT_MAX_INPUT_BYTES)return fail('too_large');
+ if(original.length<4||!original.subarray(0,4).equals(Buffer.from([80,75,3,4])))return fail('malformed');
+ let pdfBody:Buffer;
+ try{const converted=await input.officeConverter(Buffer.from(original),input.signal);input.signal.throwIfAborted();pdfBody=Buffer.from(converted);
+  if(pdfBody.length<5||pdfBody.length>ARTIFACT_MAX_INPUT_BYTES||pdfBody.subarray(0,5).toString()!=='%PDF-')return fail('office_conversion_invalid');
+ }catch{input.signal.throwIfAborted();return fail('office_conversion_failed');}
+ if(!await stillAuthorized())return fail('identity_or_authorization_changed');
+ const extracted=await extractEmbeddedPdfText({body:pdfBody,declaredSize:pdfBody.length,declaredMime:'application/pdf',objectMime:'application/pdf'},{attachmentId:input.attachmentId,signal:input.signal,runner:input.runner});
+ if(extracted.data.reason!=='text')return fail(extracted.data.reason);
+ const pageCount=extracted.data.pageCount!,split=extracted.data.text!.split('\f');
+ if(split.length===pageCount+1&&!split.at(-1)?.trim())split.pop();
+ if(split.length!==pageCount)return fail('page_boundaries_unavailable');
+ if(!await stillAuthorized())return fail('identity_or_authorization_changed');
+ return{reason:'text',pdfBody,pages:split,pageCount};
+}
 export type ReservationistRasterMime='image/png'|'image/jpeg'|'image/webp';
 /** Header-only validation: no decoder, OCR, metadata text or altered bytes enter the source. */
 export function validateReservationistRaster(bytes:Uint8Array,mimeType:string):{width:number;height:number}{
@@ -164,21 +183,16 @@ export async function admitReservationistAttachment(input: {
   if(!await input.read.revalidate!()||JSON.stringify(m)!==JSON.stringify(input.metadata)||JSON.stringify(originalScope)!==JSON.stringify(input.scope))return fail('identity_or_authorization_changed');
   let pages: readonly string[] | null, pageCount: number, reason: string;
   let rendering:DocumentSource['rendering'];
-  let pdfBody=bytes.body;
   if(office){
-    if(bytes.body.length<4||!bytes.body.subarray(0,4).equals(Buffer.from([80,75,3,4])))return fail('malformed');
-    try{
-      const converted=await input.officeConverter!(Buffer.from(bytes.body),input.read.signal);
-      input.read.signal.throwIfAborted();pdfBody=Buffer.from(converted);
-      if(pdfBody.length<5||pdfBody.length>ARTIFACT_MAX_INPUT_BYTES||pdfBody.subarray(0,5).toString()!=='%PDF-')return fail('office_conversion_invalid');
-      if(createHash('sha256').update(bytes.body).digest('hex')!==m.sourceHash||!await input.read.revalidate!()||JSON.stringify(m)!==JSON.stringify(input.metadata)||JSON.stringify(originalScope)!==JSON.stringify(input.scope))return fail('identity_or_authorization_changed');
-    }catch{input.read.signal.throwIfAborted();return fail('office_conversion_failed');}
-  }
-  if (m.mimeType === 'application/pdf'||office) {
+    const extracted=await extractReservationistOfficeText({body:bytes.body,attachmentId:m.attachmentId,signal:input.read.signal,officeConverter:input.officeConverter!,runner:input.runner,revalidate:async()=>createHash('sha256').update(bytes.body).digest('hex')===m.sourceHash&&await input.read.revalidate!()&&JSON.stringify(m)===JSON.stringify(input.metadata)&&JSON.stringify(originalScope)===JSON.stringify(input.scope)});
+    if(extracted.reason!=='text'||!extracted.pdfBody||!extracted.pages||extracted.pageCount===null)return fail(extracted.reason);
+    reason=extracted.reason;pages=extracted.pages;pageCount=extracted.pageCount;
+    rendering={method:'gotenberg_libreoffice',originalSourceHash:m.sourceHash,derivedPdfSHA256:createHash('sha256').update(extracted.pdfBody).digest('hex'),pageProvenance:'derived_pdf',textSHA256:createHash('sha256').update(JSON.stringify(pages)).digest('hex')};
+  } else if (m.mimeType === 'application/pdf') {
     const extracted = await extractEmbeddedPdfText(
       {
-        body: pdfBody,
-        declaredSize: pdfBody.length,
+        body: bytes.body,
+        declaredSize: bytes.body.length,
         declaredMime: 'application/pdf',
         objectMime: 'application/pdf',
       },
@@ -186,7 +200,6 @@ export async function admitReservationistAttachment(input: {
     );
     reason = extracted.data.reason;
     if (reason !== 'text' && reason !== 'no_embedded_text') return fail(reason);
-    if (office && reason === 'no_embedded_text') return fail(reason);
     pageCount = extracted.data.pageCount!;
     if (reason === 'text') {
       const split = extracted.data.text!.split('\f');
@@ -195,7 +208,6 @@ export async function admitReservationistAttachment(input: {
       if (split.length !== pageCount) return fail('page_boundaries_unavailable');
       pages = split;
     } else pages = null;
-    if(office)rendering={method:'gotenberg_libreoffice',originalSourceHash:m.sourceHash,derivedPdfSHA256:createHash('sha256').update(pdfBody).digest('hex'),pageProvenance:'derived_pdf',textSHA256:createHash('sha256').update(JSON.stringify(pages)).digest('hex')};
   } else {
     if (bytes.body.byteLength > ARTIFACT_MAX_OUTPUT_BYTES) return fail('too_large');
     let text: string;
@@ -210,7 +222,6 @@ export async function admitReservationistAttachment(input: {
     pageCount = 1;
     reason = 'text';
   }
-  if(office&&(!await input.read.revalidate!()||JSON.stringify(m)!==JSON.stringify(input.metadata)||JSON.stringify(originalScope)!==JSON.stringify(input.scope)))return fail('identity_or_authorization_changed');
   return {
     status: 'admitted',
     reason,

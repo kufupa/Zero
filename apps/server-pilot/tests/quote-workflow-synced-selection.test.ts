@@ -1,8 +1,13 @@
 import { asc, getTableName } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { getDb } from '../src/db/client.js';
 import { attachment } from '../src/db/schema/mail.js';
+import { attachmentReads, buildInboundPrompt } from '../src/ai/extraction/extract.js';
+import { buildQuoteWorkflowPrompt } from '../src/ai/quote-workflow-llm.js';
+import { readAuthorizedArtifactBytes } from '../src/mail/artifacts/read-artifact.js';
 import {
+  createArtifactReader,
   loadSyncedQuoteSelectionFromMailbox,
   orderCausalPreceding,
   readQuoteAttachments,
@@ -12,6 +17,16 @@ import {
 vi.mock('../src/db/client.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/db/client.js')>()),
   getDb: vi.fn(),
+}));
+
+vi.mock('../src/mail/artifacts/read-artifact.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/mail/artifacts/read-artifact.js')>()),
+  readAuthorizedArtifactBytes: vi.fn(),
+}));
+
+vi.mock('../src/storage/s3.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/storage/s3.js')>()),
+  getS3Storage: vi.fn(() => ({ headObject: vi.fn(), getObjectBounded: vi.fn() })),
 }));
 
 /** Minimal select chain: where/limit/orderBy, awaitable, rows keyed by table name. */
@@ -46,6 +61,65 @@ function row(overrides: Partial<QuoteAttachmentRow> & { id: string }): QuoteAtta
     messageId: 'm1',
     ...overrides,
   };
+}
+
+const docxMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+function crc32(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** Small, real stored ZIP DOCX; conversion remains a fake in this unit test. */
+function minimalDocx(): Buffer {
+  const files = [
+    ['[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'],
+    ['_rels/.rels', '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'],
+    ['word/document.xml', `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>ARRIVAL: 30 September 2026. DEPARTURE: 02 October 2026.</w:t></w:r></w:p>${' '.repeat(4 * 1024)}<w:sectPr/></w:body></w:document>`],
+  ];
+  const local: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const [filename, text] of files) {
+    const name = Buffer.from(filename);
+    const data = Buffer.from(text);
+    const crc = crc32(data);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(0x21, 12);
+    header.writeUInt32LE(crc, 14);
+    header.writeUInt32LE(data.length, 18);
+    header.writeUInt32LE(data.length, 22);
+    header.writeUInt16LE(name.length, 26);
+    const entry = Buffer.concat([header, name, data]);
+    local.push(entry);
+
+    const index = Buffer.alloc(46);
+    index.writeUInt32LE(0x02014b50, 0);
+    index.writeUInt16LE(20, 4);
+    index.writeUInt16LE(20, 6);
+    index.writeUInt16LE(0x21, 14);
+    index.writeUInt32LE(crc, 16);
+    index.writeUInt32LE(data.length, 20);
+    index.writeUInt32LE(data.length, 24);
+    index.writeUInt16LE(name.length, 28);
+    index.writeUInt32LE(offset, 42);
+    central.push(Buffer.concat([index, name]));
+    offset += entry.length;
+  }
+  const directory = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, directory, end]);
 }
 
 describe('readQuoteAttachments', () => {
@@ -110,7 +184,7 @@ describe('readQuoteAttachments', () => {
     expect(result).toEqual([]);
   });
 
-  it('keeps a document that carries a Content-ID: a cid never skips a document', async () => {
+  it('reads a DOCX document that carries a Content-ID: a cid never skips a document', async () => {
     const result = await readQuoteAttachments(
       [
         row({
@@ -123,7 +197,7 @@ describe('readQuoteAttachments', () => {
       ],
       async () => ({ text: null }),
     );
-    expect(result).toMatchObject([{ id: 'rooming', bytesPresent: false, readFailure: 'not a PDF' }]);
+    expect(result).toMatchObject([{ id: 'rooming', bytesPresent: false, readFailure: 'no readable text' }]);
   });
 
   it('lists the office documents and large unknown files it could not read, and keeps PDF failures', async () => {
@@ -144,7 +218,7 @@ describe('readQuoteAttachments', () => {
       async (attachment) => (attachment.id === 'tiny-pdf' ? { text: null, reason: 'encrypted' } : { text: null }),
     );
     expect(result.map((part) => [part.id, part.readFailure])).toEqual([
-      ['rooming', 'not a PDF'],
+      ['rooming', 'no readable text'],
       ['rooms', 'not a PDF'],
       ['terms', 'not a PDF'],
       ['legacy', 'not a PDF'],
@@ -162,6 +236,12 @@ describe('readQuoteAttachments', () => {
         row({ id: 'b' }),
         row({ id: 'c' }),
         row({ id: 'd' }),
+        row({
+          id: 'docx-big',
+          filename: 'oversized.docx',
+          mimeType: docxMime,
+          sizeBytes: 6 * 1024 * 1024,
+        }),
       ],
       async (attachment) => {
         read.push(attachment.id);
@@ -171,10 +251,13 @@ describe('readQuoteAttachments', () => {
     expect(read).toEqual(['a', 'b', 'c']);
     expect(result.find((part) => part.id === 'big')?.readFailure).toBe('over the 3 file / 5 MB analysis limit');
     expect(result.find((part) => part.id === 'd')?.readFailure).toBe('over the 3 file / 5 MB analysis limit');
+    expect(result.find((part) => part.id === 'docx-big')?.readFailure).toBe(
+      'over the 3 file / 5 MB analysis limit',
+    );
   });
 
-  it('keeps scanned PDF bytes for the model and turns reader failures into readFailure', async () => {
-    const pdf = new Uint8Array([37, 80, 68, 70, 45]);
+  it('keeps scanned PDFs as quote-analysis files and marks them unread for text extraction', async () => {
+    const pdf = new Uint8Array(Buffer.from('%PDF-1.7'));
     const result = await readQuoteAttachments([row({ id: 'scan' }), row({ id: 'locked' }), row({ id: 'boom' })], async (attachment) => {
       if (attachment.id === 'scan') return { text: null, pdf };
       if (attachment.id === 'locked') return { text: null, reason: 'encrypted' };
@@ -183,6 +266,86 @@ describe('readQuoteAttachments', () => {
     expect(result[0]).toMatchObject({ id: 'scan', bytesPresent: true, pdf });
     expect(result[1]).toMatchObject({ id: 'locked', bytesPresent: false, readFailure: 'encrypted' });
     expect(result[2]).toMatchObject({ id: 'boom', bytesPresent: false, readFailure: 'read failed' });
+    expect(attachmentReads([result[0]!])).toMatchObject([
+      { id: 'scan', status: 'not_read', reason: 'scanned PDF: no text layer, not sent to the model' },
+    ]);
+    const selection = { subject: '', bodyText: '', preceding: [], attachments: [result[0]!] };
+    expect(buildInboundPrompt(selection).user).not.toContain('scan.pdf');
+    expect(buildQuoteWorkflowPrompt(selection).files).toEqual([
+      { filename: 'scan.pdf', mediaType: 'application/pdf', data: pdf },
+    ]);
+  });
+
+  it('puts converted DOCX arrival and departure text in the inbound extraction prompt', async () => {
+    const docx = minimalDocx();
+    const pdf = Buffer.from('%PDF-1.7 synthetic');
+    const sha256 = createHash('sha256').update(docx).digest('hex');
+    const doc = row({
+      id: 'request',
+      filename: 'stay-request.docx',
+      mimeType: docxMime,
+      sizeBytes: docx.length,
+      sha256,
+    });
+    vi.mocked(readAuthorizedArtifactBytes).mockImplementation(async (input) => {
+      expect(input.allowOffice).toBe(true);
+      expect(input.expectedLocator).toMatchObject({
+        s3Key: doc.s3Key,
+        mimeType: docxMime,
+        sizeBytes: docx.length,
+        messageId: doc.messageId,
+        sha256,
+      });
+      expect(input.expectedSha256).toBe(sha256);
+      expect(await input.revalidate?.()).toBe(true);
+      return {
+        body: docx,
+        contentType: docxMime,
+        sha256,
+        locator: input.expectedLocator!,
+      };
+    });
+    const officeConverter = vi.fn(async (original: Uint8Array, signal: AbortSignal) => {
+      signal.throwIfAborted();
+      const zip = Buffer.from(original).toString('latin1');
+      expect(zip).toContain('ARRIVAL: 30 September 2026');
+      expect(zip).toContain('DEPARTURE: 02 October 2026');
+      return pdf;
+    });
+    const runner = async (tool: string) => ({
+      stdout: Buffer.from(
+        tool === 'pdfinfo'
+          ? 'Pages: 1\nEncrypted: no'
+          : 'ARRIVAL: 30 September 2026. DEPARTURE: 02 October 2026.\f',
+      ),
+      stderr: Buffer.alloc(0),
+      exitCode: 0,
+    });
+    const reader = createArtifactReader([doc], new AbortController().signal, {
+      revalidateOffice: async () => true,
+      officeConverter,
+      runner: runner as never,
+    });
+    const attachments = await readQuoteAttachments([doc], reader);
+    const selection = {
+      subject: 'Request for rates',
+      bodyText: 'As per the attached request.',
+      preceding: [],
+      attachments,
+    };
+    const prompt = buildInboundPrompt(selection).user;
+
+    expect(officeConverter).toHaveBeenCalledOnce();
+    expect(attachments).toMatchObject([
+      {
+        id: 'request',
+        bytesPresent: true,
+        text: expect.stringContaining('ARRIVAL: 30 September 2026'),
+      },
+    ]);
+    expect(prompt).toContain('ARRIVAL: 30 September 2026');
+    expect(prompt).toContain('DEPARTURE: 02 October 2026');
+    expect(buildQuoteWorkflowPrompt(selection).user).toContain('DEPARTURE: 02 October 2026');
   });
 
   it('drops an unknown-type part whose bytes are an image, and lists a non-image one as not a PDF', async () => {
