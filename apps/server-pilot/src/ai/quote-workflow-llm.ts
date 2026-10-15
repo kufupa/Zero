@@ -71,6 +71,8 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   .update('\nattachment-review/2')
   // Guest-name removal changes the cached party result even though the prompt and response schema are unchanged.
   .update('\nparty-not-guest/2')
+  // Group date normalization changes cached payloads without changing the model prompt or schema.
+  .update('\nluna-group-dates/1')
   .digest('hex')
   .slice(0, 16);
 

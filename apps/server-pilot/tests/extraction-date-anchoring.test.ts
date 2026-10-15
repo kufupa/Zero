@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { extractInboundMail } from '../src/ai/extraction/extract.js';
+import type { MailKind } from '../src/ai/extraction/schema.js';
 import { anchorStayDateRange, receivedDateAtHotel } from '../src/ai/stay-date-anchoring.js';
 import { buildPreparedStaffQuotePlan } from '../src/ai/quote-ready.js';
 import { AE1_OUTPUT, fakeModel, selectionFor } from './fixtures/inbound-extraction.js';
@@ -11,13 +12,18 @@ async function extractRequestedDates(input: {
   departure: string | null;
   subject?: string;
   dateEvidence?: string | null;
+  kind?: MailKind;
+  preceding?: Array<{ bodyText: string }>;
 }) {
+  const baseSelection = selectionFor(input.bodyText, input.subject);
   const selection = {
-    ...selectionFor(input.bodyText, input.subject),
+    ...baseSelection,
     receivedAt: input.receivedAt,
+    preceding: input.preceding ?? baseSelection.preceding,
   };
   const model = fakeModel(() => ({
     ...AE1_OUTPUT,
+    kind: input.kind ?? AE1_OUTPUT.kind,
     stays: [
       {
         ...AE1_OUTPUT.stays[0]!,
@@ -61,6 +67,101 @@ async function extractRequestedDateSets(input: {
 }
 
 describe('received-time date anchoring', () => {
+  it.each([
+    {
+      name: 'ignores a year from a previous visit',
+      bodyText: 'Previous visit was in 2025. Please quote 12–14 March.',
+      dateEvidence: '12–14 March',
+      kind: 'quote' as const,
+      arrival: '2026-03-12',
+      departure: '2026-03-15',
+      expected: { arrival: '2027-03-12', departure: '2027-03-15' },
+    },
+    {
+      name: 'keeps a year attached to this stay',
+      bodyText: 'Please quote 12–14 March 2026.',
+      dateEvidence: '12–14 March 2026',
+      kind: 'quote' as const,
+      arrival: '2026-03-12',
+      departure: '2026-03-15',
+      expected: { arrival: '2026-03-12', departure: '2026-03-15' },
+    },
+    {
+      name: 'recognizes the stay year despite an unrelated year in the body',
+      bodyText: 'Previous visit was in 2025. Please quote 12–14 March 2026.',
+      dateEvidence: null,
+      kind: 'quote' as const,
+      arrival: '2026-03-12',
+      departure: '2026-03-15',
+      expected: { arrival: '2026-03-12', departure: '2026-03-15' },
+    },
+  ])('counts a year only when it belongs to this stay: $name', async (scenario) => {
+    const result = await extractRequestedDates({
+      bodyText: scenario.bodyText,
+      dateEvidence: scenario.dateEvidence,
+      kind: scenario.kind,
+      receivedAt: '2026-12-20T12:00:00.000Z',
+      arrival: scenario.arrival,
+      departure: scenario.departure,
+    });
+
+    expect(result.requested).toEqual(scenario.expected);
+  });
+
+  it.each([
+    {
+      name: 'older message contains next Friday',
+      bodyText: 'Please confirm the dates from our earlier email.',
+      preceding: [{ bodyText: 'Please quote next Friday for two nights.' }],
+      dateEvidence: 'next Friday for two nights',
+      receivedAt: '2026-12-25T12:00:00.000Z',
+      arrival: '2026-12-25',
+      departure: '2026-12-27',
+      expected: { arrival: '2026-12-25', departure: '2026-12-27' },
+    },
+    {
+      name: 'older yearless dates do not use the selected email receipt',
+      bodyText: 'Please confirm the dates from my earlier request.',
+      preceding: [{ bodyText: 'Please quote 12–14 March.' }],
+      dateEvidence: '12–14 March',
+      receivedAt: '2026-12-20T12:00:00.000Z',
+      arrival: '2026-03-12',
+      departure: '2026-03-15',
+      expected: { arrival: '2026-03-12', departure: '2026-03-15' },
+    },
+  ])('does not re-anchor an unattributed older-message phrase: $name', async (scenario) => {
+    const result = await extractRequestedDates(scenario);
+
+    expect(result.requested).toEqual(scenario.expected);
+  });
+
+  it.each([
+    {
+      name: 'existing booking extension stays in its extracted year',
+      kind: 'amendment' as const,
+      bodyText: 'Please extend the existing booking from 12–15 March to 12–17 March.',
+      dateEvidence: '12–17 March',
+      receivedAt: '2026-03-14T12:00:00.000Z',
+      arrival: '2026-03-12',
+      departure: '2026-03-18',
+      expected: { arrival: '2026-03-12', departure: '2026-03-18' },
+    },
+    {
+      name: 'new quote request still rolls forward',
+      kind: 'quote' as const,
+      bodyText: 'Please quote 12–17 March.',
+      dateEvidence: '12–17 March',
+      receivedAt: '2026-03-14T12:00:00.000Z',
+      arrival: '2026-03-12',
+      departure: '2026-03-18',
+      expected: { arrival: '2027-03-12', departure: '2027-03-18' },
+    },
+  ])('applies yearless rollover only to a new stay: $name', async (scenario) => {
+    const result = await extractRequestedDates(scenario);
+
+    expect(result.requested).toEqual(scenario.expected);
+  });
+
   it('reproduces a yearless March stay accepted in the past after a December email', async () => {
     const result = await extractRequestedDates({
       bodyText: 'Please quote 12-14 March.',

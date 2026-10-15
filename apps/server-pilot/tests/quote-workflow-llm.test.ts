@@ -232,7 +232,7 @@ describe('QUOTE_WORKFLOW_PROMPT_VERSION', () => {
       .update(K2_MAPPING)
       .update('\n')
       .update(JSON.stringify(zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' })))
-      .update('\nattachment-review/2\nparty-not-guest/2')
+      .update('\nattachment-review/2\nparty-not-guest/2\nluna-group-dates/1')
       .digest('hex')
       .slice(0, 16);
     const promptOnly = createHash('sha256')

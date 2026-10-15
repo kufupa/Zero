@@ -770,6 +770,101 @@ describe('quoteWorkflow.analyseSelection', () => {
     expect(result.status).toBe('integration_unavailable');
     expect(enqueueHmsRead).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      label: 'one yearless stay',
+      bodyText: 'Please quote 12-14 March for 2 adults, B&B. Guest: Ada Lovelace.',
+      groups: [
+        { arrival: '2026-03-12', departure: '2026-03-15', dateEvidence: '12-14 March', guestNames: ['Ada Lovelace'] },
+      ],
+      expected: [{ arrival: '2027-03-12', departure: '2027-03-15', guestNames: ['Ada Lovelace'] }],
+    },
+    {
+      label: 'a yearless first stay of two',
+      bodyText: 'Please quote 12-14 March for Ada Lovelace and 2027-04-02 to 2027-04-04 for Grace Hopper.',
+      groups: [
+        { arrival: '2026-03-12', departure: '2026-03-15', dateEvidence: '12-14 March', guestNames: ['Ada Lovelace'] },
+        {
+          arrival: '2027-04-02',
+          departure: '2027-04-04',
+          dateEvidence: '2027-04-02 to 2027-04-04',
+          guestNames: ['Grace Hopper'],
+        },
+      ],
+      expected: [
+        { arrival: '2027-03-12', departure: '2027-03-15', guestNames: ['Ada Lovelace'] },
+        { arrival: '2027-04-02', departure: '2027-04-04', guestNames: ['Grace Hopper'] },
+      ],
+    },
+    {
+      label: 'a yearless second stay of two',
+      bodyText: 'Please quote 2027-04-02 to 2027-04-04 for Grace Hopper and 12-14 March for Ada Lovelace.',
+      groups: [
+        {
+          arrival: '2027-04-02',
+          departure: '2027-04-04',
+          dateEvidence: '2027-04-02 to 2027-04-04',
+          guestNames: ['Grace Hopper'],
+        },
+        { arrival: '2026-03-12', departure: '2026-03-15', dateEvidence: '12-14 March', guestNames: ['Ada Lovelace'] },
+      ],
+      expected: [
+        { arrival: '2027-04-02', departure: '2027-04-04', guestNames: ['Grace Hopper'] },
+        { arrival: '2027-03-12', departure: '2027-03-15', guestNames: ['Ada Lovelace'] },
+      ],
+    },
+  ])(
+    'returns luna.groups dates equal to the mapped stay dates, so the staff overlay can match guestNames ($label)',
+    async ({ bodyText, groups, expected }) => {
+      quoteWorkflowLoaders.loadSyncedSelection = async () => ({
+        subject: 'Quote request',
+        bodyText,
+        preceding: [],
+        attachments: [],
+        receivedAt: '2026-12-20T12:00:00.000Z',
+      });
+      quoteWorkflowLoaders.llmEnabled = () => true;
+      quoteWorkflowLoaders.adapter = {
+        invoke: async () => ({
+          modelId: 'gpt-6-luna',
+          output: lunaOutput({ groups: groups.map((group) => ({ ...quoteGroup, ...group })) }),
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+            latencyMs: 1,
+            estimatedCostUsd: 0,
+            rateTableVersion: 't',
+          },
+        }),
+      };
+      const result = await mailboxCaller().quoteWorkflow.analyseSelection({
+        internetMessageId: '<date-sync@x>',
+        storeId: 'store-1',
+        entryId: 'entry-1',
+        folderEntryId: 'folder-1',
+        selectionEpoch: 12,
+      });
+      expect(result.status).toBe('ready');
+      if (result.status === 'ready') {
+        expect(result.source).toBe('luna');
+        expect(result.groups).toMatchObject(
+          expected.map(({ arrival, departure }) => ({ arrivalDate: arrival, departureDate: departure })),
+        );
+        expect(result.luna).toMatchObject({ workflow: 'quote' });
+        expect(result.luna?.groups).toMatchObject(
+          expected.map(({ arrival, departure, guestNames }) => ({
+            arrival,
+            departure,
+            guestNames,
+            rooms: 1,
+            adultsPerRoom: 2,
+          })),
+        );
+      }
+    },
+  );
 });
 
 describe('quoteWorkflow.analyseSelection amendment payload', () => {

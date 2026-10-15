@@ -8,6 +8,8 @@ export type StayDateAnchorContext = {
   yearEvidenceText?: string;
   /** Passed only for a matched or single-stay correction. */
   staffNote?: string;
+  /** Existing-stay actions must not roll yearless dates into a new-request year. */
+  allowYearlessRollover?: boolean;
 };
 
 const DAY_MS = 86_400_000;
@@ -65,17 +67,15 @@ export function receivedDateAtHotel(receivedAt: string | null | undefined): stri
   return `${value.year}-${value.month}-${value.day}`;
 }
 
-/** Text used to verify model date evidence against the selected mail. */
+/** Text used to verify date evidence from the selected message and its attachments only. */
 export function stayDateSourceText(selection: {
   subject?: string;
   bodyText?: string;
-  preceding?: Array<{ bodyText: string }>;
   attachments?: Array<{ text?: string }>;
 }): string {
   return [
     selection.subject ? `Subject: ${selection.subject}` : '',
     selection.bodyText ?? '',
-    ...(selection.preceding ?? []).map(({ bodyText }) => bodyText),
     ...(selection.attachments ?? []).map(({ text }) => text ?? ''),
   ]
     .filter(Boolean)
@@ -93,7 +93,41 @@ export function stayDateYearEvidenceText(selection: {
 }
 
 function hasExplicitYear(text: string | undefined): boolean {
-  return Boolean(text && /\b(?:19|20)\d{2}\b/.test(text));
+  if (!text) return false;
+  const month = `(?:${MONTHS.join('|')})`;
+  const monthDateYear = new RegExp(`${MONTH_DAY.source}\\s*,?\\s*\\b(?:19|20)\\d{2}\\b`, 'i');
+  const monthRangeYear = new RegExp(
+    `\\b(?:\\d{1,2}(?:st|nd|rd|th)?\\s*[-–—]\\s*\\d{1,2}(?:st|nd|rd|th)?\\s+${month}|${month}\\s+\\d{1,2}(?:st|nd|rd|th)?\\s*[-–—]\\s*\\d{1,2}(?:st|nd|rd|th)?)\\s*,?\\s*(?:19|20)\\d{2}\\b`,
+    'i',
+  );
+  return (
+    monthDateYear.test(text) ||
+    monthRangeYear.test(text) ||
+    new RegExp(`\\b${month}\\s+(?:19|20)\\d{2}\\b`, 'i').test(text) ||
+    /\b(?:19|20)\d{2}-\d{2}-\d{2}\b/.test(text) ||
+    /\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)\d{2}\b/.test(text)
+  );
+}
+
+function hasUnambiguousYearForStay(text: string | undefined): boolean {
+  if (!text) return false;
+  const day = String.raw`\d{1,2}(?:st|nd|rd|th)?`;
+  const month = `(?:${MONTHS.join('|')})`;
+  const monthDay = `${month}\\s+${day}`;
+  const dayMonth = `${day}\\s+${month}`;
+  const monthRange = `(?:${month}\\s+${day}\\s*[-–—]\\s*${day}|${day}\\s*[-–—]\\s*${day}\\s+${month})`;
+  const explicitMonthDate = new RegExp(
+    `\\b(?:${monthRange}|${monthDay}|${dayMonth})\\s*,?\\s*(?:19|20)\\d{2}\\b`,
+    'gi',
+  );
+  const explicitMonthYear = new RegExp(`\\b${month}\\s+(?:19|20)\\d{2}\\b`, 'gi');
+  const explicitDates = [
+    ...text.matchAll(explicitMonthDate),
+    ...text.matchAll(/\b(?:19|20)\d{2}-\d{2}-\d{2}\b/g),
+    ...text.matchAll(/\b\d{1,2}[./-]\d{1,2}[./-](?:19|20)\d{2}\b/g),
+    ...text.matchAll(explicitMonthYear),
+  ];
+  return explicitDates.length === 1;
 }
 
 function hasStaffDateCorrection(note: string | undefined): boolean {
@@ -163,18 +197,22 @@ export function anchorStayDateRange(
   }
   if (
     hasExplicitYear(context.sourceText) ||
-    hasExplicitYear(context.yearEvidenceText) ||
+    hasUnambiguousYearForStay(context.yearEvidenceText) ||
     hasExplicitYear(context.subjectText)
   ) {
     return { arrival, departure: departure ?? null };
   }
+  if (context.allowYearlessRollover === false) {
+    return { arrival, departure: departure ?? null };
+  }
 
-  if (context.sourceText && RELATIVE_NEXT_YEAR.test(context.sourceText)) {
+  const selectedDateText = [context.sourceText, context.subjectText].filter(Boolean).join('\n');
+  if (RELATIVE_NEXT_YEAR.test(selectedDateText)) {
     const anchoredArrival = dateInYear(arrival, Number(referenceDate.slice(0, 4)) + 1);
     return anchoredArrival ? withArrival(anchoredArrival) : { arrival, departure: departure ?? null };
   }
 
-  const relativeWeekday = context.sourceText?.match(RELATIVE_WEEKDAY)?.[1];
+  const relativeWeekday = selectedDateText.match(RELATIVE_WEEKDAY)?.[1];
   if (relativeWeekday) {
     const anchoredArrival = nextWeekdayAfter(referenceDate, relativeWeekday);
     return anchoredArrival ? withArrival(anchoredArrival) : { arrival, departure: departure ?? null };
@@ -182,8 +220,10 @@ export function anchorStayDateRange(
 
   const checkedStayText =
     Boolean(context.sourceText?.trim()) ||
-    Boolean(context.subjectText?.trim()) ||
-    Boolean(context.yearEvidenceText?.trim());
+    Boolean(
+      context.subjectText &&
+        (MONTH_DAY.test(context.subjectText) || RELATIVE_NEXT_YEAR.test(context.subjectText) || RELATIVE_WEEKDAY.test(context.subjectText)),
+    );
   if (!checkedStayText) return { arrival, departure: departure ?? null };
 
   const anchoredArrival = nextOccurrence(arrival, referenceDate);

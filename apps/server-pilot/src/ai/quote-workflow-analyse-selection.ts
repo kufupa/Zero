@@ -10,6 +10,7 @@ import {
   amendmentFromAnalysis,
   analyseQuoteSelection,
   mapLlmDecision,
+  type MappedQuoteDecision,
   type QuoteTreatAs,
   type QuoteWorkflowFallbackReason,
   type QuoteWorkflowTelemetry,
@@ -380,6 +381,22 @@ function withAnalysisRunId<T extends object>(
 }
 
 /**
+ * mapLlmDecision anchors yearless and mixed-year stay dates into mapped.groups. The staff overlay matches Luna's
+ * groups to staff stays by date, so copy the mapped dates back onto Luna's groups by position. A stale date makes
+ * the overlay miss that stay and drop its guestNames. Other Luna fields are left as they are.
+ */
+function lunaWithMappedDates(luna: LunaAnalysis, mapped: MappedQuoteDecision): LunaAnalysis {
+  return {
+    ...luna,
+    groups: luna.groups.map((group, index) => {
+      const stay = mapped.groups[index];
+      if (!stay) return group;
+      return { ...group, arrival: stay.arrivalDate ?? null, departure: stay.departureDate ?? null };
+    }),
+  };
+}
+
+/**
  * Cache-or-analyse for one synced selection. Returns the route payload plus an
  * outcome so callers (the warmer) can log without re-deriving it.
  */
@@ -474,7 +491,7 @@ export async function analyseSyncedSelection(
       reviewItems: [...attachmentReviews, ...questionItems(mapped.missing)],
       source: 'luna' as const,
       aiUnavailable: false as const,
-      luna,
+      luna: lunaWithMappedDates(luna, mapped),
       workflow: luna.workflow,
       amendment: amendmentFromAnalysis(luna),
       sourceRevision: options.selectionEpoch,

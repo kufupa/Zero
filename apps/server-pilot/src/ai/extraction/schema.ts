@@ -202,6 +202,7 @@ export function sanitizeExtraction(
     const sourceText = dateEvidence && selectionText.includes(dateEvidence) ? dateEvidence : '';
     const dateAnchor: StayDateAnchorContext = {
       ...input.dateAnchor,
+      allowYearlessRollover: output.kind === 'quote' || output.kind === 'booking',
       sourceText,
       subjectText: output.stays.length === 1 ? input.dateAnchor?.subjectText : undefined,
       yearEvidenceText:
