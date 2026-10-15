@@ -151,6 +151,7 @@ export function createReservationistTools(runners: ReservationistRunners) {
 export function createReservationistAgent(options: {
   model?: ConstructorParameters<typeof Agent>[0]['model'];
   runners: ReservationistRunners;
+  tools?: ConstructorParameters<typeof Agent>[0]['tools'];
 }) {
   return new Agent({
     id: 'reservationist',
@@ -166,7 +167,7 @@ ${rc.get('hotelRules')}
 ${aopQuoteInstructions()}`;
     },
     model: options.model ?? createLunaModel(),
-    tools: createReservationistTools(options.runners),
+    tools: options.tools ?? createReservationistTools(options.runners),
   });
 }
 

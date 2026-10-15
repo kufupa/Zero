@@ -8,6 +8,7 @@ import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js'
 import {
   CENTURION_HOTEL_RULES,
   createReservationistAgent,
+  createReservationistTools,
   reservationistDecisionSchema,
   type ReservationistContext,
   type ReservationistDecision,
@@ -51,17 +52,23 @@ function sourceTextOf(selection: SyncedQuoteSelection): string {
 function groupFromStayAsk(
   stay: NonNullable<ReservationistDecision['stayAsk']>,
 ): LunaAnalysis['groups'][number] {
+  const rooms = stay.rooms;
   return {
     arrival: stay.arrivalDate,
     departure: stay.departureDate,
     dateEvidence: null,
-    rooms: stay.rooms,
-    adultsPerRoom: stay.rooms > 0 ? Math.floor(stay.adults / stay.rooms) : stay.adults,
-    childAges: [],
+    rooms,
+    adultsPerRoom: rooms > 0 ? Math.ceil(stay.adults / rooms) : stay.adults,
+    childAges: Array.from({ length: Math.max(0, stay.children) }, () => 0),
     board: null,
     roomPreference: null,
     guestNames: [],
   };
+}
+
+function confirmationTokenInSource(source: string, confirmation: string): boolean {
+  const escaped = confirmation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![0-9-])${escaped}(?![0-9-])`).test(source);
 }
 
 function extraMissing(decision: ReservationistDecision): LunaAnalysis['missing'] {
@@ -86,10 +93,18 @@ export function agentDecisionToLunaAnalysis(
     missing: extraMissing(decision),
     evidence: [],
     tasks: [],
-    confirmationNumber: confirmation && source.includes(confirmation) ? confirmation : null,
+    confirmationNumber: confirmation && confirmationTokenInSource(source, confirmation) ? confirmation : null,
     requestedChange: decision.requestedChange ?? null,
     todoTarget: decision.workflow === 'hms_todo' ? (decision.todoTarget ?? null) : null,
   };
+}
+
+function escapeEmailBody(text: string): string {
+  return text.replace(/[<>]/g, (ch) => (ch === '<' ? '&lt;' : '&gt;'));
+}
+
+function promptDirection(direction: string | undefined): string {
+  return direction === 'outbound' || direction === 'staff' ? 'staff' : 'inbound';
 }
 
 function maskedMessage(
@@ -99,12 +114,27 @@ function maskedMessage(
 ): AgentCaseMessage {
   return {
     id,
-    direction: extras.direction ?? 'inbound',
+    direction: promptDirection(extras.direction),
     eventAt: extras.eventAt ?? null,
     from: extras.from ?? '',
     subject: extras.subject ?? '',
-    text: maskCardNumbers(text),
+    text: escapeEmailBody(maskCardNumbers(text)),
   };
+}
+
+const PANE_WRITE_OFF = 'pane analysis: writes off';
+
+/** HMS read lookups only. PDF / document / create runners never reach the pane agent. */
+export function paneAnalysisTools(runners: Pick<ReservationistRunners, 'quote' | 'party'>) {
+  const tools = createReservationistTools({
+    quote: runners.quote,
+    party: runners.party,
+    pdf: async () => {
+      throw new Error(PANE_WRITE_OFF);
+    },
+    validateCreate: async () => ({ ok: false, errors: [PANE_WRITE_OFF] }),
+  });
+  return { quote_stay: tools.quote_stay, party_lookup: tools.party_lookup };
 }
 
 export function selectionToAgentPrompt(
@@ -127,7 +157,7 @@ export function selectionToAgentPrompt(
         subject: maskCardNumbers(selection.subject),
       }),
       context: selection.preceding.map((message, index) =>
-        maskedMessage(`preceding-${index}`, message.bodyText),
+        maskedMessage(`preceding-${index}`, message.bodyText, { direction: message.direction }),
       ),
     }),
   );
@@ -159,7 +189,11 @@ export async function analyseSelectionWithAgent(input: {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const agent = createReservationistAgent({ model: input.model, runners: input.runners });
+    const agent = createReservationistAgent({
+      model: input.model,
+      runners: input.runners,
+      tools: paneAnalysisTools(input.runners),
+    });
     const requestContext = new RequestContext<ReservationistContext>([
       ['propertyCode', 'HRCEN'],
       ['hotelRules', CENTURION_HOTEL_RULES],

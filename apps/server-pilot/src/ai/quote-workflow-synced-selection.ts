@@ -35,7 +35,7 @@ export type SyncedQuoteSelection = {
   bodyText: string;
   /** Selected message receipt time; anchors year inference. */
   receivedAt?: string;
-  preceding: Array<{ bodyText: string }>;
+  preceding: Array<{ bodyText: string; direction?: 'inbound' | 'outbound' }>;
   attachments: SyncedQuoteAttachment[];
   /** Stable DB ids of the selected message and its thread. Not part of the source hash. */
   messageId?: string;
@@ -372,8 +372,13 @@ async function revalidateOfficeAttachment(row: QuoteAttachmentRow, transportId: 
  */
 export function orderCausalPreceding(
   selected: { id: string; receivedAt: Date | null },
-  threadRows: Array<{ id: string; textBody: string | null; receivedAt: Date | null }>,
-): Array<{ bodyText: string }> {
+  threadRows: Array<{
+    id: string;
+    textBody: string | null;
+    receivedAt: Date | null;
+    direction?: 'inbound' | 'outbound';
+  }>,
+): Array<{ bodyText: string; direction?: 'inbound' | 'outbound' }> {
   const selectedAt = selected.receivedAt?.getTime();
   if (selectedAt === undefined) return [];
   return threadRows
@@ -387,7 +392,10 @@ export function orderCausalPreceding(
       if (delta !== 0) return delta;
       return left.id.localeCompare(right.id);
     })
-    .map((candidate) => ({ bodyText: candidate.textBody ?? '' }));
+    .map((candidate) => ({
+      bodyText: candidate.textBody ?? '',
+      ...(candidate.direction ? { direction: candidate.direction } : {}),
+    }));
 }
 
 /**
@@ -446,6 +454,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       id: message.id,
       textBody: message.textBody,
       receivedAt: message.receivedAt,
+      direction: message.direction,
     })
     .from(message)
     .where(and(eq(message.transportId, input.transportId), eq(message.threadId, row.threadId)));
