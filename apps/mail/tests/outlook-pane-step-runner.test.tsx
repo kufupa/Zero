@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
-import { findReadStayArrival } from './helpers/prepare-reviewed-quote';
+import { confirmPublicRate, findReadStayArrival } from './helpers/prepare-reviewed-quote';
 import { expiredPriorQuoteToastMessage } from '../lib/quote-workflow/booking-draft-bind';
 import { resetPartyAutoLookupForTests } from '../components/quote-workflow/party-picker';
 
@@ -191,6 +191,7 @@ describe('mounted pane step runner and current inputs', () => {
   it('runs the explicit step control with the current stay facts and revision', async () => {
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
+    confirmPublicRate();
     const perStep = await screen.findByRole('button', { name: /^Run Search availability 2026-11-12 → 2026-11-14/i });
     expect((perStep as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(perStep);
@@ -219,6 +220,7 @@ describe('mounted pane step runner and current inputs', () => {
   it('replans the stay search after staff edit dates then sends the new stay', async () => {
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
+    confirmPublicRate();
     fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-12-01' } });
     fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-12-03' } });
     const perStep = await screen.findByRole('button', { name: /Run Search availability 2026-12-01 → 2026-12-03/i });
@@ -238,6 +240,7 @@ describe('mounted pane step runner and current inputs', () => {
   it('has no separate party lookup: the stay search runs from the stay facts alone', async () => {
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
+    confirmPublicRate();
     const stay = await screen.findByRole('button', { name: /^Run Search availability/i });
     expect((stay as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByRole('button', { name: /Look up organisation/i })).toBeNull();
@@ -257,6 +260,7 @@ describe('mounted pane step runner and current inputs', () => {
     await waitFor(() => expect(panePartyFindMock).toHaveBeenCalledTimes(1));
     answer({ outcome: 'resolved', results: [], truncated: false, best: null, searchedFor: null });
     await waitFor(() => expect(screen.queryAllByText('Finding the company in HMS…')).toHaveLength(0));
+    confirmPublicRate();
     const released = await screen.findByRole('button', { name: /^Run Search availability/i });
     expect((released as HTMLButtonElement).disabled).toBe(false);
   });
@@ -273,6 +277,7 @@ describe('mounted pane step runner and current inputs', () => {
     });
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
+    confirmPublicRate();
     fireEvent.click(await screen.findByRole('button', { name: /^Run Search availability/i }));
     await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
     fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-15' } });
@@ -288,6 +293,7 @@ describe('mounted pane step runner and current inputs', () => {
     executeStaffQuoteMutateMock.mockRejectedValueOnce(new Error('executeStaffQuote network down'));
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
+    confirmPublicRate();
     fireEvent.click(await screen.findByRole('button', { name: /^Run Search availability/i }));
     await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
     const retry = await screen.findByRole('button', { name: /^Run Search availability/i });
@@ -369,6 +375,17 @@ describe('Re-quote after an expired prior quote', () => {
     expect(executeStaffQuoteMutateMock).not.toHaveBeenCalled();
   });
 
+  it('holds Re-quote with the party-decision reason while the party is still undecided', async () => {
+    render(<OutlookPanePage />);
+    await fillStayFacts('2026-11-12', '2026-11-14');
+    const requote = await waitFor(() => requoteAction());
+    requote();
+    expect(toast.warning).toHaveBeenCalledWith(
+      "Pick the company or agency in HMS, or choose 'No company/agency — public rate'.",
+    );
+    expect(executeStaffQuoteMutateMock).not.toHaveBeenCalled();
+  });
+
   it('does not start the re-quote run under a lookup that began while the earlier quote loaded', async () => {
     let loaded!: () => void;
     getPriorQueryMock.mockImplementationOnce(async () => {
@@ -380,6 +397,7 @@ describe('Re-quote after an expired prior quote', () => {
     panePartyFindMock.mockImplementationOnce(() => new Promise(() => {}));
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
+    confirmPublicRate();
     const requote = await waitFor(() => requoteAction());
     requote();
     await waitFor(() => expect(getPriorQueryMock).toHaveBeenCalledTimes(1));
@@ -401,6 +419,7 @@ describe('Re-quote after an expired prior quote', () => {
     });
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
+    confirmPublicRate();
     const requote = await waitFor(() => requoteAction());
     requote();
     await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
@@ -415,6 +434,7 @@ describe('Re-quote after an expired prior quote', () => {
   it('keeps the re-quoted result when nothing moved on while HMS searched', async () => {
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
+    confirmPublicRate();
     const requote = await waitFor(() => requoteAction());
     requote();
     expect((await screen.findAllByText(ROOM_LABEL)).length).toBeGreaterThan(0);

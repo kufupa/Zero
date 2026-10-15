@@ -796,7 +796,7 @@ describe('QuoteWorkflowPanel', () => {
 
   it('offers a date-specific search after results, enabled when idle and tied to the same stay', () => {
     const onRunStep = vi.fn();
-    const session = sessionFromFixture('public-single');
+    const session = searchable(sessionFromFixture('public-single'));
     const step = session.steps.find((item) => item.kind === 'quote_stay');
     expect(step).toBeDefined();
     if (!step) return;
@@ -825,9 +825,27 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByText('Finding the company in HMS…')).toBeTruthy();
   });
 
+  it('holds Search this date range with the party-decision reason after a ready quote', () => {
+    const onRunStep = vi.fn();
+    const session = sessionFromFixture('public-single');
+    const step = session.steps.find((item) => item.kind === 'quote_stay');
+    expect(step).toBeDefined();
+    if (!step) return;
+    session.steps = session.steps.map((item) => (item.id === step.id ? { ...item, status: 'succeeded' as const } : item));
+    render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} />);
+
+    const button = screen.getByRole('button', { name: 'Search this date range for Stay 1' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(
+      screen.getByText("Pick the company or agency in HMS, or choose 'No company/agency — public rate'."),
+    ).toBeTruthy();
+    fireEvent.click(button);
+    expect(onRunStep).not.toHaveBeenCalled();
+  });
+
   it('explains when a date-specific search has no run handler instead of leaving an enabled no-op', () => {
     vi.mocked(toast.warning).mockClear();
-    const session = sessionFromFixture('public-single');
+    const session = searchable(sessionFromFixture('public-single'));
     const step = session.steps.find((item) => item.kind === 'quote_stay');
     expect(step).toBeDefined();
     if (!step) return;

@@ -1250,9 +1250,9 @@ export function NavaPane({
   requoteSameStayRef.current = (row) => {
     const session = quoteSessionRef.current;
     // Same as Get rates: a party lookup that still decides the pick would reset this run.
-    const lookupWait = partyLookupWaitReason(session);
-    if (lookupWait) {
-      toast.warning(lookupWait);
+    const pricingWait = partyLookupWaitReason(session) || partyDecisionWaitReason(session);
+    if (pricingWait) {
+      toast.warning(pricingWait);
       return;
     }
     const luna = session.analysis?.luna;
@@ -1285,10 +1285,11 @@ export function NavaPane({
         toast.warning('The stays changed since this quote. Run the search for that stay again.');
         return;
       }
-      // The prior quote loaded after the click, so a lookup may have started since. The run must not start under it.
-      const lookupWaitNow = partyLookupWaitReason(quoteSessionRef.current);
-      if (lookupWaitNow) {
-        toast.warning(lookupWaitNow);
+      // The prior quote loaded after the click, so a lookup or party decision may have started since.
+      const pricingWaitNow =
+        partyLookupWaitReason(quoteSessionRef.current) || partyDecisionWaitReason(quoteSessionRef.current);
+      if (pricingWaitNow) {
+        toast.warning(pricingWaitNow);
         return;
       }
       const run = bindExecuteStaffQuote({
@@ -1377,7 +1378,7 @@ export function NavaPane({
     const step = quoteSession.steps.find((item) => item.id === stepId);
     const maySearchAgain = step?.kind === 'quote_stay' && step.status === 'succeeded' && !quoteSession.runningStepId;
     if (!step || (!maySearchAgain && !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId))) return;
-    const waiting = quoteRunBlockReason(quoteSession, step);
+    const waiting = quoteRunBlockReason(quoteSession, step, { skipPartyDecision: readBack });
     if (waiting) {
       toast.warning(waiting);
       return;
@@ -1622,7 +1623,6 @@ export function NavaPane({
       (quoteSession.binding.internetMessageId ?? null) !== (activeEmail.internetMessageId ?? null) ||
       !staffSourceReady(quoteSession) ||
       partyLookupWaitReason(quoteSession) ||
-      partyDecisionWaitReason(quoteSession) ||
       staffQuoteAutoSuppressed.current.has(contactMessageKey) ||
       autoStaffQuoteSuppressed(contactMessageKey)
     ) {
@@ -1643,9 +1643,19 @@ export function NavaPane({
         candidate.status !== 'ready' ||
         !candidate.shareKey ||
         !canRunQuoteStep(candidate, quoteSession.steps, quoteSession.runningStepId) ||
-        quoteSession.staffQuotes[candidate.shareKey] ||
-        quoteRunBlockReason(quoteSession, candidate)
+        quoteSession.staffQuotes[candidate.shareKey]
       ) {
+        return false;
+      }
+      const wouldReadBack = staffQuoteAutoAttempted.current.has(
+        staffQuoteAttemptKey(
+          binding.transportId,
+          source.messageId,
+          source.sourceHash,
+          candidate.shareKey,
+        ),
+      );
+      if (quoteRunBlockReason(quoteSession, candidate, { skipPartyDecision: wouldReadBack })) {
         return false;
       }
       return canBuildStaffQuoteRequest({

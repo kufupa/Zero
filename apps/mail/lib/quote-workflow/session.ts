@@ -213,6 +213,7 @@ export function quoteRunBlockReason(
     'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds' | 'partyDecision'
   >,
   step: QuoteToolStep,
+  options?: { skipPartyDecision?: boolean },
 ): string | null {
   if (
     step.kind === 'quote_stay' &&
@@ -223,7 +224,7 @@ export function quoteRunBlockReason(
   }
   const lookupWait = partyLookupWaitReason(session);
   if (lookupWait) return lookupWait;
-  if (step.kind === 'quote_stay') {
+  if (step.kind === 'quote_stay' && !options?.skipPartyDecision) {
     const decisionWait = partyDecisionWaitReason(session);
     if (decisionWait) return decisionWait;
   }

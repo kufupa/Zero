@@ -3645,4 +3645,25 @@ describe('partyDecision: quote_stay waits for a pick or explicit public rate', (
     expect(salesStrategyForQueuedQuote({ salesStrategy: 'Government' })).toBe('Government');
     expect(salesStrategyForQueuedQuote({ salesStrategy: 'BAR' })).toBe('BAR');
   });
+
+  it('ambiguous, no-match, outage, and lookup-error paths stay undecided', () => {
+    const named = reduceQuoteSession(analysisReady(), { type: 'patch_staff_header', header: { company: 'Acme Travel' } });
+    expect(named.partyDecision).toBe('undecided');
+    expect(named.staffHeader.parties).toBeUndefined();
+    expect(partyDecisionWaitReason(named)).toBe(PARTY_DECISION_WAIT);
+
+    const pending = reduceQuoteSession(named, { type: 'party_lookup_pending', kind: 'company', pending: true });
+    expect(pending.partyDecision).toBe('undecided');
+    const settled = reduceQuoteSession(pending, { type: 'party_lookup_pending', kind: 'company', pending: false });
+    expect(settled.partyDecision).toBe('undecided');
+    expect(partyDecisionWaitReason(settled)).toBe(PARTY_DECISION_WAIT);
+  });
+
+  it('selecting a party after public_confirmed becomes picked', () => {
+    const confirmed = reduceQuoteSession(analysisReady(), { type: 'party_public_confirmed' });
+    expect(confirmed.partyDecision).toBe('public_confirmed');
+    const picked = reduceQuoteSession(confirmed, { type: 'patch_staff_header', header: VERIFIED_COMPANY });
+    expect(picked.partyDecision).toBe('picked');
+    expect(partyDecisionWaitReason(picked)).toBeNull();
+  });
 });

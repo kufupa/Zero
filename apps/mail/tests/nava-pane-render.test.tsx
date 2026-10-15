@@ -1114,7 +1114,8 @@ describe('NavaPane screen states', () => {
     if (visible) {
       expect(await screen.findByRole('region', { name: VOUCHER_COPY.heading }, { timeout: 5000 })).toBeDefined();
     } else {
-      const intent = (await screen.findByLabelText('Change how Nava reads this email')) as HTMLSelectElement;
+      const intent = await screen.findByLabelText('Change how Nava reads this email');
+      if (!(intent instanceof HTMLSelectElement)) throw new Error('expected the read-as control to be a select');
       expect(intent.value).toBe(name);
       expect(voucherFindQuery).not.toHaveBeenCalled();
       expect(screen.queryByRole('region', { name: VOUCHER_COPY.heading })).toBeNull();
@@ -1979,13 +1980,13 @@ describe('NavaPane screen states', () => {
 
     rerender(<NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined());
-    confirmPublicRate();
     await waitFor(() =>
       expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
         input: expect.objectContaining({ messageId: 'mail-1' }),
       }),
     );
     expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined();
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2);
   });
 

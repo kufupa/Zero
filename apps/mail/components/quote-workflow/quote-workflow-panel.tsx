@@ -967,6 +967,8 @@ function stayRatesBlockReason(
   if (rows.some((group) => !roomRequirementReady(group))) return 'Choose a room type for each room before searching.';
   if (rows.some((group) => !group.quantity)) return 'Add the number of rooms first.';
   if (!step) return 'The HMS search is not ready yet.';
+  const decisionWait = partyDecisionWaitReason(session);
+  if (decisionWait) return decisionWait;
   if (step.status === 'succeeded') return null;
   const stepWait = quoteRunBlockReason(session, step);
   if (stepWait) return stepWait;
@@ -1717,7 +1719,11 @@ export function QuoteWorkflowPanel({
                       <>
                         <SecondaryButton
                           className="w-full"
-                          disabled={loadingThisStay || queuedThisStay}
+                          disabled={
+                            loadingThisStay ||
+                            queuedThisStay ||
+                            Boolean(reason && reason === partyDecisionWaitReason(session))
+                          }
                           disabledReason={
                             loadingThisStay
                               ? 'A search is running for this stay.'
