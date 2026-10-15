@@ -30,7 +30,10 @@ import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
-import { isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
+import {
+  guardCenturionHmsMailboxOrigin,
+  isDaVinciMailboxOrigin,
+} from '../hms/mailbox-hms-origin-bind.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -232,7 +235,7 @@ export type HmsJobView = {
 
 export type HmsBatchStatus = 'queued' | 'running' | 'partial' | 'done' | 'failed' | 'cancelled';
 export type HmsBatchItemStatus = HmsJobStatus | 'skipped' | 'reused' | 'cancelled';
-export type HmsBatchSkipReason = 'insufficient_data' | 'spam';
+export type HmsBatchSkipReason = 'insufficient_data' | 'spam' | 'davinci_origin';
 
 export type HmsBatchItemView = {
   itemIndex: number;
@@ -802,6 +805,7 @@ type HmsBatchEnqueueInput = {
   transportId: string;
   userId: string;
   workItemIds: string[];
+  originRefusedWorkItemIds?: readonly string[];
 };
 
 type HmsBatchScope = { batchId: string; transportId: string };
@@ -1219,17 +1223,27 @@ export async function enqueueHmsBatch(
     const now = new Date();
     // Spam gets no lookup: the thread-state gate (spamAt) the automatic prefetch also applies. An extraction label
     // alone is not spam, because staff can clear spam on a thread whose extraction still says spam.
-    const selections = orderedSources.map(
-      (source): { skipped: HmsBatchSkipReason } | { request: HmsJobRequest } => {
-        if (source.spamAt) return { skipped: 'spam' };
-        // No succeeded extraction still leaves the message text, so a confirmation in the subject or body queues.
-        return selectHmsBatchRequest({
-          kind: source.extraction?.kind ?? null,
-          payload: source.extraction?.payload ?? null,
-          subject: source.subject,
-          textBody: source.textBody,
-        });
-      },
+    const originRefused = new Set(input.originRefusedWorkItemIds ?? []);
+    const selections = await Promise.all(
+      orderedSources.map(
+        async (source): Promise<{ skipped: HmsBatchSkipReason } | { request: HmsJobRequest }> => {
+          if (source.spamAt) return { skipped: 'spam' };
+          if (originRefused.has(source.workItemId)) return { skipped: 'davinci_origin' };
+          const guard = await guardCenturionHmsMailboxOrigin({
+            transportId: input.transportId,
+            threadId: source.threadId,
+            messageId: source.triggerMessageId,
+          });
+          if (!guard.ok) return { skipped: 'davinci_origin' };
+          // No succeeded extraction still leaves the message text, so a confirmation in the subject or body queues.
+          return selectHmsBatchRequest({
+            kind: source.extraction?.kind ?? null,
+            payload: source.extraction?.payload ?? null,
+            subject: source.subject,
+            textBody: source.textBody,
+          });
+        },
+      ),
     );
     const requested = orderedSources.flatMap((source, itemIndex) => {
       const selection = selections[itemIndex]!;
@@ -3286,7 +3300,9 @@ export async function readHmsBatchView(
           workItemId: run.workItemId ?? '',
           status: 'skipped',
           reason:
-            metrics.batchItemReason === 'insufficient_data' || metrics.batchItemReason === 'spam'
+            metrics.batchItemReason === 'insufficient_data' ||
+            metrics.batchItemReason === 'spam' ||
+            metrics.batchItemReason === 'davinci_origin'
               ? metrics.batchItemReason
               : null,
           runId: null,

@@ -28,6 +28,7 @@ const jobMocks = vi.hoisted(() => ({
   readHmsJobView: vi.fn(),
   queueUserHmsJob: vi.fn(),
   queueUserPartyHmsJob: vi.fn(),
+  enqueueHmsBatch: vi.fn(),
 }));
 
 vi.mock('../src/db/client.js', async (importOriginal) => ({
@@ -42,6 +43,7 @@ vi.mock('../src/ai/hms-jobs.js', async (importOriginal) => ({
   readHmsJobView: jobMocks.readHmsJobView,
   queueUserHmsJob: jobMocks.queueUserHmsJob,
   queueUserPartyHmsJob: jobMocks.queueUserPartyHmsJob,
+  enqueueHmsBatch: jobMocks.enqueueHmsBatch,
 }));
 
 const STAY: PaneStayFields = {
@@ -124,6 +126,7 @@ afterEach(async () => {
   jobMocks.readHmsJobView.mockReset().mockResolvedValue(null);
   jobMocks.queueUserHmsJob.mockReset();
   jobMocks.queueUserPartyHmsJob.mockReset();
+  jobMocks.enqueueHmsBatch.mockReset();
   paneStayLookupLoaders.spawn = null;
   paneStayLookupLoaders.lock = null;
   paneStayLookupLoaders.enabled = null;
@@ -131,6 +134,7 @@ afterEach(async () => {
   paneStaySaveLoaders.osressGuestDatesSearch = null;
   mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+  mailboxHmsOriginBindLoaders.loadWorkItemAnchors = null;
   vi.unstubAllEnvs();
   await Promise.all(cleanupDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -667,6 +671,108 @@ describe('paneStayLookup router origin guard', () => {
     ]);
     expect(paneStayLookupLoaders.spawn).not.toHaveBeenCalled();
     expect(jobMocks.queueUserHmsJob).not.toHaveBeenCalled();
+  });
+
+  it('queueBatch skips Da Vinci-origin items before enqueue and still queues Centurion items', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    const dvItem = '11111111-1111-4111-8111-111111111111';
+    const cenItem = '22222222-2222-4222-8222-222222222222';
+    const batchId = '33333333-3333-4333-8333-333333333333';
+    const order: string[] = [];
+    mailboxHmsOriginBindLoaders.loadWorkItemAnchors = async () => [
+      { workItemId: dvItem, threadId: 'thread-dv', messageId: 'msg-dv' },
+      { workItemId: cenItem, threadId: 'thread-cen', messageId: 'msg-cen' },
+    ];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async (input) => {
+      order.push(`origin:${input.threadId}:${input.messageId ?? ''}`);
+      return {
+        fromAddress: 'guest@example.invalid',
+        toAddresses:
+          input.threadId === 'thread-dv'
+            ? ['davinci@legacyhotels.co.za']
+            : ['centurion@legacyhotels.co.za'],
+      };
+    };
+    jobMocks.enqueueHmsBatch.mockImplementation(async (input) => {
+      order.push('enqueue');
+      return {
+        batchId: input.batchId,
+        status: 'queued',
+        summary: {
+          total: input.workItemIds.length,
+          queued: input.workItemIds.length,
+          running: 0,
+          retrying: 0,
+          done: 0,
+          failed: 0,
+          cancelled: 0,
+          skipped: 0,
+          reused: 0,
+        },
+        items: [],
+      };
+    });
+    await expect(
+      mailboxCaller().paneStayLookup.queueBatch({
+        batchId,
+        workItemIds: [dvItem, cenItem],
+      }),
+    ).resolves.toMatchObject({ batchId, status: 'queued' });
+    expect(order).toEqual([
+      'origin:thread-dv:msg-dv',
+      'origin:thread-cen:msg-cen',
+      'enqueue',
+    ]);
+    expect(jobMocks.enqueueHmsBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchId,
+        transportId: 'transport-1',
+        userId: 'user-ropperman',
+        workItemIds: [dvItem, cenItem],
+        originRefusedWorkItemIds: [dvItem],
+      }),
+    );
+  });
+
+  it('queueBatch still enqueues when every item is Centurion-origin', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    const cenItem = '22222222-2222-4222-8222-222222222222';
+    const batchId = '33333333-3333-4333-8333-333333333333';
+    mailboxHmsOriginBindLoaders.loadWorkItemAnchors = async () => [
+      { workItemId: cenItem, threadId: 'thread-cen', messageId: 'msg-cen' },
+    ];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['centurion@legacyhotels.co.za'],
+    });
+    jobMocks.enqueueHmsBatch.mockResolvedValue({
+      batchId,
+      status: 'queued',
+      summary: {
+        total: 1,
+        queued: 1,
+        running: 0,
+        retrying: 0,
+        done: 0,
+        failed: 0,
+        cancelled: 0,
+        skipped: 0,
+        reused: 0,
+      },
+      items: [],
+    });
+    await expect(
+      mailboxCaller().paneStayLookup.queueBatch({
+        batchId,
+        workItemIds: [cenItem],
+      }),
+    ).resolves.toMatchObject({ batchId });
+    expect(jobMocks.enqueueHmsBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workItemIds: [cenItem],
+        originRefusedWorkItemIds: [],
+      }),
+    );
   });
 });
 

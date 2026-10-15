@@ -76,7 +76,11 @@ export function VoucherFindCard({
   const checkedFor = useRef<string | null>(null);
   // The search job runs on the voucher mail's thread, which the check's reply names.
   const replyThread = reply?.status === 'voucher' ? (reply.threadId ?? null) : null;
-  const transport = useMemo(() => hmsJobTransport(jobClient, replyThread), [jobClient, replyThread]);
+  const replyMessageId = reply?.status === 'voucher' ? reply.messageId : null;
+  const transport = useMemo(
+    () => hmsJobTransport(jobClient, replyThread, replyMessageId),
+    [jobClient, replyThread, replyMessageId],
+  );
   // Read back only a search for this voucher's guest: one thread can carry vouchers for different guests.
   const voucherSearch =
     reply?.status === 'voucher' && canSearchVoucher(reply.guest)

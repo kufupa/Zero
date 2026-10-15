@@ -1,8 +1,9 @@
 import { normalizeEmailAddress } from '../ai/never-spam.js';
 import { getDb } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
+import { workItem } from '../db/schema/work.js';
 import { TRPCError } from '@trpc/server';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 
 export const DAVINCI_MAILBOX_IDENTITIES = [
   'davinci@legacyhotels.co.za',
@@ -45,10 +46,22 @@ export type MailboxHmsOriginLoadInput = {
   messageId?: string;
 };
 
+export type MailboxHmsWorkItemAnchor = {
+  workItemId: string;
+  threadId: string;
+  messageId?: string;
+};
+
 export const mailboxHmsOriginBindLoaders: {
   loadThreadOrigin: ((input: MailboxHmsOriginLoadInput) => Promise<MailboxHmsOriginFields | null>) | null;
   loadThreadOriginScan: ((input: MailboxHmsOriginLoadInput) => Promise<MailboxHmsOriginScan>) | null;
-} = { loadThreadOrigin: null, loadThreadOriginScan: null };
+  loadWorkItemAnchors:
+    | ((input: {
+        transportId: string;
+        workItemIds: string[];
+      }) => Promise<MailboxHmsWorkItemAnchor[]>)
+    | null;
+} = { loadThreadOrigin: null, loadThreadOriginScan: null, loadWorkItemAnchors: null };
 
 function collectNormalizedAddresses(origin: MailboxHmsOriginFields): string[] {
   const raw: string[] = [];
@@ -103,6 +116,35 @@ function refusedOrigin(): GuardCenturionHmsMailboxOriginResult {
     code: 'READ_DAVINCI_ORIGIN_REFUSED',
     message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
   };
+}
+
+export async function loadWorkItemMailboxHmsOriginAnchors(input: {
+  transportId: string;
+  workItemIds: string[];
+}): Promise<MailboxHmsWorkItemAnchor[]> {
+  if (mailboxHmsOriginBindLoaders.loadWorkItemAnchors) {
+    return mailboxHmsOriginBindLoaders.loadWorkItemAnchors(input);
+  }
+  if (input.workItemIds.length === 0) return [];
+  const rows = await getDb()
+    .select({
+      workItemId: workItem.id,
+      threadId: workItem.threadId,
+      messageId: workItem.sourceMessageId,
+    })
+    .from(workItem)
+    .where(and(eq(workItem.transportId, input.transportId), inArray(workItem.id, input.workItemIds)));
+  return rows.flatMap((row) =>
+    row.threadId
+      ? [
+          {
+            workItemId: row.workItemId,
+            threadId: row.threadId,
+            ...(row.messageId ? { messageId: row.messageId } : {}),
+          },
+        ]
+      : [],
+  );
 }
 
 async function loadThreadMailboxHmsOriginScanFromDb(

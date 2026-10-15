@@ -32,7 +32,11 @@ import {
   toolInputDigest,
 } from '../../ai/hitl-tool-run.js';
 import { availabilityRequestSchema } from '../../ai/hms-availability.js';
-import { assertCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
+import {
+  assertCenturionHmsMailboxOrigin,
+  guardCenturionHmsMailboxOrigin,
+  loadWorkItemMailboxHmsOriginAnchors,
+} from '../../hms/mailbox-hms-origin-bind.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
@@ -289,11 +293,30 @@ export const paneStayLookupRouter = router({
   queueBatch: mailboxProcedure.input(hmsBatchQueueInput).mutation(async ({ input, ctx }) => {
     if (!hmsJobQueueEnabled()) return null;
     try {
+      const anchors = await loadWorkItemMailboxHmsOriginAnchors({
+        transportId: ctx.activeTransportId,
+        workItemIds: input.workItemIds,
+      });
+      const byId = new Map(anchors.map((anchor) => [anchor.workItemId, anchor]));
+      const originRefusedWorkItemIds: string[] = [];
+      for (const workItemId of input.workItemIds) {
+        const anchor = byId.get(workItemId);
+        if (!anchor) {
+          throw new HmsBatchInputError('one or more work items are unavailable', 'NOT_FOUND');
+        }
+        const guard = await guardCenturionHmsMailboxOrigin({
+          transportId: ctx.activeTransportId,
+          threadId: anchor.threadId,
+          ...(anchor.messageId ? { messageId: anchor.messageId } : {}),
+        });
+        if (!guard.ok) originRefusedWorkItemIds.push(workItemId);
+      }
       return await enqueueHmsBatch({
         batchId: input.batchId,
         transportId: ctx.activeTransportId,
         userId: ctx.sessionUser.id,
         workItemIds: input.workItemIds,
+        originRefusedWorkItemIds,
       });
     } catch (error) {
       if (error instanceof HmsBatchInputError) {
