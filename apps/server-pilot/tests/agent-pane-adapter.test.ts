@@ -165,6 +165,16 @@ describe('agentDecisionToLunaAnalysis', () => {
     });
     expect(lunaAnalysisSchema.parse(prefix).confirmationNumber).toBeNull();
 
+    for (const bodyText of ['Ref AB57291630-1 attached.', 'Ref 57291630-1X attached.']) {
+      const alnum = agentDecisionToLunaAnalysis(decision('amend', { confirmationNumber: '57291630-1' }), {
+        ...selection,
+        bodyText,
+        preceding: [],
+        attachments: [],
+      });
+      expect(lunaAnalysisSchema.parse(alnum).confirmationNumber).toBeNull();
+    }
+
     const exact = agentDecisionToLunaAnalysis(decision('amend', { confirmationNumber: '57291630-1' }), {
       ...selection,
       bodyText: 'Please amend 57291630-1 for next week.',

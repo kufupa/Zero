@@ -68,7 +68,7 @@ function groupFromStayAsk(
 
 function confirmationTokenInSource(source: string, confirmation: string): boolean {
   const escaped = confirmation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?<![0-9-])${escaped}(?![0-9-])`).test(source);
+  return new RegExp(`(?<![A-Za-z0-9-])${escaped}(?![A-Za-z0-9-])`).test(source);
 }
 
 function extraMissing(decision: ReservationistDecision): LunaAnalysis['missing'] {
