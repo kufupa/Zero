@@ -5,7 +5,9 @@
  *   pnpm --filter @zero/server eval:same-move
  *   pnpm --filter @zero/server eval:same-move -- --ops evals/same-move/joined-ops.jsonl
  */
+import { formatSameMoveOpsBaseline, majorityBaseline } from '../src/ai/same-move-ops.js';
 import {
+  loadSameMoveOpsJsonl,
   parseSameMoveEvalCli,
   runSameMoveOpsEval,
   runSameMovePromptfooEval,
@@ -14,7 +16,9 @@ import {
 const cli = parseSameMoveEvalCli(process.argv.slice(2));
 if (cli.mode === 'ops') {
   const report = runSameMoveOpsEval(cli.opsPath);
+  const baseline = majorityBaseline(loadSameMoveOpsJsonl(cli.opsPath));
   process.stdout.write(`${JSON.stringify(report)}\n`);
+  process.stdout.write(`${formatSameMoveOpsBaseline(baseline)}\n`);
   process.exitCode = 0;
 } else {
   const report = await runSameMovePromptfooEval();
