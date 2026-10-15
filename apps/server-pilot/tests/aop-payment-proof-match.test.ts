@@ -40,7 +40,7 @@ function pop(
 }
 
 describe('matchPaymentProof', () => {
-  it('is exact when the confirmation number appears in the reference', () => {
+  it('matches a stated confirmation number with no surname', () => {
     const result = matchPaymentProof({
       pop: pop({ reference: 'EFT 9999901-1' }),
       candidates: [stay, other],
@@ -68,9 +68,10 @@ describe('matchPaymentProof', () => {
     });
     expect(result.status).toBe('none');
     expect(result.confirmationNumber).toBeNull();
+    expect(result.why).toContain('stated_conf_not_found');
   });
 
-  it('treats a confirmation in the reference as stronger than amount, name, company and date together', () => {
+  it('stated confirmation beats amount and name for a different stay', () => {
     const result = matchPaymentProof({
       pop: pop({
         reference: 'EFT 9999901-1',
@@ -80,8 +81,61 @@ describe('matchPaymentProof', () => {
       }),
       candidates: [stay, other],
     });
+    expect(result.confirmationNumber).not.toBe('9999902-1');
+    expect(result.status).toBe('ambiguous');
+    expect(result.confirmationNumber).toBeNull();
+  });
+
+  it('returns none with stated_conf_not_found when the stated confirmation matches no candidate', () => {
+    const result = matchPaymentProof({
+      pop: pop({
+        reference: 'EFT 8888888',
+        amount: 1850,
+        payerName: 'Smith Northwind Travel',
+        paidOn: '2026-11-10',
+      }),
+      candidates: [stay, other],
+    });
+    expect(result.status).toBe('none');
+    expect(result.confirmationNumber).toBeNull();
+    expect(result.why).toContain('stated_conf_not_found');
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('returns ambiguous when a base confirmation matches two legs', () => {
+    const result = matchPaymentProof({
+      pop: pop({ reference: 'EFT 9999901' }),
+      candidates: [
+        stay,
+        { ...stay, confirmationNumber: '9999901-2' },
+        other,
+      ],
+    });
+    expect(result.status).toBe('ambiguous');
+    expect(result.confirmationNumber).toBeNull();
+    expect(result.candidates).toEqual(['9999901-1', '9999901-2']);
+    expect(result.why).toContain('stated_conf_not_found');
+  });
+
+  it('matches a full base-N token to only that leg', () => {
+    const result = matchPaymentProof({
+      pop: pop({ reference: 'EFT 9999901-1' }),
+      candidates: [stay, { ...stay, confirmationNumber: '9999901-2' }, other],
+    });
     expect(result.status).toBe('exact');
     expect(result.confirmationNumber).toBe('9999901-1');
+  });
+
+  it('ignores paidOn that is not an ISO calendar day', () => {
+    const slash = matchPaymentProof({
+      pop: pop({ paidOn: '01/02/2027' }),
+      candidates: [
+        { ...stay, lastName: 'Ng', departure: '12/31/2026' },
+        { ...other, lastName: 'Ng', departure: '01/01/2027' },
+      ],
+    });
+    expect(slash.status).toBe('none');
+    expect(slash.confirmationNumber).toBeNull();
   });
 
   it('treats amount equal to balanceDue within R1 as a match signal', () => {
@@ -144,18 +198,6 @@ describe('matchPaymentProof', () => {
     expect(result.score).toBe(1);
   });
 
-  it('ignores paidOn that is not an ISO calendar day', () => {
-    const slash = matchPaymentProof({
-      pop: pop({ paidOn: '01/02/2027' }),
-      candidates: [
-        { ...stay, lastName: 'Ng', departure: '12/31/2026' },
-        { ...other, lastName: 'Ng', departure: '01/01/2027' },
-      ],
-    });
-    expect(slash.status).toBe('none');
-    expect(slash.confirmationNumber).toBeNull();
-  });
-
   it('returns ambiguous on a tie and never picks a confirmation number', () => {
     const twins = [
       { ...stay, confirmationNumber: '9999901-1', lastName: 'Lee', balanceDue: 1000 },
@@ -173,7 +215,6 @@ describe('matchPaymentProof', () => {
   it('is exact when one stay wins by a score gap', () => {
     const result = matchPaymentProof({
       pop: pop({
-        reference: '9999901-1',
         amount: 1850,
         payerName: 'Smith',
       }),
