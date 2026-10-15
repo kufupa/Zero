@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildPaymentProofPop,
   matchPaymentProof,
   matchPaymentProofInputSchema,
 } from '../src/ai/aop/payment-proof-match.js';
@@ -276,5 +277,51 @@ describe('matchPaymentProof', () => {
       ],
     });
     expect(parsed.candidates[0]?.confirmationNumber).toBe('9999903-1');
+  });
+});
+
+describe('buildPaymentProofPop', () => {
+  it('reads amount, reference and paidOn from attachment text before the body', () => {
+    const pop = buildPaymentProofPop({
+      bodyText: 'Please find POP attached. Paid ZAR 9,999.00 on 2026-01-01 ref 111111',
+      attachments: [
+        {
+          text: 'ABSA EFT\nAmount R1,850.00\nDate 2026-11-10\nReference 8888888\nPayer: A. Smith',
+        },
+      ],
+    });
+    expect(pop.amount).toBe(1850);
+    expect(pop.reference).toBe('8888888');
+    expect(pop.paidOn).toBe('2026-11-10');
+    expect(pop.payerName).toMatch(/Smith/i);
+  });
+
+  it('uses the body when the attachment has no amount, ref or date', () => {
+    const pop = buildPaymentProofPop({
+      bodyText: 'Paid R2,400.00 on 12/11/2026 ref 7777777\nPaid by: Jones',
+      attachments: [{ text: 'Scan of the slip — no figures.' }],
+    });
+    expect(pop.amount).toBe(2400);
+    expect(pop.reference).toBe('7777777');
+    expect(pop.paidOn).toBe('2026-11-12');
+    expect(pop.payerName).toMatch(/Jones/i);
+  });
+
+  it('sets amount to null when several distinct R/ZAR amounts appear', () => {
+    const pop = buildPaymentProofPop({
+      bodyText: 'POP attached',
+      attachments: [{ text: 'Paid R1,850.00\nAlso R2,400.00\nRef 8888888' }],
+    });
+    expect(pop.amount).toBeNull();
+    expect(pop.reference).toBe('8888888');
+  });
+
+  it('does not treat amount digits as a 6-10 digit reference', () => {
+    const pop = buildPaymentProofPop({
+      bodyText: '',
+      attachments: [{ text: 'Amount R12,500.00' }],
+    });
+    expect(pop.amount).toBe(12500);
+    expect(pop.reference).toBeNull();
   });
 });

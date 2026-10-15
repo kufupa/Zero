@@ -1,5 +1,10 @@
 import { findFirstStayMatch } from './find-first-stay.js';
-import { matchPaymentProof } from './payment-proof-match.js';
+import {
+  buildPaymentProofPop,
+  extractVoucherNumber,
+  matchPaymentProof,
+  type PaymentProofSelection,
+} from './payment-proof-match.js';
 
 export type StayPickAsk = {
   lastName: string;
@@ -14,6 +19,7 @@ export type StayPickPop = {
   payerName: string | null;
   paidOn: string | null;
 };
+export type StayPickSelection = PaymentProofSelection;
 export type StayPick = {
   status: 'pick' | 'check_conf' | 'none';
   confirmationNumber: string | null;
@@ -76,15 +82,17 @@ export function pickStayFromFindRows(input: {
   rows: unknown[];
   workflow: string;
   pop?: StayPickPop;
+  selection?: StayPickSelection;
 }): StayPick {
   const rows = input.rows.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object');
   if (rows.length === 0) return { status: 'none', confirmationNumber: null, why: ['no overlap'] };
+  const voucher = input.ask.voucher?.trim() || extractVoucherNumber(input.selection ?? {}) || undefined;
   const c1 = findFirstStayMatch({
     ask: {
       lastName: input.ask.lastName,
       arrival: input.ask.arrival,
       ...(input.ask.departure ? { departure: input.ask.departure } : {}),
-      ...(input.ask.voucher ? { voucherNumber: input.ask.voucher } : {}),
+      ...(voucher ? { voucherNumber: voucher } : {}),
       ...(input.ask.confirmationNumber !== undefined
         ? { confirmationNumber: input.ask.confirmationNumber }
         : {}),
@@ -94,7 +102,7 @@ export function pickStayFromFindRows(input: {
   const check = (why: string[]): StayPick => ({ status: 'check_conf', confirmationNumber: null, why });
   if (input.workflow === 'post_payment') {
     const c3 = matchPaymentProof({
-      pop: input.pop ?? { amount: null, reference: null, payerName: null, paidOn: null },
+      pop: input.pop ?? buildPaymentProofPop(input.selection ?? {}),
       candidates: rows.map(toC3),
     });
     const fromC1 = c1.status === 'match' ? asPick(c1.confirmationNumber, c1.why, rows) : null;
@@ -102,6 +110,7 @@ export function pickStayFromFindRows(input: {
     if (fromC1?.status === 'pick' && fromC3?.status === 'pick') {
       return fromC1.confirmationNumber === fromC3.confirmationNumber ? fromC1 : check(['C1 and C3 disagree']);
     }
+    if (fromC3?.status === 'pick') return fromC3;
     return check(c1.why.length ? c1.why : c3.why);
   }
   return c1.status === 'match' ? asPick(c1.confirmationNumber, c1.why, rows) : check(c1.why);
