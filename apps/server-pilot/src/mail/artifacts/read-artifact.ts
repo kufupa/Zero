@@ -58,6 +58,12 @@ export type AttachmentLocator = {
   sha256?: string | null;
 };
 
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+export function isDocxMimeType(mimeType: string): boolean {
+  return mimeType.split(';', 1)[0]?.trim().toLowerCase() === DOCX_MIME;
+}
+
 /**
  * Internal bounded-byte result. Callers may turn this into a private artifact
  * handle, but must not serialize `body`, `locator`, or an object URL.
@@ -1002,7 +1008,7 @@ export async function readAuthorizedArtifactBytes(input: {
   }
   const raster = input.allowRaster === true &&
     ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(locator.mimeType);
-  const office = input.allowOffice === true && locator.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const office = input.allowOffice === true && isDocxMimeType(locator.mimeType);
   if ((raster || office) && (!input.expectedLocator || !input.revalidate ||
     locator.s3Key.includes('\\') ||
     locator.s3Key.split('/').some(part => !part || part === '.' || part === '..'))) {

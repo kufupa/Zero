@@ -60,6 +60,8 @@ const UNREAD_REASON_WORDS: Record<string, string> = {
   'parser failure': 'reader failed',
   unsupported: 'file type not readable',
   'not a PDF': 'not a PDF',
+  'office conversion failed': 'Word file could not be read',
+  'page boundaries unavailable': 'page breaks could not be read',
 };
 
 /** Why Nava could not read a file, in words staff can act on. Null for a reason with no wording. */
