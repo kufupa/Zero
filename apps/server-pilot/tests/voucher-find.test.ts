@@ -349,7 +349,6 @@ describe('guest under a Client Details heading', () => {
 
   it('reads one guest on the line under the heading, with or without the hotel name first', () => {
     expect(read('Client Details\n   Proof Labtest (1 Pax) 0820000000\nCheck in: 12 Nov 2026')).toEqual({ lastName: 'Labtest', arrival: '2026-11-12' });
-    expect(read('Client Details\nLABTEST/PROOF (1 Pax) 0820000000')).toEqual({ lastName: 'LABTEST', arrival: null });
     expect(read('Client Details\n\nThe Sample Hotel Proof Labtest Ms (1 Pax)')).toEqual({ lastName: 'Labtest', arrival: null });
   });
 
@@ -365,6 +364,8 @@ describe('guest under a Client Details heading', () => {
     expect(read('Client Details\nSample Travel Agency (1 Pax)')).toEqual({ lastName: null, arrival: null });
     expect(read('Client Details\nProof Labtest & Mary Sample (1 Pax)\nGuest: Sample')).toEqual({ lastName: null, arrival: null });
     expect(read('Client Details\nSample + Labtest (1 Pax)\nCheck in: 12 Nov 2026')).toEqual({ lastName: null, arrival: '2026-11-12' });
+    expect(read('Client Details\nProof Labtest/Mary Sample (1 Pax)')).toEqual({ lastName: null, arrival: null });
+    expect(read('Client Details\nLABTEST/PROOF (1 Pax)')).toEqual({ lastName: null, arrival: null });
   });
 
   it('still reads a Guest label when a heading has no pax line under it', () => {

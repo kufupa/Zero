@@ -242,8 +242,8 @@ function headedGuestSurname(lines: string[], index: number): string | 'unclear' 
   const name = match[1]!.replace(HOTEL_PREFIX, '');
   const words = name.split(/\s+/).filter((word) => word && !TITLE.test(word));
   if (Number(match[2]) !== 1 || words.length > HEADED_NAME_WORDS_MAX) return 'unclear';
-  // Letters, spaces, apostrophes, hyphens, slashes and dots only: any joiner (&, +, comma) or label means not one guest.
-  if (!/^[\p{L}\s'./-]+$/u.test(name) || /\band\b/i.test(name) || NOT_THE_GUEST.test(name)) return 'unclear';
+  // Letters, spaces, apostrophes, hyphens and dots only: any joiner (&, +, /, comma) or label means not one guest.
+  if (!/^[\p{L}\s'.-]+$/u.test(name) || /\band\b/i.test(name) || NOT_THE_GUEST.test(name)) return 'unclear';
   return surnameFrom(name) ?? 'unclear';
 }
 
