@@ -873,6 +873,12 @@ function missingQuestionPriority(field: string): number {
   return 6;
 }
 
+/** A defaulted ambiguous preference such as "Twin" intentionally lets HMS search any room type. */
+function roomRequirementReady(group: StayGroupRequirement): boolean {
+  return rowRoomCode(group) !== null ||
+    (group.fields.roomPreference === 'defaulted' && Boolean(group.roomPreference?.trim()));
+}
+
 /** Ignore analysis questions whose current editable quote value is already present. */
 function missingQuestionAnswered(
   field: string,
@@ -900,7 +906,7 @@ function missingQuestionAnswered(
       (group) => Boolean(
         group.arrivalDate &&
           group.departureDate &&
-          rowRoomTypeCode(group) &&
+          roomRequirementReady(group) &&
           group.quantity &&
           group.adults,
       ),
@@ -956,7 +962,7 @@ function stayRatesBlockReason(
   if (rows.some((group) => !group.arrivalDate || !group.departureDate)) {
     return 'Add arrival and departure dates first.';
   }
-  if (rows.some((group) => !rowRoomCode(group))) return 'Choose a room type for each room before searching.';
+  if (rows.some((group) => !roomRequirementReady(group))) return 'Choose a room type for each room before searching.';
   if (rows.some((group) => !group.quantity)) return 'Add the number of rooms first.';
   if (!step) return 'The HMS search is not ready yet.';
   if (step.status === 'succeeded') return null;
@@ -1347,7 +1353,7 @@ export function QuoteWorkflowPanel({
       (stay) =>
         stay.rows.length > 0 &&
         stay.rows.every(
-          (row) => Boolean(row.arrivalDate && row.departureDate && rowRoomTypeCode(row) && row.quantity && row.adults),
+          (row) => Boolean(row.arrivalDate && row.departureDate && roomRequirementReady(row) && row.quantity && row.adults),
         ),
     );
   const partyState =

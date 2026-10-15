@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   buildPreparedStaffQuotePlan,
@@ -216,7 +216,12 @@ type Eval47SummaryRow = {
   stays?: Eval47StaySummary[];
 };
 
-const eval47Path = '/home/orca/nava-research/quote-ready/eval-47.jsonl';
+type Eval47SummaryFixture = {
+  totalRows: number;
+  shapes: Array<{ hasInput: 'y' | 'n'; reason?: string; count: number }>;
+};
+
+const eval47SummaryUrl = new URL('./fixtures/quote-ready-eval-47-summary.json', import.meta.url);
 
 /** The eval stores gate summaries, not mail text or extraction payloads. Rehydrate blocker-shaped test inputs only. */
 function payloadForEval47Shape(row: Eval47SummaryRow): Record<string, unknown> | null {
@@ -270,21 +275,22 @@ function payloadForEval47Shape(row: Eval47SummaryRow): Record<string, unknown> |
 }
 
 describe('quote-ready eval-47 summary replay', () => {
-  it.skipIf(!existsSync(eval47Path))('counts prefillable eval row shapes without reading message identifiers', () => {
-    const rows = readFileSync(eval47Path, 'utf8')
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Eval47SummaryRow);
+  it('counts prefillable shapes from the checked-in sanitized summary', () => {
+    const summary = JSON.parse(readFileSync(eval47SummaryUrl, 'utf8')) as Eval47SummaryFixture;
+    const rows: Eval47SummaryRow[] = summary.shapes.flatMap(({ count, ...row }) =>
+      Array.from({ length: count }, () => row),
+    );
     const prefillable = rows.filter((row) => {
       const fixture = payloadForEval47Shape(row);
       return fixture ? build(fixture).inputs.length > 0 : false;
     }).length;
 
-    expect(rows).toHaveLength(47);
+    expect(rows).toHaveLength(summary.totalRows);
+    expect(summary.totalRows).toBe(47);
     expect(prefillable).toBe(40);
     expect(prefillable).toBeGreaterThanOrEqual(30);
     expect(prefillable).toBeLessThanOrEqual(44);
-    console.log(`prefillable ${prefillable}/47`);
+    console.log(`prefillable ${prefillable}/${summary.totalRows}`);
   });
 });
 

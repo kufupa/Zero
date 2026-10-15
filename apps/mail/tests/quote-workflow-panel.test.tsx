@@ -609,6 +609,79 @@ describe('QuoteWorkflowPanel', () => {
     expect(roomType.className).toMatch(/border-\[#c01823\]/);
   });
 
+  it('keeps a defaulted any-type row ready and searchable after room and occupancy edits', () => {
+    const onRunStep = vi.fn();
+    const base = sessionFromFixture('public-single');
+    const session = withLunaMissing(
+      {
+        ...base,
+        phase: 'requirements',
+        offers: [],
+        rateOptions: [],
+        selectedOfferIds: [],
+        groups: base.groups.map((group) => ({
+          ...group,
+          roomPreference: 'Twin',
+          roomTypeCode: undefined,
+          roomCodes: [],
+          quantity: 2,
+          adults: 2,
+          fields: {
+            ...group.fields,
+            roomPreference: 'defaulted',
+            quantity: 'staff_corrected',
+            adults: 'staff_corrected',
+          },
+        })),
+        steps: base.steps.map((step) => ({ ...step, status: 'ready' as const })),
+      },
+      [{ field: 'stay', question: 'Complete the stay details.' }],
+    );
+    const { container } = render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} />);
+
+    const search = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
+    expect(search.disabled).toBe(false);
+    expect(container.querySelector('#quote-stay [data-testid="quote-step-state"]')?.textContent).toBe('Done');
+    expect(screen.queryByLabelText('Needs your answer')).toBeNull();
+    fireEvent.click(search);
+    expect(onRunStep).toHaveBeenCalledWith(base.steps[0]!.id);
+  });
+
+  it('keeps a blank defaulted room preference blocked until staff choose a type', () => {
+    const onRunStep = vi.fn();
+    const base = sessionFromFixture('public-single');
+    const session = withLunaMissing(
+      {
+        ...base,
+        phase: 'requirements',
+        offers: [],
+        rateOptions: [],
+        selectedOfferIds: [],
+        groups: base.groups.map((group) => ({
+          ...group,
+          roomPreference: '',
+          roomTypeCode: undefined,
+          roomCodes: [],
+          quantity: 2,
+          adults: 2,
+          fields: {
+            ...group.fields,
+            roomPreference: 'defaulted',
+            quantity: 'staff_corrected',
+            adults: 'staff_corrected',
+          },
+        })),
+        steps: base.steps.map((step) => ({ ...step, status: 'ready' as const })),
+      },
+      [{ field: 'stay', question: 'Complete the stay details.' }],
+    );
+    render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} />);
+
+    const search = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
+    expect(search.disabled).toBe(true);
+    expect(screen.getAllByText('Choose a room type for each room before searching.')).toHaveLength(2);
+  });
+
   it('labels missing fields and extracted provenance', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('missing-fields')} />);
     expect(screen.getAllByText('Missing').length).toBeGreaterThan(0);
