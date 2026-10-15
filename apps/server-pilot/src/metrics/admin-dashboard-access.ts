@@ -1,5 +1,6 @@
 /** Server access guard for the configured executive dashboard metrics. */
 import { TRPCError } from '@trpc/server';
+import { NAVA_USER_EMAIL } from '../db/seed.js';
 
 export type AdminDashboardCohort = 'centurion' | 'research';
 export type AdminDashboardGrantKind = 'aggregate' | 'drilldown' | 'export';
@@ -12,18 +13,17 @@ export type AdminDashboardGrant = {
   export: boolean;
 };
 
-/**
- * Every authenticated application user receives the same configured cohort
- * tools/data grant. There are no staff/finance or per-cohort user sub-roles;
- * authentication, tenant/source boundaries, and the selected cohort remain
- * enforced by their existing callers and query scope.
- */
+/** Allowlist, not mailbox_access role, because admin is app-wide not per-mailbox. */
+export const ADMIN_DASHBOARD_EMAILS = [NAVA_USER_EMAIL] as const;
+
 function normalizeEmail(email: string | null | undefined): string {
   return (email ?? '').trim().toLowerCase();
 }
 
 export function isAdminDashboardEmail(email: string | null | undefined): boolean {
-  return normalizeEmail(email).length > 0;
+  const normalized = normalizeEmail(email);
+  if (!normalized) return false;
+  return ADMIN_DASHBOARD_EMAILS.some((allowed) => normalizeEmail(allowed) === normalized);
 }
 
 export function resolveAdminDashboardGrant(
