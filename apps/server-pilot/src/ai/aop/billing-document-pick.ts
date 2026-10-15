@@ -46,7 +46,7 @@ export const pickBillingDocumentDescription = [
   'Pick the HMS document that matches a billing ask (invoice, pro forma, folio,',
   'statement, credit note). Call after hms_list_documents when available. Pass the',
   'ask kind, optional confirmation number, and list rows {id, filename, kind?,',
-  'createdAt?}. Returns one match, many (staff pick), or none. Newest of the same',
+  'createdAt?}. Returns one match, many (staff pick), or none. A stated confirmation number matches whole tokens only (base matches its legs, base-N only that leg) and never falls back to other documents. Newest of the same',
   'kind wins only when exactly one kind matches. Never calls HMS.',
 ].join(' ');
 
@@ -101,13 +101,27 @@ function asRef(row: BillingDocumentRow): { id: string; filename: string } {
   return { id: row.id, filename: row.filename };
 }
 
-function confNeedle(confirmationNumber: string | undefined): string | null {
+type StatedConf = { base: string; leg: string | null } | { raw: string };
+
+function statedConf(confirmationNumber: string | undefined): StatedConf | null {
   const trimmed = confirmationNumber?.trim();
-  return trimmed ? trimmed.toLowerCase() : null;
+  if (!trimmed) return null;
+  const m = /^(\d{6,10})(?:-(\d+))?$/.exec(trimmed);
+  return m ? { base: m[1]!, leg: m[2] ?? null } : { raw: trimmed.toLowerCase() };
 }
 
-function rowHasConf(row: BillingDocumentRow, needle: string): boolean {
-  return row.id.toLowerCase().includes(needle) || row.filename.toLowerCase().includes(needle);
+// Whole tokens only: a base matches its legs, base-N matches only that leg, so 9999901-1 never picks 9999901-10.
+function rowHasConf(row: BillingDocumentRow, stated: StatedConf): boolean {
+  const text = `${row.id} ${row.filename}`;
+  if ('raw' in stated) {
+    const escaped = stated.raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`, 'i').test(text);
+  }
+  for (const m of text.matchAll(/(?<![A-Za-z0-9])(\d{6,10})(?:-(\d+))?(?![0-9])/g)) {
+    if (m[1] !== stated.base) continue;
+    if (stated.leg === null || m[2] === stated.leg) return true;
+  }
+  return false;
 }
 
 function result(input: {
@@ -128,11 +142,16 @@ function result(input: {
 export function pickBillingDocument(input: PickBillingDocumentInput): PickBillingDocumentOutput {
   const parsed = pickBillingDocumentInputSchema.parse(input);
   const kindMatches = parsed.documents.filter((row) => rowKind(row) === parsed.kind);
-  const needle = confNeedle(parsed.confirmationNumber);
-  const matches =
-    needle && kindMatches.some((row) => rowHasConf(row, needle))
-      ? kindMatches.filter((row) => rowHasConf(row, needle))
-      : kindMatches;
+  const stated = statedConf(parsed.confirmationNumber);
+  // A stated confirmation number never falls back to other stays' documents of the same kind.
+  const matches = stated ? kindMatches.filter((row) => rowHasConf(row, stated)) : kindMatches;
+  if (stated && matches.length === 0 && kindMatches.length > 0) {
+    return result({
+      status: 'none',
+      rows: [],
+      todo: 'No document for the stated confirmation number: check conf# in HMS.',
+    });
+  }
 
   const newestFirst = [...matches].sort((a, b) => createdMs(b) - createdMs(a));
 

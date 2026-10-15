@@ -97,6 +97,39 @@ describe('pickBillingDocument', () => {
     expect(picked.document?.id).toBe('b');
   });
 
+  it('never matches a different leg as a substring of the stated confirmation', () => {
+    const picked = pickBillingDocument({
+      kind: 'invoice',
+      confirmationNumber: CONF,
+      documents: [row('d1', 'invoice-9999901-10.pdf', { kind: 'invoice' })],
+    });
+    expect(picked.status).toBe('none');
+    expect(picked.document).toBeNull();
+    expect(picked.todo).toMatch(/conf/i);
+  });
+
+  it('does not fall back to another stay when the stated confirmation has no document', () => {
+    const picked = pickBillingDocument({
+      kind: 'invoice',
+      confirmationNumber: CONF,
+      documents: [row('d1', 'invoice-8888802-1.pdf', { kind: 'invoice' })],
+    });
+    expect(picked.status).toBe('none');
+    expect(picked.document).toBeNull();
+  });
+
+  it('lets a stated base match each of its legs', () => {
+    const picked = pickBillingDocument({
+      kind: 'invoice',
+      confirmationNumber: '9999901',
+      documents: [
+        row('d1', 'invoice-9999901-1.pdf', { kind: 'invoice' }),
+        row('d2', 'invoice-9999901-2.pdf', { kind: 'invoice' }),
+      ],
+    });
+    expect(picked.status).toBe('many');
+  });
+
   it('treats credit-note filenames as credit_note, not invoice', () => {
     const picked = pickBillingDocument({
       kind: 'credit_note',
