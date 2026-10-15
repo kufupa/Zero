@@ -1,3 +1,4 @@
+import { corpusTextBody } from '../src/ai/agent-decision-to-ops.js';
 import {
   applyPartyBindRule,
   buildPartyMatchCandidates,
@@ -371,23 +372,6 @@ function latestSucceededExtractions(rows: readonly JsonRecord[]): Map<string, Js
     }
   }
   return latest;
-}
-
-function corpusTextBody(message: JsonRecord): string {
-  const body = typeof message.body === 'string' ? message.body : '';
-  if (message.body_is_html !== true) return body;
-  return body
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/giu, ' ')
-    .replace(/<\s*br\s*\/?>/giu, '\n')
-    .replace(/<\/(?:p|div|li|tr|table|blockquote|h[1-6]|section)\s*>/giu, '\n')
-    .replace(/<[^>]+>/gu, ' ')
-    .replace(/&nbsp;|&#160;/giu, ' ')
-    .replace(/&amp;/giu, '&')
-    .replace(/&lt;/giu, '<')
-    .replace(/&gt;/giu, '>')
-    .replace(/&quot;/giu, '"')
-    .replace(/&#39;|&apos;/giu, "'")
-    .replace(/[ \t]+\n/gu, '\n');
 }
 
 function selectTestEmails(input: {
