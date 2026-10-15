@@ -26,6 +26,10 @@ vi.mock('sonner', () => ({ toast: { warning: vi.fn(), success: vi.fn(), error: v
 
 afterEach(() => cleanup());
 
+function searchable(session: QuoteSession): QuoteSession {
+  return { ...session, partyDecision: 'public_confirmed' };
+}
+
 function sessionFromFixture(id: Parameters<typeof loadQuoteFixture>[0]): QuoteSession {
   const fixture = loadQuoteFixture(id);
   let session = reduceQuoteSession(initialQuoteSession(), {
@@ -69,7 +73,7 @@ function sessionFromFixture(id: Parameters<typeof loadQuoteFixture>[0]): QuoteSe
   if (fixture.offers.length) {
     session = reduceQuoteSession(session, fixtureResultsReady(fixture.offers));
   }
-  return session;
+  return searchable(session);
 }
 
 function assertRatePlanVisible() {
@@ -1444,10 +1448,12 @@ function staggeredDatesSession() {
       alternatives: [],
     },
   });
-  return reduceQuoteSession(session, {
-    type: 'staff_source_ready',
-    source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
-  });
+  return searchable(
+    reduceQuoteSession(session, {
+      type: 'staff_source_ready',
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) },
+    }),
+  );
 }
 
 /** Same two options, with option A (2 Nov) quoted and its PDF not yet built. */
@@ -1897,6 +1903,73 @@ describe('the Find in HMS picker in the quote header', () => {
       ),
     ).toBeDefined();
     expect(container.textContent).not.toMatch(/Luna/);
+  });
+
+  it('offers No company/agency — public rate while undecided, and hides it after confirmation', () => {
+    const onPartyPublicConfirmed = vi.fn();
+    function Gate() {
+      const [session, setSession] = useState({ ...headerSession({ company: '' }), partyDecision: 'undecided' as const });
+      return (
+        <QuoteWorkflowPanel
+          session={session}
+          onPartyPublicConfirmed={() => {
+            onPartyPublicConfirmed();
+            setSession((current) => reduceQuoteSession(current, { type: 'party_public_confirmed' }));
+          }}
+        />
+      );
+    }
+    render(<Gate />);
+    fireEvent.click(screen.getByRole('button', { name: 'No company/agency — public rate' }));
+    expect(onPartyPublicConfirmed).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
+  });
+
+  it('hides the public-rate action while analysis is still null', () => {
+    render(
+      <QuoteWorkflowPanel
+        session={{ ...headerSession({ company: '' }), partyDecision: 'undecided', analysis: null }}
+        onPartyPublicConfirmed={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
+  });
+
+  it('hides the public-rate action on a voucher view', () => {
+    const base = headerSession({ company: '' });
+    render(
+      <QuoteWorkflowPanel
+        session={{
+          ...base,
+          partyDecision: 'undecided',
+          analysis: {
+            ...base.analysis!,
+            luna: {
+              workflow: 'create_booking',
+              flags: [],
+              groups: [],
+              party: { kind: null, name: null, reference: null },
+              rateClaims: [],
+              missing: [],
+              evidence: [],
+              tasks: [],
+            },
+          },
+        }}
+        onPartyPublicConfirmed={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
+  });
+
+  it('hides the public-rate choice once a verified company is picked', () => {
+    render(
+      <QuoteWorkflowPanel
+        session={headerSession({ company: ACME.name, parties: { company: ACME } })}
+        onPartyPublicConfirmed={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
   });
 });
 

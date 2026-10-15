@@ -10,7 +10,12 @@ import { toast } from 'sonner';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
-import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import {
+  confirmPublicRate,
+  fillStayFactsMatchingAuthorisedOffer,
+  prepareReviewedQuote,
+} from './helpers/prepare-reviewed-quote';
+import { HMS_JOB_POLL_MS } from '../lib/quote-workflow/amend-find';
 import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
 import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
@@ -1603,6 +1608,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await settle();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
 
     const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
@@ -1659,6 +1665,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await settle();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
 
     const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
@@ -1700,6 +1707,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} preview />);
     await storedReadLands();
     await settle();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
     expect((await screen.findByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(declineHtml);
 
@@ -1783,6 +1791,7 @@ describe('NavaPane screen states', () => {
       </HmsJobNoticeProvider>,
     );
     await storedReadLands();
+    confirmPublicRate();
     expect(await screen.findByText('Nava is getting rates from HMS — you can keep working')).toBeDefined();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId('hms-running-count').textContent).toBe('HMS: 1 pending');
@@ -1846,6 +1855,7 @@ describe('NavaPane screen states', () => {
 
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
+    confirmPublicRate();
 
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2));
     await settle();
@@ -1912,21 +1922,346 @@ describe('NavaPane screen states', () => {
 
     const { rerender } = render(<NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />);
     await storedReadLands();
+    confirmPublicRate();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
 
     rerender(<NavaPane bridge={bridgeFor('002', '<other-quote@example.invalid>', 'Quote B')} />);
+    await storedReadLands();
+    expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined();
+    confirmPublicRate();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole('button', { name: /Allocation for mail-2/ })).toBeDefined();
 
     rerender(<NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />);
+    await storedReadLands();
+    expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined();
     await waitFor(() =>
       expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
         input: expect.objectContaining({ messageId: 'mail-1' }),
       }),
     );
     expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined();
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not auto-start a quote until staff pick a party or confirm public rates', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await settle();
+
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined();
+  });
+
+  it('auto-start keeps a Government sales strategy after an explicit public-rate choice', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        luna: {
+          workflow: 'quote',
+          flags: [],
+          groups: [],
+          party: { kind: 'government', name: 'Dept X', reference: null },
+          rateClaims: [],
+          missing: [],
+          evidence: [],
+          tasks: [],
+        },
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.queueStaffQuoteMutation.mockImplementation((input: Record<string, unknown>) => {
+      bridgeMockState.lastStaffQuoteInput = input;
+      return Promise.resolve({ runId: 'staff-job-gov' });
+    });
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(null);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await waitFor(() => expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government'));
+    confirmPublicRate();
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'Government' });
+  });
+
+  it('reads back a finished quote on a fresh mount while party is still undecided', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(
+      completedStaffQuoteJob({ ...STAFF_QUOTE_READY, description: 'Allocation for mail-1' }),
+    );
+
+    const first = render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
+      input: expect.objectContaining({ messageId: 'mail-1' }),
+    });
+
+    first.unmount();
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
+  it('reads back an existing job on remount even when sessionStorage still suppresses auto-start', async () => {
+    sessionStorage.setItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>', '1');
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(
+      completedStaffQuoteJob({ ...STAFF_QUOTE_READY, description: 'Allocation after manual run' }),
+    );
+
+    const first = render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    expect(await screen.findByRole('button', { name: /Allocation after manual run/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
+      input: expect.objectContaining({ messageId: 'mail-1' }),
+    });
+
+    first.unmount();
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    expect(await screen.findByRole('button', { name: /Allocation after manual run/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>')).toBe('1');
+  });
+
+  it('reads back an existing quote while the company lookup is still pending', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      contact: {
+        name: 'Guest Example',
+        company: 'Example Agency',
+        endClient: 'Example Company',
+        email: null,
+        phone: null,
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.findPartyMutation.mockImplementation(() => new Promise(() => undefined));
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(
+      completedStaffQuoteJob({ ...STAFF_QUOTE_READY, description: 'Allocation during lookup' }),
+    );
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Find in HMS' })[0]!);
+    expect(await screen.findByRole('button', { name: /Allocation during lookup/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
+  it('keeps Search disabled while a running job is read back, then clears the guard', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    let jobStatus: 'running' | 'done' = 'running';
+    const firstGroup = STORED_READY.analysis.groups[0]!;
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: [{ ...firstGroup, roomCodes: ['SKNG'] }],
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(async () =>
+      jobStatus === 'running'
+        ? {
+            runId: 'staff-job-running',
+            status: 'running' as const,
+            result: null,
+            failureClass: null,
+            asOf: new Date().toISOString(),
+          }
+        : completedStaffQuoteJob({ ...STAFF_QUOTE_READY, description: 'Allocation after wait' }),
+    );
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await waitFor(() => expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalled());
+    confirmPublicRate();
+
+    await waitFor(() => {
+      const searches = screen.getAllByRole('button', { name: /^Search availability$/i });
+      expect(searches.length).toBeGreaterThan(0);
+      expect(searches.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: /^Search availability$/i })[0]!);
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+
+    jobStatus = 'done';
+    expect(
+      await screen.findByRole('button', { name: /Allocation after wait/ }, { timeout: HMS_JOB_POLL_MS + 4000 }),
+    ).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(screen.queryByText('An HMS search is already running. You can keep working.')).toBeNull();
+  }, 15_000);
+
+  it('ignores a late running-job read-back after staff switch emails, leaving Search enabled', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    sessionStorage.setItem('nava.staff-quote-auto-suppressed:<other-quote@example.invalid>', '1');
+    let resolveFirstRead: ((view: unknown) => void) | undefined;
+    let firstReadPending = true;
+    const firstGroup = STORED_READY.analysis.groups[0]!;
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: [{ ...firstGroup, roomCodes: ['SKNG'] }],
+      },
+    };
+    bridgeMockState.staffQuoteSources['<other-quote@example.invalid>'] = {
+      messageId: 'mail-2',
+      threadId: 'thread-2',
+      sourceHash: 'cd'.repeat(32),
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(() => {
+      if (firstReadPending) {
+        firstReadPending = false;
+        return new Promise((resolve) => {
+          resolveFirstRead = resolve;
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const bridgeFor = (entryId: string, internetMessageId: string, subject: string) =>
+      ({
+        ...fakeBridge,
+        activeEmail: { ...fakeBridge.activeEmail!, entryId, internetMessageId, subject },
+      }) as unknown as PaneBridge;
+
+    const { rerender } = render(
+      <NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />,
+    );
+    await storedReadLands();
+    await waitFor(() => expect(resolveFirstRead).toBeTypeOf('function'));
+
+    rerender(<NavaPane bridge={bridgeFor('002', '<other-quote@example.invalid>', 'Quote B')} />);
+    await storedReadLands();
+    await waitFor(() => expect(screen.getByText('Quote B')).toBeDefined());
+    await waitFor(() =>
+      expect(bridgeMockState.staffQuoteJobQuery.mock.calls.length).toBeGreaterThan(1),
+    );
+
+    await act(async () =>
+      resolveFirstRead?.({
+        runId: 'staff-job-old-email',
+        status: 'running' as const,
+        result: null,
+        failureClass: null,
+        asOf: new Date().toISOString(),
+      }),
+    );
+    await settle();
+
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    confirmPublicRate();
+    await waitFor(() => {
+      const searches = screen.getAllByRole('button', { name: /^Search availability$/i });
+      expect(searches.length).toBeGreaterThan(0);
+      expect(searches.every((button) => (button as HTMLButtonElement).disabled)).toBe(false);
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: /^Search availability$/i })[0]!);
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+  });
+
+  it('walks to a later stay’s saved quote after an empty first-stay probe, without starting pricing', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    const firstGroup = STORED_READY.analysis.groups[0]!;
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      refs: {
+        r_1: { stayId: 's_1', rowId: 'r_1' },
+        r_2: { stayId: 's_2', rowId: 'r_2' },
+      },
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: [
+          { ...firstGroup, id: 'r_1' },
+          { ...firstGroup, id: 'r_2', arrivalDate: '2026-11-05', departureDate: '2026-11-07' },
+        ],
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(
+      async (input: { runId?: string; input?: { groups?: Array<{ arrivalDate?: string }> } }) => {
+        const arrival = input.input?.groups?.[0]?.arrivalDate;
+        if (arrival === '2026-11-05') {
+          return completedStaffQuoteJob({
+            ...STAFF_QUOTE_READY,
+            arrivalDate: '2026-11-05',
+            departureDate: '2026-11-07',
+            description: 'Allocation for stay 2',
+            workflowRunId: 'workflow-stay-2',
+            revisionRef: 'revision-stay-2',
+          });
+        }
+        return null;
+      },
+    );
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    expect(await screen.findByRole('button', { name: /Allocation for stay 2/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
+      input: expect.objectContaining({
+        groups: [expect.objectContaining({ arrivalDate: '2026-11-05' })],
+      }),
+    });
+  }, 15_000);
+
+  it('probes an unchanged key once, then auto-starts pricing after public-rate', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(null);
+    bridgeMockState.queueStaffQuoteMutation.mockImplementation((input: Record<string, unknown>) => {
+      bridgeMockState.lastStaffQuoteInput = input;
+      return Promise.resolve({ runId: 'staff-job-once' });
+    });
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await waitFor(() => expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalled());
+    const probes = bridgeMockState.staffQuoteJobQuery.mock.calls.filter(
+      (call) => call[0] && typeof call[0] === 'object' && 'input' in (call[0] as object),
+    );
+    expect(probes).toHaveLength(1);
+    confirmPublicRate();
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+    const probesAfter = bridgeMockState.staffQuoteJobQuery.mock.calls.filter(
+      (call) => call[0] && typeof call[0] === 'object' && 'input' in (call[0] as object),
+    );
+    expect(probesAfter).toHaveLength(1);
+  });
+
+  it('does not offer public-rate on a voucher email', async () => {
+    analysisForBookingVoucher();
+    voucherFindQuery.mockResolvedValue({
+      status: 'voucher',
+      messageId: 'mail-1',
+      guest: { lastName: 'Smith', arrival: '2026-11-12' },
+      file: null,
+    });
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByRole('region', { name: 'Find the booking' }, { timeout: 5000 })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
   });
 
   // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
@@ -1999,6 +2334,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await fillStayFactsMatchingAuthorisedOffer();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => expect(resolveInitialStatus).toBeTypeOf('function'));
 
@@ -2107,6 +2443,7 @@ describe('NavaPane screen states', () => {
     await settle();
 
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
     expect(bridgeMockState.lastStaffQuoteInput).not.toHaveProperty('autoStart');
@@ -2151,6 +2488,7 @@ describe('NavaPane screen states', () => {
     await settle();
 
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
     expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({
@@ -2171,6 +2509,7 @@ describe('NavaPane screen states', () => {
     await settle();
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
     await fillStayFactsMatchingAuthorisedOffer();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability/i }));
 
     expect(await screen.findByText('Nava is getting rates from HMS — you can keep working')).toBeDefined();
@@ -2238,6 +2577,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await settle();
+    confirmPublicRate();
 
     fireEvent.click(screen.getAllByRole('button', { name: /^Search availability$/i })[0]!);
     await waitFor(() => expect(bridgeMockState.releaseStaffQuote).toBeTypeOf('function'));

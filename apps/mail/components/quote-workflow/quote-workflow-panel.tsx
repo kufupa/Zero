@@ -10,7 +10,9 @@ import {
   groupStays,
   isMultiStay,
   newQuoteToken,
+  partyDecisionWaitReason,
   partyLookupWaitReason,
+  quotePublicRateChoiceVisible,
   quoteRunBlockReason,
   requestedQuoteKeys,
   rowRoomCode,
@@ -956,7 +958,9 @@ function stayRatesBlockReason(
   session: QuoteSession,
   rows: StayGroupRequirement[],
   step: QuoteToolStep | undefined,
+  existingQuoteWait: string | null = null,
 ): string | null {
+  if (existingQuoteWait) return existingQuoteWait;
   const lookupWait = partyLookupWaitReason(session);
   if (lookupWait) return lookupWait;
   if (!rows.length) return 'Add a stay before searching.';
@@ -966,6 +970,8 @@ function stayRatesBlockReason(
   if (rows.some((group) => !roomRequirementReady(group))) return 'Choose a room type for each room before searching.';
   if (rows.some((group) => !group.quantity)) return 'Add the number of rooms first.';
   if (!step) return 'The HMS search is not ready yet.';
+  const decisionWait = partyDecisionWaitReason(session);
+  if (decisionWait) return decisionWait;
   if (step.status === 'succeeded') return null;
   const stepWait = quoteRunBlockReason(session, step);
   if (stepWait) return stepWait;
@@ -1064,6 +1070,8 @@ export function QuoteWorkflowPanel({
   findParty,
   partyJobTransport,
   onPartyLookupPending,
+  onPartyPublicConfirmed,
+  readBackBusy,
   onSelectStayKey,
   onStaffNote,
   staffNoteDraft,
@@ -1116,6 +1124,8 @@ export function QuoteWorkflowPanel({
   findParty?: PartyFinder | null;
   /** Tells the pane whether a company or agency search still decides its pick. A rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+  onPartyPublicConfirmed?: () => void;
+  readBackBusy?: (stayKey: string) => boolean;
   onSelectStayKey?: (stayKey: string) => void;
   onStaffNote?: (note: string) => void;
   /** A retained staff correction, owned by the pane so it survives a trip off the tool screen. */
@@ -1139,6 +1149,8 @@ export function QuoteWorkflowPanel({
   } | null>(null);
   const [mealPlanFilters, setMealPlanFilters] = useState<Record<string, QuoteBoard | 'all'>>({});
   const selectionEpoch = session.binding?.selectionEpoch ?? 0;
+  const checkingQuote = (stayKey: string | undefined): string | null =>
+    stayKey && readBackBusy?.(stayKey) ? 'Checking existing quote…' : null;
   const editedPartyFields = useRef({ selectionEpoch, company: false, agency: false });
   if (editedPartyFields.current.selectionEpoch !== selectionEpoch) {
     editedPartyFields.current = { selectionEpoch, company: false, agency: false };
@@ -1180,7 +1192,7 @@ export function QuoteWorkflowPanel({
     const step = session.steps.find((item) => item.id === next.stepId);
     const rows = session.groups.filter((group) => step?.shareKey === stayKeyForGroup(group));
     const reason = step
-      ? stayRatesBlockReason(session, rows, step)
+      ? stayRatesBlockReason(session, rows, step, checkingQuote(step.shareKey))
       : 'The stay changed before its search could start.';
     if (reason) {
       setQueuedStayRuns((current) => current.slice(1));
@@ -1474,7 +1486,7 @@ export function QuoteWorkflowPanel({
         ? 'The rate change is still being saved before the next search.'
         : nextRateStep
           ? nextRateStay
-            ? stayRatesBlockReason(session, nextRateStay.rows, nextRateStep) ??
+            ? stayRatesBlockReason(session, nextRateStay.rows, nextRateStep, checkingQuote(nextRateStep.shareKey)) ??
               (!onRunStep && !onRunNext ? 'Search is not available in this view.' : null)
             : 'Add a date range before searching.'
           : rateKeys.length
@@ -1654,6 +1666,11 @@ export function QuoteWorkflowPanel({
               Search availability
             </SecondaryButton>
           ) : null}
+          {quotePublicRateChoiceVisible(session) && onPartyPublicConfirmed ? (
+            <SecondaryButton className="w-full" onClick={onPartyPublicConfirmed}>
+              No company/agency — public rate
+            </SecondaryButton>
+          ) : null}
           {showRates ? (
             <>
               {stays.map((stay, stayIndex) => {
@@ -1661,7 +1678,7 @@ export function QuoteWorkflowPanel({
                 if (!first) return null;
                 const stayKey = stayKeyForGroup(first);
                 const step = stepFor(first);
-                const reason = stayRatesBlockReason(session, stay.rows, step);
+                const reason = stayRatesBlockReason(session, stay.rows, step, checkingQuote(stayKey));
                 const actionReason = reason ?? (!onRunStep && !onRunNext ? 'Search is not available in this view.' : null);
                 const retryActionReason = reason ?? (!onRunStep ? 'Search is not available in this view.' : null);
                 const loadingThisStay =
@@ -1708,13 +1725,13 @@ export function QuoteWorkflowPanel({
                       <>
                         <SecondaryButton
                           className="w-full"
-                          disabled={loadingThisStay || queuedThisStay}
+                          disabled={loadingThisStay || queuedThisStay || Boolean(checkingQuote(stayKey))}
                           disabledReason={
                             loadingThisStay
                               ? 'A search is running for this stay.'
                               : queuedThisStay
                                 ? 'Waiting for the earlier search to finish.'
-                                : null
+                                : checkingQuote(stayKey)
                           }
                           onClick={() => {
                             onSelectStayKey?.(stayKey);

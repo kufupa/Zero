@@ -101,9 +101,11 @@ import {
   hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
+  partyDecisionWaitReason,
   partyLookupWaitReason,
   pickNextRunnableStep,
   quoteRunBlockReason,
+  salesStrategyForQueuedQuote,
   reduceQuoteSession,
   removedStayFor,
   staffSourceReady,
@@ -114,6 +116,7 @@ import { trpcClient } from '@/providers/query-provider';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
 import { toast } from 'sonner';
+import { useStaffQuoteReadBack } from './staff-quote-read-back';
 import { WelcomeScreen } from './screens/welcome';
 import { DiagnosticsScreen } from './screens/diagnostics';
 import { TourScreen } from './screens/tour';
@@ -571,6 +574,29 @@ export function NavaPane({
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
+  const staffQuoteReadBack = useStaffQuoteReadBack({
+    session: quoteSession,
+    enabled:
+      staffQuoteQueueMode === 'on' &&
+      Boolean(session?.user) &&
+      !requiresRelogin &&
+      !isNonActionableMessage &&
+      !isQuoteFixturePreview(),
+    query: staffQuoteFromTrpc(trpcClient).workstation.staffQuoteJob?.query,
+    onQuote: (result, meta) => {
+      dispatchQuote({
+        type: 'staff_quote_ready',
+        offer: result.offer,
+        staffQuote: result.staffQuote,
+        selectionEpoch: meta.selectionEpoch,
+        inputRevision: meta.inputRevision,
+        stayRevision: meta.stayRevision,
+        extrasReviewItems: result.extrasReviewItems,
+        approvedHeader: meta.header,
+      });
+      for (const item of result.extrasReviewItems) toast.warning(item);
+    },
+  });
   const senderFallback =
     storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
   // The contact the quotation's client lines fall back to: the read's contact, else the external sender.
@@ -1038,6 +1064,7 @@ export function NavaPane({
     session?.user?.id,
     requiresRelogin,
     isNonActionableMessage,
+    staffQuoteReadBack.generation,
   ]);
 
   // Onboarding & Screen State
@@ -1249,9 +1276,9 @@ export function NavaPane({
   requoteSameStayRef.current = (row) => {
     const session = quoteSessionRef.current;
     // Same as Get rates: a party lookup that still decides the pick would reset this run.
-    const lookupWait = partyLookupWaitReason(session);
-    if (lookupWait) {
-      toast.warning(lookupWait);
+    const pricingWait = partyLookupWaitReason(session) || partyDecisionWaitReason(session);
+    if (pricingWait) {
+      toast.warning(pricingWait);
       return;
     }
     const luna = session.analysis?.luna;
@@ -1284,10 +1311,11 @@ export function NavaPane({
         toast.warning('The stays changed since this quote. Run the search for that stay again.');
         return;
       }
-      // The prior quote loaded after the click, so a lookup may have started since. The run must not start under it.
-      const lookupWaitNow = partyLookupWaitReason(quoteSessionRef.current);
-      if (lookupWaitNow) {
-        toast.warning(lookupWaitNow);
+      // The prior quote loaded after the click, so a lookup or party decision may have started since.
+      const pricingWaitNow =
+        partyLookupWaitReason(quoteSessionRef.current) || partyDecisionWaitReason(quoteSessionRef.current);
+      if (pricingWaitNow) {
+        toast.warning(pricingWaitNow);
         return;
       }
       const run = bindExecuteStaffQuote({
@@ -1370,12 +1398,16 @@ export function NavaPane({
       return current;
     });
 
-  const runQuoteStep = (stepId: string, autoStart = false, readBack = false) => {
+  const runQuoteStep = (stepId: string, autoStart = false) => {
     if (isNonActionableMessage) return;
-    if ((autoStart || readBack) && (staffQuoteQueueMode !== 'on' || isQuoteFixturePreview())) return;
+    if (autoStart && (staffQuoteQueueMode !== 'on' || isQuoteFixturePreview())) return;
     const step = quoteSession.steps.find((item) => item.id === stepId);
     const maySearchAgain = step?.kind === 'quote_stay' && step.status === 'succeeded' && !quoteSession.runningStepId;
     if (!step || (!maySearchAgain && !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId))) return;
+    if (step.shareKey && staffQuoteReadBack.busy(step.shareKey)) {
+      toast.warning('Checking existing quote…');
+      return;
+    }
     const waiting = quoteRunBlockReason(quoteSession, step);
     if (waiting) {
       toast.warning(waiting);
@@ -1423,7 +1455,7 @@ export function NavaPane({
       toast.warning('The selected email is not ready yet. Wait a moment, then select it again.');
       return;
     }
-    if (!autoStart && !readBack) {
+    if (!autoStart) {
       if (step.kind === 'quote_stay' && step.shareKey && quoteSession.binding) {
         staffQuoteAutoAttempted.current.add(
           staffQuoteAttemptKey(
@@ -1447,23 +1479,13 @@ export function NavaPane({
           return originalStaffQuoteJob(input, options);
         }
       : undefined;
-    const runHeader = autoStart || readBack
-      ? { ...quoteSession.staffHeader, salesStrategy: 'BAR' as const }
+    const runHeader = autoStart
+      ? { ...quoteSession.staffHeader, salesStrategy: salesStrategyForQueuedQuote(quoteSession.staffHeader) }
       : quoteSession.staffHeader;
     // Get rates is where she proceeds with the read as shown, so unedited AI fields are accepted (v5 B2).
-    if (!autoStart && !readBack && !storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
-    const run = readBack
-      ? bindReadBackStaffQuote({
-          query: observedStaffQuoteJob,
-          source,
-          selectionEpoch,
-          inputRevision,
-          groups: stayGroups,
-          header: runHeader,
-          stayKey: step.shareKey,
-        })
-      : autoStart
-        ? bindAutoStartStaffQuote({
+    if (!autoStart && !storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
+    const run = autoStart
+      ? bindAutoStartStaffQuote({
           queue: staff.workstation.queueStaffQuote?.mutate,
           staffQuoteJob: observedStaffQuoteJob,
           source,
@@ -1473,7 +1495,7 @@ export function NavaPane({
           header: runHeader,
           stayKey: step.shareKey,
         })
-        : bindExecuteStaffQuote({
+      : bindExecuteStaffQuote({
           mutate: staff.workstation.executeStaffQuote?.mutate,
           queue: staff.workstation.queueStaffQuote?.mutate,
           staffQuoteJob: observedStaffQuoteJob,
@@ -1620,9 +1642,7 @@ export function NavaPane({
       !quoteSession.binding ||
       (quoteSession.binding.internetMessageId ?? null) !== (activeEmail.internetMessageId ?? null) ||
       !staffSourceReady(quoteSession) ||
-      partyLookupWaitReason(quoteSession) ||
-      staffQuoteAutoSuppressed.current.has(contactMessageKey) ||
-      autoStaffQuoteSuppressed(contactMessageKey)
+      partyLookupWaitReason(quoteSession)
     ) {
       return;
     }
@@ -1631,7 +1651,7 @@ export function NavaPane({
     if (!source || !binding) return;
     const staff = staffQuoteFromTrpc(trpcClient);
     if (!staff.workstation.queueStaffQuote?.mutate || !staff.workstation.staffQuoteJob?.query) return;
-    const header = { ...quoteSession.staffHeader, salesStrategy: 'BAR' as const };
+    const header = { ...quoteSession.staffHeader, salesStrategy: salesStrategyForQueuedQuote(quoteSession.staffHeader) };
     const step = quoteSession.steps.find((candidate) => {
       if (
         candidate.kind !== 'quote_stay' ||
@@ -1639,6 +1659,8 @@ export function NavaPane({
         !candidate.shareKey ||
         !canRunQuoteStep(candidate, quoteSession.steps, quoteSession.runningStepId) ||
         quoteSession.staffQuotes[candidate.shareKey] ||
+        staffQuoteReadBack.busy(candidate.shareKey) ||
+        !staffQuoteReadBack.done(candidate.shareKey) ||
         quoteRunBlockReason(quoteSession, candidate)
       ) {
         return false;
@@ -1653,15 +1675,21 @@ export function NavaPane({
       });
     });
     if (!step?.shareKey) return;
+    if (
+      staffQuoteAutoSuppressed.current.has(contactMessageKey) ||
+      autoStaffQuoteSuppressed(contactMessageKey)
+    ) {
+      return;
+    }
     const attemptKey = staffQuoteAttemptKey(
       binding.transportId,
       source.messageId,
       source.sourceHash,
       step.shareKey,
     );
-    const readBack = staffQuoteAutoAttempted.current.has(attemptKey);
+    if (staffQuoteAutoAttempted.current.has(attemptKey)) return;
     staffQuoteAutoAttempted.current.add(attemptKey);
-    runQuoteStep(step.id, true, readBack);
+    runQuoteStep(step.id, true);
   };
   autoStartStaffQuoteStepRef.current = autoStartStaffQuoteStep;
 
@@ -2132,6 +2160,8 @@ export function NavaPane({
               findParty={PANE_PARTY_FINDER}
               partySuggestions={partySuggestions}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
+              onPartyPublicConfirmed={() => dispatchQuote({ type: 'party_public_confirmed' })}
+              readBackBusy={(stayKey) => staffQuoteReadBack.busy(stayKey)}
               partyIndex={PANE_PARTY_INDEX}
               partyJobTransport={partyJobTransport}
               rates={PANE_SAVED_RATES}
