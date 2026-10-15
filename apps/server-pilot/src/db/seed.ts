@@ -18,6 +18,7 @@ import {
   mailLabel,
 } from './schema/mail.js';
 import type { DB } from './client.js';
+import { DAVINCI_MAILBOX_IDENTITIES } from '../hms/mailbox-hms-origin-bind.js';
 
 export type PilotUserSpec = {
   id: string;
@@ -68,6 +69,12 @@ export const TRANSPORT_ALIASES = [
   'centurion@legacyhotels.com',
   'centurion@legacyhotel.com',
 ] as const;
+
+export const DAVINCI_TRANSPORT_ID = 'transport-davinci';
+export const DAVINCI_TRANSPORT_EMAIL = DAVINCI_MAILBOX_IDENTITIES[0];
+export const DAVINCI_TRANSPORT_OWNER_HEADER = DAVINCI_MAILBOX_IDENTITIES[0];
+export const DAVINCI_TRANSPORT_DISPLAY_NAME = 'Da Vinci Hotel Reservations';
+export const DAVINCI_TRANSPORT_ALIASES = DAVINCI_MAILBOX_IDENTITIES.slice(1);
 
 export type SeedResult = {
   pilotCredentials: Record<string, { password: string }>;
@@ -202,6 +209,30 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
   await db
     .insert(mailboxTransport)
     .values({
+      id: DAVINCI_TRANSPORT_ID,
+      email: DAVINCI_TRANSPORT_EMAIL,
+      ownerHeaderValue: DAVINCI_TRANSPORT_OWNER_HEADER,
+      mailboxType: 'personal',
+      displayName: DAVINCI_TRANSPORT_DISPLAY_NAME,
+      isActive: true,
+      sendFromConfig: { aliases: [...DAVINCI_TRANSPORT_ALIASES] },
+    })
+    .onConflictDoUpdate({
+      target: mailboxTransport.id,
+      set: {
+        email: DAVINCI_TRANSPORT_EMAIL,
+        ownerHeaderValue: DAVINCI_TRANSPORT_OWNER_HEADER,
+        mailboxType: 'personal',
+        displayName: DAVINCI_TRANSPORT_DISPLAY_NAME,
+        isActive: true,
+        sendFromConfig: { aliases: [...DAVINCI_TRANSPORT_ALIASES] },
+        updatedAt: new Date(),
+      },
+    });
+
+  await db
+    .insert(mailboxTransport)
+    .values({
       id: NAVA_TRANSPORT_ID,
       email: NAVA_TRANSPORT_EMAIL,
       ownerHeaderValue: NAVA_TRANSPORT_EMAIL,
@@ -298,6 +329,7 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
   await applyPilotMailboxAccess(db);
 
   await seedSpamLabel(db, TRANSPORT_ID);
+  await seedSpamLabel(db, DAVINCI_TRANSPORT_ID);
   await seedSpamLabel(db, NAVA_TRANSPORT_ID);
 
   const activeTransportRows = await db

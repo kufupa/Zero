@@ -7,8 +7,8 @@
  *      message scoped to that transport (create/find a thread, insert
  *      `message` + `attachment` rows).
  *   3. If the header is missing, try direct `To` match against active transport
- *      emails; when `INGEST_REQUIRE_OWNER_HEADER=false`, also match Centurion
- *      transport email/aliases on To/Cc/Bcc/From. On miss quarantine with
+ *      emails; when `INGEST_REQUIRE_OWNER_HEADER=false`, also match hotel
+ *      transport email/aliases (Centurion, Da Vinci) on To/Cc/Bcc/From. On miss quarantine with
  *      reason `missing_owner_header`. If the header is present but no matching
  *      transport (owner header or alias) -> quarantine with reason
  *      `unknown_transport`.
@@ -77,6 +77,8 @@ import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
+const DAVINCI_TRANSPORT_ID = 'transport-davinci';
+const HOTEL_EQUATED_TRANSPORT_IDS = [CENTURION_TRANSPORT_ID, DAVINCI_TRANSPORT_ID] as const;
 export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
 export const CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT = 500;
 const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS = 1_000;
@@ -307,7 +309,7 @@ export async function persistInboundMessage(
   } else if (!parsed.ownerHeaderValue) {
     transport = await findDirectToTransport(db, parsed.toAddresses);
     if (!transport && !ingestRequireOwnerHeader()) {
-      transport = await findCenturionEquatedTransport(db, parsed);
+      transport = await findEquatedHotelTransport(db, parsed);
     }
     if (!transport) {
       return quarantineWithAttachmentCleanup({
@@ -1828,13 +1830,6 @@ function transportIdentitySet(email: string, sendFromConfig: unknown): Set<strin
   return identities;
 }
 
-function equatedAddresses(parsed: ParsedInboundMessage): string[] {
-  return [parsed.fromAddress, ...parsed.toAddresses, ...parsed.ccAddresses, ...parsed.bccAddresses]
-    .filter((address): address is string => Boolean(address))
-    .map(normalizeEmailAddress)
-    .filter(Boolean);
-}
-
 async function findTransportByStamp(
   db: DB,
   ownerHeaderValue: string,
@@ -1862,11 +1857,11 @@ async function findTransportByStamp(
   );
 }
 
-async function findCenturionEquatedTransport(
+async function findEquatedHotelTransport(
   db: DB,
   parsed: ParsedInboundMessage,
 ): Promise<RoutedTransport | null> {
-  const centurionRows = await db
+  const rows = await db
     .select({
       id: mailboxTransport.id,
       email: mailboxTransport.email,
@@ -1874,18 +1869,27 @@ async function findCenturionEquatedTransport(
     })
     .from(mailboxTransport)
     .where(
-      and(eq(mailboxTransport.id, CENTURION_TRANSPORT_ID), eq(mailboxTransport.isActive, true)),
-    )
-    .limit(1);
+      and(
+        inArray(mailboxTransport.id, [...HOTEL_EQUATED_TRANSPORT_IDS]),
+        eq(mailboxTransport.isActive, true),
+      ),
+    );
 
-  const centurion = centurionRows[0];
-  if (!centurion) return null;
+  const matchAddresses = (addresses: string[]): RoutedTransport | null =>
+    rows.find((transport) => {
+      const identities = transportIdentitySet(transport.email, transport.sendFromConfig);
+      return addresses.some((address) => identities.has(address));
+    }) ?? null;
 
-  const identities = transportIdentitySet(centurion.email, centurion.sendFromConfig);
-  if (equatedAddresses(parsed).some((address) => identities.has(address))) {
-    return centurion;
-  }
-  return null;
+  const recipientAddresses = [
+    ...parsed.toAddresses,
+    ...parsed.ccAddresses,
+    ...parsed.bccAddresses,
+  ]
+    .map(normalizeEmailAddress)
+    .filter(Boolean);
+  const from = parsed.fromAddress ? normalizeEmailAddress(parsed.fromAddress) : '';
+  return matchAddresses(recipientAddresses) ?? matchAddresses(from ? [from] : []);
 }
 
 async function ensureSoftQuarantineLabel(db: DB, transportId: string): Promise<string> {

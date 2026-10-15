@@ -30,7 +30,12 @@ import {
   TRANSPORT_EMAIL,
   TRANSPORT_OWNER_HEADER,
   TRANSPORT_ALIASES,
+  DAVINCI_TRANSPORT_ID,
+  DAVINCI_TRANSPORT_EMAIL,
+  DAVINCI_TRANSPORT_ALIASES,
+  DAVINCI_TRANSPORT_DISPLAY_NAME,
 } from '../src/db/seed';
+import { DAVINCI_MAILBOX_IDENTITIES } from '../src/hms/mailbox-hms-origin-bind';
 import * as pilotSeed from '../src/db/seed';
 import {
   TEST_DB_AVAILABLE,
@@ -69,6 +74,19 @@ describe('seed identity constants', () => {
       'centurion@legacyhotels.com',
       'centurion@legacyhotel.com',
     ]);
+  });
+
+  it('reuses Da Vinci mailbox identities for transport-davinci; Centurion aliases stay hotel-only', () => {
+    expect(DAVINCI_TRANSPORT_ID).toBe('transport-davinci');
+    expect(DAVINCI_TRANSPORT_EMAIL).toBe(DAVINCI_MAILBOX_IDENTITIES[0]);
+    expect(DAVINCI_TRANSPORT_ALIASES).toEqual(DAVINCI_MAILBOX_IDENTITIES.slice(1));
+    expect(DAVINCI_TRANSPORT_DISPLAY_NAME).toBe('Da Vinci Hotel Reservations');
+    expect(TRANSPORT_ALIASES).not.toEqual(
+      expect.arrayContaining([...DAVINCI_MAILBOX_IDENTITIES]),
+    );
+    expect(TRANSPORT_ALIASES.every((alias) => alias.startsWith('centurion@'))).toBe(
+      true,
+    );
   });
 });
 
@@ -249,23 +267,52 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
+      'seeds transport-davinci with Da Vinci mailbox identities and grants nobody',
+      async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          const rows = await db
+            .select()
+            .from(mailboxTransport)
+            .where(eq(mailboxTransport.id, DAVINCI_TRANSPORT_ID));
+          const access = await db
+            .select({ userId: mailboxAccess.userId })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.transportId, DAVINCI_TRANSPORT_ID));
+          return { transport: rows[0], access };
+        });
+        expect(outcome.transport).toBeDefined();
+        expect(outcome.transport!.id).toBe('transport-davinci');
+        expect(outcome.transport!.email).toBe(DAVINCI_MAILBOX_IDENTITIES[0]);
+        expect(outcome.transport!.ownerHeaderValue).toBe(DAVINCI_MAILBOX_IDENTITIES[0]);
+        expect(outcome.transport!.displayName).toBe('Da Vinci Hotel Reservations');
+        expect(outcome.transport!.mailboxType).toBe('personal');
+        expect(outcome.transport!.isActive).toBe(true);
+        expect(outcome.transport!.sendFromConfig).toEqual({
+          aliases: [...DAVINCI_MAILBOX_IDENTITIES.slice(1)],
+        });
+        expect(outcome.access).toEqual([]);
+      },
+      30000,
+    );
+
+    it(
       'applyPilotMailboxAccess grants a new active transport to nobody until explicitly listed',
       async () => {
         const { applyPilotMailboxAccess } = await import('../src/db/seed.js');
         const outcome = await withSeededTestDb(async (db) => {
           await db.insert(mailboxTransport).values({
-            id: 'transport-davinci',
-            email: 'davinci@legacyhotels.co.za',
-            ownerHeaderValue: 'davinci@legacyhotels.co.za',
+            id: 'transport-unlisted',
+            email: 'unlisted@example.test',
+            ownerHeaderValue: 'unlisted@example.test',
             mailboxType: 'personal',
-            displayName: 'Da Vinci Transport',
+            displayName: 'Unlisted Transport',
             isActive: true,
           });
           await applyPilotMailboxAccess(db);
-          const davinciAccess = await db
+          const unlistedAccess = await db
             .select({ userId: mailboxAccess.userId })
             .from(mailboxAccess)
-            .where(eq(mailboxAccess.transportId, 'transport-davinci'));
+            .where(eq(mailboxAccess.transportId, 'transport-unlisted'));
           const nava = await db
             .select({ transportId: mailboxAccess.transportId })
             .from(mailboxAccess)
@@ -291,7 +338,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .from(mailboxAccess)
             .where(eq(mailboxAccess.userId, KAMALA_USER_ID));
           return {
-            davinciAccess,
+            unlistedAccess,
             navaIds: nava.map((r) => r.transportId).sort(),
             cenIds: cen.map((r) => r.transportId),
             marthaIds: martha.map((r) => r.transportId),
@@ -300,7 +347,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             kamalaIds: kamala.map((r) => r.transportId),
           };
         });
-        expect(outcome.davinciAccess).toEqual([]);
+        expect(outcome.unlistedAccess).toEqual([]);
         expect(outcome.navaIds).toEqual(['transport-centurion', 'transport-nava']);
         expect(outcome.cenIds).toEqual(['transport-centurion']);
         expect(outcome.marthaIds).toEqual(['transport-centurion']);
@@ -441,7 +488,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             .from(mailCategory),
         );
 
-        for (const transportId of ['transport-centurion', 'transport-nava']) {
+        for (const transportId of [
+          'transport-centurion',
+          'transport-nava',
+          DAVINCI_TRANSPORT_ID,
+        ]) {
           for (const slug of AI_MANAGED_CATEGORY_SLUGS) {
             expect(categories).toContainEqual({ transportId, slug });
           }
