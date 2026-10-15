@@ -33,7 +33,7 @@ export type FindFirstStayMatchInput = z.infer<typeof findFirstStayMatchInputSche
 export type FindFirstStayMatchOutput = z.infer<typeof findFirstStayMatchOutputSchema>;
 
 export const findFirstStayMatchDescription =
-  'Pick the existing HMS stay for a booking ask so create does not double-book. Call after hms find, before create_reservation_dry_run. Pass lastName + arrival (departure, rooms, voucherNumber, confirmationNumber if known) and the find rows. Exact surname + same arrival, or voucher number in notes, is a match. A stated confirmation base (digits only) matches every HMS leg base-N; a full base-leg confirmation matches only that leg. One matching live leg is a match; several legs of the same base with no other discriminator (surname/arrival) is possible listing all legs (do not pick). Confirmation match + surname contradiction is conflict. Same surname ±1 day or same arrival + different surname is possible (staff decide; do not pick). Two matches is conflict (do not pick). Cancelled stays never match.';
+  'Pick the existing HMS stay for a booking ask so create does not double-book. Call after hms find, before create_reservation_dry_run. Pass lastName + arrival (departure, rooms, voucherNumber, confirmationNumber if known) and the find rows. Exact surname + same arrival, or voucher number in notes, is a match. A stated confirmation base (digits only) matches every HMS leg base-N; a full base-leg confirmation matches only that leg. A stated confirmation decides alone: one matching live leg is a match; several legs is possible listing all legs (do not pick); no matching leg is none with stated_conf_not_found (check the number; never fall back to surname/dates). Confirmation match + surname contradiction is conflict. Same surname ±1 day or same arrival + different surname is possible (staff decide; do not pick). Two matches is conflict (do not pick). Cancelled stays never match.';
 
 function foldSurname(value: string): string {
   const surname = surnameFrom(value) ?? value.trim();
@@ -92,6 +92,8 @@ function surnamesContradict(askName: string, stayName: string): boolean {
 
 type Ranked = { confirmationNumber: string; kind: 'match' | 'possible'; why: string };
 
+// A stated confirmation number decides on its own: surname, dates and notes never pick among legs or stand in for a
+// number HMS did not return, because either would let create or a payment land on the wrong stay.
 function confOutcome(
   ask: FindFirstStayMatchInput['ask'],
   candidates: FindFirstStayMatchInput['candidates'],
@@ -101,43 +103,21 @@ function confOutcome(
   const liveHits = candidates.filter(
     (stay) => !isCancelled(stay.status) && candidateMatchesStatedConf(stay.confirmationNumber, stated),
   );
-  if (liveHits.length === 0) return null;
-
-  const askDay = toDay(ask.arrival);
-  const agreeing = liveHits.filter((stay) => !surnamesContradict(ask.lastName, stay.lastName));
-  if (agreeing.length === 0) {
+  if (liveHits.length === 0) {
+    return { status: 'none', confirmationNumber: null, why: ['stated_conf_not_found: check the confirmation number'] };
+  }
+  if (liveHits.length > 1) {
     return {
-      status: 'conflict',
+      status: 'possible',
       confirmationNumber: null,
-      why: ['confirmation matches, surname contradicts'],
+      why: liveHits.map((stay) => `base confirmation matches ${stay.confirmationNumber}`),
     };
   }
-
-  const sameArrival = (stay: (typeof liveHits)[number]) => {
-    const stayDay = toDay(stay.arrival);
-    return Boolean(askDay && stayDay && askDay === stayDay);
-  };
-  const exactBoth = agreeing.filter(sameArrival);
-  if (exactBoth.length === 1) {
-    return {
-      status: 'match',
-      confirmationNumber: exactBoth[0]!.confirmationNumber,
-      why: ['confirmation number matches'],
-    };
+  const hit = liveHits[0]!;
+  if (surnamesContradict(ask.lastName, hit.lastName)) {
+    return { status: 'conflict', confirmationNumber: null, why: ['confirmation matches, surname contradicts'] };
   }
-  if (agreeing.length === 1) {
-    return {
-      status: 'match',
-      confirmationNumber: agreeing[0]!.confirmationNumber,
-      why: ['confirmation number matches'],
-    };
-  }
-
-  return {
-    status: 'possible',
-    confirmationNumber: null,
-    why: agreeing.map((stay) => `base confirmation matches ${stay.confirmationNumber}`),
-  };
+  return { status: 'match', confirmationNumber: hit.confirmationNumber, why: ['confirmation number matches'] };
 }
 
 export function findFirstStayMatch(input: FindFirstStayMatchInput): FindFirstStayMatchOutput {
