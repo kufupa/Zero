@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { MAIL_KINDS } from '../../db/schema/work.js';
 import { maskCardNumbers } from '../card-mask.js';
 import { validIsoDate } from '../quote-workflow-llm.js';
+import { anchorStayDateRange, type StayDateAnchorContext } from '../stay-date-anchoring.js';
 
 /**
  * Inbound extraction (mail_extraction). The model fills `mailExtractionSchema`, which is lenient so one bad field
@@ -52,6 +53,11 @@ export const mailExtractionSchema = z.object({
     z.object({
       hotel: nullableText.describe('Target hotel as named in the mail, or null.'),
       requested: dateRange.describe('The dates the sender asks for now.'),
+      requestedDateEvidence: z
+        .string()
+        .nullable()
+        .optional()
+        .describe('Exact source phrase for THIS stay’s requested dates, or null if not stated. Never reuse another stay’s phrase.'),
       booked: dateRange
         .nullable()
         .describe(
@@ -180,7 +186,7 @@ export function stableId(prefix: 's' | 'r', ...parts: string[]): string {
  */
 export function sanitizeExtraction(
   output: MailExtractionOutput,
-  input: { messageId: string; sourceText: string },
+  input: { messageId: string; sourceText: string; dateAnchor?: StayDateAnchorContext },
 ): SanitizedExtraction {
   const sourceLower = input.sourceText.toLowerCase();
   const email = cleanText(output.contact.email);
@@ -191,10 +197,23 @@ export function sanitizeExtraction(
     .slice(0, MAX_CONFIRMATIONS);
   const stays = output.stays.slice(0, MAX_STAYS).map((stay, stayIndex): ExtractionStay => {
     const id = stableId('s', input.messageId, String(stayIndex));
+    const dateEvidence = stay.requestedDateEvidence?.trim() ?? '';
+    const selectionText = input.dateAnchor?.sourceText ?? '';
+    const sourceText = dateEvidence && selectionText.includes(dateEvidence) ? dateEvidence : '';
+    const dateAnchor: StayDateAnchorContext = {
+      ...input.dateAnchor,
+      allowYearlessRollover: output.kind === 'quote' || output.kind === 'booking',
+      sourceText,
+      subjectText: output.stays.length === 1 ? input.dateAnchor?.subjectText : undefined,
+      yearEvidenceText:
+        output.stays.length === 1
+          ? input.dateAnchor?.yearEvidenceText ?? selectionText
+          : undefined,
+    };
     return {
       id,
       hotel: cleanText(stay.hotel),
-      requested: dateRangeOf(stay.requested),
+      requested: dateRangeOf(anchorStayDateRange(stay.requested, dateAnchor)),
       booked: stay.booked ? dateRangeOf(stay.booked) : null,
       totalRooms: countOf(stay.totalRooms, 1, 999),
       rows: stay.rows.slice(0, MAX_ROWS).map((row, rowIndex) => ({
@@ -209,7 +228,17 @@ export function sanitizeExtraction(
       })),
     };
   });
-  const missing = output.missing
+  const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay) => {
+    const arrival = validIsoDate(stay.requested.arrival);
+    const departure = validIsoDate(stay.requested.departure);
+    return arrival && departure && departure <= arrival
+      ? [{ field: 'stayDates', question: 'Departure date must be after arrival; confirm the requested stay dates.' }]
+      : [];
+  });
+  const missing = [
+    ...output.missing.slice(0, Math.max(0, MAX_MISSING - reversedDateWarnings.length)),
+    ...reversedDateWarnings,
+  ]
     .slice(0, MAX_MISSING)
     .map((item) => ({
       field: cleanText(item.field, 60) ?? '',

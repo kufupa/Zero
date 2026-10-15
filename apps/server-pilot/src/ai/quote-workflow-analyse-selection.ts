@@ -10,6 +10,7 @@ import {
   amendmentFromAnalysis,
   analyseQuoteSelection,
   mapLlmDecision,
+  type MappedQuoteDecision,
   type QuoteTreatAs,
   type QuoteWorkflowFallbackReason,
   type QuoteWorkflowTelemetry,
@@ -27,6 +28,7 @@ import type {
   SyncedQuoteSelection,
 } from './quote-workflow-synced-selection.js';
 import { attachmentMattersForReview, unreadReasonWords } from './quote-attachment-review.js';
+import { stayDateSourceText, stayDateYearEvidenceText } from './stay-date-anchoring.js';
 
 /**
  * Luna analyse of a synced mail, shared by the pane route and the inbound
@@ -201,6 +203,7 @@ function fallbackLunaCarrier(treatAs: QuoteTreatAs, analysis: QuoteWorkflowAnaly
     groups: analysis.groups.map((group) => ({
       arrival: group.arrivalDate ?? null,
       departure: group.departureDate ?? null,
+      dateEvidence: null,
       rooms: group.quantity ?? null,
       adultsPerRoom: group.adults ?? null,
       childAges: [...group.childrenAges],
@@ -378,6 +381,22 @@ function withAnalysisRunId<T extends object>(
 }
 
 /**
+ * mapLlmDecision anchors yearless and mixed-year stay dates into mapped.groups. The staff overlay matches Luna's
+ * groups to staff stays by date, so copy the mapped dates back onto Luna's groups by position. A stale date makes
+ * the overlay miss that stay and drop its guestNames. Other Luna fields are left as they are.
+ */
+function lunaWithMappedDates(luna: LunaAnalysis, mapped: MappedQuoteDecision): LunaAnalysis {
+  return {
+    ...luna,
+    groups: luna.groups.map((group, index) => {
+      const stay = mapped.groups[index];
+      if (!stay) return group;
+      return { ...group, arrival: stay.arrivalDate ?? null, departure: stay.departureDate ?? null };
+    }),
+  };
+}
+
+/**
  * Cache-or-analyse for one synced selection. Returns the route payload plus an
  * outcome so callers (the warmer) can log without re-deriving it.
  */
@@ -452,7 +471,16 @@ export async function analyseSyncedSelection(
       flags,
       ...(treatAs ? { workflow: treatAs } : {}),
     };
-    const mapped = mapLlmDecision(luna, { treatAs });
+    const mapped = mapLlmDecision(luna, {
+      treatAs,
+      dateAnchor: {
+        receivedAt: synced.receivedAt,
+        sourceText: stayDateSourceText(synced),
+        subjectText: synced.subject,
+        yearEvidenceText: stayDateYearEvidenceText(synced),
+        staffNote,
+      },
+    });
     const payload = {
       status: 'ready' as const,
       intent: mapped.intent,
@@ -463,7 +491,7 @@ export async function analyseSyncedSelection(
       reviewItems: [...attachmentReviews, ...questionItems(mapped.missing)],
       source: 'luna' as const,
       aiUnavailable: false as const,
-      luna,
+      luna: lunaWithMappedDates(luna, mapped),
       workflow: luna.workflow,
       amendment: amendmentFromAnalysis(luna),
       sourceRevision: options.selectionEpoch,

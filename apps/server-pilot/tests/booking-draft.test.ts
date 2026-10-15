@@ -563,6 +563,29 @@ describe('buildBookingDrafts', () => {
 });
 
 describe('prepareBookingDraft route', () => {
+  it('accepts overlaid booking groups without date evidence', () => {
+    const parsed = prepareBookingDraftInput.parse({
+      ...draftInput,
+      analysis: {
+        ...analysis(),
+        groups: [
+          {
+            arrival: '2026-10-12',
+            departure: '2026-10-13',
+            rooms: 2,
+            adultsPerRoom: 1,
+            childAges: [],
+            board: 'room_only',
+            roomPreference: null,
+            guestNames: ['Mr John Smith', 'Jane Doe'],
+          },
+        ],
+      },
+    });
+
+    expect(parsed.analysis.groups[0]?.dateEvidence).toBeNull();
+  });
+
   it('rejects an extra input key', () => {
     expect(() => prepareBookingDraftInput.parse({ ...draftInput, extra: true })).toThrow();
   });

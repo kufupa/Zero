@@ -276,6 +276,7 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
       order.push({ groupId: stay.id, stayId: stay.id, rowId: null });
       groups.push({
         ...dates,
+        dateEvidence: null,
         rooms: null,
         adultsPerRoom: null,
         childAges: [],
@@ -290,6 +291,7 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
       order.push({ groupId: row.id, stayId: stay.id, rowId: row.id });
       groups.push({
         ...dates,
+        dateEvidence: null,
         rooms: pick(at('count'), row.rooms),
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
         childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],

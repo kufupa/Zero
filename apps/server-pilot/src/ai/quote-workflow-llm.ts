@@ -9,6 +9,11 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { maskCardNumbers } from './card-mask.js';
 import { createHash } from 'node:crypto';
 import { matchKey } from './party-match.js';
+import {
+  anchorStayDateRange,
+  receivedDateAtHotel,
+  type StayDateAnchorContext,
+} from './stay-date-anchoring.js';
 
 const THREAD_MESSAGE_MAX = 8_000;
 const THREAD_TOTAL_MAX = 40_000;
@@ -36,6 +41,11 @@ export const K2_MAPPING = [
   'Never ask for room type, board or rate; the hotel defaults those.',
   'Emit one task per distinct piece of PMS work, in the order staff would do it.',
   'Different date sets for the same ask become separate quote tasks.',
+  'For every group, dateEvidence must be an exact phrase from that stay only; never reuse another stay’s phrase.',
+  'Use dateEvidence from the staff note when it corrects dates. In multiple stays, apply a note correction only to the stay whose own dateEvidence appears in the note; if it cannot be attributed, apply it only for a single stay.',
+  'Per stay, precedence is: attributed staff correction > explicit year in that stay’s dateEvidence (subject may supply it only for one stay) > that stay’s verified “next year” (year after Johannesburg receipt) or “next <weekday>” resolved from Johannesburg receipt, overriding model dates > yearless next occurrence even when the model supplied a farther-future year > unchanged model dates.',
+  'For a cross-year span like “28 Dec - 2 Jan 2027”, the year after the second date applies to the January endpoint; December arrival is in the preceding year.',
+  'If evidence is missing or mismatched, check body/subject for an explicit year only for a single stay; with multiple stays, keep model dates. Never borrow a year or relative phrase across stays.',
   '"Quote then book if OK" stays workflow=quote.',
   'Use workflow=create_booking only for explicit make/confirm asks without a quote, price, rate or',
   'availability ask.',
@@ -61,6 +71,8 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   .update('\nattachment-review/2')
   // Guest-name removal changes the cached party result even though the prompt and response schema are unchanged.
   .update('\nparty-not-guest/2')
+  // Group date normalization changes cached payloads without changing the model prompt or schema.
+  .update('\nluna-group-dates/1')
   .digest('hex')
   .slice(0, 16);
 
@@ -191,8 +203,9 @@ export function buildQuoteWorkflowPrompt(
   if (staffNote) {
     parts.push(`Staff note (top-priority evidence):\n${maskCardNumbers(staffNote)}`);
   }
-  if (selection.receivedAt) {
-    parts.push(`Received at: ${selection.receivedAt.slice(0, 10)}`);
+  const receivedDate = receivedDateAtHotel(selection.receivedAt);
+  if (receivedDate) {
+    parts.push(`Received at (Johannesburg local date): ${receivedDate}`);
   }
   parts.push(`Subject:\n${maskCardNumbers(selection.subject)}`);
   parts.push(`Body:\n${maskCardNumbers(selection.bodyText)}`);
@@ -381,7 +394,7 @@ function groundedAmendmentFields(
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
 export function mapLlmDecision(
   analysis: LunaAnalysis,
-  options?: { treatAs?: QuoteTreatAs },
+  options?: { treatAs?: QuoteTreatAs; dateAnchor?: StayDateAnchorContext },
 ): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
   const staffQuote = Boolean(options?.treatAs);
@@ -401,8 +414,29 @@ export function mapLlmDecision(
     };
   }
   const groups = analysis.groups.map((group, index) => {
-    const arrivalDate = validIsoDate(group.arrival);
-    const departureDate = validIsoDate(group.departure);
+    const sourceText = options?.dateAnchor?.sourceText ?? '';
+    const staffNote = options?.dateAnchor?.staffNote;
+    const dateEvidence = group.dateEvidence?.trim() ?? '';
+    const verifiedDateEvidence =
+      dateEvidence &&
+      (sourceText.includes(dateEvidence) || staffNote?.includes(dateEvidence))
+        ? dateEvidence
+        : '';
+    const singleStay = analysis.groups.length === 1;
+    const noteNamesStay = Boolean(verifiedDateEvidence && staffNote?.includes(verifiedDateEvidence));
+    const anchorContext: StayDateAnchorContext = {
+      receivedAt: options?.dateAnchor?.receivedAt,
+      sourceText: verifiedDateEvidence,
+      subjectText: singleStay ? options?.dateAnchor?.subjectText : undefined,
+      yearEvidenceText: singleStay ? options?.dateAnchor?.yearEvidenceText ?? sourceText : undefined,
+      staffNote: staffNote && (singleStay || noteNamesStay) ? staffNote : undefined,
+    };
+    const anchoredDates = anchorStayDateRange(
+      { arrival: group.arrival, departure: group.departure },
+      anchorContext,
+    );
+    const arrivalDate = validIsoDate(anchoredDates.arrival);
+    const departureDate = validIsoDate(anchoredDates.departure);
     if (group.arrival && !arrivalDate) {
       missing.push({
         field: 'arrivalDate',
@@ -413,6 +447,12 @@ export function mapLlmDecision(
       missing.push({
         field: 'departureDate',
         question: `Departure date for group ${index + 1} is not a valid ISO calendar date.`,
+      });
+    }
+    if (arrivalDate && departureDate && departureDate <= arrivalDate) {
+      missing.push({
+        field: 'stayDates',
+        question: `Departure date for group ${index + 1} must be after arrival; confirm the stay dates.`,
       });
     }
     const boardDefaulted = group.board === null;
@@ -548,6 +588,11 @@ export async function analyseQuoteSelection(input: {
       source: 'luna',
       analysis: {
         ...parsed.data,
+        groups: parsed.data.groups.map((group) => ({
+          ...group,
+          dateEvidence:
+            group.dateEvidence && sourceText.includes(group.dateEvidence) ? group.dateEvidence : null,
+        })),
         evidence: verbatim(parsed.data.evidence).map((item) =>
           staffNote && staffNote.includes(item.quote)
             ? { ...item, source: 'staff_note' as const }

@@ -449,11 +449,25 @@ test('incomplete later page cannot claim no special rates',()=>{
   assert.equal(result.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
   assert.equal(result.completeness.search,'partial');
 });
-test('LOS restrictions and unexplained limited-night settings cannot become eligible availability',()=>{
+test('LOS restrictions include reasons and unexplained limited-night settings stay unknown',()=>{
   const f=multipleSource();f.rate.minLOS=4;
-  assert.equal(quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]).options[0].availability,'restricted');
-  f.rate.minLOS=null;f.rate.maxNights=2;
+  let option=quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]).options[0];
+  assert.equal(option.availability,'restricted');
+  assert.equal(option.availabilityReason,'Rate minimum stay requires 4 nights; requested stay is 3 nights.');
+  f.rate.minLOS=null;f.rate.maxLOS=2;
+  option=quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]).options[0];
+  assert.equal(option.availability,'restricted');
+  assert.equal(option.availabilityReason,'Rate maximum stay allows 2 nights; requested stay is 3 nights.');
+  f.rate.maxLOS=null;f.rate.maxNights=2;
   assert.equal(quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]).options[0].availability,'unknown');
+});
+test('departure maximum-LOS restriction survives native projection',()=>{
+  const f=multipleSource();
+  f.rate.columns.col4.combMaxLOSToDeparture=2;
+  const projected=quote.projectWindow({data:f.data,calendar:f.calendar,criteria:{}});
+  const option=quote.extractOptions(request,request.rooms[0],[projected]).options[0];
+  assert.equal(option.availability,'restricted');
+  assert.equal(option.availabilityReason,'Departure maximum stay allows 2 nights; requested stay is 3 nights.');
 });
 test('configured picker choices accept exact native code or label only',()=>{
   const choices=[{value:'CON',display:'Negotiated Contracted'},{value:'BAR',display:'BAR'}];

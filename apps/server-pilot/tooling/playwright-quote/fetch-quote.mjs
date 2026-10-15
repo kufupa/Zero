@@ -450,7 +450,7 @@ function nativeDate(value) {
 
 const issue = (code,path,reason,action='Inspect source evidence or narrow the request.') => ({code,path,reason,action});
 const restrictionKeys = ['combClosed','combClosedToArrival','combClosedToDeparture','combMinLOSToArrival',
-  'combMinLOSToDeparture','combMaxLOSToArrival','combMinLOSToThrough','combMaxLOSToThrough'];
+  'combMinLOSToDeparture','combMaxLOSToArrival','combMaxLOSToDeparture','combMinLOSToThrough','combMaxLOSToThrough'];
 const pick = (object,keys) => Object.fromEntries(keys.filter(k=>Object.hasOwn(object??{},k)).map(k=>[k,object[k]]));
 
 // Preserve bounded native labels as observations only, never package/tax/child entitlement.
@@ -487,18 +487,36 @@ export function sourceFacts(option, roomInformation='') {
 }
 
 function rateAvailability(rate,nightly,departure,quantity,nights) {
-  if (nightly.some(n=>n.inventory<quantity)) return 'unavailable';
-  if (rate.restricted===true || nightly.some(n=>n.restricted===true || n.rateAvailable===false || n.restrictions.combClosed===true) ||
-    nightly[0]?.restrictions.combClosedToArrival===true || departure?.combClosedToDeparture===true) return 'restricted';
-  const minTests=[rate.minLOS,nightly[0]?.restrictions.combMinLOSToArrival,departure?.combMinLOSToDeparture,
-    ...nightly.map(n=>n.restrictions.combMinLOSToThrough)];
-  const maxTests=[rate.maxLOS,nightly[0]?.restrictions.combMaxLOSToArrival,...nightly.map(n=>n.restrictions.combMaxLOSToThrough)];
-  if (minTests.some(x=>typeof x==='number'&&x>nights) || maxTests.some(x=>typeof x==='number'&&x>0&&x<nights)) return 'restricted';
+  if (nightly.some(n=>n.inventory<quantity)) return {status:'unavailable'};
+  if (rate.restricted===true) return {status:'restricted',reason:'Rate is explicitly restricted by HMS.'};
+  const closedNight=nightly.find(n=>n.restricted===true||n.rateAvailable===false||n.restrictions.combClosed===true);
+  if (closedNight) return {status:'restricted',reason:`HMS closes or restricts night ${closedNight.date}.`};
+  if (nightly[0]?.restrictions.combClosedToArrival===true)
+    return {status:'restricted',reason:'HMS closes the requested arrival date to arrivals.'};
+  if (departure?.combClosedToDeparture===true)
+    return {status:'restricted',reason:'HMS closes the requested departure date to departures.'};
+
+  const minTests=[
+    ['Rate minimum stay',rate.minLOS],
+    ['Arrival minimum stay',nightly[0]?.restrictions.combMinLOSToArrival],
+    ['Departure minimum stay',departure?.combMinLOSToDeparture],
+    ...nightly.map(n=>[`Night ${n.date} minimum stay`,n.restrictions.combMinLOSToThrough]),
+  ];
+  const maxTests=[
+    ['Rate maximum stay',rate.maxLOS],
+    ['Arrival maximum stay',nightly[0]?.restrictions.combMaxLOSToArrival],
+    ['Departure maximum stay',departure?.combMaxLOSToDeparture],
+    ...nightly.map(n=>[`Night ${n.date} maximum stay`,n.restrictions.combMaxLOSToThrough]),
+  ];
+  const minViolation=minTests.find(([,limit])=>typeof limit==='number'&&limit>nights);
+  if(minViolation) return {status:'restricted',reason:`${minViolation[0]} requires ${minViolation[1]} nights; requested stay is ${nights} nights.`};
+  const maxViolation=maxTests.find(([,limit])=>typeof limit==='number'&&limit>0&&limit<nights);
+  if(maxViolation) return {status:'restricted',reason:`${maxViolation[0]} allows ${maxViolation[1]} nights; requested stay is ${nights} nights.`};
   if (rate.restricted!==false || !departure || departure.combClosedToDeparture!==false ||
     nightly.some(n=>n.rateAvailable!==true||n.restricted!==false||n.restrictions.combClosed!==false) ||
     nightly[0]?.restrictions.combClosedToArrival!==false ||
-    [rate.minLeadTime,rate.maxLeadTime,rate.limitedRatePlanRestriction,rate.maxNights,rate.availableLimitNightCount].some(x=>x!==null&&x!==undefined&&x!==false&&x!==0)) return 'unknown';
-  return 'available';
+    [rate.minLeadTime,rate.maxLeadTime,rate.limitedRatePlanRestriction,rate.maxNights,rate.availableLimitNightCount].some(x=>x!==null&&x!==undefined&&x!==false&&x!==0)) return {status:'unknown'};
+  return {status:'available'};
 }
 
 // Merge only native/visible observations. An invalid row is isolated, never a
@@ -579,7 +597,9 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     // Keep incomplete identity, not unverified monetary claims.
     option.nightly=invalid?[]:wanted.slice(0,-1).map(d=>option.observations.get(d).fact);
     option.departure=option.observations.get(request.departureDate)?.fact.restrictions??null;
-    option.availability=invalid?'unknown':rateAvailability(option._rate,option.nightly,option.departure,room.quantity,wanted.length-1);
+    const availability=invalid?{status:'unknown'}:rateAvailability(option._rate,option.nightly,option.departure,room.quantity,wanted.length-1);
+    option.availability=availability.status;
+    if(availability.reason)option.availabilityReason=availability.reason;
     const governmentFamily=request.search?.salesStrategy==='Government'&&!contextRequested.length&&windows.every(w=>w.criteria?.salesStrategy==='GOV')&&option._rate.isNegotiatedRate===false&&/^Local Government Rate (?:Breakfast|Dinner|Room Only)$/.test(option.rate.label);
     option.eligibility=invalid?'unknown':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified?'verified':'conditional';
     if (option.availability==='restricted') option.eligibility='conditional';

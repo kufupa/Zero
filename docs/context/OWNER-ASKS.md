@@ -215,6 +215,8 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 89  | Check all running agents are on the roadmap; kill stragglers | ✅ | LANES "Agent audit" | Re-check at each lane event |
 | 90  | Pause; update every MD/ledger; admit and log mistakes | ✅ | `docs/context/MISTAKES.md` 2026-10-14 rows | — |
 | 91  | Profitroom computer-use agent? | ⬜ | FACTS §2 Profitroom note (Profitroom is an excluded host) | Owner decides whether it's a scope change |
+| 92  | Fix remote type errors on PR #242, merge current main, preserve #245 and push | ✅ | Merge `2f091393e`, fix `6e021fcd4`; remote EC2 typecheck clean (0 new) | Greptile follow-up #93 |
+| 93  | Complete PR #242 date precedence across nine Greptile date scenarios; add table tests and reply/resolve with SHAs | ✅ | Fix `79696f751`; 9 table-driven date scenarios; 143 targeted tests pass; all 11 PR #242 threads resolved | Remote typecheck for code head not verified here; no local typecheck |
 | 92  | Veto proposed stack ADR #253 (CopilotKit + React Flow + own compiler); more research into OSS chat→workflow-graph builders; open to swapping Mastra | 🟡 | #253 closed; R6 lane running | R6 → recommendation |
 | 93  | Merge, deploy, then self-test quote mails one at a time; post each result in the coordinator chat | 🟡 | #244, #245 merged | Merge #242, #243, #246, #249 after Greptile → deploy → per-mail results in chat |
 | 94  | Luna max for lanes; coordinator chat stays on Opus 5.5 | ✅ | Gateway activated 2026-10-14 22:43Z; Opus slot unchanged | — |

@@ -12,7 +12,8 @@ export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property co
 - Thank-you/acknowledgement/FYI with no ask, and internal handovers, are skip.
 - Amendments and cancellations of an existing booking: workflow=amend or cancel. Fill confirmationNumber exactly as written (e.g. 57291630-1), guestLastName, arrival/departure as stated, requestedChange as one short plain-English line (e.g. 'Change departure from 15 Nov to 17 Nov'). No tools. Invoices, folios, payment queries stay other.
 - Venue hire, conference or delegate packages (DDR), and events, are other (no tools). A rooms-only group is quote at any size, 10+ rooms included.
-- Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room. A day-month without a year is its next occurrence.
+- Fill occupancy the way staff do, then run the tool: one named guest or "a room" is 1 adult in 1 room; N named guests in N rooms is single occupancy; "two people" with no room count is 2 adults in 1 room.
+- Resolve each stay from its own date evidence and the selected email's Received at date in Johannesburg local time, never today's date. If that stay's date phrase has an explicit year, keep the model dates as-is; only for a single stay may the subject provide that year. Otherwise, if the model arrival is before the received date, move its month/day to the next occurrence on or after receipt; if not, keep it. Resolve "next Friday" only when that phrase is in the stay's own date evidence. Never borrow a year or relative phrase from another stay.
 - Missing dates: no tool can run; decide the workflow and list what is missing.`;
 
 export const reservationistDecisionSchema = z.object({
@@ -38,6 +39,11 @@ const lunaGroupSchema = z.object({
     .string()
     .nullable()
     .describe('ISO YYYY-MM-DD checkout day (exclusive), or null if not stated.'),
+  dateEvidence: z
+    .string()
+    .nullable()
+    .default(null)
+    .describe('Exact source phrase for THIS group’s arrival/departure dates, or null if not stated. Never reuse another group’s phrase.'),
   rooms: z.number().int().nullable().describe('Number of identical rooms in this group.'),
   adultsPerRoom: z
     .number()

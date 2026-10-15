@@ -15,6 +15,7 @@ import {
   type MailExtractionPayload,
   type MailKind,
 } from './schema.js';
+import { stayDateSourceText, stayDateYearEvidenceText } from '../stay-date-anchoring.js';
 
 /** The model every inbound read requests. Same Azure deployment as the quote analyse route. */
 export const EXTRACTION_MODEL_ID = 'gpt-6-luna';
@@ -31,7 +32,8 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - For mail-kind mapping, these action/document rules take precedence over hotel workflow examples above: an invoice, folio, or other payment notice that is a payment document for an existing booking is voucher_pop when there is no reservation action.
 - kind: quote asks for accommodation rates, availability or a quotation. booking asks to make or confirms a stay. amendment changes an existing booking (dates, nights, room, late checkout). cancellation cancels one. other is anything else, including venue hire, event-only asks, invoice or folio requests that are not themselves payment documents for an existing booking, and payment questions that are not proof/remittance/payment documents for an existing booking.
 - spam is cold sales or promotions aimed at the hotel. Hotel-directed enquiries about rates, availability, groups, conferences or events are never spam, even if the wording resembles marketing; use quote for an accommodation rate or availability request. Cold sales/promotions aimed at the hotel remain spam.
-- stays: one stay per distinct date set. Two date sets in one mail are two stays. Dates are ISO yyyy-mm-dd. departure is the checkout day, so "26 to 27 Oct" is one night. A stated night count wins over a bare date pair: "26th and 27th Oct, 2 nights" lists the nights, so departure is 28 Oct. A year the mail states for the trip (in the subject or body, e.g. "Tour 2027" or "next year") wins. Otherwise a day and month without a year is its next occurrence after the received date.
+- stays: one stay per distinct date set. Two date sets in one mail are two stays. Dates are ISO yyyy-mm-dd. departure is the checkout day, so "26 to 27 Oct" is one night. A stated night count wins over a bare date pair: "26th and 27th Oct, 2 nights" lists the nights, so departure is 28 Oct. For each stay, requestedDateEvidence is an exact source phrase for that stay's dates only; never reuse another stay's phrase.
+- Date anchoring is per stay. Precedence: a staff correction attributed to that stay; an explicit year in that stay's date evidence (the subject may supply a year only for a single stay); that stay's verified "next year" (the year after Johannesburg receipt) or "next <weekday>" resolved from the Johannesburg received date, overriding model dates; then a yearless date uses its next occurrence from receipt even if the model supplied a farther-future year. For a cross-year span such as "28 Dec - 2 Jan 2027", the year after the second date applies to the January endpoint and the December arrival is in the preceding year. For one stay with missing or unmatched evidence, check body/subject for an explicit year first. For multiple stays with missing or unmatched evidence, keep model dates rather than inferring from another stay. Never borrow another stay's year or relative phrase.
 - rows: within a stay, one row per room type as written. "Single" and "Double/Twin" are separate rows. rooms is the count of identical rooms of that type. adultsPerRoom is the adults in EACH room: "6 adults in 3 rooms" is 2, one named guest in a room is 1, and a double or twin with no headcount is 2.
 - totalRooms is the stay's total rooms as stated. When the mail gives a total without a split per room type (e.g. "30 rooms, single and double/twin rates"), set totalRooms, keep one row per room type with rooms null, and list rooms in missing. Never split a total yourself.
 - requested is the stay the sender asks for now. booked is set only for amendment, cancellation and voucher_pop: the dates the mail or thread says are currently booked. Otherwise booked is null.
@@ -222,6 +224,12 @@ export async function extractInboundMail(input: {
   const sanitized = sanitizeExtraction(parsed.data, {
     messageId: input.messageId,
     sourceText: prompt.user,
+    dateAnchor: {
+      receivedAt: input.selection.receivedAt,
+      sourceText: stayDateSourceText(input.selection),
+      subjectText: input.selection.subject,
+      yearEvidenceText: stayDateYearEvidenceText(input.selection),
+    },
   });
   const kind = isSelfSentPreStayInformationMail({
     fromAddress: input.from,

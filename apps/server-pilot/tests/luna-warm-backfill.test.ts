@@ -45,6 +45,7 @@ const LLM_ON = { QUOTE_WORKFLOW_LLM: 'on' };
 const quoteGroup = {
   arrival: '2026-11-12',
   departure: '2026-11-14',
+  dateEvidence: null,
   rooms: 1,
   adultsPerRoom: 2,
   childAges: [] as number[],
