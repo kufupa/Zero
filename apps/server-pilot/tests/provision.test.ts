@@ -665,6 +665,19 @@ describe('parseFlags', () => {
     }
     expect(existsSync('--bogus')).toBe(false);
   });
+
+  it('rejects --apply without --credentials-out with exit 2 before any file is created', () => {
+    expect(() => parseFlags(['--apply'])).toThrow(ProvisionUsageError);
+    try {
+      parseFlags(['--apply']);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProvisionUsageError);
+      expect((err as ProvisionUsageError).exitCode).toBe(2);
+      expect((err as Error).message).toMatch(/usage:/i);
+    }
+    expect(existsSync('--apply')).toBe(false);
+    expect(existsSync('--credentials-out')).toBe(false);
+  });
 });
 
 describe('applyAfterReservingCredentialsFile', () => {
@@ -732,13 +745,68 @@ describe('applyAfterReservingCredentialsFile', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('throws on a partial then 0-byte writeSync so commit never happens and the file is cleaned', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'provision-creds-'));
+    const path = join(root, 'creds.json');
+    try {
+      const { db, state } = createFakeDb({ users: [navaUser] });
+      const plan = await planProvision(db, ONE_HOTEL);
+      let calls = 0;
+      const writePartialThenZero = (
+        _fd: number,
+        _buffer: NodeJS.ArrayBufferView,
+        _offset?: number | null,
+        length?: number | null,
+      ): number => {
+        calls += 1;
+        if (calls === 1) {
+          const remaining = length ?? 8;
+          return Math.max(1, Math.min(4, remaining));
+        }
+        return 0;
+      };
+      await expect(
+        applyAfterReservingCredentialsFile({
+          path,
+          writeSync: writePartialThenZero,
+          apply: async (writeCredentials) => {
+            await applyProvisionThenWriteCredentials(
+              db,
+              plan,
+              Object.fromEntries(plan.usersToCreate.map((u) => [u.email, `pw-${u.id}`])),
+              writeCredentials,
+            );
+          },
+        }),
+      ).rejects.toThrow(/short write|0-byte|0 bytes/i);
+      expect(existsSync(path)).toBe(false);
+      expect(existsSync(`${path}.ROLLED_BACK`)).toBe(false);
+      expect(state.users.map((u) => u.id)).toEqual([NAVA_USER_ID]);
+      expect(state.transports).toEqual([]);
+      expect(state.grants).toEqual([]);
+      expect(state.accounts).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
-async function insertSyntheticNava(db: DB): Promise<void> {
+const TEST_PROVISION_USER_ID = 'user-test-provision-a';
+
+const DISPOSABLE_ONE_HOTEL: ProvisionSpec = {
+  users: ONE_HOTEL.users,
+  transports: ONE_HOTEL.transports,
+  grants: ONE_HOTEL.grants.map((g) =>
+    g.userId === NAVA_USER_ID ? { ...g, userId: TEST_PROVISION_USER_ID } : g,
+  ),
+};
+
+async function insertSyntheticProvisionUser(db: DB): Promise<void> {
   await db.insert(userTable).values({
-    id: NAVA_USER_ID,
-    name: 'Nava AI',
-    email: 'nava@example.test',
+    id: TEST_PROVISION_USER_ID,
+    name: 'Provision Test User',
+    email: 'provision-test@example.test',
     emailVerified: true,
   });
 }
@@ -746,25 +814,27 @@ async function insertSyntheticNava(db: DB): Promise<void> {
 describe.skipIf(!TEST_DB_AVAILABLE)('planProvision/applyProvision (disposable PostgreSQL)', () => {
   it('grants an existing-email user and rolls back a stale apply', async () => {
     await withTestDb(async (db) => {
-      await insertSyntheticNava(db);
+      await insertSyntheticProvisionUser(db);
       await db.insert(userTable).values({
         id: 'legacy-7',
         name: 'Legacy Hotel A',
         email: 'hotel-a@example.test',
         emailVerified: true,
       });
-      const plan = await planProvision(db, ONE_HOTEL);
+      const plan = await planProvision(db, DISPOSABLE_ONE_HOTEL);
       expect(plan.usersToCreate).toEqual([]);
       expect(plan.alreadyPresent.users).toEqual(['legacy-7']);
       expect(plan.grantsToCreate.map((g) => g.userId).sort()).toEqual(
-        ['legacy-7', NAVA_USER_ID].sort(),
+        ['legacy-7', TEST_PROVISION_USER_ID].sort(),
       );
       await applyProvision(db, plan, {});
       const grants = await db
         .select({ userId: mailboxAccess.userId, transportId: mailboxAccess.transportId })
         .from(mailboxAccess)
         .where(eq(mailboxAccess.transportId, 'transport-hotel-a'));
-      expect(grants.map((g) => g.userId).sort()).toEqual(['legacy-7', NAVA_USER_ID].sort());
+      expect(grants.map((g) => g.userId).sort()).toEqual(
+        ['legacy-7', TEST_PROVISION_USER_ID].sort(),
+      );
 
       const stale = {
         ...plan,
@@ -789,8 +859,8 @@ describe.skipIf(!TEST_DB_AVAILABLE)('planProvision/applyProvision (disposable Po
 
   it('write failure rolls back so no new users remain', async () => {
     await withTestDb(async (db) => {
-      await insertSyntheticNava(db);
-      const plan = await planProvision(db, ONE_HOTEL);
+      await insertSyntheticProvisionUser(db);
+      const plan = await planProvision(db, DISPOSABLE_ONE_HOTEL);
       await expect(
         applyProvisionThenWriteCredentials(
           db,
@@ -802,7 +872,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)('planProvision/applyProvision (disposable Po
         ),
       ).rejects.toThrow('ENOSPC');
       const users = await db.select({ id: userTable.id }).from(userTable);
-      expect(users.map((u) => u.id).sort()).toEqual([NAVA_USER_ID]);
+      expect(users.map((u) => u.id).sort()).toEqual([TEST_PROVISION_USER_ID]);
       const transports = await db
         .select({ id: mailboxTransport.id })
         .from(mailboxTransport)

@@ -40,7 +40,9 @@ function requireFlagValue(argv: string[], flagIndex: number): string {
   return value;
 }
 
-export function parseFlags(argv: string[]): { apply: boolean; credentialsOut: string | null } {
+export function parseFlags(
+  argv: string[],
+): { apply: false; credentialsOut: string | null } | { apply: true; credentialsOut: string } {
   let apply = false;
   let credentialsOut: string | null = null;
   for (let i = 0; i < argv.length; i++) {
@@ -56,7 +58,11 @@ export function parseFlags(argv: string[]): { apply: boolean; credentialsOut: st
     }
     throw new ProvisionUsageError();
   }
-  return { apply, credentialsOut };
+  if (apply) {
+    if (!credentialsOut) throw new ProvisionUsageError();
+    return { apply: true, credentialsOut };
+  }
+  return { apply: false, credentialsOut };
 }
 
 function printPlan(plan: ProvisionPlan): void {
@@ -114,16 +120,38 @@ function discardReservedCredentialsFile(fd: number, path: string): void {
   }
 }
 
+export type CredentialsWriteSync = (
+  fd: number,
+  buffer: NodeJS.ArrayBufferView,
+  offset?: number | null,
+  length?: number | null,
+  position?: number | null,
+) => number;
+
+function writeAllSync(fd: number, data: Uint8Array, write: CredentialsWriteSync): void {
+  let offset = 0;
+  while (offset < data.length) {
+    const remaining = data.length - offset;
+    const written = write(fd, data, offset, remaining);
+    if (written <= 0 || written > remaining) {
+      throw new Error(`provision: short write (${written} bytes written, ${remaining} remaining)`);
+    }
+    offset += written;
+  }
+}
+
 export async function applyAfterReservingCredentialsFile(opts: {
   path: string;
   apply: (
     writeCredentials: (payload: Record<string, { password: string }>) => void,
   ) => Promise<void>;
+  writeSync?: CredentialsWriteSync;
 }): Promise<void> {
+  const write = opts.writeSync ?? writeSync;
   const fd = openSync(opts.path, 'wx', 0o600);
   try {
     await opts.apply((payload) => {
-      writeSync(fd, `${JSON.stringify(payload, null, 2)}\n`);
+      writeAllSync(fd, Buffer.from(`${JSON.stringify(payload, null, 2)}\n`), write);
       fsyncSync(fd);
     });
   } catch (err) {
@@ -135,8 +163,6 @@ export async function applyAfterReservingCredentialsFile(opts: {
 
 async function main(): Promise<void> {
   const flags = parseFlags(process.argv.slice(2));
-  if (flags.apply && !flags.credentialsOut)
-    throw new Error('--apply requires --credentials-out <path>');
   const env = parseEnv(process.env);
   const conn = postgres(env.DATABASE_URL, {
     max: 5,
@@ -152,10 +178,8 @@ async function main(): Promise<void> {
       console.log('dry-run only (never prunes); pass --apply --credentials-out <path> to insert');
       return;
     }
-    const credentialsOut = flags.credentialsOut;
-    if (!credentialsOut) throw new Error('--apply requires --credentials-out <path>');
     await applyAfterReservingCredentialsFile({
-      path: credentialsOut,
+      path: flags.credentialsOut,
       apply: async (writeCredentials) => {
         const credentials: Record<string, string> = {};
         for (const user of plan.usersToCreate) {
