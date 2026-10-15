@@ -22,8 +22,8 @@ const LUNA_MODEL_ID = 'gpt-6-luna';
 const WORKFLOW_TO_LUNA: Record<ReservationistDecision['workflow'], LunaAnalysis['workflow']> = {
   quote: 'quote',
   create: 'create_booking',
-  skip: 'other',
-  spam: 'other',
+  skip: 'skip',
+  spam: 'skip',
   other: 'other',
   amend: 'amend',
   cancel: 'cancel',

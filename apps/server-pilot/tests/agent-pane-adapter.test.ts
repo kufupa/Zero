@@ -30,8 +30,8 @@ import { createReservationistAgent } from '../src/ai/reservationist-agent.js';
 const LUNA_WORKFLOW: Record<ReservationistDecision['workflow'], LunaAnalysis['workflow']> = {
   quote: 'quote',
   create: 'create_booking',
-  skip: 'other',
-  spam: 'other',
+  skip: 'skip',
+  spam: 'skip',
   other: 'other',
   amend: 'amend',
   cancel: 'cancel',
@@ -83,6 +83,11 @@ describe('agentDecisionToLunaAnalysis', () => {
   it.each([...RESERVATIONIST_WORKFLOWS])('maps agent workflow %s onto lunaAnalysisSchema', (workflow) => {
     const analysis = agentDecisionToLunaAnalysis(decision(workflow), selection);
     expect(lunaAnalysisSchema.parse(analysis).workflow).toBe(LUNA_WORKFLOW[workflow]);
+  });
+
+  it('maps agent skip and spam onto luna skip, not other', () => {
+    expect(agentDecisionToLunaAnalysis(decision('skip'), selection).workflow).toBe('skip');
+    expect(agentDecisionToLunaAnalysis(decision('spam'), selection).workflow).toBe('skip');
   });
 
   it('folds stayAsk into one luna group with per-room adults', () => {

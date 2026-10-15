@@ -35,6 +35,7 @@ const WORKFLOW_OPERATION: Record<LunaAnalysis['workflow'], string> = {
   amend: 'amend',
   cancel: 'cancel',
   other: 'unknown',
+  skip: 'none',
   forward_to_partner: 'partner',
   send_document: 'document',
   payment_ack: 'post_payment',

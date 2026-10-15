@@ -116,7 +116,7 @@ const lunaGroupSchema = z.object({
 });
 
 export const lunaAnalysisSchema = z.object({
-  workflow: z.enum(['quote', 'create_booking', 'other', 'amend', 'cancel', ...HOLDING_MOVE_WORKFLOWS]),
+  workflow: z.enum(['quote', 'create_booking', 'other', 'skip', 'amend', 'cancel', ...HOLDING_MOVE_WORKFLOWS]),
   flags: z.array(
     z.enum([
       'conference_or_group',
