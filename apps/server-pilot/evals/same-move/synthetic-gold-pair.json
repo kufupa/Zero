@@ -1,0 +1,71 @@
+{
+  "labels": [
+    {
+      "messageId": "msg-book-1",
+      "threadId": "thread-book",
+      "targetKey": "normal:msg-book-1",
+      "staff_move": "booked_confirmed",
+      "hms_work_implied": ["create"]
+    },
+    {
+      "messageId": "msg-cancel-1",
+      "threadId": "thread-cancel",
+      "targetKey": "normal:msg-cancel-1",
+      "staff_move": "cancel_done",
+      "hms_work_implied": ["cancel"]
+    },
+    {
+      "messageId": "msg-quote-1",
+      "threadId": "thread-quote",
+      "staff_move": "priced_quote",
+      "hms_work_implied": ["rates_read"]
+    },
+    {
+      "messageId": "msg-silent-1",
+      "threadId": "thread-silent",
+      "staff_move": "no_visible_action",
+      "hms_work_implied": ["create"]
+    }
+  ],
+  "claimed": [
+    {
+      "messageId": "msg-book-1",
+      "targetKey": "normal:msg-book-1",
+      "operations": [
+        {
+          "operation": "create",
+          "needLevel": "required",
+          "requiredFields": ["arrival"],
+          "candidateTool": "hms_create_reservation",
+          "unknownReason": null
+        }
+      ]
+    }
+  ],
+  "predicted": [
+    {
+      "messageId": "msg-book-1",
+      "operations": [
+        {
+          "operation": "create",
+          "needLevel": "required",
+          "requiredFields": ["arrival"],
+          "candidateTool": "hms_create_reservation",
+          "unknownReason": null
+        }
+      ]
+    },
+    {
+      "messageId": "msg-cancel-1",
+      "operations": [
+        {
+          "operation": "create",
+          "needLevel": "required",
+          "requiredFields": [],
+          "candidateTool": "hms_create_reservation",
+          "unknownReason": null
+        }
+      ]
+    }
+  ]
+}

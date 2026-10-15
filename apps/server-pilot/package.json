@@ -27,6 +27,7 @@
     "eval:hms-portfolio-ablation": "tsx src/ops/portfolio-ablation-replay.ts",
     "eval:quote-outcomes": "tsx scripts/quote-outcome-eval.ts",
     "eval:party": "tsx scripts/party-match-eval.ts",
+    "eval:gold-pair-join": "tsx scripts/join-gold-pair-ops.ts",
     "test": "vitest run",
     "check:entities": "node scripts/check-entity-literals.mjs",
     "test:outlook-sync": "tsx scripts/outlook-sync-test-gate.ts",
