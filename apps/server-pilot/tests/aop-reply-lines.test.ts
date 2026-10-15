@@ -42,16 +42,17 @@ describe('pickReplyLine', () => {
     );
   });
 
-  it('B is booked plus pro forma to follow', () => {
-    const result = pickReplyLine({ code: 'B' });
+  it('B is booked plus pro forma to follow when a confirmation number exists', () => {
+    const result = pickReplyLine({ code: 'B', confirmationNumber: CONF });
     expect(result.code).toBe('B');
     expect(result.line).toMatch(/^Good day,/);
-    expect(result.line).toMatch(/booked|booking has been made/i);
+    expect(result.line).toMatch(/booked|has been made/i);
     expect(result.line).toMatch(/pro forma/i);
+    expect(result.line).toContain(CONF);
   });
 
-  it('S asks the reader to see the attached document', () => {
-    const plain = pickReplyLine({ code: 'S' });
+  it('S asks the reader to see the attached document when one is attached', () => {
+    const plain = pickReplyLine({ code: 'S', attached: true });
     expect(plain.line).toMatch(/^Good day,/);
     expect(plain.line).toMatch(/please see attached/i);
     const invoice = pickReplyLine({ code: 'S', documentKind: 'invoice' });
@@ -63,6 +64,40 @@ describe('pickReplyLine', () => {
     expect(result.code).toBe('R');
     expect(result.line).toMatch(/^Good day,/);
     expect(result.line).toMatch(/please contact Da Vinci reservations/i);
+  });
+
+  it('C without done does not default to amended', () => {
+    expect(() => pickReplyLine({ code: 'C' })).toThrow(/done/i);
+    expect(() => pickReplyLine({ code: REPLY_CODE_FOR_WORKFLOW.cancel })).toThrow(/done/i);
+  });
+
+  it('B without a confirmation number does not claim the booking was made', () => {
+    expect(() => pickReplyLine({ code: 'B' })).toThrow(/confirmationNumber/i);
+    expect(() => pickReplyLine({ code: REPLY_CODE_FOR_WORKFLOW.create })).toThrow(
+      /confirmationNumber/i,
+    );
+  });
+
+  it('S without an attached document does not say please see attached', () => {
+    expect(() => pickReplyLine({ code: 'S' })).toThrow(/attached|documentKind/i);
+    expect(() => pickReplyLine({ code: REPLY_CODE_FOR_WORKFLOW.send_document })).toThrow(
+      /attached|documentKind/i,
+    );
+  });
+
+  it('R accepts partnerDestination as the live decision field', () => {
+    const result = pickReplyLine({ code: 'R', partnerDestination: 'Accounts' });
+    expect(result.line).toMatch(/please contact Accounts/i);
+  });
+
+  it('interpolated fields stay one sentence', () => {
+    const result = pickReplyLine({
+      code: 'R',
+      redirectTo: 'Accounts\nSecond sentence',
+    });
+    expect(result.line).not.toMatch(/\n/);
+    expect(result.line.split(/(?<=[.!?])\s+/).length).toBe(1);
+    expect(result.line).toMatch(/^Good day, please contact Accounts Second sentence\.$/);
   });
 
   it('schemas and description are ready for createTool', () => {
@@ -95,5 +130,27 @@ describe('REPLY_LINES_SOP', () => {
     expect(REPLY_LINES_SOP).toMatch(/acknowledge/);
     expect(REPLY_LINES_SOP).toMatch(/payment_ack/);
     expect(REPLY_LINES_SOP).toMatch(/forward_to_partner/);
+  });
+
+  it('opens with its own entry condition and never overrides rules globally', () => {
+    const first = instructionLines(REPLY_LINES_SOP)[0] ?? '';
+    expect(first).toMatch(/^Applies only when /);
+    expect(REPLY_LINES_SOP).not.toMatch(
+      /Never skip|Never other|Overrides |beats |Pick one workflow|This SOP wins/i,
+    );
+  });
+
+  it('does not mention events, conference, venue, or DDR', () => {
+    expect(REPLY_LINES_SOP).not.toMatch(/\bevents?\b|\bconference\b|\bDDR\b|\bworkshop\b|\bvenue\b/i);
+  });
+
+  it('routes voucher already-paid new bookings to create, not payment_ack', () => {
+    expect(REPLY_LINES_SOP).toMatch(/voucher/i);
+    expect(REPLY_LINES_SOP).toMatch(/create/);
+    expect(REPLY_LINES_SOP).toMatch(/not payment_ack/i);
+  });
+
+  it('says which template wins when amend and cancel both fit', () => {
+    expect(REPLY_LINES_SOP).toMatch(/cancel wins/i);
   });
 });
