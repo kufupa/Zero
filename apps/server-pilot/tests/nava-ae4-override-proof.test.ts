@@ -15,6 +15,7 @@ import {
   planAe4Stay,
   randToMinor,
   ratesRunOf,
+  readRoomRows,
   storedWorkView,
   textHasAmount,
   textHasNote,
@@ -22,6 +23,7 @@ import {
   type Ae4StayRead,
   type Ae4Summary,
 } from '../scripts/nava-ae4-override-proof';
+import { needsEditsMessage } from '../scripts/nava-proof-kit';
 import { KNOWN_WRITE_PROCEDURES } from '../scripts/nava-preview-run';
 
 const NOTE = "Kamala OK'd – repeat group";
@@ -381,6 +383,43 @@ describe('the stay', () => {
     };
     expect(planAe4Stay(asked, inputs)).toEqual([{ field: 'roomType', value: 'STQN' }]);
     expect(planAe4Stay({ ...stored, roomValue: '' }, inputs)).toEqual([{ field: 'roomType', value: 'STQN' }]);
+  });
+
+  it('reads unset adults as null and names the adults edit', async () => {
+    const roomType = { value: 'STWN', options: [{ value: 'STWN', textContent: 'Standard Twin (STWN)' }] };
+    const rooms = { value: '1' };
+    const mealPlan = { value: 'bb', querySelector: () => null };
+    const row = {
+      querySelectorAll: () => [{ textContent: 'Adults per room not set' }],
+      querySelector: (selector: string) => (selector.startsWith('select') ? roomType : rooms),
+    };
+    const stay = { querySelector: () => mealPlan };
+    const group = {
+      closest: (selector: string) => (selector === '[role="row"]' ? row : stay),
+      getAttribute: () => 'Rooms for stay 1, room 1',
+    };
+    const section = { querySelectorAll: () => [group] };
+    const pane = { querySelector: () => section };
+    const document = { querySelector: () => pane };
+    const page = {
+      evaluate: async (expression: string) => new Function('document', `return ${expression};`)(document),
+    } as never;
+
+    const [read] = await readRoomRows(page);
+    expect(read?.adults).toBeNull();
+    const fills = planAe4Stay(
+      {
+        ...stored,
+        roomValue: read!.roomValue,
+        roomOptions: read!.roomOptions,
+        rooms: read!.rooms === null ? '' : String(read!.rooms),
+        adults: read!.adults === null ? '' : String(read!.adults),
+        board: read!.board,
+      },
+      inputs,
+    );
+    expect(fills).toEqual([{ field: 'adults', value: '2' }]);
+    expect(needsEditsMessage(fills.map(({ field }) => field))).toBe('needs_edits:adults');
   });
 
   it('never fills a date the stay has, and never guesses the other one', () => {

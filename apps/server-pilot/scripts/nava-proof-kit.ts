@@ -12,6 +12,7 @@ import { strFromU8, unzipSync } from 'fflate';
 import {
   Blocker,
   decodeXml,
+  latestOutcome,
   parseTrpcBatch,
   readPane,
   waitFor,
@@ -117,7 +118,8 @@ export async function openProofPage(
 }
 
 /** Opens the thread in /nava-preview and waits until the pane has read it (the "Nava is reading" line is gone). */
-export async function openThread(page: Page, baseUrl: string, threadId: string): Promise<void> {
+export async function openThread(page: Page, baseUrl: string, threadId: string, captured: Captured): Promise<void> {
+  const outcomeStart = captured.outcomes.length;
   await page.goto(`${baseUrl}/nava-preview?thread=${encodeURIComponent(threadId)}`, { waitUntil: 'domcontentloaded' });
   if (new URL(page.url()).pathname.startsWith('/login')) throw new Blocker('the storage state has no session');
   await waitFor('the pane to read the email', SETTLE_MS, async () => {
@@ -125,11 +127,12 @@ export async function openThread(page: Page, baseUrl: string, threadId: string):
     const outcome = read ? outcomeOf(read) : null;
     if (outcome === 'unsynced') throw new Blocker('pane unsynced');
     if (outcome === 'error') {
-      const errorText = [read?.statusText, ...(read?.alerts ?? [])].join(' ');
-      const threadNotOnMailbox =
-        read?.paneStatus === 'error' &&
-        (/Could not load this thread\./i.test(errorText) || /\bNOT_FOUND\b/.test(errorText));
-      throw new Blocker(threadNotOnMailbox ? 'thread_not_on_mailbox' : 'pane error');
+      const threadRead = await waitFor('the thread response', 2_000, async () =>
+        latestOutcome(captured, 'mail.get', outcomeStart),
+      ).catch(() => null);
+      const errorCode = threadRead?.error?.code;
+      if (errorCode === 'NOT_FOUND') throw new Blocker('thread_not_on_mailbox');
+      throw new Blocker(errorCode ? `pane error: ${errorCode}` : 'pane error');
     }
     return outcome;
   });

@@ -646,7 +646,7 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
   };
   const steps = async (page: Page, captured: Captured): Promise<void> => {
     // 1. Open the thread and let the pane read it.
-    await openThread(page, config.baseUrl, threadId);
+    await openThread(page, config.baseUrl, threadId, captured);
     log('pane settled');
     const stored = await waitFor('the stored read', 15_000, async () => {
       const get = latestOutcome(captured, 'workItems.getByMessage');
@@ -953,7 +953,7 @@ export async function readAe1Plan(config: Ae1Config, log: (line: string) => void
     restored: false,
   };
   const steps = async (page: Page, captured: Captured): Promise<void> => {
-    await openThread(page, config.baseUrl, threadId);
+    await openThread(page, config.baseUrl, threadId, captured);
     const stored = await waitFor('the stored read', 15_000, async () => {
       const get = latestOutcome(captured, 'workItems.getByMessage');
       return get ? storedWorkView(get.data) : null;
