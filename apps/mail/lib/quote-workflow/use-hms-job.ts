@@ -17,6 +17,16 @@ import {
  * when it is still moving. A change of `scope` (another email or booking selection) clears what is shown.
  */
 
+/** Server message when tRPC refused the queue call; null for other queue failures. */
+export function preconditionFailedMessage(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null;
+  const record = error as { message?: unknown; code?: unknown; data?: unknown };
+  const data = record.data && typeof record.data === 'object' ? (record.data as { code?: unknown }) : null;
+  const code = record.code ?? data?.code;
+  if (code !== 'PRECONDITION_FAILED') return null;
+  return typeof record.message === 'string' && record.message.trim() ? record.message : null;
+}
+
 export type HmsJobState = {
   /** The job on screen: queued, running, retrying, done (a dated snapshot) or failed. Null before any job. */
   view: HmsJobView | null;
@@ -24,6 +34,8 @@ export type HmsJobState = {
   queuing: boolean;
   /** True when the queue call itself failed, so no job exists. */
   queueFailed: boolean;
+  /** PRECONDITION_FAILED server copy, when that is why queueing failed. */
+  queueFailureMessage: string | null;
   /** True when the read-back failed, so the pane can offer a safe retry. */
   statusFailed: boolean;
   /**
@@ -126,6 +138,7 @@ export function useHmsJob(input: {
   const [view, setView] = useState<HmsJobView | null>(null);
   const [queuing, setQueuing] = useState(false);
   const [queueFailed, setQueueFailed] = useState(false);
+  const [queueFailureMessage, setQueueFailureMessage] = useState<string | null>(null);
   const [statusFailed, setStatusFailed] = useState(false);
   const [readBackSettled, setReadBackSettled] = useState(false);
   const [statusRetryRound, setStatusRetryRound] = useState(0);
@@ -160,6 +173,7 @@ export function useHmsJob(input: {
       setRunId(null);
       setView(null);
       setQueueFailed(false);
+      setQueueFailureMessage(null);
       setStatusFailed(false);
       setQueuing(true);
       (options ? transport.queue(request, options) : transport.queue(request)).then(
@@ -215,13 +229,14 @@ export function useHmsJob(input: {
             noticeReporter.cancel(noticeObserverId, jobId);
           }
         },
-        () => {
+        (error) => {
           if (generation.current !== mine) {
             noticeReporter.queueFailed(noticeObserverId, jobId, () => retryRef.current());
             return;
           }
           setQueuing(false);
           setQueueFailed(true);
+          setQueueFailureMessage(preconditionFailedMessage(error));
         },
       );
     },
@@ -259,6 +274,7 @@ export function useHmsJob(input: {
     setView(null);
     setQueuing(false);
     setQueueFailed(false);
+    setQueueFailureMessage(null);
     setStatusFailed(false);
     setReadBackSettled(false);
     if (!transport || !resumeKind) return;
@@ -439,5 +455,14 @@ export function useHmsJob(input: {
     [noticeReporter, noticeObserverId],
   );
 
-  return { view, queuing, queueFailed, statusFailed, readBackSettled, start, retry };
+  return {
+    view,
+    queuing,
+    queueFailed,
+    queueFailureMessage,
+    statusFailed,
+    readBackSettled,
+    start,
+    retry,
+  };
 }

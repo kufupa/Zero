@@ -530,6 +530,103 @@ describe('paneStayLookup router origin guard', () => {
     ).resolves.toEqual({ runId: 'run-queued' });
     expect(jobMocks.queueUserHmsJob).toHaveBeenCalledTimes(1);
   });
+
+  it('findStay refuses Da Vinci-origin before any lock or spawn', async () => {
+    const seen: string[] = [];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['centurion@legacyhotels.co.za', 'davinci@legacyhotels.co.za'],
+    });
+    paneStayLookupLoaders.lock = passingLock(seen);
+    paneStayLookupLoaders.spawn = vi.fn(async () => lookupResult());
+    await expect(
+      mailboxCaller().paneStayLookup.findStay({
+        confirmation: '57291630-1',
+        threadId: 'thread-dv',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(seen).toEqual([]);
+    expect(paneStayLookupLoaders.spawn).not.toHaveBeenCalled();
+  });
+
+  it('searchGuest refuses Da Vinci-origin before any lock or spawn', async () => {
+    const seen: string[] = [];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['davinci@legacyhotels.co.za'],
+    });
+    paneStayLookupLoaders.lock = passingLock(seen);
+    paneStayLookupLoaders.spawn = vi.fn(async () => lookupResult({ outcome: 'ok', stay: null, rows: [] }));
+    await expect(
+      mailboxCaller().paneStayLookup.searchGuest({
+        lastName: 'Mokoena',
+        arrival: '2027-09-14',
+        threadId: 'thread-dv',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(seen).toEqual([]);
+    expect(paneStayLookupLoaders.spawn).not.toHaveBeenCalled();
+  });
+
+  it('findStay omits the origin guard when threadId is missing', async () => {
+    const loadThreadOrigin = vi.fn(async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['davinci@legacyhotels.co.za'],
+    }));
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = loadThreadOrigin;
+    paneStayLookupLoaders.lock = passingLock();
+    paneStayLookupLoaders.spawn = async () => lookupResult();
+    await expect(
+      mailboxCaller().paneStayLookup.findStay({ confirmation: '57291630-1' }),
+    ).resolves.toMatchObject({ outcome: 'found' });
+    expect(loadThreadOrigin).not.toHaveBeenCalled();
+  });
+
+  it('queueSearchGuest refuses Da Vinci-origin and does not enqueue', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['davinci@legacyhotels.co.za'],
+    });
+    jobMocks.queueUserHmsJob.mockResolvedValue({ id: 'should-not-enqueue' });
+    await expect(
+      mailboxCaller().paneStayLookup.queueSearchGuest({
+        threadId: 'thread-dv',
+        lastName: 'Mokoena',
+        arrival: '2027-09-14',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(jobMocks.queueUserHmsJob).not.toHaveBeenCalled();
+  });
+
+  it('queueParty refuses Da Vinci-origin and does not enqueue', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['davinci@legacyhotels.co.za'],
+    });
+    jobMocks.queueUserPartyHmsJob.mockResolvedValue({ id: 'should-not-enqueue' });
+    await expect(
+      mailboxCaller().paneStayLookup.queueParty({
+        threadId: 'thread-dv',
+        name: 'Acme',
+        partyKind: 'agency',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(jobMocks.queueUserPartyHmsJob).not.toHaveBeenCalled();
+  });
 });
 
 describe('paneStayLookup router', () => {

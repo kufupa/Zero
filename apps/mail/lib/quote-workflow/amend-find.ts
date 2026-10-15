@@ -103,7 +103,7 @@ export type StayCommercialWire = {
 };
 
 /** The email's arrival, when it is a real ISO day, moves HMS quick search to cover that day. */
-export type FindStayInput = { confirmation: string; arrival?: string };
+export type FindStayInput = { confirmation: string; arrival?: string; threadId?: string };
 
 /**
  * The reply a find job stores. Refusals and failures carry no stay. With an arrival sent, HMS refuses a record that
@@ -138,7 +138,12 @@ export type GuestSearchRow = {
   departure: string | null;
 };
 
-export type GuestSearchInput = { lastName: string; arrival: string; departure?: string };
+export type GuestSearchInput = {
+  lastName: string;
+  arrival: string;
+  departure?: string;
+  threadId?: string;
+};
 
 /** The reply a search job stores. rows are complete only for outcome ok. */
 export type GuestSearchReply = {
@@ -340,7 +345,7 @@ export function hmsJobTransport(
         if (runId) return { runId };
         if (options?.autoStart) return { runId: null };
         if (!client.findStay) throw new Error('paneStayLookup.findStay unavailable');
-        return { runId: null, view: syncView(request, await client.findStay(input)) };
+        return { runId: null, view: syncView(request, await client.findStay({ ...input, threadId })) };
       }
       if (request.kind === 'party') {
         // Party reads are never generated from read-back: only the pane's explicit Find action may queue one.
@@ -379,7 +384,7 @@ export function hmsJobTransport(
       // Auto-start with the queue off must not run the live search: it would repeat on every card open.
       if (options?.autoStart) return { runId: null };
       if (!client.searchGuest) throw new Error('paneStayLookup.searchGuest unavailable');
-      return { runId: null, view: syncView(request, await client.searchGuest(input)) };
+      return { runId: null, view: syncView(request, await client.searchGuest({ ...input, threadId })) };
     },
     status: (input) => client.jobStatus('runId' in input ? input : { threadId, ...input }),
   };

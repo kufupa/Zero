@@ -18,7 +18,7 @@ import {
 } from '../../lib/quote-workflow/amend-find';
 import type { StaffQuoteParties, StaffQuoteParty } from '../../lib/quote-workflow/types';
 import { LinkButton, Notice, SecondaryButton } from '../nava-pane/pane-ui';
-import { useHmsJob } from '../../lib/quote-workflow/use-hms-job';
+import { preconditionFailedMessage, useHmsJob } from '../../lib/quote-workflow/use-hms-job';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { HmsAsOf, HmsJobStatusLine, HmsLookupProgress } from './hms-queue-status';
 
@@ -83,6 +83,7 @@ const PARTY_JOB_OUTCOMES = new Set<PartyFindReply['outcome']>([
   'external_system_unavailable',
   'refused_flag_off',
   'refused_input_invalid',
+  'refused_origin_mismatch',
   'refused_lock_unavailable',
   'refused_lock_busy',
 ]);
@@ -469,12 +470,13 @@ export function PartyPicker({
         return;
       }
       setState({ status: 'none', query, note: noCandidateNote(reply, kind, query) });
-    } catch {
+    } catch (error) {
       if (token !== latest.current) return;
       setState({
         status: 'none',
         query,
-        note: partyNoCandidateNote('execution_failure', kind, query),
+        note:
+          preconditionFailedMessage(error) ?? partyNoCandidateNote('execution_failure', kind, query),
       });
     }
   };
@@ -659,7 +661,9 @@ export function PartyPicker({
           queueFailed={partyJob.queueFailed}
           failureMessage={partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
           failedMessage={partySearchTimedOut ? timeoutMessage : partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
-          queueFailureMessage={partyNoCandidateNote('execution_failure', kind, query)}
+          queueFailureMessage={
+            partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', kind, query)
+          }
         />
       ) : null}
       {v2NeedsPick ? (

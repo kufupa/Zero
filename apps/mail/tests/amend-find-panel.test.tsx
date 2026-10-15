@@ -939,7 +939,11 @@ describe('AmendLookupPanel with the job queue off', () => {
         'Email departure 14 Oct 2026; HMS departure 13 Oct 2026',
       ),
     );
-    expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    expect(findStay).toHaveBeenCalledWith({
+      confirmation: CONFIRMATION,
+      arrival: '2026-10-12',
+      threadId: THREAD,
+    });
     expect(jobStatus.mock.calls.some(([input]) => 'runId' in input)).toBe(false);
     expect(screen.queryByTestId('hms-as-of')).toBeNull();
   });
@@ -950,7 +954,12 @@ describe('AmendLookupPanel with the job queue off', () => {
     render(<AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: null })} trpc={trpc} />);
     await pressSearch();
     await screen.findByRole('list', { name: 'Bookings found in HMS' });
-    expect(search).toHaveBeenCalledWith({ lastName: 'Mokoena', arrival: '2026-10-12', departure: '2026-10-14' });
+    expect(search).toHaveBeenCalledWith({
+      lastName: 'Mokoena',
+      arrival: '2026-10-12',
+      departure: '2026-10-14',
+      threadId: THREAD,
+    });
   });
 
   it('does not run an automatic find inline when the queue is off, while a manual find stays synchronous', async () => {
@@ -965,7 +974,11 @@ describe('AmendLookupPanel with the job queue off', () => {
     expect(findStay).not.toHaveBeenCalled();
 
     const started = await transport!.queue({ kind: 'find', confirmation: CONFIRMATION, arrival: '2026-10-12' });
-    expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    expect(findStay).toHaveBeenCalledWith({
+      confirmation: CONFIRMATION,
+      arrival: '2026-10-12',
+      threadId: THREAD,
+    });
     expect(started.view).toMatchObject({ status: 'done', outcome: 'found' });
   });
 
@@ -1001,7 +1014,11 @@ describe('party lookup transport with the job queue off', () => {
     expect(transport).not.toBeNull();
 
     const started = await transport!.queue(request);
-    expect(findParty).toHaveBeenCalledWith({ name: 'ABC Travel', kind: 'company' });
+    expect(findParty).toHaveBeenCalledWith({
+      name: 'ABC Travel',
+      kind: 'company',
+      threadId: THREAD,
+    });
     expect(started).toMatchObject({
       runId: null,
       view: { status: 'done', outcome: 'no_match', result: reply },

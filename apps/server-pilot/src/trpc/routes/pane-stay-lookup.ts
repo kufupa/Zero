@@ -39,9 +39,13 @@ import { z } from 'zod';
 
 const confirmation = z.string().regex(/^\d+-\d+$/);
 const arrival = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const threadIdInput = z.string().min(1);
 
 // Read-only find. strict(): no propertyCode or other key reaches the module. The lock is always the session hotel.
-const findStayInput = z.object({ confirmation, arrival: arrival.optional() }).strict();
+// threadId is optional: pane/thread callers send it so Da Vinci origin is refused before HMS.
+const findStayInput = z
+  .object({ confirmation, arrival: arrival.optional(), threadId: threadIdInput.optional() })
+  .strict();
 
 // Surname search over one arrival day, optionally narrowed to one departure. Same strict() and session-hotel lock.
 const searchGuestInput = z
@@ -49,11 +53,11 @@ const searchGuestInput = z
     lastName: z.string().min(2).max(40).regex(GUEST_SURNAME_PATTERN),
     arrival,
     departure: arrival.optional(),
+    threadId: threadIdInput.optional(),
   })
   .strict();
 
 // Queued variants: the same lookups as read_tool jobs on the hms lane. The thread anchors the job to mail.
-const threadIdInput = z.string().min(1);
 const queueFindInput = z
   .object({ threadId: threadIdInput, confirmation, arrival: arrival.optional(), autoStart: z.literal(true).optional() })
   .strict();
@@ -134,11 +138,22 @@ export const paneStayLookupRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
+      if (input.threadId) {
+        await assertCenturionHmsMailboxOrigin({
+          transportId: ctx.activeTransportId,
+          threadId: input.threadId,
+        });
+      }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      return findStay(input, {
-        lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
-        onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
-      });
+      return findStay(
+        input.arrival
+          ? { confirmation: input.confirmation, arrival: input.arrival }
+          : { confirmation: input.confirmation },
+        {
+          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
+          onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
+        },
+      );
     }),
   searchGuest: mailboxProcedure
     .input(searchGuestInput)
@@ -156,11 +171,22 @@ export const paneStayLookupRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
+      if (input.threadId) {
+        await assertCenturionHmsMailboxOrigin({
+          transportId: ctx.activeTransportId,
+          threadId: input.threadId,
+        });
+      }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      return searchGuest(input, {
-        lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
-        onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
-      });
+      return searchGuest(
+        input.departure
+          ? { lastName: input.lastName, arrival: input.arrival, departure: input.departure }
+          : { lastName: input.lastName, arrival: input.arrival },
+        {
+          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
+          onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
+        },
+      );
     }),
   // HMS_JOB_QUEUE off (the default): nothing is queued. runId null tells the pane to run findStay or searchGuest above.
   queueFind: mailboxProcedure.input(queueFindInput).mutation(async ({ input, ctx }) => {
