@@ -267,6 +267,8 @@ export async function persistInboundMessage(
     });
   }
 
+  // Source receipt (ingestMailboxId+pop3Uidl) before routing dispatch: the
+  // same UIDL is duplicate even if current matching would quarantine as multi.
   const existingMessage = await findExistingMessageByIngestIdentity(db, meta);
   if (existingMessage) {
     const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
