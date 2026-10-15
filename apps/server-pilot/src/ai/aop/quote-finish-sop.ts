@@ -1,7 +1,7 @@
 // Agent SOP for workflow: quote
 export const QUOTE_FINISH_SOP = `Applies only when the last mail asks this hotel to provide a quote, quotation, rate or availability for lodging rooms (a price-check), or accepts a quote this hotel already sent on this thread. Otherwise ignore this section.
 
-Not this section: a voucher or remittance / EFT with no rate ask; amend/cancel of a named confirmation; a first-mail book-or-key with no prior quote on this thread.
+Not this section: an agent/TMC voucher or paid-stay pack (an already-paid new booking, even if it asks about the rate); remittance / EFT with no rate ask; amend/cancel of a named confirmation; a first-mail book-or-key with no prior quote on this thread.
 
 AOP-1 finish (not the spine). For a mail that meets this condition:
 
