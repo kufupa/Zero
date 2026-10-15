@@ -32,6 +32,7 @@ import {
   toolInputDigest,
 } from '../../ai/hitl-tool-run.js';
 import { availabilityRequestSchema } from '../../ai/hms-availability.js';
+import { assertCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
@@ -163,6 +164,10 @@ export const paneStayLookupRouter = router({
     }),
   // HMS_JOB_QUEUE off (the default): nothing is queued. runId null tells the pane to run findStay or searchGuest above.
   queueFind: mailboxProcedure.input(queueFindInput).mutation(async ({ input, ctx }) => {
+    await assertCenturionHmsMailboxOrigin({
+      transportId: ctx.activeTransportId,
+      threadId: input.threadId,
+    });
     if (!hmsJobQueueEnabled()) return { runId: null };
     const run = await queueUserHmsJob({
       transportId: ctx.activeTransportId,
@@ -179,6 +184,10 @@ export const paneStayLookupRouter = router({
   queueSearchGuest: mailboxProcedure
     .input(queueSearchGuestInput)
     .mutation(async ({ input, ctx }) => {
+      await assertCenturionHmsMailboxOrigin({
+        transportId: ctx.activeTransportId,
+        threadId: input.threadId,
+      });
       if (!hmsJobQueueEnabled()) return { runId: null };
       const run = await queueUserHmsJob({
         transportId: ctx.activeTransportId,
@@ -205,6 +214,10 @@ export const paneStayLookupRouter = router({
       return { runId: run.id };
     }),
   queueParty: mailboxProcedure.input(queuePartyInput).mutation(async ({ input, ctx }) => {
+    await assertCenturionHmsMailboxOrigin({
+      transportId: ctx.activeTransportId,
+      threadId: input.threadId,
+    });
     if (!hmsJobQueueEnabled()) return { runId: null };
     try {
       const run = await queueUserPartyHmsJob({

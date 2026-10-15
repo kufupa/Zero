@@ -9,6 +9,10 @@ import {
 } from '../src/ai/pane-party-lookup.js';
 import { quoteRateContextEnabled } from '../src/ai/quote-rate-switch.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
+import {
+  CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+  mailboxHmsOriginBindLoaders,
+} from '../src/hms/mailbox-hms-origin-bind.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
@@ -102,6 +106,7 @@ afterEach(() => {
   panePartyLookupLoaders.spawn = null;
   panePartyLookupLoaders.lock = null;
   panePartyLookupLoaders.enabled = null;
+  mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
   vi.unstubAllEnvs();
 });
 
@@ -450,6 +455,41 @@ describe('kill switch', () => {
     expect(quoteRateContextEnabled({})).toBe(true);
     expect(quoteRateContextEnabled({ QUOTE_RATE_CONTEXT: 'on' })).toBe(true);
     expect(quoteRateContextEnabled({ QUOTE_RATE_CONTEXT: ' OFF ' })).toBe(false);
+  });
+});
+
+describe('panePartyLookup router origin guard', () => {
+  it('refuses Da Vinci-origin before any lock or spawn, with the pane message', async () => {
+    const seen: string[] = [];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['centurion@legacyhotels.co.za', 'davinci@legacyhotels.co.za'],
+    });
+    panePartyLookupLoaders.lock = passingLock(seen);
+    panePartyLookupLoaders.spawn = fixtureSpawn();
+    await expect(
+      mailboxCaller().panePartyLookup.findParty({ name: 'Tourvest', threadId: 'thread-dv' }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(seen).toEqual([]);
+    expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
+  });
+
+  it('allows Centurion-origin and still searches HMS', async () => {
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['centurion@legacyhotels.co.za'],
+    });
+    panePartyLookupLoaders.lock = passingLock();
+    panePartyLookupLoaders.spawn = fixtureSpawn();
+    await expect(
+      mailboxCaller().panePartyLookup.findParty({ name: 'Tourvest', threadId: 'thread-cen' }),
+    ).resolves.toMatchObject({
+      outcome: 'resolved',
+      best: { kind: 'company', nativeId: '206' },
+    });
   });
 });
 
