@@ -1,0 +1,10 @@
+{
+  "tests_pass": true,
+  "typecheck_new": 0,
+  "sha": "a402a4e14c834dbb53dad329b7ad6a5d9de1c834",
+  "files": [
+    "apps/server-pilot/src/ai/agent-finish-check.ts",
+    "apps/server-pilot/scripts/agent-finish-check.ts"
+  ],
+  "tests": ["tests/agent-finish-check.test.ts"]
+}
