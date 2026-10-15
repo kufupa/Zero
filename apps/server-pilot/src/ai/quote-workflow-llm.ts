@@ -9,6 +9,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { maskCardNumbers } from './card-mask.js';
 import { createHash } from 'node:crypto';
 import { matchKey } from './party-match.js';
+import { matchRoomType } from './room-types.js';
 import {
   anchorStayDateRange,
   receivedDateAtHotel,
@@ -398,6 +399,9 @@ export function mapLlmDecision(
 ): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
   const staffQuote = Boolean(options?.treatAs);
+  const quoteDefaults = options?.treatAs
+    ? options.treatAs === 'quote'
+    : analysis.workflow === 'quote';
   const notQuote = analysis.workflow === 'other' || isAmendOrCancelWorkflow(analysis.workflow);
   if ((notQuote || venueOrEventManual(analysis)) && !staffQuote) {
     const routed = analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field));
@@ -455,6 +459,17 @@ export function mapLlmDecision(
         question: `Departure date for group ${index + 1} must be after arrival; confirm the stay dates.`,
       });
     }
+    const hasValidStayDates = Boolean(arrivalDate && departureDate && departureDate > arrivalDate);
+    const hasGuestEvidence =
+      group.adultsPerRoom !== null || group.childAges.length > 0 || group.guestNames.length > 0;
+    const quantityDefaulted =
+      quoteDefaults && group.rooms === null && hasValidStayDates && hasGuestEvidence;
+    const adultsDefaulted = quoteDefaults && group.adultsPerRoom === null;
+    const quantity = group.rooms ?? (quantityDefaulted ? 1 : undefined);
+    const adults = group.adultsPerRoom ?? (adultsDefaulted ? 2 : undefined);
+    const roomPreference = group.roomPreference?.trim() || undefined;
+    const roomMatch = roomPreference ? matchRoomType(roomPreference) : null;
+    const roomPreferenceDefaulted = quoteDefaults && !roomMatch?.code;
     const boardDefaulted = group.board === null;
     const board: MappedQuoteDecision['groups'][number]['board'] = mapStatedOrDefaultBoard(
       group.board,
@@ -464,18 +479,25 @@ export function mapLlmDecision(
       id: `g${index + 1}`,
       ...(arrivalDate ? { arrivalDate } : {}),
       ...(departureDate ? { departureDate } : {}),
-      ...(group.rooms !== null ? { quantity: group.rooms } : {}),
-      ...(group.adultsPerRoom !== null ? { adults: group.adultsPerRoom } : {}),
+      ...(quantity !== undefined ? { quantity } : {}),
+      ...(adults !== undefined ? { adults } : {}),
       childrenAges: group.childAges,
       board,
-      ...(group.roomPreference ? { roomPreference: group.roomPreference } : {}),
+      ...(roomPreference ? { roomPreference } : {}),
       ...(analysis.party.name ? { organisation: analysis.party.name } : {}),
       specialRequests: [] as string[],
       fields: {
         arrivalDate: arrivalDate ? ('extracted' as const) : ('missing' as const),
         departureDate: departureDate ? ('extracted' as const) : ('missing' as const),
-        quantity: fieldState(group.rooms),
-        adults: fieldState(group.adultsPerRoom),
+        quantity: quantityDefaulted ? ('defaulted' as const) : fieldState(group.rooms),
+        adults: adultsDefaulted ? ('defaulted' as const) : fieldState(group.adultsPerRoom),
+        ...(quoteDefaults
+          ? {
+              roomPreference: roomPreferenceDefaulted
+                ? ('defaulted' as const)
+                : fieldState(roomPreference),
+            }
+          : {}),
         board: boardDefaulted ? ('defaulted' as const) : fieldState(group.board),
       },
     };
@@ -499,8 +521,25 @@ export function mapLlmDecision(
       question: 'Stay dates, rooms and occupancy for this quote?',
     });
   }
+  const mappedQuoteFieldIsPresent = (field: string): boolean => {
+    if (!quoteDefaults || groups.length === 0) return false;
+    switch (field.toLowerCase()) {
+      case 'rooms':
+      case 'roomcount':
+      case 'quantity':
+      case 'numberofrooms':
+        return groups.every((group) => group.quantity !== undefined);
+      case 'adultsperroom':
+      case 'adults':
+      case 'occupancy':
+      case 'numberofguestsperroom':
+        return groups.every((group) => group.adults !== undefined);
+      default:
+        return false;
+    }
+  };
   for (const item of analysis.missing) {
-    if (!hotelDefaultedQuestion(item.field)) missing.push(item);
+    if (!hotelDefaultedQuestion(item.field) && !mappedQuoteFieldIsPresent(item.field)) missing.push(item);
   }
   if (roomsOnlyInfoNeeded(analysis)) {
     missing.unshift({ field: 'rooms_only_group', question: ROOMS_ONLY_INFO_QUESTION });

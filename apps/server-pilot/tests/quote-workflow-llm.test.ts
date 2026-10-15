@@ -530,7 +530,46 @@ describe('mapLlmDecision', () => {
     expect(JSON.stringify(mapped)).not.toMatch(/price|rate"|amount/i);
   });
 
-  it('maps half-board to dinner B&B and derives only missing dates and occupancy for the reply', () => {
+  it('defaults quote rooms and occupancy to editable values with defaulted provenance', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, rooms: null, adultsPerRoom: null }],
+          missing: [
+            { field: 'rooms', question: 'How many rooms?' },
+            { field: 'adultsPerRoom', question: 'How many adults per room?' },
+          ],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      quantity: 1,
+      adults: 2,
+      fields: { quantity: 'defaulted', adults: 'defaulted' },
+    });
+    expect(mapped.missing).toEqual([]);
+    expect(mapped.missingQuoteReplyFields).toEqual([]);
+  });
+
+  it('marks an unresolved quote room type as a defaulted any-type choice', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, roomPreference: 'Twin' }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      roomPreference: 'Twin',
+      fields: { roomPreference: 'defaulted' },
+    });
+  });
+
+  it('defaults occupancy while keeping missing dates and room count in the reply', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(
         analysis({
@@ -550,13 +589,29 @@ describe('mapLlmDecision', () => {
 
     expect(mapped.groups[0]).toMatchObject({
       departureDate: '2026-11-14',
+      adults: 2,
       board: 'dinner_bb',
-      fields: { arrivalDate: 'missing', departureDate: 'extracted' },
+      fields: { arrivalDate: 'missing', departureDate: 'extracted', adults: 'defaulted' },
     });
     expect(mapped.missingQuoteReplyFields).toEqual([
       'Arrival date for stay 1',
-      'Number of rooms and occupancy per room for stay 1',
+      'Number of rooms for stay 1',
     ]);
+  });
+
+  it('does not apply quote room or occupancy defaults to create_booking', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'create_booking',
+          groups: [{ ...group, rooms: null, adultsPerRoom: null }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).not.toHaveProperty('quantity');
+    expect(mapped.groups[0]).not.toHaveProperty('adults');
+    expect(mapped.groups[0]?.fields).toMatchObject({ quantity: 'missing', adults: 'missing' });
   });
 
   it('maps create_booking to intent quote and leaves groups in place', () => {

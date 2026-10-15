@@ -1,0 +1,13 @@
+{
+  "source": "Sanitized aggregate gate-shape counts; no message identifiers or stay-level values retained.",
+  "totalRows": 47,
+  "shapes": [
+    { "hasInput": "y", "count": 14 },
+    { "hasInput": "n", "reason": "missing_dates", "count": 3 },
+    { "hasInput": "n", "reason": "missing_occupancy", "count": 7 },
+    { "hasInput": "n", "reason": "missing_rooms", "count": 10 },
+    { "hasInput": "n", "reason": "room_type_unresolved", "count": 9 },
+    { "hasInput": "n", "reason": "spam", "count": 3 },
+    { "hasInput": "n", "reason": "system_notice", "count": 1 }
+  ]
+}

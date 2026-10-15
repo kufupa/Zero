@@ -48,15 +48,18 @@ function groupForStay(
 
   const groups: StaffQuoteInput['groups'] = [];
   for (const row of stay.rows) {
-    const quantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
+    const recordedQuantity = row.rooms ?? (stay.rows.length === 1 ? stay.totalRooms : null);
+    // Only a real guest signal (before defaults) justifies assuming one room.
+    const hasGuestData = row.adultsPerRoom !== null || row.childAges.length > 0;
+    const quantity = recordedQuantity ?? (hasGuestData ? 1 : null);
     if (!row.id || row.id.length > 64 || !Number.isInteger(quantity) || quantity === null || quantity < 1 || quantity > 100) {
       return { groups: [], reason: 'missing_rooms' };
     }
+    const adults = row.adultsPerRoom ?? 2;
     if (
-      !Number.isInteger(row.adultsPerRoom) ||
-      row.adultsPerRoom === null ||
-      row.adultsPerRoom < 1 ||
-      row.adultsPerRoom > 6 ||
+      !Number.isInteger(adults) ||
+      adults < 1 ||
+      adults > 6 ||
       row.childAges.length > 6 ||
       row.childAges.some((age) => !Number.isInteger(age) || age < 0 || age > 17)
     ) {
@@ -64,13 +67,12 @@ function groupForStay(
     }
     const roomType = row.roomType?.trim();
     const roomMatch = roomType ? matchRoomType(roomType) : null;
-    if (roomType && !roomMatch?.code) return { groups: [], reason: 'room_type_unresolved' };
     groups.push({
       id: row.id,
       arrivalDate: arrival,
       departureDate: departure,
       quantity,
-      adults: row.adultsPerRoom,
+      adults,
       childrenAges: row.childAges,
       board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' ? 'dinner_bb' : 'bb',
       ...(roomMatch?.code ? { roomCodes: [roomMatch.code] } : {}),

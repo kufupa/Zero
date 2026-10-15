@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   buildPreparedStaffQuotePlan,
@@ -114,19 +115,62 @@ describe('prepared quote input from stored extraction', () => {
     '1 x twin',
     '1 x standard',
     '1 x deluxe',
-  ])('leaves ambiguous room phrase %s unresolved', (roomType) => {
+  ])('falls back to any room type for ambiguous phrase %s', (roomType) => {
     const plan = buildWithRoomType(roomType);
 
+    expect(plan.inputs).toHaveLength(1);
+    expect(plan.inputs[0]?.groups[0]?.roomCodes).toBeUndefined();
+    expect(plan.stays[0]?.reason).toBeUndefined();
+  });
+
+  it('defaults missing occupancy to two adults per room', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{ ...stay, rows: [{ ...stay.rows[0]!, adultsPerRoom: null }] }],
+    });
+
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({ quantity: 2, adults: 2 });
+    expect(plan.reason).toBeNull();
+  });
+
+  it('defaults a missing room count to one when dates and a guest row exist', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{ ...stay, totalRooms: null, rows: [{ ...stay.rows[0]!, rooms: null }] }],
+    });
+
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({ quantity: 1, adults: 2 });
+    expect(plan.reason).toBeNull();
+  });
+
+  it('does not default a room count when no guest evidence exists', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        totalRooms: null,
+        rows: [{ ...stay.rows[0]!, rooms: null, adultsPerRoom: null, childAges: [] }],
+      }],
+    });
+
     expect(plan.inputs).toEqual([]);
-    expect(plan.stays[0]?.reason).toBe('room_type_unresolved');
+    expect(plan.reason).toBe('missing_rooms');
+  });
+
+  it('keeps missing dates as a hard block', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{ ...stay, requested: { arrival: null, departure: null } }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('missing_dates');
   });
 
   it.each([
-    ['missing dates', { stays: [{ ...payload().stays[0], requested: { arrival: null, departure: null } }] }, 'missing_dates'],
     ['past dates', { stays: [{ ...payload().stays[0], requested: { arrival: '2026-10-13', departure: '2026-10-15' } }] }, 'past_dates'],
-    ['missing room count', { stays: [{ ...payload().stays[0], totalRooms: null, rows: [{ ...payload().stays[0]!.rows[0], rooms: null }] }] }, 'missing_rooms'],
-    ['missing occupancy', { stays: [{ ...payload().stays[0], rows: [{ ...payload().stays[0]!.rows[0], adultsPerRoom: null }] }] }, 'missing_occupancy'],
-    ['ambiguous room type', { stays: [{ ...payload().stays[0], rows: [{ ...payload().stays[0]!.rows[0], roomType: 'Twin' }] }] }, 'room_type_unresolved'],
+    ['zero room count', { stays: [{ ...payload().stays[0], rows: [{ ...payload().stays[0]!.rows[0], rooms: 0 }] }] }, 'missing_rooms'],
+    ['out-of-range occupancy', { stays: [{ ...payload().stays[0], rows: [{ ...payload().stays[0]!.rows[0], adultsPerRoom: 7 }] }] }, 'missing_occupancy'],
   ])('does not prepare a stay with %s', (_label, overrides, reason) => {
     const plan = build(overrides as Record<string, unknown>);
 
@@ -150,6 +194,103 @@ describe('prepared quote input from stored extraction', () => {
 
     expect(plan.inputs).toHaveLength(2);
     expect(plan.inputs.map((input) => input.groups[0]?.arrivalDate)).toEqual(['2026-10-20', '2026-11-01']);
+  });
+});
+
+type Eval47StaySummary = {
+  hasInput: 'y' | 'n';
+  reason?: string;
+  dates?: Array<{ arrival: string; departure: string }>;
+  rooms?: Array<{
+    roomCodes: string[];
+    count: number;
+    adultsPerRoom: number;
+    childCountPerRoom: number;
+  }>;
+  board?: string[];
+};
+
+type Eval47SummaryRow = {
+  hasInput: 'y' | 'n';
+  reason?: string;
+  stays?: Eval47StaySummary[];
+};
+
+type Eval47SummaryFixture = {
+  totalRows: number;
+  shapes: Array<{ hasInput: 'y' | 'n'; reason?: string; count: number }>;
+};
+
+const eval47SummaryUrl = new URL('./fixtures/quote-ready-eval-47-summary.json', import.meta.url);
+
+/** The eval stores gate summaries, not mail text or extraction payloads. Rehydrate blocker-shaped test inputs only. */
+function payloadForEval47Shape(row: Eval47SummaryRow): Record<string, unknown> | null {
+  const baseStay = payload().stays[0]!;
+  if (row.reason === 'spam' || row.reason === 'system_notice') return null;
+  if (row.reason === 'missing_dates') {
+    return { stays: [{ ...baseStay, requested: { arrival: null, departure: null } }] };
+  }
+  if (row.reason === 'missing_occupancy') {
+    return {
+      stays: [{ ...baseStay, rows: [{ ...baseStay.rows[0]!, adultsPerRoom: null }] }],
+    };
+  }
+  if (row.reason === 'missing_rooms') {
+    return {
+      stays: [{ ...baseStay, totalRooms: null, rows: [{ ...baseStay.rows[0]!, rooms: null }] }],
+    };
+  }
+  if (row.reason === 'room_type_unresolved') {
+    return {
+      stays: [{ ...baseStay, rows: [{ ...baseStay.rows[0]!, roomType: 'Twin' }] }],
+    };
+  }
+  if (row.hasInput !== 'y') return null;
+
+  const stays = (row.stays ?? []).map((stay, stayIndex) => {
+    const date = stay.dates?.[0];
+    const rows = (stay.rooms ?? []).map((room, rowIndex) => {
+      const board = stay.board?.[rowIndex];
+      return {
+        id: `eval-${stayIndex}-${rowIndex}`,
+        roomType: room.roomCodes[0] ?? null,
+        rooms: room.count,
+        adultsPerRoom: room.adultsPerRoom,
+        childAges: Array.from({ length: room.childCountPerRoom }, () => 0),
+        board: board === 'room_only' ? 'room_only' : board === 'dinner_bb' ? 'dbb' : 'bb',
+      };
+    });
+    return {
+      ...baseStay,
+      id: `eval-stay-${stayIndex}`,
+      requested: {
+        arrival: date?.arrival ?? baseStay.requested.arrival,
+        departure: date?.departure ?? baseStay.requested.departure,
+      },
+      totalRooms: rows.length === 1 ? rows[0]?.rooms ?? null : null,
+      rows: rows.length ? rows : baseStay.rows,
+    };
+  });
+  return { stays: stays.length ? stays : [baseStay] };
+}
+
+describe('quote-ready eval-47 summary replay', () => {
+  it('counts prefillable shapes from the checked-in sanitized summary', () => {
+    const summary = JSON.parse(readFileSync(eval47SummaryUrl, 'utf8')) as Eval47SummaryFixture;
+    const rows: Eval47SummaryRow[] = summary.shapes.flatMap(({ count, ...row }) =>
+      Array.from({ length: count }, () => row),
+    );
+    const prefillable = rows.filter((row) => {
+      const fixture = payloadForEval47Shape(row);
+      return fixture ? build(fixture).inputs.length > 0 : false;
+    }).length;
+
+    expect(rows).toHaveLength(summary.totalRows);
+    expect(summary.totalRows).toBe(47);
+    expect(prefillable).toBe(40);
+    expect(prefillable).toBeGreaterThanOrEqual(30);
+    expect(prefillable).toBeLessThanOrEqual(44);
+    console.log(`prefillable ${prefillable}/${summary.totalRows}`);
   });
 });
 

@@ -433,7 +433,8 @@ export function staffQuoteGroupsFromStay(
       roomPreference: group.roomPreference,
       roomCodes: group.roomCodes?.length ? group.roomCodes : rowCode ? [rowCode] : undefined,
     });
-    if (rooms.status === 'unresolved') {
+    // Ambiguous mail wording stays visible/editable, but its defaulted provenance means any type.
+    if (rooms.status === 'unresolved' && group.fields.roomPreference !== 'defaulted') {
       return {
         error: `Room type "${rooms.label}" is not one HMS knows. Choose one of: ${[...KNOWN_NATIVE_ROOM_CODES].join(', ')}.`,
       };
