@@ -308,33 +308,49 @@ function readOpsRows(value: unknown): ClaimedOpsRow[] {
   });
 }
 
-export function parseGoldPairFixture(raw: string): GoldPairJoinInput {
-  const trimmed = raw.trim();
-  if (!trimmed) throw new Error('gold-pair fixture empty');
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) {
-      return { labels: readLabels(parsed) };
-    }
-    const record = asRecord(parsed);
-    return {
-      labels: readLabels(record.labels),
-      claimed: readOpsRows(record.claimed),
-      predicted: readOpsRows(record.predicted),
-    };
+function fromJsonDocument(parsed: unknown): GoldPairJoinInput {
+  assertNoMailFields(parsed, 'fixture');
+  if (Array.isArray(parsed)) {
+    return { labels: readLabels(parsed) };
   }
+  const record = asRecord(parsed);
+  return {
+    labels: readLabels(record.labels),
+    claimed: readOpsRows(record.claimed),
+    predicted: readOpsRows(record.predicted),
+  };
+}
+
+function fromJsonlLines(trimmed: string): GoldPairJoinInput {
   const labels: StaffMoveLabel[] = [];
   const claimed: ClaimedOpsRow[] = [];
   const predicted: PredictedOpsRow[] = [];
   for (const line of trimmed.split(/\n/)) {
     if (!line.trim()) continue;
-    const row = asRecord(JSON.parse(line) as unknown);
+    const parsedLine = JSON.parse(line) as unknown;
+    assertNoMailFields(parsedLine, 'fixture');
+    if (Array.isArray(parsedLine)) {
+      labels.push(...readLabels(parsedLine));
+      continue;
+    }
+    const row = asRecord(parsedLine);
     const kind = text(row.kind) ?? 'label';
     if (kind === 'claimed') claimed.push(readOpsRows([row])[0]!);
     else if (kind === 'predicted') predicted.push(readOpsRows([row])[0]!);
     else labels.push(readLabels([{ ...row, staff_move: row.staff_move }])[0]!);
   }
   return { labels, claimed, predicted };
+}
+
+export function parseGoldPairFixture(raw: string): GoldPairJoinInput {
+  const trimmed = raw.trim();
+  if (!trimmed) throw new Error('gold-pair fixture empty');
+  try {
+    return fromJsonDocument(JSON.parse(trimmed) as unknown);
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
+  }
+  return fromJsonlLines(trimmed);
 }
 
 export function parseGoldPairJoinCli(

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_SYNTHETIC_GOLD_PAIR_IN,
   joinGoldPairOps,
+  parseGoldPairFixture,
   parseGoldPairJoinCli,
   runGoldPairJoin,
   staffMoveToOperations,
@@ -57,6 +58,22 @@ describe('staffMoveToOperations', () => {
     ).toEqual(['create']);
     expect(staffMoveToOperations('no_visible_action', ['none']).map((row) => row.operation)).toEqual([
       'none',
+    ]);
+  });
+});
+
+describe('parseGoldPairFixture', () => {
+  it('parses two-line JSONL objects as join input', () => {
+    const raw = [
+      JSON.stringify({ messageId: 'jsonl-a', staff_move: 'booked_confirmed' }),
+      JSON.stringify({ messageId: 'jsonl-b', staff_move: 'cancel_done' }),
+    ].join('\n');
+    const parsed = parseGoldPairFixture(raw);
+    expect(parsed.labels.map((row) => row.messageId)).toEqual(['jsonl-a', 'jsonl-b']);
+    const rows = joinGoldPairOps(parsed);
+    expect(rows.map((row) => ({ id: row.id, op: row.claimed[0]?.operation }))).toEqual([
+      { id: 'jsonl-a', op: 'create' },
+      { id: 'jsonl-b', op: 'cancel' },
     ]);
   });
 });
