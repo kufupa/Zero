@@ -39,6 +39,19 @@ Done = score on the golden set in `PRODUCT.md`, not a merge.
 | Flags and env        | A flag flip covers every pm2 process that reads it (`http`, `worker`, `ai-worker`, `remote-http`), sources the right env files, and checks `/proc/<pid>/environ` for each before anything is enqueued                                                                     | 6 quote-ready proofs dead-lettered on 2026-10-14 (login-shell pm2 restart); webmail never got the flag             |
 | ETAs                 | Quote the ledger-scaled ETA of the **longest dependency chain** (code + review + deploy + live proof). If the owner doubts it, show the evidence; change the number only for new evidence                                                                                 | the 8 h quote-ready ETA was cut to 6 h under pushback; actual was > 8 h                                            |
 
+## VPS resources: never overload this machine (owner, 2026-10-15)
+
+This 4-vCPU / 15 GB VPS runs every lane, the gateway and the owner's tools. Twice now, parallel heavy checks froze it (first `tsc --noEmit` ×2, then several full Vitest suites at once).
+
+| Never | Instead |
+|---|---|
+| `tsc`, `tsgo`, or any `typecheck` script here | `bash /home/orca/bin/remote-typecheck.sh <clean worktree>` (EC2 via SSM; baseline mail 62, server-pilot 0) |
+| A full Vitest suite run directly (`vitest run` with no files) | Targeted files with `--maxWorkers=2`; the full suite ONLY via `bash /home/orca/bin/vitest-full.sh apps/<app>` (flock: one at a time machine-wide, 1 worker, nice, 25-min cap) |
+| More than 3 code lanes at once, or Docker/bake-off installs while lanes run tests | Max 3 writers + 1 verifier; research lanes run no heavy installs |
+| Leaving servers, containers or test runners behind | Every lane kills what it started before it reports |
+
+A PreToolUse hook (`~/.claude/hooks/block-local-tsc.sh`) denies tsc and direct full Vitest runs. Before launching a lane, the coordinator checks `uptime`. If load is above 8, wait or cut lanes.
+
 Run contracts, `/goal` vs `/loop`, and the overnight template: `docs/context/RUN-CONTRACT.md`.
 
 Do not copy this file into other worktrees by hand. It lives on `main`. A worktree sees it when that worktree’s HEAD contains this commit (`git merge origin/main` on an **idle** tree). Never merge into a live Luna/Codex lane.
