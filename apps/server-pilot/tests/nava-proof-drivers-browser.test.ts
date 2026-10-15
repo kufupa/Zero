@@ -136,7 +136,7 @@ const STAYS = [
 /**
  * The AE1 pane: two stays with two room rows each. `rooms` is the count the read gives every row ('' for none); `single`
  * is the room type the email asks for on the single rows. `notQuote` is a thread read as not a quote: the pane shows no
- * Stay details until its type is set to Quote, and then shows them.
+ * Stay rows until its type is set to Quote, and then shows them.
  */
 function ae1Page(
   rooms = '30',
@@ -155,19 +155,30 @@ function ae1Page(
       <select aria-label="Meal plan"><option value="unknown" selected>Not stated yet</option><option value="bb">B&amp;B</option></select>
     </div>`;
   const single = options.single ?? 'Single';
-  const stayDetails = `<section aria-label="Stay details">${row(1, 1, single)}${row(1, 2, 'Double/twin')}${row(2, 1, single)}${row(2, 2, 'Double/twin')}</section>`;
+  const stayDetails = `<section aria-label="Stay">${row(1, 1, single)}${row(1, 2, 'Double/twin')}${row(2, 1, single)}${row(2, 2, 'Double/twin')}</section>`;
   const initialKind = options.notQuote ? 'new_booking' : (options.kind ?? 'quote');
   const body = `
     ${readAsBadge(initialKind)}
-    ${options.notQuote ? '' : stayDetails}
-    <section aria-label="Rates from HMS">
-      <p id="rated">0 of 2 stays rated</p>
-      <button id="get">Get rates from HMS</button>
-      <details open><summary><span>HMS steps</span></summary>
-        ${STAYS.map(([a, d], i) => `<button class="step" data-stay="${i}">Run Search availability ${a} → ${d}</button>`).join('')}
-      </details>
+    <section aria-label="Quote contact — printed on the PDF">
+      <dl>
+        <div data-contact-field="name"><dd><span>Guest</span></dd></div>
+        <div data-contact-field="email"><dd><span>guest@example.test</span></dd></div>
+      </dl>
     </section>
-    <section aria-label="Quote documents">
+    ${options.notQuote ? '' : stayDetails}
+    <section aria-label="Availability & rates">
+      <p id="rated">0 of 2 stays rated</p>
+      <button id="get">Search availability</button>
+      ${STAYS.map(
+        ([a, d], i) =>
+          `<div class="stay-search" data-stay="${i}">` +
+          `<button class="date-range" data-stay="${i}">Search this date range for Stay ${i + 1}</button>` +
+          `<details><summary>Details</summary>` +
+          `<div><button class="step" data-stay="${i}">Run Search availability ${a} → ${d}</button></div>` +
+          `</details></div>`,
+      ).join('')}
+    </section>
+    <section aria-label="Documents">
       <button id="pdf">Prepare quote</button><p id="prepared"></p><button id="xlsx">Download Excel</button>
     </section>`;
   const script = `
@@ -175,7 +186,7 @@ function ae1Page(
     const runs = [];
     ${
       options.notQuote
-        ? `// The Stay details appear once the thread is Quote, as the pane shows them.
+        ? `// The Stay rows appear once the thread is Quote, as the pane shows them.
     document.querySelector('select[aria-label="Change how Nava reads this email"]').addEventListener('change', (event) => {
       if (event.target.value === 'quote') {
         const readAs = document.querySelector('[data-read-as]');
@@ -188,7 +199,7 @@ function ae1Page(
         : ''
     }
     // The pane logs every field edit (workItems.recordEvent); the drivers must not cause one without leave.
-    document.querySelectorAll('section[aria-label="Stay details"] input, section[aria-label="Stay details"] select').forEach((el) =>
+    document.querySelectorAll('section[aria-label="Stay"] input, section[aria-label="Stay"] select').forEach((el) =>
       el.addEventListener('input', () => trpc('workItems.recordEvent', { field: el.getAttribute('aria-label') })),
     );
     trpc('workItems.getByMessage', { messageId: 'm1' });
@@ -793,7 +804,7 @@ describe('the active mailbox', () => {
 function ae4Page(rooms: string): string {
   const body = `
     ${readAsBadge('quote')}
-    <section aria-label="Stay details">
+    <section aria-label="Stay">
       <div hidden>
         <input type="date" aria-label="Arrival" value="2026-11-02">
         <input type="date" aria-label="Departure" value="2026-11-06">
@@ -811,7 +822,7 @@ function ae4Page(rooms: string): string {
     <section aria-label="Room 1 price"><button disabled>Discount / override</button></section>`;
   const script = `
     trpc('workItems.getByMessage', { messageId: 'm1' });
-    document.querySelectorAll('section[aria-label="Stay details"] input, section[aria-label="Stay details"] select').forEach((el) =>
+    document.querySelectorAll('section[aria-label="Stay"] input, section[aria-label="Stay"] select').forEach((el) =>
       el.addEventListener('input', () => trpc('workItems.recordEvent', { field: el.getAttribute('aria-label'), value: el.value })),
     );`;
   return shell(body, script);

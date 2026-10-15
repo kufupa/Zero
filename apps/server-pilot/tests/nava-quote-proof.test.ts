@@ -74,9 +74,9 @@ describe('quote proof scoring', () => {
       blocker: null,
     };
 
-    expect(quoteThreadFailure(proof, new Blocker('the Quote documents step is missing'))).toEqual({
+    expect(quoteThreadFailure(proof, new Blocker('the Documents step is missing'))).toEqual({
       ...proof,
-      blocker: 'the Quote documents step is missing',
+      blocker: 'the Documents step is missing',
     });
   });
 
@@ -134,14 +134,14 @@ describe('quote proof input review', () => {
 });
 
 describe('quote proof interaction helpers', () => {
-  it('targets display-first contact values and the guided quote section and room labels', () => {
+  it('targets display-first contact values and current quote section names and room labels', () => {
     expect(QUOTE_SELECTORS.intent).toBe('[data-preview-pane] [data-read-as]');
-    expect(QUOTE_SELECTORS.contactRegion).toBe('Guest & contact');
+    expect(QUOTE_SELECTORS.contactRegion).toBe('Quote contact — printed on the PDF');
     expect(QUOTE_SELECTORS.contactNameValue).toBe('[data-contact-field="name"] dd > span');
     expect(QUOTE_SELECTORS.contactEmailValue).toBe('[data-contact-field="email"] dd > span');
     expect(QUOTE_SELECTORS.stayRegion).toBe('Stay');
-    expect(QUOTE_SELECTORS.ratesRegion).toBe('Rates');
-    expect(QUOTE_SELECTORS.docsRegion).toBe('Quote');
+    expect(QUOTE_SELECTORS.ratesRegion).toBe('Availability & rates');
+    expect(QUOTE_SELECTORS.docsRegion).toBe('Documents');
     expect(QUOTE_SELECTORS.roomRow.test('Standard Queen ×2')).toBe(true);
     expect(QUOTE_SELECTORS.roomRow.test('Room type needed ×1')).toBe(true);
     expect(QUOTE_SELECTORS.roomRow.test('Room 1')).toBe(false);

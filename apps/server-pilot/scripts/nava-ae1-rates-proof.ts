@@ -3,7 +3,7 @@
  *
  * AE1 (docs/plans/2026-10-09-001-feat-nava-pane-weekend-v4-plan.md): the Tailormade/New Frontiers email asks for 26-27 Oct
  * and 17-18 Nov, 30 rooms, single and double/twin rates. PASS means:
- *   - Get rates ran exactly once per stay (one workstation.executeStaffQuote per date option);
+ *   - Search availability ran exactly once per stay (one workstation.executeStaffQuote per date option);
  *   - the Excel has one line per stay x room and one total row; the PDF exists and covers every stay.
  *
  * The driver opens one thread in /nava-preview, waits for the pane to read it, and sets the type to Quote if needed. Where
@@ -17,10 +17,10 @@
  *     matches X (Twin for "double/twin"; Queen, then King, for "single" or "double");
  *   - adults per room: 1 for a single, else 2 (NAVA_AE1_ADULTS overrides, e.g. "1/2");
  *   - meal plan: NAVA_AE1_BOARD (default bb) only where the pane has none.
- * A value the pane already has is kept, never overwritten. If the pane refuses a value (it does not take, or Get rates stays disabled), the
+ * A value the pane already has is kept, never overwritten. If the pane refuses a value (it does not take, or Search availability stays disabled), the
  * run stops with a blocker; it never works around a product rule.
  *
- * Then it runs each stay's own search ("Run Search availability <dates>" in the pane's HMS steps), waits for "k of N
+ * Then it runs each stay's own search ("Run Search availability <dates>" in that stay's Details list), waits for "k of N
  * stays rated", screenshots the rates step, prepares the combined quote PDF and downloads the Excel, and screenshots the
  * documents step. Guest details are masked in every screenshot.
  *
@@ -48,7 +48,7 @@
  *
  * Usage: NAVA_PROOF_ALLOW_EDITS=1 nava-preview-gate.sh --ae1-rates <thread-id>   (signs in, then runs:)
  *   pnpm --dir apps/server-pilot exec tsx scripts/nava-ae1-rates-proof.ts --threads <id> --out <dir> --timeout-ms 600000
- * Dry plan: add --dry-plan. It reads the Stay details rows, prints each count and its source (the read, or
+ * Dry plan: add --dry-plan. It reads the Stay rows, prints each count and its source (the read, or
  * NAVA_AE1_ROOMS) and what a real run would need, and makes no edit and no HMS call. The last stdout line is the plan.
  * A thread that is not Quote has no rows until it is switched, so its plan stops at "not planned" (edits allowed) or at
  * needs_edits:type; a real run with edits allowed switches it first.
@@ -74,6 +74,7 @@ import {
   type Captured,
   type StoredWorkView,
 } from './nava-ae4-override-proof';
+import { QUOTE_SEARCH_BUTTON } from './nava-quote-selectors';
 import {
   allowEditsFrom,
   browserMailboxApi,
@@ -300,7 +301,7 @@ export const AE1_EXPECTED_BLOCKS: readonly string[] = [`${PARTY_LOOKUP_PROCEDURE
 // Room rows
 
 export type SelectOption = { value: string; label: string };
-/** One room row of the Stay details step, as the page shows it. */
+/** One room row of the Stay step, as the page shows it. */
 export type PaneRoomRow = {
   stay: number;
   room: number;
@@ -506,10 +507,10 @@ export function planStopBeforeRows(typeIsQuote: boolean, allowEdits: boolean): s
     : needsEditsMessage(['type']);
 }
 
-/** Browser-side: the Stay details step's room rows, in page order. Plain JS, no DOM types. */
+/** Browser-side: the Stay step's room rows, in page order. Plain JS, no DOM types. */
 export const READ_ROWS_JS = `() => {
   const pane = document.querySelector('[data-preview-pane]');
-  const section = pane ? pane.querySelector('section[aria-label="Stay details"]') : null;
+  const section = pane ? pane.querySelector('section[aria-label="Stay"]') : null;
   if (!section) return null;
   const all = (selector) => Array.from(section.querySelectorAll(selector));
   const groups = all('[role="group"][aria-label^="Rooms for stay "]');
@@ -541,9 +542,9 @@ const countOf = (raw: string): number | null => (/^\d+$/.test(raw.trim()) && Num
 
 async function readRoomRows(page: Page): Promise<PaneRoomRow[]> {
   const raw = (await page.evaluate(`(${READ_ROWS_JS})()`).catch(() => null)) as RawRows | null;
-  if (!raw) throw new Blocker('the Stay details step is missing');
+  if (!raw) throw new Blocker('the Stay step is missing');
   if (new Set(raw.counts).size !== 1) {
-    throw new Blocker(`the Stay details rows do not line up (groups, room types, rooms, adults, meal plans: ${raw.counts.join('/')})`);
+    throw new Blocker(`the Stay rows do not line up (groups, room types, rooms, adults, meal plans: ${raw.counts.join('/')})`);
   }
   return raw.rows.map((row) => ({ ...row, rooms: countOf(row.rooms), adults: countOf(row.adults) }));
 }
@@ -621,10 +622,10 @@ export function ae1Failures(summary: Omit<Ae1Summary, 'ok' | 'failures'>): strin
 // ---------------------------------------------------------------------------------------------------------------------
 // Browser run
 
-export const RATES_SECTION = '[data-preview-pane] section[aria-label="Rates from HMS"]';
+export const RATES_SECTION = '[data-preview-pane] section[aria-label="Availability & rates"]';
 /** The pane's company search gives up after 6 minutes (trpc-request-timeout.ts), so this wait always settles. */
 const PARTY_SETTLE_MS = 6 * 60_000 + 30_000;
-export const DOCUMENTS_SECTION = '[data-preview-pane] section[aria-label="Quote documents"]';
+export const DOCUMENTS_SECTION = '[data-preview-pane] section[aria-label="Documents"]';
 export const RUN_STEP = /^Run Search availability /;
 
 /** The step buttons, one per date option, with the stay key each runs ("2026-10-26 → 2026-10-27" -> "2026-10-26:2026-10-27"). */
@@ -705,7 +706,7 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
       log('type set to Quote');
     }
     await waitFor('the room rows', SETTLE_MS, async () =>
-      (await pane.locator('section[aria-label="Stay details"] [role="group"][aria-label^="Rooms for stay "]').count()) > 0
+      (await pane.locator('section[aria-label="Stay"] [role="group"][aria-label^="Rooms for stay "]').count()) > 0
         ? true
         : null,
     );
@@ -727,7 +728,7 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     const blocker = blockerOfPlan(planned.split, inputs);
     if (blocker) throw new Blocker(blocker);
     summary.filledFields.push(...filledFieldsOf(planned.split));
-    const details = pane.locator('section[aria-label="Stay details"]');
+    const details = pane.locator('section[aria-label="Stay"]');
     for (const plan of planned.plans) {
       if (plan.roomType) await details.locator('select[aria-label="Room type"]').nth(plan.index).selectOption(plan.roomType);
       if (plan.rooms !== null) {
@@ -757,26 +758,27 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     // 4. One rates run per stay, through each stay's own search.
     const rates = page.locator(RATES_SECTION);
     await rates.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
-      throw new Blocker('the Rates from HMS step is missing');
+      throw new Blocker('the Availability & rates step is missing');
     });
-    // The company lookup decides its pick before Get rates can run. Wait for it to settle, bounded, and name it if it never does.
+    // The company lookup decides its pick before availability search can run. Wait for it to settle, bounded, and name it if it never does.
     await waitFor('the company lookup in HMS to settle', PARTY_SETTLE_MS, async () =>
       /Finding the (company|agency)/.test(await rates.innerText()) ? null : true,
     ).catch(async () => {
       throw new Blocker(`the company lookup in HMS did not settle: ${await visibleText(page, RATES_SECTION)}`);
     });
-    const getRates = rates.getByRole('button', { name: 'Get rates from HMS', exact: true });
-    await waitFor('Get rates from HMS to be enabled', STEP_MS, async () => ((await getRates.isEnabled()) ? true : null)).catch(
+    const searchButton = rates.getByRole('button', { name: QUOTE_SEARCH_BUTTON }).first();
+    await waitFor('Search availability to be enabled', STEP_MS, async () => ((await searchButton.isEnabled()) ? true : null)).catch(
       async () => {
-        throw new Blocker(`Get rates from HMS is disabled: ${await visibleText(page, RATES_SECTION)}`);
+        throw new Blocker(`Search availability is disabled: ${await visibleText(page, RATES_SECTION)}`);
       },
     );
     const uiStays = new Set(rows.map((row) => row.stay)).size;
-    let stepList = await stepButtons(rates);
-    if (stepList.length && !(await stepList[0]!.button.isVisible())) {
-      await rates.getByText('HMS steps', { exact: true }).click();
-      stepList = await stepButtons(rates);
+    // Each stay keeps its step list in its own collapsed Details; open every one so each stay's step can be clicked.
+    const closedDetails = rates.locator('details:not([open]) > summary');
+    for (let opened = 0; opened < 20 && (await closedDetails.count()) > 0; opened++) {
+      await closedDetails.first().click();
     }
+    const stepList = await stepButtons(rates);
     summary.stays = stepList.length || uiStays;
     if (stepList.length && stepList.length !== uiStays) {
       throw new Blocker(`the pane shows ${uiStays} stays but ${stepList.length} date options`);
@@ -788,7 +790,7 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     for (let i = 0; i < summary.stays; i++) {
       const runsBefore = state.ratedStayKeys.length;
       const outcomesBefore = captured.outcomes.length;
-      const button = stepList[i]?.button ?? getRates;
+      const button = stepList[i]?.button ?? searchButton;
       await waitFor(`the search for stay ${i + 1} to be enabled`, STEP_MS, async () =>
         (await button.isEnabled()) ? true : null,
       ).catch(async () => {
@@ -833,7 +835,7 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     // 5. The combined quote PDF.
     const prepare = page.locator(DOCUMENTS_SECTION).getByRole('button', { name: /^Prepare (quote|PDF)$/ });
     await prepare.first().waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
-      throw new Blocker('the Quote documents step is missing');
+      throw new Blocker('the Documents step is missing');
     });
     await waitFor('Prepare quote to be enabled', STEP_MS, async () => ((await prepare.first().isEnabled()) ? true : null)).catch(
       async () => {
@@ -1005,7 +1007,7 @@ export async function readAe1Plan(config: Ae1Config, log: (line: string) => void
       return;
     }
     await waitFor('the room rows', SETTLE_MS, async () =>
-      (await pane.locator('section[aria-label="Stay details"] [role="group"][aria-label^="Rooms for stay "]').count()) > 0
+      (await pane.locator('section[aria-label="Stay"] [role="group"][aria-label^="Rooms for stay "]').count()) > 0
         ? true
         : null,
     ).catch(() => undefined);

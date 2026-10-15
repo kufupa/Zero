@@ -555,8 +555,8 @@ describe('verdict', () => {
   });
 
   it('reports a blocker', () => {
-    expect(ae1Failures({ ...passing, blocker: 'Get rates from HMS is disabled: x' })[0]).toBe(
-      'blocker: Get rates from HMS is disabled: x',
+    expect(ae1Failures({ ...passing, blocker: 'Search availability is disabled: x' })[0]).toBe(
+      'blocker: Search availability is disabled: x',
     );
   });
 });
@@ -569,23 +569,32 @@ describe('the pane markup the driver reads', () => {
     const session = mail('lib', 'quote-workflow', 'session.ts');
     const documents = mail('components', 'quote-workflow', 'document-review.tsx');
     const ui = mail('components', 'nava-pane', 'pane-ui.tsx');
+    const driver = readFileSync(join(here, '..', 'scripts', 'nava-ae1-rates-proof.ts'), 'utf8');
     expect(ui).toContain('<section id={id} aria-label={title}');
     expect(ui).toContain('<div role="group" aria-label={label}');
-    expect(panel).toContain('<Section step={1} title="Stay details">');
-    expect(RATES_SECTION).toContain('aria-label="Rates from HMS"');
-    expect(panel).toContain('<Section step={2} title="Rates from HMS">');
-    expect(DOCUMENTS_SECTION).toContain('aria-label="Quote documents"');
-    expect(panel).toContain('<Section step={3} title="Quote documents">');
-    expect(panel).toContain('Get rates from HMS');
-    expect(panel).toContain('{`${rated} of ${total} stays rated`}');
+    expect(panel).toContain('<Section step={3} title="Stay"');
+    expect(READ_ROWS_JS).toContain('section[aria-label="Stay"]');
+    expect(RATES_SECTION).toContain('aria-label="Availability & rates"');
+    expect(panel).toContain('<Section step={4} title="Availability & rates"');
+    expect(DOCUMENTS_SECTION).toContain('aria-label="Documents"');
+    expect(panel).toContain('<Section step={6} title="Documents"');
+    expect(panel).toContain('Search availability');
+    expect(driver).toContain('name: QUOTE_SEARCH_BUTTON');
+    expect(panel).toContain(
+      '${quotationTotal.rated} of ${quotationTotal.stays} stays rated. Search each date range for the complete total.',
+    );
     expect(card).toContain('const where = `stay ${stayNumber}, room ${roomNumber}`;');
     expect(card).toContain('label={`Rooms for ${where}`}');
-    expect(card).toContain('Email asked for {unknownValue} — pick a room type');
-    for (const label of ['Room type', 'Rooms', 'Adults', 'Meal plan']) expect(card).toContain(`aria-label="${label}"`);
-    expect(steps).toContain('Run {step.title}');
+    expect(card).toContain("Email said '${unknownValue}' →");
+    for (const label of ['Room type', 'Rooms', 'Meal plan']) expect(card).toContain(`aria-label="${label}"`);
+    expect(card).toContain('label={`Adult guests per room for ${where}`}');
+    expect(steps).toContain('<span>Run</span>');
+    expect(steps).toContain('<span>{step.title}</span>');
     expect(session).toContain("title: `Search availability ${key.replace(':', ' → ')}`");
     expect(RUN_STEP.test('Run Search availability 2026-10-26 → 2026-10-27')).toBe(true);
-    expect(documents).toContain("{isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF'}");
+    expect(documents).toContain(
+      "const pdfButtonLabel = isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF';",
+    );
     expect(documents).toContain('Download Excel');
   });
 
@@ -605,9 +614,9 @@ describe('the pane markup the driver reads', () => {
           <input aria-hidden="true" type="number" aria-label="Rooms" class="sr-only" value="${rooms}">
           <input aria-hidden="true" type="number" aria-label="Adults" class="sr-only" value="">
           <select aria-label="Meal plan"><option value="unknown" selected>Not stated yet</option><option value="bb">B&amp;B</option></select></div>`;
-        await page.setContent(`<div data-preview-pane><section aria-label="Stay details">
+        await page.setContent(`<div data-preview-pane><section aria-label="Stay">
           ${roomRow(1, 1, 'Single', '')}${roomRow(1, 2, 'Double/twin', '')}${roomRow(2, 1, 'Single', '4')}
-        </section><section aria-label="Rates from HMS"><input aria-label="Rooms" value="9"></section></div>`);
+        </section><section aria-label="Availability & rates"><input aria-label="Rooms" value="9"></section></div>`);
         const read = (await page.evaluate(`(${READ_ROWS_JS})()`)) as {
           counts: number[];
           rows: Array<{ stay: number; room: number; roomValue: string; roomOptions: SelectOption[]; rooms: string; board: string }>;
