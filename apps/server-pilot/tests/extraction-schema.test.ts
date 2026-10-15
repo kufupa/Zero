@@ -1,5 +1,6 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { describe, expect, it } from 'vitest';
+import { EXTRACTION_RULES } from '../src/ai/extraction/extract.js';
 import {
   mailExtractionPayloadSchema,
   mailExtractionSchema,
@@ -7,7 +8,7 @@ import {
 } from '../src/ai/extraction/schema.js';
 import { AE1_OUTPUT, AE1_TEXT } from './fixtures/inbound-extraction.js';
 
-describe('mail extraction origin schema', () => {
+describe('mail extraction contract', () => {
   it.each([
     ['person', 'person'],
     ['system_notice', 'system_notice'],
@@ -67,5 +68,17 @@ describe('mail extraction origin schema', () => {
     };
     expect(jsonSchema.properties).toHaveProperty('origin');
     expect(jsonSchema.required ?? []).not.toContain('origin');
+  });
+
+  it('distinguishes voucher booking action from payment and document evidence', () => {
+    expect(EXTRACTION_RULES).toContain(
+      'A travel agent asking the hotel to log a stay they already booked is booking; an attached voucher or sender-stated paid claim is supporting evidence, not the action.',
+    );
+    expect(EXTRACTION_RULES).toContain(
+      'A POP or proof of payment tied to an existing hotel confirmation number, with no new booking request, remains voucher_pop.',
+    );
+    expect(EXTRACTION_RULES).toContain(
+      'A voucher-only delivery or confirmation with no new booking request remains voucher_pop; a voucher alone is not proof of payment.',
+    );
   });
 });

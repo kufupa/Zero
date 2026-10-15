@@ -960,6 +960,67 @@ describe('workflow source and automation refinement', () => {
       expect(refined.policyFlags).toContain('refine:agency-voucher-delivery');
     });
 
+    it('routes voucher mail by booking action, existing payment proof, or document-only intent', () => {
+      const newBooking = refineTriageOutput(
+        {
+          from: 'Reservations Desk <booking-agent@example.test>',
+          subject: 'Paid booking voucher',
+          body: "We've already booked this stay and payment has been made. Please log it into the hotel system. Voucher attached.",
+        },
+        workflowOutput({
+          primaryFolder: 'documents-delivery',
+          humanAction: 'document_or_delivery',
+          suggestedTools: ['hms_list_documents'],
+          isSpam: false,
+        }),
+      );
+
+      expect(newBooking).toMatchObject({
+        primaryFolder: 'bookings',
+        overlays: { booking: true, payment: true },
+        humanAction: 'create_or_reconcile',
+      });
+      expect(newBooking.policyFlags).toContain('refine:voucher-new-booking');
+      expect(newBooking.rationale).toContain('Voucher attachment is supporting evidence.');
+      expect(newBooking.rationale).toContain(
+        'Sender reports payment already made; not independently verified.',
+      );
+
+      const existingPaymentProof = refineTriageOutput(
+        {
+          from: 'Reservations Desk <booking-agent@example.test>',
+          subject: 'Voucher and POP for confirmation no. 57291630-1',
+          body: 'Please find proof of payment for existing hotel confirmation no. 57291630-1 and record this payment against that booking.',
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+          overlays: { booking: true },
+          humanAction: 'create_or_reconcile',
+          isSpam: false,
+        }),
+      );
+
+      expect(existingPaymentProof).toMatchObject({
+        primaryFolder: 'money-billing',
+        overlays: { booking: false, payment: true },
+        humanAction: 'payment_or_finance',
+      });
+
+      const documentOnly = refineTriageOutput(
+        {
+          from: 'Reservations Desk <booking-agent@example.test>',
+          subject: 'Travel voucher for confirmed stay',
+          body: 'Attached travel voucher for the confirmed stay. Please confirm receipt.',
+        },
+        workflowOutput({ primaryFolder: 'bookings', isSpam: false }),
+      );
+
+      expect(documentOnly).toMatchObject({
+        primaryFolder: 'documents-delivery',
+        humanAction: 'document_or_delivery',
+      });
+    });
+
     it('routes agency travel vouchers with invoice requests to money-billing', () => {
       const refined = refineTriageOutput(
         {
