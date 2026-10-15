@@ -1430,7 +1430,7 @@ describe('loadCredentialsIn', () => {
     ];
     try {
       for (const run of errorPaths) {
-        const blob = captureConsoleAndStderr(run);
+        const blob = captureConsoleAndStderr(() => expect(run).toThrow());
         expect(blob).not.toContain(CREDENTIALS_LEAK_SECRET);
         expect(blob).not.toContain('shortpw');
         expect(blob).not.toContain('x'.repeat(65));

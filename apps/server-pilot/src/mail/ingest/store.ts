@@ -89,11 +89,15 @@ const CENTURION_TRANSPORT_ID = 'transport-centurion';
 const DAVINCI_TRANSPORT_ID = 'transport-davinci';
 const FAITH_TRANSPORT_ID = 'transport-faith';
 const AYANDA_TRANSPORT_ID = 'transport-ayanda';
+const EPICK_TRANSPORT_ID = 'transport-epick';
+const KMGIDI_TRANSPORT_ID = 'transport-kmgidi';
 const HOTEL_EQUATED_TRANSPORT_IDS = [
   CENTURION_TRANSPORT_ID,
   DAVINCI_TRANSPORT_ID,
   FAITH_TRANSPORT_ID,
   AYANDA_TRANSPORT_ID,
+  EPICK_TRANSPORT_ID,
+  KMGIDI_TRANSPORT_ID,
 ] as const;
 export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
 export const CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT = 500;

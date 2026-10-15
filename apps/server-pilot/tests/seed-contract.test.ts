@@ -126,22 +126,15 @@ describe('seed identity constants', () => {
     expect(KMGIDI_TRANSPORT_EMAIL).toBe(KMGIDI_MAILBOX_IDENTITIES[0]);
     expect(KMGIDI_TRANSPORT_ALIASES).toEqual(KMGIDI_MAILBOX_IDENTITIES.slice(1));
     expect(KMGIDI_TRANSPORT_DISPLAY_NAME).toBe('Khanyisile Mgidi Reservations');
-    expect(TRANSPORT_ALIASES).not.toEqual(
-      expect.arrayContaining([
-        ...FAITH_MAILBOX_IDENTITIES,
-        ...AYANDA_MAILBOX_IDENTITIES,
-        ...EPICK_MAILBOX_IDENTITIES,
-        ...KMGIDI_MAILBOX_IDENTITIES,
-      ]),
-    );
-    expect(DAVINCI_MAILBOX_IDENTITIES).not.toEqual(
-      expect.arrayContaining([
-        ...FAITH_MAILBOX_IDENTITIES,
-        ...AYANDA_MAILBOX_IDENTITIES,
-        ...EPICK_MAILBOX_IDENTITIES,
-        ...KMGIDI_MAILBOX_IDENTITIES,
-      ]),
-    );
+    for (const identity of [
+      ...FAITH_MAILBOX_IDENTITIES,
+      ...AYANDA_MAILBOX_IDENTITIES,
+      ...EPICK_MAILBOX_IDENTITIES,
+      ...KMGIDI_MAILBOX_IDENTITIES,
+    ]) {
+      expect(TRANSPORT_ALIASES).not.toContain(identity);
+      expect(DAVINCI_MAILBOX_IDENTITIES).not.toContain(identity);
+    }
   });
 });
 
