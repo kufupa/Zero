@@ -33,6 +33,12 @@ const WORKFLOW_OPERATION: Record<LunaAnalysis['workflow'], string> = {
   amend: 'amend',
   cancel: 'cancel',
   other: 'unknown',
+  forward_to_partner: 'partner',
+  send_document: 'document',
+  payment_ack: 'post_payment',
+  acknowledge: 'none',
+  clarify: 'unknown',
+  hms_todo: 'unknown',
 };
 
 function goldOp(operation: string, unknownReason: string | null = null): GoldOperation {
@@ -48,7 +54,7 @@ function goldOp(operation: string, unknownReason: string | null = null): GoldOpe
 export function paneAnalysisToOperations(analysis: Pick<LunaAnalysis, 'workflow'>): GoldOperation[] {
   const mapped = WORKFLOW_OPERATION[analysis.workflow];
   const operation = mapped ?? 'unknown';
-  const unknownReason = operation === 'unknown' ? 'other' : null;
+  const unknownReason = operation === 'unknown' ? (analysis.workflow === 'other' ? 'other' : analysis.workflow) : null;
   return [goldOp(operation, unknownReason)];
 }
 
