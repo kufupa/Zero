@@ -11,7 +11,7 @@ import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { QUOTE_MEALS } from '../quote-proposal/description.js';
 import { buildQuoteProposalPdf, type ProposalPdfInput } from '../quote-proposal/proposal-pdf.js';
-import { createLunaModel } from './bedrock/luna.js';
+import { createAzureLunaModel } from './bedrock/luna.js';
 import { aopQuoteInstructions } from './aop-playbook.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -166,7 +166,7 @@ ${rc.get('hotelRules')}
 
 ${aopQuoteInstructions()}`;
     },
-    model: options.model ?? createLunaModel(),
+    model: options.model ?? createAzureLunaModel(),
     tools: options.tools ?? createReservationistTools(options.runners),
   });
 }

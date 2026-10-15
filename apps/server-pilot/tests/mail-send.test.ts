@@ -22,6 +22,15 @@ import {
   __setSmtpTransportForTests,
 } from '../src/mail/send/smtp.js';
 import { withTransportSelfBcc } from '../src/trpc/routes/mail.js';
+import { readFileSync } from 'node:fs';
+
+describe('mail route Azure Luna labels', () => {
+  it('enqueues feedback extraction as Azure Luna, not Nova Lite', () => {
+    const source = readFileSync(new URL('../src/trpc/routes/mail.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/modelId: 'gpt-6-luna'/);
+    expect(source).not.toMatch(/modelId: DEFAULT_AI_MODEL_ID/);
+  });
+});
 
 const reachable = await probeTestDb();
 

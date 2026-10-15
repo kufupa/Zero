@@ -1041,7 +1041,7 @@ if (TEST_DB_AVAILABLE && reachable)
             reqHeaders: new Headers(),
             sessionUser: {
               id: `u13-cap-scorecard-user-${token}`,
-              email: 'ropperman@legacyhotels.co.za',
+              email: 'navaai@legacyhotels.co.za',
               name: null,
             },
           });
@@ -1258,7 +1258,7 @@ if (TEST_DB_AVAILABLE && reachable)
               reqHeaders: new Headers(),
               sessionUser: {
                 id: `u13-pending-scorecard-user-${token}`,
-                email: 'ropperman@legacyhotels.co.za',
+                email: 'navaai@legacyhotels.co.za',
                 name: null,
               },
             });
@@ -1414,7 +1414,7 @@ if (TEST_DB_AVAILABLE && reachable)
               reqHeaders: new Headers(),
               sessionUser: {
                 id: `u13-scorecard-user-${token}`,
-                email: 'ropperman@legacyhotels.co.za',
+                email: 'navaai@legacyhotels.co.za',
                 name: null,
               },
             });
@@ -1652,7 +1652,7 @@ if (TEST_DB_AVAILABLE && reachable)
               reqHeaders: new Headers(),
               sessionUser: {
                 id: `u13-unavailable-scorecard-user-${token}`,
-                email: 'ropperman@legacyhotels.co.za',
+                email: 'navaai@legacyhotels.co.za',
                 name: null,
               },
             });
@@ -1734,7 +1734,7 @@ if (TEST_DB_AVAILABLE && reachable)
               reqHeaders: new Headers(),
               sessionUser: {
                 id: `u13-failed-scorecard-user-${token}`,
-                email: 'ropperman@legacyhotels.co.za',
+                email: 'navaai@legacyhotels.co.za',
                 name: null,
               },
             });
