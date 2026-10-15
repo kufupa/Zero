@@ -61,6 +61,7 @@ import { PartyPicker } from './party-picker';
 import { DocumentReview } from './document-review';
 import { useFailedHmsJobNoticeMessage } from './hms-job-notices';
 import { HmsQueueStatusLine } from './hms-queue-status';
+import { HmsTodoCard } from './hms-todo-card';
 import { ItemsForYou } from './items-for-you';
 import { NeedsAnswerList } from './needs-answer-list';
 import { NotSupportedList } from './not-supported-list';
@@ -1267,6 +1268,7 @@ export function QuoteWorkflowPanel({
         {TELL_NAVA_ENABLED ? (
           <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         ) : null}
+        <HmsTodoCard card={session.analysis?.hmsTodoCard} />
         <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} unreadFiles={unreadFiles.length > 0} />
         {unreadFiles.map((item) => (
           <Notice key={item.id} tone="warn">
@@ -1991,6 +1993,7 @@ export function QuoteWorkflowPanel({
       ) : null}
       {showWorkspace ? (
         <>
+          <HmsTodoCard card={session.analysis?.hmsTodoCard} />
           <NotSupportedList
             flags={session.analysis?.luna?.flags}
             tasks={session.analysis?.luna?.tasks}
