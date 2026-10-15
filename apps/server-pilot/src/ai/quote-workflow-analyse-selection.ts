@@ -495,6 +495,8 @@ export async function analyseSyncedSelection(
       workflow: luna.workflow,
       amendment: amendmentFromAnalysis(luna),
       sourceRevision: options.selectionEpoch,
+      ratePlan: mapped.ratePlan,
+      delivery: mapped.delivery,
     };
     // Record first, so the cache entry can name the run that produced it. Recording is capped, so the
     // entry is written without a run id when the ledger is slow, off, or failed.

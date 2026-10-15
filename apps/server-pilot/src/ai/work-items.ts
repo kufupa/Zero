@@ -376,6 +376,8 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
       aiUnavailable: false as const,
       luna,
       amendment: amendmentFromAnalysis(luna),
+      ratePlan: mapped.ratePlan,
+      delivery: mapped.delivery,
     },
     refs,
   };
