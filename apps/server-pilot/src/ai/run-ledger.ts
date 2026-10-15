@@ -490,7 +490,7 @@ export async function enqueueAiRun(input: EnqueueAiRunInput, db: DB = getDb()) {
     ...(input.metrics || readAdmissionBinding || readAdmissionIssuer
       ? {
           metrics: {
-            ...(input.metrics ?? {}),
+            ...input.metrics,
             ...(readAdmissionIssuer ? { readAdmissionIssuer } : {}),
             ...(readAdmissionBinding ? { readAdmissionBinding } : {}),
           },
@@ -648,7 +648,13 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         .select()
         .from(aiWorkflowRun)
         .where(claimable)
-        .orderBy(desc(aiWorkflowRun.priority), aiWorkflowRun.createdAt)
+        // staff_quote shares HMS_JOB_PRIORITY_USER with party/find; jump those reads on this serial lane.
+        // hms_write is a separate claim (runKind filter) and keeps HMS_WRITE_PRIORITY.
+        .orderBy(
+          desc(aiWorkflowRun.priority),
+          desc(sql`CASE WHEN ${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote' THEN 1 ELSE 0 END`),
+          aiWorkflowRun.createdAt,
+        )
         .limit(1)
         .for('update', { skipLocked: true });
 
