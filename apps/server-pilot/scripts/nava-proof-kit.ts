@@ -123,7 +123,14 @@ export async function openThread(page: Page, baseUrl: string, threadId: string):
   await waitFor('the pane to read the email', SETTLE_MS, async () => {
     const read = await readPane(page, threadId);
     const outcome = read ? outcomeOf(read) : null;
-    if (outcome === 'unsynced' || outcome === 'error') throw new Blocker(`pane ${outcome}`);
+    if (outcome === 'unsynced') throw new Blocker('pane unsynced');
+    if (outcome === 'error') {
+      const errorText = [read?.statusText, ...(read?.alerts ?? [])].join(' ');
+      const threadNotOnMailbox =
+        read?.paneStatus === 'error' &&
+        (/Could not load this thread\./i.test(errorText) || /\bNOT_FOUND\b/.test(errorText));
+      throw new Blocker(threadNotOnMailbox ? 'thread_not_on_mailbox' : 'pane error');
+    }
     return outcome;
   });
 }
