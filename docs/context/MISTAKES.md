@@ -4,6 +4,16 @@ One entry per lesson: trigger, what happened, rule. Newest first. Add an entry w
 
 | Date | Trigger | What happened | Rule |
 |---|---|---|---|
+| 2026-10-15 | Replay scores for the agent and SOPs all evening | The eval fed the email body only; prod adds attachment text (74% of gold inbound have attachments). The owner caught it by asking about PDF inputs, hours in | Eval input = prod input. Build the prompt with prod's exported functions; state input parity in the brief |
+| 2026-10-15 | SOP tuning on 30-row slices | C1 7→27/30 and C3 3→21/30 on tuning rows; ~0 on fresh rows. The watchdog reported the gains as wins first | Fresh-row gate with ×2 baselines before tuning; no "win" before holdout |
+| 2026-10-15 | Watchdog relayed a driver brief as owner approval for prod `--apply` | The owner had said "Wrong chat — ignore" in that session; the main driver refused | Approvals never travel between sessions; the executing chat must hear it from the owner |
+| 2026-10-15 | "load<12 / mem≥4GB" rule in briefs and memory | Watchdog inference copied by 3 drivers as an owner rule. Owner: "i didnt add this rule im ok w more load" | Same as 2026-10-14 "<2%": quote owner rules verbatim with a source |
+| 2026-10-15 | Main driver asked the owner whether a bare conf should become `-1` | The corpus and code already answered it. Owner: "if u got enough info try look it up use multiple strategies" | Look it up with several strategies before asking the owner a data question |
+| 2026-10-15 | Two PRs sharing a type merged, each green alone | Deploy #2 failed on-box tsc | Typecheck main after every merge, before deploy |
+| 2026-10-15 | #308 party slice 2 | 6 Luna rounds, each a new P1 next to the last fix; blocked | Round 3 with an adjacent P1 = design flag (AGENTS.md gates section) |
+| 2026-10-15 | Party cascade step 2 on live HMS | 6 searches ran on a tool that read the menu-bar window, not the Guest Search dialog | One read-only DOM probe before any live batch |
+| 2026-10-15 | `pkill -f gepa_run.py`, `pgrep -f` monitors | Matched the agent's own shell (exit 144) / monitor never fired; a run kept going while believed stopped | Kill and watch by PID |
+| 2026-10-15 | GEPA partner rewrite | +14 train rows, −8 val; train was 38% forward | Check the train mix before picking minibatch strata; accept on val only |
 | 2026-10-15 | Rates runs timed out during staff hours | The coordinator claimed "HMS is too slow during staff hours" without measuring. The job rows showed Nava's own serial queue (80–1,025 s waiting) | Measure (queue wait vs run time from the job rows) before naming a cause |
 | 2026-10-15 | Long rates runs at 07:00Z | The coordinator invented a "no live batches once staff are on" rule. Nava has its own HMS account and does not share staff's lane | Do not invent constraints. Check the account/lane facts in FACTS.md first |
 | 2026-10-15 | `pr.sh` squashed #271 with a soft reset on a stale base | The squash nearly reverted #269 (same near-miss on #266 at 03:15Z) | Always rebase onto a fresh `origin/main` before squashing; check the diff stat for unrelated deletions |
