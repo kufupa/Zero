@@ -1,5 +1,4 @@
 import { AmendLookupPanel } from '@/components/quote-workflow/amend-lookup-panel';
-import { HmsTodoCard } from '@/components/quote-workflow/hms-todo-card';
 import { VoucherFindCard } from '@/components/quote-workflow/voucher-find-card';
 import { ApproveCard } from '@/components/quote-workflow/approve-card';
 import { hmsApprovalFromTrpc } from '@/lib/quote-workflow/hms-write';
@@ -60,7 +59,6 @@ export function BookingVoucherCard({
       {ota ? (
         <OtaBookingChannelChip source={ota} />
       ) : null}
-      <HmsTodoCard card={session.analysis?.hmsTodoCard} />
       <AmendLookupPanel session={session} trpc={trpcClient} />
       {/* Amendments keep their read-only Find panel; this write card is only for non-amend stored work. */}
       {workItemId && !amendment ? (

@@ -2,8 +2,16 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { BookingVoucherCard } from '../components/nava-pane/blocks/booking-voucher-card';
+import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { HmsTodoCard, type HmsTodoCardPayload } from '../components/quote-workflow/hms-todo-card';
+import { initialQuoteSession } from '../lib/quote-workflow/session';
+import type { QuoteSession } from '../lib/quote-workflow/types';
+
+vi.mock('@/providers/query-provider', () => ({
+  trpcClient: {},
+}));
 
 afterEach(() => cleanup());
 
@@ -20,6 +28,45 @@ const NEW_BOOKING: HmsTodoCardPayload = {
     { label: 'Guest last name', value: 'Example', source: 'mail' },
   ],
 };
+
+/** Outlook NavaPane quoting-tool tree: QuoteWorkflowPanel then BookingVoucherCard. */
+function outlookNavaPaneTree(session: QuoteSession) {
+  return (
+    <>
+      <QuoteWorkflowPanel session={session} />
+      <BookingVoucherCard
+        session={session}
+        internetMessageId={null}
+        syncCommitted={null}
+        syncPending={false}
+      />
+    </>
+  );
+}
+
+function bookingSessionWithCard(): QuoteSession {
+  return {
+    ...initialQuoteSession(),
+    phase: 'non_quote',
+    analysis: {
+      intent: 'other',
+      groups: [],
+      secondaryAsks: [],
+      alternatives: [],
+      hmsTodoCard: NEW_BOOKING,
+      luna: {
+        workflow: 'create_booking',
+        flags: [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    },
+  };
+}
 
 describe('HmsTodoCard', () => {
   it('renders a new_booking card as Key into HMS steps with Missing for empty values', () => {
@@ -45,5 +92,12 @@ describe('HmsTodoCard', () => {
   it('renders nothing when the card is null', () => {
     const { container } = render(<HmsTodoCard card={null} />);
     expect(container.innerHTML).toBe('');
+  });
+});
+
+describe('Outlook NavaPane tree', () => {
+  it('shows Key into HMS once when analysis returns a to-do card', () => {
+    render(outlookNavaPaneTree(bookingSessionWithCard()));
+    expect(screen.getAllByRole('heading', { name: 'Key into HMS' })).toHaveLength(1);
   });
 });
