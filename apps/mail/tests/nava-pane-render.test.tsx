@@ -1974,13 +1974,15 @@ describe('NavaPane screen states', () => {
     expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
 
     rerender(<NavaPane bridge={bridgeFor('002', '<other-quote@example.invalid>', 'Quote B')} />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined());
+    await storedReadLands();
+    expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined();
     confirmPublicRate();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole('button', { name: /Allocation for mail-2/ })).toBeDefined();
 
     rerender(<NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined());
+    await storedReadLands();
+    expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined();
     await waitFor(() =>
       expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
         input: expect.objectContaining({ messageId: 'mail-1' }),
@@ -2013,6 +2015,32 @@ describe('NavaPane screen states', () => {
     await storedReadLands();
     expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
+  it('reads back an existing job on remount even when sessionStorage still suppresses auto-start', async () => {
+    sessionStorage.setItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>', '1');
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(
+      completedStaffQuoteJob({ ...STAFF_QUOTE_READY, description: 'Allocation after manual run' }),
+    );
+
+    const first = render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    expect(await screen.findByRole('button', { name: /Allocation after manual run/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
+      input: expect.objectContaining({ messageId: 'mail-1' }),
+    });
+    expect(sessionStorage.getItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>')).toBe('1');
+
+    first.unmount();
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    expect(await screen.findByRole('button', { name: /Allocation after manual run/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>')).toBe('1');
   });
 
   it('keeps Search disabled while a running job is read back, then clears the guard', async () => {

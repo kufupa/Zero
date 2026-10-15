@@ -1697,9 +1697,7 @@ export function NavaPane({
       !quoteSession.binding ||
       (quoteSession.binding.internetMessageId ?? null) !== (activeEmail.internetMessageId ?? null) ||
       !staffSourceReady(quoteSession) ||
-      partyLookupWaitReason(quoteSession) ||
-      staffQuoteAutoSuppressed.current.has(contactMessageKey) ||
-      autoStaffQuoteSuppressed(contactMessageKey)
+      partyLookupWaitReason(quoteSession)
     ) {
       return;
     }
@@ -1755,6 +1753,15 @@ export function NavaPane({
     if (partyWait && !seenAttempt) {
       // Existing job/result is server state. The in-memory attempt set is empty after remount.
       runQuoteStep(step.id, true, true);
+      return;
+    }
+    // sessionStorage suppression only blocks starting a new price run. Read-back of an
+    // existing job still happens after a remount that kept the per-email flag.
+    if (
+      !seenAttempt &&
+      (staffQuoteAutoSuppressed.current.has(contactMessageKey) ||
+        autoStaffQuoteSuppressed(contactMessageKey))
+    ) {
       return;
     }
     staffQuoteAutoAttempted.current.add(attemptKey);

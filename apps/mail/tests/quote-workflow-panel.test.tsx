@@ -1927,6 +1927,16 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
   });
 
+  it('hides the public-rate action while analysis is still null', () => {
+    render(
+      <QuoteWorkflowPanel
+        session={{ ...headerSession({ company: '' }), analysis: null }}
+        onPartyPublicConfirmed={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
+  });
+
   it('hides the public-rate action on a voucher view', () => {
     const base = headerSession({ company: '' });
     render(

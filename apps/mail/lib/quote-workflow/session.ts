@@ -204,8 +204,9 @@ export function quotePublicRateChoiceVisible(
   session: Pick<QuoteSession, 'partyDecision' | 'staffHeader' | 'analysis'>,
 ): boolean {
   if (!partyDecisionWaitReason(session)) return false;
-  if (session.analysis?.intent === 'other') return false;
-  const workflow = session.analysis?.luna?.workflow;
+  const analysis = session.analysis;
+  if (analysis?.intent !== 'quote') return false;
+  const workflow = analysis.luna?.workflow;
   return workflow !== 'create_booking' && workflow !== 'other';
 }
 

@@ -12,6 +12,7 @@ import {
   pickNextRunnableStep,
   planQuoteSteps,
   partyDecisionWaitReason,
+  quotePublicRateChoiceVisible,
   quoteRunBlockReason,
   quoteRunIsCurrent,
   salesStrategyForQueuedQuote,
@@ -3665,5 +3666,15 @@ describe('partyDecision: quote_stay waits for a pick or explicit public rate', (
     const picked = reduceQuoteSession(confirmed, { type: 'patch_staff_header', header: VERIFIED_COMPANY });
     expect(picked.partyDecision).toBe('picked');
     expect(partyDecisionWaitReason(picked)).toBeNull();
+  });
+
+  it('hides the public-rate action while analysis is still null', () => {
+    const idle = initialQuoteSession();
+    expect(idle.analysis).toBeNull();
+    expect(quotePublicRateChoiceVisible(idle)).toBe(false);
+  });
+
+  it('shows the public-rate action once analysis is a new quote and the party is undecided', () => {
+    expect(quotePublicRateChoiceVisible(analysisReady())).toBe(true);
   });
 });
