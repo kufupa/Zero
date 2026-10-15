@@ -6,6 +6,7 @@ import type { ModelAdapter } from './bedrock/adapter.js';
 import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { analyseQuoteSources, type QuoteWorkflowAnalysis } from './quote-workflow-analyse.js';
+import { buildHmsTodoCard } from './hms-todo-card.js';
 import {
   amendmentFromAnalysis,
   analyseQuoteSelection,
@@ -500,6 +501,10 @@ export async function analyseSyncedSelection(
       luna: lunaWithMappedDates(luna, mapped),
       workflow: luna.workflow,
       amendment: amendmentFromAnalysis(luna),
+      hmsTodoCard: buildHmsTodoCard({
+        ...luna,
+        attachmentFilenames: synced.attachments.map((attachment) => attachment.filename),
+      }),
       sourceRevision: options.selectionEpoch,
       ratePlan: mapped.ratePlan,
       delivery: mapped.delivery,
@@ -564,6 +569,12 @@ export async function analyseSyncedSelection(
     fallbackReason: llm.fallbackReason,
     aiUnavailable: true as const,
     amendment: null,
+    hmsTodoCard: override.luna
+      ? buildHmsTodoCard({
+          ...override.luna,
+          attachmentFilenames: synced.attachments.map((attachment) => attachment.filename),
+        })
+      : null,
     sourceRevision: options.selectionEpoch,
   };
   const analysisRunId = ledger
