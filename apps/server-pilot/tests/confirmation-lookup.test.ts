@@ -208,4 +208,26 @@ describe('resolveThreadConfirmationEvidence', () => {
       ]),
     ).toEqual({ confirmation: LEG1, reason: null });
   });
+
+  it('keeps one dashed conf when a 10-digit phone is also in the attachment text', () => {
+    expect(
+      resolveThreadConfirmationEvidence([
+        { filename: '88001122-1.pdf', text: 'Please call 8212345678 about 88001122-1' },
+      ]),
+    ).toEqual({ confirmation: LEG1, reason: null });
+  });
+
+  it('takes a labelled bare base when the thread has no dashed conf', () => {
+    expect(
+      resolveThreadConfirmationEvidence([
+        { filename: 'note.txt', text: 'Please check confirmation number 88001122' },
+      ]),
+    ).toEqual({ confirmation: BASE, reason: null });
+  });
+
+  it('ignores an unlabelled 10-digit token as a booking base', () => {
+    expect(
+      resolveThreadConfirmationEvidence([{ filename: 'scan.pdf', text: '8212345678' }]),
+    ).toEqual({ confirmation: null, reason: null });
+  });
 });
