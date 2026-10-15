@@ -5439,6 +5439,47 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       }
     });
 
+    it('skips blank lines in the legacy env but still parses every assignment', async () => {
+      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { spawnSync } = await import('node:child_process');
+      const { tmpdir } = await import('node:os');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, join } = await import('node:path');
+      const here = dirname(fileURLToPath(import.meta.url));
+      const parser = join(here, '..', 'deploy', 'parse-ec2-legacy-env.mjs');
+      const tempDir = mkdtempSync(join(tmpdir(), 'nava-legacy-env-parser-test-'));
+      const legacyEnv = join(tempDir, '.env.production');
+      const remoteCommon = join(tempDir, '.env.remote-common');
+      try {
+        writeFileSync(
+          legacyEnv,
+          [
+            "NODE_ENV='production'",
+            "DATABASE_URL='postgres://example.invalid/zero'",
+            "AWS_REGION='af-south-1'",
+            '',
+            "S3_BUCKET='nava-test-bucket'",
+            "GOTENBERG_URL='http://127.0.0.1:3000'",
+            '',
+          ].join('\n'),
+          'utf8',
+        );
+        const ok = spawnSync(
+          process.execPath,
+          [parser, legacyEnv, remoteCommon, 'DATABASE_URL', 'AWS_REGION', 'S3_BUCKET', 'GOTENBERG_URL'],
+          { encoding: 'utf8' },
+        );
+        expect(ok.status).toBe(0);
+        expect(readFileSync(remoteCommon, 'utf8')).toContain("GOTENBERG_URL='http://127.0.0.1:3000'");
+
+        writeFileSync(legacyEnv, ['', '', ''].join('\n'), 'utf8');
+        const empty = spawnSync(process.execPath, [parser, legacyEnv, remoteCommon, 'DATABASE_URL'], { encoding: 'utf8' });
+        expect(empty.status).toBe(2);
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it('renders quoted allowlisted legacy values without remote forbidden credentials', async () => {
       const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
       const { spawnSync } = await import('node:child_process');

@@ -12,11 +12,9 @@ function fail() {
 function parseAssignments(source) {
   if (source.includes('\r') || source.includes('\0')) throw new Error('invalid');
 
-  const lines = source.split('\n');
-  if (lines.at(-1) === '') lines.pop();
-  if (lines.length === 0 || lines.some((line) => line.length === 0)) {
-    throw new Error('invalid');
-  }
+  // Blank lines carry no assignment (install-gotenberg.sh appends after one); every other line must still parse.
+  const lines = source.split('\n').filter((line) => line.length > 0);
+  if (lines.length === 0) throw new Error('invalid');
 
   const values = new Map();
   for (const line of lines) {
