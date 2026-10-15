@@ -17,6 +17,7 @@ export type HmsTodoCardPayload = {
   steps: HmsTodoStep[];
   missing: string[];
   writesEnabled: false;
+  prefill?: { fields: Array<{ label: string; value: string }>; stillNeeded: string[] };
 };
 
 const PII_LABELS = new Set([
@@ -25,6 +26,9 @@ const PII_LABELS = new Set([
   'Requested change',
   'Payment reference',
   'Attachments',
+  'Agency',
+  'Billing reference',
+  'Reservation note',
 ]);
 
 /**
@@ -53,6 +57,32 @@ export function HmsTodoCard({ card }: { card: HmsTodoCardPayload | null | undefi
           </div>
         ))}
       </dl>
+      {card.prefill ? (
+        <>
+          <p className="text-[11px] font-semibold text-[#475569]">HMS fields</p>
+          <dl className="flex flex-col gap-1.5">
+            {card.prefill.fields.map((field) => (
+              <div key={field.label} className="flex items-baseline justify-between gap-3">
+                <dt className="text-[13px] font-semibold text-[#475569]">{field.label}</dt>
+                <dd
+                  data-pii={PII_LABELS.has(field.label) || undefined}
+                  className="text-right text-[12.5px] text-[#1e293b]"
+                >
+                  {field.value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="text-[11px] font-semibold text-[#475569]">Still needed</p>
+          <ul className="flex flex-col gap-1.5">
+            {card.prefill.stillNeeded.map((question) => (
+              <li key={question} className="text-[12.5px] text-[#1e293b]">
+                {question}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
       <p className="text-[11px] text-[#64748b]">Nava does not write to HMS</p>
     </Section>
   );
