@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto';
 
 const runLedger = vi.hoisted(() => ({
   markAiRunDeadLetter: vi.fn(),
+  markAiRunPolicyRefused: vi.fn(),
   markAiRunRetry: vi.fn(),
   markAiRunSucceeded: vi.fn(),
 }));
@@ -153,6 +154,7 @@ function prefetchEnv(overrides: Partial<ReturnType<typeof parseEnv>> = {}) {
 
 beforeEach(() => {
   runLedger.markAiRunDeadLetter.mockReset().mockResolvedValue({ id: RUN_ID });
+  runLedger.markAiRunPolicyRefused.mockReset().mockResolvedValue({ id: RUN_ID, state: 'superseded' });
   runLedger.markAiRunRetry.mockReset().mockResolvedValue({ id: RUN_ID });
   runLedger.markAiRunSucceeded.mockReset().mockResolvedValue({ id: RUN_ID });
   panePartyLookupLoaders.enabled = () => true;
@@ -316,7 +318,43 @@ describe('executeHmsJob party reads', () => {
     expect(lockOptions).toEqual({ tryOnce: true });
   });
 
-  it('retries an execution failure as a transient HMS read failure', async () => {
+    it('ends a policy refusal superseded, not dead-lettered', async () => {
+      panePartyLookupLoaders.enabled = () => false;
+
+      await expect(executeHmsJob({ run: runningRun(REQUEST), fence, db: fakeDb })).resolves.toBe(
+        'dead_letter',
+      );
+
+      expect(runLedger.markAiRunPolicyRefused).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lastError: 'refused_flag_off',
+        }),
+        fakeDb,
+      );
+      expect(runLedger.markAiRunDeadLetter).not.toHaveBeenCalled();
+      expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
+    });
+
+    it('dead-letters refused_input_invalid as SCHEMA_DRIFT', async () => {
+      await expect(
+        executeHmsJob({
+          run: runningRun({ kind: 'party', name: '   ' }),
+          fence,
+          db: fakeDb,
+        }),
+      ).resolves.toBe('dead_letter');
+      expect(runLedger.markAiRunDeadLetter).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lastError: 'refused_input_invalid',
+          failureClass: 'SCHEMA_DRIFT',
+        }),
+        fakeDb,
+      );
+      expect(runLedger.markAiRunPolicyRefused).not.toHaveBeenCalled();
+      expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
+    });
+
+    it('retries an execution failure as a transient HMS read failure', async () => {
     panePartyLookupLoaders.spawn = vi.fn(async () => ({
       outcome: 'execution_failure',
       candidates: [],
@@ -434,13 +472,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           triggerMessageId: quote.triggerMessageId,
         };
         await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
-        expect(runLedger.markAiRunDeadLetter).toHaveBeenCalledWith(
+        expect(runLedger.markAiRunPolicyRefused).toHaveBeenCalledWith(
           expect.objectContaining({
             lastError: 'refused_origin_mismatch',
-            failureClass: 'POLICY_BLOCK',
           }),
           db,
         );
+        expect(runLedger.markAiRunDeadLetter).not.toHaveBeenCalled();
         expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
       }));
   },
