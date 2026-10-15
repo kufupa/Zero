@@ -50,6 +50,8 @@ export type { BookingDraftDefaults, BookingDraftMissing };
 export const buildCreatePrefillDescription =
   'Build HMS create-form requests for a new stay after findFirstStayMatch returned none. Call with the stay facts already read from the mail/voucher plus BookingDraftDefaults. Maps free text to enum codes only by exact case/space-insensitive match; never guesses. Output.requests is one create-tool request per room; missing holds staff questions; todoNextStep is the Key into HMS line.';
 
+const NATIVE_RATE_CODE = /^[A-Z0-9]{2,10}$/;
+
 function foldToken(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -164,7 +166,9 @@ export async function buildCreatePrefill(
     missing.push({ field: 'guaranteeType', question: 'Guarantee type for this booking?' });
   }
 
-  const ratePlan = trimmed(parsed.rateText);
+  // ratePlan is a native HMS code (BAR, BARRO, BWEBB), not an enum; prose like "Best Available Rate" goes to missing.
+  const rateText = trimmed(parsed.rateText);
+  const ratePlan = rateText && NATIVE_RATE_CODE.test(rateText) ? rateText : null;
   if (!ratePlan) missing.push({ field: 'ratePlan', question: 'Rate plan code for this booking?' });
 
   const shared: Record<string, unknown> = {};

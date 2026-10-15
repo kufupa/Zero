@@ -198,4 +198,9 @@ describe('CREATE_PREFILL_SOP', () => {
       /Never skip|Never other|Overrides |beats |Pick one workflow|This SOP wins/i,
     );
   });
+  it('never treats rate prose as a native rate-plan code', async () => {
+    const out = await buildCreatePrefill(stay({ rateText: 'Best Available Rate' }));
+    expect(out.requests[0]?.ratePlan).toBeUndefined();
+    expect(out.missing.some((row) => row.field === 'ratePlan')).toBe(true);
+  });
 });
