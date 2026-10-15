@@ -1,15 +1,14 @@
 // Agent SOP for workflow: payment_ack
-export const PAYMENT_PROOF_SOP = `AOP-4 Payment proof. Overrides skip/OTA, other, and hms_todo for this mail. Never skip, spam, create, other, or hms_todo. Never claim a payment was posted. Posting is staff.
+export const PAYMENT_PROOF_SOP = `Applies only when the last mail sends or asks about proof of payment, remittance, EFT, or a completed card authorisation as evidence a payment was already made. Automated channel, OTA or RateTiger payment notices are not this section. Otherwise ignore this section.
 
-Entry: POP, remittance, EFT, bill-back/accommodation voucher, card auth, VCC/virtual card, swipe-required, channel-manager payment notice, or a request to charge.
+For a mail that meets this condition, first match wins:
+1. Agency voucher or paid-stay pack that asks to book/confirm/reserve this hotel — ignore this section (create).
+2. They ask this hotel to send an invoice, folio or pro forma — ignore this section (send_document).
+3. Events, conference, venue hire or DDR — even with a deposit attached — forward_to_partner.
+4. POP / remittance / EFT / voucher for another property, accounts, a company account, or a group/event deposit; or a request to charge, swipe or process a card with no proof they already paid — forward_to_partner. partnerDestination = accounts or the named desk. replyDraft empty or a short holding note.
+5. Failed/declined card, CVV, or "should we charge?" — clarify. replyDraft is that one question.
+6. Completed POP / EFT / remittance / card authorisation for this hotel — payment_ack even when the stay is unnamed or matchPaymentProof is none or ambiguous. Never say the payment was posted.
 
-Stay: read amount, reference, payer, paid-on yourself. Put a confirmation number from the subject, body or payment reference into confirmationNumber. If matchPaymentProof is available and status=exact, use that conf#. Do not clarify because the stay is missing.
+Stay: read amount, reference, payer, paid-on yourself. Call matchPaymentProof when candidate stays exist. Fill confirmationNumber only when status=exact, or when the tool was not called and the mail writes exactly one confirmation number. If status is ambiguous or none, leave confirmationNumber empty — do not pick from the mail.
 
-Moves (pick one):
-- skip/spam/other/hms_todo: NEVER on this mail. Channel-manager, OTA, RateTiger, VCC and card-link notices are forward_to_partner (or clarify if they only ask a question).
-- clarify: ONLY a failed/declined-card question, a CVV question, or "should we charge / charge the full account?". Never acknowledge a failed charge. replyDraft is that one question. Ordinary POP/voucher is not clarify.
-- forward_to_partner: this desk does not process it — automated channel/OTA/VCC/OTP/card-link notices; swipe-required or "please charge"/"process payment" card details; a charge pack (order + screenshot / payment details for the hotel to charge) with no proof-of-payment, remittance, EFT, POP or voucher framing; company-account or group/event deposits for reception/accounts. partnerDestination = reception/accounts. replyDraft empty or a short holding note.
-- payment_ack: a person or agency sent POP / EFT / remittance / bill-back or accommodation voucher as evidence they already paid (including a voucher that names another Legacy hotel — receipt only). Fill confirmationNumber when written. replyDraft empty (silent — usual) OR one line "POP well received, thank you" / "Voucher well received." only if they asked to confirm receipt. Amount mismatch: note it in rationale; still payment_ack. Never "payment posted". Unsure ack vs forward: voucher/POP/remittance/EFT words → payment_ack; charge/VCC/card words → forward.
-- acknowledge: only a pure thank-you with no POP, voucher, card or failed-charge to handle.
-
-Done: stay named when the mail has a conf#; otherwise the mail is with the desk that charges.`;
+Reply: empty (usual) or one line "POP well received, thank you" only if they asked to confirm receipt. Amount mismatch: note it in rationale; still payment_ack.`;

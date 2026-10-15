@@ -33,12 +33,13 @@ export type MatchPaymentProofOutput = z.infer<typeof matchPaymentProofOutputSche
 export const matchPaymentProofDescription =
   'Score POP fields against stay candidates. Call after reading amount, reference, payer and paid-on from the mail (do not parse amounts here) and listing candidate stays. Returns exact, ambiguous (never pick) or none. Use the confirmationNumber only when status is exact.';
 
-const SCORE_CONF = 8;
+const SCORE_CONF = 10;
 const SCORE_AMOUNT = 4;
 const SCORE_NAME = 2;
 const SCORE_COMPANY = 2;
 const SCORE_DATE = 1;
 const MIN_EXACT = SCORE_NAME;
+const ISO_DAY = /^(\d{4}-\d{2}-\d{2})/;
 
 type Candidate = MatchPaymentProofInput['candidates'][number];
 type Scored = {
@@ -59,9 +60,13 @@ function hasPhrase(haystack: string, needle: string, minLength: number): boolean
 
 function confInReference(reference: string | null, confirmationNumber: string): boolean {
   if (!reference) return false;
-  const conf = confirmationNumber.trim();
-  if (conf.length < 4) return false;
-  return reference.toLowerCase().includes(conf.toLowerCase());
+  return hasPhrase(reference, confirmationNumber, 4);
+}
+
+function isoDay(value: string | null): string | null {
+  if (!value) return null;
+  const match = ISO_DAY.exec(value.trim());
+  return match?.[1] ?? null;
 }
 
 function amountMatches(amount: number | null, balanceDue: number | null | undefined): boolean {
@@ -70,8 +75,10 @@ function amountMatches(amount: number | null, balanceDue: number | null | undefi
 }
 
 function paidBeforeDeparture(paidOn: string | null, departure: string): boolean {
-  if (!paidOn || !departure) return false;
-  return paidOn < departure;
+  const paid = isoDay(paidOn);
+  const leave = isoDay(departure);
+  if (!paid || !leave) return false;
+  return paid < leave;
 }
 
 function scoreCandidate(pop: MatchPaymentProofInput['pop'], stay: Candidate): Scored {

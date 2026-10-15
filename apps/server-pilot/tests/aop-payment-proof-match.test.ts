@@ -42,7 +42,7 @@ function pop(
 describe('matchPaymentProof', () => {
   it('is exact when the confirmation number appears in the reference', () => {
     const result = matchPaymentProof({
-      pop: pop({ reference: 'EFT 9999901-1 Smith' }),
+      pop: pop({ reference: 'EFT 9999901-1' }),
       candidates: [stay, other],
     });
     expect(result.status).toBe('exact');
@@ -50,6 +50,38 @@ describe('matchPaymentProof', () => {
     expect(result.candidates).toEqual(['9999901-1']);
     expect(result.why.some((line) => /conf/i.test(line))).toBe(true);
     expect(result.score).toBeGreaterThan(0);
+  });
+
+  it('does not treat a confirmation number as a digit substring of the reference', () => {
+    const result = matchPaymentProof({
+      pop: pop({ reference: 'EFT 0123456' }),
+      candidates: [
+        {
+          ...stay,
+          confirmationNumber: '12345',
+          lastName: 'Ng',
+          company: null,
+          balanceDue: null,
+        },
+        other,
+      ],
+    });
+    expect(result.status).toBe('none');
+    expect(result.confirmationNumber).toBeNull();
+  });
+
+  it('treats a confirmation in the reference as stronger than amount, name, company and date together', () => {
+    const result = matchPaymentProof({
+      pop: pop({
+        reference: 'EFT 9999901-1',
+        amount: 2400,
+        payerName: 'Jones Contoso Agency',
+        paidOn: '2026-11-10',
+      }),
+      candidates: [stay, other],
+    });
+    expect(result.status).toBe('exact');
+    expect(result.confirmationNumber).toBe('9999901-1');
   });
 
   it('treats amount equal to balanceDue within R1 as a match signal', () => {
@@ -100,6 +132,28 @@ describe('matchPaymentProof', () => {
       candidates: [stay, other],
     });
     expect(afterStay.status).toBe('none');
+  });
+
+  it('does not treat a date-only signal as exact', () => {
+    const result = matchPaymentProof({
+      pop: pop({ paidOn: '2026-11-10' }),
+      candidates: [stay],
+    });
+    expect(result.status).toBe('none');
+    expect(result.confirmationNumber).toBeNull();
+    expect(result.score).toBe(1);
+  });
+
+  it('ignores paidOn that is not an ISO calendar day', () => {
+    const slash = matchPaymentProof({
+      pop: pop({ paidOn: '01/02/2027' }),
+      candidates: [
+        { ...stay, lastName: 'Ng', departure: '12/31/2026' },
+        { ...other, lastName: 'Ng', departure: '01/01/2027' },
+      ],
+    });
+    expect(slash.status).toBe('none');
+    expect(slash.confirmationNumber).toBeNull();
   });
 
   it('returns ambiguous on a tie and never picks a confirmation number', () => {
