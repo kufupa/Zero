@@ -687,12 +687,19 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     // 2. Type: Quote, as staff would set it. A thread that is not Quote shows its room rows only after this switch, so its
     // counts can be checked only after it: with edits allowed, a rooms stop then leaves the switch in place and nothing else.
     const pane = page.locator('[data-preview-pane]');
-    const type = pane.locator('select[aria-label="Nava reads this as"]');
-    await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
-      throw new Blocker('treat-as select ("Nava reads this as") is missing');
-    });
-    if ((await type.inputValue()) !== 'quote') {
+    const rawKind = await page
+      .locator('[data-preview-pane] [data-read-as]')
+      .first()
+      .getAttribute('data-read-as', { timeout: STEP_MS })
+      .catch(() => null);
+    const kind = rawKind?.trim() || 'unknown';
+    const typeIsQuote = kind === 'quote' || kind === 'group';
+    if (!typeIsQuote) {
       if (!inputs.allowEdits) throw new Blocker(needsEditsMessage(['type']));
+      const type = pane.locator('select[aria-label="Change how Nava reads this email"]');
+      await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
+        throw new Blocker('treat-as select ("Change how Nava reads this email") is missing');
+      });
       await type.selectOption('quote');
       summary.filledFields.push('type');
       log('type set to Quote');
@@ -983,13 +990,14 @@ export async function readAe1Plan(config: Ae1Config, log: (line: string) => void
     }).catch((): StoredWorkView | null => null);
     plan.storedWorkflow = stored?.status === 'ready' ? stored.workflow : null;
 
-    const pane = page.locator('[data-preview-pane]');
-    const type = pane.locator('select[aria-label="Nava reads this as"]');
-    await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
-      throw new Blocker('treat-as select ("Nava reads this as") is missing');
-    });
+    const rawKind = await page
+      .locator('[data-preview-pane] [data-read-as]')
+      .first()
+      .getAttribute('data-read-as', { timeout: STEP_MS })
+      .catch(() => null);
+    const kind = rawKind?.trim() || 'unknown';
     // A thread that is not Quote has no rows to read until it is switched, and a plan makes no edit: the plan stops here.
-    const typeIsQuote = (await type.inputValue()) === 'quote';
+    const typeIsQuote = kind === 'quote' || kind === 'group';
     if (!typeIsQuote) plan.wouldFill.push('type');
     const typeStop = planStopBeforeRows(typeIsQuote, inputs.allowEdits);
     if (typeStop) {

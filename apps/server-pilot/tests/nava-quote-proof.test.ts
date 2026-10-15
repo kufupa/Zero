@@ -135,6 +135,7 @@ describe('quote proof input review', () => {
 
 describe('quote proof interaction helpers', () => {
   it('targets display-first contact values and the guided quote section and room labels', () => {
+    expect(QUOTE_SELECTORS.intent).toBe('[data-preview-pane] [data-read-as]');
     expect(QUOTE_SELECTORS.contactRegion).toBe('Guest & contact');
     expect(QUOTE_SELECTORS.contactNameValue).toBe('[data-contact-field="name"] dd > span');
     expect(QUOTE_SELECTORS.contactEmailValue).toBe('[data-contact-field="email"] dd > span');

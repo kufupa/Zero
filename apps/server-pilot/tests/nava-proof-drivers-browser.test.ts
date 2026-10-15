@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
@@ -9,6 +9,7 @@ import { buildQuoteWorkbook } from '../src/quote-proposal/quote-workbook';
 import { parseAe1Config, readAe1Plan, runAe1 } from '../scripts/nava-ae1-rates-proof';
 import { parseAe2Config, runAe2 } from '../scripts/nava-ae2-find-proof';
 import { parseAe4Config, runAe4 } from '../scripts/nava-ae4-override-proof';
+import { QUOTE_SELECTORS } from '../scripts/nava-quote-proof';
 
 /**
  * Runs the drivers end to end in Chromium against a scripted stand-in for the pane: plain HTML with the pane's labels
@@ -43,6 +44,35 @@ const shell = (body: string, script: string) => `<!doctype html><html><head><met
 <div data-preview-pane><div data-preview-status="ready"><main class="nava-pane-scroll">${body}</main></div></div>
 <script>${TRPC_JS}
 ${script}</script></body></html>`;
+
+const readAsBadge = (kind: 'quote' | 'group' | 'new_booking') => {
+  const label = kind === 'new_booking' ? 'New booking' : kind === 'group' ? 'Group' : 'Quote';
+  const value = kind === 'new_booking' ? 'create_booking' : 'quote';
+  return `<section role="status" aria-label="Nava reads this as: ${label}">
+    <div><span>Nava reads this as:</span><span data-read-as="${kind}">${label}</span></div>
+    <label>Change how Nava reads this email
+      <select aria-label="Change how Nava reads this email">
+        <option value="quote"${value === 'quote' ? ' selected' : ''}>Quote</option>
+        <option value="create_booking"${value === 'create_booking' ? ' selected' : ''}>New booking</option>
+      </select>
+    </label>
+  </section>`;
+};
+
+describe('quote proof read-as selector', () => {
+  it('stays tied to WorkflowBadge’s read-as attribute', () => {
+    const workflowBadge = readFileSync(
+      new URL('../../mail/components/quote-workflow/workflow-badge.tsx', import.meta.url),
+      'utf8',
+    );
+    const quoteProof = readFileSync(new URL('../scripts/nava-quote-proof.ts', import.meta.url), 'utf8');
+    const selectorAttribute = /^\[data-preview-pane\] \[(data-[a-z-]+)\]$/.exec(QUOTE_SELECTORS.intent)?.[1];
+    expect(selectorAttribute).toBe('data-read-as');
+    expect(workflowBadge).toContain(`${selectorAttribute}={current}`);
+    expect(workflowBadge).toContain("current === 'quote' || current === 'group'");
+    expect(quoteProof).toContain("proof.kind !== 'quote' && proof.kind !== 'group'");
+  });
+});
 
 let dir: string;
 let server: Server | null = null;
@@ -108,7 +138,10 @@ const STAYS = [
  * is the room type the email asks for on the single rows. `notQuote` is a thread read as not a quote: the pane shows no
  * Stay details until its type is set to Quote, and then shows them.
  */
-function ae1Page(rooms = '30', options: { single?: string; notQuote?: boolean } = {}): string {
+function ae1Page(
+  rooms = '30',
+  options: { single?: string; notQuote?: boolean; kind?: 'quote' | 'group' } = {},
+): string {
   const row = (stay: number, room: number, asked: string) => `
     <div class="room" data-stay="${stay - 1}">
       <select aria-label="Room type">
@@ -123,8 +156,9 @@ function ae1Page(rooms = '30', options: { single?: string; notQuote?: boolean } 
     </div>`;
   const single = options.single ?? 'Single';
   const stayDetails = `<section aria-label="Stay details">${row(1, 1, single)}${row(1, 2, 'Double/twin')}${row(2, 1, single)}${row(2, 2, 'Double/twin')}</section>`;
+  const initialKind = options.notQuote ? 'new_booking' : (options.kind ?? 'quote');
   const body = `
-    <select aria-label="Nava reads this as">${options.notQuote ? '<option value="other" selected>Not a quote</option>' : ''}<option value="quote"${options.notQuote ? '' : ' selected'}>Quote request</option></select>
+    ${readAsBadge(initialKind)}
     ${options.notQuote ? '' : stayDetails}
     <section aria-label="Rates from HMS">
       <p id="rated">0 of 2 stays rated</p>
@@ -142,8 +176,14 @@ function ae1Page(rooms = '30', options: { single?: string; notQuote?: boolean } 
     ${
       options.notQuote
         ? `// The Stay details appear once the thread is Quote, as the pane shows them.
-    document.querySelector('select[aria-label="Nava reads this as"]').addEventListener('change', (event) => {
-      if (event.target.value === 'quote') document.querySelector('[data-preview-pane] main').insertAdjacentHTML('afterbegin', ${JSON.stringify(stayDetails)});
+    document.querySelector('select[aria-label="Change how Nava reads this email"]').addEventListener('change', (event) => {
+      if (event.target.value === 'quote') {
+        const readAs = document.querySelector('[data-read-as]');
+        readAs.setAttribute('data-read-as', 'quote');
+        readAs.textContent = 'Quote';
+        readAs.closest('[role="status"]').setAttribute('aria-label', 'Nava reads this as: Quote');
+        document.querySelector('[data-preview-pane] main').insertAdjacentHTML('afterbegin', ${JSON.stringify(stayDetails)});
+      }
     });`
         : ''
     }
@@ -233,7 +273,7 @@ describe('AE1 driver against a scripted pane', () => {
   it.skipIf(!chromiumBinary)(
     'fills the rows, rates each stay once, and checks the PDF and the Excel',
     async () => {
-      const base = await serve(ae1Page(), ae1Handlers());
+      const base = await serve(ae1Page('30', { kind: 'group' }), ae1Handlers());
       const out = join(dir, 'ae1-rates-test');
       const config = parseAe1Config(
         ['--threads', 't-1', '--out', out, '--timeout-ms', '20000'],
@@ -752,7 +792,7 @@ describe('the active mailbox', () => {
 /** A stored quote as in the live incident: 2026-11-02 to 06, one room. `rooms` '' leaves the room count missing. */
 function ae4Page(rooms: string): string {
   const body = `
-    <select aria-label="Nava reads this as"><option value="quote" selected>Quote request</option></select>
+    ${readAsBadge('quote')}
     <section aria-label="Stay details">
       <div hidden>
         <input type="date" aria-label="Arrival" value="2026-11-02">
