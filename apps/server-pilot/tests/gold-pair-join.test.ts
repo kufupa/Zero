@@ -8,6 +8,7 @@ import {
   joinGoldPairOps,
   parseGoldPairFixture,
   parseGoldPairJoinCli,
+  predictedActionToOperations,
   runGoldPairJoin,
   staffMoveToOperations,
   type ClaimedOpsRow,
@@ -62,6 +63,33 @@ describe('staffMoveToOperations', () => {
   });
 });
 
+describe('predictedActionToOperations', () => {
+  it('maps R3 actions onto same-move GoldOperation strings', () => {
+    expect(predictedActionToOperations('new_booking').map((row) => row.operation)).toEqual(['create']);
+    expect(predictedActionToOperations('quote_availability').map((row) => row.operation)).toEqual([
+      'quote',
+    ]);
+    expect(predictedActionToOperations('cancel').map((row) => row.operation)).toEqual(['cancel']);
+    expect(predictedActionToOperations('amend').map((row) => row.operation)).toEqual(['amend']);
+    expect(predictedActionToOperations('payment_proof').map((row) => row.operation)).toEqual([
+      'post_payment',
+    ]);
+    expect(predictedActionToOperations('billing').map((row) => row.operation)).toEqual(['post_payment']);
+    expect(predictedActionToOperations('no_action').map((row) => row.operation)).toEqual(['none']);
+    expect(predictedActionToOperations('group_event').map((row) => row.operation)).toEqual(['unknown']);
+    expect(predictedActionToOperations('other_actionable').map((row) => row.operation)).toEqual([
+      'unknown',
+    ]);
+  });
+
+  it('maps unknown action to unknown and does not throw', () => {
+    expect(() => predictedActionToOperations('not_a_real_r3_action')).not.toThrow();
+    expect(predictedActionToOperations('not_a_real_r3_action').map((row) => row.operation)).toEqual([
+      'unknown',
+    ]);
+  });
+});
+
 describe('parseGoldPairFixture', () => {
   it('parses two-line JSONL objects as join input', () => {
     const raw = [
@@ -75,6 +103,72 @@ describe('parseGoldPairFixture', () => {
       { id: 'jsonl-a', op: 'create' },
       { id: 'jsonl-b', op: 'cancel' },
     ]);
+  });
+
+  it('maps JSONL kind=predicted R3 actions onto GoldOperation and joins by messageId', () => {
+    const raw = [
+      JSON.stringify({ messageId: 'pred-book', staff_move: 'booked_confirmed' }),
+      JSON.stringify({
+        kind: 'predicted',
+        messageId: 'pred-book',
+        action: 'new_booking',
+        needsAction: true,
+      }),
+      JSON.stringify({ messageId: 'pred-quote', staff_move: 'priced_quote' }),
+      JSON.stringify({
+        kind: 'predicted',
+        messageId: 'pred-quote',
+        action: 'quote_availability',
+        needsAction: true,
+      }),
+      JSON.stringify({ messageId: 'pred-cancel', staff_move: 'cancel_done' }),
+      JSON.stringify({ kind: 'predicted', messageId: 'pred-cancel', action: 'cancel' }),
+      JSON.stringify({ messageId: 'pred-amend', staff_move: 'amend_done' }),
+      JSON.stringify({ kind: 'predicted', messageId: 'pred-amend', action: 'amend' }),
+      JSON.stringify({ messageId: 'pred-pay', staff_move: 'payment_ack' }),
+      JSON.stringify({ kind: 'predicted', messageId: 'pred-pay', action: 'payment_proof' }),
+      JSON.stringify({ messageId: 'pred-bill', staff_move: 'payment_ack' }),
+      JSON.stringify({ kind: 'predicted', messageId: 'pred-bill', action: 'billing' }),
+      JSON.stringify({ messageId: 'pred-none', staff_move: 'acknowledge_only' }),
+      JSON.stringify({ kind: 'predicted', messageId: 'pred-none', action: 'no_action' }),
+      JSON.stringify({ messageId: 'pred-unk', staff_move: 'ask_clarify' }),
+      JSON.stringify({ kind: 'predicted', messageId: 'pred-unk', action: 'weird_r3' }),
+    ].join('\n');
+    const rows = joinGoldPairOps(parseGoldPairFixture(raw));
+    const byId = Object.fromEntries(rows.map((row) => [row.id, row.predicted[0]?.operation]));
+    expect(byId).toEqual({
+      'pred-book': 'create',
+      'pred-quote': 'quote',
+      'pred-cancel': 'cancel',
+      'pred-amend': 'amend',
+      'pred-pay': 'post_payment',
+      'pred-bill': 'post_payment',
+      'pred-none': 'none',
+      'pred-unk': 'unknown',
+    });
+    expect(rows.find((row) => row.id === 'pred-book')?.expectPass).toBe(true);
+    expect(rows.find((row) => row.id === 'pred-none')?.expectPass).toBe(true);
+  });
+
+  it('keeps already-parsed kind=predicted GoldOperation rows and ignores nava_should prose', () => {
+    const raw = [
+      JSON.stringify({
+        messageId: 'pred-ops',
+        staff_move: 'booked_confirmed',
+        nava_should: 'please create a booking for the guest in June',
+      }),
+      JSON.stringify({
+        kind: 'predicted',
+        messageId: 'pred-ops',
+        operations: [op('create', ['arrival'])],
+        action: 'quote_availability',
+      }),
+    ].join('\n');
+    const parsed = parseGoldPairFixture(raw);
+    expect(parsed.predicted?.[0]?.operations.map((row) => row.operation)).toEqual(['create']);
+    const rows = joinGoldPairOps(parsed);
+    expect(rows[0]?.predicted).toEqual([op('create', ['arrival'])]);
+    expect(JSON.stringify(rows[0])).not.toMatch(/nava_should|please create/);
   });
 });
 

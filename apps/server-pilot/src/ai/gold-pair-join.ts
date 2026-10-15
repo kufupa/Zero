@@ -41,9 +41,13 @@ export type ClaimedOpsRow = {
 
 export type PredictedOpsRow = {
   messageId?: string;
+  message_id?: string;
   threadId?: string;
+  thread_id?: string;
   targetKey?: string;
-  operations: GoldOperation[];
+  target_key?: string;
+  operations?: GoldOperation[];
+  action?: string;
 };
 
 export type SameMoveOpsRow = {
@@ -77,6 +81,18 @@ const STAFF_MOVE_OPERATION: Record<string, string> = {
   forward_redirect: 'partner',
   unavailable_offer_alt: 'unknown',
   other: 'unknown',
+};
+
+const R3_ACTION_OPERATION: Record<string, string> = {
+  new_booking: 'create',
+  quote_availability: 'quote',
+  cancel: 'cancel',
+  amend: 'amend',
+  payment_proof: 'post_payment',
+  billing: 'post_payment',
+  group_event: 'unknown',
+  other_actionable: 'unknown',
+  no_action: 'none',
 };
 
 const HMS_WORK_OPERATION: Record<string, string> = {
@@ -114,6 +130,19 @@ function goldOp(operation: string, unknownReason: string | null = null): GoldOpe
     candidateTool: OPERATION_TOOL[operation] ?? null,
     unknownReason,
   };
+}
+
+export function predictedActionToOperations(action: string): GoldOperation[] {
+  const visible = R3_ACTION_OPERATION[action];
+  if (!visible) return [goldOp('unknown', action)];
+  return [goldOp(visible, visible === 'unknown' ? action : null)];
+}
+
+function predictedOpsFromRow(row: PredictedOpsRow): GoldOperation[] {
+  if (row.operations && row.operations.length > 0) return cloneOps(row.operations);
+  const action = text(row.action);
+  if (action) return predictedActionToOperations(action);
+  return [];
 }
 
 export function staffMoveToOperations(
@@ -192,15 +221,41 @@ type IndexedOps = {
   byThreadId: Map<string, GoldOperation[][]>;
 };
 
-function indexOps(rows: readonly { messageId?: string; threadId?: string; targetKey?: string; operations: GoldOperation[] }[]): IndexedOps {
+function opsRowKeys(row: {
+  messageId?: string;
+  message_id?: string;
+  threadId?: string;
+  thread_id?: string;
+  targetKey?: string;
+  target_key?: string;
+}): { messageId?: string; threadId?: string; targetKey?: string } {
+  return {
+    messageId: text(row.messageId) ?? text(row.message_id),
+    threadId: text(row.threadId) ?? text(row.thread_id),
+    targetKey: text(row.targetKey) ?? text(row.target_key),
+  };
+}
+
+function indexOps(
+  rows: readonly {
+    messageId?: string;
+    message_id?: string;
+    threadId?: string;
+    thread_id?: string;
+    targetKey?: string;
+    target_key?: string;
+    operations?: GoldOperation[];
+  }[],
+): IndexedOps {
   const byMessageId = new Map<string, GoldOperation[]>();
   const byTargetKey = new Map<string, GoldOperation[]>();
   const byThreadId = new Map<string, GoldOperation[][]>();
   for (const row of rows) {
-    const ops = cloneOps(row.operations);
-    const messageId = text(row.messageId);
-    const targetKey = text(row.targetKey);
-    const threadId = text(row.threadId);
+    const ops = cloneOps(row.operations ?? []);
+    const keys = opsRowKeys(row);
+    const messageId = keys.messageId;
+    const targetKey = keys.targetKey;
+    const threadId = keys.threadId;
     if (messageId) byMessageId.set(messageId, ops);
     if (targetKey) byTargetKey.set(targetKey, ops);
     if (threadId) {
@@ -234,7 +289,12 @@ function lookupOps(
 export function joinGoldPairOps(input: GoldPairJoinInput): SameMoveOpsRow[] {
   assertNoMailFields(input, 'join');
   const claimedIndex = indexOps(input.claimed ?? []);
-  const predictedIndex = indexOps(input.predicted ?? []);
+  const predictedIndex = indexOps(
+    (input.predicted ?? []).map((row) => ({
+      ...opsRowKeys(row),
+      operations: predictedOpsFromRow(row),
+    })),
+  );
   return input.labels.map((label) => {
     const keys = labelKeys(label);
     const id = keys.messageId ?? keys.targetKey ?? keys.threadId;
@@ -300,11 +360,26 @@ function readOpsRows(value: unknown): ClaimedOpsRow[] {
   return value.map((item) => {
     const row = asRecord(item);
     return {
-      messageId: text(row.messageId),
-      threadId: text(row.threadId),
-      targetKey: text(row.targetKey),
+      messageId: text(row.messageId) ?? text(row.message_id),
+      threadId: text(row.threadId) ?? text(row.thread_id),
+      targetKey: text(row.targetKey) ?? text(row.target_key),
       operations: readOperations(row.operations),
     };
+  });
+}
+
+function readPredictedRows(value: unknown): PredictedOpsRow[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const row = asRecord(item);
+    const parsed: PredictedOpsRow = {
+      messageId: text(row.messageId) ?? text(row.message_id),
+      threadId: text(row.threadId) ?? text(row.thread_id),
+      targetKey: text(row.targetKey) ?? text(row.target_key),
+      operations: readOperations(row.operations),
+      action: text(row.action),
+    };
+    return { ...parsed, operations: predictedOpsFromRow(parsed) };
   });
 }
 
@@ -317,7 +392,7 @@ function fromJsonDocument(parsed: unknown): GoldPairJoinInput {
   return {
     labels: readLabels(record.labels),
     claimed: readOpsRows(record.claimed),
-    predicted: readOpsRows(record.predicted),
+    predicted: readPredictedRows(record.predicted),
   };
 }
 
@@ -336,7 +411,7 @@ function fromJsonlLines(trimmed: string): GoldPairJoinInput {
     const row = asRecord(parsedLine);
     const kind = text(row.kind) ?? 'label';
     if (kind === 'claimed') claimed.push(readOpsRows([row])[0]!);
-    else if (kind === 'predicted') predicted.push(readOpsRows([row])[0]!);
+    else if (kind === 'predicted') predicted.push(readPredictedRows([row])[0]!);
     else labels.push(readLabels([{ ...row, staff_move: row.staff_move }])[0]!);
   }
   return { labels, claimed, predicted };
