@@ -235,7 +235,9 @@ describe('QUOTE_WORKFLOW_PROMPT_VERSION', () => {
       .update(aopQuoteInstructions())
       .update('\n')
       .update(JSON.stringify(zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' })))
-      .update('\nattachment-review/2\nparty-not-guest/2\nluna-group-dates/1\naop-quote-spine/1')
+      .update(
+        '\nattachment-review/2\nparty-not-guest/2\nluna-group-dates/1\none-night-default/1\naop-quote-spine/1',
+      )
       .digest('hex')
       .slice(0, 16);
     const promptOnly = createHash('sha256')
@@ -532,6 +534,85 @@ describe('mapLlmDecision', () => {
     ]);
     expect(JSON.stringify(mapped.groups)).not.toMatch(/price|rate"|amount/i);
     expect(mapped.ratePlan.source).toBe('party_contract');
+  });
+
+  it('defaults a one-date quote to one night and marks departure defaulted', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, arrival: '2026-11-12', departure: null, dateEvidence: '12 Nov' }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-13',
+      fields: { arrivalDate: 'extracted', departureDate: 'defaulted' },
+    });
+    expect(mapped.missingQuoteReplyFields).toEqual([]);
+  });
+
+  it('drops the checkout question once the one-night default fills departure', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, arrival: '2026-11-12', departure: null, dateEvidence: '12 Nov' }],
+          missing: [{ field: 'departureDate', question: 'What is the checkout date?' }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]?.departureDate).toBe('2026-11-13');
+    expect(mapped.missing.map((item) => item.field)).not.toContain('departureDate');
+  });
+
+  it('keeps checkout derived from stated nights instead of replacing it with one night', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{
+            ...group,
+            arrival: '2026-11-12',
+            departure: '2026-11-15',
+            dateEvidence: '12 Nov for three nights',
+          }],
+        }),
+      ),
+      {
+        dateAnchor: {
+          receivedAt: '2026-10-06T08:00:00.000Z',
+          sourceText: 'Please quote 12 Nov for three nights.',
+        },
+      },
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-15',
+      fields: { departureDate: 'extracted' },
+    });
+  });
+
+  it('does not default a checkout when the quote has no arrival', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, arrival: null, departure: null }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      fields: { arrivalDate: 'missing', departureDate: 'missing' },
+    });
+    expect(mapped.groups[0]).not.toHaveProperty('departureDate');
+    expect(mapped.missingQuoteReplyFields).toContain('Arrival date for stay 1');
+    expect(mapped.missingQuoteReplyFields).toContain('Departure date for stay 1');
   });
 
   it('defaults quote rooms and occupancy to editable values with defaulted provenance', () => {

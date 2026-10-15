@@ -1,0 +1,52 @@
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import { validateStaffQuoteInstallationConfiguration } from '../src/ai/staff-quote-installation.js';
+
+const repo = fileURLToPath(new URL('../../../', import.meta.url));
+const privateRoot = resolve(repo, '.private');
+
+function configuration(propertyCode: string, dinnerAddOn?: unknown) {
+  return {
+    tenantId: 'test-tenant',
+    owner: {
+      cdpUrl: 'http://127.0.0.1:8765',
+      browserOwnership: 'borrowed',
+      propertyCode,
+      secretPath: resolve(repo, 'private-secret'),
+    },
+    outputDir: resolve(privateRoot, 'playwright-quote', 'test-output'),
+    ratePolicyConfigurationPath: resolve(privateRoot, 'rate-policy.json'),
+    ...(dinnerAddOn !== undefined ? { dinnerAddOn } : {}),
+  };
+}
+
+describe('staff quote installation defaults', () => {
+  it('defaults Centurion dinner to an editable R350 per person per night', () => {
+    const installed = validateStaffQuoteInstallationConfiguration(configuration('HRCEN'));
+
+    expect(installed.dinnerAddOn).toEqual({
+      amountMinor: 35_000,
+      unit: 'per_person_per_night',
+      label: 'Dinner Allowance',
+    });
+  });
+
+  it('leaves generic installations unpriced and preserves an explicit hotel price', () => {
+    const generic = validateStaffQuoteInstallationConfiguration(configuration('OTHER'));
+    const explicit = validateStaffQuoteInstallationConfiguration(
+      configuration('HRCEN', {
+        amountMinor: 40_000,
+        unit: 'per_person',
+        label: 'Staff configured',
+      }),
+    );
+
+    expect(generic.dinnerAddOn).toBeUndefined();
+    expect(explicit.dinnerAddOn).toEqual({
+      amountMinor: 40_000,
+      unit: 'per_person',
+      label: 'Staff configured',
+    });
+  });
+});

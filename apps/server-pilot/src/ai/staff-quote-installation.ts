@@ -53,7 +53,7 @@ const configurationSchema = z
       .strict(),
     outputDir: z.string().min(1),
     ratePolicyConfigurationPath: z.string().min(1),
-    // Hotel/staff-approved dinner pricing. Deliberately absent by default: the pane must ask staff to price it.
+    // Optional hotel/staff-approved dinner pricing; Centurion's default is applied during validation below.
     dinnerAddOn: z
       .object({
         amountMinor: z.number().int().positive().max(100_000_000),
@@ -116,7 +116,9 @@ function checkedPrivateFile(path: string, limit: number): Buffer {
   if (bytes.length !== info.size) throw new Error('staff_quote_private_file_changed');
   return bytes;
 }
-function validateConfiguration(raw: unknown): StaffQuoteInstallationConfiguration {
+export function validateStaffQuoteInstallationConfiguration(
+  raw: unknown,
+): StaffQuoteInstallationConfiguration {
   const configuration = configurationSchema.parse(raw),
     url = new URL(configuration.owner.cdpUrl);
   if (
@@ -131,13 +133,24 @@ function validateConfiguration(raw: unknown): StaffQuoteInstallationConfiguratio
     !inside(privateRoot, configuration.ratePolicyConfigurationPath)
   )
     throw new Error('staff_quote_installation_invalid');
-  return configuration;
+  return configuration.owner.propertyCode === 'HRCEN' && !configuration.dinnerAddOn
+    ? {
+        ...configuration,
+        dinnerAddOn: {
+          amountMinor: 35_000,
+          unit: 'per_person_per_night',
+          label: 'Dinner Allowance',
+        },
+      }
+    : configuration;
 }
 /** Reads only the installed descriptor, never credentials or a browser. */
 export function readInstalledStaffQuoteConfiguration(): StaffQuoteInstallationConfiguration {
   const path = process.env.RESERVATIONIST_STAFF_QUOTE_CONFIGURATION;
   if (!path) throw new Error('staff_quote_installation_unavailable');
-  return validateConfiguration(JSON.parse(checkedPrivateFile(path, 1024 * 1024).toString()));
+  return validateStaffQuoteInstallationConfiguration(
+    JSON.parse(checkedPrivateFile(path, 1024 * 1024).toString()),
+  );
 }
 
 // The same installed, networkless Poppler sandbox used by the original source owner.
@@ -540,7 +553,7 @@ export function getInstalledStaffQuoteServices(
   if (!path) throw new Error('staff_quote_installation_unavailable');
   const bytes = checkedPrivateFile(path, 1024 * 1024),
     identity = sha(bytes);
-  const configuration = validateConfiguration(JSON.parse(bytes.toString()));
+  const configuration = validateStaffQuoteInstallationConfiguration(JSON.parse(bytes.toString()));
   const guard = () => {
     if (
       process.env.RESERVATIONIST_STAFF_QUOTE_CONFIGURATION !== path ||

@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto';
 import { matchKey } from './party-match.js';
 import { matchRoomType } from './room-types.js';
 import {
+  addDays,
   anchorStayDateRange,
   receivedDateAtHotel,
   type StayDateAnchorContext,
@@ -85,6 +86,8 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   .update('\nparty-not-guest/2')
   // Group date normalization changes cached payloads without changing the model prompt or schema.
   .update('\nluna-group-dates/1')
+  // One-date stays now default to one night, so cached analyses without a checkout must be remapped.
+  .update('\none-night-default/1')
   .update('\naop-quote-spine/1')
   .digest('hex')
   .slice(0, 16);
@@ -476,7 +479,12 @@ export function mapLlmDecision(
       anchorContext,
     );
     const arrivalDate = validIsoDate(anchoredDates.arrival);
-    const departureDate = validIsoDate(anchoredDates.departure);
+    const anchoredDepartureDate = validIsoDate(anchoredDates.departure);
+    const departureDefaulted =
+      quoteDefaults && Boolean(arrivalDate) && !anchoredDepartureDate && !group.departure;
+    const departureDate =
+      anchoredDepartureDate ??
+      (departureDefaulted && arrivalDate ? addDays(arrivalDate, 1) : undefined);
     if (group.arrival && !arrivalDate) {
       missing.push({
         field: 'arrivalDate',
@@ -524,7 +532,11 @@ export function mapLlmDecision(
       specialRequests: [] as string[],
       fields: {
         arrivalDate: arrivalDate ? ('extracted' as const) : ('missing' as const),
-        departureDate: departureDate ? ('extracted' as const) : ('missing' as const),
+        departureDate: departureDefaulted
+          ? ('defaulted' as const)
+          : departureDate
+            ? ('extracted' as const)
+            : ('missing' as const),
         quantity: quantityDefaulted ? ('defaulted' as const) : fieldState(group.rooms),
         adults: adultsDefaulted ? ('defaulted' as const) : fieldState(group.adultsPerRoom),
         ...(quoteDefaults
@@ -570,6 +582,11 @@ export function mapLlmDecision(
       case 'occupancy':
       case 'numberofguestsperroom':
         return groups.every((group) => group.adults !== undefined);
+      case 'departure':
+      case 'departuredate':
+      case 'checkout':
+      case 'checkoutdate':
+        return groups.every((group) => group.departureDate !== undefined);
       default:
         return false;
     }

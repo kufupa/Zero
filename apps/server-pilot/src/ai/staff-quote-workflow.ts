@@ -516,10 +516,11 @@ export function buildStaffProposalFacts(
     input.dinnerAllowanceMinor !== undefined ||
     input.dinnerAllowanceLabel !== undefined ||
     input.dinnerAllowanceUnit !== undefined;
+  const configured = input.salesStrategy === 'Government' ? undefined : options.dinnerAddOn;
   // A priced dinner charge also covers rows retried from a dinner board after the scope was saved (a row staff added later).
   const pricedDinner =
-    (input.dinnerAllowanceMinor ?? options.dinnerAddOn?.amountMinor) !== undefined &&
-    (input.dinnerAllowanceUnit ?? options.dinnerAddOn?.unit) !== undefined;
+    (input.dinnerAllowanceMinor ?? configured?.amountMinor) !== undefined &&
+    (input.dinnerAllowanceUnit ?? configured?.unit) !== undefined;
   const allowanceGroups =
     allowanceIds !== undefined
       ? input.groups.filter(
@@ -534,7 +535,6 @@ export function buildStaffProposalFacts(
   const dinnerGroupIds = allowanceGroups.map((group) => group.id);
   const hasDinnerAddOn = dinnerGroupIds.length > 0 || dinnerFallbackGroupIds.length > 0;
   const hasUncoveredDinnerFallback = dinnerFallbackGroupIds.some((id) => !dinnerGroupIds.includes(id));
-  const configured = options.dinnerAddOn;
   const amountMinor = input.dinnerAllowanceMinor ?? configured?.amountMinor;
   const unit = input.dinnerAllowanceUnit ?? configured?.unit;
   const dinnerLabel = withQualifier('Dinner add-on', input.dinnerAllowanceLabel ?? configured?.label);
