@@ -7,7 +7,7 @@ import {
   type SnapshotRow,
 } from './agent-decision-to-ops.js';
 import { goldenSelection } from './reservationist-backtest.js';
-import type { LunaAnalysis } from './reservationist-decision.js';
+import { TODO_TARGET_OPS, type LunaAnalysis } from './reservationist-decision.js';
 import type { GoldOperation } from './same-move-ops.js';
 
 /** Copied from gold-pair-join goldOp — that helper is not exported. */
@@ -27,12 +27,15 @@ const OPERATION_TOOL: Record<string, string | null> = {
   channel: null,
 };
 
+const TODO_TARGET_SET = new Set<string>(TODO_TARGET_OPS);
+
 const WORKFLOW_OPERATION: Record<LunaAnalysis['workflow'], string> = {
   quote: 'quote',
   create_booking: 'create',
   amend: 'amend',
   cancel: 'cancel',
   other: 'unknown',
+  skip: 'none',
   forward_to_partner: 'partner',
   send_document: 'document',
   payment_ack: 'post_payment',
@@ -51,7 +54,14 @@ function goldOp(operation: string, unknownReason: string | null = null): GoldOpe
   };
 }
 
-export function paneAnalysisToOperations(analysis: Pick<LunaAnalysis, 'workflow'>): GoldOperation[] {
+export function paneAnalysisToOperations(
+  analysis: Pick<LunaAnalysis, 'workflow' | 'todoTarget'>,
+): GoldOperation[] {
+  if (analysis.workflow === 'hms_todo') {
+    const target = analysis.todoTarget;
+    if (target && TODO_TARGET_SET.has(target)) return [goldOp(target)];
+    return [goldOp('unknown', 'hms_todo')];
+  }
   const mapped = WORKFLOW_OPERATION[analysis.workflow];
   const operation = mapped ?? 'unknown';
   const unknownReason = operation === 'unknown' ? (analysis.workflow === 'other' ? 'other' : analysis.workflow) : null;
