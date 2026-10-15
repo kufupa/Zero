@@ -192,6 +192,14 @@ export type QuoteAnalysis = {
   luna?: LunaAnalysisWire | null;
   /** Intent stays other for amend and cancel. This only feeds the HMS lookup panel. */
   amendment?: QuoteAmendment | null;
+  /** Staff checklist of facts to type into HMS. Null unless the mail is a booking, amend, cancel, or payment proof. */
+  hmsTodoCard?: {
+    kind: 'new_booking' | 'amend' | 'cancel' | 'payment_proof';
+    title: string;
+    steps: Array<{ label: string; value: string | null; source: 'mail' | 'attachment' | 'missing' }>;
+    missing: string[];
+    writesEnabled: false;
+  } | null;
   /** The email came from an automated mailbox staff cannot answer. The pane hides Insert draft for it. */
   noReplySender?: boolean;
   aiUnavailable?: boolean;

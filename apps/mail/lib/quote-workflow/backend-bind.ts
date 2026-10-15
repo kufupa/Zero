@@ -66,6 +66,7 @@ export type AnalyseSelectionResult =
       aiUnavailable?: boolean;
       luna?: LunaAnalysisWire | null;
       amendment?: QuoteAmendment | null;
+      hmsTodoCard?: QuoteAnalysis['hmsTodoCard'];
       noReplySender?: boolean;
     };
 
@@ -171,6 +172,7 @@ export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
     ...(ready.aiUnavailable !== undefined ? { aiUnavailable: ready.aiUnavailable } : {}),
     ...(ready.luna !== undefined ? { luna: ready.luna } : {}),
     ...(ready.amendment !== undefined ? { amendment: ready.amendment } : {}),
+    ...(ready.hmsTodoCard !== undefined ? { hmsTodoCard: ready.hmsTodoCard } : {}),
     ...(ready.noReplySender !== undefined ? { noReplySender: ready.noReplySender } : {}),
   };
 }
