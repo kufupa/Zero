@@ -33,6 +33,7 @@ import { ensureWorkItemForMessage, MESSAGE_ARRIVED_AT } from '../work-items.js';
 import {
   enqueueAiRun,
   markAiRunDeadLetter,
+  markAiRunPolicyRefused,
   markAiRunRetry,
   markAiRunSucceeded,
   mailBaselineGenerationKey,
@@ -195,7 +196,7 @@ async function commitRead(
 
 /**
  * What one run did. `stored` and `failed` both write a mail_extraction row. `capped` and `disabled` write nothing
- * and defer the run. `unconfigured` and `stale_version` dead-letter it.
+ * and defer the run. `unconfigured` dead-letters it. `stale_version` is an expected rollover refusal (superseded).
  */
 export type InboundExtractionOutcome =
   | 'stored'
@@ -502,14 +503,21 @@ export async function executeInboundExtractionRun(input: {
         input.mailBaselineRoute ?? resolveMailBaselineExtractionRoute({ approvedRoute: null }),
         input.signal,
       );
-  if (outcome === 'stale_version' || outcome === 'unconfigured') {
+  if (outcome === 'stale_version') {
+    await markAiRunPolicyRefused(
+      {
+        ...claim,
+        lastError: `inbound extraction version ${run.promptVersion} is not deployed (deployed ${EXTRACTION_VERSION})`,
+      },
+      db,
+    );
+    return { runId: run.id, state: 'dead_letter' };
+  }
+  if (outcome === 'unconfigured') {
     await markAiRunDeadLetter(
       {
         ...claim,
-        lastError:
-          outcome === 'stale_version'
-            ? `inbound extraction version ${run.promptVersion} is not deployed (deployed ${EXTRACTION_VERSION})`
-            : 'inbound extraction model is not configured',
+        lastError: 'inbound extraction model is not configured',
       },
       db,
     );

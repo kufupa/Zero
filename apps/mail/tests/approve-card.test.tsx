@@ -713,4 +713,21 @@ describe('writeRowsOf and writeStatusOf', () => {
     ).toBe(true);
     expect(writeStatusOf(viewWith({ status: 'done' })).approve).toBe(false);
   });
+
+  it('treats a superseded policy block as a stopped write, not a replaced approval', () => {
+    const policy = writeStatusOf(
+      viewWith({
+        run: runWith('superseded', { failureClass: 'POLICY_BLOCK', lastError: 'refused_flag_off' }),
+      }),
+    );
+    expect(policy.phase).toBe('stopped');
+    expect(policy.approve).toBe(true);
+    expect(policy.message).toMatch(/Nava is not allowed to write this kind of change yet/);
+
+    const replaced = writeStatusOf(
+      viewWith({ run: runWith('superseded', { lastError: 'form_changed' }) }),
+    );
+    expect(replaced.phase).toBe('stopped');
+    expect(replaced.message).toMatch(/A newer approval replaced this write/);
+  });
 });
