@@ -311,6 +311,30 @@ export async function persistInboundMessage(
     };
   }
 
+  const duplicateExisting = async (): Promise<PersistDuplicateResult> =>
+    withCandidateAttachmentCleanupFailures(
+      {
+        kind: 'duplicate',
+        transportId: existingMessage!.transportId,
+        messageId: existingMessage!.id,
+        rawMimeS3Key,
+        candidateAttachmentCleanupFailureCount: 0,
+      },
+      await cleanupIfNeeded(existingMessage!.id),
+    );
+  const fanOutMatched = (ids: string[]) =>
+    existingMessage && existingMessage.transportId !== ids[0]
+      ? duplicateExisting()
+      : persistMultiTransportFanOut({
+          parsed,
+          raw,
+          meta,
+          opts,
+          storage,
+          rawMimeS3Key,
+          ids,
+        });
+
   // Routing ------------------------------------------------------------
   let transport: RoutedTransport | null = opts.routedTransport ?? null;
 
@@ -338,16 +362,9 @@ export async function persistInboundMessage(
     if (direct.kind === 'unique') {
       transport = direct.transport;
     } else if (direct.kind === 'multi') {
-      return persistMultiTransportFanOut({
-        parsed,
-        raw,
-        meta,
-        opts,
-        storage,
-        rawMimeS3Key,
-        ids: direct.ids,
-      });
+      return fanOutMatched(direct.ids);
     } else if (direct.kind === 'ambiguous') {
+      if (existingMessage) return duplicateExisting();
       return quarantineWithAttachmentCleanup({
         db,
         storage,
@@ -362,16 +379,9 @@ export async function persistInboundMessage(
       if (equated.kind === 'unique') {
         transport = equated.transport;
       } else if (equated.kind === 'multi') {
-        return persistMultiTransportFanOut({
-          parsed,
-          raw,
-          meta,
-          opts,
-          storage,
-          rawMimeS3Key,
-          ids: equated.ids,
-        });
+        return fanOutMatched(equated.ids);
       } else if (equated.kind === 'ambiguous') {
+        if (existingMessage) return duplicateExisting();
         return quarantineWithAttachmentCleanup({
           db,
           storage,
@@ -401,16 +411,9 @@ export async function persistInboundMessage(
     if (stamped.kind === 'unique') {
       transport = stamped.transport;
     } else if (stamped.kind === 'multi') {
-      return persistMultiTransportFanOut({
-        parsed,
-        raw,
-        meta,
-        opts,
-        storage,
-        rawMimeS3Key,
-        ids: stamped.ids,
-      });
+      return fanOutMatched(stamped.ids);
     } else if (stamped.kind === 'ambiguous') {
+      if (existingMessage) return duplicateExisting();
       return quarantineWithAttachmentCleanup({
         db,
         storage,
@@ -488,7 +491,10 @@ export async function persistInboundMessage(
     };
     const existingSource = claimIngestIdentity
       ? await findExistingMessageByIngestIdentity(transactionDb, meta)
-      : await findMessageByIdAndTransport(transactionDb, messageId, transport.id);
+      : await findMessageByIdAndTransport(transactionDb, messageId, transport.id, {
+          ingestMailboxId: meta.ingestMailboxId,
+          pop3Uidl: meta.pop3Uidl,
+        });
     if (existingSource) {
       duplicate = {
         kind: 'duplicate',
@@ -858,8 +864,11 @@ export async function persistInboundMessage(
     }
 
     if (parsed.attachments.length > 0) {
+      const attachmentsToStore = claimIngestIdentity
+        ? parsed.attachments
+        : await copyAttachmentsToMessageId(storage, parsed.attachments, messageId);
       await tx.insert(attachment).values(
-        parsed.attachments.map((a) => ({
+        attachmentsToStore.map((a) => ({
           id: randomUUID(),
           messageId,
           filename: a.filename,
@@ -987,7 +996,7 @@ export async function persistInboundMessage(
       });
     }
 
-    if (opts.promoteQuarantineId) {
+    if (opts.promoteQuarantineId && opts.routedTransport === undefined) {
       await tx
         .delete(mailIngestQuarantine)
         .where(eq(mailIngestQuarantine.id, opts.promoteQuarantineId));
@@ -1913,17 +1922,55 @@ function fanOutCopyMessageId(
   )}-${hash.slice(20, 32)}`;
 }
 
+function fanOutAttachmentKey(sourceKey: string, destMessageId: string): string {
+  const prefixEnd = sourceKey.indexOf('/', 'attachments/'.length);
+  const rest = prefixEnd >= 0 ? sourceKey.slice(prefixEnd + 1) : sourceKey;
+  return `attachments/${destMessageId}/${rest}`;
+}
+
+async function copyAttachmentsToMessageId(
+  storage: S3Storage,
+  attachments: ParsedInboundMessage['attachments'],
+  destMessageId: string,
+): Promise<ParsedInboundMessage['attachments']> {
+  const copied: ParsedInboundMessage['attachments'] = [];
+  for (const attachmentItem of attachments) {
+    const destKey = fanOutAttachmentKey(attachmentItem.s3Key, destMessageId);
+    if (destKey !== attachmentItem.s3Key) {
+      await storage.copyObject({
+        sourceKey: attachmentItem.s3Key,
+        destKey,
+        contentType: attachmentItem.mimeType,
+      });
+    }
+    copied.push({ ...attachmentItem, s3Key: destKey });
+  }
+  return copied;
+}
+
 async function findMessageByIdAndTransport(
   db: DB,
   id: string,
   transportId: string,
+  fanoutFrom: { ingestMailboxId: string; pop3Uidl: string },
 ): Promise<{ id: string; transportId: string } | undefined> {
   const rows = await db
-    .select({ id: message.id, transportId: message.transportId })
+    .select({
+      id: message.id,
+      transportId: message.transportId,
+      sourceProvenance: message.sourceProvenance,
+    })
     .from(message)
     .where(and(eq(message.id, id), eq(message.transportId, transportId)))
     .limit(1);
-  return rows[0];
+  const row = rows[0];
+  if (!row) return undefined;
+  const from = (row.sourceProvenance as { fanoutFrom?: { ingestMailboxId?: unknown; pop3Uidl?: unknown } } | null)
+    ?.fanoutFrom;
+  if (from?.ingestMailboxId !== fanoutFrom.ingestMailboxId || from?.pop3Uidl !== fanoutFrom.pop3Uidl) {
+    throw new Error('fan-out copy id collision');
+  }
+  return { id: row.id, transportId: row.transportId };
 }
 
 async function persistMultiTransportFanOut(args: {
@@ -1950,6 +1997,8 @@ async function persistMultiTransportFanOut(args: {
 
   let firstOwner: PersistResult | null = null;
   let incomplete = false;
+  let allSucceeded = true;
+  let copyError: unknown;
   for (let i = 0; i < transports.length; i++) {
     try {
       const one = await persistInboundMessage(
@@ -1965,8 +2014,12 @@ async function persistMultiTransportFanOut(args: {
       );
       if (i === 0) firstOwner = one;
       if (one.kind === 'deferred') incomplete = true;
-    } catch {
-      incomplete = true;
+      if (one.kind !== 'stored' && one.kind !== 'duplicate' && one.kind !== 'reconciled') {
+        allSucceeded = false;
+      }
+    } catch (err) {
+      copyError = err;
+      allSucceeded = false;
     }
   }
 
@@ -1978,6 +2031,7 @@ async function persistMultiTransportFanOut(args: {
     activeIngestUidlClaimToken: args.opts.activeIngestUidlClaimToken,
   });
 
+  if (copyError) throw copyError;
   if (incomplete || !firstOwner) {
     return {
       kind: 'deferred',
@@ -1988,6 +2042,12 @@ async function persistMultiTransportFanOut(args: {
       rawMimeS3Key: args.rawMimeS3Key,
       candidateAttachmentCleanupFailureCount,
     };
+  }
+
+  if (allSucceeded && args.opts.promoteQuarantineId) {
+    await args.opts.db
+      .delete(mailIngestQuarantine)
+      .where(eq(mailIngestQuarantine.id, args.opts.promoteQuarantineId));
   }
 
   if (firstOwner.kind !== 'stored' && firstOwner.kind !== 'reconciled') {

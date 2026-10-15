@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   attachment,
@@ -79,8 +80,8 @@ function matchesWhere(row: Row, where: unknown): boolean {
   walkEqPairs(where, pairs);
   if (pairs.length === 0) return true;
   return pairs.every((pair) => {
-    if (!(pair.col in row)) return true;
-    return row[pair.col] === pair.value;
+    const actual = pair.col in row ? row[pair.col] : null;
+    return actual === pair.value;
   });
 }
 
@@ -97,6 +98,7 @@ function projectRows(rows: Row[], projection: Record<string, unknown> | undefine
 
 function recordingDb(transports: TransportMatchCandidate[]) {
   let failNextExtraCopy = false;
+  let failEveryExtraCopy = false;
   const tables = new Map<object, Row[]>([
     [
       mailboxTransport,
@@ -131,7 +133,7 @@ function recordingDb(transports: TransportMatchCandidate[]) {
       ) {
         continue;
       }
-      if (table === message && value.pop3Uidl == null && failNextExtraCopy) {
+      if (table === message && value.pop3Uidl == null && (failNextExtraCopy || failEveryExtraCopy)) {
         failNextExtraCopy = false;
         throw new Error('injected extra-copy failure');
       }
@@ -222,7 +224,20 @@ function recordingDb(transports: TransportMatchCandidate[]) {
     failNextExtraCopy: () => {
       failNextExtraCopy = true;
     },
+    failEveryExtraCopy: () => {
+      failEveryExtraCopy = true;
+    },
   };
+}
+
+function fanOutCopyMessageId(ingestMailboxId: string, pop3Uidl: string, transportId: string): string {
+  const hash = createHash('sha256')
+    .update(`fanout:${ingestMailboxId}:${pop3Uidl}:${transportId}`)
+    .digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(
+    17,
+    20,
+  )}-${hash.slice(20, 32)}`;
 }
 
 function syntheticEml(args: {
@@ -264,15 +279,16 @@ async function persistSynthetic(
   raw: Buffer,
   pop3Uidl: string,
   db: DB,
+  extra?: { promoteQuarantineId?: string; storage?: FakeS3Storage },
 ): Promise<Awaited<ReturnType<typeof persistInboundMessage>>> {
-  const storage = new FakeS3Storage('test-mail-bucket');
+  const storage = extra?.storage ?? new FakeS3Storage('test-mail-bucket');
   const messageId = generateMessageId();
   const parsed = await parseRawMessage(raw, { messageId, storage });
   return persistInboundMessage(
     parsed,
     raw,
     { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl, messageId },
-    { db, storage, skipAiEnqueue: true },
+    { db, storage, skipAiEnqueue: true, promoteQuarantineId: extra?.promoteQuarantineId },
   );
 }
 
@@ -531,21 +547,22 @@ describe('cross-hotel fan-out', () => {
     );
   });
 
-  it('returns deferred when copy B fails, then retry stores B without duplicating A', async () => {
+  it('rethrows when copy B throws, then retry stores B without duplicating A', async () => {
     const fake = recordingDb([HOTEL_A, HOTEL_B]);
     const raw = syntheticEml({
       from: 'guest@example.test',
       to: 'hotel-a@example.test, hotel-b@example.test',
-      subject: 'retry after extra copy defer',
+      subject: 'retry after extra copy throw',
     });
     fake.failNextExtraCopy();
-    const first = await persistSynthetic(raw, 'uidl-fanout-defer', fake.db);
-    expect(first.kind).toBe('deferred');
+    await expect(persistSynthetic(raw, 'uidl-fanout-throw', fake.db)).rejects.toThrow(
+      'injected extra-copy failure',
+    );
     const afterFirst = fake.rows<{ transportId: string }>(message);
     expect(afterFirst).toHaveLength(1);
     expect(afterFirst[0]!.transportId).toBe(HOTEL_A.id);
 
-    const retry = await persistSynthetic(raw, 'uidl-fanout-defer', fake.db);
+    const retry = await persistSynthetic(raw, 'uidl-fanout-throw', fake.db);
     expect(['stored', 'duplicate', 'reconciled']).toContain(retry.kind);
     expect(retry.kind).not.toBe('deferred');
     const messages = fake.rows<{ transportId: string }>(message);
@@ -554,8 +571,115 @@ describe('cross-hotel fan-out', () => {
       new Set([HOTEL_A.id, HOTEL_B.id]),
     );
 
-    await persistSynthetic(raw, 'uidl-fanout-defer', fake.db);
+    await persistSynthetic(raw, 'uidl-fanout-throw', fake.db);
     expect(fake.rows(message)).toHaveLength(2);
+  });
+
+  it('rethrows persistently when copy B keeps throwing after A is stored', async () => {
+    const fake = recordingDb([HOTEL_A, HOTEL_B]);
+    const raw = syntheticEml({
+      from: 'guest@example.test',
+      to: 'hotel-a@example.test, hotel-b@example.test',
+      subject: 'persistent extra copy throw',
+    });
+    fake.failEveryExtraCopy();
+    await expect(persistSynthetic(raw, 'uidl-fanout-throw-persist', fake.db)).rejects.toThrow(
+      'injected extra-copy failure',
+    );
+    expect(fake.rows(message)).toHaveLength(1);
+    expect(fake.rows<{ transportId: string }>(message)[0]!.transportId).toBe(HOTEL_A.id);
+
+    await expect(persistSynthetic(raw, 'uidl-fanout-throw-persist', fake.db)).rejects.toThrow(
+      'injected extra-copy failure',
+    );
+    expect(fake.rows(message)).toHaveLength(1);
+  });
+
+  it('does not re-fan a stored UIDL after another hotel is activated', async () => {
+    const fake = recordingDb([HOTEL_B]);
+    const raw = syntheticEml({
+      from: 'guest@example.test',
+      to: 'hotel-a@example.test, hotel-b@example.test',
+      subject: 'uidl stored before routing change',
+    });
+    const first = await persistSynthetic(raw, 'uidl-route-change', fake.db);
+    expect(first.kind).toBe('stored');
+    expect(fake.rows(message)).toHaveLength(1);
+    expect(fake.rows<{ transportId: string }>(message)[0]!.transportId).toBe(HOTEL_B.id);
+
+    fake.seed(mailboxTransport, {
+      ...HOTEL_A,
+      ownerHeaderValue: HOTEL_A.email,
+      isActive: true,
+    });
+    const retry = await persistSynthetic(raw, 'uidl-route-change', fake.db);
+    expect(retry.kind).toBe('duplicate');
+    expect(fake.rows(message)).toHaveLength(1);
+    expect(fake.rows(mailIngestQuarantine)).toHaveLength(0);
+    expect(fake.rows<{ transportId: string }>(message)[0]!.transportId).toBe(HOTEL_B.id);
+  });
+
+  it('keeps the quarantine row until every fan-out copy succeeds', async () => {
+    const fake = recordingDb([HOTEL_A, HOTEL_B]);
+    const raw = syntheticEml({
+      from: 'guest@example.test',
+      to: 'hotel-a@example.test, hotel-b@example.test',
+      subject: 'recover multi fan-out',
+    });
+    const quarantineId = '11111111-2222-4333-8444-aaaaaaaaaaaa';
+    fake.seed(mailIngestQuarantine, {
+      id: quarantineId,
+      ingestMailboxId: 'ingest-nava-legacy',
+      pop3Uidl: 'uidl-recover-multi',
+      rawMimeS3Key: 'raw-mime/ingest-nava-legacy/uidl-recover-multi.eml',
+      reason: 'parse_failure',
+    });
+    fake.failNextExtraCopy();
+    await expect(
+      persistSynthetic(raw, 'uidl-recover-multi', fake.db, { promoteQuarantineId: quarantineId }),
+    ).rejects.toThrow('injected extra-copy failure');
+    expect(fake.rows(mailIngestQuarantine)).toHaveLength(1);
+    expect(fake.rows(message)).toHaveLength(1);
+
+    const retry = await persistSynthetic(raw, 'uidl-recover-multi', fake.db, {
+      promoteQuarantineId: quarantineId,
+    });
+    expect(['stored', 'duplicate', 'reconciled']).toContain(retry.kind);
+    expect(fake.rows(mailIngestQuarantine)).toHaveLength(0);
+    expect(fake.rows(message)).toHaveLength(2);
+  });
+
+  it('throws when an extra-copy id collides with an unrelated message', async () => {
+    const fake = recordingDb([HOTEL_A, HOTEL_B]);
+    const pop3Uidl = 'uidl-fanout-collision';
+    const collisionId = fanOutCopyMessageId('ingest-nava-legacy', pop3Uidl, HOTEL_B.id);
+    fake.seed(mailThread, {
+      id: '11111111-2222-4333-8444-bbbbbbbbbbbb',
+      transportId: HOTEL_B.id,
+      threadRootId: collisionId,
+      isRead: true,
+      subject: 'unrelated',
+      latestMessageAt: new Date('2026-10-15T12:00:00.000Z'),
+    });
+    fake.seed(message, {
+      id: collisionId,
+      transportId: HOTEL_B.id,
+      threadId: '11111111-2222-4333-8444-bbbbbbbbbbbb',
+      direction: 'inbound',
+      fromAddress: 'other@example.test',
+      toAddresses: ['hotel-b@example.test'],
+      ccAddresses: [],
+      subject: 'unrelated',
+      sourceProvenance: { source: 'import' },
+    });
+    const raw = syntheticEml({
+      from: 'guest@example.test',
+      to: 'hotel-a@example.test, hotel-b@example.test',
+      subject: 'fan-out id collision',
+    });
+    await expect(persistSynthetic(raw, pop3Uidl, fake.db)).rejects.toThrow(
+      'fan-out copy id collision',
+    );
   });
 
   it('does not delete B attachment object when A reconciles an existing copy', async () => {
@@ -590,6 +714,8 @@ describe('cross-hotel fan-out', () => {
       transportId: HOTEL_A.id,
       threadId,
       direction: 'inbound',
+      ingestMailboxId: 'history-import',
+      pop3Uidl: 'history-uidl',
       messageIdHeader: SHARED_MID,
       fromAddress: parsed.fromAddress ?? '',
       toAddresses: parsed.toAddresses,
@@ -622,9 +748,12 @@ describe('cross-hotel fan-out', () => {
       { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: 'uidl-fanout-att', messageId },
       { db: fake.db, storage, skipAiEnqueue: true },
     );
-    expect(['stored', 'reconciled', 'duplicate']).toContain(result.kind);
-    expect(result.kind).not.toBe('deferred');
+    expect(result.kind).toBe('reconciled');
 
+    const copyA = fake
+      .rows<{ id: string; transportId: string }>(message)
+      .find((row) => row.transportId === HOTEL_A.id);
+    expect(copyA?.id).toBe(historyId);
     const copyB = fake
       .rows<{ id: string; transportId: string }>(message)
       .find((row) => row.transportId === HOTEL_B.id);
@@ -632,7 +761,7 @@ describe('cross-hotel fan-out', () => {
     const bAttachment = fake
       .rows<{ messageId: string; s3Key: string }>(attachment)
       .find((row) => row.messageId === copyB?.id);
-    expect(bAttachment?.s3Key).toBe(uploaded.s3Key);
-    expect(storage.get(uploaded.s3Key)).toBeDefined();
+    expect(bAttachment?.s3Key.startsWith(`attachments/${copyB!.id}/`)).toBe(true);
+    expect(storage.get(bAttachment!.s3Key)).toBeDefined();
   });
 });
