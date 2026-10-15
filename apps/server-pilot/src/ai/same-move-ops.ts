@@ -150,6 +150,7 @@ export function compareSemantics(
   if (predictionError) return { grade: 'prediction_error', mismatchReasons: ['prediction_error'] };
   if (predicted.length === 0 || claimed.length === 0)
     return { grade: 'not_scored', mismatchReasons: [] };
+  if (opsMatch(predicted, claimed)) return { grade: 'match', mismatchReasons: [] };
   const predictedMap = operationMap(predicted);
   const claimedMap = operationMap(claimed);
   const reasons: string[] = [];
@@ -159,19 +160,14 @@ export function compareSemantics(
   for (const operation of claimedMap.keys()) {
     if (!predictedMap.has(operation)) reasons.push('unexpected_operation');
   }
-  for (const operation of predictedMap.keys()) {
-    const expected = predictedMap.get(operation);
-    const actual = claimedMap.get(operation);
-    if (!expected || !actual) continue;
-    for (const field of expected.requiredFields) {
-      if (!actual.requiredFields.includes(field)) reasons.push('missing_required_field');
-    }
-    for (const field of actual.requiredFields) {
-      if (!expected.requiredFields.includes(field)) reasons.push('unexpected_required_field');
+  for (const claimedOp of claimed) {
+    const predictedOp = predictedMap.get(claimedOp.operation);
+    if (!predictedOp) continue;
+    for (const field of claimedOp.requiredFields) {
+      if (!predictedOp.requiredFields.includes(field)) reasons.push('unexpected_required_field');
     }
   }
   const uniqueReasons = [...new Set(reasons)].sort();
-  if (uniqueReasons.length === 0) return { grade: 'match', mismatchReasons: [] };
   const overlap = [...predictedMap.keys()].some((operation) => claimedMap.has(operation));
   return { grade: overlap ? 'partial' : 'mismatch', mismatchReasons: uniqueReasons };
 }

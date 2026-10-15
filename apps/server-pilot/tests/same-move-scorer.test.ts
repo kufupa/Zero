@@ -11,6 +11,7 @@ import {
 import {
   loadSameMoveOpsJsonl,
   parseSameMoveEvalCli,
+  runSameMoveOpsEval,
   scoreSameMoveOps,
 } from '../src/ai/same-move-scorer';
 
@@ -112,6 +113,52 @@ describe('same-move ops JSONL report', () => {
     if (parsed.mode === 'ops') {
       expect(parsed.opsPath).toMatch(/joined\.jsonl$/);
     }
+  });
+
+  it('report match count equals opsMatch-based majorityBaseline modelMatch', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'same-move-ops-'));
+    temps.add(dir);
+    const jsonl = path.join(dir, 'joined.jsonl');
+    const predictedCreate = op('create', ['arrival', 'departure'], 'hms_create');
+    const claimedSubset = op('create', ['arrival'], 'hms_create');
+    const predictedArrival = op('create', ['arrival'], 'hms_create');
+    const claimedEmptyFields = op('create', [], 'hms_create');
+    const claimedCancel = op('cancel', ['reservationRef'], 'hms_cancel');
+    await writeFile(
+      jsonl,
+      [
+        {
+          id: 'create-claimed-subset',
+          expectPass: true,
+          predicted: [predictedCreate],
+          claimed: [claimedSubset],
+        },
+        {
+          id: 'create-empty-claimed-fields',
+          expectPass: true,
+          predicted: [predictedArrival],
+          claimed: [claimedEmptyFields],
+        },
+        {
+          id: 'create-vs-cancel',
+          expectPass: false,
+          predicted: [predictedCreate],
+          claimed: [claimedCancel],
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join('\n') + '\n',
+    );
+
+    const rows = loadSameMoveOpsJsonl(jsonl);
+    const report = runSameMoveOpsEval(jsonl);
+    const opsMatchCount = rows.filter((row) => opsMatch(row.predicted, row.claimed)).length;
+    const baseline = majorityBaseline(rows);
+
+    expect(opsMatchCount).toBe(2);
+    expect(baseline.modelMatch).toBe(opsMatchCount);
+    expect(report.match).toBe(opsMatchCount);
+    expect(report.grades.partial + report.grades.mismatch).toBe(1);
   });
 });
 
