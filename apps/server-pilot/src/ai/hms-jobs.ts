@@ -30,7 +30,16 @@ import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
+import {
+  DAVINCI_HMS_READ_TARGET,
+  hmsDavinciReadsEnabled,
+  hmsReadTargetJobMetrics,
+  isDaVinciTransport,
+  resolveHmsReadJobTarget,
+  type HmsReadTarget,
+} from '../hms/hms-read-target.js';
 import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
+import { runWithHmsReadTarget } from './pane-stay-spawn-env.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -2251,12 +2260,14 @@ async function executePartyMatchV2(input: {
     threadId: input.run.threadId,
     messageId: input.run.triggerMessageId,
   });
-  if (!origin.ok) {
+  const davinciRead = isDaVinciTransport(input.run.transportId) || !origin.ok;
+  if (davinciRead && !hmsDavinciReadsEnabled()) {
     return {
       ...partyMatchV2NoMatch('Da Vinci mailbox origin is not bound to Centurion HMS'),
       outcome: 'refused_origin_mismatch',
     };
   }
+  const davinciTarget = davinciRead ? DAVINCI_HMS_READ_TARGET : null;
 
   const quoteLlmParty = await existingQuoteWorkflowParty(
     input.db,
@@ -2279,14 +2290,16 @@ async function executePartyMatchV2(input: {
   let failure: PanePartyFindResult | null = null;
 
   for (const search of plan) {
-    const result = await findParty(
-      { name: search.term, kind: search.kind },
-      {
-        acquisition: input.acquisition,
-        exactTerm: true,
-        resultCap: PARTY_MATCH_V2_ROW_CAP,
-        origin: mailboxOrigin,
-      },
+    const result = await runWithHmsReadTarget(davinciTarget, () =>
+      findParty(
+        { name: search.term, kind: search.kind },
+        {
+          acquisition: input.acquisition,
+          exactTerm: true,
+          resultCap: PARTY_MATCH_V2_ROW_CAP,
+          origin: mailboxOrigin,
+        },
+      ),
     );
     searchesTried.push({
       term: search.term,
@@ -2661,15 +2674,30 @@ export async function executeHmsJob(input: {
   // Worker-time origin recheck: jobs queued before the enqueue guard, or whose
   // thread became mixed-origin after enqueue, must not reach Centurion HMS.
   // Party V2 keeps its own refusal result shape below.
-  if (!(request.kind === 'party' && request.matchVersion === 2) && run.threadId) {
-    const origin = await guardCenturionHmsMailboxOrigin({
-      transportId: run.transportId,
-      threadId: run.threadId,
-      messageId: run.triggerMessageId,
-    });
-    if (!origin.ok) {
-      await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
-      return 'dead_letter';
+  const partyV2 = request.kind === 'party' && request.matchVersion === 2;
+  let davinciReadTarget: HmsReadTarget | null = null;
+  if (!partyV2 && run.threadId) {
+    if (request.kind === 'find' || request.kind === 'search_guest' || request.kind === 'party') {
+      const resolved = await resolveHmsReadJobTarget({
+        transportId: run.transportId,
+        threadId: run.threadId,
+        messageId: run.triggerMessageId,
+      });
+      if (!resolved.ok) {
+        await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
+        return 'dead_letter';
+      }
+      davinciReadTarget = hmsReadTargetJobMetrics(resolved.target)?.hmsReadTarget ?? null;
+    } else {
+      const origin = await guardCenturionHmsMailboxOrigin({
+        transportId: run.transportId,
+        threadId: run.threadId,
+        messageId: run.triggerMessageId,
+      });
+      if (!origin.ok) {
+        await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
+        return 'dead_letter';
+      }
     }
   }
   const metrics = objectRecord(run.metrics) as {
@@ -2839,11 +2867,11 @@ export async function executeHmsJob(input: {
     userId: metrics.userId ?? null,
     inputDigest: toolInputDigest(request as Record<string, unknown>),
   };
-  const result =
+  const result = await runWithHmsReadTarget(davinciReadTarget, async () =>
     request.kind === 'availability'
-      ? await probeAvailability(request, { lock: deps.lock, acquisition: deps.acquisition })
+      ? probeAvailability(request, { lock: deps.lock, acquisition: deps.acquisition })
       : request.kind === 'find'
-        ? await recordedToolRun(
+        ? recordedToolRun(
             { kind: 'stay_lookup', ...audit },
             () =>
               findStay(
@@ -2859,7 +2887,7 @@ export async function executeHmsJob(input: {
             background &&
             request.matchVersion === 2 &&
             partyMatchV2Enabled()
-          ? await executePartyMatchV2({
+          ? executePartyMatchV2({
               run,
               db,
               signal: input.signal,
@@ -2867,11 +2895,11 @@ export async function executeHmsJob(input: {
               acquisition: deps.acquisition,
             })
           : request.kind === 'party'
-          ? await findParty(
+          ? findParty(
               { name: request.name, ...(request.partyKind ? { kind: request.partyKind } : {}) },
               { acquisition: deps.acquisition },
             )
-          : await recordedToolRun(
+          : recordedToolRun(
               { kind: 'guest_search', ...audit },
               () =>
                 searchGuest(
@@ -2883,7 +2911,8 @@ export async function executeHmsJob(input: {
                   deps,
                 ),
               classifySearch,
-            );
+            ),
+  );
 
   const outcome: string = result.outcome;
   if (outcome === 'refused_lock_busy') {
@@ -2917,7 +2946,13 @@ export async function executeHmsJob(input: {
     {
       ...mark,
       readResult: { ...result, kind: request.kind, asOf: new Date().toISOString() },
-      metrics: { hmsJob: true, kind: request.kind, outcome, screenshotDir: screenshotDir.value },
+      metrics: {
+        hmsJob: true,
+        kind: request.kind,
+        outcome,
+        screenshotDir: screenshotDir.value,
+        ...(davinciReadTarget ? { hmsReadTarget: davinciReadTarget } : {}),
+      },
     },
     db,
   );

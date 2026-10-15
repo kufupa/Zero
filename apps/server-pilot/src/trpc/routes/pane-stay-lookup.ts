@@ -32,8 +32,12 @@ import {
   toolInputDigest,
 } from '../../ai/hitl-tool-run.js';
 import { availabilityRequestSchema } from '../../ai/hms-availability.js';
+import { runWithHmsReadTarget } from '../../ai/pane-stay-spawn-env.js';
 import {
-  assertCenturionHmsMailboxOrigin,
+  assertHmsReadOriginAllowed,
+  hmsReadTargetJobMetrics,
+} from '../../hms/hms-read-target.js';
+import {
   guardCenturionHmsMailboxOrigin,
   loadWorkItemMailboxHmsOriginAnchors,
 } from '../../hms/mailbox-hms-origin-bind.js';
@@ -166,24 +170,25 @@ export const paneStayLookupRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-      if (input.threadId) {
-        await assertCenturionHmsMailboxOrigin(
-          originGuardInput(
-            { threadId: input.threadId, messageId: input.messageId },
-            ctx.activeTransportId,
-          ),
-        );
-      }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      return findStay(
-        input.arrival
-          ? { confirmation: input.confirmation, arrival: input.arrival }
-          : { confirmation: input.confirmation },
-        {
-          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
-          onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
-        },
+      const run = () =>
+        findStay(
+          input.arrival
+            ? { confirmation: input.confirmation, arrival: input.arrival }
+            : { confirmation: input.confirmation },
+          {
+            lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
+            onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
+          },
+        );
+      if (!input.threadId) return run();
+      const target = await assertHmsReadOriginAllowed(
+        originGuardInput(
+          { threadId: input.threadId, messageId: input.messageId },
+          ctx.activeTransportId,
+        ),
       );
+      return runWithHmsReadTarget(hmsReadTargetJobMetrics(target)?.hmsReadTarget ?? null, run);
     }),
   searchGuest: mailboxProcedure
     .input(searchGuestInput)
@@ -201,28 +206,29 @@ export const paneStayLookupRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-      if (input.threadId) {
-        await assertCenturionHmsMailboxOrigin(
-          originGuardInput(
-            { threadId: input.threadId, messageId: input.messageId },
-            ctx.activeTransportId,
-          ),
-        );
-      }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      return searchGuest(
-        input.departure
-          ? { lastName: input.lastName, arrival: input.arrival, departure: input.departure }
-          : { lastName: input.lastName, arrival: input.arrival },
-        {
-          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
-          onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
-        },
+      const run = () =>
+        searchGuest(
+          input.departure
+            ? { lastName: input.lastName, arrival: input.arrival, departure: input.departure }
+            : { lastName: input.lastName, arrival: input.arrival },
+          {
+            lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
+            onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
+          },
+        );
+      if (!input.threadId) return run();
+      const target = await assertHmsReadOriginAllowed(
+        originGuardInput(
+          { threadId: input.threadId, messageId: input.messageId },
+          ctx.activeTransportId,
+        ),
       );
+      return runWithHmsReadTarget(hmsReadTargetJobMetrics(target)?.hmsReadTarget ?? null, run);
     }),
   // HMS_JOB_QUEUE off (the default): nothing is queued. runId null tells the pane to run findStay or searchGuest above.
   queueFind: mailboxProcedure.input(queueFindInput).mutation(async ({ input, ctx }) => {
-    await assertCenturionHmsMailboxOrigin(originGuardInput(input, ctx.activeTransportId));
+    await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
     if (!hmsJobQueueEnabled()) return { runId: null };
     const run = await queueUserHmsJob({
       transportId: ctx.activeTransportId,
@@ -239,7 +245,7 @@ export const paneStayLookupRouter = router({
   queueSearchGuest: mailboxProcedure
     .input(queueSearchGuestInput)
     .mutation(async ({ input, ctx }) => {
-      await assertCenturionHmsMailboxOrigin(originGuardInput(input, ctx.activeTransportId));
+      await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
       if (!hmsJobQueueEnabled()) return { runId: null };
       const run = await queueUserHmsJob({
         transportId: ctx.activeTransportId,
@@ -266,7 +272,7 @@ export const paneStayLookupRouter = router({
       return { runId: run.id };
     }),
   queueParty: mailboxProcedure.input(queuePartyInput).mutation(async ({ input, ctx }) => {
-    await assertCenturionHmsMailboxOrigin(originGuardInput(input, ctx.activeTransportId));
+    await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
     if (!hmsJobQueueEnabled()) return { runId: null };
     try {
       const run = await queueUserPartyHmsJob({
