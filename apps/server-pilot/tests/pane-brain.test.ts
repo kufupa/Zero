@@ -24,6 +24,8 @@ import {
   CENTURION_HOTEL_RULES,
   createReservationistAgent,
   type ReservationistRunners,
+  assertAopToolsReadOnly,
+  createReservationistTools,
 } from '../src/ai/reservationist-agent.js';
 import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
 import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
@@ -185,19 +187,17 @@ describe('reservationist agent SOP and tool hooks', () => {
     expect(instructions).toContain('OTA and system mail: no action.');
   });
 
-  it('merges aopTools into the toolset', async () => {
+  it('merges registered aopTools into the toolset', async () => {
     const folioRead = createTool({
       id: 'aop_folio_read',
       description: 'Read-only folio lookup.',
       inputSchema: z.object({ confirmationNumber: z.string() }),
       execute: async () => ({ ok: true }),
     });
-    const agent = createReservationistAgent({
-      model: 'openai/gpt-5',
-      runners: fakeRunners(),
-      aopTools: { aop_folio_read: folioRead },
-    });
-    expect(Object.keys(await agent.listTools()).sort()).toEqual([
+    const registry = { aop_folio_read: folioRead };
+    expect(assertAopToolsReadOnly({ aop_folio_read: folioRead }, registry)).toEqual(registry);
+    const tools = createReservationistTools(fakeRunners(), { aop_folio_read: folioRead }, registry);
+    expect(Object.keys(tools).sort()).toEqual([
       'aop_folio_read',
       'create_reservation_dry_run',
       'party_lookup',
@@ -206,10 +206,19 @@ describe('reservationist agent SOP and tool hooks', () => {
     ]);
   });
 
-  it('refuses aopTools that are not pure aop_* helpers', () => {
+  it('refuses aopTools that are not the exact registered objects', () => {
     const tool = (id: string) =>
       createTool({ id, description: 'x', inputSchema: z.object({}), execute: async () => ({}) });
-    for (const id of ['send_reply', 'aop_send_reply', 'aop_hms_post_payment', 'hms_cancel_reservation']) {
+    const registered = tool('aop_folio_read');
+    // An unregistered tool under an allowed-looking id is refused.
+    expect(() =>
+      createReservationistAgent({ model: 'openai/gpt-5', runners: fakeRunners(), aopTools: { aop_folio_read: tool('aop_folio_read') } }),
+    ).toThrow(/AOP_TOOL_REFUSED/);
+    // A different object under a registered key is refused.
+    expect(() =>
+      assertAopToolsReadOnly({ aop_folio_read: tool('aop_folio_read') }, { aop_folio_read: registered }),
+    ).toThrow(/AOP_TOOL_REFUSED/);
+    for (const id of ['send_reply', 'hms_cancel_reservation']) {
       expect(() =>
         createReservationistAgent({ model: 'openai/gpt-5', runners: fakeRunners(), aopTools: { [id]: tool(id) } }),
       ).toThrow(/AOP_TOOL_REFUSED/);

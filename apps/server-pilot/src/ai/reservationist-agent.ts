@@ -14,6 +14,7 @@ import { buildQuoteProposalPdf, type ProposalPdfInput } from '../quote-proposal/
 import { createLunaModel } from './bedrock/luna.js';
 import { aopQuoteInstructions } from './aop-playbook.js';
 import type { ReservationistDecision } from './reservationist-decision.js';
+import { AOP_TOOL_REGISTRY } from './aop/tool-registry.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const TOOLING = fileURLToPath(new URL('../../tooling/playwright-quote/', import.meta.url));
@@ -105,15 +106,14 @@ const createSchema = JSON.parse(readFileSync(join(TOOLING, 'create-tool.schema.j
 };
 const { shopRow: _shopRow, shop: _shop, result: _result, ...createDefs } = createSchema.$defs;
 
-/** AOP tools are pure helpers (pick/format over inputs). No send, HMS write, or IO tools. */
-const AOP_TOOL_ID = /^aop_[a-z0-9_]+$/;
-const AOP_TOOL_FORBIDDEN = /(send|save|create|cancel|amend|post|write|delete|refund|enqueue)/;
-
-export function assertAopToolsReadOnly(aopTools?: Record<string, ReturnType<typeof createTool>>) {
+/** aopTools must be the exact registered objects; names alone prove nothing about side effects. */
+export function assertAopToolsReadOnly(
+  aopTools?: Record<string, ReturnType<typeof createTool>>,
+  registry: Readonly<Record<string, ReturnType<typeof createTool>>> = AOP_TOOL_REGISTRY,
+) {
   for (const [key, tool] of Object.entries(aopTools ?? {})) {
-    const id = String((tool as { id?: unknown }).id ?? key);
-    if (!AOP_TOOL_ID.test(key) || id !== key || AOP_TOOL_FORBIDDEN.test(key)) {
-      throw new Error(`AOP_TOOL_REFUSED: ${key} must be a pure aop_* helper`);
+    if (!Object.hasOwn(registry, key) || registry[key] !== tool) {
+      throw new Error(`AOP_TOOL_REFUSED: ${key} is not in AOP_TOOL_REGISTRY`);
     }
   }
   return aopTools ?? {};
@@ -122,8 +122,9 @@ export function assertAopToolsReadOnly(aopTools?: Record<string, ReturnType<type
 export function createReservationistTools(
   runners?: ReservationistRunners,
   aopTools?: Record<string, ReturnType<typeof createTool>>,
+  registry: Readonly<Record<string, ReturnType<typeof createTool>>> = AOP_TOOL_REGISTRY,
 ) {
-  const aop = assertAopToolsReadOnly(aopTools);
+  const aop = assertAopToolsReadOnly(aopTools, registry);
   if (!runners) return { ...aop };
   return {
     quote_stay: createTool({
