@@ -100,7 +100,8 @@ export function decideQuoteAvailability(raw: DecideQuoteAvailabilityInput): Deci
   const nights = nightsBetween(requested.arrival, checkout);
   const roomsAvailable = available.reduce((sum, row) => sum + row.rooms, 0);
   const roomsRequested = requested.rooms;
-  const dates = formatStayDates(requested.arrival, checkout);
+  // A missing departure is quoted as one night, and the guest is told so rather than left to infer it.
+  const dates = `${formatStayDates(requested.arrival, checkout)}${assumedOneNight ? ' (1 night, as no departure date was given)' : ''}`;
   const decision =
     roomsAvailable <= 0 ? 'sold_out' : roomsAvailable < roomsRequested ? 'partial' : 'full';
   const replyLine =

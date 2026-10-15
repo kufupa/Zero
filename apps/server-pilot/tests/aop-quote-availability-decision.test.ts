@@ -84,7 +84,7 @@ describe('decideQuoteAvailability', () => {
     expect(result.assumedOneNight).toBe(true);
     expect(result.nights).toBe(1);
     expect(result.replyLine).toBe(
-      'We have 1 of the 3 rooms for 18–19 Nov 2026; shall I proceed with 1?',
+      'We have 1 of the 3 rooms for 18–19 Nov 2026 (1 night, as no departure date was given); shall I proceed with 1?',
     );
   });
 
