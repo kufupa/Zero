@@ -130,6 +130,7 @@ afterEach(async () => {
   paneStaySaveLoaders.lock = null;
   paneStaySaveLoaders.osressGuestDatesSearch = null;
   mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
   vi.unstubAllEnvs();
   await Promise.all(cleanupDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -626,6 +627,46 @@ describe('paneStayLookup router origin guard', () => {
       message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
     });
     expect(jobMocks.queueUserPartyHmsJob).not.toHaveBeenCalled();
+  });
+
+  it('findStay and queueFind pass the selected message id into the origin guard', async () => {
+    const seen: Array<{ threadId: string; messageId?: string }> = [];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async (input) => {
+      seen.push({ threadId: input.threadId, messageId: input.messageId });
+      return {
+        fromAddress: 'guest@example.invalid',
+        toAddresses: ['davinci@legacyhotels.co.za'],
+      };
+    };
+    paneStayLookupLoaders.spawn = vi.fn(async () => lookupResult());
+    jobMocks.queueUserHmsJob.mockResolvedValue({ id: 'should-not-enqueue' });
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    await expect(
+      mailboxCaller().paneStayLookup.findStay({
+        confirmation: '57291630-1',
+        threadId: 'thread-mixed',
+        messageId: 'msg-older-dv',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    await expect(
+      mailboxCaller().paneStayLookup.queueFind({
+        threadId: 'thread-mixed',
+        confirmation: '57291630-1',
+        messageId: 'msg-older-dv',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(seen).toEqual([
+      { threadId: 'thread-mixed', messageId: 'msg-older-dv' },
+      { threadId: 'thread-mixed', messageId: 'msg-older-dv' },
+    ]);
+    expect(paneStayLookupLoaders.spawn).not.toHaveBeenCalled();
+    expect(jobMocks.queueUserHmsJob).not.toHaveBeenCalled();
   });
 });
 

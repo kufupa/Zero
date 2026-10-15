@@ -40,11 +40,26 @@ import { z } from 'zod';
 const confirmation = z.string().regex(/^\d+-\d+$/);
 const arrival = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const threadIdInput = z.string().min(1);
+const messageIdInput = z.string().min(1);
+
+function originGuardInput(input: { threadId: string; messageId?: string }, transportId: string) {
+  return {
+    transportId,
+    threadId: input.threadId,
+    ...(input.messageId ? { messageId: input.messageId } : {}),
+  };
+}
 
 // Read-only find. strict(): no propertyCode or other key reaches the module. The lock is always the session hotel.
 // threadId is optional: pane/thread callers send it so Da Vinci origin is refused before HMS.
+// messageId is the pane-selected mail; origin is checked on that row and on every inbound.
 const findStayInput = z
-  .object({ confirmation, arrival: arrival.optional(), threadId: threadIdInput.optional() })
+  .object({
+    confirmation,
+    arrival: arrival.optional(),
+    threadId: threadIdInput.optional(),
+    messageId: messageIdInput.optional(),
+  })
   .strict();
 
 // Surname search over one arrival day, optionally narrowed to one departure. Same strict() and session-hotel lock.
@@ -54,16 +69,24 @@ const searchGuestInput = z
     arrival,
     departure: arrival.optional(),
     threadId: threadIdInput.optional(),
+    messageId: messageIdInput.optional(),
   })
   .strict();
 
 // Queued variants: the same lookups as read_tool jobs on the hms lane. The thread anchors the job to mail.
 const queueFindInput = z
-  .object({ threadId: threadIdInput, confirmation, arrival: arrival.optional(), autoStart: z.literal(true).optional() })
+  .object({
+    threadId: threadIdInput,
+    messageId: messageIdInput.optional(),
+    confirmation,
+    arrival: arrival.optional(),
+    autoStart: z.literal(true).optional(),
+  })
   .strict();
 const queueSearchGuestInput = z
   .object({
     threadId: threadIdInput,
+    messageId: messageIdInput.optional(),
     lastName: searchGuestInput.shape.lastName,
     arrival,
     departure: arrival.optional(),
@@ -76,6 +99,7 @@ const queueSearchGuestInput = z
 const queuePartyInput = z
   .object({
     threadId: threadIdInput,
+    messageId: messageIdInput.optional(),
     name: z.string().min(1).max(256),
     partyKind: z.enum(['company', 'agency']).optional(),
     retry: z.literal(true).optional(),
@@ -139,10 +163,7 @@ export const paneStayLookupRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       if (input.threadId) {
-        await assertCenturionHmsMailboxOrigin({
-          transportId: ctx.activeTransportId,
-          threadId: input.threadId,
-        });
+        await assertCenturionHmsMailboxOrigin(originGuardInput(input, ctx.activeTransportId));
       }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
       return findStay(
@@ -172,10 +193,7 @@ export const paneStayLookupRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       if (input.threadId) {
-        await assertCenturionHmsMailboxOrigin({
-          transportId: ctx.activeTransportId,
-          threadId: input.threadId,
-        });
+        await assertCenturionHmsMailboxOrigin(originGuardInput(input, ctx.activeTransportId));
       }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
       return searchGuest(
@@ -190,10 +208,7 @@ export const paneStayLookupRouter = router({
     }),
   // HMS_JOB_QUEUE off (the default): nothing is queued. runId null tells the pane to run findStay or searchGuest above.
   queueFind: mailboxProcedure.input(queueFindInput).mutation(async ({ input, ctx }) => {
-    await assertCenturionHmsMailboxOrigin({
-      transportId: ctx.activeTransportId,
-      threadId: input.threadId,
-    });
+    await assertCenturionHmsMailboxOrigin(originGuardInput(input, ctx.activeTransportId));
     if (!hmsJobQueueEnabled()) return { runId: null };
     const run = await queueUserHmsJob({
       transportId: ctx.activeTransportId,
@@ -210,10 +225,7 @@ export const paneStayLookupRouter = router({
   queueSearchGuest: mailboxProcedure
     .input(queueSearchGuestInput)
     .mutation(async ({ input, ctx }) => {
-      await assertCenturionHmsMailboxOrigin({
-        transportId: ctx.activeTransportId,
-        threadId: input.threadId,
-      });
+      await assertCenturionHmsMailboxOrigin(originGuardInput(input, ctx.activeTransportId));
       if (!hmsJobQueueEnabled()) return { runId: null };
       const run = await queueUserHmsJob({
         transportId: ctx.activeTransportId,
@@ -240,10 +252,7 @@ export const paneStayLookupRouter = router({
       return { runId: run.id };
     }),
   queueParty: mailboxProcedure.input(queuePartyInput).mutation(async ({ input, ctx }) => {
-    await assertCenturionHmsMailboxOrigin({
-      transportId: ctx.activeTransportId,
-      threadId: input.threadId,
-    });
+    await assertCenturionHmsMailboxOrigin(originGuardInput(input, ctx.activeTransportId));
     if (!hmsJobQueueEnabled()) return { runId: null };
     try {
       const run = await queueUserPartyHmsJob({

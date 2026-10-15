@@ -289,9 +289,10 @@ export function NavaPane({
   } = bridge;
   const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
   const partyJobThreadId = quoteSession.staffSource?.threadId ?? null;
+  const partyJobMessageId = quoteSession.staffSource?.messageId ?? null;
   const partyJobTransport = useMemo(
-    () => hmsJobTransport(PANE_HMS_JOB_CLIENT, partyJobThreadId),
-    [partyJobThreadId],
+    () => hmsJobTransport(PANE_HMS_JOB_CLIENT, partyJobThreadId, partyJobMessageId),
+    [partyJobThreadId, partyJobMessageId],
   );
   const [rateCatalogue, setRateCatalogue] = useState<RatePlanCatalogueEntry[]>([]);
   // Preview/Book in HMS show only when the server flag is on. Until the read answers, the card stays copy-only.

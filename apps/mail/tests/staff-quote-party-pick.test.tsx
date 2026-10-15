@@ -63,6 +63,22 @@ describe('partyFinderFromTrpc', () => {
       threadId: 'thread-dv',
     });
   });
+
+  it('passes the selected message id with the thread so origin is checked on that mail', async () => {
+    const reply: PartyFindReply = { outcome: 'no_match', results: [], truncated: false };
+    const mutate = vi.fn(async () => reply);
+    const find = partyFinderFromTrpc({ panePartyLookup: { findParty: { mutate } } });
+    expect(find).not.toBeNull();
+    await expect(
+      find!('Safari', 'company', { threadId: 'thread-dv', messageId: 'msg-older-dv' }),
+    ).resolves.toEqual(reply);
+    expect(mutate).toHaveBeenCalledWith({
+      name: 'Safari',
+      kind: 'company',
+      threadId: 'thread-dv',
+      messageId: 'msg-older-dv',
+    });
+  });
 });
 
 describe('party copy', () => {

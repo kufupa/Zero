@@ -30,6 +30,7 @@ export type PartyFindReply = {
 /** Mail the search belongs to. Pane callers send threadId; omit only for non-thread callers. */
 export type PartyFindMail = {
   threadId?: string | null;
+  messageId?: string | null;
 };
 
 /** One search for a name over HMS companies and agencies, or over one kind when given. */
@@ -46,6 +47,7 @@ type TrpcPanePartyRoutes = {
         name: string;
         kind?: StaffQuoteParty['kind'];
         threadId?: string;
+        messageId?: string;
       }) => Promise<PartyFindReply>;
     };
   };
@@ -62,10 +64,12 @@ export function partyFinderFromTrpc(trpc: unknown): PartyFinder | null {
   if (!find) return null;
   return (name, kind, mail) => {
     const threadId = mail?.threadId?.trim();
+    const messageId = mail?.messageId?.trim();
     return find.mutate({
       name,
       ...(kind ? { kind } : {}),
       ...(threadId ? { threadId } : {}),
+      ...(messageId ? { messageId } : {}),
     });
   };
 }

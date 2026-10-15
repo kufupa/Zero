@@ -158,8 +158,13 @@ function findWithMail(
   query: string,
   kind: StaffQuoteParty['kind'] | undefined,
   threadId: string | null | undefined,
+  messageId?: string | null,
 ): Promise<PartyFindReply> {
-  const mail = threadId?.trim() ? { threadId: threadId.trim() } : undefined;
+  const thread = threadId?.trim();
+  const selected = messageId?.trim();
+  const mail = thread
+    ? { threadId: thread, ...(selected ? { messageId: selected } : {}) }
+    : undefined;
   return mail ? find(query, kind, mail) : kind ? find(query, kind) : find(query);
 }
 
@@ -361,7 +366,7 @@ export function PartyPicker({
   }, [jobTransport?.jobQueueEnabled]);
   const autoMemoKey =
     autoLookup && (!jobTransport || queueMode === 'off') && kind && query.length >= AUTO_LOOKUP_MIN_CHARS
-      ? `${kind}:${searchKey(query)}:${threadId ?? ''}`
+      ? `${kind}:${searchKey(query)}:${threadId ?? ''}:${sourceMessageId ?? ''}`
       : null;
   const autoKey = pickedHere ? null : autoMemoKey;
   const jobResume =
@@ -435,7 +440,9 @@ export function PartyPicker({
     const searchKind = kind;
     let live = true;
     const timer = setTimeout(() => {
-      const entry = startAutoSearch(autoKey, () => findWithMail(find, query, searchKind, threadId));
+      const entry = startAutoSearch(autoKey, () =>
+        findWithMail(find, query, searchKind, threadId, sourceMessageId),
+      );
       // A search for this name may have finished while the field showed another name: render its reply now.
       if (entry.reply) rerender();
       else void entry.promise.then(() => live && rerender());
@@ -462,7 +469,7 @@ export function PartyPicker({
     }
     setState({ status: 'busy', query });
     try {
-      const reply: PartyFindReply = await findWithMail(find, query, kind, threadId);
+      const reply: PartyFindReply = await findWithMail(find, query, kind, threadId, sourceMessageId);
       if (token !== latest.current) return;
       const results = reply.results.filter(inScope);
       if (results.length) {

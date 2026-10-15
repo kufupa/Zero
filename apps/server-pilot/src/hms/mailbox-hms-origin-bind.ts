@@ -23,6 +23,14 @@ export type MailboxHmsOriginFields = {
   ccAddresses?: readonly string[] | null;
 };
 
+export type MailboxHmsOriginScan = {
+  /** The pane-selected message, when a messageId was asked for and found. */
+  selected: MailboxHmsOriginFields | null;
+  /** False when a messageId was asked for and that row is not on the thread. */
+  selectedFound: boolean;
+  inbounds: MailboxHmsOriginFields[];
+};
+
 export type BindCenturionHmsMailboxPropertyResult =
   | { ok: true; propertyCode: string }
   | { ok: false; code: 'READ_DAVINCI_ORIGIN_REFUSED' | 'READ_PROPERTY_CODE_REQUIRED' };
@@ -31,11 +39,16 @@ export type GuardCenturionHmsMailboxOriginResult =
   | { ok: true }
   | { ok: false; code: 'READ_DAVINCI_ORIGIN_REFUSED'; message: string };
 
+export type MailboxHmsOriginLoadInput = {
+  transportId: string;
+  threadId: string;
+  messageId?: string;
+};
+
 export const mailboxHmsOriginBindLoaders: {
-  loadThreadOrigin:
-    | ((input: { transportId: string; threadId: string }) => Promise<MailboxHmsOriginFields | null>)
-    | null;
-} = { loadThreadOrigin: null };
+  loadThreadOrigin: ((input: MailboxHmsOriginLoadInput) => Promise<MailboxHmsOriginFields | null>) | null;
+  loadThreadOriginScan: ((input: MailboxHmsOriginLoadInput) => Promise<MailboxHmsOriginScan>) | null;
+} = { loadThreadOrigin: null, loadThreadOriginScan: null };
 
 function collectNormalizedAddresses(origin: MailboxHmsOriginFields): string[] {
   const raw: string[] = [];
@@ -70,12 +83,34 @@ export function bindCenturionHmsMailboxProperty(input: {
   return { ok: true, propertyCode };
 }
 
-async function loadThreadMailboxHmsOriginFromDb(input: {
-  transportId: string;
-  threadId: string;
-}): Promise<MailboxHmsOriginFields | null> {
+function originFields(row: {
+  fromAddress: string | null;
+  ownerHeaderValue: string | null;
+  toAddresses: string[] | null;
+  ccAddresses: string[] | null;
+}): MailboxHmsOriginFields {
+  return {
+    fromAddress: row.fromAddress,
+    ownerHeaderValue: row.ownerHeaderValue,
+    toAddresses: row.toAddresses,
+    ccAddresses: row.ccAddresses,
+  };
+}
+
+function refusedOrigin(): GuardCenturionHmsMailboxOriginResult {
+  return {
+    ok: false,
+    code: 'READ_DAVINCI_ORIGIN_REFUSED',
+    message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+  };
+}
+
+async function loadThreadMailboxHmsOriginScanFromDb(
+  input: MailboxHmsOriginLoadInput,
+): Promise<MailboxHmsOriginScan> {
   const rows = await getDb()
     .select({
+      id: message.id,
       direction: message.direction,
       fromAddress: message.fromAddress,
       ownerHeaderValue: message.ownerHeaderValue,
@@ -89,49 +124,54 @@ async function loadThreadMailboxHmsOriginFromDb(input: {
       desc(message.createdAt),
       desc(message.id),
     );
-  const trigger = rows.find((row) => row.direction === 'inbound');
-  if (!trigger) return null;
+  const inbounds = rows
+    .filter((row) => row.direction === 'inbound')
+    .map((row) => originFields(row));
+  const selectedRow = input.messageId ? (rows.find((row) => row.id === input.messageId) ?? null) : null;
   return {
-    fromAddress: trigger.fromAddress,
-    ownerHeaderValue: trigger.ownerHeaderValue,
-    toAddresses: trigger.toAddresses,
-    ccAddresses: trigger.ccAddresses,
+    selected: selectedRow ? originFields(selectedRow) : null,
+    selectedFound: input.messageId ? selectedRow !== null : true,
+    inbounds,
   };
 }
 
-export async function loadThreadMailboxHmsOrigin(input: {
-  transportId: string;
-  threadId: string;
-}): Promise<MailboxHmsOriginFields | null> {
-  if (mailboxHmsOriginBindLoaders.loadThreadOrigin) {
-    return mailboxHmsOriginBindLoaders.loadThreadOrigin(input);
+async function loadThreadMailboxHmsOriginScan(
+  input: MailboxHmsOriginLoadInput,
+): Promise<MailboxHmsOriginScan> {
+  if (mailboxHmsOriginBindLoaders.loadThreadOriginScan) {
+    return mailboxHmsOriginBindLoaders.loadThreadOriginScan(input);
   }
-  return loadThreadMailboxHmsOriginFromDb(input);
+  if (mailboxHmsOriginBindLoaders.loadThreadOrigin) {
+    const origin = await mailboxHmsOriginBindLoaders.loadThreadOrigin(input);
+    if (!origin) {
+      return { selected: null, selectedFound: !input.messageId, inbounds: [] };
+    }
+    return { selected: origin, selectedFound: true, inbounds: [origin] };
+  }
+  return loadThreadMailboxHmsOriginScanFromDb(input);
 }
 
-/** Same #276 origin rule as admission: Da Vinci identity is not Centurion HMS. */
-export async function guardCenturionHmsMailboxOrigin(input: {
-  transportId: string;
-  threadId: string;
-}): Promise<GuardCenturionHmsMailboxOriginResult> {
-  const origin = await loadThreadMailboxHmsOrigin(input);
-  if (!origin) return { ok: true };
-  const bound = bindCenturionHmsMailboxProperty({
-    propertyCode: 'HRCEN',
-    origin,
-  });
-  if (bound.ok || bound.code !== 'READ_DAVINCI_ORIGIN_REFUSED') return { ok: true };
-  return {
-    ok: false,
-    code: bound.code,
-    message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
-  };
+export async function loadThreadMailboxHmsOrigin(
+  input: MailboxHmsOriginLoadInput,
+): Promise<MailboxHmsOriginFields | null> {
+  const scan = await loadThreadMailboxHmsOriginScan(input);
+  return scan.selected ?? scan.inbounds[0] ?? null;
 }
 
-export async function assertCenturionHmsMailboxOrigin(input: {
-  transportId: string;
-  threadId: string;
-}): Promise<void> {
+/** Same #276 origin rule as admission: Da Vinci identity is not Centurion HMS. Fail closed. */
+export async function guardCenturionHmsMailboxOrigin(
+  input: MailboxHmsOriginLoadInput,
+): Promise<GuardCenturionHmsMailboxOriginResult> {
+  const scan = await loadThreadMailboxHmsOriginScan(input);
+  if (input.messageId && !scan.selectedFound) return refusedOrigin();
+  const origins = [...(scan.selected ? [scan.selected] : []), ...scan.inbounds];
+  if (origins.some(isDaVinciMailboxOrigin)) return refusedOrigin();
+  return { ok: true };
+}
+
+export async function assertCenturionHmsMailboxOrigin(
+  input: MailboxHmsOriginLoadInput,
+): Promise<void> {
   const guard = await guardCenturionHmsMailboxOrigin(input);
   if (!guard.ok) {
     throw new TRPCError({ code: 'PRECONDITION_FAILED', message: guard.message });

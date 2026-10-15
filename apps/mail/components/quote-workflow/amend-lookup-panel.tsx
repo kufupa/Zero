@@ -73,7 +73,11 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const client = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
   const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
   const threadId = session.staffSource?.threadId.trim() || null;
-  const transport = useMemo(() => hmsJobTransport(client, threadId), [client, threadId]);
+  const messageId = session.staffSource?.messageId.trim() || null;
+  const transport = useMemo(
+    () => hmsJobTransport(client, threadId, messageId),
+    [client, threadId, messageId],
+  );
   const epoch = session.binding?.selectionEpoch ?? null;
   const key = threadId && epoch !== null ? `${threadId}:${epoch}` : null;
   const confirmationNumber = amendment?.confirmationNumber?.trim() || null;
@@ -115,7 +119,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   if (!amendment) return null;
 
   const findView: HmsJobView | null = find.view;
-  const findRun = findRunFromJob(findView, find.queueFailed);
+  const findRun = findRunFromJob(findView, find.queueFailed, find.queueFailureMessage);
   const running = find.queuing || (findView !== null && !isSettled(findView));
   const found = findRun?.kind === 'found' ? findRun : null;
   const stay: StayRecordWire | null = found?.stay ?? null;
@@ -133,7 +137,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const refusedNow = refusedSearch && key && refusedSearch.scope === key ? refusedSearch.message : null;
   const searchRun: HmsSearchRun | null = refusedNow
     ? { kind: 'error', message: refusedNow }
-    : searchRunFromJob(searchView, search.queueFailed);
+    : searchRunFromJob(searchView, search.queueFailed, search.queueFailureMessage);
   const searching = search.queuing || (searchView !== null && !isSettled(searchView));
   // A background prefetch shows its status but never blocks a staff Find: the staff run queues ahead of it.
   const findBusy = find.queuing || (findView !== null && !isSettled(findView) && !findView.prefetch);

@@ -14,6 +14,7 @@ const findPartyInput = z
     name: z.string().max(256),
     kind: z.enum(['company', 'agency']).optional(),
     threadId: z.string().min(1).optional(),
+    messageId: z.string().min(1).optional(),
   })
   .strict();
 
@@ -26,6 +27,7 @@ export const panePartyLookupRouter = router({
       await assertCenturionHmsMailboxOrigin({
         transportId: ctx.activeTransportId,
         threadId: input.threadId,
+        ...(input.messageId ? { messageId: input.messageId } : {}),
       });
     }
     return findParty({ name: input.name, kind: input.kind });

@@ -107,6 +107,7 @@ afterEach(() => {
   panePartyLookupLoaders.lock = null;
   panePartyLookupLoaders.enabled = null;
   mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
   vi.unstubAllEnvs();
 });
 
@@ -505,6 +506,32 @@ describe('panePartyLookup router origin guard', () => {
       best: { kind: 'company', nativeId: '206' },
     });
     expect(loadThreadOrigin).not.toHaveBeenCalled();
+  });
+
+  it('passes the selected message id into the origin guard', async () => {
+    const loadThreadOrigin = vi.fn(async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['davinci@legacyhotels.co.za'],
+    }));
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = loadThreadOrigin;
+    panePartyLookupLoaders.lock = passingLock();
+    panePartyLookupLoaders.spawn = fixtureSpawn();
+    await expect(
+      mailboxCaller().panePartyLookup.findParty({
+        name: 'Tourvest',
+        threadId: 'thread-mixed',
+        messageId: 'msg-older-dv',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(loadThreadOrigin).toHaveBeenCalledWith({
+      transportId: 'transport-1',
+      threadId: 'thread-mixed',
+      messageId: 'msg-older-dv',
+    });
+    expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
   });
 });
 
