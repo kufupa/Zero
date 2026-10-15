@@ -107,6 +107,7 @@ import {
   type AiWorkflowRunState,
   HMS_JOB_PROMPT_VERSION,
   markAiRunDeadLetter,
+  markAiRunPolicyRefused,
   markAiRunRetry,
   markAiRunSucceeded,
   NOT_APPLICABLE_MODEL_ID,
@@ -2859,14 +2860,14 @@ export async function executeHmsJob(input: {
     return retryOrFail(db, run, mark, 'TRANSIENT_NETWORK', 'lookup execution failed');
   }
   if (outcome.startsWith('refused_')) {
-    await markAiRunDeadLetter(
-      {
-        ...mark,
-        lastError: outcome,
-        failureClass: outcome === 'refused_input_invalid' ? 'SCHEMA_DRIFT' : 'POLICY_BLOCK',
-      },
-      db,
-    );
+    if (outcome === 'refused_input_invalid') {
+      await markAiRunDeadLetter(
+        { ...mark, lastError: outcome, failureClass: 'SCHEMA_DRIFT' },
+        db,
+      );
+      return 'dead_letter';
+    }
+    await markAiRunPolicyRefused({ ...mark, lastError: outcome }, db);
     return 'dead_letter';
   }
 

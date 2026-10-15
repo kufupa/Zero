@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { getDb } from '../src/db/client.js';
 import {
   aiWorkflowRun,
@@ -15,6 +15,7 @@ import {
   enqueueAiRun,
   heartbeatAiRun,
   markAiRunDeadLetter,
+  markAiRunPolicyRefused,
   markAiRunRetry,
   markAiRunRunning,
   markAiRunSucceeded,
@@ -294,6 +295,62 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai workflow run contract', ()
       .where(eq(aiWorkflowRun.id, run.id));
     expect(row?.state).toBe('dead_letter');
     expect(row?.lastError).toBe('policy violation');
+  });
+
+  it('marks policy refused as superseded and does not increment dead_letter', async () => {
+    const { transportId, threadId, messageId } = await seedMailContext();
+    const run = await enqueueAiRun({
+      transportId,
+      threadId,
+      triggerMessageId: messageId,
+      runKind: 'feedback_extraction',
+      idempotencyKey: `feedback:${messageId}`,
+      modelId: 'amazon.nova-lite-v1:0',
+      promptVersion: 'feedback-v1',
+    });
+    const owned = await claimNextAiRun({ ownerId: 'worker-a', lane: 'default' });
+    const db = getDb();
+    const [{ deadLetterBefore }] = await db
+      .select({
+        deadLetterBefore: sql<number>`count(*) FILTER (WHERE ${aiWorkflowRun.state} = 'dead_letter')::int`,
+      })
+      .from(aiWorkflowRun);
+
+    const wrong = await markAiRunPolicyRefused({
+      runId: run.id,
+      claimOwner: 'worker-a',
+      claimToken: 'wrong-token',
+      expectedStates: ['claimed'],
+      lastError: 'refused_origin_mismatch',
+    });
+    expect(wrong).toBeNull();
+
+    const [stillClaimed] = await db
+      .select()
+      .from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.id, run.id));
+    expect(stillClaimed?.state).toBe('claimed');
+
+    const row = await markAiRunPolicyRefused({
+      runId: run.id,
+      claimOwner: 'worker-a',
+      claimToken: owned!.claimToken!,
+      expectedStates: ['claimed'],
+      lastError: 'refused_origin_mismatch',
+    });
+    expect(row?.state).toBe('superseded');
+    expect(row?.failureClass).toBe('POLICY_BLOCK');
+    expect(row?.lastError).toBe('refused_origin_mismatch');
+    expect(row?.claimOwner).toBeNull();
+    expect(row?.claimToken).toBeNull();
+    expect(row?.finishedAt).toBeInstanceOf(Date);
+
+    const [{ deadLetterAfter }] = await db
+      .select({
+        deadLetterAfter: sql<number>`count(*) FILTER (WHERE ${aiWorkflowRun.state} = 'dead_letter')::int`,
+      })
+      .from(aiWorkflowRun);
+    expect(Number(deadLetterAfter)).toBe(Number(deadLetterBefore));
   });
 
   it('marks succeeded with trace and metrics metadata', async () => {
