@@ -1959,6 +1959,54 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(claimed.priority).toBe(HMS_JOB_PRIORITY_USER);
     }));
 
+  it('claims a later staff_quote before earlier party and find user jobs at the same priority', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run: party } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: CENTURION_USER_ID,
+          request: { kind: 'party', name: 'Horizon Trail Tours', partyKind: 'company' },
+          priority: HMS_JOB_PRIORITY_USER,
+          idempotencyKey: `hms-job:user-party:${randomUUID()}`,
+        },
+        db,
+      );
+      const { run: find } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: CENTURION_USER_ID,
+          request: { kind: 'find', confirmation: CONFIRMATION },
+          priority: HMS_JOB_PRIORITY_USER,
+          idempotencyKey: `hms-job:user:${randomUUID()}`,
+        },
+        db,
+      );
+      const { run: quote } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      expect([party.priority, find.priority, quote.priority]).toEqual([
+        HMS_JOB_PRIORITY_USER,
+        HMS_JOB_PRIORITY_USER,
+        HMS_JOB_PRIORITY_USER,
+      ]);
+      await db
+        .update(aiWorkflowRun)
+        .set({ createdAt: new Date(Date.now() - 60_000) })
+        .where(eq(aiWorkflowRun.id, party.id));
+      await db
+        .update(aiWorkflowRun)
+        .set({ createdAt: new Date(Date.now() - 30_000) })
+        .where(eq(aiWorkflowRun.id, find.id));
+
+      const claimed = await claimJob(db);
+      expect(claimed.id).toBe(quote.id);
+    }));
+
   it('with HMS_LANE_PAUSED=1 the hms lane claims nothing, and resumes when unset', () =>
     withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
