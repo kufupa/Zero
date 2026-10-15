@@ -1,4 +1,5 @@
 import { mailExtractionPayloadSchema } from './extraction/schema.js';
+import { addDays } from './stay-date-anchoring.js';
 import { applyPartyBindRule, buildPartyMatchCandidates, type PartyMatchRow } from './party-match-v2.js';
 import { matchRoomType } from './room-types.js';
 import { staffQuoteInput, type StaffQuoteInput, type StaffQuoteParties } from './staff-quote-workflow.js';
@@ -36,7 +37,9 @@ function groupForStay(
   stay: NonNullable<ReturnType<typeof mailExtractionPayloadSchema.parse>['stays'][number]>,
   today: string,
 ): { groups: StaffQuoteInput['groups']; reason?: string } {
-  const { arrival, departure } = stay.requested;
+  const { arrival } = stay.requested;
+  const departure =
+    stay.requested.departure || (validIsoDay(arrival) ? addDays(arrival, 1) : null);
   if (!arrival || !departure) return { groups: [], reason: 'missing_dates' };
   if (!validIsoDay(arrival) || !validIsoDay(departure) || departure <= arrival) {
     return { groups: [], reason: 'invalid_dates' };

@@ -167,6 +167,35 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.reason).toBe('missing_dates');
   });
 
+  it('defaults a stored arrival with no checkout to one night', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{ ...stay, requested: { arrival: '2026-10-20', departure: null } }],
+    });
+
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({
+      arrivalDate: '2026-10-20',
+      departureDate: '2026-10-21',
+    });
+    expect(plan.reason).toBeNull();
+  });
+
+  it('preserves an extraction checkout derived from stated nights', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{
+        ...stay,
+        requested: { arrival: '2026-10-20', departure: '2026-10-23' },
+        requestedDateEvidence: '20 Oct for three nights',
+      }],
+    });
+
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({
+      arrivalDate: '2026-10-20',
+      departureDate: '2026-10-23',
+    });
+  });
+
   it.each([
     ['past dates', { stays: [{ ...payload().stays[0], requested: { arrival: '2026-10-13', departure: '2026-10-15' } }] }, 'past_dates'],
     ['zero room count', { stays: [{ ...payload().stays[0], rows: [{ ...payload().stays[0]!.rows[0], rooms: 0 }] }] }, 'missing_rooms'],

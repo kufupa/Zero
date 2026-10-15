@@ -47,7 +47,7 @@ function dateInYear(value: string, year: number): string | null {
   return validDay(candidate) ? candidate : null;
 }
 
-function addDays(value: string, days: number): string {
+export function addDays(value: string, days: number): string {
   const time = Date.parse(`${value}T00:00:00.000Z`) + days * DAY_MS;
   return new Date(time).toISOString().slice(0, 10);
 }

@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { matchKey } from './party-match.js';
 import { matchRoomType } from './room-types.js';
 import {
+  addDays,
   anchorStayDateRange,
   receivedDateAtHotel,
   type StayDateAnchorContext,
@@ -440,7 +441,12 @@ export function mapLlmDecision(
       anchorContext,
     );
     const arrivalDate = validIsoDate(anchoredDates.arrival);
-    const departureDate = validIsoDate(anchoredDates.departure);
+    const anchoredDepartureDate = validIsoDate(anchoredDates.departure);
+    const departureDefaulted =
+      quoteDefaults && Boolean(arrivalDate) && !anchoredDepartureDate && !group.departure;
+    const departureDate =
+      anchoredDepartureDate ??
+      (departureDefaulted && arrivalDate ? addDays(arrivalDate, 1) : undefined);
     if (group.arrival && !arrivalDate) {
       missing.push({
         field: 'arrivalDate',
@@ -488,7 +494,11 @@ export function mapLlmDecision(
       specialRequests: [] as string[],
       fields: {
         arrivalDate: arrivalDate ? ('extracted' as const) : ('missing' as const),
-        departureDate: departureDate ? ('extracted' as const) : ('missing' as const),
+        departureDate: departureDefaulted
+          ? ('defaulted' as const)
+          : departureDate
+            ? ('extracted' as const)
+            : ('missing' as const),
         quantity: quantityDefaulted ? ('defaulted' as const) : fieldState(group.rooms),
         adults: adultsDefaulted ? ('defaulted' as const) : fieldState(group.adultsPerRoom),
         ...(quoteDefaults

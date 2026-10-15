@@ -444,6 +444,80 @@ describe('staff-approved quotation beneath native guards', () => {
     ]);
   });
 
+  it('uses the Centurion Dinner Allowance default for DBB at guests times nights', async () => {
+    const dbbInput = input();
+    dbbInput.groups[0]!.board = 'dinner_bb';
+    const fallback = staffQuoteDinnerFallback(dbbInput)!;
+    const f = await fixture(fallback.input);
+    const revision = await executeStaffQuote(
+      f.prepared,
+      createReservationistBusinessServices(f.options, f.prepared.approval),
+      async () => true,
+    );
+    const proposal = buildStaffProposalFacts(
+      f.confirmed,
+      scope,
+      f.prepared,
+      revision,
+      {
+        dinnerFallbackGroupIds: fallback.groupIds,
+        dinnerAddOn: {
+          amountMinor: 35_000,
+          unit: 'per_person_per_night',
+          label: 'Dinner Allowance',
+        },
+      },
+    );
+
+    expect(proposal.dinnerAddOnRequired).toBe(false);
+    expect(proposal.extrasReviewItems).not.toContain('Dinner price — enter amount');
+    expect(proposal.facts?.extras[0]).toMatchObject({
+      label: 'Dinner add-on (Dinner Allowance)',
+      units: 6,
+      unitMinor: 35_000,
+      service: 'dinner_add_on',
+    });
+    expect(deriveAuthorizedExtraLines(revision, proposal.facts!)).toMatchObject([
+      {
+        description: 'Dinner add-on (Dinner Allowance)',
+        quantity: 2,
+        nights: 3,
+        totalMinor: 210_000,
+      },
+    ]);
+  });
+
+  it('does not apply the Centurion dinner default to a Government quote', async () => {
+    const dbbInput = input();
+    dbbInput.salesStrategy = 'Government';
+    dbbInput.groups[0]!.board = 'dinner_bb';
+    const fallback = staffQuoteDinnerFallback(dbbInput)!;
+    const f = await fixture(fallback.input);
+    const revision = await executeStaffQuote(
+      f.prepared,
+      createReservationistBusinessServices(f.options, f.prepared.approval),
+      async () => true,
+    );
+    const proposal = buildStaffProposalFacts(
+      f.confirmed,
+      scope,
+      f.prepared,
+      revision,
+      {
+        dinnerFallbackGroupIds: fallback.groupIds,
+        dinnerAddOn: {
+          amountMinor: 35_000,
+          unit: 'per_person_per_night',
+          label: 'Dinner Allowance',
+        },
+      },
+    );
+
+    expect(proposal.facts).toBeNull();
+    expect(proposal.dinnerAddOnRequired).toBe(true);
+    expect(proposal.extrasReviewItems).toContain('Dinner price — enter amount');
+  });
+
   it('uses exact corrections without manufacturing extracted facts; varies nightly prices and multiplies quantity once', async () => {
     const f = await fixture(),
       services = createReservationistBusinessServices(f.options, f.prepared.approval),
