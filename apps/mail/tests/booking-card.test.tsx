@@ -256,6 +256,16 @@ describe('booking cards', () => {
     expect(screen.getAllByRole('button', { name: 'Copy Adults for Standard Queen ×2' })).toHaveLength(2);
   });
 
+  it('shows a booking card from bookingDrafts when analysis left no stay groups', () => {
+    const session: QuoteSession = {
+      ...quotedSession(null),
+      groups: [],
+      bookingDrafts: { '2026-11-12:2026-11-14': draftReady() },
+    };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByText('Book in HMS')).toBeDefined();
+  });
+
   it('lets staff type a rate code when the draft has none', () => {
     const draft = draftReady();
     for (const room of draft.draft.rooms) delete room.request.ratePlan;

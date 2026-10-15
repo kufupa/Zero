@@ -985,7 +985,9 @@ export const workstationRouter = router({
           requests: prefill.requests,
           missing: prefill.missing,
           schemaErrors: prefill.schemaErrors,
-          boards: prefillBoardsFromLuna(input.analysis.groups),
+          boards: prefillBoardsFromLuna(
+            input.analysis.groups.filter((group) => Boolean(group.arrival?.trim())),
+          ),
         }),
         options: createRequestFieldOptions(),
         messageId: input.messageId,

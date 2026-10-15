@@ -2271,6 +2271,12 @@ describe('quote session staff review items', () => {
       sourceHash: STAFF_HASH,
     });
     expect(otherMail.bookingDrafts).toEqual({});
+    const pricedStale = reduceQuoteSession(s, {
+      type: 'booking_draft_ready',
+      payload: { ...payload, revisionRef: 'rev-stale' },
+      sourceHash: STAFF_HASH,
+    });
+    expect(pricedStale.bookingDrafts).toEqual({});
   });
 
   it('keeps an unquoted draft for a stay that has no staff quote when another stay does', () => {

@@ -1610,6 +1610,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (draftKey) {
         return { ...session, bookingDrafts: { ...session.bookingDrafts, [draftKey]: action.payload } };
       }
+      // Stay-key fallback is only for mail-prefill drafts. A priced draft whose revisionRef does not
+      // match a run is stale, even when this stay has no quote yet.
+      if (action.payload.revisionRef !== 'unquoted') return session;
       // No priced quote for this stay: key by the stay dates on the prefill rooms (or the session's only stay).
       const room = action.payload.draft.rooms[0]?.request;
       const arrival = typeof room?.arrival === 'string' ? room.arrival : '';

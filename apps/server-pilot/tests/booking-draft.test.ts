@@ -707,4 +707,22 @@ describe('prepareUnquotedBookingDraft route', () => {
       '2026-12-01:2026-12-03',
     ]);
   });
+
+  it('does not borrow a skipped group\'s board', async () => {
+    const first = analysis().groups[0]!;
+    const result = await draftCaller().workstation.prepareUnquotedBookingDraft({
+      ...unquotedInput,
+      analysis: analysis({
+        groups: [
+          { ...first, arrival: null, departure: null, rooms: 1, board: 'room_only', guestNames: ['Skip Me'] },
+          { ...first, arrival: '2026-12-01', departure: '2026-12-03', rooms: 1, board: 'bb', guestNames: ['Alan Turing'] },
+        ],
+      }),
+    });
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(result.draft.rooms).toHaveLength(1);
+    expect(result.draft.rooms[0]?.board).toBe('bb');
+    expect(result.draft.rooms[0]?.request.arrival).toBe('2026-12-01');
+  });
 });

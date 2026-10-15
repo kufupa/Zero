@@ -2011,7 +2011,7 @@ export function QuoteWorkflowPanel({
           />
         </>
       ) : null}
-      {requestedQuoteKeys(session.groups)
+      {[...new Set([...requestedQuoteKeys(session.groups), ...Object.keys(session.bookingDrafts)])]
         .filter((key) => session.bookingDrafts[key])
         .map((key) => (
           <Fragment key={key}>

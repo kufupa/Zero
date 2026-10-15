@@ -49,6 +49,7 @@ import {
   bindPrepareBookingDraft,
   bindPrepareUnquotedBookingDraft,
   bindUsePriorQuoteForBooking,
+  UNQUOTED_BOOKING_REVISION_REF,
   buildExpiredPriorRequoteBindArgs,
   EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
   expiredPriorQuoteNotice,
@@ -769,7 +770,9 @@ export function NavaPane({
       .join(','),
     quoteSession.staffQuote ? 'quoted' : '',
     Object.keys(quoteSession.staffQuotes).join(','),
-    Object.keys(quoteSession.bookingDrafts).join(','),
+    Object.keys(quoteSession.bookingDrafts)
+      .filter((key) => quoteSession.bookingDrafts[key]?.revisionRef !== UNQUOTED_BOOKING_REVISION_REF)
+      .join(','),
   ].join(':');
   useEffect(() => {
     if (isNonActionableMessage) return;
@@ -778,10 +781,14 @@ export function NavaPane({
     const binding = quoteSession.binding;
     // Each date option waits for its own earlier quote. An option that already has a run or a draft is left alone.
     // A single stay waits as one, dated or not, so its first accepted prior quote binds as it did before date options.
+    // An unquoted prefill card must not stop that lookup.
     const stayKeys = requestedQuoteKeys(quoteSession.groups);
     const singleStayKey = stayKeys.length <= 1 ? (stayKeys[0] ?? 'unknown:unknown') : null;
     const waiting = (singleStayKey ? [singleStayKey] : stayKeys).filter(
-      (key) => !quoteSession.staffQuotes[key] && !quoteSession.bookingDrafts[key],
+      (key) =>
+        !quoteSession.staffQuotes[key] &&
+        (!quoteSession.bookingDrafts[key] ||
+          quoteSession.bookingDrafts[key]?.revisionRef === UNQUOTED_BOOKING_REVISION_REF),
     );
     if (luna?.workflow !== 'create_booking' || !source || !binding || waiting.length === 0) {
       return;
