@@ -113,7 +113,7 @@ export type SeedOptions = {
   precomputedCredentials?: Record<string, { password: string }>;
 };
 
-function credentialAccountId(specId: string): string {
+export function credentialAccountId(specId: string): string {
   return `cred-${specId}`;
 }
 
@@ -219,6 +219,8 @@ export async function planPilotCredentials(
 
 /**
  * Seed all pilot rows against the given DB handle.
+ *
+ * NEVER run on prod; use provision:prod (additive, never prunes).
  *
  * Idempotent: re-running upserts rows. The DB handle may be a normal
  * connection (production) or a transaction-scoped handle (tests with
@@ -415,7 +417,7 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
   };
 }
 
-async function seedAiManagedCategories(db: DB, transportId: string): Promise<void> {
+export async function seedAiManagedCategories(db: DB, transportId: string): Promise<void> {
   for (const row of AI_MANAGED_CATEGORY_SEED_ROWS) {
     await db
       .insert(mailCategory)
@@ -441,7 +443,7 @@ async function seedAiManagedCategories(db: DB, transportId: string): Promise<voi
   }
 }
 
-async function seedSpamLabel(db: DB, transportId: string): Promise<void> {
+export async function seedSpamLabel(db: DB, transportId: string): Promise<void> {
   await db
     .insert(mailLabel)
     .values({

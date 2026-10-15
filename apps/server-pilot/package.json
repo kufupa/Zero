@@ -37,7 +37,8 @@
     "test:rocketseed": "vitest run tests/transport-mode.test.ts tests/fixture-loopback.test.ts tests/worker-mode.test.ts tests/rocketseed-returned-copy.test.ts tests/rocketseed-returned-copy-correlation.test.ts tests/cid-images.test.ts tests/ingest-duplicate-cleanup.test.ts tests/sanitize-email-html.test.ts tests/safe-inline-image.test.ts tests/inline-attachment-http.test.ts tests/rocketseed-flow.test.ts tests/rocketseed-ci-contract.test.ts",
     "db:generate": "node --import tsx ./node_modules/drizzle-kit/bin.cjs generate",
     "db:migrate": "node --import tsx ./node_modules/drizzle-kit/bin.cjs migrate",
-    "seed:prod": "tsx scripts/seed-prod.ts"
+    "seed:prod": "tsx scripts/seed-prod.ts",
+    "provision:prod": "tsx scripts/provision-prod.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "4.0.80",
