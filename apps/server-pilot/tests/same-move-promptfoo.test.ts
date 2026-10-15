@@ -3,7 +3,7 @@ import {
   runSameMovePromptfooEval,
   scoreSameMove,
 } from '../src/ai/same-move-scorer';
-import type { GoldOperation } from '../scripts/compare-centurion-human-gold';
+import type { GoldOperation } from '../src/ai/same-move-ops';
 
 function op(
   operation: GoldOperation['operation'],

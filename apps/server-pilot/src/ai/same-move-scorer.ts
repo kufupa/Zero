@@ -5,7 +5,7 @@ import {
   compareSemantics,
   type GoldGrade,
   type GoldOperation,
-} from '../../scripts/compare-centurion-human-gold.js';
+} from './same-move-ops.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const SAME_MOVE_FIXTURES_DIR = path.resolve(here, '../../evals/same-move/fixtures');
@@ -112,13 +112,25 @@ type PromptfooEvaluate = (
   opts?: Record<string, unknown>,
 ) => Promise<unknown>;
 
+function isPromptfooEvaluate(value: unknown): value is PromptfooEvaluate {
+  return typeof value === 'function';
+}
+
+function readNamedEvaluate(value: unknown): PromptfooEvaluate | null {
+  if (!value || typeof value !== 'object' || !('evaluate' in value)) return null;
+  return isPromptfooEvaluate(value.evaluate) ? value.evaluate : null;
+}
+
+function readPromptfooEvaluate(mod: unknown): PromptfooEvaluate | null {
+  const direct = readNamedEvaluate(mod);
+  if (direct) return direct;
+  if (!mod || typeof mod !== 'object' || !('default' in mod)) return null;
+  return readNamedEvaluate(mod.default);
+}
+
 async function loadPromptfooEvaluate(): Promise<PromptfooEvaluate> {
-  const mod = (await import('promptfoo')) as {
-    evaluate?: PromptfooEvaluate;
-    default?: { evaluate?: PromptfooEvaluate };
-  };
-  const evaluate = mod.evaluate ?? mod.default?.evaluate;
-  if (typeof evaluate !== 'function') {
+  const evaluate = readPromptfooEvaluate(await import('promptfoo'));
+  if (!evaluate) {
     throw new Error('promptfoo.evaluate missing; add promptfoo as a local MIT CLI devDependency');
   }
   return evaluate;
