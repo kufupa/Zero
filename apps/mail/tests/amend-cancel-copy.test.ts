@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AMEND_CANCEL_COPY,
+  canPreviewCancelFromCapabilities,
   cancellationChargeCopy,
   cancelledText,
   cancelOutcomeNote,
@@ -76,5 +77,22 @@ describe('cancel outcome copy', () => {
       viewAfterCommit(run({ outcome: 'refused_reason_missing', previewDigest: null }), run(), CONFIRMATION),
     ).toEqual({ kind: 'ready', run: run(), reason: '', note: AMEND_CANCEL_COPY.reasonRefused });
     expect(viewAfterPreview(run(), CONFIRMATION)).toMatchObject({ kind: 'ready', reason: '' });
+  });
+});
+
+describe('canPreviewCancelFromCapabilities', () => {
+  it('stays off when paneSave is missing or false', () => {
+    expect(canPreviewCancelFromCapabilities(undefined)).toBe(false);
+    expect(canPreviewCancelFromCapabilities(null)).toBe(false);
+    expect(canPreviewCancelFromCapabilities({})).toBe(false);
+    expect(canPreviewCancelFromCapabilities({ paneSave: false })).toBe(false);
+    expect(canPreviewCancelFromCapabilities({ paneSave: false, paneSaveMode: 'lab' })).toBe(false);
+    expect(canPreviewCancelFromCapabilities({ paneSave: false, paneSaveMode: 'on' })).toBe(false);
+  });
+
+  it('is on for lab and on, including a server that only sends paneSave', () => {
+    expect(canPreviewCancelFromCapabilities({ paneSave: true })).toBe(true);
+    expect(canPreviewCancelFromCapabilities({ paneSave: true, paneSaveMode: 'lab' })).toBe(true);
+    expect(canPreviewCancelFromCapabilities({ paneSave: true, paneSaveMode: 'on' })).toBe(true);
   });
 });
