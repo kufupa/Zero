@@ -38,7 +38,14 @@ export function resolveModelAdapter(
   }
 
   if (profile === 'gpt6_luna_max') {
-    return new AzureLunaModelAdapter();
+    try {
+      return new AzureLunaModelAdapter();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `AI_TRIAGE_MODEL_PROFILE=gpt6_luna_max requires AZURE_OPENAI_BASE_URL and AZURE_FOUNDRY_API_KEY (${message}); refusing silent Bedrock fallback`,
+      );
+    }
   }
 
   return createBedrockModelAdapter({
@@ -47,6 +54,33 @@ export function resolveModelAdapter(
     guardrailId: env.BEDROCK_GUARDRAIL_ID,
     guardrailVersion: env.BEDROCK_GUARDRAIL_VERSION,
   });
+}
+
+export type TriageModelLabels = {
+  modelId: string;
+  routeId: string;
+  protocol: string;
+};
+
+/** Ledger/enqueue labels for the profile `resolveModelAdapter` will actually run. */
+export function triageModelLabels(
+  env: Record<string, string | undefined> = process.env,
+): TriageModelLabels {
+  const profile = parseAiTriageModelProfile(
+    env.AI_TRIAGE_MODEL_PROFILE as MailEnv['AI_TRIAGE_MODEL_PROFILE'] | undefined,
+  );
+  if (profile === 'nova_lite') {
+    return {
+      modelId: env.AI_MODEL_ID?.trim() || 'amazon.nova-lite-v1:0',
+      routeId: 'nova_lite',
+      protocol: 'bedrock-converse',
+    };
+  }
+  return {
+    modelId: 'gpt-6-luna',
+    routeId: 'azure_luna_max',
+    protocol: 'azure-foundry-responses',
+  };
 }
 
 export type ApprovedLocalModelAdapterInput = {

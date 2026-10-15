@@ -1,4 +1,5 @@
 import {
+  parseAiTriageModelProfile,
   parseEnv,
   parseHmsControlConfig,
   requireHmsEvidenceHmacChildKey,
@@ -176,6 +177,14 @@ describe('env', () => {
     expect(parseEnv(baseEnv()).AI_DRAFTS_ENABLED).toBe(false);
     expect(parseEnv(baseEnv()).AI_STALE_RUN_TIMEOUT_MS).toBe(15 * 60_000);
     expect(parseEnv(baseEnv()).AI_MODEL_ROUTE).toBe('unavailable');
+  });
+
+  it('defaults AI_TRIAGE_MODEL_PROFILE to gpt6_luna_max and keeps nova_lite selectable', () => {
+    expect(parseAiTriageModelProfile(undefined)).toBe('gpt6_luna_max');
+    expect(parseEnv(baseEnv()).AI_TRIAGE_MODEL_PROFILE).toBe('gpt6_luna_max');
+    expect(parseEnv(baseEnv({ AI_TRIAGE_MODEL_PROFILE: 'nova_lite' })).AI_TRIAGE_MODEL_PROFILE).toBe(
+      'nova_lite',
+    );
   });
 
   it('keeps quote preparation off by default and parses its independent hourly cap', () => {

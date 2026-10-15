@@ -52,10 +52,10 @@ import {
   newCanonicalAttachments,
 } from './canonical-identity.js';
 import {
-  DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import { triageModelLabels } from '../../ai/bedrock/factory.js';
 import { enqueueInboundExtraction } from '../../ai/extraction/inbound-run.js';
 import { classifyMailSource } from '../../ai/mail-source.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
@@ -813,9 +813,12 @@ export async function persistInboundMessage(
             idempotencyKey: isHotelSent
               ? `external-sent-baseline:${messageId}`
               : `inbound-triage:${messageId}`,
-            modelId: DEFAULT_AI_MODEL_ID,
+            modelId: triageModelLabels().modelId,
             promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
-            ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
+            metrics: {
+              ...triageModelLabels(),
+              ...(mailSourceDecision ? { mailSourceDecision } : {}),
+            },
           },
           tx as unknown as DB,
         );
