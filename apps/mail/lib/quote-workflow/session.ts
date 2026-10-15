@@ -1610,13 +1610,12 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (draftKey) {
         return { ...session, bookingDrafts: { ...session.bookingDrafts, [draftKey]: action.payload } };
       }
-      // No priced quote: key by the stay dates on the prefill rooms (or the session's only stay).
-      if (Object.keys(session.staffQuotes).length > 0) return session;
+      // No priced quote for this stay: key by the stay dates on the prefill rooms (or the session's only stay).
       const room = action.payload.draft.rooms[0]?.request;
       const arrival = typeof room?.arrival === 'string' ? room.arrival : '';
       const departure = typeof room?.departure === 'string' ? room.departure : '';
       const stayKey = arrival && departure ? `${arrival}:${departure}` : requestedQuoteKeys(session.groups)[0];
-      if (!stayKey) return session;
+      if (!stayKey || session.staffQuotes[stayKey]) return session;
       return { ...session, bookingDrafts: { ...session.bookingDrafts, [stayKey]: action.payload } };
     }
     case 'handle_review_item': {

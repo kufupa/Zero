@@ -1037,6 +1037,7 @@ export function NavaPane({
     quoteSession.staffSource?.sourceHash ?? '',
     String(quoteSession.binding?.selectionEpoch ?? 0),
     String(quoteSession.inputRevision),
+    String(quoteSession.stayRevision),
     Object.keys(quoteSession.staffQuotes).join(','),
     Object.keys(quoteSession.bookingDrafts).join(','),
   ].join(':');

@@ -2273,6 +2273,57 @@ describe('quote session staff review items', () => {
     expect(otherMail.bookingDrafts).toEqual({});
   });
 
+  it('keeps an unquoted draft for a stay that has no staff quote when another stay does', () => {
+    let s = twoDateSession();
+    s = reduceQuoteSession(s, {
+      type: 'staff_quote_ready',
+      offer: { ...authorisedOffer, id: 'rev-a', sourceRef: 'rev-a', nightly: [], stayTotalMinor: 850000 },
+      staffQuote: {
+        workflowRunId: 'run-a',
+        revisionRef: 'rev-a',
+        factRefs: [],
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: STAFF_HASH,
+        selectionEpoch: 1,
+        inputRevision: s.inputRevision,
+        inputDigest: 'digest',
+        totalMinor: 850000,
+        currency: 'ZAR',
+        quoteRequestKey: STAY_A,
+        approvedHeader: emptyHeader(),
+      },
+      selectionEpoch: 1,
+      inputRevision: s.inputRevision,
+    });
+    const ready = reduceQuoteSession(s, {
+      type: 'booking_draft_ready',
+      payload: {
+        draft: {
+          rooms: [
+            {
+              groupId: 'g2',
+              roomIndex: 1,
+              request: { arrival: '2026-12-01', departure: '2026-12-03', roomType: 'STQN' },
+              schemaErrors: [] as string[],
+            },
+          ],
+          rateCheck: [],
+          missing: [],
+          flags: [] as string[],
+        },
+        options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
+        messageId: 'mail-1',
+        selectionEpoch: 1,
+        inputRevision: s.inputRevision,
+        revisionRef: 'unquoted',
+      },
+      sourceHash: STAFF_HASH,
+    });
+    expect(ready.bookingDrafts[STAY_B]?.revisionRef).toBe('unquoted');
+    expect(ready.bookingDrafts[STAY_A]).toBeUndefined();
+  });
+
   it('prefills government party into company and salesStrategy when header is empty', () => {
     const s = analysisReady({
       ...quoteAnalysis,

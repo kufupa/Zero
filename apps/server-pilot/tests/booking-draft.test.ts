@@ -687,4 +687,24 @@ describe('prepareUnquotedBookingDraft route', () => {
     });
     expect(result).toMatchObject({ status: 'unavailable' });
   });
+
+  it('keeps each stay on its own dates', async () => {
+    const first = analysis().groups[0]!;
+    const result = await draftCaller().workstation.prepareUnquotedBookingDraft({
+      ...unquotedInput,
+      analysis: analysis({
+        groups: [
+          { ...first, arrival: '2026-10-12', departure: '2026-10-13', rooms: 1, guestNames: ['Ada Lovelace'] },
+          { ...first, arrival: '2026-12-01', departure: '2026-12-03', rooms: 1, guestNames: ['Alan Turing'] },
+        ],
+      }),
+    });
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(result.draft.rooms.map((room) => room.request.arrival)).toEqual(['2026-10-12', '2026-12-01']);
+    expect(result.draft.rooms.map((room) => room.groupId)).toEqual([
+      '2026-10-12:2026-10-13',
+      '2026-12-01:2026-12-03',
+    ]);
+  });
 });

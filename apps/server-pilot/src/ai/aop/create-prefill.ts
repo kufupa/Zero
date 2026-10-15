@@ -73,39 +73,50 @@ export async function buildCreatePrefillFromLuna(
 ): Promise<BuildCreatePrefillOutput | null> {
   const groups = luna.groups;
   if (!Array.isArray(groups) || groups.length === 0) return null;
-  const arrival = groups[0]?.arrival?.trim() || null;
-  if (!arrival) return null;
   const roomTotal = groups.reduce((sum, group) => sum + (group.rooms ?? 1), 0);
   if (!Number.isSafeInteger(roomTotal) || roomTotal <= 0 || roomTotal > MAX_PREFILL_ROOMS) return null;
   const party = luna.party;
-  try {
-    return await buildCreatePrefill({
-      arrival,
-      departure: groups[0]?.departure ?? null,
-      nights: null,
-      rooms: groups.flatMap((group) =>
-        Array.from({ length: Math.max(group.rooms ?? 1, 0) }, (_, index) => ({
-          adults: group.adultsPerRoom ?? 1,
-          childAges: [...(group.childAges ?? [])],
-          roomTypeText: group.roomPreference ?? null,
-          guestName: group.guestNames?.[index] ?? null,
-        })),
-      ),
-      boardText: groups[0]?.board ?? null,
-      rateText: null,
-      agencyName: party?.kind === 'agency' ? (party.name ?? null) : null,
-      organizationName:
-        party?.kind === 'organization' || party?.kind === 'government' ? (party.name ?? null) : null,
-      voucherNumber: null,
-      bookerName: null,
-      bookerEmail: null,
-      billingReference: party?.reference ?? null,
-      paidBy: null,
-      defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
-    });
-  } catch {
-    return null;
+  const parts: BuildCreatePrefillOutput[] = [];
+  for (const group of groups) {
+    const arrival = group.arrival?.trim() || null;
+    if (!arrival) continue;
+    try {
+      parts.push(
+        await buildCreatePrefill({
+          arrival,
+          departure: group.departure ?? null,
+          nights: null,
+          rooms: Array.from({ length: Math.max(group.rooms ?? 1, 0) }, (_, index) => ({
+            adults: group.adultsPerRoom ?? 1,
+            childAges: [...(group.childAges ?? [])],
+            roomTypeText: group.roomPreference ?? null,
+            guestName: group.guestNames?.[index] ?? null,
+          })),
+          boardText: group.board ?? null,
+          rateText: null,
+          agencyName: party?.kind === 'agency' ? (party.name ?? null) : null,
+          organizationName:
+            party?.kind === 'organization' || party?.kind === 'government' ? (party.name ?? null) : null,
+          voucherNumber: null,
+          bookerName: null,
+          bookerEmail: null,
+          billingReference: party?.reference ?? null,
+          paidBy: null,
+          defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
+        }),
+      );
+    } catch {
+      continue;
+    }
   }
+  if (parts.length === 0) return null;
+  const missing = uniqueMissing(parts.flatMap((part) => part.missing));
+  return {
+    requests: parts.flatMap((part) => part.requests),
+    missing,
+    schemaErrors: parts.flatMap((part) => part.schemaErrors),
+    todoNextStep: todoNextStep(missing),
+  };
 }
 
 function foldToken(value: string): string {
