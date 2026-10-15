@@ -151,6 +151,14 @@ describe('agentDecisionToLunaAnalysis', () => {
       ]),
     );
   });
+
+  it('copies hms_todo create onto analysis.todoTarget', () => {
+    const parsed = lunaAnalysisSchema.parse(
+      agentDecisionToLunaAnalysis(decision('hms_todo', { todoTarget: 'create' }), selection),
+    );
+    expect(parsed.workflow).toBe('hms_todo');
+    expect(parsed.todoTarget).toBe('create');
+  });
 });
 
 describe('analyseSelectionWithAgent', () => {

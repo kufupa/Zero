@@ -203,5 +203,6 @@ export const lunaAnalysisSchema = z.object({
     .describe(
       'One short plain-English line describing the requested change, at most 300 characters, card numbers masked. Null if none.',
     ),
+  todoTarget: z.enum(TODO_TARGET_OPS).nullish(),
 });
 export type LunaAnalysis = z.infer<typeof lunaAnalysisSchema>;

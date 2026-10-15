@@ -114,6 +114,13 @@ describe('lunaAnalysisSchema', () => {
     expect(() => lunaAnalysisSchema.parse(analysis({ tasks: nine }))).toThrow();
   });
 
+  it('keeps optional todoTarget and still parses old payloads without it', () => {
+    expect(lunaAnalysisSchema.parse(analysis()).todoTarget).toBeUndefined();
+    expect(
+      lunaAnalysisSchema.parse(analysis({ workflow: 'hms_todo', todoTarget: 'create' })).todoTarget,
+    ).toBe('create');
+  });
+
   it('accepts amend and cancel workflows, with amendment fields optional for old payloads', () => {
     expect(lunaAnalysisSchema.parse(analysis({ workflow: 'amend' })).workflow).toBe('amend');
     expect(lunaAnalysisSchema.parse(analysis({ workflow: 'cancel' })).workflow).toBe('cancel');

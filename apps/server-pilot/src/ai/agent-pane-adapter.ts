@@ -88,6 +88,7 @@ export function agentDecisionToLunaAnalysis(
     tasks: [],
     confirmationNumber: confirmation && source.includes(confirmation) ? confirmation : null,
     requestedChange: decision.requestedChange ?? null,
+    todoTarget: decision.workflow === 'hms_todo' ? (decision.todoTarget ?? null) : null,
   };
 }
 
