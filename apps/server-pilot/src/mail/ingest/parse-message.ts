@@ -58,6 +58,12 @@ export interface ParsedInboundMessage {
   inReplyTo: string | null;
   references: string[];
   fromAddress: string | null;
+  /**
+   * Bare address from the actual `From` header, never `Sender`.
+   * Optional so fixtures need not set it; stamp corroboration treats
+   * a missing value as null, not as `fromAddress`.
+   */
+  fromHeaderAddress?: string | null;
   toAddresses: string[];
   ccAddresses: string[];
   bccAddresses: string[];
@@ -323,6 +329,7 @@ export function buildParsedMessage(args: {
     inReplyTo,
     references,
     fromAddress,
+    fromHeaderAddress: fromEmail,
     toAddresses,
     ccAddresses,
     bccAddresses,

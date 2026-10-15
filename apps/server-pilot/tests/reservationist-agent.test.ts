@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { RequestContext } from '@mastra/core/request-context';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CENTURION_HOTEL_RULES,
   createDefaultRunners,
@@ -81,7 +81,26 @@ describe('reservationist tools', () => {
     expect(src).not.toMatch(/^import[^;]*(playwright|stagehand|fetch-quote|create-lab)/m);
   });
 });
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe('reservationist agent', () => {
+  it('defaults the agent model to Azure Luna and fails closed without Azure env', () => {
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', '');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', '');
+    expect(() => createReservationistAgent({ runners: fakeRunners() })).toThrow(
+      /AZURE_OPENAI_BASE_URL|AZURE_FOUNDRY_API_KEY/,
+    );
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', 'https://example.invalid/openai/v1');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', 'test-key');
+    const agent = createReservationistAgent({ runners: fakeRunners() });
+    expect(agent.id).toBe('reservationist');
+    const src = readFileSync(new URL('../src/ai/reservationist-agent.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/createAzureLunaModel/);
+    expect(src).not.toMatch(/createLunaModel\(/);
+  });
+
   it('exposes exactly the four tools and hotel rules from request context', async () => {
     const agent = createReservationistAgent({ model: 'openai/gpt-5', runners: fakeRunners() });
     const tools = await agent.listTools();
@@ -94,5 +113,10 @@ describe('reservationist agent', () => {
     const instructions = await agent.getInstructions({ requestContext: ctx(false) });
     expect(String(instructions)).toContain('HRCEN');
     expect(String(instructions)).toContain(CENTURION_HOTEL_RULES);
+    expect(String(instructions)).toMatch(/Never claim an HMS action was done/);
+    expect(String(instructions)).toMatch(/Do not call tools for holding moves/);
+    expect(String(instructions)).toMatch(/forward_to_partner/);
+    expect(String(instructions)).toMatch(/send_document/);
+    expect(String(instructions)).toMatch(/hms_todo/);
   });
 });

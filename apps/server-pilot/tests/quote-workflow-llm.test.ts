@@ -2,6 +2,7 @@ import {
   amendmentFromAnalysis,
   analyseQuoteSelection,
   buildQuoteWorkflowPrompt,
+  isNonQuoteLunaWorkflow,
   K2_MAPPING,
   mapLlmDecision,
   partyNotGuest,
@@ -114,6 +115,13 @@ describe('lunaAnalysisSchema', () => {
     expect(() => lunaAnalysisSchema.parse(analysis({ tasks: nine }))).toThrow();
   });
 
+  it('keeps optional todoTarget and still parses old payloads without it', () => {
+    expect(lunaAnalysisSchema.parse(analysis()).todoTarget).toBeUndefined();
+    expect(
+      lunaAnalysisSchema.parse(analysis({ workflow: 'hms_todo', todoTarget: 'create' })).todoTarget,
+    ).toBe('create');
+  });
+
   it('accepts amend and cancel workflows, with amendment fields optional for old payloads', () => {
     expect(lunaAnalysisSchema.parse(analysis({ workflow: 'amend' })).workflow).toBe('amend');
     expect(lunaAnalysisSchema.parse(analysis({ workflow: 'cancel' })).workflow).toBe('cancel');
@@ -215,12 +223,13 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.system).toMatch(/treat this mail as a quote/i);
   });
 
-  it('asks for amendments and cancellations as amend or cancel, and keeps invoices as other', () => {
+  it('asks for amendments and cancellations as amend or cancel, and maps invoice asks onto other in this schema', () => {
     const prompt = buildQuoteWorkflowPrompt(selection);
     expect(prompt.system).toMatch(
       /Amendments and cancellations of an existing booking: workflow=amend or cancel\./,
     );
-    expect(prompt.system).toMatch(/Invoices, folios, payment queries stay other\./);
+    expect(prompt.system).toMatch(/workflow=send_document/);
+    expect(prompt.system).toMatch(/"forward_to_partner", "send_document"/);
     expect(prompt.system).not.toMatch(/Cancellations, amendments, invoices/);
   });
 });
@@ -803,6 +812,15 @@ describe('mapLlmDecision', () => {
 
   it('maps other to other with no groups prefilled', () => {
     const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis({ workflow: 'other' })));
+    expect(mapped.intent).toBe('other');
+    expect(mapped.groups).toEqual([]);
+  });
+
+  it('treats skip as a non-quote workflow like other, hiding quote groups', () => {
+    expect(isNonQuoteLunaWorkflow('skip')).toBe(true);
+    expect(isNonQuoteLunaWorkflow('other')).toBe(true);
+    expect(isNonQuoteLunaWorkflow('quote')).toBe(false);
+    const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis({ workflow: 'skip' })));
     expect(mapped.intent).toBe('other');
     expect(mapped.groups).toEqual([]);
   });

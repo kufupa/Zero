@@ -334,6 +334,8 @@ export interface MarkAiRunDeadLetterInput {
   failureClass?: AiFailureClass;
 }
 
+export type MarkAiRunPolicyRefusedInput = Omit<MarkAiRunDeadLetterInput, 'failureClass'>;
+
 export class RunDeadlineError extends Error {
   readonly failureClass = 'RUN_DEADLINE' as const;
   constructor(message = 'AI run deadline exceeded or cleanup reserve exhausted') {
@@ -959,6 +961,34 @@ export async function markAiRunDeadLetter(input: MarkAiRunDeadLetterInput, db: D
       state: 'dead_letter',
       lastError: input.lastError,
       failureClass: input.failureClass,
+      claimOwner: null,
+      claimToken: null,
+      finishedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(aiWorkflowRun.id, input.runId),
+        eq(aiWorkflowRun.claimOwner, input.claimOwner),
+        eq(aiWorkflowRun.claimToken, input.claimToken),
+        inArray(aiWorkflowRun.state, input.expectedStates),
+      ),
+    )
+    .returning();
+  return row ?? null;
+}
+
+export async function markAiRunPolicyRefused(
+  input: MarkAiRunPolicyRefusedInput,
+  db: DB = getDb(),
+) {
+  const now = new Date();
+  const [row] = await db
+    .update(aiWorkflowRun)
+    .set({
+      state: 'superseded',
+      lastError: input.lastError,
+      failureClass: 'POLICY_BLOCK',
       claimOwner: null,
       claimToken: null,
       finishedAt: now,

@@ -19,13 +19,14 @@ describe('isAdminDashboardEnabled', () => {
     expect(describeAdminSource(null)).toBe('demo');
   });
 
-  it('enables every authenticated user when not in demo', () => {
+  it('enables only the owner email when not in demo', () => {
     vi.mocked(runtime.isFrontendOnlyDemo).mockReturnValue(false);
 
     expect(isAdminDashboardEnabled({ user: { email: 'navaai@legacyhotels.co.za' } })).toBe(true);
-    expect(isAdminDashboardEnabled({ user: { email: 'martha@legacyhotels.co.za' } })).toBe(true);
-    expect(isAdminDashboardEnabled({ user: { email: 'random@legacyhotels.co.za' } })).toBe(true);
+    expect(isAdminDashboardEnabled({ user: { email: '  NavaAI@LegacyHotels.co.za ' } })).toBe(true);
+    expect(isAdminDashboardEnabled({ user: { email: 'centurion@legacyhotels.co.za' } })).toBe(false);
+    expect(isAdminDashboardEnabled({ user: { email: 'martha@legacyhotels.co.za' } })).toBe(false);
     expect(isAdminDashboardEnabled(null)).toBe(false);
-    expect(describeAdminSource({ user: { email: 'random@legacyhotels.co.za' } })).toBe('hosted');
+    expect(describeAdminSource({ user: { email: 'navaai@legacyhotels.co.za' } })).toBe('hosted');
   });
 });

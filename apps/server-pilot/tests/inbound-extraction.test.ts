@@ -661,6 +661,8 @@ describe('inbound extraction stored read', () => {
               attempts: aiWorkflowRun.attempts,
               nextRunAt: aiWorkflowRun.nextRunAt,
               deadlineAt: aiWorkflowRun.deadlineAt,
+              lastError: aiWorkflowRun.lastError,
+              failureClass: aiWorkflowRun.failureClass,
             })
             .from(aiWorkflowRun)
             .where(eq(aiWorkflowRun.id, runId))
@@ -729,7 +731,10 @@ describe('inbound extraction stored read', () => {
           adapter: null,
         }),
       ).toEqual({ runId: unconfigured.run.id, state: 'dead_letter' });
-      expect((await stateOf(unconfigured.run.id)).state).toBe('dead_letter');
+      expect(await stateOf(unconfigured.run.id)).toMatchObject({
+        state: 'dead_letter',
+        lastError: 'inbound extraction model is not configured',
+      });
 
       const stale = await claimOne('thread-run-stale');
       expect(
@@ -743,7 +748,11 @@ describe('inbound extraction stored read', () => {
           loadSelection,
         }),
       ).toEqual({ runId: stale.run.id, state: 'dead_letter' });
-      expect((await stateOf(stale.run.id)).state).toBe('dead_letter');
+      expect(await stateOf(stale.run.id)).toMatchObject({
+        state: 'superseded',
+        failureClass: 'POLICY_BLOCK',
+        lastError: `inbound extraction version extract-retired is not deployed (deployed ${EXTRACTION_VERSION})`,
+      });
     }));
 });
 

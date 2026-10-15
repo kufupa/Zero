@@ -8,25 +8,32 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DO_MIGRATE=0
 QUIESCED=0
+ALLOW_ROLLBACK=0
 for arg in "$@"; do
   case "$arg" in
     --migrate) DO_MIGRATE=1 ;;
     --quiesced) QUIESCED=1 ;;
+    --allow-rollback) ALLOW_ROLLBACK=1 ;;
     -h|--help)
-      echo "usage: $0 [--migrate] [--quiesced]"
+      echo "usage: $0 [--migrate] [--quiesced] [--allow-rollback]"
       echo "  sync git bundle → optional db:migrate → deploy-ec2.sh → health"
       echo "  --quiesced: assets only (no PM2/health); online pm2 http OK; VPN assert retained"
+      echo "  --allow-rollback: forward to bundle sync (override ancestor/unverified SHA refuse)"
       exit 0
       ;;
     *)
-      echo "unknown arg: $arg (try --migrate / --quiesced)" >&2
+      echo "unknown arg: $arg (try --migrate / --quiesced / --allow-rollback)" >&2
       exit 2
       ;;
   esac
 done
 
-echo "== ops-deploy: sync bundle =="
-bash "${SCRIPT_DIR}/sync-ec2-git-bundle.sh"
+echo "== ops-deploy: sync bundle (prints shipping SHA and EC2 SHA) =="
+if [ "$ALLOW_ROLLBACK" -eq 1 ]; then
+  bash "${SCRIPT_DIR}/sync-ec2-git-bundle.sh" --allow-rollback
+else
+  bash "${SCRIPT_DIR}/sync-ec2-git-bundle.sh"
+fi
 
 REMOTE_NVM='export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; export PATH="$HOME/.local/share/pnpm:$PATH"'
 

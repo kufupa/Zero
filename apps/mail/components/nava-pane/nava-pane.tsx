@@ -58,7 +58,12 @@ import {
   type UsePriorQuoteForBookingReady,
 } from '@/lib/quote-workflow/booking-draft-bind';
 import { paneStayFromTrpc, readPaneSaveFlag } from '@/lib/quote-workflow/pane-stay-bind';
-import { partyFinderFromTrpc, partyIndexFromTrpc } from '@/lib/quote-workflow/party-lookup';
+import {
+  partyFinderFromTrpc,
+  partyIndexFromTrpc,
+  partySuggesterFromTrpc,
+  type PartySuggestion,
+} from '@/lib/quote-workflow/party-lookup';
 import { amendFindClientFromTrpc, hmsJobTransport, type HmsJobRequest, type HmsJobView } from '@/lib/quote-workflow/amend-find';
 import {
   bindAutoStartStaffQuote,
@@ -186,6 +191,7 @@ function ExistingStayInformationCard({ confirmationNumbers }: { confirmationNumb
 const PANE_STAY_CLIENT = paneStayFromTrpc(trpcClient);
 // One HMS party search for the quote header's Find in HMS picker. Null when the panePartyLookup route is missing.
 const PANE_PARTY_FINDER = partyFinderFromTrpc(trpcClient);
+const PANE_PARTY_SUGGESTER = partySuggesterFromTrpc(trpcClient);
 const PANE_HMS_JOB_CLIENT = amendFindClientFromTrpc(trpcClient);
 // The same picker's typeahead: the HMS list and the listed parties, as staff type. Null when the route is missing.
 const PANE_PARTY_INDEX = partyIndexFromTrpc(trpcClient);
@@ -573,6 +579,28 @@ export function NavaPane({
   documentContactRef.current = documentContact;
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
+  const [partySuggestions, setPartySuggestions] = useState<PartySuggestion[]>([]);
+  const senderEmail = activeEmail?.senderEmail ?? '';
+  const bodyText = activeEmail?.bodyText ?? '';
+  useEffect(() => {
+    setPartySuggestions([]);
+    if (!PANE_PARTY_SUGGESTER || !contactMessageKey) return;
+    let cancelled = false;
+    void PANE_PARTY_SUGGESTER({
+      sender: senderEmail,
+      body: bodyText.slice(0, 20_000),
+    }).then(
+      (reply) => {
+        if (!cancelled) setPartySuggestions(reply.suggestions);
+      },
+      () => {
+        if (!cancelled) setPartySuggestions([]);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [contactMessageKey, senderEmail, bodyText]);
   const suppressAutoStaffQuoteForCurrentEmail = () => {
     if (!contactMessageKey) return;
     staffQuoteAutoSuppressed.current.add(contactMessageKey);
@@ -2102,6 +2130,7 @@ export function NavaPane({
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
               findParty={PANE_PARTY_FINDER}
+              partySuggestions={partySuggestions}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
               partyIndex={PANE_PARTY_INDEX}
               partyJobTransport={partyJobTransport}

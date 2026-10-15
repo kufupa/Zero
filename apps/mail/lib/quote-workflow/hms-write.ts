@@ -217,7 +217,9 @@ function needsCheckWords(run: Run): string {
 }
 
 function stopWords(run: Run): string {
-  if (run.state === 'superseded') return 'A newer approval replaced this write.';
+  if (run.state === 'superseded' && run.failureClass == null) {
+    return 'A newer approval replaced this write.';
+  }
   return STOP_REASON[run.failureClass ?? ''] ?? 'Nava stopped the write.';
 }
 

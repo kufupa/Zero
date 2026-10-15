@@ -1,5 +1,7 @@
 import {
   CENTURION_HOTEL_RULES,
+  HOLDING_MOVE_WORKFLOWS,
+  isHoldingMoveWorkflow,
   lunaAnalysisSchema,
   type LunaAnalysis,
 } from './reservationist-decision.js';
@@ -34,7 +36,7 @@ const DEFAULT_DEADLINE_MS = 25_000;
 
 export const K2_MAPPING = [
   'Map hotel-rule workflow names onto this schema: "create" is create_booking;',
-  '"skip" and "spam" are other.',
+  `"skip", "spam", ${HOLDING_MOVE_WORKFLOWS.map((move) => `"${move}"`).join(', ')} are other.`,
   'Rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms',
   '(engine quotes per group, max 8 groups); set rooms_only_group.',
   'Do not set conference_or_group for rooms-only.',
@@ -356,6 +358,16 @@ export function isAmendOrCancelWorkflow(
   return workflow === 'amend' || workflow === 'cancel';
 }
 
+/** Holding / out-of-scope / no-action workflows: hide the quote UI the same way `other` does. */
+export function isNonQuoteLunaWorkflow(workflow: LunaAnalysis['workflow']): boolean {
+  return (
+    workflow === 'other' ||
+    workflow === 'skip' ||
+    isHoldingMoveWorkflow(workflow) ||
+    isAmendOrCancelWorkflow(workflow)
+  );
+}
+
 /** Route payload for an existing-booking change. Null for every other workflow. */
 export type QuoteAmendment = {
   kind: 'amend' | 'cancel';
@@ -433,7 +445,7 @@ export function mapLlmDecision(
   const quoteDefaults = options?.treatAs
     ? options.treatAs === 'quote'
     : analysis.workflow === 'quote';
-  const notQuote = analysis.workflow === 'other' || isAmendOrCancelWorkflow(analysis.workflow);
+  const notQuote = isNonQuoteLunaWorkflow(analysis.workflow);
   const aop = aopQuoteSpineOf(analysis, options?.channel);
   if ((notQuote || venueOrEventManual(analysis)) && !staffQuote) {
     const routed = analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field));

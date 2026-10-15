@@ -11,6 +11,7 @@ import {
   approveHmsWrite,
   assertHmsUnchangedBeforeSave,
   consumeHmsWriteApproval,
+  endHmsWriteRun,
   formDigest,
   hmsStateDigest,
   hmsWriteStateOf,
@@ -483,6 +484,38 @@ describe('HMS write approvals', () => {
           now: () => at(31),
         }),
       ).resolves.toEqual({ status: 'needs_check', reason: 'snapshot_stale' });
+    });
+  });
+
+  it('ends a POLICY_BLOCK write run superseded and still records needs-check', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db);
+      await approve(db, workItemId);
+      const claim = await claimWrite(db);
+      await expect(
+        endHmsWriteRun({
+          db,
+          fence: claim.fence,
+          failureClass: 'POLICY_BLOCK',
+          reason: 'refused_flag_off',
+        }),
+      ).resolves.toBe(true);
+      expect(await runRow(db, claim.runId)).toMatchObject({
+        state: 'superseded',
+        failureClass: 'POLICY_BLOCK',
+        lastError: 'refused_flag_off',
+      });
+      const events = (
+        await db.select().from(workEvent).where(eq(workEvent.workItemId, workItemId))
+      ).filter((row) => row.type === 'status.changed');
+      expect(events.map((row) => row.value)).toEqual([
+        expect.objectContaining({
+          needsCheck: true,
+          runId: claim.runId,
+          failureClass: 'POLICY_BLOCK',
+          reason: 'refused_flag_off',
+        }),
+      ]);
     });
   });
 

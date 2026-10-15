@@ -43,7 +43,6 @@ import { SettingsCard } from '@/components/settings/settings-card';
 import { useMemo, useState, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import { Navigate } from 'react-router';
 
 type Metric<T> = MetricResult<T> | null | undefined;
 
@@ -1450,7 +1449,12 @@ export default function AdminDashboardPage() {
   }
 
   if (!canAccess) {
-    return <Navigate to="/settings/general" replace />;
+    return (
+      <EmptyDashboardState
+        title="No access"
+        message="The executive dashboard is limited to the admin account."
+      />
+    );
   }
 
   if (source === 'demo') {

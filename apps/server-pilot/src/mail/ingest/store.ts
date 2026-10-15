@@ -2,16 +2,25 @@
  * Persist an inbound message to Postgres + S3.
  *
  * Routing:
- *   1. Parse `X-Zero-Mailbox` header from the parsed message.
- *   2. Look up `mailboxTransport` by `ownerHeaderValue`. If found, store the
- *      message scoped to that transport (create/find a thread, insert
- *      `message` + `attachment` rows).
- *   3. If the header is missing, try direct `To` match against active transport
- *      emails; when `INGEST_REQUIRE_OWNER_HEADER=false`, also match hotel
- *      transport email/aliases (Centurion, Da Vinci, Faith, Ayanda) on To/Cc/Bcc/From. On miss quarantine with
- *      reason `missing_owner_header`. If the header is present but no matching
- *      transport (owner header or alias) -> quarantine with reason
- *      `unknown_transport`.
+ *   1. Direct `To` identity match first (email + aliases). Unique is a
+ *      candidate. One identity matching ≥2 transports → `ambiguous_transport`.
+ *      Distinct addresses matching ≥2 transports → `multi_transport`. Multi
+ *      and ambiguous win over `X-Zero-Mailbox`.
+ *   2. A unique stamp is trusted only when `isStampCorroborated` — the
+ *      stamped transport identity (email + send_from_config aliases)
+ *      appears in parsed To/Cc/Bcc, or the actual From header is that
+ *      identity (own outbound echo — same trust as unstamped equated-From
+ *      routing; never Sender). Else ignore the stamp and fall through to
+ *      the unstamped path. Stamp may only select a transport unstamped
+ *      routing would also accept from those fields; it never moves mail
+ *      to a hotel not named in To/Cc/Bcc/From. Sender-forgeable envelope
+ *      headers (Delivered-To, X-Original-To) and Sender are not
+ *      corroboration.
+ *   3. Unstamped / ignored-stamp: unique Direct-To → that transport. When
+ *      `INGEST_REQUIRE_OWNER_HEADER=false` and Direct-To is none, also match
+ *      hotel transport identities on To/Cc/Bcc then From. On miss quarantine
+ *      with `missing_owner_header`. Present but unknown stamp →
+ *      `unknown_transport`; >1 stamp match → `ambiguous_transport`.
  *   4. Degraded containment: when `AI_WRITE_GATE_ENABLED` is not `'true'`,
  *      apply soft label `soft-quarantine` for From domains outside the
  *      transport domain (healthy gated path stays inbox-first).
@@ -52,10 +61,10 @@ import {
   newCanonicalAttachments,
 } from './canonical-identity.js';
 import {
-  DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import { triageModelLabels } from '../../ai/bedrock/factory.js';
 import { enqueueInboundExtraction } from '../../ai/extraction/inbound-run.js';
 import { classifyMailSource } from '../../ai/mail-source.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
@@ -106,15 +115,25 @@ function mergeDeliveredAtSourceProvenance(deliveredAt: Date) {
   end`;
 }
 
-type RoutedTransport = {
+export type TransportMatchCandidate = {
   id: string;
   email: string;
   sendFromConfig: unknown;
 };
 
+type RoutedTransport = TransportMatchCandidate;
+
+export type TransportMatchResult<T extends TransportMatchCandidate = TransportMatchCandidate> =
+  | { kind: 'unique'; transport: T }
+  | { kind: 'none' }
+  | { kind: 'ambiguous'; ids: string[] }
+  | { kind: 'multi'; ids: string[] };
+
 export type QuarantineReason =
   | 'missing_owner_header'
   | 'unknown_transport'
+  | 'ambiguous_transport'
+  | 'multi_transport'
   | 'message_too_large'
   | 'parse_failure'
   | 'malformed_delivery_outcome';
@@ -254,6 +273,8 @@ export async function persistInboundMessage(
     });
   }
 
+  // Source receipt (ingestMailboxId+pop3Uidl) before routing dispatch: the
+  // same UIDL is duplicate even if current matching would quarantine as multi.
   const existingMessage = await findExistingMessageByIngestIdentity(db, meta);
   if (existingMessage) {
     const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
@@ -295,6 +316,7 @@ export async function persistInboundMessage(
 
   // Routing ------------------------------------------------------------
   let transport: RoutedTransport | null = null;
+  let stampRoute: 'stamp_corroborated' | 'stamp_ignored_uncorroborated' | undefined;
 
   if (opts.transportOverride !== undefined) {
     // Promotion has already applied its exact sender/recipient gate. Still
@@ -313,37 +335,87 @@ export async function persistInboundMessage(
       });
     }
     // Explicit promotion route wins over owner-header/direct-To routing.
-  } else if (!parsed.ownerHeaderValue) {
-    transport = await findDirectToTransport(db, parsed.toAddresses);
-    if (!transport && !ingestRequireOwnerHeader()) {
-      transport = await findEquatedHotelTransport(db, parsed);
-    }
-    if (!transport) {
-      return quarantineWithAttachmentCleanup({
-        db,
-        storage,
-        parsed,
-        meta,
-        rawMimeS3Key,
-        reason: 'missing_owner_header',
-        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
-      });
-    }
-    // Inbox-first: direct-To without X-Zero-Mailbox still stores + enqueues
-    // triage; AI (when write gate on) may set spam later.
   } else {
-    transport = await findTransportByStamp(db, parsed.ownerHeaderValue);
-    if (!transport) {
+    const direct = await findDirectToTransport(db, parsed.toAddresses);
+    if (direct.kind === 'ambiguous' || direct.kind === 'multi') {
       return quarantineWithAttachmentCleanup({
         db,
         storage,
         parsed,
         meta,
         rawMimeS3Key,
-        reason: 'unknown_transport',
+        reason: quarantineReasonForMatch(direct),
         activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
       });
     }
+
+    if (parsed.ownerHeaderValue) {
+      const stamped = await findTransportByStamp(db, parsed.ownerHeaderValue);
+      if (stamped.kind === 'ambiguous' || stamped.kind === 'multi') {
+        return quarantineWithAttachmentCleanup({
+          db,
+          storage,
+          parsed,
+          meta,
+          rawMimeS3Key,
+          reason: quarantineReasonForMatch(stamped),
+          activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+        });
+      }
+      if (stamped.kind === 'none') {
+        return quarantineWithAttachmentCleanup({
+          db,
+          storage,
+          parsed,
+          meta,
+          rawMimeS3Key,
+          reason: 'unknown_transport',
+          activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+        });
+      }
+      if (isStampCorroborated(stamped.transport, parsed)) {
+        transport = stamped.transport;
+        stampRoute = 'stamp_corroborated';
+      } else {
+        stampRoute = 'stamp_ignored_uncorroborated';
+      }
+    }
+
+    if (!transport) {
+      if (direct.kind === 'unique') {
+        transport = direct.transport;
+      } else if (!ingestRequireOwnerHeader()) {
+        const equated = await findEquatedHotelTransport(db, parsed);
+        if (equated.kind === 'unique') {
+          transport = equated.transport;
+        } else if (equated.kind === 'ambiguous' || equated.kind === 'multi') {
+          return quarantineWithAttachmentCleanup({
+            db,
+            storage,
+            parsed,
+            meta,
+            rawMimeS3Key,
+            reason: quarantineReasonForMatch(equated),
+            routingDetail: stampRoute ? { stampRoute } : undefined,
+            activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+          });
+        }
+      }
+      if (!transport) {
+        return quarantineWithAttachmentCleanup({
+          db,
+          storage,
+          parsed,
+          meta,
+          rawMimeS3Key,
+          reason: 'missing_owner_header',
+          routingDetail: stampRoute ? { stampRoute } : undefined,
+          activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+        });
+      }
+    }
+    // Inbox-first: direct-To without a trusted stamp still stores + enqueues
+    // triage; AI (when write gate on) may set spam later.
   }
 
   const messageId = meta.messageId;
@@ -700,6 +772,7 @@ export async function persistInboundMessage(
     const sourceProvenance = {
       ...(ambiguousSource ? { source: 'pop3', attention: 'AMBIGUOUS_IDENTITY' } : {}),
       ...(parsed.deliveredAt ? { deliveredAt: parsed.deliveredAt.toISOString() } : {}),
+      ...(stampRoute ? { stampRoute } : {}),
     };
 
     await tx.insert(message).values({
@@ -813,9 +886,12 @@ export async function persistInboundMessage(
             idempotencyKey: isHotelSent
               ? `external-sent-baseline:${messageId}`
               : `inbound-triage:${messageId}`,
-            modelId: DEFAULT_AI_MODEL_ID,
+            modelId: triageModelLabels().modelId,
             promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
-            ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
+            metrics: {
+              ...triageModelLabels(),
+              ...(mailSourceDecision ? { mailSourceDecision } : {}),
+            },
           },
           tx as unknown as DB,
         );
@@ -1779,9 +1855,8 @@ async function findExistingQuarantine(
 async function findDirectToTransport(
   db: DB,
   toAddresses: string[],
-): Promise<RoutedTransport | null> {
-  if (toAddresses.length === 0) return null;
-  const directTo = new Set(toAddresses.map(normalizeEmailAddress));
+): Promise<TransportMatchResult<RoutedTransport>> {
+  if (toAddresses.length === 0) return { kind: 'none' };
   const transports = await db
     .select({
       id: mailboxTransport.id,
@@ -1791,9 +1866,7 @@ async function findDirectToTransport(
     .from(mailboxTransport)
     .where(eq(mailboxTransport.isActive, true));
 
-  return (
-    transports.find((transport) => directTo.has(normalizeEmailAddress(transport.email))) ?? null
-  );
+  return resolveTransportMatch(transports, toAddresses);
 }
 
 async function findActiveTransportById(
@@ -1837,11 +1910,78 @@ function transportIdentitySet(email: string, sendFromConfig: unknown): Set<strin
   return identities;
 }
 
+/**
+ * True when the stamped transport identity appears in parsed To/Cc/Bcc, or
+ * the actual `From` header (`fromHeaderAddress`, never `Sender`) is that
+ * identity (own outbound echo — same trust as unstamped equated-From routing).
+ *
+ * Invariant: the stamp may only select a transport that unstamped routing
+ * would also accept from the same parsed recipients/From. It can never
+ * move mail to a hotel not named in To/Cc/Bcc/From. Sender-forgeable
+ * envelope headers (Delivered-To, X-Original-To) and the `Sender` header
+ * are not corroboration.
+ */
+export function isStampCorroborated(
+  transport: TransportMatchCandidate,
+  parsed: ParsedInboundMessage,
+): boolean {
+  const identities = transportIdentitySet(transport.email, transport.sendFromConfig);
+  if (identities.size === 0) return false;
+  const candidates = [
+    parsed.fromHeaderAddress ?? null,
+    ...parsed.toAddresses,
+    ...parsed.ccAddresses,
+    ...parsed.bccAddresses,
+  ];
+  for (const address of candidates) {
+    if (!address) continue;
+    if (identities.has(normalizeEmailAddress(address))) return true;
+  }
+  return false;
+}
+
+export function resolveTransportMatch<T extends TransportMatchCandidate>(
+  candidates: T[],
+  addresses: string[],
+): TransportMatchResult<T> {
+  const normalizedAddresses = [...new Set(addresses.map(normalizeEmailAddress).filter(Boolean))];
+  if (normalizedAddresses.length === 0 || candidates.length === 0) return { kind: 'none' };
+
+  const byId = new Map<string, T>();
+  const ambiguousIds = new Set<string>();
+  for (const address of normalizedAddresses) {
+    const matchingIds = new Set<string>();
+    for (const candidate of candidates) {
+      if (transportIdentitySet(candidate.email, candidate.sendFromConfig).has(address)) {
+        matchingIds.add(candidate.id);
+        byId.set(candidate.id, candidate);
+      }
+    }
+    if (matchingIds.size >= 2) {
+      for (const id of matchingIds) ambiguousIds.add(id);
+    }
+  }
+
+  if (ambiguousIds.size > 0) {
+    return { kind: 'ambiguous', ids: [...ambiguousIds].sort() };
+  }
+  if (byId.size >= 2) {
+    return { kind: 'multi', ids: [...byId.keys()].sort() };
+  }
+  const unique = [...byId.values()][0];
+  return unique ? { kind: 'unique', transport: unique } : { kind: 'none' };
+}
+
+function quarantineReasonForMatch(match: { kind: 'ambiguous' | 'multi' }): QuarantineReason {
+  return match.kind === 'ambiguous' ? 'ambiguous_transport' : 'multi_transport';
+}
+
 async function findTransportByStamp(
   db: DB,
   ownerHeaderValue: string,
-): Promise<RoutedTransport | null> {
+): Promise<TransportMatchResult<RoutedTransport>> {
   const normalizedHeader = normalizeEmailAddress(ownerHeaderValue);
+  if (!normalizedHeader) return { kind: 'none' };
   const transports = await db
     .select({
       id: mailboxTransport.id,
@@ -1852,22 +1992,31 @@ async function findTransportByStamp(
     .from(mailboxTransport)
     .where(eq(mailboxTransport.isActive, true));
 
-  const byOwnerHeader = transports.find(
-    (transport) => normalizeEmailAddress(transport.ownerHeaderValue) === normalizedHeader,
-  );
-  if (byOwnerHeader) return byOwnerHeader;
+  const matched = new Map<string, RoutedTransport>();
+  for (const transport of transports) {
+    if (normalizeEmailAddress(transport.ownerHeaderValue) === normalizedHeader) {
+      matched.set(transport.id, transport);
+    }
+  }
+  const identity = resolveTransportMatch(transports, [normalizedHeader]);
+  if (identity.kind === 'unique') {
+    matched.set(identity.transport.id, identity.transport);
+  } else if (identity.kind === 'ambiguous' || identity.kind === 'multi') {
+    for (const id of identity.ids) {
+      const row = transports.find((transport) => transport.id === id);
+      if (row) matched.set(id, row);
+    }
+  }
 
-  return (
-    transports.find((transport) =>
-      transportIdentitySet(transport.email, transport.sendFromConfig).has(normalizedHeader),
-    ) ?? null
-  );
+  if (matched.size > 1) return { kind: 'ambiguous', ids: [...matched.keys()].sort() };
+  const unique = [...matched.values()][0];
+  return unique ? { kind: 'unique', transport: unique } : { kind: 'none' };
 }
 
 async function findEquatedHotelTransport(
   db: DB,
   parsed: ParsedInboundMessage,
-): Promise<RoutedTransport | null> {
+): Promise<TransportMatchResult<RoutedTransport>> {
   const rows = await db
     .select({
       id: mailboxTransport.id,
@@ -1882,21 +2031,13 @@ async function findEquatedHotelTransport(
       ),
     );
 
-  const matchAddresses = (addresses: string[]): RoutedTransport | null =>
-    rows.find((transport) => {
-      const identities = transportIdentitySet(transport.email, transport.sendFromConfig);
-      return addresses.some((address) => identities.has(address));
-    }) ?? null;
-
-  const recipientAddresses = [
+  const recipients = resolveTransportMatch(rows, [
     ...parsed.toAddresses,
     ...parsed.ccAddresses,
     ...parsed.bccAddresses,
-  ]
-    .map(normalizeEmailAddress)
-    .filter(Boolean);
-  const from = parsed.fromAddress ? normalizeEmailAddress(parsed.fromAddress) : '';
-  return matchAddresses(recipientAddresses) ?? matchAddresses(from ? [from] : []);
+  ]);
+  if (recipients.kind !== 'none') return recipients;
+  return resolveTransportMatch(rows, parsed.fromAddress ? [parsed.fromAddress] : []);
 }
 
 async function ensureSoftQuarantineLabel(db: DB, transportId: string): Promise<string> {
@@ -1939,8 +2080,10 @@ async function quarantineUnrouted(args: {
   meta: IngestMeta;
   rawMimeS3Key: string;
   reason: QuarantineReason;
+  routingDetail?: Record<string, unknown>;
 }): Promise<PersistQuarantinedResult> {
-  const { db, parsed, meta, rawMimeS3Key, reason } = args;
+  const { db, parsed, meta, rawMimeS3Key, reason, routingDetail } = args;
+  const parsedHeaders = { ...headerSummary(parsed), ...routingDetail };
   const existing = await findExistingQuarantine(db, meta);
   if (existing) {
     if (existing.reason !== reason) {
@@ -1949,7 +2092,7 @@ async function quarantineUnrouted(args: {
         .set({
           reason,
           ownerHeaderValue: parsed.ownerHeaderValue,
-          parsedHeaders: headerSummary(parsed),
+          parsedHeaders,
         })
         .where(eq(mailIngestQuarantine.id, existing.id));
     }
@@ -1970,7 +2113,7 @@ async function quarantineUnrouted(args: {
     rawMimeS3Key,
     reason,
     ownerHeaderValue: parsed.ownerHeaderValue,
-    parsedHeaders: headerSummary(parsed),
+    parsedHeaders,
   });
   return {
     kind: 'quarantined',
