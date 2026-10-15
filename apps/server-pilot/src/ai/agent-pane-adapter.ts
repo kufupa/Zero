@@ -1,5 +1,6 @@
 /** Pane producer: Mastra reservationist decision → LunaAnalysis. Caller supplies runners; no live HMS here. */
 import { RequestContext } from '@mastra/core/request-context';
+import { BILLING_SOP } from './aop/billing-sop.js';
 import { agentThreadPrompt, type AgentCaseMessage } from './agent-decision-to-ops.js';
 import { maskCardNumbers } from './card-mask.js';
 import { lunaProviderOptions } from './bedrock/luna.js';
@@ -18,6 +19,8 @@ import type { LunaAnalysis } from './reservationist-decision.js';
 
 const DEFAULT_DEADLINE_MS = 25_000;
 const MAX_STEPS = 10;
+/** Billing only: on a fresh 99 it scored 38 vs 31 with no SOP; the other SOPs together scored lower. */
+const PANE_AOP_SOPS = { send_document: BILLING_SOP } as const;
 const LUNA_MODEL_ID = 'gpt-6-luna';
 
 const WORKFLOW_TO_LUNA: Record<ReservationistDecision['workflow'], LunaAnalysis['workflow']> = {
@@ -194,6 +197,7 @@ export async function analyseSelectionWithAgent(input: {
       model: input.model,
       runners: input.runners,
       tools: input.runners ? paneAnalysisTools(input.runners) : {},
+      aopSops: PANE_AOP_SOPS,
     });
     const requestContext = new RequestContext<ReservationistContext>([
       ['propertyCode', 'HRCEN'],
