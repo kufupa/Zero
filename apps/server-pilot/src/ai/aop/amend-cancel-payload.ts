@@ -90,6 +90,8 @@ function realIsoDate(value: string): boolean {
 }
 
 function occupancy(value: unknown, field: 'adults' | 'children'): boolean {
+  // Number('') is 0, so a blank or non-decimal string must refuse rather than request zero guests.
+  if (typeof value === 'string' && !/^\d+$/.test(value.trim())) return false;
   const n = typeof value === 'number' ? value : Number(value);
   if (!Number.isInteger(n) || n < 0 || n > 16) return false;
   return field !== 'adults' || n >= 1;

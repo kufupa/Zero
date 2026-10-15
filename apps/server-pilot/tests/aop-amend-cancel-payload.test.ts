@@ -152,7 +152,7 @@ describe('buildAmendCancelPayload', () => {
 
     const trailing = buildAmendCancelPayload({
       kind: 'amend',
-      confirmationNumber: `${CONF}0`,
+      confirmationNumber: `${CONF}x`,
       lastName: LAST,
       changes: [{ field: 'arrival', to: '2027-09-14' }],
     });
@@ -176,6 +176,17 @@ describe('buildAmendCancelPayload', () => {
       lastName: LAST,
     });
     expect(wide.args).toEqual([]);
+  });
+
+  it('refuses a blank occupancy count instead of requesting zero', () => {
+    const out = buildAmendCancelPayload({
+      kind: 'amend',
+      confirmationNumber: CONF,
+      lastName: LAST,
+      changes: [{ field: 'children', to: '' }],
+    });
+    expect(out.args).toEqual([]);
+    expect(out.refusals.length).toBeGreaterThan(0);
   });
 
   it('refuses unsupported change fields and leaves args empty', () => {
