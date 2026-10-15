@@ -257,16 +257,19 @@ export async function applyProvision(
       await seed.seedAiManagedCategories(tx, spec.id);
     }
     for (const grant of plan.grantsToCreate) {
-      await tx
-        .insert(mailboxAccess)
-        .values({
-          id: grantRowId(grant),
-          userId: grant.userId,
-          transportId: grant.transportId,
-          role: grant.role,
-          isDefault: grant.isDefault,
-        })
-        .onConflictDoNothing({ target: mailboxAccess.id });
+      insertOrStale(
+        await tx
+          .insert(mailboxAccess)
+          .values({
+            id: grantRowId(grant),
+            userId: grant.userId,
+            transportId: grant.transportId,
+            role: grant.role,
+            isDefault: grant.isDefault,
+          })
+          .onConflictDoNothing({ target: mailboxAccess.id })
+          .returning({ id: mailboxAccess.id }),
+      );
     }
   });
 }

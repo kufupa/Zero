@@ -2,22 +2,23 @@ import {
   applyProvision,
   applyProvisionThenWriteCredentials,
   planProvision,
-  PROVISION_SPEC,
   type ProvisionSpec,
 } from '../src/db/provision.js';
 import {
-  AYANDA_TRANSPORT_ID,
-  DAVINCI_TRANSPORT_ID,
-  FAITH_TRANSPORT_ID,
-  NAVA_USER_ID,
-  TRANSPORT_ID,
-} from '../src/db/seed.js';
+  applyAfterReservingCredentialsFile,
+  parseFlags,
+  ProvisionUsageError,
+} from '../scripts/provision-prod.js';
+import { NAVA_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { mailCategory, mailboxAccess, mailboxTransport, mailLabel } from '../src/db/schema/mail.js';
 import { account, user as userTable } from '../src/db/schema/auth.js';
 import { TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 import type { DB } from '../src/db/client.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 type UserRow = { id: string; name: string; email: string; emailVerified?: boolean };
 type AccountRow = {
@@ -211,41 +212,52 @@ const ONE_HOTEL: ProvisionSpec = {
   grants: TEST_SPEC.grants.filter((g) => g.transportId === 'transport-hotel-a'),
 };
 
-describe('PROVISION_SPEC', () => {
+describe('synthetic provision spec', () => {
   it('covers three hotel logins and grants each only its own transport; navaai non-default on all three', () => {
-    expect(PROVISION_SPEC.users.map((u) => u.id).sort()).toEqual([
-      'user-ayanda',
-      'user-davinci',
-      'user-faith',
+    expect(TEST_SPEC.users.map((u) => u.id).sort()).toEqual([
+      'user-hotel-a',
+      'user-hotel-b',
+      'user-hotel-c',
     ]);
-    expect(PROVISION_SPEC.users.map((u) => u.name)).toEqual([
-      'Da Vinci Reservations',
-      'Faith',
-      'Ayanda',
+    expect(TEST_SPEC.users.map((u) => u.name)).toEqual(['Hotel A', 'Hotel B', 'Hotel C']);
+    expect(TEST_SPEC.transports.map((t) => t.id).sort()).toEqual([
+      'transport-hotel-a',
+      'transport-hotel-b',
+      'transport-hotel-c',
     ]);
-    expect(PROVISION_SPEC.transports.map((t) => t.id).sort()).toEqual([
-      AYANDA_TRANSPORT_ID,
-      DAVINCI_TRANSPORT_ID,
-      FAITH_TRANSPORT_ID,
+    const byUser = (id: string) => TEST_SPEC.grants.filter((g) => g.userId === id);
+    expect(byUser('user-hotel-a')).toEqual([
+      {
+        userId: 'user-hotel-a',
+        transportId: 'transport-hotel-a',
+        role: 'owner',
+        isDefault: true,
+      },
     ]);
-    const byUser = (id: string) => PROVISION_SPEC.grants.filter((g) => g.userId === id);
-    expect(byUser('user-davinci')).toEqual([
-      { userId: 'user-davinci', transportId: DAVINCI_TRANSPORT_ID, role: 'owner', isDefault: true },
+    expect(byUser('user-hotel-b')).toEqual([
+      {
+        userId: 'user-hotel-b',
+        transportId: 'transport-hotel-b',
+        role: 'owner',
+        isDefault: true,
+      },
     ]);
-    expect(byUser('user-faith')).toEqual([
-      { userId: 'user-faith', transportId: FAITH_TRANSPORT_ID, role: 'owner', isDefault: true },
-    ]);
-    expect(byUser('user-ayanda')).toEqual([
-      { userId: 'user-ayanda', transportId: AYANDA_TRANSPORT_ID, role: 'owner', isDefault: true },
+    expect(byUser('user-hotel-c')).toEqual([
+      {
+        userId: 'user-hotel-c',
+        transportId: 'transport-hotel-c',
+        role: 'owner',
+        isDefault: true,
+      },
     ]);
     const nava = byUser(NAVA_USER_ID);
     expect(nava.every((g) => g.role === 'owner' && g.isDefault === false)).toBe(true);
     expect(nava.map((g) => g.transportId).sort()).toEqual([
-      AYANDA_TRANSPORT_ID,
-      DAVINCI_TRANSPORT_ID,
-      FAITH_TRANSPORT_ID,
+      'transport-hotel-a',
+      'transport-hotel-b',
+      'transport-hotel-c',
     ]);
-    expect(PROVISION_SPEC.grants.every((g) => g.transportId !== TRANSPORT_ID)).toBe(true);
+    expect(TEST_SPEC.grants.every((g) => g.transportId !== TRANSPORT_ID)).toBe(true);
   });
 });
 
@@ -506,6 +518,82 @@ describe('applyProvision', () => {
     ).rejects.toThrow('stale plan, re-run dry-run');
     expect(wrote).toBe(false);
     expect(state.accounts.find((a) => a.userId === existing.id)?.password).toBe('KEEP-HASH');
+  });
+
+  it('throws on a stale grant insert', async () => {
+    const { db, state } = createFakeDb({ users: [navaUser] });
+    const plan = await planProvision(db, ONE_HOTEL);
+    const planned = plan.grantsToCreate[0]!;
+    state.grants.push({
+      id: `access-${planned.userId}-${planned.transportId}`,
+      userId: planned.userId,
+      transportId: planned.transportId,
+      role: 'owner',
+      isDefault: !planned.isDefault,
+    });
+    await expect(
+      applyProvision(
+        db,
+        plan,
+        Object.fromEntries(plan.usersToCreate.map((u) => [u.email, `pw-${u.id}`])),
+      ),
+    ).rejects.toThrow('stale plan, re-run dry-run');
+  });
+});
+
+describe('parseFlags', () => {
+  it('rejects unknown flags with usage and exit 2', () => {
+    expect(() => parseFlags(['--aply'])).toThrow(ProvisionUsageError);
+    try {
+      parseFlags(['--aply']);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProvisionUsageError);
+      expect((err as ProvisionUsageError).exitCode).toBe(2);
+      expect((err as Error).message).toMatch(/usage:/i);
+    }
+  });
+
+  it('accepts --apply and --credentials-out', () => {
+    expect(parseFlags(['--apply', '--credentials-out', '/tmp/out.json'])).toEqual({
+      apply: true,
+      credentialsOut: '/tmp/out.json',
+    });
+  });
+});
+
+describe('applyAfterReservingCredentialsFile', () => {
+  it('fails before apply when credentials parent dir is missing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'provision-creds-'));
+    try {
+      const apply = vi.fn(async () => ({ 'hotel-a@example.test': { password: 'secret' } }));
+      await expect(
+        applyAfterReservingCredentialsFile({
+          path: join(root, 'missing-parent', 'creds.json'),
+          apply,
+        }),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(apply).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('unlinks the reserved empty file when apply fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'provision-creds-'));
+    const path = join(root, 'creds.json');
+    try {
+      await expect(
+        applyAfterReservingCredentialsFile({
+          path,
+          apply: async () => {
+            throw new Error('db failed');
+          },
+        }),
+      ).rejects.toThrow('db failed');
+      expect(existsSync(path)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

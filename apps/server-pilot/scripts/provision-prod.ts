@@ -1,25 +1,45 @@
 /** Additive provision runner. Dry-run default. --apply inserts only; never prunes. Never Secrets Manager. */
 import {
-  applyProvisionThenWriteCredentials,
+  applyProvision,
   planProvision,
   PROVISION_SPEC,
   STALE_PLAN_MESSAGE,
   type ProvisionPlan,
 } from '../src/db/provision.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
-import { closeSync, existsSync, openSync, writeSync } from 'node:fs';
+import { closeSync, fsyncSync, openSync, unlinkSync, writeSync } from 'node:fs';
 import * as schema from '../src/db/schema/index.js';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomBytes } from 'node:crypto';
 import { parseEnv } from '../src/env.js';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import postgres from 'postgres';
 
-function parseFlags(argv: string[]): { apply: boolean; credentialsOut: string | null } {
+export const USAGE = 'usage: provision-prod.ts [--apply --credentials-out <path>]';
+
+export class ProvisionUsageError extends Error {
+  readonly exitCode = 2;
+  constructor() {
+    super(USAGE);
+    this.name = 'ProvisionUsageError';
+  }
+}
+
+export function parseFlags(argv: string[]): { apply: boolean; credentialsOut: string | null } {
   let apply = false;
   let credentialsOut: string | null = null;
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--apply') apply = true;
-    if (argv[i] === '--credentials-out') credentialsOut = argv[++i] ?? null;
+    const arg = argv[i];
+    if (arg === '--apply') {
+      apply = true;
+      continue;
+    }
+    if (arg === '--credentials-out') {
+      credentialsOut = argv[++i] ?? null;
+      continue;
+    }
+    throw new ProvisionUsageError();
   }
   return { apply, credentialsOut };
 }
@@ -51,21 +71,32 @@ function printPlan(plan: ProvisionPlan): void {
   for (const row of plan.transportDrift) console.log(`  ${row.id} ${row.field}`);
 }
 
-function writeCredentialsFile(path: string, payload: Record<string, { password: string }>): void {
-  let fd: number;
+export async function applyAfterReservingCredentialsFile(opts: {
+  path: string;
+  apply: () => Promise<Record<string, { password: string }>>;
+}): Promise<void> {
+  const fd = openSync(opts.path, 'wx', 0o600);
+  let committed = false;
   try {
-    fd = openSync(path, 'wx', 0o600);
-  } catch (err) {
-    const code =
-      err && typeof err === 'object' && 'code' in err ? (err as { code: string }).code : '';
-    if (code === 'EEXIST')
-      throw new Error(`refusing to overwrite existing credentials file: ${path}`);
-    throw err;
-  }
-  try {
+    const payload = await opts.apply();
     writeSync(fd, `${JSON.stringify(payload, null, 2)}\n`);
-  } finally {
+    fsyncSync(fd);
+    committed = true;
     closeSync(fd);
+  } catch (err) {
+    if (!committed) {
+      try {
+        closeSync(fd);
+      } catch {
+        // already closed
+      }
+      try {
+        unlinkSync(opts.path);
+      } catch {
+        // best-effort cleanup of the empty reservation
+      }
+    }
+    throw err;
   }
 }
 
@@ -90,14 +121,22 @@ async function main(): Promise<void> {
     }
     const credentialsOut = flags.credentialsOut;
     if (!credentialsOut) throw new Error('--apply requires --credentials-out <path>');
-    if (existsSync(credentialsOut))
-      throw new Error(`refusing to overwrite existing credentials file: ${credentialsOut}`);
-    const credentials: Record<string, string> = {};
-    for (const user of plan.usersToCreate) {
-      credentials[user.email] = randomBytes(18).toString('base64url');
-    }
-    await applyProvisionThenWriteCredentials(db, plan, credentials, (payload) => {
-      writeCredentialsFile(credentialsOut, payload);
+    await applyAfterReservingCredentialsFile({
+      path: credentialsOut,
+      apply: async () => {
+        const credentials: Record<string, string> = {};
+        for (const user of plan.usersToCreate) {
+          credentials[user.email] = randomBytes(18).toString('base64url');
+        }
+        await applyProvision(db, plan, credentials);
+        const payload: Record<string, { password: string }> = {};
+        for (const user of plan.usersToCreate) {
+          const password = credentials[user.email];
+          if (!password) throw new Error(`provision missing password for ${user.id}`);
+          payload[user.email] = { password };
+        }
+        return payload;
+      },
     });
     console.log('provision apply complete (insert-only; never prunes)');
   } finally {
@@ -105,9 +144,17 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
+function fail(err: unknown): never {
+  if (err instanceof ProvisionUsageError) {
+    console.error(USAGE);
+    process.exit(2);
+  }
   const message = err instanceof Error ? err.message : String(err);
   if (message === STALE_PLAN_MESSAGE) console.error(STALE_PLAN_MESSAGE);
   else console.error('provision failed:', err);
   process.exit(1);
-});
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(fail);
+}
