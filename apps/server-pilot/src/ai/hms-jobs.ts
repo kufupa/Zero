@@ -30,10 +30,7 @@ import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
-import {
-  guardCenturionHmsMailboxOrigin,
-  isDaVinciMailboxOrigin,
-} from '../hms/mailbox-hms-origin-bind.js';
+import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -1586,6 +1583,12 @@ export async function prefetchHmsConfirmations(
     run.triggerMessageId,
   );
   if (triggerItem?.status === 'done' || triggerItem?.status === 'dismissed') return 0;
+  const origin = await guardCenturionHmsMailboxOrigin({
+    transportId: run.transportId,
+    threadId: run.threadId,
+    messageId: run.triggerMessageId,
+  });
+  if (!origin.ok) return 0;
   const workItemId = triggerItem?.id ?? null;
   let created = 0;
   const numbers = prefetchConfirmations(source.payload, source.subject, source.textBody);
@@ -1680,6 +1683,12 @@ export async function prefetchAvailabilityForExtraction(
     .orderBy(desc(mailExtraction.createdAt))
     .limit(1);
   if (!extraction || extraction.spamAt) return 0;
+  const origin = await guardCenturionHmsMailboxOrigin({
+    transportId: run.transportId,
+    threadId: extraction.threadId,
+    messageId: run.triggerMessageId,
+  });
+  if (!origin.ok) return 0;
   const perHour = availabilityProbesPerHour(env);
   const workItemId = await latestWorkItemId(db, run.transportId, extraction.threadId);
   const dayKey = new Date().toISOString().slice(0, 10);
@@ -1772,16 +1781,12 @@ export async function prefetchPartyForExtraction(
   const from = normalizeEmailAddress(source.fromAddress);
   const mailbox = normalizeEmailAddress(source.mailboxEmail);
   if (from === mailbox) return 0;
-  if (
-    isDaVinciMailboxOrigin({
-      fromAddress: source.fromAddress,
-      ownerHeaderValue: source.ownerHeaderValue,
-      toAddresses: source.toAddresses,
-      ccAddresses: source.ccAddresses,
-    })
-  ) {
-    return 0;
-  }
+  const origin = await guardCenturionHmsMailboxOrigin({
+    transportId: run.transportId,
+    threadId: source.threadId,
+    messageId: run.triggerMessageId,
+  });
+  if (!origin.ok) return 0;
   if (isStaffSender(source.fromAddress, source.mailboxEmail)) {
     const sentFrom = await knownSenders(db, run.transportId, [source.fromAddress]);
     if (sentFrom.has(from)) return 0;
@@ -2071,6 +2076,12 @@ export async function prefetchQuoteReadyForExtraction(
     now,
   );
   if (!evaluation.plan?.inputs.length || !evaluation.transportId || !evaluation.threadId) return 0;
+  const origin = await guardCenturionHmsMailboxOrigin({
+    transportId: evaluation.transportId,
+    threadId: evaluation.threadId,
+    messageId: evaluation.messageId,
+  });
+  if (!origin.ok) return 0;
   const workItemId = await latestWorkItemId(db, evaluation.transportId, evaluation.threadId);
   const perHour = quotePreparationPerHour(env);
   let created = 0;
@@ -2234,7 +2245,12 @@ async function executePartyMatchV2(input: {
     toAddresses: source.toAddresses,
     ccAddresses: source.ccAddresses,
   };
-  if (isDaVinciMailboxOrigin(mailboxOrigin)) {
+  const origin = await guardCenturionHmsMailboxOrigin({
+    transportId: input.run.transportId,
+    threadId: input.run.threadId,
+    messageId: input.run.triggerMessageId,
+  });
+  if (!origin.ok) {
     return {
       ...partyMatchV2NoMatch('Da Vinci mailbox origin is not bound to Centurion HMS'),
       outcome: 'refused_origin_mismatch',

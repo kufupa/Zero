@@ -78,6 +78,7 @@ import { QUOTE_MEALS } from '../../quote-proposal/description.js';
 import { emailsMatch } from '../../quote-proposal/identity.js';
 import { and, eq, desc, sql } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
+import { assertCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
 import { TRPCError } from '@trpc/server';
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
@@ -796,8 +797,21 @@ export const workstationRouter = router({
         next,
       ),
     )
-    .mutation(({ input, ctx }) =>
-      runStaffQuote(
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const [mail] = await db
+        .select({ threadId: message.threadId, direction: message.direction })
+        .from(message)
+        .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+        .limit(1);
+      if (!mail || mail.direction !== 'inbound')
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
+      await assertCenturionHmsMailboxOrigin({
+        transportId: ctx.activeTransportId,
+        threadId: mail.threadId,
+        messageId: input.messageId,
+      });
+      return runStaffQuote(
         input,
         {
           transportId: ctx.activeTransportId,
@@ -807,9 +821,9 @@ export const workstationRouter = router({
             email: ctx.sessionUser.email,
           },
         },
-        getDb(),
-      ),
-    ),
+        db,
+      );
+    }),
   queueStaffQuote: mailboxProcedure
     .input(staffQuoteInput.extend({ autoStart: z.literal(true).optional() }))
     .mutation(async ({ input, ctx }) => {
@@ -823,6 +837,11 @@ export const workstationRouter = router({
         .limit(1);
       if (!mail || mail.direction !== 'inbound')
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
+      await assertCenturionHmsMailboxOrigin({
+        transportId: ctx.activeTransportId,
+        threadId: mail.threadId,
+        messageId: mail.id,
+      });
       const staffQuoteUser = {
         id: ctx.sessionUser.id,
         name: ctx.sessionUser.name ?? null,
