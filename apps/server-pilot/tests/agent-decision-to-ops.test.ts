@@ -9,8 +9,11 @@ import { staffMoveToOperations } from '../src/ai/gold-pair-join.js';
 import type { ReservationistDecision } from '../src/ai/reservationist-decision.js';
 import { opsMatch, type GoldOperation } from '../src/ai/same-move-ops.js';
 
-function decision(workflow: ReservationistDecision['workflow']): ReservationistDecision {
-  return { workflow, stayAsk: null, missing: [], replyDraft: '', rationale: '' };
+function decision(
+  workflow: ReservationistDecision['workflow'],
+  extra: Partial<ReservationistDecision> = {},
+): ReservationistDecision {
+  return { workflow, stayAsk: null, missing: [], replyDraft: '', rationale: '', ...extra };
 }
 
 function requiredOp(operation: string, candidateTool: string): GoldOperation {
@@ -62,6 +65,44 @@ describe('decisionToOperations', () => {
     const predicted = decisionToOperations(decision('quote'), [{ toolName: 'party_lookup' }]);
     expect(predicted).toEqual([requiredOp('quote', 'hms_quote_stay')]);
     expect(opsMatch(predicted, staffMoveToOperations('priced_quote'))).toBe(true);
+  });
+
+  it('maps catalog moves onto gold ops', () => {
+    expect(decisionToOperations(decision('forward_to_partner'), [])).toEqual([
+      {
+        operation: 'partner',
+        needLevel: 'required',
+        requiredFields: [],
+        candidateTool: null,
+        unknownReason: null,
+      },
+    ]);
+    expect(decisionToOperations(decision('send_document'), [])).toEqual([
+      requiredOp('document', 'hms_generate_invoice'),
+    ]);
+    expect(decisionToOperations(decision('payment_ack'), [])).toEqual([
+      requiredOp('post_payment', 'hms_post_payment'),
+    ]);
+    expect(decisionToOperations(decision('clarify'), [])).toEqual([
+      notNeededOp('unknown', 'clarify'),
+    ]);
+    expect(decisionToOperations(decision('acknowledge'), [])).toEqual([notNeededOp('none')]);
+  });
+
+  it('maps hms_todo onto its target op and never invents a completed write', () => {
+    expect(
+      decisionToOperations(
+        decision('hms_todo', {
+          todoTarget: 'post_payment',
+          todoReason: 'POP posting is staff-only.',
+          todoNextStep: 'Staff posts payment on the folio.',
+        }),
+        [],
+      ),
+    ).toEqual([requiredOp('post_payment', 'hms_post_payment')]);
+    expect(decisionToOperations(decision('hms_todo'), [])).toEqual([
+      notNeededOp('unknown', 'hms_todo'),
+    ]);
   });
 
   it('ignores repeated party_lookup when mapping create', () => {

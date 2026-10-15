@@ -2,7 +2,7 @@
  * Map a ReservationistDecision (+ recorded tool names) onto same-move GoldOperation rows.
  * Offline replay only. No HMS. No mail bodies in the emitted ops.
  */
-import type { ReservationistDecision } from './reservationist-decision.js';
+import { TODO_TARGET_OPS, type ReservationistDecision } from './reservationist-decision.js';
 import type { GoldOperation } from './same-move-ops.js';
 
 /** Copied from gold-pair-join goldOp — that helper is not exported. */
@@ -22,6 +22,8 @@ const OPERATION_TOOL: Record<string, string | null> = {
   channel: null,
 };
 
+const TODO_TARGET_SET = new Set<string>(TODO_TARGET_OPS);
+
 const WORKFLOW_OPERATION: Record<ReservationistDecision['workflow'], string> = {
   quote: 'quote',
   create: 'create',
@@ -30,6 +32,12 @@ const WORKFLOW_OPERATION: Record<ReservationistDecision['workflow'], string> = {
   skip: 'none',
   spam: 'none',
   other: 'unknown',
+  forward_to_partner: 'partner',
+  send_document: 'document',
+  payment_ack: 'post_payment',
+  clarify: 'unknown',
+  acknowledge: 'none',
+  hms_todo: 'unknown',
 };
 
 function goldOp(operation: string, unknownReason: string | null = null): GoldOperation {
@@ -42,13 +50,24 @@ function goldOp(operation: string, unknownReason: string | null = null): GoldOpe
   };
 }
 
+function unknownReasonFor(workflow: ReservationistDecision['workflow']): string {
+  if (workflow === 'clarify') return 'clarify';
+  if (workflow === 'hms_todo') return 'hms_todo';
+  return 'other';
+}
+
 export function decisionToOperations(
   decision: ReservationistDecision,
   _toolCalls: { toolName: string }[],
 ): GoldOperation[] {
+  if (decision.workflow === 'hms_todo') {
+    const target = decision.todoTarget;
+    if (target && TODO_TARGET_SET.has(target)) return [goldOp(target)];
+    return [goldOp('unknown', 'hms_todo')];
+  }
   const mapped = WORKFLOW_OPERATION[decision.workflow];
   const operation = mapped ?? 'unknown';
-  const unknownReason = operation === 'unknown' ? 'other' : null;
+  const unknownReason = operation === 'unknown' ? unknownReasonFor(decision.workflow) : null;
   return [goldOp(operation, unknownReason)];
 }
 
