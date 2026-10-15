@@ -19,8 +19,11 @@ const workflowBadge = readFileSync(
   join(components, 'quote-workflow', 'workflow-badge.tsx'),
   'utf8',
 );
+const requirementCard = readFileSync(join(components, 'quote-workflow', 'requirement-card.tsx'), 'utf8');
 const ae1Proof = readFileSync(join(scripts, 'nava-ae1-rates-proof.ts'), 'utf8');
 const ae4Proof = readFileSync(join(scripts, 'nava-ae4-override-proof.ts'), 'utf8');
+const browserProofs = readFileSync(join(here, 'nava-proof-drivers-browser.test.ts'), 'utf8');
+const ae4FakePane = browserProofs.match(/function ae4Page\([\s\S]*?(?=\nconst ae4Handlers)/)?.[0] ?? '';
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const accessibleName = (value: string) =>
@@ -64,5 +67,28 @@ describe('quote proof selectors stay aligned with pane labels', () => {
   it('keeps both live proof drivers on the shared search selector', () => {
     expect(ae1Proof).toContain('name: QUOTE_SEARCH_BUTTON');
     expect(ae4Proof).toContain('name: QUOTE_SEARCH_BUTTON');
+  });
+
+  it('keeps AE4 adults and meal-plan selectors aligned with the real stay card', () => {
+    expect(requirementCard).toContain('<article aria-label={`Stay ${stayNumber} details`}');
+    expect(requirementCard).toContain('aria-label="Meal plan"');
+    expect(requirementCard).toContain('aria-label="Room type"');
+    expect(requirementCard).toContain('aria-label="Rooms"');
+    expect(requirementCard).toContain('label={`Adult guests per room for ${where}`}');
+    expect(requirementCard).toContain('aria-label={`Edit adults per room for ${where}`}');
+    expect(ae4Proof).toContain('article[aria-label$=" details"]');
+    expect(ae4Proof).toContain('select[aria-label="Meal plan"]');
+    expect(ae4Proof).toContain('select[aria-label="Room type"]');
+    expect(ae4Proof).toContain('input[aria-label="Rooms"]');
+    expect(ae4Proof).toContain('Adults per room not set');
+    expect(ae4Proof).toContain('READ_ROWS_JS');
+    expect(ae4Proof).toContain('fillAdults(');
+    expect(ae4Proof).not.toContain('input[aria-label="Adults"]');
+    expect(ae4FakePane).not.toContain('aria-label="Adults"');
+    expect(ae4FakePane).toContain('aria-label="Meal plan"');
+    expect(ae4FakePane).toContain('aria-label="Room type"');
+    expect(ae4FakePane).toContain('aria-label="Rooms"');
+    expect(ae4FakePane).toContain('aria-label="Edit adults per room for ${where}"');
+    expect(ae4FakePane).toContain('aria-label="Adult guests per room for ${where}"');
   });
 });

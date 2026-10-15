@@ -66,8 +66,11 @@ import { pathToFileURL } from 'node:url';
 import {
   batchInput,
   Blocker,
+  fillAdults,
   HMS_RATES_PROCEDURE,
   latestOutcome,
+  readRoomRows,
+  READ_ROWS_JS,
   storedWorkView,
   trpcProcedures,
   visibleText,
@@ -75,6 +78,7 @@ import {
   type Captured,
   type StoredWorkView,
 } from './nava-ae4-override-proof';
+export { READ_ROWS_JS };
 import { QUOTE_SEARCH_BUTTON } from './nava-quote-selectors';
 import {
   allowEditsFrom,
@@ -307,7 +311,7 @@ export type PaneRoomRow = {
   roomOptions: SelectOption[];
   rooms: number | null;
   adults: number | null;
-  /** The stay's meal plan: a board, "all" when its rows differ, "unknown" when a row has none. */
+  /** The stay-level Meal plan read, shared by its room rows. */
   board: string;
 };
 
@@ -503,80 +507,6 @@ export function planStopBeforeRows(typeIsQuote: boolean, allowEdits: boolean): s
   return allowEdits
     ? 'not planned: switch the thread to Quote first; its room rows cannot be planned without that edit'
     : needsEditsMessage(['type']);
-}
-
-/**
- * Browser-side: the Stay step's room rows, in page order. Plain JS, no DOM types. The pane (requirement-card.tsx) puts the
- * room type, the room count and the adults line in each room row, and one Meal plan select on each stay. That select only
- * filters the rate cards; it shows the board the stay's rows carry, or offers "Not stated in email" when they carry none.
- */
-export const READ_ROWS_JS = `() => {
-  const pane = document.querySelector('[data-preview-pane]');
-  const section = pane ? pane.querySelector('section[aria-label="Stay"]') : null;
-  if (!section) return null;
-  const groups = Array.from(section.querySelectorAll('[role="group"][aria-label^="Rooms for stay "]'));
-  const ADULTS = /^(?:(\\d+) adults? per room|Adults per room not set)$/i;
-  const parts = groups.map((group) => {
-    const row = group.closest('[role="row"]');
-    const stay = group.closest('article[aria-label$=" details"]');
-    const adultsLine = row
-      ? Array.from(row.querySelectorAll('span')).map((el) => (el.textContent || '').trim()).find((text) => ADULTS.test(text))
-      : undefined;
-    return {
-      group,
-      select: row ? row.querySelector('select[aria-label="Room type"]') : null,
-      rooms: row ? row.querySelector('input[aria-label="Rooms"]') : null,
-      adultsLine,
-      meal: stay ? stay.querySelector('select[aria-label="Meal plan"]') : null,
-    };
-  });
-  const have = (key) => parts.filter((part) => part[key] !== null && part[key] !== undefined).length;
-  return {
-    counts: [groups.length, have('select'), have('rooms'), have('adultsLine'), have('meal')],
-    rows: parts.map(({ group, select, rooms, adultsLine, meal }) => {
-      const match = /^Rooms for stay (\\d+), room (\\d+)$/.exec(group.getAttribute('aria-label') || '');
-      const adults = adultsLine ? ADULTS.exec(adultsLine) : null;
-      return {
-        stay: match ? Number(match[1]) : 0,
-        room: match ? Number(match[2]) : 0,
-        roomValue: select ? select.value : '',
-        roomOptions: select ? Array.from(select.options).map((o) => ({ value: o.value, label: (o.textContent || '').trim() })) : [],
-        rooms: rooms ? rooms.value : '',
-        adults: adults && adults[1] ? adults[1] : '',
-        board: meal ? (meal.querySelector('option[value="unknown"]') ? 'unknown' : meal.value) : '',
-      };
-    }),
-  };
-}`;
-
-type RawRows = { counts: number[]; rows: Array<Omit<PaneRoomRow, 'rooms' | 'adults'> & { rooms: string; adults: string }> };
-
-const countOf = (raw: string): number | null => (/^\d+$/.test(raw.trim()) && Number(raw) > 0 ? Number(raw) : null);
-
-async function readRoomRows(page: Page): Promise<PaneRoomRow[]> {
-  const raw = (await page.evaluate(`(${READ_ROWS_JS})()`).catch(() => null)) as RawRows | null;
-  if (!raw) throw new Blocker('the Stay step is missing');
-  if (new Set(raw.counts).size !== 1) {
-    throw new Blocker(`the Stay rows do not line up (groups, room types, rooms, adults, meal plans: ${raw.counts.join('/')})`);
-  }
-  return raw.rows.map((row) => ({ ...row, rooms: countOf(row.rooms), adults: countOf(row.adults) }));
-}
-
-/** Sets a row's adults per room the way staff do: "Tap to edit", then + on the stepper until it shows the count. */
-async function fillAdults(details: Locator, where: string, adults: number): Promise<void> {
-  const edit = details.locator(`button[aria-label="Edit adults per room for ${where}"]`);
-  if (await edit.count()) await edit.click();
-  const stepper = details.locator(`[role="group"][aria-label="Adult guests per room for ${where}"]`);
-  const more = stepper.locator(`button[aria-label="More: Adult guests per room for ${where}"]`);
-  await more.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
-    throw new Blocker(`the adults stepper for ${where} is missing`);
-  });
-  for (let press = 0; press < 10; press++) {
-    const shown = countOf((await stepper.locator('span').first().innerText().catch(() => '')).trim());
-    if (shown === adults) return;
-    if (shown !== null && shown > adults) throw new Blocker(`the adults for ${where} already show ${shown}`);
-    await more.click();
-  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

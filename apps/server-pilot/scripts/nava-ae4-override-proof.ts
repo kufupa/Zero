@@ -69,7 +69,7 @@
  * Expected: one row, actor_kind user, actor_user_id user-navaai, override_rate_code NCOR1B, override_rate_minor 185000,
  * override_note "Kamala OK'd – repeat group", ai_nightly_minor the HMS rate, work_item_kind quote.
  */
-import { chromium, type Browser, type Page, type Request, type Response, type Route } from 'playwright';
+import { chromium, type Browser, type Locator, type Page, type Request, type Response, type Route } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -315,22 +315,114 @@ export function planAe4Stay(read: Ae4StayRead, inputs: Pick<Ae4Inputs, 'arrival'
   return fills;
 }
 
-/** Browser-side: the first stay's fields. Plain JS, no DOM types. The date inputs are read even while folded away. */
+type PaneRoomRow = {
+  stay: number;
+  room: number;
+  roomValue: string;
+  roomOptions: Array<{ value: string; label: string }>;
+  rooms: number | null;
+  adults: number | null;
+  board: string;
+};
+
+type RawRows = {
+  counts: number[];
+  rows: Array<Omit<PaneRoomRow, 'rooms' | 'adults'> & { rooms: string; adults: string }>;
+};
+
+/** Browser-side: Stay rows and one meal-plan read per stay article, shared across each article's rows. */
+export const READ_ROWS_JS = `() => {
+  const pane = document.querySelector('[data-preview-pane]');
+  const section = pane ? pane.querySelector('section[aria-label="Stay"]') : null;
+  if (!section) return null;
+  const groups = Array.from(section.querySelectorAll('[role="group"][aria-label^="Rooms for stay "]'));
+  const ADULTS = /^(?:(\\d+) adults? per room|Adults per room not set)$/i;
+  const mealPlans = new Map();
+  const mealPlanFor = (stay) => {
+    if (!stay) return { select: null, board: '' };
+    if (!mealPlans.has(stay)) {
+      const select = stay.querySelector('select[aria-label="Meal plan"]');
+      mealPlans.set(stay, {
+        select,
+        board: select ? (select.querySelector('option[value="unknown"]') ? 'unknown' : select.value) : '',
+      });
+    }
+    return mealPlans.get(stay);
+  };
+  const parts = groups.map((group) => {
+    const row = group.closest('[role="row"]');
+    const stay = group.closest('article[aria-label$=" details"]');
+    const adultsLine = row
+      ? Array.from(row.querySelectorAll('span')).map((el) => (el.textContent || '').trim()).find((text) => ADULTS.test(text))
+      : undefined;
+    const mealPlan = mealPlanFor(stay);
+    return {
+      group,
+      select: row ? row.querySelector('select[aria-label="Room type"]') : null,
+      rooms: row ? row.querySelector('input[aria-label="Rooms"]') : null,
+      adultsLine,
+      meal: mealPlan.select,
+      board: mealPlan.board,
+    };
+  });
+  const have = (key) => parts.filter((part) => part[key] !== null && part[key] !== undefined).length;
+  return {
+    counts: [groups.length, have('select'), have('rooms'), have('adultsLine'), have('meal')],
+    rows: parts.map(({ group, select, rooms, adultsLine, board }) => {
+      const match = /^Rooms for stay (\\d+), room (\\d+)$/.exec(group.getAttribute('aria-label') || '');
+      const adults = adultsLine ? ADULTS.exec(adultsLine) : null;
+      return {
+        stay: match ? Number(match[1]) : 0,
+        room: match ? Number(match[2]) : 0,
+        roomValue: select ? select.value : '',
+        roomOptions: select ? Array.from(select.options).map((o) => ({ value: o.value, label: (o.textContent || '').trim() })) : [],
+        rooms: rooms ? rooms.value : '',
+        adults: adults && adults[1] ? adults[1] : '',
+        board,
+      };
+    }),
+  };
+}`;
+
+const countOf = (raw: string): number | null => (positiveCount(raw) ? Number(raw) : null);
+
+export async function readRoomRows(page: Page): Promise<PaneRoomRow[]> {
+  const raw = (await page.evaluate(`(${READ_ROWS_JS})()`).catch(() => null)) as RawRows | null;
+  if (!raw) throw new Blocker('the Stay step is missing');
+  if (new Set(raw.counts).size !== 1) {
+    throw new Blocker(`the Stay rows do not line up (groups, room types, rooms, adults, meal plans: ${raw.counts.join('/')})`);
+  }
+  return raw.rows.map((row) => ({ ...row, rooms: countOf(row.rooms), adults: countOf(row.adults) }));
+}
+
+/** Sets adults the way staff do: "Tap to edit", then + on the stepper until it shows the count. */
+export async function fillAdults(details: Locator, where: string, adults: number): Promise<void> {
+  const edit = details.locator(`button[aria-label="Edit adults per room for ${where}"]`);
+  if (await edit.count()) await edit.click();
+  const stepper = details.locator(`[role="group"][aria-label="Adult guests per room for ${where}"]`);
+  const more = stepper.locator(`button[aria-label="More: Adult guests per room for ${where}"]`);
+  await more.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
+    throw new Blocker(`the adults stepper for ${where} is missing`);
+  });
+  for (let press = 0; press < 10; press++) {
+    const shown = countOf((await stepper.locator('span').first().innerText().catch(() => '')).trim());
+    if (shown === adults) return;
+    if (shown !== null && shown > adults) throw new Blocker(`the adults for ${where} already show ${shown}`);
+    await more.click();
+  }
+}
+
+export type Ae4StayDatesRead = { hasStaySection: boolean; arrival: string; departure: string };
+
+/** Browser-side: stay dates, including inputs hidden while the date editor is folded. */
 export const READ_STAY_JS = `() => {
   const pane = document.querySelector('[data-preview-pane]');
   if (!pane) return null;
-  const all = (selector) => Array.from(pane.querySelectorAll(selector));
   const value = (selector) => { const el = pane.querySelector(selector); return el ? el.value : ''; };
-  const select = pane.querySelector('select[aria-label="Room type"]');
   return {
-    rows: all('select[aria-label="Room type"]').length,
+    hasStaySection: Boolean(pane.querySelector('section[aria-label="Stay"]')),
     arrival: value('input[aria-label="Arrival"]'),
     departure: value('input[aria-label="Departure"]'),
-    roomValue: select ? select.value : '',
-    roomOptions: select ? Array.from(select.options).map((o) => ({ value: o.value, label: (o.textContent || '').trim() })) : [],
-    rooms: value('input[aria-label="Rooms"]'),
-    adults: value('input[aria-label="Adults"]'),
-    board: value('select[aria-label="Meal plan"]'),
   };
 }`;
 
@@ -816,8 +908,20 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
         });
 
         // 4. The stay: the pane's own. Only what it is missing is filled, and only with NAVA_PROOF_ALLOW_EDITS=1.
-        const stayRead = (await page.evaluate(`(${READ_STAY_JS})()`)) as Ae4StayRead | null;
-        if (!stayRead) throw new Blocker('the Stay step is missing');
+        const stayDates = (await page.evaluate(`(${READ_STAY_JS})()`)) as Ae4StayDatesRead | null;
+        if (!stayDates) throw new Blocker('the Stay step is missing');
+        const roomRows = stayDates.hasStaySection ? await readRoomRows(page) : [];
+        const firstRoom = roomRows[0];
+        const stayRead: Ae4StayRead = {
+          rows: roomRows.length,
+          arrival: stayDates.arrival,
+          departure: stayDates.departure,
+          roomValue: firstRoom?.roomValue ?? '',
+          roomOptions: firstRoom?.roomOptions ?? [],
+          rooms: firstRoom?.rooms == null ? '' : String(firstRoom.rooms),
+          adults: firstRoom?.adults == null ? '' : String(firstRoom.adults),
+          board: firstRoom?.board ?? '',
+        };
         const fills = planAe4Stay(stayRead, inputs);
         if (fills.length && !inputs.allowEdits) throw new Blocker(needsEditsMessage(fills.map((fill) => fill.field)));
         const fillOf = (field: Ae4StayField) => fills.find((fill) => fill.field === field)?.value ?? null;
@@ -840,9 +944,10 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
         const roomsFill = fillOf('rooms');
         if (roomsFill !== null) await pane.locator('input[aria-label="Rooms"]').fill(roomsFill, { force: true });
         const adultsFill = fillOf('adults');
-        if (adultsFill !== null) await pane.locator('input[aria-label="Adults"]').fill(adultsFill, { force: true });
+        const where = `stay ${firstRoom?.stay ?? 1}, room ${firstRoom?.room ?? 1}`;
+        if (adultsFill !== null) await fillAdults(pane, where, Number(adultsFill));
         const boardFill = fillOf('board');
-        if (boardFill !== null) await pane.locator('select[aria-label="Meal plan"]').selectOption(boardFill);
+        if (boardFill !== null) await pane.locator('select[aria-label="Meal plan"]').first().selectOption(boardFill);
         summary.filledFields.push(...fills.map((fill) => fill.field));
         log(fills.length ? `stay filled: ${fills.map((fill) => fill.field).join(', ')}` : 'stay used as the pane has it');
 
