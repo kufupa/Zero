@@ -789,12 +789,19 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
 
         const pane = page.locator('[data-preview-pane]');
         // 3. Type: Quote. Changing it is an edit to the thread.
-        const type = pane.locator('select[aria-label="Nava reads this as"]');
-        await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
-          throw new Blocker('treat-as select ("Nava reads this as") is missing');
-        });
-        if ((await type.inputValue()) !== 'quote') {
+        const rawKind = await page
+          .locator('[data-preview-pane] [data-read-as]')
+          .first()
+          .getAttribute('data-read-as', { timeout: STEP_MS })
+          .catch(() => null);
+        const kind = rawKind?.trim() || 'unknown';
+        const typeIsQuote = kind === 'quote' || kind === 'group';
+        if (!typeIsQuote) {
           if (!inputs.allowEdits) throw new Blocker(needsEditsMessage(['type']));
+          const type = pane.locator('select[aria-label="Change how Nava reads this email"]');
+          await type.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
+            throw new Blocker('treat-as select ("Change how Nava reads this email") is missing');
+          });
           await type.selectOption('quote');
           summary.filledFields.push('type');
           log('type set to Quote');

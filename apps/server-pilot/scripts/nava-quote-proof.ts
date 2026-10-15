@@ -47,9 +47,9 @@ const PARTY_SEARCH_LIMIT = 2;
 const FIELD_EDIT_LIMIT = 4;
 const MESSAGE_LIMIT = 220;
 
-/** Page targets use accessible names; structural locators only scope a semantic rate card or labelled field. */
+/** Page targets use accessible names, except the read-as kind which has stable pane metadata. */
 export const QUOTE_SELECTORS = {
-  intent: 'Nava reads this as',
+  intent: '[data-preview-pane] [data-read-as]',
   contactRegion: 'Guest & contact',
   contactNameValue: '[data-contact-field="name"] dd > span',
   contactEmailValue: '[data-contact-field="email"] dd > span',
@@ -1524,9 +1524,13 @@ async function proveThread(
   partyIndexSignals: PartyIndexSignals,
 ): Promise<void> {
   await openThread(page, config.baseUrl, threadId);
-  const intent = page.getByRole('combobox', { name: QUOTE_SELECTORS.intent, exact: true });
-  proof.kind = (await controlValue(intent)) ?? 'unknown';
-  if (proof.kind !== 'quote') {
+  const kind = await page
+    .locator(QUOTE_SELECTORS.intent)
+    .first()
+    .getAttribute('data-read-as', { timeout: STEP_MS })
+    .catch(() => null);
+  proof.kind = kind?.trim() || 'unknown';
+  if (proof.kind !== 'quote' && proof.kind !== 'group') {
     proof.blocker = 'not_quote';
     return;
   }
