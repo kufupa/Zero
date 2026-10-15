@@ -2209,6 +2209,12 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                   Add arrival and departure dates first.
                 </p>
               </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                No company/agency — public rate
+              </button>
               <article
                 class="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3"
               >
@@ -4287,6 +4293,12 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                   Add arrival and departure dates first.
                 </p>
               </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                No company/agency — public rate
+              </button>
               <article
                 class="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3"
               >
@@ -6689,6 +6701,12 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                   Add arrival and departure dates first.
                 </p>
               </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                No company/agency — public rate
+              </button>
               <article
                 class="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3"
               >
@@ -8667,6 +8685,12 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                   Add arrival and departure dates first.
                 </p>
               </div>
+              <button
+                class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
+                type="button"
+              >
+                No company/agency — public rate
+              </button>
               <article
                 class="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3"
               >

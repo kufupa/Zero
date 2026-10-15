@@ -10,7 +10,11 @@ import { toast } from 'sonner';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
-import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import {
+  confirmPublicRate,
+  fillStayFactsMatchingAuthorisedOffer,
+  prepareReviewedQuote,
+} from './helpers/prepare-reviewed-quote';
 import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
 import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
@@ -1603,6 +1607,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await settle();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
 
     const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
@@ -1659,6 +1664,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await settle();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
 
     const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
@@ -1700,6 +1706,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} preview />);
     await storedReadLands();
     await settle();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
     expect((await screen.findByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(declineHtml);
 
@@ -1783,6 +1790,7 @@ describe('NavaPane screen states', () => {
       </HmsJobNoticeProvider>,
     );
     await storedReadLands();
+    confirmPublicRate();
     expect(await screen.findByText('Nava is getting rates from HMS — you can keep working')).toBeDefined();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId('hms-running-count').textContent).toBe('HMS: 1 pending');
@@ -1846,6 +1854,7 @@ describe('NavaPane screen states', () => {
 
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
+    confirmPublicRate();
 
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2));
     await settle();
@@ -1855,6 +1864,52 @@ describe('NavaPane screen states', () => {
     ]);
     expect([...queued.values()].every((input) => input.autoStart === true)).toBe(true);
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not auto-start a quote until staff pick a party or confirm public rates', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await settle();
+
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined();
+  });
+
+  it('auto-start keeps a Government sales strategy after an explicit public-rate choice', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        luna: {
+          workflow: 'quote',
+          flags: [],
+          groups: [],
+          party: { kind: 'government', name: 'Dept X', reference: null },
+          rateClaims: [],
+          missing: [],
+          evidence: [],
+          tasks: [],
+        },
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.queueStaffQuoteMutation.mockImplementation((input: Record<string, unknown>) => {
+      bridgeMockState.lastStaffQuoteInput = input;
+      return Promise.resolve({ runId: 'staff-job-gov' });
+    });
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(null);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await waitFor(() => expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government'));
+    confirmPublicRate();
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'Government' });
   });
 
   it('reads back the first email’s fresh quote when returning from another email', async () => {
@@ -1912,14 +1967,19 @@ describe('NavaPane screen states', () => {
 
     const { rerender } = render(<NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />);
     await storedReadLands();
+    confirmPublicRate();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
 
     rerender(<NavaPane bridge={bridgeFor('002', '<other-quote@example.invalid>', 'Quote B')} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined());
+    confirmPublicRate();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole('button', { name: /Allocation for mail-2/ })).toBeDefined();
 
     rerender(<NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'No company/agency — public rate' })).toBeDefined());
+    confirmPublicRate();
     await waitFor(() =>
       expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
         input: expect.objectContaining({ messageId: 'mail-1' }),
@@ -1999,6 +2059,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await fillStayFactsMatchingAuthorisedOffer();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => expect(resolveInitialStatus).toBeTypeOf('function'));
 
@@ -2107,6 +2168,7 @@ describe('NavaPane screen states', () => {
     await settle();
 
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
     expect(bridgeMockState.lastStaffQuoteInput).not.toHaveProperty('autoStart');
@@ -2151,6 +2213,7 @@ describe('NavaPane screen states', () => {
     await settle();
 
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
     expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({
@@ -2171,6 +2234,7 @@ describe('NavaPane screen states', () => {
     await settle();
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
     await fillStayFactsMatchingAuthorisedOffer();
+    confirmPublicRate();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability/i }));
 
     expect(await screen.findByText('Nava is getting rates from HMS — you can keep working')).toBeDefined();
@@ -2238,6 +2302,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await settle();
+    confirmPublicRate();
 
     fireEvent.click(screen.getAllByRole('button', { name: /^Search availability$/i })[0]!);
     await waitFor(() => expect(bridgeMockState.releaseStaffQuote).toBeTypeOf('function'));

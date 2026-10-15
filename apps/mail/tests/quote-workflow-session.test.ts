@@ -11,8 +11,10 @@ import {
   pdfBlocker,
   pickNextRunnableStep,
   planQuoteSteps,
+  partyDecisionWaitReason,
   quoteRunBlockReason,
   quoteRunIsCurrent,
+  salesStrategyForQueuedQuote,
   reduceQuoteSession,
   selectionDigest,
   buildQuoteStepInputs,
@@ -139,7 +141,8 @@ describe('quote session', () => {
 
   it('an unreadable amount blocks the run and the PDF until it is fixed, without clearing results', () => {
     const start = initialQuoteSession();
-    const errored = reduceQuoteSession(start, {
+    const ready = reduceQuoteSession(start, { type: 'party_public_confirmed' });
+    const errored = reduceQuoteSession(ready, {
       type: 'patch_staff_header',
       header: { fieldErrors: { dinnerAllowance: 'Enter an amount in rand, like 450 or 1,250.50' } },
     });
@@ -1143,7 +1146,7 @@ describe('mixed complete and incomplete quote dates', () => {
       ],
       missingQuoteReplyFields: ['Arrival date for stay 2', 'Departure date for stay 2'],
     };
-    const session = analysisReady(analysis);
+    const session = reduceQuoteSession(analysisReady(analysis), { type: 'party_public_confirmed' });
 
     expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toBeNull();
     expect(quoteRunBlockReason(session, stepFor(session, 'unknown:unknown'))).toMatch(/missing arrival and departure/i);
@@ -1973,6 +1976,7 @@ describe('quote session staff review items', () => {
     expect(canRunQuoteStep(stepFor(s, STAY_B), s.steps, stepFor(s, STAY_A).id)).toBe(false);
     expect(pickNextRunnableStep(s.steps, null)?.shareKey).toBe(STAY_A);
 
+    s = reduceQuoteSession(s, { type: 'party_public_confirmed' });
     s = reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-a', 850000, s.inputRevision));
     expect(stepFor(s, STAY_A).status).toBe('succeeded');
     // Both options end in one combined quote, so no option waits for a PDF of its own.
@@ -2026,7 +2030,7 @@ describe('quote session staff review items', () => {
   });
 
   it('a failed later option keeps the earlier option result', () => {
-    let s = twoDateSession();
+    let s = reduceQuoteSession(twoDateSession(), { type: 'party_public_confirmed' });
     s = reduceQuoteSession(s, staffQuoteFor(STAY_A, 'rev-a', 850000, s.inputRevision));
     const stepB = stepFor(s, STAY_B).id;
     s = reduceQuoteSession(s, { type: 'step_running', stepId: stepB });
@@ -3570,5 +3574,75 @@ describe('rowRoomCode: staff picks beat the projected room type', () => {
 
   it('a cleared select leaves the row with no room type', () => {
     expect(rowRoomCode(row({ roomPreference: '', roomTypeCode: undefined }))).toBeNull();
+  });
+});
+
+const PARTY_DECISION_WAIT =
+  "Pick the company or agency in HMS, or choose 'No company/agency — public rate'.";
+const VERIFIED_COMPANY = {
+  company: 'Acme Travel',
+  parties: { company: { kind: 'company' as const, nativeId: 'hms-1', name: 'Acme Travel' } },
+};
+
+describe('partyDecision: quote_stay waits for a pick or explicit public rate', () => {
+  it('undecided blocks quote_stay with the party-decision reason', () => {
+    const session = analysisReady();
+    expect(session.partyDecision).toBe('undecided');
+    expect(partyDecisionWaitReason(session)).toBe(PARTY_DECISION_WAIT);
+    expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toBe(PARTY_DECISION_WAIT);
+  });
+
+  it('a verified company pick unblocks quote_stay', () => {
+    const picked = reduceQuoteSession(analysisReady(), { type: 'patch_staff_header', header: VERIFIED_COMPANY });
+    expect(picked.partyDecision).toBe('picked');
+    expect(partyDecisionWaitReason(picked)).toBeNull();
+    expect(quoteRunBlockReason(picked, stepFor(picked, STAY_A))).toBeNull();
+  });
+
+  it('party_public_confirmed unblocks quote_stay when no party is selected', () => {
+    const confirmed = reduceQuoteSession(analysisReady(), { type: 'party_public_confirmed' });
+    expect(confirmed.partyDecision).toBe('public_confirmed');
+    expect(confirmed.inputRevision).toBe(analysisReady().inputRevision);
+    expect(partyDecisionWaitReason(confirmed)).toBeNull();
+    expect(quoteRunBlockReason(confirmed, stepFor(confirmed, STAY_A))).toBeNull();
+  });
+
+  it('party_public_confirmed is ignored when a verified party is already selected', () => {
+    const picked = reduceQuoteSession(analysisReady(), { type: 'patch_staff_header', header: VERIFIED_COMPANY });
+    expect(reduceQuoteSession(picked, { type: 'party_public_confirmed' })).toBe(picked);
+  });
+
+  it('clearing a pick returns to undecided and blocks again', () => {
+    const picked = reduceQuoteSession(analysisReady(), { type: 'patch_staff_header', header: VERIFIED_COMPANY });
+    const cleared = reduceQuoteSession(picked, { type: 'patch_staff_header', header: { company: '', parties: undefined } });
+    expect(cleared.partyDecision).toBe('undecided');
+    expect(quoteRunBlockReason(cleared, stepFor(cleared, STAY_A))).toBe(PARTY_DECISION_WAIT);
+  });
+
+  it('a new email resets partyDecision to undecided', () => {
+    const confirmed = reduceQuoteSession(analysisReady(), { type: 'party_public_confirmed' });
+    const next = reduceQuoteSession(confirmed, { type: 'selection', binding: bind({ entryId: 'e2' }) });
+    expect(next.partyDecision).toBe('undecided');
+    expect(next.staffHeader.parties).toBeUndefined();
+  });
+
+  it('pending lookup reason still wins first over an undecided party', () => {
+    const pending = reduceQuoteSession(analysisReady(), {
+      type: 'party_lookup_pending',
+      kind: 'company',
+      pending: true,
+    });
+    expect(quoteRunBlockReason(pending, stepFor(pending, STAY_A))).toBe('Finding the company in HMS…');
+    const confirmedWhilePending = reduceQuoteSession(pending, { type: 'party_public_confirmed' });
+    expect(quoteRunBlockReason(confirmedWhilePending, stepFor(confirmedWhilePending, STAY_A))).toBe(
+      'Finding the company in HMS…',
+    );
+    const settled = reduceQuoteSession(pending, { type: 'party_lookup_pending', kind: 'company', pending: false });
+    expect(quoteRunBlockReason(settled, stepFor(settled, STAY_A))).toBe(PARTY_DECISION_WAIT);
+  });
+
+  it('queued auto-start keeps Government and only fills BAR when the header has no other strategy', () => {
+    expect(salesStrategyForQueuedQuote({ salesStrategy: 'Government' })).toBe('Government');
+    expect(salesStrategyForQueuedQuote({ salesStrategy: 'BAR' })).toBe('BAR');
   });
 });

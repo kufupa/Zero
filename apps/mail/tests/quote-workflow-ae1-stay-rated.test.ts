@@ -200,7 +200,11 @@ describe('AE1 multi-stay: a run waits for the party lookup', () => {
     expect(pending.inputRevision).toBe(session.inputRevision);
     expect(quoteRunBlockReason(pending, stayA)).toBe('Finding the company in HMS…');
     const settled = reduceQuoteSession(pending, { type: 'party_lookup_pending', kind: 'company', pending: false });
-    expect(quoteRunBlockReason(settled, stayA)).toBeNull();
+    expect(quoteRunBlockReason(settled, stayA)).toBe(
+      "Pick the company or agency in HMS, or choose 'No company/agency — public rate'.",
+    );
+    const confirmed = reduceQuoteSession(settled, { type: 'party_public_confirmed' });
+    expect(quoteRunBlockReason(confirmed, stayA)).toBeNull();
     // A report that changes nothing returns the same session, so the pane does not re-render for it.
     expect(reduceQuoteSession(settled, { type: 'party_lookup_pending', kind: 'company', pending: false })).toBe(settled);
   });

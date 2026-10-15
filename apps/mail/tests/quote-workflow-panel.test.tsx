@@ -26,6 +26,10 @@ vi.mock('sonner', () => ({ toast: { warning: vi.fn(), success: vi.fn(), error: v
 
 afterEach(() => cleanup());
 
+function searchable(session: QuoteSession): QuoteSession {
+  return { ...session, partyDecision: 'public_confirmed' };
+}
+
 function sessionFromFixture(id: Parameters<typeof loadQuoteFixture>[0]): QuoteSession {
   const fixture = loadQuoteFixture(id);
   let session = reduceQuoteSession(initialQuoteSession(), {
@@ -144,15 +148,17 @@ function failedRateSession(
     }],
     phase: 'tools',
   };
-  return reduceQuoteSession(session, {
-    type: 'results_unavailable',
-    stepId: 'quote-1',
-    reason,
-    detail,
-    alternatives,
-    selectionEpoch: session.binding?.selectionEpoch ?? 0,
-    inputRevision: session.inputRevision,
-  });
+  return searchable(
+    reduceQuoteSession(session, {
+      type: 'results_unavailable',
+      stepId: 'quote-1',
+      reason,
+      detail,
+      alternatives,
+      selectionEpoch: session.binding?.selectionEpoch ?? 0,
+      inputRevision: session.inputRevision,
+    }),
+  );
 }
 
 function AlternativeStayPanel({
@@ -637,7 +643,7 @@ describe('QuoteWorkflowPanel', () => {
       },
       [{ field: 'stay', question: 'Complete the stay details.' }],
     );
-    const { container } = render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} />);
+    const { container } = render(<QuoteWorkflowPanel session={searchable(session)} onRunStep={onRunStep} />);
 
     const search = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
     expect(search.disabled).toBe(false);
@@ -890,7 +896,7 @@ describe('QuoteWorkflowPanel', () => {
     const onRunStep = vi.fn();
     const onPatchGroup = vi.fn();
     const { rerender } = render(
-      <QuoteWorkflowPanel session={session} onRunStep={onRunStep} onPatchGroup={onPatchGroup} />,
+      <QuoteWorkflowPanel session={searchable(session)} onRunStep={onRunStep} onPatchGroup={onPatchGroup} />,
     );
 
     const roomTypes = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
@@ -913,11 +919,11 @@ describe('QuoteWorkflowPanel', () => {
     expect(typeRate[1]?.disabled).toBe(false);
     expect((screen.getByRole('textbox', { name: 'Notes for HMS' }) as HTMLTextAreaElement).disabled).toBe(false);
 
-    const finished: QuoteSession = {
+    const finished: QuoteSession = searchable({
       ...session,
       runningStepId: null,
       steps: session.steps.map((step) => step.id === activeStep.id ? { ...step, status: 'succeeded' as const } : step),
-    };
+    });
     rerender(<QuoteWorkflowPanel session={finished} onRunStep={onRunStep} onPatchGroup={onPatchGroup} />);
     expect(onRunStep).toHaveBeenCalledWith(base.steps[1]!.id);
   });
@@ -947,7 +953,7 @@ describe('QuoteWorkflowPanel', () => {
     };
     render(
       <QuoteWorkflowPanel
-        session={session}
+        session={searchable(session)}
         onRunStep={onRunStep}
         onPatchGroup={onPatchGroup}
       />,
@@ -1248,7 +1254,7 @@ describe('QuoteWorkflowPanel', () => {
     const seen: { latest: QuoteSession | null } = { latest: null };
     const base = staggeredDatesSession();
     const key = `${base.groups[0]!.arrivalDate}:${base.groups[0]!.departureDate}`;
-    const initial = { ...base, staffHeader: { ...base.staffHeader, dinnerAllowanceMinor: 45_000 } };
+    const initial = searchable({ ...base, staffHeader: { ...base.staffHeader, dinnerAllowanceMinor: 45_000 } });
     render(<StayExtraGate initial={initial} seen={seen} />);
     const runButtons = () => [
       screen.getByRole('button', { name: 'Search this date range for Stay 1' }) as HTMLButtonElement,
@@ -1304,7 +1310,7 @@ describe('QuoteWorkflowPanel', () => {
 
   it('keeps one primary search action and offers per-date retries as secondary actions', () => {
     const onRunStep = vi.fn();
-    const session = staggeredDatesSession();
+    const session = searchable(staggeredDatesSession());
     render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} onRunNext={vi.fn()} />);
     expect(screen.getAllByRole('button', { name: 'Search availability' })).toHaveLength(1);
     const dateRange = screen.getByRole('button', { name: 'Search this date range for Stay 2' }) as HTMLButtonElement;
@@ -1316,7 +1322,7 @@ describe('QuoteWorkflowPanel', () => {
 
   it('lists each date range as its own stay and totals the quote across stays', () => {
     const onRunStep = vi.fn();
-    const quoted = staggeredDatesWithOptionA();
+    const quoted = searchable(staggeredDatesWithOptionA());
     render(<QuoteWorkflowPanel session={quoted} onRunStep={onRunStep} onRunNext={vi.fn()} />);
     expect(screen.getByRole('heading', { name: /Stay 1 of 2/ })).toBeDefined();
     expect(screen.getByRole('heading', { name: /Stay 2 of 2/ })).toBeDefined();
@@ -1881,6 +1887,36 @@ describe('the Find in HMS picker in the quote header', () => {
     render(<QuoteWorkflowPanel session={session} />);
     expect((screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getAllByText('Finding the company in HMS…').length).toBeGreaterThan(0);
+  });
+
+  it('offers No company/agency — public rate while undecided, and hides it after confirmation', () => {
+    const onPartyPublicConfirmed = vi.fn();
+    function Gate() {
+      const [session, setSession] = useState(headerSession({ company: '' }));
+      return (
+        <QuoteWorkflowPanel
+          session={session}
+          onPartyPublicConfirmed={() => {
+            onPartyPublicConfirmed();
+            setSession((current) => reduceQuoteSession(current, { type: 'party_public_confirmed' }));
+          }}
+        />
+      );
+    }
+    render(<Gate />);
+    fireEvent.click(screen.getByRole('button', { name: 'No company/agency — public rate' }));
+    expect(onPartyPublicConfirmed).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
+  });
+
+  it('hides the public-rate choice once a verified company is picked', () => {
+    render(
+      <QuoteWorkflowPanel
+        session={headerSession({ company: ACME.name, parties: { company: ACME } })}
+        onPartyPublicConfirmed={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
   });
 
   it('says Nava, not Luna, when the automatic HMS lookup cannot reach HMS', async () => {

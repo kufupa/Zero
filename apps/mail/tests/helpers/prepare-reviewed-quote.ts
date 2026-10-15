@@ -15,6 +15,11 @@ export async function findReadStayArrival(): Promise<HTMLElement> {
   return screen.getByLabelText('Arrival');
 }
 
+/** Staff explicit public-rate choice. Clears the party-decision hold before Search. */
+export function confirmPublicRate(): void {
+  fireEvent.click(screen.getByRole('button', { name: 'No company/agency — public rate' }));
+}
+
 export async function fillStayFactsMatchingAuthorisedOffer(): Promise<void> {
   fireEvent.change(await findReadStayArrival(), { target: { value: '2026-11-12' } });
   fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-14' } });
@@ -31,6 +36,7 @@ export async function fillStayFactsMatchingAuthorisedOffer(): Promise<void> {
 /** Drive an authorised HITL path. Production unavailable path must not reach here. */
 export async function prepareReviewedQuote(replyHtml: string | null = AUTHORISED_REPLY_HTML): Promise<void> {
   await fillStayFactsMatchingAuthorisedOffer();
+  confirmPublicRate();
   fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
   const allocation = await waitFor(() => {
     const match = screen.getAllByRole('button').find((element) => {

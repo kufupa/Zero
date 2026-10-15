@@ -185,9 +185,33 @@ export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyK
   return `Finding the ${names.join(' and ')} in HMS…`;
 }
 
+function hasVerifiedParty(header: Pick<StaffQuoteHeader, 'parties'>): boolean {
+  const parties = header.parties;
+  return Boolean(parties?.company?.nativeId || parties?.agency?.nativeId);
+}
+
+/** Why quote_stay waits for a verified party pick or an explicit public-rate choice, or null. */
+export function partyDecisionWaitReason(
+  session: Pick<QuoteSession, 'partyDecision' | 'staffHeader'>,
+): string | null {
+  if (hasVerifiedParty(session.staffHeader)) return null;
+  if (session.partyDecision === 'picked' || session.partyDecision === 'public_confirmed') return null;
+  return "Pick the company or agency in HMS, or choose 'No company/agency — public rate'.";
+}
+
+/** Auto-start/read-back keep BAR only when the session has no other sales strategy. */
+export function salesStrategyForQueuedQuote(
+  header: Pick<StaffQuoteHeader, 'salesStrategy'>,
+): 'BAR' | 'Government' {
+  return header.salesStrategy === 'Government' ? 'Government' : 'BAR';
+}
+
 /** Plain-English reason this date option must wait, or null when it may run. */
 export function quoteRunBlockReason(
-  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'>,
+  session: Pick<
+    QuoteSession,
+    'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds' | 'partyDecision'
+  >,
   step: QuoteToolStep,
 ): string | null {
   if (
@@ -199,6 +223,10 @@ export function quoteRunBlockReason(
   }
   const lookupWait = partyLookupWaitReason(session);
   if (lookupWait) return lookupWait;
+  if (step.kind === 'quote_stay') {
+    const decisionWait = partyDecisionWaitReason(session);
+    if (decisionWait) return decisionWait;
+  }
   if (step.kind === 'quote_stay' && step.shareKey) {
     const problem = staffHeaderFieldProblem(staffHeaderForStay(session.staffHeader, step.shareKey));
     if (problem) return `Fix the amounts before running this search. ${problem}`;
@@ -336,6 +364,7 @@ export function initialQuoteSession(): QuoteSession {
     missing: [],
     errorMessage: null,
     runningStepId: null,
+    partyDecision: 'undecided',
     mailboxStatus: null,
     evidence: null,
     partyLookup: null,
@@ -1431,6 +1460,10 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         : pending.filter((kind) => kind !== action.kind);
       return { ...session, pendingPartyKinds };
     }
+    case 'party_public_confirmed': {
+      if (hasVerifiedParty(session.staffHeader) || session.partyDecision === 'public_confirmed') return session;
+      return { ...session, partyDecision: 'public_confirmed' };
+    }
     case 'patch_staff_header': {
       // Field errors alone do not change the quote, so they neither bump the input revision nor clear results.
       const { fieldErrors, ...amounts } = action.header;
@@ -1441,9 +1474,15 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (action.header.agency !== undefined && !action.header.agency.trim()) {
         staffHeader.agency = '';
       }
+      const partyDecision = hasVerifiedParty(staffHeader)
+        ? 'picked'
+        : session.partyDecision === 'picked'
+          ? 'undecided'
+          : session.partyDecision;
       return clearDownstream({
         ...session,
         staffHeader,
+        partyDecision,
         inputRevision: session.inputRevision + 1,
       });
     }

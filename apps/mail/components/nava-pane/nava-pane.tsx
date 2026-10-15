@@ -101,9 +101,11 @@ import {
   hasStaffStayEdits,
   initialQuoteSession,
   nextSelectedOfferIds,
+  partyDecisionWaitReason,
   partyLookupWaitReason,
   pickNextRunnableStep,
   quoteRunBlockReason,
+  salesStrategyForQueuedQuote,
   reduceQuoteSession,
   removedStayFor,
   staffSourceReady,
@@ -1447,7 +1449,7 @@ export function NavaPane({
         }
       : undefined;
     const runHeader = autoStart || readBack
-      ? { ...quoteSession.staffHeader, salesStrategy: 'BAR' as const }
+      ? { ...quoteSession.staffHeader, salesStrategy: salesStrategyForQueuedQuote(quoteSession.staffHeader) }
       : quoteSession.staffHeader;
     // Get rates is where she proceeds with the read as shown, so unedited AI fields are accepted (v5 B2).
     if (!autoStart && !readBack && !storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
@@ -1620,6 +1622,7 @@ export function NavaPane({
       (quoteSession.binding.internetMessageId ?? null) !== (activeEmail.internetMessageId ?? null) ||
       !staffSourceReady(quoteSession) ||
       partyLookupWaitReason(quoteSession) ||
+      partyDecisionWaitReason(quoteSession) ||
       staffQuoteAutoSuppressed.current.has(contactMessageKey) ||
       autoStaffQuoteSuppressed(contactMessageKey)
     ) {
@@ -1630,7 +1633,10 @@ export function NavaPane({
     if (!source || !binding) return;
     const staff = staffQuoteFromTrpc(trpcClient);
     if (!staff.workstation.queueStaffQuote?.mutate || !staff.workstation.staffQuoteJob?.query) return;
-    const header = { ...quoteSession.staffHeader, salesStrategy: 'BAR' as const };
+    const header = {
+      ...quoteSession.staffHeader,
+      salesStrategy: salesStrategyForQueuedQuote(quoteSession.staffHeader),
+    };
     const step = quoteSession.steps.find((candidate) => {
       if (
         candidate.kind !== 'quote_stay' ||
@@ -2131,6 +2137,7 @@ export function NavaPane({
               findParty={PANE_PARTY_FINDER}
               partySuggestions={partySuggestions}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
+              onPartyPublicConfirmed={() => dispatchQuote({ type: 'party_public_confirmed' })}
               partyIndex={PANE_PARTY_INDEX}
               partyJobTransport={partyJobTransport}
               rates={PANE_SAVED_RATES}

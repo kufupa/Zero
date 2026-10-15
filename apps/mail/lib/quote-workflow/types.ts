@@ -662,6 +662,11 @@ export type QuoteSession = {
   runningStepId: string | null;
   /** Companies or agencies whose automatic HMS search has not yet decided the pick. A rates run waits for them. */
   pendingPartyKinds?: StaffQuoteParty['kind'][];
+  /**
+   * Whether staff have chosen a verified HMS company/agency or explicitly quoted public rates.
+   * Default `undecided`: auto-price waits. A cleared pick returns here.
+   */
+  partyDecision: 'undecided' | 'picked' | 'public_confirmed';
   mailboxStatus: QuoteMailboxStatus | null;
   evidence: QuoteEvidenceProvenance | null;
   partyLookup: PartyLookupRef | null;
@@ -747,6 +752,7 @@ export type QuoteSessionAction =
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
   | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }
+  | { type: 'party_public_confirmed' }
   | { type: 'select_stay_key'; stayKey: string }
   | {
       type: 'staff_quote_ready';

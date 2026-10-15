@@ -10,6 +10,7 @@ import {
   groupStays,
   isMultiStay,
   newQuoteToken,
+  partyDecisionWaitReason,
   partyLookupWaitReason,
   quoteRunBlockReason,
   requestedQuoteKeys,
@@ -1064,6 +1065,7 @@ export function QuoteWorkflowPanel({
   findParty,
   partyJobTransport,
   onPartyLookupPending,
+  onPartyPublicConfirmed,
   onSelectStayKey,
   onStaffNote,
   staffNoteDraft,
@@ -1116,6 +1118,8 @@ export function QuoteWorkflowPanel({
   findParty?: PartyFinder | null;
   /** Tells the pane whether a company or agency search still decides its pick. A rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+  /** Staff explicitly quote public BAR with no company or agency. */
+  onPartyPublicConfirmed?: () => void;
   onSelectStayKey?: (stayKey: string) => void;
   onStaffNote?: (note: string) => void;
   /** A retained staff correction, owned by the pane so it survives a trip off the tool screen. */
@@ -1652,6 +1656,11 @@ export function QuoteWorkflowPanel({
               onClick={runNextRate}
             >
               Search availability
+            </SecondaryButton>
+          ) : null}
+          {partyDecisionWaitReason(session) && onPartyPublicConfirmed ? (
+            <SecondaryButton className="w-full" onClick={onPartyPublicConfirmed}>
+              No company/agency — public rate
             </SecondaryButton>
           ) : null}
           {showRates ? (
