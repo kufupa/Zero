@@ -4131,6 +4131,8 @@ export async function executeAiRun(
     candidateReplyModelAdapter?: ModelAdapter;
     /** Explicit configured draft-purpose route; absent remains unavailable. */
     candidateDraftRoute?: DraftModelRouteConfig;
+    /** Resolve inside the per-run try so a missing Azure config fails this claim. */
+    candidateDraftRouteFactory?: DraftModelRouteFactory;
     candidateReplyAsks?: readonly PreparedAsk[];
     /** Explicit purpose-bound mail extraction route; absent means unavailable. */
     mailBaselineExtractionRoute?: {
@@ -4784,6 +4786,11 @@ export async function executeAiRun(
     }
 
     if (run.runKind === 'candidate_draft') {
+      // Adapter construction belongs in this try: a missing Azure env must
+      // mark THIS claimed run failed (retry/dead-letter) instead of crashing
+      // the worker loop and leaving the claim stale until timeout.
+      const candidateDraftRoute =
+        options.candidateDraftRoute ?? options.candidateDraftRouteFactory?.();
       const [trigger] = await db
         .select()
         .from(message)
@@ -4830,7 +4837,7 @@ export async function executeAiRun(
           requestText,
           asks: replyAsks,
           adapter: options.candidateReplyModelAdapter ?? options.candidateModelAdapter,
-          route: options.candidateDraftRoute,
+          route: candidateDraftRoute,
           signal,
           deadlineAt: deadlineAt.getTime(),
         });
@@ -4856,11 +4863,11 @@ export async function executeAiRun(
           textBody: preparedReply.textBody,
           htmlBody: preparedReply.htmlBody,
           outcome: persistedOutcome,
-          ...(options.candidateDraftRoute?.release
+          ...(candidateDraftRoute?.release
             ? {
                 routeBinding: {
-                  ...options.candidateDraftRoute.route,
-                  release: options.candidateDraftRoute.release,
+                  ...candidateDraftRoute.route,
+                  release: candidateDraftRoute.release,
                 },
               }
             : {}),
@@ -5624,11 +5631,6 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     createProductionMailBaselineExtractionRouteFactory()();
   const composedShadowModelRoute =
     shadowModelRouteFactory?.() ?? createProductionShadowModelRouteFactory()();
-  const composedCandidateDraftRoute =
-    candidateDraftRouteFactory?.() ??
-    (claimed.runKind === 'candidate_draft'
-      ? createProductionDraftModelRouteFactory()()
-      : undefined);
   const executed = await executeAiRun(claimed.id, {
     shutdownSignal,
     readToolExecutor,
@@ -5636,7 +5638,11 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     candidatePlanModel,
     candidateModelAdapter,
     candidateReplyModelAdapter,
-    candidateDraftRoute: composedCandidateDraftRoute,
+    candidateDraftRouteFactory:
+      candidateDraftRouteFactory ??
+      (claimed.runKind === 'candidate_draft'
+        ? createProductionDraftModelRouteFactory()
+        : undefined),
     candidateReplyAsks,
     shadowModelAdapter,
     shadowModelRoute: shadowModelRoute ?? composedShadowModelRoute?.route,
