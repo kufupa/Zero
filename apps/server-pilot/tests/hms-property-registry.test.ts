@@ -60,6 +60,13 @@ describe('read-only HMS property registry', () => {
     ).toEqual({ source: 'file', path: '/private/centurion.json', property: null });
   });
 
+  it('rejects a Da Vinci secret bound to the Centurion property code', () => {
+    const davinci = getHmsPropertyRegistration('transport-davinci');
+    expect(() =>
+      validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, expectedPropertyCode: 'HRCEN' }),
+    ).toThrow('hms_property_credential_mismatch');
+  });
+
   it('fails closed for unknown transports, conflicting secret sources, or a non-view-only secret', () => {
     expect(() => getHmsPropertyRegistration('transport-unknown')).toThrow('hms_property_unknown');
     expect(() =>

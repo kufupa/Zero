@@ -58,7 +58,12 @@ export function validateHmsPropertySecret(property, secret) {
   if (!property || !secret || typeof secret !== 'object' || Array.isArray(secret)) {
     throw new Error('hms_property_credential_mismatch');
   }
-  if (SECRET_BINDING_FIELDS.some((field) => property[field] !== undefined && secret[field] !== property[field])) {
+  if (
+    secret.expectedPropertyCode !== property.propertyCode ||
+    SECRET_BINDING_FIELDS.some(
+      (field) => property[field] !== undefined && secret[field] !== property[field],
+    )
+  ) {
     throw new Error('hms_property_credential_mismatch');
   }
   return secret;
