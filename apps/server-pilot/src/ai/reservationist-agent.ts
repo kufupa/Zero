@@ -105,7 +105,10 @@ const createSchema = JSON.parse(readFileSync(join(TOOLING, 'create-tool.schema.j
 };
 const { shopRow: _shopRow, shop: _shop, result: _result, ...createDefs } = createSchema.$defs;
 
-export function createReservationistTools(runners?: ReservationistRunners) {
+/** No runners (pane analysis) means no tools: the agent only classifies. */
+export function createReservationistTools(
+  runners?: ReservationistRunners,
+): Record<string, ReturnType<typeof createTool>> {
   if (!runners) return {};
   return {
     quote_stay: createTool({
