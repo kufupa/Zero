@@ -143,12 +143,8 @@ async function runFind(ctx) {
   await findOnOpenGuestStay(ctx);
 }
 
-async function runSearchGuest(ctx) {
+async function searchGuest(ctx) {
   const { page, args, result } = ctx;
-  await login(page, ctx.secret);
-  mark(ctx, 'login');
-  await openGuestStay(page);
-  await page.waitForTimeout(1500);
   // The surname goes into the header search; quick-search.mjs nudges the panel open. Enter is never pressed.
   // A panel still showing the history list is enough to read and move its window: the move runs the search.
   const executedPanel = (state) => state.executed;
@@ -190,6 +186,20 @@ async function runSearchGuest(ctx) {
   setOutcome(result, verdict.outcome, verdict.reason);
   if (args.debugHtml || verdict.outcome !== 'ok') await dumpPanelHtml(ctx, panel);
   mark(ctx, 'read');
+}
+
+export async function searchGuestOnOpenGuestStay(ctx) {
+  if (!ctx.result) ctx.result = newLookupResult(ctx.args);
+  await searchGuest(ctx);
+  return ctx.result;
+}
+
+async function runSearchGuest(ctx) {
+  await login(ctx.page, ctx.secret);
+  mark(ctx, 'login');
+  await openGuestStay(ctx.page);
+  await ctx.page.waitForTimeout(1500);
+  await searchGuestOnOpenGuestStay(ctx);
 }
 
 async function drive(ctx) {

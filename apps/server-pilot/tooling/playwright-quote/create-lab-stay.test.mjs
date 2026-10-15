@@ -190,6 +190,28 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   assert.equal(source.includes('Labcancel'), false);
 });
 
+test('proof mode is guarded before browser work and wires read-only reconciliation', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const proofGuard = source.indexOf('proofModeRefusal({');
+  const createDir = source.indexOf('await mkdir(dir');
+  const browserCall = source.indexOf('connectOverCDP');
+  assert.ok(proofGuard !== -1 && proofGuard < createDir && createDir < browserCall);
+  assert.match(source, /argv\.includes\('--proof'\)/);
+  assert.match(source, /PROOF_PROPERTY_HRCEN_REQUIRED/);
+  assert.match(source, /installReadOnlyGuard/);
+  assert.match(source, /await import\('\.\/stay-lookup\.mjs'\)/);
+  assert.doesNotMatch(source, /import \{ findOnOpenGuestStay, searchGuestOnOpenGuestStay \} from '\.\/stay-lookup\.mjs'/);
+  assert.match(source, /findOnOpenGuestStay/);
+  assert.match(source, /searchGuestOnOpenGuestStay/);
+  assert.match(source, /reconcileCreateSave/);
+  assert.match(source, /saveClickMayHaveFired\(error\)/);
+  assert.match(source, /save_click_unconfirmed/);
+  assert.match(source, /result\.saved = proof\.confNo \? true : null/);
+  for (const field of ['confNo', 'readbackMatch', 'mismatches', 'screenshot']) {
+    assert.match(source, new RegExp(`${field}:`));
+  }
+});
+
 test('childAges passes and --shop returns BAR rows without a row click', async () => {
   assert.equal(parseShop(['--request', 'x.json', '--shop']), true);
   assert.equal(parseShop(['--request', 'x.json']), false);
@@ -205,4 +227,47 @@ test('childAges passes and --shop returns BAR rows without a row click', async (
   assert.deepEqual(shop.rows, [{ roomType: 'STQN', code: 'BAR', name: 'Best Available Rate' }]);
   assert.deepEqual(shopRowsFromTexts(['HRCEN: The Centurion Hotel 160']), []);
   assert.throws(() => refuseRateRowClick(), /RATE_ROW_CLICK_REFUSED/);
+});
+
+test('create CLI exits after cleanup and both output streams have flushed', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const cleanup = source.indexOf('await context.close().catch(() => {});');
+  const launcher = source.indexOf('main().then(', cleanup);
+  const flushHelper = source.indexOf('async function flushOutput()', cleanup);
+  assert.ok(cleanup !== -1 && launcher > cleanup);
+  assert.ok(flushHelper > cleanup && flushHelper < launcher);
+  assert.match(source, /process\.stdout\.write\('', resolveOutput\)/);
+  assert.match(source, /process\.stderr\.write\('', resolveError\)/);
+  const completion = source.slice(launcher);
+  const stdoutFlush = completion.indexOf('await flushOutput()');
+  const successExit = completion.indexOf('process.exit(process.exitCode ?? 0)');
+  const errorHandler = completion.indexOf('(error) => {');
+  const stderrWrite = completion.indexOf('process.stderr.write(', errorHandler);
+  const stderrFlush = completion.indexOf('await flushOutput()', errorHandler);
+  const errorExit = completion.indexOf('process.exit(2)', errorHandler);
+  assert.ok(stdoutFlush !== -1 && successExit > stdoutFlush);
+  assert.ok(errorHandler !== -1);
+  assert.ok(stderrWrite > errorHandler);
+  assert.ok(stderrFlush > stderrWrite);
+  assert.ok(errorExit > stderrFlush);
+});
+
+test('proof mode refuses Save when the pre-save guest search is unavailable', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const preSaveSearch = source.indexOf('const existingRows = proofMode');
+  const refusal = source.indexOf('proofPreSaveSearchRefusal(existingRows)');
+  const saveClick = source.indexOf("await clickTip(page, '^Save')");
+  assert.ok(preSaveSearch !== -1 && refusal > preSaveSearch && saveClick > refusal);
+  assert.match(source, /result\.refusalReason = preSaveRefusal/);
+  assert.match(source, /result\.clickedSave = false/);
+});
+
+test('proof mode captures parsed search rows before Save', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const baseline = source.indexOf('const existingRows = proofMode');
+  const saveClick = source.indexOf("await clickTip(page, '^Save')");
+  assert.ok(baseline !== -1 && saveClick > baseline);
+  assert.match(source, /return \{\s*outcome: found\.outcome,\s*rows: found\.rows,/);
+  assert.match(source, /Array\.isArray\(search\.rows\) \? search\.rows : null/);
+  assert.match(source, /existingRows\s*,/);
 });
