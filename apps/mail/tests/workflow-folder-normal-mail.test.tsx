@@ -100,7 +100,7 @@ vi.mock('../components/mail/use-mail', async () => {
   };
 });
 
-vi.mock('../hooks/use-search-labels', () => ({ default: () => ({ labels: [] }) }));
+vi.mock('../hooks/use-labels-search', () => ({ default: () => ({ labels: [] }) }));
 vi.mock('../hooks/use-category-ids', () => ({ default: () => ({ categoryIds: [] }) }));
 vi.mock('../hooks/use-categories', () => ({
   useCategorySettings: () => [],
