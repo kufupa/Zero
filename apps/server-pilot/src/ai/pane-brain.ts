@@ -29,13 +29,15 @@ export async function analyseWithPaneBrain(input: {
 }): Promise<AnalyseQuoteSelectionResult> {
   if (paneBrain(input.env) === 'agent') {
     try {
-      return await analyseSelectionWithAgent({
+      const result = await analyseSelectionWithAgent({
         selection: input.selection,
         model: createAzureLunaModel(),
         deadlineMs: input.deadlineMs,
         treatAs: input.treatAs,
         staffNote: input.staffNote,
       });
+      // The pane's fallback enum has no agent_error; it is an error to staff.
+      return result.source === 'luna' ? result : { ...result, fallbackReason: 'error' };
     } catch {
       return { source: 'regex_fallback', fallbackReason: 'error' };
     }
