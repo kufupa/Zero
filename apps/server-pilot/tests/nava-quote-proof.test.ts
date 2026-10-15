@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Blocker } from '../scripts/nava-ae4-override-proof';
+import { Blocker, type Captured } from '../scripts/nava-ae4-override-proof';
 import { staffQuoteFailureMessage } from '../src/ai/staff-quote-run.js';
 import * as quoteProofDriver from '../scripts/nava-quote-proof';
 import { openThread } from '../scripts/nava-proof-kit';
@@ -396,10 +396,14 @@ describe('quote proof driver regressions', () => {
     expect(Math.abs(clickTimes[0]! - clickTimes[1]!)).toBeLessThan(500);
   }, 15_000);
 
-  it('labels a missing cross-mailbox thread separately from other pane errors', async () => {
-    const pageForError = (message: string) =>
+  it('labels only a NOT_FOUND thread response as a mailbox miss', async () => {
+    const pageForError = (captured: Captured, code?: string | null) =>
       ({
-        goto: async () => undefined,
+        goto: async () => {
+          if (code !== undefined) {
+            captured.outcomes.push({ procedure: 'mail.get', error: { message: 'thread request failed', code } });
+          }
+        },
         url: () => 'https://nava.example.test/nava-preview?thread=thread-a',
         evaluate: async () => ({
           subject: null,
@@ -410,20 +414,23 @@ describe('quote proof driver regressions', () => {
           amendment: null,
           voucher: false,
           aiUnavailable: false,
-          alerts: [message],
+          alerts: ['Could not load this thread.'],
           alerting: true,
           fields: [],
-          statusText: message,
+          statusText: 'Could not load this thread.',
         }),
       }) as never;
+    const openWithCode = (code?: string | null, previousOutcomes: Captured['outcomes'] = []) => {
+      const captured: Captured = { outcomes: previousOutcomes, blocked: [] };
+      return openThread(pageForError(captured, code), 'https://nava.example.test', 'thread-a', captured);
+    };
 
-    for (const message of ['Could not load this thread.', 'NOT_FOUND: thread not found']) {
-      await expect(openThread(pageForError(message), 'https://nava.example.test', 'thread-a')).rejects.toThrow(
-        'thread_not_on_mailbox',
-      );
-    }
+    await expect(openWithCode('NOT_FOUND')).rejects.toThrow('thread_not_on_mailbox');
+    await expect(openWithCode('INTERNAL_SERVER_ERROR')).rejects.toThrow('pane error: INTERNAL_SERVER_ERROR');
+    await expect(openWithCode(null)).rejects.toThrow('pane error');
+    await expect(openWithCode()).rejects.toThrow('pane error');
     await expect(
-      openThread(pageForError('The thread service is temporarily unavailable.'), 'https://nava.example.test', 'thread-a'),
+      openWithCode(undefined, [{ procedure: 'mail.get', error: { message: 'old thread not found', code: 'NOT_FOUND' } }]),
     ).rejects.toThrow('pane error');
   });
 

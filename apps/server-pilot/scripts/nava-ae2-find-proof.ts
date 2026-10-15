@@ -377,7 +377,7 @@ export async function runAe2(config: Ae2Config, log: (line: string) => void): Pr
 
   const steps = async (page: Page, captured: Captured): Promise<void> => {
     // 1. Open the thread, let the pane read it, and wait for the amendment card.
-    await openThread(page, config.baseUrl, threadId);
+    await openThread(page, config.baseUrl, threadId, captured);
     summary.paneType = (await readPane(page, threadId))?.intent ?? null;
     log('pane settled');
     const card = page.locator(CARD);
