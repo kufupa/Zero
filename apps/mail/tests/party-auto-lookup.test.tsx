@@ -88,7 +88,7 @@ function inlinePartyJobTransport(find: PartyFinder): HmsJobTransport {
     queueSearchGuest: async () => ({ runId: null }),
     queueParty: async () => ({ runId: null }),
     jobQueueEnabled: async () => false,
-    findParty: ({ name, kind }) => find(name, kind),
+    findParty: ({ name, kind, threadId }) => find(name, kind, threadId ? { threadId } : undefined),
     jobStatus: async () => null,
     screenshot: async () => ({ status: 'unavailable', reason: 'screenshot_unavailable' }),
   };
@@ -121,7 +121,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     fireEvent.click(confirm);
     expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
-    expect(find).toHaveBeenCalledWith('Woolworths', 'company');
+    expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' });
   });
 
   it('keeps queue-off explicit Find inline and lists manual results for a staff pick', async () => {
@@ -146,7 +146,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     fireEvent.click(within(results).getByRole('button', { name: 'Woolworths Holdings' }));
     expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(2);
-    expect(find).toHaveBeenCalledWith('Woolworths', 'company');
+    expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' });
   });
 
   it('does not queue HMS jobs while typing; explicit Find queues one user lookup', async () => {
@@ -286,7 +286,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
       await screen.findByRole('button', { name: 'Woolworths Holdings' }, { timeout: 3000 }),
     ).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
-    expect(find).toHaveBeenCalledWith('Woolworths', 'company');
+    expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' });
   });
 
   it('keeps Find in HMS visible for an empty Company field, disabled until a name is entered', () => {
@@ -308,7 +308,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     const button = screen.getByRole('button', { name: 'Find in HMS' }) as HTMLButtonElement;
     expect(button.disabled).toBe(false);
     fireEvent.click(button);
-    await waitFor(() => expect(find).toHaveBeenCalledWith('Ab', 'company'));
+    await waitFor(() => expect(find).toHaveBeenCalledWith('Ab', 'company', { threadId: 'thread-1' }));
   });
 
   it('shows manual HMS matches under the party field so staff can confirm one', async () => {
@@ -359,7 +359,9 @@ describe('automatic lookup when the name changes mid-search', () => {
         : Promise.resolve(reply({ outcome: 'no_match' })),
     );
     const { rerender } = render(<Harness find={find} name="Woolworths" />);
-    await waitFor(() => expect(find).toHaveBeenCalledWith('Woolworths', 'company'));
+    await waitFor(() =>
+      expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' }),
+    );
     rerender(<Harness find={find} name="Pick n Pay" />);
     finish(reply({ results: [WOOLWORTHS], best: WOOLWORTHS, searchedFor: 'Woolworths' }));
     rerender(<Harness find={find} name="Woolworths" />);
@@ -377,8 +379,14 @@ describe('the finder passes the kind it was given', () => {
     expect(find).not.toBeNull();
     await find?.('Foschini', 'company');
     await find?.('Foschini');
+    await find?.('Foschini', 'company', { threadId: 'thread-1' });
     expect(mutate).toHaveBeenNthCalledWith(1, { name: 'Foschini', kind: 'company' });
     expect(mutate).toHaveBeenNthCalledWith(2, { name: 'Foschini' });
+    expect(mutate).toHaveBeenNthCalledWith(3, {
+      name: 'Foschini',
+      kind: 'company',
+      threadId: 'thread-1',
+    });
   });
 });
 

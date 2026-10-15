@@ -152,6 +152,16 @@ function uniqueCandidates(candidates: PartyCandidate[]): PartyCandidate[] {
   });
 }
 
+function findWithMail(
+  find: PartyFinder,
+  query: string,
+  kind: StaffQuoteParty['kind'] | undefined,
+  threadId: string | null | undefined,
+): Promise<PartyFindReply> {
+  const mail = threadId?.trim() ? { threadId: threadId.trim() } : undefined;
+  return mail ? find(query, kind, mail) : kind ? find(query, kind) : find(query);
+}
+
 function sameJobName(left: string, right: string): boolean {
   const normalize = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
   return normalize(left) === normalize(right);
@@ -350,7 +360,7 @@ export function PartyPicker({
   }, [jobTransport?.jobQueueEnabled]);
   const autoMemoKey =
     autoLookup && (!jobTransport || queueMode === 'off') && kind && query.length >= AUTO_LOOKUP_MIN_CHARS
-      ? `${kind}:${searchKey(query)}`
+      ? `${kind}:${searchKey(query)}:${threadId ?? ''}`
       : null;
   const autoKey = pickedHere ? null : autoMemoKey;
   const jobResume =
@@ -424,7 +434,7 @@ export function PartyPicker({
     const searchKind = kind;
     let live = true;
     const timer = setTimeout(() => {
-      const entry = startAutoSearch(autoKey, () => find(query, searchKind));
+      const entry = startAutoSearch(autoKey, () => findWithMail(find, query, searchKind, threadId));
       // A search for this name may have finished while the field showed another name: render its reply now.
       if (entry.reply) rerender();
       else void entry.promise.then(() => live && rerender());
@@ -451,7 +461,7 @@ export function PartyPicker({
     }
     setState({ status: 'busy', query });
     try {
-      const reply: PartyFindReply = kind ? await find(query, kind) : await find(query);
+      const reply: PartyFindReply = await findWithMail(find, query, kind, threadId);
       if (token !== latest.current) return;
       const results = reply.results.filter(inScope);
       if (results.length) {

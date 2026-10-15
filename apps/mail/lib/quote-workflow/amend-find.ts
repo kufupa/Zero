@@ -207,7 +207,11 @@ export type HmsJobClient = {
   /** The synchronous find and search, used while the server's job queue is off. */
   findStay?: (input: FindStayInput) => Promise<FindStayReply>;
   searchGuest?: (input: GuestSearchInput) => Promise<GuestSearchReply>;
-  findParty?: (input: { name: string; kind?: 'company' | 'agency' }) => Promise<PartyFindReply>;
+  findParty?: (input: {
+    name: string;
+    kind?: 'company' | 'agency';
+    threadId?: string;
+  }) => Promise<PartyFindReply>;
   jobStatus: (
     input:
       | { runId: string }
@@ -279,7 +283,10 @@ export function amendFindClientFromTrpc(trpc: unknown): HmsJobClient | null {
     ...(find ? { findStay: (input: FindStayInput) => find.mutate(input) } : {}),
     ...(search ? { searchGuest: (input: GuestSearchInput) => search.mutate(input) } : {}),
     ...(party
-      ? { findParty: (input: { name: string; kind?: 'company' | 'agency' }) => party.mutate(input) }
+      ? {
+          findParty: (input: { name: string; kind?: 'company' | 'agency'; threadId?: string }) =>
+            party.mutate(input),
+        }
       : {}),
     jobStatus: (input) => status.query(input),
     screenshot: (input) => shot.query(input),
@@ -355,6 +362,7 @@ export function hmsJobTransport(
             await client.findParty({
               name: request.name,
               ...(request.partyKind ? { kind: request.partyKind } : {}),
+              threadId,
             }),
           ),
         };
