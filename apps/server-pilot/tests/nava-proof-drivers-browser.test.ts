@@ -858,22 +858,48 @@ describe('the active mailbox', () => {
 
 /** A stored quote as in the live incident: 2026-11-02 to 06, one room. `rooms` '' leaves the room count missing. */
 function ae4Page(rooms: string): string {
+  const where = 'stay 1, room 1';
   const body = `
     ${readAsBadge('quote')}
     <section aria-label="Stay">
-      <div hidden>
-        <input type="date" aria-label="Arrival" value="2026-11-02">
-        <input type="date" aria-label="Departure" value="2026-11-06">
-      </div>
-      <button>Change dates ▾</button>
-      <select aria-label="Room type">
-        <option value="">Choose a room type</option>
-        <option value="STQN">Standard Queen (STQN)</option>
-        <option value="STWN" selected>Standard Twin (STWN)</option>
-      </select>
-      <input type="number" aria-label="Rooms" value="${rooms}">
-      <input type="number" aria-label="Adults" value="2">
-      <select aria-label="Meal plan"><option value="unknown">Not stated yet</option><option value="bb" selected>B&amp;B</option></select>
+      <article aria-label="Stay 1 details">
+        <div hidden>
+          <input type="date" aria-label="Arrival" value="2026-11-02">
+          <input type="date" aria-label="Departure" value="2026-11-06">
+        </div>
+        <button>Change dates ▾</button>
+        <select aria-label="Meal plan">
+          <option value="all">All meal plans</option><option value="room_only">Room only</option>
+          <option value="bb" selected>Bed &amp; breakfast</option><option value="dinner_bb">Dinner, bed &amp; breakfast</option>
+        </select>
+        <section aria-label="Room types and occupancy">
+          <div role="table" aria-label="Room types &amp; occupancy"><div role="rowgroup">
+            <div role="row" aria-label="Standard Twin ×${rooms || '?'}"><div role="cell">
+              <select aria-label="Room type">
+                <option value="">Choose a room type</option>
+                <option value="STQN">Standard Queen (STQN)</option>
+                <option value="STWN" selected>Standard Twin (STWN)</option>
+              </select>
+              <div role="group" aria-label="Rooms for ${where}">
+                <button aria-label="Fewer: Rooms for ${where}">−</button><span>${rooms || '–'}</span>
+                <button aria-label="More: Rooms for ${where}">+</button>
+              </div>
+              <input type="number" aria-label="Rooms" class="sr-only" value="${rooms}">
+              <div class="adults">
+                <span><span class="adults-text">2 adults per room</span></span>
+                <button type="button" class="tap" aria-label="Edit adults per room for ${where}">Tap to edit</button>
+                <div class="stepper" hidden>
+                  <div role="group" aria-label="Adult guests per room for ${where}">
+                    <button aria-label="Fewer: Adult guests per room for ${where}">−</button>
+                    <span aria-live="polite">2</span>
+                    <button class="more" aria-label="More: Adult guests per room for ${where}">+</button>
+                  </div>
+                </div>
+              </div>
+            </div></div>
+          </div></div>
+        </section>
+      </article>
     </section>
     <section aria-label="Room 1 price"><button disabled>Discount / override</button></section>`;
   const script = `
@@ -881,7 +907,21 @@ function ae4Page(rooms: string): string {
     document.querySelectorAll('section[aria-label="Stay"] input, section[aria-label="Stay"] select').forEach((el) =>
       el.addEventListener('input', () => trpc('workItems.recordEvent', { field: el.getAttribute('aria-label'), value: el.value })),
     );`;
-  return shell(body, script);
+  const adultsScript = `
+    document.querySelectorAll('.tap').forEach((button) => button.addEventListener('click', () => {
+      button.hidden = true;
+      button.nextElementSibling.hidden = false;
+    }));
+    document.querySelectorAll('.more').forEach((button) => button.addEventListener('click', () => {
+      const group = button.closest('[role="group"]');
+      const count = Number(group.querySelector('span').textContent) || 0;
+      const next = count + 1;
+      group.querySelector('span').textContent = String(next);
+      button.closest('.adults').querySelector('.adults-text').textContent =
+        next + ' ' + (next === 1 ? 'adult' : 'adults') + ' per room';
+      trpc('workItems.recordEvent', { field: 'adults', value: String(next) });
+    }));`;
+  return shell(body, `${script}${adultsScript}`);
 }
 
 const ae4Handlers = (): Record<string, Handler> => ({

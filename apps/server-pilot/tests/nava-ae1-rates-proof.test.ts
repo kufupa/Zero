@@ -1,8 +1,7 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { chromium } from 'playwright';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ae1Failures,
@@ -38,10 +37,6 @@ const BASE = 'https://nava.example.test';
 const here = dirname(fileURLToPath(import.meta.url));
 const mailRoot = join(here, '..', '..', 'mail');
 const mail = (...parts: string[]) => readFileSync(join(mailRoot, ...parts), 'utf8');
-const chromiumBinary = [
-  chromium.executablePath(),
-  '/home/orca/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell',
-].find(existsSync);
 const url = (procedures: string) => `${BASE}/api/trpc/${procedures}?batch=1`;
 const body = (...inputs: unknown[]) =>
   JSON.stringify(Object.fromEntries(inputs.map((input, index) => [String(index), { json: input }])));
@@ -614,46 +609,91 @@ describe('the pane markup the driver reads', () => {
     expect(documents).toContain('Download Excel');
   });
 
-  it.skipIf(!chromiumBinary)(
-    'reads each room row with its stay, its room type options and its counts',
-    async () => {
-      const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
-      try {
-        const page = await browser.newPage();
-        // requirement-card.tsx: per row the Room type select, the Rooms stepper group and sr-only input, and the adults
-        // line; one Meal plan select per stay article, offering "unknown" only while the stay's rows carry no board.
-        const roomRow = (stayNumber: number, roomNumber: number, asked: string, rooms: string, adults: string) => `
-          <div role="row" aria-label="${asked} ×${rooms || '?'}"><div role="cell"><select aria-label="Room type">
-            <option value="">Choose room type</option>
-            <option value="${asked}" selected>Email asked for ${asked} — pick a room type</option>
-            <option value="STWN">Standard Twin (STWN)</option><option value="STQN">Standard Queen (STQN)</option>
-          </select>
-          <div role="group" aria-label="Rooms for stay ${stayNumber}, room ${roomNumber}"><span>${rooms || '–'}</span></div>
-          <input aria-hidden="true" type="number" aria-label="Rooms" class="sr-only" value="${rooms}">
-          <span><span>${adults ? `${adults} ${adults === '1' ? 'adult' : 'adults'} per room` : 'Adults per room not set'}</span></span>
-          <button aria-label="Edit adults per room for stay ${stayNumber}, room ${roomNumber}">Tap to edit</button></div></div>`;
-        const meal = (unknown: boolean) =>
-          `<select aria-label="Meal plan"><option value="all">All meal plans</option><option value="bb"${unknown ? '' : ' selected'}>Bed &amp; breakfast</option>` +
-          `${unknown ? '<option value="unknown">Not stated in email</option>' : ''}</select>`;
-        await page.setContent(`<div data-preview-pane><section aria-label="Stay">
-          <article aria-label="Stay 1 details">${meal(true)}${roomRow(1, 1, 'Single', '', '')}${roomRow(1, 2, 'Double/twin', '', '2')}</article>
-          <article aria-label="Stay 2 details">${meal(false)}${roomRow(2, 1, 'Single', '4', '1')}</article>
-        </section><section aria-label="Availability & rates"><input aria-label="Rooms" value="9"></section></div>`);
-        const read = (await page.evaluate(`(${READ_ROWS_JS})()`)) as {
-          counts: number[];
-          rows: Array<{ stay: number; room: number; roomValue: string; roomOptions: SelectOption[]; rooms: string; adults: string; board: string }>;
+  it('reads each room row with its stay, room type options and counts, reading Meal plan once per stay', () => {
+    type FakeElement = {
+      value?: string;
+      textContent?: string;
+      options?: Array<{ value: string; textContent: string }>;
+      querySelector?: (selector: string) => FakeElement | null;
+      querySelectorAll?: (selector: string) => FakeElement[];
+      closest?: (selector: string) => FakeElement | null;
+      getAttribute?: (name: string) => string | null;
+    };
+    const mealReads = [0, 0];
+    const stayDefs = [
+      { board: 'unknown', rooms: ['', ''], adults: ['', '2'], asked: ['Single', 'Double/twin'] },
+      { board: 'bb', rooms: ['4'], adults: ['1'], asked: ['Single'] },
+    ];
+    const groups: FakeElement[] = [];
+
+    for (const [stayIndex, stayDef] of stayDefs.entries()) {
+      const article: FakeElement = {
+        querySelector: (selector) => {
+          if (selector !== 'select[aria-label="Meal plan"]') return null;
+          mealReads[stayIndex]! += 1;
+          return {
+            value: stayDef.board === 'unknown' ? 'all' : stayDef.board,
+            querySelector: (option) =>
+              option === 'option[value="unknown"]' && stayDef.board === 'unknown' ? { value: 'unknown' } : null,
+          };
+        },
+      };
+      for (const [roomIndex, asked] of stayDef.asked.entries()) {
+        const roomOptions = [
+          { value: '', textContent: 'Choose room type' },
+          { value: asked, textContent: `Email asked for ${asked} — pick a room type` },
+          { value: 'STWN', textContent: 'Standard Twin (STWN)' },
+          { value: 'STQN', textContent: 'Standard Queen (STQN)' },
+        ];
+        const row: FakeElement = {
+          querySelectorAll: (selector) =>
+            selector === 'span'
+              ? [{ textContent: stayDef.adults[roomIndex] ? `${stayDef.adults[roomIndex]} adults per room` : 'Adults per room not set' }]
+              : [],
+          querySelector: (selector) => {
+            if (selector === 'select[aria-label="Room type"]') {
+              return { value: asked, options: roomOptions };
+            }
+            if (selector === 'input[aria-label="Rooms"]') return { value: stayDef.rooms[roomIndex] };
+            return null;
+          },
         };
-        expect(read.counts).toEqual([3, 3, 3, 3, 3]);
-        expect(read.rows.map((row) => [row.stay, row.room, row.roomValue, row.rooms, row.adults, row.board])).toEqual([
-          [1, 1, 'Single', '', '', 'unknown'],
-          [1, 2, 'Double/twin', '', '2', 'unknown'],
-          [2, 1, 'Single', '4', '1', 'bb'],
-        ]);
-        expect(pickRoomOption('Double/twin', read.rows[1]!.roomOptions)?.value).toBe('STWN');
-      } finally {
-        await browser.close();
+        groups.push({
+          getAttribute: (name) =>
+            name === 'aria-label' ? `Rooms for stay ${stayIndex + 1}, room ${roomIndex + 1}` : null,
+          closest: (selector) => {
+            if (selector === '[role="row"]') return row;
+            if (selector === 'article[aria-label$=" details"]') return article;
+            return null;
+          },
+        });
       }
-    },
-    30_000,
-  );
+    }
+
+    const section: FakeElement = { querySelectorAll: () => groups };
+    const pane: FakeElement = { querySelector: (selector) => (selector === 'section[aria-label="Stay"]' ? section : null) };
+    const fakeDocument: FakeElement = { querySelector: (selector) => (selector === '[data-preview-pane]' ? pane : null) };
+    const evaluate = new Function('document', `return (${READ_ROWS_JS})()`) as (document: FakeElement) => {
+      counts: number[];
+      rows: Array<{
+        stay: number;
+        room: number;
+        roomValue: string;
+        roomOptions: SelectOption[];
+        rooms: string;
+        adults: string;
+        board: string;
+      }>;
+    };
+    const read = evaluate(fakeDocument);
+
+    expect(read.counts).toEqual([3, 3, 3, 3, 3]);
+    expect(mealReads).toEqual([1, 1]);
+    expect(read.rows.map((row) => [row.stay, row.room, row.roomValue, row.rooms, row.adults, row.board])).toEqual([
+      [1, 1, 'Single', '', '', 'unknown'],
+      [1, 2, 'Double/twin', '', '2', 'unknown'],
+      [2, 1, 'Single', '4', '1', 'bb'],
+    ]);
+    expect(pickRoomOption('Double/twin', read.rows[1]!.roomOptions)?.value).toBe('STWN');
+  });
 });
