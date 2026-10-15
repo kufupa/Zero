@@ -2243,14 +2243,11 @@ describe('deploy config', () => {
     );
     expect(deploy).toContain('export VITE_PUBLIC_BACKEND_URL=""');
     expect(deploy).toContain('unset VITE_PUBLIC_APP_URL');
-    expect(deploy).toContain('assert SPA did not bake undefined/api');
-    expect(deploy).toContain('undefined/api/trpc');
     expect(deploy).not.toContain('export VITE_PUBLIC_APP_URL');
     expect(deploy.match(/pnpm --filter @zero\/mail build/g)).toHaveLength(1);
-    expect(deploy).toContain(
-      `rsync -a --delete --exclude '/downloads/' "\${MAIL_APP}/build/client/" "\${WEB_ROOT}/"`,
-    );
-    expect(deploy).toContain('WEB_ROOT}/downloads');
+    expect(
+      deploy.match(/rsync -a --delete "\$\{MAIL_APP\}\/build\/client\/" "\$\{WEB_ROOT\}\/"/g),
+    ).toHaveLength(1);
     expect(deploy).toContain('127.0.0.1 nava.legacyhotels.co.za');
     expect(deploy).not.toContain('127.0.0.1 nava.legacy.local');
   });

@@ -53,8 +53,6 @@ export const aiWorkflowRunKindEnum = pgEnum('ai_workflow_run_kind', [
   'inbound_triage',
   'candidate_draft',
   'feedback_extraction',
-  'read_tool',
-  'shadow_prediction',
 ]);
 
 export const aiWorkflowRunStateEnum = pgEnum('ai_workflow_run_state', [
@@ -527,14 +525,6 @@ export const aiWorkflowRun = pgTable(
     modelId: text('model_id').notNull(),
     promptVersion: text('prompt_version').notNull(),
     promptHash: text('prompt_hash'),
-    /** Closed typed read request; private server-side input, never model text. */
-    readRequest: jsonb('read_request').$type<Record<string, unknown>>(),
-    /** Durable typed receipt reference for read_tool runs. */
-    readResultRef: text('read_result_ref'),
-    /** Private typed receipt body; populated only after a fenced read succeeds. */
-    readResult: jsonb('read_result').$type<Record<string, unknown>>(),
-    /** Receipt TTL copied from the trusted typed result evidence. */
-    readResultExpiresAt: timestamp('read_result_expires_at'),
     state: aiWorkflowRunStateEnum('state').notNull().default('queued'),
     executorLane: aiExecutorLaneEnum('executor_lane').notNull().default('default'),
     claimOwner: text('claim_owner'),
@@ -559,9 +549,6 @@ export const aiWorkflowRun = pgTable(
   },
   (t) => [
     uniqueIndex('ai_workflow_run_idempotency_uidx').on(t.idempotencyKey),
-    uniqueIndex('ai_workflow_run_read_result_ref_uidx')
-      .on(t.readResultRef)
-      .where(sql`${t.readResultRef} IS NOT NULL`),
     index('ai_workflow_run_claim_idx').on(t.state, t.nextRunAt, t.createdAt),
     index('ai_workflow_run_lane_claim_idx').on(t.executorLane, t.state, t.nextRunAt, t.createdAt),
     index('ai_workflow_run_transport_idx').on(t.transportId, t.state, t.createdAt),

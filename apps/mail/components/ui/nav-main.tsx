@@ -344,7 +344,6 @@ export function NavMain({ items, unreadCountsSnapshot }: NavMainProps) {
           );
         })}
         {!pathname.includes('/settings') &&
-          !pathname.startsWith('/lab') &&
           !isBottomNav &&
           state !== 'collapsed' &&
           !isFrontendOnlyDemo() && (

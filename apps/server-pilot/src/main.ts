@@ -6,7 +6,6 @@ import { createAuth } from './lib/auth.js';
 import { resolveAuthSessionProfile } from './lib/auth-profile.js';
 import { closeDb } from './db/client.js';
 import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js';
-import { createWiredCenturionLabIndexHandler } from './http/centurion-lab-index.js';
 import { createEmlDownloadHandler } from './http/eml-download.js';
 import { appRouter } from './trpc/router.js';
 
@@ -34,8 +33,6 @@ app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => auth.handler(c.req.raw)
 // CID inline images: cookie session + mailbox_access join (no active-transport
 // header — <img> tags cannot set custom headers). Must mount before /api/trpc/*.
 const inlineAttachmentHandler = createWiredInlineAttachmentHandler(auth);
-const centurionLabIndexHandler = createWiredCenturionLabIndexHandler(auth);
-app.get('/api/lab/centurion-index', (c) => centurionLabIndexHandler(c.req.raw));
 app.get(
   '/api/mail/messages/:messageId/attachments/:attachmentId/inline',
   async (c) =>

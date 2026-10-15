@@ -19,17 +19,9 @@ export default [
 
   // Pilot email/password (Better Auth). Signup stays closed.
   route('/zero/login', '(auth)/zero/login/page.tsx'),
-  route('/outlook-pane', '(routes)/outlook-pane/page.tsx'),
 
   layout('(routes)/layout.tsx', [
     route('/developer', '(routes)/developer/page.tsx'),
-    layout(
-      '(routes)/lab/layout.tsx',
-      prefix('/lab', [
-        route('/centurion', '(routes)/lab/centurion/page.tsx'),
-        route('/centurion/:tool', '(routes)/lab/centurion/[tool]/page.tsx'),
-      ]),
-    ),
     layout(
       '(routes)/mail/layout.tsx',
       prefix('/mail', [
@@ -54,7 +46,6 @@ export default [
         route('/security', '(routes)/settings/security/page.tsx'),
         route('/shortcuts', '(routes)/settings/shortcuts/page.tsx'),
         route('/catchup-upload', '(routes)/settings/catchup-upload/page.tsx'),
-        route('/outlook-addin', '(routes)/settings/outlook-addin/page.tsx'),
         route('/*', '(routes)/settings/[...settings]/page.tsx'),
       ]),
     ),

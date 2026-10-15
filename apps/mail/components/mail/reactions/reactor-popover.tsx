@@ -54,13 +54,13 @@ export const ReactorPopover: React.FC<ReactorPopoverProps> = ({
         </div>
 
         <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
-          {group.users.map((user) => {
+          {group.users.map((user, idx) => {
             const displayName = user.userName || user.email;
             const initials = getInitials(user.userName, user.email);
 
             return (
               <div
-                key={user.email}
+                key={`${user.email}-${idx}`}
                 className="flex items-center justify-between gap-2.5 rounded-md p-1.5 text-sm transition-colors hover:bg-gray-100 dark:hover:bg-[#333333]"
               >
                 <div className="flex items-center gap-2.5 min-w-0">

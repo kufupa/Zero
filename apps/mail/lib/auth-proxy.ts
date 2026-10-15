@@ -1,10 +1,9 @@
 import { createAuthClient } from 'better-auth/client';
-import { resolvePublicBackendUrl } from './public-backend-url';
 import { isFrontendOnlyDemo } from './demo/runtime';
 import { getDemoSession } from './demo/session';
 
 const authClient = createAuthClient({
-  baseURL: resolvePublicBackendUrl(),
+  baseURL: import.meta.env.VITE_PUBLIC_BACKEND_URL,
   fetchOptions: {
     credentials: 'include',
   },

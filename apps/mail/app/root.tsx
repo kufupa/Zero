@@ -17,8 +17,9 @@ import { siteConfig } from '@/lib/site-config';
 import { signOut } from '@/lib/auth-client';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import type { Route } from './+types/root';
-import { AlertCircle, ArrowLeft, Loader2 } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 import { m } from '@/paraglide/messages';
+import { ArrowLeft } from 'lucide-react';
 import * as Sentry from '@sentry/react';
 import './globals.css';
 const DeferredDubAnalytics = lazy(() => import('@/components/analytics/deferred-dub-analytics'));
@@ -90,13 +91,13 @@ export function Layout({ children }: PropsWithChildren) {
   );
 }
 
-export function HydrateFallback() {
-  return (
-    <div className="flex h-screen w-full items-center justify-center" data-testid="root-hydrate-fallback">
-      <Loader2 className="h-10 w-10 animate-spin" />
-    </div>
-  );
-}
+// export function HydrateFallback() {
+//   return (
+//     <div className="flex h-screen w-full items-center justify-center">
+//       <Loader2 className="h-10 w-10 animate-spin" />
+//     </div>
+//   );
+// }
 
 export default function App() {
   return <Outlet />;

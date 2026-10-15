@@ -54,6 +54,13 @@ Message-header reading action (`.eml` button and three-dots menu item) that expo
 
 Mail-view distinction between an action attached to a rendered message, which targets that message, and a toolbar, context-menu, or hotkey action, which targets the thread's chronological latest message. This remains true when the reading pane presents messages newest-first; visual position does not redefine the thread-level target.
 
+### Bulk selection precedence
+
+The hotkey arbitration rule where multi-selecting email threads supersedes the reading pane's single-thread hotkey scope and forces list-level bulk shortcuts to remain active even while an email thread is displayed on screen.
+
+Enables collection actions (bulk delete, mark read or unread, archive, cancel selection) to operate directly on the selected set without requiring the user to close the reading pane first. Once selection clears, hotkey resolution automatically reverts to the open thread. Distinct from Reply action scope (which governs message-level versus thread-level targeting) and from Close-to-inbox (which clears thread display upon selection reset).
+
+
 ### Ingest mailbox
 
 The single POP3 sink account (`navaai@legacyhotels.co.za` on the hotel Zimbra pilot) that the EC2 worker drains. Hotel BCC / header-routing waves may still stamp `X-Zero-Mailbox` so messages land in the correct logical mailbox transport. Older docs may say `nava@legacyhotel.com` — that identity was replaced for the real-mail cutover.
@@ -69,6 +76,10 @@ When `INGEST_REQUIRE_OWNER_HEADER=false`, sink mail without `X-Zero-Mailbox` sti
 ### Quarantine promote
 
 Ops one-shot (`promote-quarantine.ts`) that re-runs S3-stored quarantine MIME through `persistInboundMessage` (atomic quarantine delete) so backlog leaves quarantine into the correct transport and inbound triage enqueues normally.
+
+### Quarantine parse-failure drain
+
+Ops recovery that drains S3-backed `mail_ingest_quarantine` rows with `reason = 'parse_failure'` back through `persistInboundMessage` once an underlying database migration, schema mismatch, or worker dependency failure has been resolved. Distinct from Quarantine promote (which targets `missing_owner_header` routing) and from Raw MIME rehydrate (which rebuilds wiped tables from unindexed S3 keys).
 
 ### Raw MIME rehydrate
 
@@ -504,28 +515,6 @@ Mandatory dual review on every implementation plan: `gstack-plan-eng-review` as 
 
 Hard override that forbids Vitest (and similar runners) against pilot/production Postgres, including under overnight autonomy and “make tests green” pressure. Prefer disposable non-production databases for DB-required tests; prove pilot with read-only SQL/API, health checks, or purpose-built non-test scripts. Related: Pilot RDS vitest refuse, VITEST_ALLOW_PILOT_RDS, Wipe-safe pilot verify.
 
-## Outlook desktop taskpane domain
-
-### Outlook Task Pane
-
-Native WinForms `CustomTaskPane` instance hosted in Classic Outlook 2016 Explorer/Inspector windows, docked to the right edge and running an embedded Microsoft Edge WebView2 runtime.
-
-### VSTO WebView2 Bridge
-
-The .NET Framework 4.8 C# COM add-in registered in `HKCU\Software\Microsoft\Office\Outlook\Addins` that instantiates WebView2, points it to the canonical HTTPS task pane URL, and brokers bidirectional JSON messaging between the Outlook COM object model and web DOM.
-
-### Nava Task Pane Route
-
-The dedicated, responsive web route (`/outlook-pane`) in `apps/mail` styled for a narrow (~350–450px) taskpane viewport, rendering AI reservationist cards, active email inspection, and pilot actions.
-
-### Workstation Client
-
-Physical or virtual Windows PC on the hotel LAN running Classic Outlook 2016 with local POP3/PST storage against the hotel Zimbra server, connecting to `https://nava.legacyhotels.co.za` over hotel LAN/OpenVPN.
-
-### Workstation Bridge Protocol
-
-The versioned JSON RPC message contract exchanged over `window.chrome.webview.postMessage` and `WebMessageReceived` bridging Outlook COM capabilities (active email headers, selection change events, reply draft insertion) into the web client.
-
 ## Flagged ambiguities
 
 - **"read" / grey list styling** had been treated as “already replied” in shared Centurion triage — unread/grey is Ball-in-court auto-read; ever answered is hasReplied.
@@ -539,7 +528,6 @@ The versioned JSON RPC message contract exchanged over `window.chrome.webview.po
 - **"never-spam"** names the auto-triage allowlist (not a ban on manual mark-spam or ingest block); the same hotel domain list also seeds Image trust defaults — spam auto-path and image-loading are still distinct product surfaces.
 - **"nava URL"** after the hotel-HTTPS cutover means the Canonical origin on hotel DNS/VPN — not `nava.legacy.local` (legacy CORS overlap only).
 - **"SynXis exclusion"** had been applied only at actionable-thread filter — within-thread Trigger inbound can still be a Channel-automated inbound unless selection hard-excludes it; thread filter alone does not protect uEPV.
-- **"Office.js Web Add-in"** had been assumed to work across all Outlook clients — modern Office.js web taskpanes strictly require an Exchange or Microsoft 365 mailbox and fail to load on POP3/IMAP accounts in Outlook 2016 desktop. VSTO COM Add-ins (.NET/C#) remain mandatory for non-Exchange local POP3 environments.
 - **"first inbound"** is not the same as Trigger inbound — received-day / early demand scripts used first inbound; unanswered EPV must not silently fall back to it when no guest/agent trigger exists.
 
 ## Pilot measurement
