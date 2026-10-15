@@ -29,6 +29,7 @@
     "eval:party": "tsx scripts/party-match-eval.ts",
     "test": "vitest run",
     "check:entities": "node scripts/check-entity-literals.mjs",
+    "check:agent-finish": "tsx scripts/agent-finish-check.ts tests/fixtures/agent-finish/pass.json",
     "test:outlook-sync": "tsx scripts/outlook-sync-test-gate.ts",
     "test:ingestion": "INGESTION_DB_TEST_REQUIRED=1 vitest run --maxWorkers=1 tests/ingest-schema-drift.test.ts tests/pop3-worker.test.ts tests/recover-parse-failure.test.ts tests/migration-compatibility.test.ts",
     "test:rocketseed": "vitest run tests/transport-mode.test.ts tests/fixture-loopback.test.ts tests/worker-mode.test.ts tests/rocketseed-returned-copy.test.ts tests/rocketseed-returned-copy-correlation.test.ts tests/cid-images.test.ts tests/ingest-duplicate-cleanup.test.ts tests/sanitize-email-html.test.ts tests/safe-inline-image.test.ts tests/inline-attachment-http.test.ts tests/rocketseed-flow.test.ts tests/rocketseed-ci-contract.test.ts",
