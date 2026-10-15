@@ -2,6 +2,7 @@
  * One AOP scorer (Driver C aop-eval). Promptfoo, aop-eval CLI, and GEPA import this.
  * Same-move = staffMoveToOperations + decisionToOperations + opKey. No mail bodies.
  */
+import { closeSync, openSync, readSync } from 'node:fs';
 import { RequestContext } from '@mastra/core/request-context';
 import {
   agentThreadPrompt,
@@ -20,7 +21,7 @@ import {
   type ReservationistDecision,
   type ReservationistRunners,
 } from '../../src/ai/reservationist-agent.js';
-import { assertNotTestSplit } from './split.js';
+import { assertNotTestSplit, evalTestSplitUnlocked, type SplitTaggedRow } from './split.js';
 
 const SCORABLE = new Set(['confirmationNumber', 'arrivalDate', 'departureDate', 'rooms', 'adults']);
 
@@ -66,6 +67,73 @@ export type AgentEvalDeps = {
   aopSops?: Record<string, string>;
   readFile?: (filePath: string, encoding: 'utf8') => string;
 };
+
+function* iterateJsonlLines(
+  filePath: string,
+  readFile?: AgentEvalDeps['readFile'],
+): Generator<string> {
+  if (readFile) {
+    const text = readFile(filePath, 'utf8');
+    let start = 0;
+    while (start < text.length) {
+      const nl = text.indexOf('\n', start);
+      const end = nl === -1 ? text.length : nl;
+      const line = text.slice(start, end);
+      start = nl === -1 ? text.length : nl + 1;
+      if (line.trim()) yield line;
+    }
+    return;
+  }
+  const fd = openSync(filePath, 'r');
+  try {
+    let buf = '';
+    const chunk = Buffer.alloc(64 * 1024);
+    while (true) {
+      const n = readSync(fd, chunk, 0, chunk.length);
+      if (n === 0) break;
+      buf += chunk.toString('utf8', 0, n);
+      let nl = buf.indexOf('\n');
+      while (nl !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (line.trim()) yield line;
+        nl = buf.indexOf('\n');
+      }
+    }
+    if (buf.trim()) yield buf;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function peekSplitAndId(line: string): SplitTaggedRow & { parsed: Record<string, unknown> } {
+  const parsed = JSON.parse(line) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('jsonl row must be an object');
+  }
+  const rec = parsed as Record<string, unknown>;
+  const inbound = rec.inbound;
+  return {
+    split: rec.split,
+    inbound: inbound && typeof inbound === 'object' ? { id: (inbound as { id?: unknown }).id } : undefined,
+    parsed: rec,
+  };
+}
+
+/** Stream jsonl; drop split=test before keeping the row unless EVAL_UNLOCK_TEST=1. */
+export function readUnlockedRows<T = Record<string, unknown>>(
+  filePath: string,
+  readFile?: AgentEvalDeps['readFile'],
+): T[] {
+  const unlocked = evalTestSplitUnlocked();
+  const rows: T[] = [];
+  for (const line of iterateJsonlLines(filePath, readFile)) {
+    const peek = peekSplitAndId(line);
+    if (!unlocked && peek.split === 'test') continue;
+    rows.push(peek.parsed as T);
+  }
+  return rows;
+}
 
 export function opKey(ops: { operation: string }[]): string {
   return [...new Set(ops.map((row) => row.operation))].sort().join('+') || 'none';

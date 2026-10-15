@@ -1,7 +1,8 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { loadAopGoldRows, writeAopEvalOut } from '../evals/agent/aop-eval.ts';
 import {
   callApi,
   generateAgentPromptfooTests,
@@ -9,6 +10,7 @@ import {
   type AgentReplayDeps,
 } from '../evals/agent/provider.ts';
 import {
+  readUnlockedRows,
   scoreReplayOutput,
   scoreRow,
   type EvalGoldRow,
@@ -277,7 +279,7 @@ describe('locked test split isolation', () => {
     else process.env.EVAL_UNLOCK_TEST = previousUnlock;
   });
 
-  it('callApi refuses a test-row id with LOCKED_TEST_SPLIT and does not run the agent', async () => {
+  it('callApi refuses a test-row id and does not run the agent', async () => {
     const dir = await tmpDir();
     const { pairsPath } = await writeSplitFixtures(dir);
     let ran = 0;
@@ -294,7 +296,7 @@ describe('locked test split isolation', () => {
         }),
       },
     );
-    expect(result.error).toBe('LOCKED_TEST_SPLIT');
+    expect(result.error).toMatch(/LOCKED_TEST_SPLIT|snapshot row not found: msg-test-a/);
     expect(ran).toBe(0);
   });
 
@@ -330,5 +332,76 @@ describe('locked test split isolation', () => {
     } finally {
       console.warn = originalWarn;
     }
+  });
+});
+
+describe('readUnlockedRows', () => {
+  const previousUnlock = process.env.EVAL_UNLOCK_TEST;
+
+  afterEach(() => {
+    if (previousUnlock === undefined) delete process.env.EVAL_UNLOCK_TEST;
+    else process.env.EVAL_UNLOCK_TEST = previousUnlock;
+  });
+
+  it('drops test-split rows while streaming', async () => {
+    const dir = await tmpDir();
+    const { pairsPath } = await writeSplitFixtures(dir);
+    delete process.env.EVAL_UNLOCK_TEST;
+    const rows = readUnlockedRows<{ inbound?: { id?: string }; split?: string }>(pairsPath);
+    expect(rows.map((row) => row.inbound?.id)).toEqual(['msg-train-a', 'msg-train-b', 'msg-dev-a']);
+    expect(rows.some((row) => row.split === 'test')).toBe(false);
+  });
+});
+
+describe('aop-eval --out', () => {
+  const previousUnlock = process.env.EVAL_UNLOCK_TEST;
+
+  afterEach(() => {
+    if (previousUnlock === undefined) delete process.env.EVAL_UNLOCK_TEST;
+    else process.env.EVAL_UNLOCK_TEST = previousUnlock;
+  });
+
+  it('never contains a test id', async () => {
+    const dir = await tmpDir();
+    const goldPath = path.join(dir, 'gold.jsonl');
+    const outPath = path.join(dir, 'out.jsonl');
+    delete process.env.EVAL_UNLOCK_TEST;
+    await writeFile(
+      goldPath,
+      [
+        {
+          split: 'train',
+          pair_id: 'msg-train-a',
+          inbound: { id: 'msg-train-a' },
+          label: {
+            workflow: 'quote_availability',
+            staff_move: 'priced_quote',
+            hms_work_implied: [],
+            required_fields: [],
+          },
+        },
+        {
+          split: 'test',
+          pair_id: 'msg-test-a',
+          inbound: { id: 'msg-test-a' },
+          label: {
+            workflow: 'amend',
+            staff_move: 'amend_done',
+            hms_work_implied: [],
+            required_fields: [],
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join('\n') + '\n',
+    );
+    const rows = loadAopGoldRows(goldPath);
+    writeAopEvalOut(
+      outPath,
+      rows.map((row) => scoreRow(row, null, 'skip')),
+    );
+    const out = await readFile(outPath, 'utf8');
+    expect(out).not.toMatch(/msg-test-a/);
+    expect(out).toMatch(/msg-train-a/);
   });
 });

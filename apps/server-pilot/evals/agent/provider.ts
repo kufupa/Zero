@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { decisionToOperations, type SnapshotRow } from '../../src/ai/agent-decision-to-ops.js';
 import {
   agentAcceptsAopSops,
+  readUnlockedRows,
   runReservationistEvalAgent,
   type AgentEvalDeps,
 } from './score-row.js';
@@ -15,7 +16,6 @@ import {
   LOCKED_TEST_SPLIT,
   assertNotTestSplit,
   evalTestSplitUnlocked,
-  isLockedTestSplit,
   rowMessageId,
   warnUnlockedTestSplit,
   type SplitTaggedRow,
@@ -60,12 +60,9 @@ function loadSops(sopsPath: string, readFile?: AgentReplayDeps['readFile']): Rec
 }
 
 function loadSnapshotRow(pairsPath: string, messageId: string, readFile?: AgentReplayDeps['readFile']): SnapshotRow {
-  for (const line of readUtf8(pairsPath, readFile).split('\n')) {
-    if (!line.trim()) continue;
-    const row = JSON.parse(line) as SnapshotRow & SplitTaggedRow;
+  for (const row of readUnlockedRows<SnapshotRow & SplitTaggedRow>(pairsPath, readFile)) {
     const id = rowMessageId(row);
-    if (!id) continue;
-    if (id !== messageId) continue;
+    if (!id || id !== messageId) continue;
     assertNotTestSplit(row);
     return row;
   }
@@ -154,17 +151,9 @@ export function generateAgentPromptfooTests(
     warnUnlockedTestSplit();
   }
   const allowed = new Set<string>();
-  const testIds = new Set<string>();
-  for (const line of readUtf8(cli.pairsPath, deps.readFile).split('\n')) {
-    if (!line.trim()) continue;
-    const row = JSON.parse(line) as SplitTaggedRow;
+  for (const row of readUnlockedRows<SplitTaggedRow>(cli.pairsPath, deps.readFile)) {
     const id = rowMessageId(row);
     if (!id) continue;
-    if (isLockedTestSplit(row)) {
-      testIds.add(id);
-      if (cli.split === 'test') allowed.add(id);
-      continue;
-    }
     if (row.split === cli.split) allowed.add(id);
   }
   const tests: AgentPromptfooTest[] = [];
@@ -180,7 +169,6 @@ export function generateAgentPromptfooTests(
     };
     const messageId = (row.message_id ?? row.messageId)?.trim();
     if (!messageId) continue;
-    if (cli.split !== 'test' && testIds.has(messageId)) continue;
     if (!allowed.has(messageId)) continue;
     const workflow = row.workflow || 'unknown';
     tests.push({
