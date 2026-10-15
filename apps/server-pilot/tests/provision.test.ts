@@ -1,16 +1,23 @@
 import {
+  applyProvision,
+  applyProvisionThenWriteCredentials,
+  planProvision,
+  PROVISION_SPEC,
+  type ProvisionSpec,
+} from '../src/db/provision.js';
+import {
   AYANDA_TRANSPORT_ID,
   DAVINCI_TRANSPORT_ID,
   FAITH_TRANSPORT_ID,
-  NAVA_USER_EMAIL,
   NAVA_USER_ID,
   TRANSPORT_ID,
 } from '../src/db/seed.js';
 import { mailCategory, mailboxAccess, mailboxTransport, mailLabel } from '../src/db/schema/mail.js';
-import { applyProvision, planProvision, PROVISION_SPEC } from '../src/db/provision.js';
 import { account, user as userTable } from '../src/db/schema/auth.js';
+import { TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 import type { DB } from '../src/db/client.js';
 import { describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
 
 type UserRow = { id: string; name: string; email: string; emailVerified?: boolean };
 type AccountRow = {
@@ -99,12 +106,15 @@ function createFakeDb(init: Partial<FakeState> = {}) {
             const rows = Array.isArray(value) ? value : [value];
             const applyInsert = () => {
               const key = tableKey(table);
-              if (!key) return;
+              if (!key) return [];
               const bucket = state[key] as Array<Record<string, unknown>>;
+              const inserted: Record<string, unknown>[] = [];
               for (const row of rows) {
                 if (bucket.some((existing) => existing.id === row.id)) continue;
                 bucket.push(row);
+                inserted.push(row);
               }
+              return inserted;
             };
             const thenable = {
               onConflictDoNothing() {
@@ -113,15 +123,20 @@ function createFakeDb(init: Partial<FakeState> = {}) {
               onConflictDoUpdate() {
                 return thenable;
               },
+              returning() {
+                return thenable;
+              },
               then(resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) {
-                applyInsert();
-                return Promise.resolve(undefined).then(resolve, reject);
+                return Promise.resolve(applyInsert()).then(resolve, reject);
               },
             };
             return thenable;
           },
         };
         return query;
+      },
+      execute() {
+        return Promise.resolve([]);
       },
       delete() {
         throw new Error('delete forbidden');
@@ -142,8 +157,58 @@ function createFakeDb(init: Partial<FakeState> = {}) {
 const navaUser: UserRow = {
   id: NAVA_USER_ID,
   name: 'Nava AI',
-  email: NAVA_USER_EMAIL,
+  email: 'nava@example.test',
   emailVerified: true,
+};
+
+const hotel = (id: string, email: string, displayName: string) => ({
+  id,
+  email,
+  ownerHeaderValue: email,
+  displayName,
+  aliases: [`${id}@example.com`] as const,
+});
+
+const TEST_SPEC: ProvisionSpec = {
+  users: [
+    { id: 'user-hotel-a', name: 'Hotel A', email: 'hotel-a@example.test' },
+    { id: 'user-hotel-b', name: 'Hotel B', email: 'hotel-b@example.test' },
+    { id: 'user-hotel-c', name: 'Hotel C', email: 'hotel-c@example.test' },
+  ],
+  transports: [
+    hotel('transport-hotel-a', 'hotel-a@example.test', 'Hotel A'),
+    hotel('transport-hotel-b', 'hotel-b@example.test', 'Hotel B'),
+    hotel('transport-hotel-c', 'hotel-c@example.test', 'Hotel C'),
+  ],
+  grants: [
+    {
+      userId: 'user-hotel-a',
+      transportId: 'transport-hotel-a',
+      role: 'owner',
+      isDefault: true,
+    },
+    {
+      userId: 'user-hotel-b',
+      transportId: 'transport-hotel-b',
+      role: 'owner',
+      isDefault: true,
+    },
+    {
+      userId: 'user-hotel-c',
+      transportId: 'transport-hotel-c',
+      role: 'owner',
+      isDefault: true,
+    },
+    { userId: NAVA_USER_ID, transportId: 'transport-hotel-a', role: 'owner', isDefault: false },
+    { userId: NAVA_USER_ID, transportId: 'transport-hotel-b', role: 'owner', isDefault: false },
+    { userId: NAVA_USER_ID, transportId: 'transport-hotel-c', role: 'owner', isDefault: false },
+  ],
+};
+
+const ONE_HOTEL: ProvisionSpec = {
+  users: [TEST_SPEC.users[0]!],
+  transports: [TEST_SPEC.transports[0]!],
+  grants: TEST_SPEC.grants.filter((g) => g.transportId === 'transport-hotel-a'),
 };
 
 describe('PROVISION_SPEC', () => {
@@ -152,6 +217,11 @@ describe('PROVISION_SPEC', () => {
       'user-ayanda',
       'user-davinci',
       'user-faith',
+    ]);
+    expect(PROVISION_SPEC.users.map((u) => u.name)).toEqual([
+      'Da Vinci Reservations',
+      'Faith',
+      'Ayanda',
     ]);
     expect(PROVISION_SPEC.transports.map((t) => t.id).sort()).toEqual([
       AYANDA_TRANSPORT_ID,
@@ -182,18 +252,19 @@ describe('PROVISION_SPEC', () => {
 describe('planProvision', () => {
   it('on empty (navaai already present) creates 3 users, missing transports, and grants', async () => {
     const { db } = createFakeDb({ users: [navaUser] });
-    const plan = await planProvision(db, PROVISION_SPEC);
+    const plan = await planProvision(db, TEST_SPEC);
     expect(plan.usersToCreate.map((u) => u.id).sort()).toEqual([
-      'user-ayanda',
-      'user-davinci',
-      'user-faith',
+      'user-hotel-a',
+      'user-hotel-b',
+      'user-hotel-c',
     ]);
     expect(plan.transportsToCreate.map((t) => t.id).sort()).toEqual([
-      AYANDA_TRANSPORT_ID,
-      DAVINCI_TRANSPORT_ID,
-      FAITH_TRANSPORT_ID,
+      'transport-hotel-a',
+      'transport-hotel-b',
+      'transport-hotel-c',
     ]);
     expect(plan.grantsToCreate).toHaveLength(6);
+    expect(plan.inactiveTransports).toEqual([]);
     expect(plan.alreadyPresent.users).toEqual([]);
     expect(plan.alreadyPresent.transports).toEqual([]);
     expect(plan.alreadyPresent.grants).toEqual([]);
@@ -201,35 +272,107 @@ describe('planProvision', () => {
 
   it('when all present returns an empty diff', async () => {
     const { db } = createFakeDb({
-      users: [navaUser, ...PROVISION_SPEC.users.map((u) => ({ ...u, emailVerified: true }))],
-      transports: PROVISION_SPEC.transports.map((t) => ({
+      users: [navaUser, ...TEST_SPEC.users.map((u) => ({ ...u, emailVerified: true }))],
+      transports: TEST_SPEC.transports.map((t) => ({
         id: t.id,
         email: t.email,
+        ownerHeaderValue: t.ownerHeaderValue,
+        displayName: t.displayName,
         isActive: true,
       })),
-      grants: PROVISION_SPEC.grants.map((g) => ({
+      grants: TEST_SPEC.grants.map((g) => ({
         id: `access-${g.userId}-${g.transportId}`,
         ...g,
       })),
     });
-    const plan = await planProvision(db, PROVISION_SPEC);
+    const plan = await planProvision(db, TEST_SPEC);
     expect(plan.usersToCreate).toEqual([]);
     expect(plan.transportsToCreate).toEqual([]);
     expect(plan.grantsToCreate).toEqual([]);
-    expect(plan.alreadyPresent.users.sort()).toEqual(['user-ayanda', 'user-davinci', 'user-faith']);
+    expect(plan.inactiveTransports).toEqual([]);
+    expect(plan.alreadyPresent.users.sort()).toEqual(['user-hotel-a', 'user-hotel-b', 'user-hotel-c']);
     expect(plan.alreadyPresent.transports.sort()).toEqual([
-      AYANDA_TRANSPORT_ID,
-      DAVINCI_TRANSPORT_ID,
-      FAITH_TRANSPORT_ID,
+      'transport-hotel-a',
+      'transport-hotel-b',
+      'transport-hotel-c',
     ]);
     expect(plan.alreadyPresent.grants).toHaveLength(6);
+  });
+
+  it('email under another id is alreadyPresent; grants use the existing id', async () => {
+    const { db } = createFakeDb({
+      users: [
+        navaUser,
+        {
+          id: 'legacy-7',
+          name: 'Legacy Hotel A',
+          email: 'HOTEL-A@example.test',
+          emailVerified: true,
+        },
+      ],
+    });
+    const plan = await planProvision(db, ONE_HOTEL);
+    expect(plan.usersToCreate).toEqual([]);
+    expect(plan.alreadyPresent.users).toEqual(['legacy-7']);
+    expect(plan.grantsToCreate).toEqual([
+      {
+        userId: 'legacy-7',
+        transportId: 'transport-hotel-a',
+        role: 'owner',
+        isDefault: true,
+      },
+      { userId: NAVA_USER_ID, transportId: 'transport-hotel-a', role: 'owner', isDefault: false },
+    ]);
+  });
+
+  it('id and email pointing at two different existing users is a plan error', async () => {
+    const { db } = createFakeDb({
+      users: [
+        navaUser,
+        {
+          id: 'user-hotel-a',
+          name: 'Other',
+          email: 'other-hotel@example.test',
+          emailVerified: true,
+        },
+        {
+          id: 'legacy-7',
+          name: 'Legacy Hotel A',
+          email: 'hotel-a@example.test',
+          emailVerified: true,
+        },
+      ],
+    });
+    await expect(planProvision(db, ONE_HOTEL)).rejects.toThrow(
+      /provision plan error:.*different existing users/,
+    );
+  });
+
+  it('reports inactive transports without implying apply will activate them', async () => {
+    const transport = TEST_SPEC.transports[0]!;
+    const { db } = createFakeDb({
+      users: [navaUser],
+      transports: [
+        {
+          id: transport.id,
+          email: transport.email,
+          ownerHeaderValue: transport.ownerHeaderValue,
+          displayName: transport.displayName,
+          isActive: false,
+        },
+      ],
+    });
+    const plan = await planProvision(db, ONE_HOTEL);
+    expect(plan.transportsToCreate).toEqual([]);
+    expect(plan.inactiveTransports).toEqual(['transport-hotel-a']);
+    expect('transportsToActivate' in plan).toBe(false);
   });
 });
 
 describe('applyProvision', () => {
   it('never issues delete or update', async () => {
     const { db } = createFakeDb({ users: [navaUser] });
-    const plan = await planProvision(db, PROVISION_SPEC);
+    const plan = await planProvision(db, TEST_SPEC);
     await applyProvision(
       db,
       plan,
@@ -238,7 +381,7 @@ describe('applyProvision', () => {
   });
 
   it('does not re-password an existing user', async () => {
-    const existing = PROVISION_SPEC.users[0]!;
+    const existing = TEST_SPEC.users[0]!;
     const { db, state } = createFakeDb({
       users: [navaUser, { ...existing, emailVerified: true }],
       accounts: [
@@ -249,7 +392,7 @@ describe('applyProvision', () => {
         },
       ],
     });
-    const plan = await planProvision(db, PROVISION_SPEC);
+    const plan = await planProvision(db, TEST_SPEC);
     expect(plan.usersToCreate.map((u) => u.id)).not.toContain(existing.id);
     await applyProvision(
       db,
@@ -261,7 +404,7 @@ describe('applyProvision', () => {
 
   it('grants hotel users only own transport; navaai non-default on all three', async () => {
     const { db, state } = createFakeDb({ users: [navaUser] });
-    const plan = await planProvision(db, PROVISION_SPEC);
+    const plan = await planProvision(db, TEST_SPEC);
     await applyProvision(
       db,
       plan,
@@ -276,32 +419,136 @@ describe('applyProvision', () => {
           role: g.role,
           isDefault: g.isDefault,
         }));
-    expect(grantsFor('user-davinci')).toEqual([
-      { userId: 'user-davinci', transportId: DAVINCI_TRANSPORT_ID, role: 'owner', isDefault: true },
+    expect(grantsFor('user-hotel-a')).toEqual([
+      { userId: 'user-hotel-a', transportId: 'transport-hotel-a', role: 'owner', isDefault: true },
     ]);
-    expect(grantsFor('user-faith')).toEqual([
-      { userId: 'user-faith', transportId: FAITH_TRANSPORT_ID, role: 'owner', isDefault: true },
+    expect(grantsFor('user-hotel-b')).toEqual([
+      { userId: 'user-hotel-b', transportId: 'transport-hotel-b', role: 'owner', isDefault: true },
     ]);
-    expect(grantsFor('user-ayanda')).toEqual([
-      { userId: 'user-ayanda', transportId: AYANDA_TRANSPORT_ID, role: 'owner', isDefault: true },
+    expect(grantsFor('user-hotel-c')).toEqual([
+      { userId: 'user-hotel-c', transportId: 'transport-hotel-c', role: 'owner', isDefault: true },
     ]);
     expect(grantsFor(NAVA_USER_ID)).toEqual(
       expect.arrayContaining([
         {
           userId: NAVA_USER_ID,
-          transportId: DAVINCI_TRANSPORT_ID,
+          transportId: 'transport-hotel-a',
           role: 'owner',
           isDefault: false,
         },
-        { userId: NAVA_USER_ID, transportId: FAITH_TRANSPORT_ID, role: 'owner', isDefault: false },
-        { userId: NAVA_USER_ID, transportId: AYANDA_TRANSPORT_ID, role: 'owner', isDefault: false },
+        {
+          userId: NAVA_USER_ID,
+          transportId: 'transport-hotel-b',
+          role: 'owner',
+          isDefault: false,
+        },
+        {
+          userId: NAVA_USER_ID,
+          transportId: 'transport-hotel-c',
+          role: 'owner',
+          isDefault: false,
+        },
       ]),
     );
     expect(grantsFor(NAVA_USER_ID)).toHaveLength(3);
     expect(state.grants.every((g) => g.transportId !== TRANSPORT_ID)).toBe(true);
-    const second = await planProvision(db, PROVISION_SPEC);
+    const second = await planProvision(db, TEST_SPEC);
     expect(second.usersToCreate).toEqual([]);
     expect(second.transportsToCreate).toEqual([]);
     expect(second.grantsToCreate).toEqual([]);
+  });
+
+  it('grants the existing user id when the spec email already belongs to another id', async () => {
+    const { db, state } = createFakeDb({
+      users: [
+        navaUser,
+        {
+          id: 'legacy-7',
+          name: 'Legacy Hotel A',
+          email: 'hotel-a@example.test',
+          emailVerified: true,
+        },
+      ],
+      accounts: [{ id: 'cred-legacy-7', userId: 'legacy-7', password: 'KEEP-HASH' }],
+    });
+    const plan = await planProvision(db, ONE_HOTEL);
+    await applyProvision(db, plan, {});
+    expect(state.accounts.find((a) => a.userId === 'legacy-7')?.password).toBe('KEEP-HASH');
+    expect(state.users.some((u) => u.id === 'user-hotel-a')).toBe(false);
+    expect(state.grants.filter((g) => g.transportId === 'transport-hotel-a').map((g) => g.userId).sort()).toEqual(
+      ['legacy-7', NAVA_USER_ID].sort(),
+    );
+  });
+
+  it('throws on a stale user insert and does not write the credentials file', async () => {
+    const existing = TEST_SPEC.users[0]!;
+    const { db, state } = createFakeDb({
+      users: [navaUser, { ...existing, emailVerified: true }],
+      accounts: [{ id: `cred-${existing.id}`, userId: existing.id, password: 'KEEP-HASH' }],
+    });
+    const plan = await planProvision(db, TEST_SPEC);
+    const stale = {
+      ...plan,
+      usersToCreate: [existing, ...plan.usersToCreate],
+    };
+    let wrote = false;
+    await expect(
+      applyProvisionThenWriteCredentials(
+        db,
+        stale,
+        Object.fromEntries(
+          stale.usersToCreate.map((u) => [u.email, `pw-${u.id}`]),
+        ),
+        () => {
+          wrote = true;
+        },
+      ),
+    ).rejects.toThrow('stale plan, re-run dry-run');
+    expect(wrote).toBe(false);
+    expect(state.accounts.find((a) => a.userId === existing.id)?.password).toBe('KEEP-HASH');
+  });
+});
+
+describe.skipIf(!TEST_DB_AVAILABLE)('planProvision/applyProvision (disposable PostgreSQL)', () => {
+  it('grants an existing-email user and rolls back a stale apply', async () => {
+    await withSeededTestDb(async (db) => {
+      await db.insert(userTable).values({
+        id: 'legacy-7',
+        name: 'Legacy Hotel A',
+        email: 'hotel-a@example.test',
+        emailVerified: true,
+      });
+      const plan = await planProvision(db, ONE_HOTEL);
+      expect(plan.usersToCreate).toEqual([]);
+      expect(plan.alreadyPresent.users).toEqual(['legacy-7']);
+      expect(plan.grantsToCreate.map((g) => g.userId).sort()).toEqual(
+        ['legacy-7', NAVA_USER_ID].sort(),
+      );
+      await applyProvision(db, plan, {});
+      const grants = await db
+        .select({ userId: mailboxAccess.userId, transportId: mailboxAccess.transportId })
+        .from(mailboxAccess)
+        .where(eq(mailboxAccess.transportId, 'transport-hotel-a'));
+      expect(grants.map((g) => g.userId).sort()).toEqual(['legacy-7', NAVA_USER_ID].sort());
+
+      const stale = {
+        ...plan,
+        usersToCreate: [{ id: 'user-hotel-a', name: 'Hotel A', email: 'hotel-a-new@example.test' }],
+      };
+      await db.insert(userTable).values({
+        id: 'user-hotel-a',
+        name: 'Already',
+        email: 'hotel-a-new@example.test',
+        emailVerified: true,
+      });
+      await expect(
+        applyProvision(db, stale, { 'hotel-a-new@example.test': 'pw-should-not-land' }),
+      ).rejects.toThrow('stale plan, re-run dry-run');
+      const accounts = await db
+        .select({ id: account.id, userId: account.userId })
+        .from(account)
+        .where(eq(account.userId, 'user-hotel-a'));
+      expect(accounts).toEqual([]);
+    });
   });
 });

@@ -5,6 +5,7 @@ import { hashPassword } from 'better-auth/crypto';
 import type { PilotUserSpec } from './seed.js';
 import type { DB } from './client.js';
 import * as seed from './seed.js';
+import { sql } from 'drizzle-orm';
 
 const hotel = (id: string, email: string, displayName: string, aliases: readonly string[]) => ({
   id,
@@ -22,7 +23,7 @@ const grant = (userId: string, transportId: string, isDefault: boolean) => ({
 
 export const PROVISION_SPEC = {
   users: [
-    { id: 'user-davinci', name: 'Da Vinci', email: seed.DAVINCI_TRANSPORT_EMAIL },
+    { id: 'user-davinci', name: 'Da Vinci Reservations', email: seed.DAVINCI_TRANSPORT_EMAIL },
     { id: 'user-faith', name: 'Faith', email: seed.FAITH_TRANSPORT_EMAIL },
     { id: 'user-ayanda', name: 'Ayanda', email: seed.AYANDA_TRANSPORT_EMAIL },
   ],
@@ -56,19 +57,85 @@ export const PROVISION_SPEC = {
   ],
 };
 
-export type ProvisionSpec = typeof PROVISION_SPEC;
-export type ProvisionTransportSpec = ProvisionSpec['transports'][number];
-export type ProvisionGrantSpec = ProvisionSpec['grants'][number];
+export type ProvisionSpec = {
+  users: readonly PilotUserSpec[];
+  transports: readonly ProvisionTransportSpec[];
+  grants: readonly ProvisionGrantSpec[];
+};
+export type ProvisionTransportSpec = {
+  id: string;
+  email: string;
+  ownerHeaderValue: string;
+  displayName: string;
+  aliases: readonly string[];
+};
+export type ProvisionGrantSpec = {
+  userId: string;
+  transportId: string;
+  role: 'owner';
+  isDefault: boolean;
+};
 export type ProvisionPlan = {
   usersToCreate: PilotUserSpec[];
   transportsToCreate: ProvisionTransportSpec[];
-  transportsToActivate: string[];
+  inactiveTransports: string[];
   grantsToCreate: ProvisionGrantSpec[];
   alreadyPresent: { users: string[]; transports: string[]; grants: string[] };
   transportDrift: Array<{ id: string; field: string; expected: unknown; actual: unknown }>;
 };
 
+export const STALE_PLAN_MESSAGE = 'stale plan, re-run dry-run';
+
 const grantRowId = (g: ProvisionGrantSpec) => `access-${g.userId}-${g.transportId}`;
+
+function emailKey(email: string): string {
+  return email.toLowerCase();
+}
+
+function resolveSpecUsers(spec: ProvisionSpec, rows: Array<{ id: string; email: string }>): {
+  usersToCreate: PilotUserSpec[];
+  alreadyUsers: string[];
+  effectiveUserId: Map<string, string>;
+} {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const byEmail = new Map<string, Array<{ id: string; email: string }>>();
+  for (const row of rows) {
+    const key = emailKey(row.email);
+    const list = byEmail.get(key) ?? [];
+    list.push(row);
+    byEmail.set(key, list);
+  }
+
+  const usersToCreate: PilotUserSpec[] = [];
+  const alreadyUsers: string[] = [];
+  const effectiveUserId = new Map<string, string>();
+
+  for (const user of spec.users) {
+    const idMatch = byId.get(user.id);
+    const emailMatches = byEmail.get(emailKey(user.email)) ?? [];
+    if (emailMatches.length > 1) {
+      throw new Error(
+        `provision plan error: ${user.id} email maps to multiple existing users (${emailMatches.map((r) => r.id).join(', ')})`,
+      );
+    }
+    const emailMatch = emailMatches[0];
+    if (idMatch && emailMatch && idMatch.id !== emailMatch.id) {
+      throw new Error(
+        `provision plan error: ${user.id} and email point to different existing users (${idMatch.id} vs ${emailMatch.id})`,
+      );
+    }
+    const existing = idMatch ?? emailMatch;
+    if (existing) {
+      alreadyUsers.push(existing.id);
+      effectiveUserId.set(user.id, existing.id);
+    } else {
+      usersToCreate.push(user);
+      effectiveUserId.set(user.id, user.id);
+    }
+  }
+
+  return { usersToCreate, alreadyUsers, effectiveUserId };
+}
 
 export async function planProvision(db: DB, spec: ProvisionSpec): Promise<ProvisionPlan> {
   const userRows = await db.select({ id: userTable.id, email: userTable.email }).from(userTable);
@@ -85,21 +152,13 @@ export async function planProvision(db: DB, spec: ProvisionSpec): Promise<Provis
     .select({ userId: mailboxAccess.userId, transportId: mailboxAccess.transportId })
     .from(mailboxAccess);
 
-  const userIds = new Set(userRows.map((row) => row.id));
-  const userEmails = new Set(userRows.map((row) => row.email));
+  const { usersToCreate, alreadyUsers, effectiveUserId } = resolveSpecUsers(spec, userRows);
   const transportsById = new Map(transportRows.map((row) => [row.id, row]));
   const grantKeys = new Set(grantRows.map((row) => `${row.userId}\0${row.transportId}`));
 
-  const usersToCreate: PilotUserSpec[] = [];
-  const alreadyUsers: string[] = [];
-  for (const user of spec.users) {
-    if (userIds.has(user.id) || userEmails.has(user.email)) alreadyUsers.push(user.id);
-    else usersToCreate.push(user);
-  }
-
   const transportsToCreate: ProvisionTransportSpec[] = [];
   const alreadyTransports: string[] = [];
-  const transportsToActivate: string[] = [];
+  const inactiveTransports: string[] = [];
   const transportDrift: ProvisionPlan['transportDrift'] = [];
   for (const transport of spec.transports) {
     const existing = transportsById.get(transport.id);
@@ -108,7 +167,7 @@ export async function planProvision(db: DB, spec: ProvisionSpec): Promise<Provis
       continue;
     }
     alreadyTransports.push(transport.id);
-    if (existing.isActive === false) transportsToActivate.push(transport.id);
+    if (existing.isActive === false) inactiveTransports.push(transport.id);
     for (const field of ['email', 'displayName', 'ownerHeaderValue'] as const) {
       if (transport[field] !== existing[field]) {
         transportDrift.push({
@@ -124,19 +183,27 @@ export async function planProvision(db: DB, spec: ProvisionSpec): Promise<Provis
   const grantsToCreate: ProvisionGrantSpec[] = [];
   const alreadyGrants: string[] = [];
   for (const grant of spec.grants) {
-    if (grantKeys.has(`${grant.userId}\0${grant.transportId}`))
-      alreadyGrants.push(grantRowId(grant));
-    else grantsToCreate.push(grant);
+    const resolved: ProvisionGrantSpec = {
+      ...grant,
+      userId: effectiveUserId.get(grant.userId) ?? grant.userId,
+    };
+    if (grantKeys.has(`${resolved.userId}\0${resolved.transportId}`))
+      alreadyGrants.push(grantRowId(resolved));
+    else grantsToCreate.push(resolved);
   }
 
   return {
     usersToCreate,
     transportsToCreate,
-    transportsToActivate,
+    inactiveTransports,
     grantsToCreate,
     alreadyPresent: { users: alreadyUsers, transports: alreadyTransports, grants: alreadyGrants },
     transportDrift,
   };
+}
+
+function insertOrStale<T>(rows: T[]): void {
+  if (rows.length === 0) throw new Error(STALE_PLAN_MESSAGE);
 }
 
 export async function applyProvision(
@@ -145,37 +212,47 @@ export async function applyProvision(
   credentials: Record<string, string>,
 ): Promise<void> {
   await db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext('nava-provision'), 0)`);
     for (const spec of plan.usersToCreate) {
       const password = credentials[spec.email];
       if (!password) throw new Error(`provision missing password for ${spec.id}`);
-      await tx
-        .insert(userTable)
-        .values({ id: spec.id, name: spec.name, email: spec.email, emailVerified: true })
-        .onConflictDoNothing({ target: userTable.id });
-      await tx
-        .insert(account)
-        .values({
-          id: seed.credentialAccountId(spec.id),
-          userId: spec.id,
-          accountId: spec.id,
-          providerId: 'credential',
-          password: await hashPassword(password),
-        })
-        .onConflictDoNothing({ target: account.id });
+      insertOrStale(
+        await tx
+          .insert(userTable)
+          .values({ id: spec.id, name: spec.name, email: spec.email, emailVerified: true })
+          .onConflictDoNothing({ target: userTable.id })
+          .returning({ id: userTable.id }),
+      );
+      insertOrStale(
+        await tx
+          .insert(account)
+          .values({
+            id: seed.credentialAccountId(spec.id),
+            userId: spec.id,
+            accountId: spec.id,
+            providerId: 'credential',
+            password: await hashPassword(password),
+          })
+          .onConflictDoNothing({ target: account.id })
+          .returning({ id: account.id }),
+      );
     }
     for (const spec of plan.transportsToCreate) {
-      await tx
-        .insert(mailboxTransport)
-        .values({
-          id: spec.id,
-          email: spec.email,
-          ownerHeaderValue: spec.ownerHeaderValue,
-          mailboxType: 'personal',
-          displayName: spec.displayName,
-          isActive: true,
-          sendFromConfig: { aliases: [...spec.aliases] },
-        })
-        .onConflictDoNothing({ target: mailboxTransport.id });
+      insertOrStale(
+        await tx
+          .insert(mailboxTransport)
+          .values({
+            id: spec.id,
+            email: spec.email,
+            ownerHeaderValue: spec.ownerHeaderValue,
+            mailboxType: 'personal',
+            displayName: spec.displayName,
+            isActive: true,
+            sendFromConfig: { aliases: [...spec.aliases] },
+          })
+          .onConflictDoNothing({ target: mailboxTransport.id })
+          .returning({ id: mailboxTransport.id }),
+      );
       await seed.seedSpamLabel(tx, spec.id);
       await seed.seedAiManagedCategories(tx, spec.id);
     }
@@ -192,4 +269,20 @@ export async function applyProvision(
         .onConflictDoNothing({ target: mailboxAccess.id });
     }
   });
+}
+
+export async function applyProvisionThenWriteCredentials(
+  db: DB,
+  plan: ProvisionPlan,
+  credentials: Record<string, string>,
+  write: (payload: Record<string, { password: string }>) => void,
+): Promise<void> {
+  await applyProvision(db, plan, credentials);
+  const payload: Record<string, { password: string }> = {};
+  for (const user of plan.usersToCreate) {
+    const password = credentials[user.email];
+    if (!password) throw new Error(`provision missing password for ${user.id}`);
+    payload[user.email] = { password };
+  }
+  write(payload);
 }

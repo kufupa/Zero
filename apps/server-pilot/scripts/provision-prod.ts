@@ -1,12 +1,13 @@
 /** Additive provision runner. Dry-run default. --apply inserts only; never prunes. Never Secrets Manager. */
 import {
-  applyProvision,
+  applyProvisionThenWriteCredentials,
   planProvision,
   PROVISION_SPEC,
+  STALE_PLAN_MESSAGE,
   type ProvisionPlan,
 } from '../src/db/provision.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
-import { closeSync, openSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, openSync, writeSync } from 'node:fs';
 import * as schema from '../src/db/schema/index.js';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomBytes } from 'node:crypto';
@@ -34,7 +35,10 @@ function printPlan(plan: ProvisionPlan): void {
     'transportsToCreate',
     plan.transportsToCreate.map((r) => r.id),
   );
-  line('transportsToActivate', plan.transportsToActivate);
+  line(
+    'inactiveTransports (needs separate action; provisioner never activates)',
+    plan.inactiveTransports,
+  );
   line(
     'grantsToCreate',
     plan.grantsToCreate.map((r) => `access-${r.userId}-${r.transportId}`),
@@ -84,15 +88,17 @@ async function main(): Promise<void> {
       console.log('dry-run only (never prunes); pass --apply --credentials-out <path> to insert');
       return;
     }
+    const credentialsOut = flags.credentialsOut;
+    if (!credentialsOut) throw new Error('--apply requires --credentials-out <path>');
+    if (existsSync(credentialsOut))
+      throw new Error(`refusing to overwrite existing credentials file: ${credentialsOut}`);
     const credentials: Record<string, string> = {};
-    const filePayload: Record<string, { password: string }> = {};
     for (const user of plan.usersToCreate) {
-      const password = randomBytes(18).toString('base64url');
-      credentials[user.email] = password;
-      filePayload[user.email] = { password };
+      credentials[user.email] = randomBytes(18).toString('base64url');
     }
-    writeCredentialsFile(flags.credentialsOut!, filePayload);
-    await applyProvision(db, plan, credentials);
+    await applyProvisionThenWriteCredentials(db, plan, credentials, (payload) => {
+      writeCredentialsFile(credentialsOut, payload);
+    });
     console.log('provision apply complete (insert-only; never prunes)');
   } finally {
     await conn.end();
@@ -100,6 +106,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('provision failed:', err);
+  const message = err instanceof Error ? err.message : String(err);
+  if (message === STALE_PLAN_MESSAGE) console.error(STALE_PLAN_MESSAGE);
+  else console.error('provision failed:', err);
   process.exit(1);
 });
