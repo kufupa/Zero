@@ -2,6 +2,7 @@ import {
   amendmentFromAnalysis,
   analyseQuoteSelection,
   buildQuoteWorkflowPrompt,
+  isNonQuoteLunaWorkflow,
   K2_MAPPING,
   mapLlmDecision,
   partyNotGuest,
@@ -112,6 +113,13 @@ describe('lunaAnalysisSchema', () => {
       note: 'x',
     }));
     expect(() => lunaAnalysisSchema.parse(analysis({ tasks: nine }))).toThrow();
+  });
+
+  it('keeps optional todoTarget and still parses old payloads without it', () => {
+    expect(lunaAnalysisSchema.parse(analysis()).todoTarget).toBeUndefined();
+    expect(
+      lunaAnalysisSchema.parse(analysis({ workflow: 'hms_todo', todoTarget: 'create' })).todoTarget,
+    ).toBe('create');
   });
 
   it('accepts amend and cancel workflows, with amendment fields optional for old payloads', () => {
@@ -804,6 +812,15 @@ describe('mapLlmDecision', () => {
 
   it('maps other to other with no groups prefilled', () => {
     const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis({ workflow: 'other' })));
+    expect(mapped.intent).toBe('other');
+    expect(mapped.groups).toEqual([]);
+  });
+
+  it('treats skip as a non-quote workflow like other, hiding quote groups', () => {
+    expect(isNonQuoteLunaWorkflow('skip')).toBe(true);
+    expect(isNonQuoteLunaWorkflow('other')).toBe(true);
+    expect(isNonQuoteLunaWorkflow('quote')).toBe(false);
+    const mapped = mapLlmDecision(lunaAnalysisSchema.parse(analysis({ workflow: 'skip' })));
     expect(mapped.intent).toBe('other');
     expect(mapped.groups).toEqual([]);
   });

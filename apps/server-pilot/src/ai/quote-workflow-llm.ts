@@ -358,10 +358,11 @@ export function isAmendOrCancelWorkflow(
   return workflow === 'amend' || workflow === 'cancel';
 }
 
-/** Holding / out-of-scope workflows: hide the quote UI the same way `other` does. */
+/** Holding / out-of-scope / no-action workflows: hide the quote UI the same way `other` does. */
 export function isNonQuoteLunaWorkflow(workflow: LunaAnalysis['workflow']): boolean {
   return (
     workflow === 'other' ||
+    workflow === 'skip' ||
     isHoldingMoveWorkflow(workflow) ||
     isAmendOrCancelWorkflow(workflow)
   );

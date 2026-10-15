@@ -68,6 +68,36 @@ describe('paneAnalysisToOperations', () => {
     ]);
   });
 
+  it('maps skip to none with unknownReason null', () => {
+    expect(paneAnalysisToOperations({ workflow: 'skip' })).toEqual([
+      {
+        operation: 'none',
+        needLevel: 'not_needed',
+        requiredFields: [],
+        candidateTool: null,
+        unknownReason: null,
+      },
+    ]);
+    expect(paneAnalysisToOperations({ workflow: 'skip' })).toEqual(
+      decisionToOperations(decision('skip'), []),
+    );
+  });
+
+  it('maps hms_todo create onto goldOp create, and missing target onto unknown', () => {
+    expect(paneAnalysisToOperations({ workflow: 'hms_todo', todoTarget: 'create' })).toEqual([
+      requiredOp('create', 'hms_create_reservation'),
+    ]);
+    expect(paneAnalysisToOperations({ workflow: 'hms_todo' })).toEqual([
+      {
+        operation: 'unknown',
+        needLevel: 'not_needed',
+        requiredFields: [],
+        candidateTool: null,
+        unknownReason: 'hms_todo',
+      },
+    ]);
+  });
+
   it('matches decisionToOperations goldOp semantics for the shared workflows', () => {
     expect(paneAnalysisToOperations({ workflow: 'quote' })).toEqual(
       decisionToOperations(decision('quote'), []),
