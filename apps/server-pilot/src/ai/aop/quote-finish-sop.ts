@@ -7,7 +7,7 @@ AOP-1 finish (not the spine). For a mail that meets this condition:
 
 1. Quote accepted / "please book" on a thread this hotel already quoted → create. That wins over staying quote because dates are given.
 2. Re-price: a date, room or number change on this quote thread stays quote, not amend, unless a confirmation number is already on the stay.
-3. Dates: missing departure → assume 1 night and say so in replyDraft. Missing arrival → still quote; list missing; no tools. Do not open with a clarifying question. Headcount-only (~10+) with no room split: one rooms/sharing question only if rooms cannot be derived.
+3. Dates: missing departure → assume 1 night and say so in replyDraft. Missing arrival → still quote; list missing; no tools. Do not open with a clarifying question. Headcount-only with no room split: still quote; assume twin sharing for the room count and say so in replyDraft. Never switch to clarify.
 4. Defaults: no board → B&B. No occupancy → 1 adult/room. Rooms from guest total. Unresolved type → all types.
 5. quote_stay: call it. Unavailable or error → still quote. replyDraft = short holding text that staff will price. No invented rates. No hms_todo.
 6. Availability (when counts exist): call decideQuoteAvailability. full → quote. partial → quote, replyDraft = replyLine ("We have X of the Y rooms for <dates>; shall I proceed with X?"). sold_out → quote, replyDraft = the one-line decline. For this mail, do not offer another date or room type.
