@@ -343,3 +343,32 @@ describe('guest and arrival from the voucher text', () => {
     ).toEqual({ lastName: null, arrival: null });
   });
 });
+
+describe('guest under a Client Details heading', () => {
+  const read = (pdf: string) => extractVoucherGuest({ subject: 'Voucher', bodyText: 'Please find voucher attached', attachmentTexts: [pdf] });
+
+  it('reads one guest on the line under the heading, with or without the hotel name first', () => {
+    expect(read('Client Details\n   Proof Labtest (1 Pax) 0820000000\nCheck in: 12 Nov 2026')).toEqual({ lastName: 'Labtest', arrival: '2026-11-12' });
+    expect(read('Client Details\nLABTEST/PROOF (1 Pax) 0820000000')).toEqual({ lastName: 'LABTEST', arrival: null });
+    expect(read('Client Details\n\nThe Sample Hotel Proof Labtest Ms (1 Pax)')).toEqual({ lastName: 'Labtest', arrival: null });
+  });
+
+  it('gives no name without the pax anchor, or for more than one guest', () => {
+    expect(read('Client Details\nProof Labtest 0820000000')).toEqual({ lastName: null, arrival: null });
+    expect(read('Client Details\nProof Labtest (2 Pax)')).toEqual({ lastName: null, arrival: null });
+    expect(read('Client Details\nProof Labtest & Mary Sample (1 Pax)')).toEqual({ lastName: null, arrival: null });
+    expect(read('Client Details\nProof Mary Anne Jane Labtest Sample (1 Pax)')).toEqual({ lastName: null, arrival: null });
+  });
+
+  it('gives no name when the heading line itself carries text, such as an agency name', () => {
+    expect(read('Client Details  Sample Travel\nProof Labtest (1 Pax)')).toEqual({ lastName: null, arrival: null });
+  });
+
+  it('lists both names for staff when the heading and a Guest label disagree', () => {
+    expect(read('Client Details\nProof Labtest (1 Pax)\nGuest: Sample')).toEqual({
+      lastName: null,
+      arrival: null,
+      conflicts: { lastNames: ['Labtest', 'Sample'], arrivals: [] },
+    });
+  });
+});

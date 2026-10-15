@@ -223,6 +223,25 @@ function surnameOnly(value: string): string | null {
   return isGuestSurname(whole) ? whole : null;
 }
 
+// Travel-agent vouchers put the lead guest on the line under a "Client Details" heading: "<names> (1 Pax) <phone>",
+// sometimes after the hotel's own name. Read only that shape, for one guest; anything else gives no name.
+const GUEST_HEADING = /^\s*(?:client|guest|passenger|traveller)\s+details\s*$/i;
+const HEADED_GUEST = /^\s*(.+?)\s*\(\s*(\d+)\s*pax\s*\)/i;
+const HOTEL_PREFIX = /^\s*(?:the\s+)?(?:[A-Za-z'-]+\s+){0,3}hotel\s+/i;
+const HEADED_NAME_WORDS_MAX = 4;
+const HEADING_LOOKAHEAD_LINES = 3;
+
+/** The surname under a guest heading, or null when the block is not one named guest. */
+function headedGuestSurname(lines: string[], index: number): string | null {
+  const next = lines.slice(index + 1, index + 1 + HEADING_LOOKAHEAD_LINES).find((line) => line.trim());
+  const match = next ? HEADED_GUEST.exec(next) : null;
+  if (!match || Number(match[2]) !== 1) return null;
+  const name = match[1]!.replace(HOTEL_PREFIX, '');
+  const words = name.split(/\s+/).filter((word) => word && !TITLE.test(word));
+  if (words.length > HEADED_NAME_WORDS_MAX || /[&,]|\band\b/i.test(name)) return null;
+  return surnameFrom(name);
+}
+
 type LabelledValue = { label: string; value: string; before: string };
 
 // Each labelled value on one line, with the text of its own field before the label. A value runs from its label to the
@@ -259,7 +278,12 @@ export function extractVoucherGuest(input: {
   const days = new Set<string>();
   // A guest value that runs into an unknown field may have its surname in the wrong word, so no surname is taken from it.
   let guestUnclear = false;
-  for (const line of sources.join('\n').split(/\r?\n/)) {
+  const lines = sources.join('\n').split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    if (GUEST_HEADING.test(line)) {
+      const surname = headedGuestSurname(lines, index);
+      if (surname && !surnames.has(surname.toLowerCase())) surnames.set(surname.toLowerCase(), surname);
+    }
     for (const field of labelledValues(line, GUEST_LABEL_START)) {
       // The exclusion is per field: "Agency guest: ..." is skipped, but "Guest: Smith, John  Company: Acme" keeps Smith.
       if (NOT_THE_GUEST.test(field.before)) continue;
