@@ -55,7 +55,7 @@ describe('pickReplyLine', () => {
     const plain = pickReplyLine({ code: 'S', attached: true });
     expect(plain.line).toMatch(/^Good day,/);
     expect(plain.line).toMatch(/please see attached/i);
-    const invoice = pickReplyLine({ code: 'S', documentKind: 'invoice' });
+    const invoice = pickReplyLine({ code: 'S', attached: true, documentKind: 'invoice' });
     expect(invoice.line.toLowerCase()).toContain('invoice');
   });
 
@@ -80,6 +80,7 @@ describe('pickReplyLine', () => {
 
   it('S without an attached document does not say please see attached', () => {
     expect(() => pickReplyLine({ code: 'S' })).toThrow(/attached|documentKind/i);
+    expect(() => pickReplyLine({ code: 'S', attached: false, documentKind: 'invoice' })).toThrow(/attached/i);
     expect(() => pickReplyLine({ code: REPLY_CODE_FOR_WORKFLOW.send_document })).toThrow(
       /attached|documentKind/i,
     );
@@ -129,7 +130,7 @@ describe('REPLY_LINES_SOP', () => {
     expect(REPLY_LINES_SOP).toMatch(/Good day,/);
     expect(REPLY_LINES_SOP).toMatch(/acknowledge/);
     expect(REPLY_LINES_SOP).toMatch(/payment_ack/);
-    expect(REPLY_LINES_SOP).toMatch(/forward_to_partner/);
+    expect(REPLY_LINES_SOP).not.toMatch(/forward_to_partner|please contact/);
   });
 
   it('opens with its own entry condition and never overrides rules globally', () => {

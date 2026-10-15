@@ -45,10 +45,10 @@ export const pickReplyLineInputSchema = z
         message: 'code B requires confirmationNumber',
       });
     }
-    if (value.code === 'S' && value.attached !== true && !oneLine(value.documentKind)) {
+    if (value.code === 'S' && value.attached !== true) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'code S requires attached: true or documentKind',
+        message: 'code S requires attached: true',
       });
     }
   });
@@ -72,7 +72,7 @@ export type PickReplyLineInput = z.input<typeof pickReplyLineInputSchema>;
 export type PickReplyLineOutput = z.infer<typeof pickReplyLineOutputSchema>;
 
 export const pickReplyLineDescription =
-  'Build the Centurion one-line staff reply for a visible-reply move. Call when workflow is acknowledge, payment_ack, amend, cancel, create, send_document or forward_to_partner and staff would send a one-liner rather than stay silent. Pass code K (received), C (requires done: amended/cancelled/released), B (requires confirmationNumber; booked + pro forma to follow), S (requires attached:true or documentKind), or R (please contact dest; redirectTo or partnerDestination). Do not call B/C/S unless the HMS write saved or the document is attached. Output.line is replyDraft; no sign-off — the pane adds the signature.';
+  'Build the Centurion one-line staff reply for a visible-reply move. Call when workflow is acknowledge, payment_ack, amend, cancel, create, send_document or forward_to_partner and staff would send a one-liner rather than stay silent. Pass code K (received), C (requires done: amended/cancelled/released), B (requires confirmationNumber; booked + pro forma to follow), S (requires attached:true; documentKind only names it), or R (please contact dest; redirectTo or partnerDestination). Do not call B/C/S unless the HMS write saved or the document is attached. Output.line is replyDraft; no sign-off — the pane adds the signature.';
 
 function booking(confirmationNumber?: string): string {
   const conf = oneLine(confirmationNumber);
