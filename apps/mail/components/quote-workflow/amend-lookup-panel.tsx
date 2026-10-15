@@ -2,6 +2,8 @@ import { useEffect, useId, useMemo, useState } from 'react';
 import {
   AMEND_CANCEL_COPY,
   amendCancelClientFromTrpc,
+  amendCapabilitiesFromTrpc,
+  canPreviewCancelFromCapabilities,
   cancelConfirmLine,
   cancelFeeSentence,
   cancelSwitchedOffNote,
@@ -72,6 +74,25 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const amendment = amendmentOf(session);
   const client = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
   const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
+  const loadCapabilities = useMemo(() => amendCapabilitiesFromTrpc(trpc), [trpc]);
+  const [canPreviewCancel, setCanPreviewCancel] = useState(false);
+  useEffect(() => {
+    if (!loadCapabilities) {
+      setCanPreviewCancel(false);
+      return;
+    }
+    let live = true;
+    loadCapabilities()
+      .then((capabilities) => {
+        if (live) setCanPreviewCancel(canPreviewCancelFromCapabilities(capabilities));
+      })
+      .catch(() => {
+        if (live) setCanPreviewCancel(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [loadCapabilities]);
   const threadId = session.staffSource?.threadId.trim() || null;
   const messageId = session.staffSource?.messageId.trim() || null;
   const transport = useMemo(
@@ -175,8 +196,6 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   // The HMS arrival is the stay the cancel must match; the email's date is only a fallback.
   const cancelArrival = isoDayOf(stayText(stay?.arrival)) ?? isoDayOf(amendment.arrival);
   const cancelInput = foundNumber && cancelArrival ? { confirmation: foundNumber, arrival: cancelArrival } : null;
-  // ponytail: writes off (U-3); re-enable with HMS writes. The server cancel path stays untouched.
-  const canPreviewCancel = false;
 
   const previewCancel = async () => {
     if (!canPreviewCancel || !cancelScope || !cancelClient || !cancelInput) return;

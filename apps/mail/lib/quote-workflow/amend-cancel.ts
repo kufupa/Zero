@@ -174,7 +174,14 @@ type TrpcPaneStayCancelRoutes = {
   };
 };
 
-export type PaneCapabilitiesReply = { paneSave?: boolean };
+export type PaneCapabilitiesReply = { paneSave?: boolean; paneSaveMode?: unknown };
+
+/** True when brain.getCapabilities.paneSave is on — lab or on. Missing and off stay false. */
+export function canPreviewCancelFromCapabilities(
+  capabilities: PaneCapabilitiesReply | null | undefined,
+): boolean {
+  return capabilities?.paneSave === true;
+}
 
 type TrpcCapabilityRoutes = {
   brain?: { getCapabilities?: { query: () => Promise<PaneCapabilitiesReply> } };
