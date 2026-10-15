@@ -6,6 +6,7 @@ import type { ModelAdapter } from './bedrock/adapter.js';
 import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { analyseQuoteSources, type QuoteWorkflowAnalysis } from './quote-workflow-analyse.js';
+import { buildHmsTodoCard, type HmsTodoCardInput } from './hms-todo-card.js';
 import {
   amendmentFromAnalysis,
   analyseQuoteSelection,
@@ -397,6 +398,22 @@ function lunaWithMappedDates(luna: LunaAnalysis, mapped: MappedQuoteDecision): L
   };
 }
 
+function hmsTodoCardFromLuna(
+  luna: LunaAnalysis | HmsTodoCardInput | null | undefined,
+  attachments: SyncedQuoteAttachment[],
+) {
+  if (!luna) return null;
+  return buildHmsTodoCard({
+    ...luna,
+    attachmentFilenames: attachments.map((attachment) => attachment.filename),
+  });
+}
+
+function hmsTodoCardFromCached(luna: unknown, attachments: SyncedQuoteAttachment[]) {
+  if (!luna || typeof luna !== 'object' || Array.isArray(luna)) return null;
+  return hmsTodoCardFromLuna(luna as HmsTodoCardInput, attachments);
+}
+
 /**
  * Cache-or-analyse for one synced selection. Returns the route payload plus an
  * outcome so callers (the warmer) can log without re-deriving it.
@@ -427,7 +444,11 @@ export async function analyseSyncedSelection(
     if (entry && hit && isReusableAnalyseCache(hit)) {
       // The producing run id is link data for the ledger. It is not part of the answer the pane shows.
       const { analysisRunId: producingRunId, ...cached } = hit;
-      const payload = { ...cached, sourceRevision: options.selectionEpoch };
+      const payload = {
+        ...cached,
+        sourceRevision: options.selectionEpoch,
+        hmsTodoCard: hmsTodoCardFromCached(cached.luna, synced.attachments),
+      };
       const analysisRunId = ledger
         ? await recordAgentRunCapped(ledger.recorder, {
             ...ledger.draft,
@@ -487,6 +508,7 @@ export async function analyseSyncedSelection(
         bodyText: synced.bodyText,
       }),
     });
+    const dated = lunaWithMappedDates(luna, mapped);
     const payload = {
       status: 'ready' as const,
       intent: mapped.intent,
@@ -497,9 +519,10 @@ export async function analyseSyncedSelection(
       reviewItems: [...attachmentReviews, ...questionItems(mapped.missing)],
       source: 'luna' as const,
       aiUnavailable: false as const,
-      luna: lunaWithMappedDates(luna, mapped),
+      luna: dated,
       workflow: luna.workflow,
       amendment: amendmentFromAnalysis(luna),
+      hmsTodoCard: hmsTodoCardFromLuna(dated, synced.attachments),
       sourceRevision: options.selectionEpoch,
       ratePlan: mapped.ratePlan,
       delivery: mapped.delivery,
@@ -564,6 +587,7 @@ export async function analyseSyncedSelection(
     fallbackReason: llm.fallbackReason,
     aiUnavailable: true as const,
     amendment: null,
+    hmsTodoCard: hmsTodoCardFromLuna(override.luna, synced.attachments),
     sourceRevision: options.selectionEpoch,
   };
   const analysisRunId = ledger
