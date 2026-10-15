@@ -188,3 +188,14 @@ export class LunaModelAdapter implements ModelAdapter {
     };
   }
 }
+
+export class AzureLunaModelAdapter extends LunaModelAdapter {
+  constructor() {
+    super({
+      model: createAzureLunaModel(),
+      routeId: 'azure_luna_max',
+      modelId: 'gpt-6-luna',
+      protocol: 'azure-foundry-responses',
+    });
+  }
+}
