@@ -86,7 +86,7 @@ export function overlayHmsConfirmation(
   return { confirmation: trimmed, reason: null };
 }
 
-type OverlayPayload = {
+export type OverlayPayload = {
   luna?: { confirmationNumber?: string | null; missing?: Array<{ field: string; question: string }> } | null;
   amendment?: { confirmationNumber: string | null } | null;
   reviewItems?: Array<Record<string, unknown>>;

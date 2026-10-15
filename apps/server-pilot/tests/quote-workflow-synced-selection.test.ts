@@ -492,12 +492,14 @@ describe('resolveThreadConfirmationEvidence', () => {
   it('overlays the live analysis payload without touching guest-request attachments', () => {
     const payload = applyThreadConfirmationOverlay(
       {
+        sourceRevision: 4,
         luna: { confirmationNumber: null, missing: [] },
         amendment: { confirmationNumber: null },
         reviewItems: [],
       },
       { confirmation: '57291630-1', reason: null },
     );
+    expect(payload.sourceRevision).toBe(4);
     expect(payload.amendment?.confirmationNumber).toBe('57291630-1');
     expect(payload.luna?.confirmationNumber).toBe('57291630-1');
   });

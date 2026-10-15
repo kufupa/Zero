@@ -25,6 +25,7 @@ import {
 import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import {
   applyThreadConfirmationOverlay,
+  type OverlayPayload,
   type SyncedQuoteAttachment,
   type SyncedQuoteSelection,
 } from './quote-workflow-synced-selection.js';
@@ -447,9 +448,15 @@ export async function analyseSyncedSelection(
             cacheWrittenAt: entry.writtenAt,
           })
         : null;
+      const withId = withAnalysisRunId(payload, analysisRunId);
       return {
         payload: applyThreadConfirmationOverlay(
-          withAnalysisRunId(payload, analysisRunId),
+          {
+            ...withId,
+            luna: hit.luna as OverlayPayload['luna'],
+            amendment: hit.amendment as OverlayPayload['amendment'],
+            reviewItems: hit.reviewItems as OverlayPayload['reviewItems'],
+          },
           synced.threadConfirmation,
         ),
         outcome: { kind: 'cache_hit' } as const,
