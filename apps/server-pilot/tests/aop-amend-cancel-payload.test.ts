@@ -178,6 +178,18 @@ describe('buildAmendCancelPayload', () => {
     expect(wide.args).toEqual([]);
   });
 
+  it('refuses an amend with a blank last name instead of sending an empty name check', () => {
+    const out = buildAmendCancelPayload({
+      kind: 'amend',
+      confirmationNumber: CONF,
+      lastName: '   ',
+      changes: [{ field: 'adults', to: 2 }],
+    });
+    expect(out.args).toEqual([]);
+    expect(out.request).toBeNull();
+    expect(out.refusals).toContain('last_name_missing');
+  });
+
   it('refuses a blank occupancy count instead of requesting zero', () => {
     const out = buildAmendCancelPayload({
       kind: 'amend',

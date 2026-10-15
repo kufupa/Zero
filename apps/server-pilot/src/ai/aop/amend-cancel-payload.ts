@@ -185,6 +185,8 @@ export function buildAmendCancelPayload(input: AmendCancelPayloadInput): AmendCa
   const refusals = confirmationRefusals(parsed.confirmationNumber);
   if (kind === 'amend') {
     refusals.push(...amendRefusals(parsed.changes));
+    // A blank expectedLastName would let the amend wrapper skip its name check on a write path.
+    if (!parsed.lastName.trim()) refusals.push('last_name_missing');
     if (refusals.length > 0) return shell(kind, refusals);
     const request: AmendRequestBody = {
       confirmation: parsed.confirmationNumber.trim(),
