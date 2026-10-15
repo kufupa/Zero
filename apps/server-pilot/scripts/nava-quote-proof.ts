@@ -39,7 +39,8 @@ import {
 } from './nava-preview-run';
 
 const QUOTE_TIMEOUT_MS = 480_000;
-const PARTY_SETTLE_MS = 240_000;
+// A rates run (~150–200s) plus two serial party runs can exceed four minutes on the single HMS lane.
+const PARTY_SETTLE_MS = 420_000;
 const PARTY_INDEX_START_GRACE_MS = 750;
 const PARTY_INDEX_SETTLE_MS = 5_000;
 const PARTY_SEARCH_START_GRACE_MS = 5_000;
@@ -720,7 +721,7 @@ function normalizedName(value: string): string {
   return value.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-type PartyIndexSignals = {
+export type PartyIndexSignals = {
   requestedAt: Map<string, number>;
   inFlight: Map<string, number>;
   completed: Set<string>;
@@ -833,11 +834,12 @@ function watchPartyIndex(page: Page): { signals: PartyIndexSignals; stop: () => 
   };
 }
 
-async function settlePartyLookups(page: Page, signals: PartyIndexSignals): Promise<void> {
+export async function settlePartyLookups(page: Page, signals: PartyIndexSignals): Promise<void> {
   const fieldStartedAt = new Map<PartyKind, number>();
   const manualSearchAttempted = new Set<PartyKind>();
   const manualSearchAttemptedAt = new Map<PartyKind, number>();
   await waitFor('company and agency lookups in HMS to settle', PARTY_SETTLE_MS, async () => {
+    let settled = true;
     for (const kind of ['company', 'agency'] as const) {
       const group = partyGroup(page, kind);
       if (!(await group.count())) continue;
@@ -904,7 +906,8 @@ async function settlePartyLookups(page: Page, signals: PartyIndexSignals): Promi
           indexStartGraceElapsed,
         })
       ) {
-        return null;
+        settled = false;
+        continue;
       }
 
       const findButton = group.getByRole('button', { name: 'Find in HMS', exact: true });
@@ -923,7 +926,10 @@ async function settlePartyLookups(page: Page, signals: PartyIndexSignals): Promi
         attempted: manualSearchAttemptedForKind,
         findEnabled,
       });
-      if (action === 'wait') return null;
+      if (action === 'wait') {
+        settled = false;
+        continue;
+      }
       if (action === 'search') {
         manualSearchAttempted.add(kind);
         manualSearchAttemptedAt.set(kind, now);
@@ -932,10 +938,10 @@ async function settlePartyLookups(page: Page, signals: PartyIndexSignals): Promi
         } catch {
           throw new Blocker('Find in HMS could not be started');
         }
-        return null;
+        settled = false;
       }
     }
-    return true;
+    return settled ? true : undefined;
   });
 }
 
@@ -1465,7 +1471,7 @@ function documentData(outcome: TrpcOutcome | null, key: 'pdfBase64' | 'xlsxBase6
   return typeof encoded === 'string' ? Buffer.from(encoded, 'base64') : null;
 }
 
-async function saveDocument(
+export async function saveDocument(
   captured: Captured,
   region: Locator,
   procedure: string,
@@ -1476,8 +1482,10 @@ async function saveDocument(
   const button = region.getByRole('button', { name, exact: true });
   await waitFor(name + ' to be enabled', STEP_MS, async () =>
     (await button.count()) > 0 && (await button.first().isEnabled()) ? true : null,
-  ).catch(() => {
-    throw new Blocker(name + ' is not available for this quote');
+  ).catch(async () => {
+    const parentText = await button.first().locator('xpath=..').innerText().catch(() => '');
+    const disabledReason = redactText(parentText.replace(name, '').replace(/\s+/g, ' ').trim()).slice(0, MESSAGE_LIMIT);
+    throw new Blocker(disabledReason ? `${name} disabled: ${disabledReason}` : name + ' is not available for this quote');
   });
   const before = captured.outcomes.length;
   await button.first().click();
@@ -1491,6 +1499,22 @@ async function saveDocument(
   }
   writeFileSync(outPath, bytes, { mode: 0o600 });
   return bytes.length;
+}
+
+export async function recordDocumentFailure(
+  page: Page,
+  region: Locator,
+  proof: QuoteProofThread,
+  screenshotPath: string,
+  error: unknown,
+): Promise<void> {
+  try {
+    await captureRegion(page, region, screenshotPath);
+  } catch {
+    // captureRegion skips the screenshot if the PII mask cannot be applied; keep the original document blocker.
+  }
+  proof.rates.outcome = 'priced_documents_failed';
+  proof.blocker = error instanceof Error ? redactText(error.message).slice(0, MESSAGE_LIMIT) : 'documents_failed';
 }
 
 async function proveThread(
@@ -1588,8 +1612,7 @@ async function proveThread(
       join(config.outDir, prefix + '-quote.xlsx'),
     );
   } catch (error) {
-    proof.rates.outcome = 'priced_documents_failed';
-    proof.blocker = error instanceof Error ? redactText(error.message).slice(0, MESSAGE_LIMIT) : 'documents_failed';
+    await recordDocumentFailure(page, docsRegion, proof, join(config.outDir, prefix + '-documents.png'), error);
     return;
   }
   const docsShot = await captureRegion(page, docsRegion, join(config.outDir, prefix + '-documents.png'));

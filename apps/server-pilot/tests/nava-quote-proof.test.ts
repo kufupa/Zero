@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Blocker } from '../scripts/nava-ae4-override-proof';
 import { staffQuoteFailureMessage } from '../src/ai/staff-quote-run.js';
+import * as quoteProofDriver from '../scripts/nava-quote-proof';
+import { openThread } from '../scripts/nava-proof-kit';
 import {
   chooseRoomType,
   classifyQuoteRequest,
@@ -23,6 +25,12 @@ import {
   requiredQuoteEdits,
   withPiiMask,
 } from '../scripts/nava-quote-proof';
+
+const quoteProofDriverForTests = quoteProofDriver as unknown as {
+  settlePartyLookups?: (...args: unknown[]) => Promise<void>;
+  saveDocument?: (...args: unknown[]) => Promise<number>;
+  recordDocumentFailure?: (...args: unknown[]) => Promise<void>;
+};
 
 const result = (outcome: string | null, blocker: string | null = null) => ({
   rates: { outcome, seconds: outcome === null ? null : 1, cards: outcome === 'priced' ? 2 : 0 },
@@ -328,6 +336,185 @@ describe('quote proof interaction helpers', () => {
       ),
     ).rejects.toThrow('PII masking failed; screenshot skipped');
     expect(screenshots).toBe(0);
+  });
+});
+
+describe('quote proof driver regressions', () => {
+  it('queues both party Finds in the same poll before waiting for their results', async () => {
+    const settlePartyLookups = quoteProofDriverForTests.settlePartyLookups;
+    expect(settlePartyLookups).toBeTypeOf('function');
+    if (!settlePartyLookups) return;
+
+    const signals = {
+      requestedAt: new Map<string, number>(),
+      inFlight: new Map<string, number>(),
+      completed: new Set<string>(),
+      partyRequestedAt: new Map<string, number>(),
+      partyInFlight: new Map<string, number>(),
+      partyCompleted: new Set<string>(),
+    };
+    const clickTimes: number[] = [];
+    const queryByKind = { company: 'Centurion Travel', agency: 'North Star' };
+    const makeGroup = (kind: 'company' | 'agency') => {
+      const empty = { count: async () => 0 };
+      const findButton = {
+        count: async () => 1,
+        first: () => findButton,
+        isEnabled: async () => true,
+        click: async () => {
+          clickTimes.push(Date.now());
+          const key = `${kind}:${queryByKind[kind].toLowerCase()}`;
+          signals.partyRequestedAt.set(key, Date.now());
+          signals.partyInFlight.set(key, 0);
+          signals.partyCompleted.add(key);
+        },
+      };
+      return {
+        count: async () => 1,
+        innerText: async () => '',
+        getByText: () => empty,
+        getByRole: (role: string, options: { name?: unknown } = {}) => {
+          if (role === 'button' && options.name === 'Find in HMS') return findButton;
+          if (role === 'list') return { ...empty, getByRole: () => empty };
+          return empty;
+        },
+      };
+    };
+    const groups = { company: makeGroup('company'), agency: makeGroup('agency') };
+    const page = {
+      getByRole: (role: string, options: { name?: unknown } = {}) => {
+        if (role === 'group') {
+          return options.name === QUOTE_SELECTORS.companyGroup ? groups.company : groups.agency;
+        }
+        const kind = options.name === QUOTE_SELECTORS.companyField ? 'company' : 'agency';
+        return { inputValue: async () => queryByKind[kind] };
+      },
+    };
+
+    await expect(settlePartyLookups(page, signals)).resolves.toBeUndefined();
+    expect(clickTimes).toHaveLength(2);
+    expect(Math.abs(clickTimes[0]! - clickTimes[1]!)).toBeLessThan(500);
+  }, 15_000);
+
+  it('labels a missing cross-mailbox thread separately from other pane errors', async () => {
+    const pageForError = (message: string) =>
+      ({
+        goto: async () => undefined,
+        url: () => 'https://nava.example.test/nava-preview?thread=thread-a',
+        evaluate: async () => ({
+          subject: null,
+          paneStatus: 'error',
+          unsyncedReason: null,
+          analysing: false,
+          intent: null,
+          amendment: null,
+          voucher: false,
+          aiUnavailable: false,
+          alerts: [message],
+          alerting: true,
+          fields: [],
+          statusText: message,
+        }),
+      }) as never;
+
+    for (const message of ['Could not load this thread.', 'NOT_FOUND: thread not found']) {
+      await expect(openThread(pageForError(message), 'https://nava.example.test', 'thread-a')).rejects.toThrow(
+        'thread_not_on_mailbox',
+      );
+    }
+    await expect(
+      openThread(pageForError('The thread service is temporarily unavailable.'), 'https://nava.example.test', 'thread-a'),
+    ).rejects.toThrow('pane error');
+  });
+
+  it('includes the visible disabled reason when Prepare PDF never becomes available', async () => {
+    const saveDocument = quoteProofDriverForTests.saveDocument;
+    expect(saveDocument).toBeTypeOf('function');
+    if (!saveDocument) return;
+
+    vi.useFakeTimers();
+    try {
+      const parent = { innerText: async () => 'Prepare PDF\nDinner price — enter amount' };
+      const button = {
+        count: async () => 1,
+        first: () => button,
+        isEnabled: async () => false,
+        locator: (selector: string) => {
+          expect(selector).toBe('xpath=..');
+          return parent;
+        },
+        click: async () => {
+          throw new Error('disabled button must not be clicked');
+        },
+      };
+      const region = { getByRole: () => button };
+      const attempt = saveDocument(
+        { outcomes: [], blocked: [] },
+        region,
+        'workstation.prepareQuotePdf',
+        'Prepare PDF',
+        'pdfBase64',
+        '/tmp/quote-proof-disabled.pdf',
+      );
+      const rejection = expect(attempt).rejects.toThrow('Prepare PDF disabled: Dinner price — enter amount');
+      for (let turn = 0; turn < 20 && vi.getTimerCount() === 0; turn += 1) await Promise.resolve();
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      await vi.runAllTimersAsync();
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 15_000);
+
+  it('captures a masked documents screenshot before recording a document failure', async () => {
+    const recordDocumentFailure = quoteProofDriverForTests.recordDocumentFailure;
+    expect(recordDocumentFailure).toBeTypeOf('function');
+    if (!recordDocumentFailure) return;
+
+    const proof = {
+      threadId: 'thread-a',
+      kind: 'quote',
+      prefilled: { contact: { name: null, email: null }, stays: [], ratePlan: null },
+      party: { suggested: [], accepted: [], prefetched: false },
+      rates: { outcome: 'priced', seconds: 10, cards: 1 },
+      docs: { pdfBytes: null, xlsxBytes: null },
+      edits: [],
+      blocker: null,
+    };
+    const calls: string[] = [];
+    let screenshot: { path: string; mask: unknown[]; timeout: number } | null = null;
+    const mask = { selector: QUOTE_SELECTORS.screenshotMask };
+    const page = {
+      setViewportSize: async () => undefined,
+      evaluate: async () => {
+        calls.push('evaluate');
+        return 0;
+      },
+      locator: (selector: string) => {
+        expect(selector).toBe(QUOTE_SELECTORS.screenshotMask);
+        return mask;
+      },
+    };
+    const region = {
+      screenshot: async (options: { path: string; mask: unknown[]; timeout: number }) => {
+        expect(proof.blocker).toBeNull();
+        calls.push('screenshot');
+        screenshot = options;
+      },
+    };
+
+    await recordDocumentFailure(
+      page,
+      region,
+      proof,
+      '/tmp/thread-01-documents.png',
+      new Blocker('Prepare PDF disabled: Dinner price — enter amount'),
+    );
+
+    expect(calls.at(-1)).toBe('screenshot');
+    expect(screenshot).toEqual({ path: '/tmp/thread-01-documents.png', mask: [mask], timeout: 15_000 });
+    expect(proof.rates.outcome).toBe('priced_documents_failed');
+    expect(proof.blocker).toBe('Prepare PDF disabled: Dinner price — enter amount');
   });
 });
 
