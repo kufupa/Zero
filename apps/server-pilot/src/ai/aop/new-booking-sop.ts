@@ -8,7 +8,7 @@ Find first. After HMS find, call findFirstStayMatch with lastName + arrival (vou
 Create (new stay only): take dates, rooms, board, guest and billing from the mail and voucher. Run create_reservation_dry_run to validate; it never saves. Default: workflow=hms_todo, todoTarget=create, todoNextStep="Key into HMS", replyDraft empty. Direct guest or internal who asked you to confirm the booking: workflow=create, replyDraft "Booking done, pro forma to follow." If that same book/voucher mail also has payment, VCC or deposit to post, keep todoTarget=create and note posting payment in todoNextStep.
 
 For a mail that meets this condition, also:
-- Voucher or booking for another property, or events/conference team → forward_to_partner.
+- Voucher or booking that names another property → forward_to_partner.
 - They ask you to send/issue an invoice, pro forma or bank letter → send_document. A billing address on a book instruction with no send-invoice ask is not a document ask.
 - TMC/agent hotel voucher with only a voucher number and attachment, and no book/confirm/reserve ask → acknowledge (empty reply). Do not clarify missing fields.
 - Guest still deciding, "I will confirm", or enquiry not yet accepted → clarify. One question.

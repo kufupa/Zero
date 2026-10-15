@@ -64,6 +64,21 @@ describe('findFirstStayMatch', () => {
     expect(result.confirmationNumber).toBe('9999903-1');
   });
 
+  it('does not match a voucher number that only appears inside a longer number', () => {
+    const result = findFirstStayMatch({
+      ask: { lastName: 'Jones', arrival: '2026-12-01', voucherNumber: '9993' },
+      candidates: [
+        stay({
+          confirmationNumber: '9999903-1',
+          lastName: 'Other',
+          arrival: '2026-12-20',
+          notes: 'Agent voucher 199934 attached',
+        }),
+      ],
+    });
+    expect(result.status).not.toBe('match');
+  });
+
   it('never matches a cancelled stay, even with the same surname and arrival', () => {
     const result = findFirstStayMatch({
       ask,

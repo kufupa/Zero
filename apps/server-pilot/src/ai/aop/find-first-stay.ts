@@ -58,7 +58,9 @@ function isCancelled(status: string): boolean {
 function voucherHitsNotes(voucherNumber: string | undefined, notes: string | undefined): boolean {
   const voucher = voucherNumber?.trim();
   if (!voucher || !notes) return false;
-  return notes.toLowerCase().includes(voucher.toLowerCase());
+  // Whole token only, so voucher 123 never matches note text 51234.
+  const escaped = voucher.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^A-Za-z0-9])${escaped}($|[^A-Za-z0-9])`, 'i').test(notes);
 }
 
 const FULL_CONF = /^\d{6,10}-\d{1,2}$/;
