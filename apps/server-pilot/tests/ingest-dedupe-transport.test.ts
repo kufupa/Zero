@@ -78,7 +78,10 @@ function matchesWhere(row: Row, where: unknown): boolean {
   const pairs: Array<{ col: string; value: unknown }> = [];
   walkEqPairs(where, pairs);
   if (pairs.length === 0) return true;
-  return pairs.every((pair) => row[pair.col] === pair.value);
+  return pairs.every((pair) => {
+    if (!(pair.col in row)) return true;
+    return row[pair.col] === pair.value;
+  });
 }
 
 function projectRows(rows: Row[], projection: Record<string, unknown> | undefined): Row[] {
@@ -93,6 +96,7 @@ function projectRows(rows: Row[], projection: Record<string, unknown> | undefine
 }
 
 function recordingDb(transports: TransportMatchCandidate[]) {
+  let failNextExtraCopy = false;
   const tables = new Map<object, Row[]>([
     [
       mailboxTransport,
@@ -126,6 +130,10 @@ function recordingDb(transports: TransportMatchCandidate[]) {
         )
       ) {
         continue;
+      }
+      if (table === message && value.pop3Uidl == null && failNextExtraCopy) {
+        failNextExtraCopy = false;
+        throw new Error('injected extra-copy failure');
       }
       rows.push({ ...value });
     }
@@ -191,12 +199,29 @@ function recordingDb(transports: TransportMatchCandidate[]) {
       }),
     }),
     execute: async () => undefined,
+    delete: (table: object) => ({
+      where: (where: unknown) => {
+        tables.set(
+          table,
+          (tables.get(table) ?? []).filter((row) => !matchesWhere(row, where)),
+        );
+        return Promise.resolve(undefined);
+      },
+    }),
     transaction: async (callback: (tx: DB) => Promise<unknown>) => callback(db as unknown as DB),
   } as unknown as DB;
 
   return {
     db,
     rows: <T extends Row>(table: object) => (tables.get(table) ?? []) as T[],
+    seed: (table: object, row: Row) => {
+      const rows = tables.get(table) ?? [];
+      rows.push({ ...row });
+      tables.set(table, rows);
+    },
+    failNextExtraCopy: () => {
+      failNextExtraCopy = true;
+    },
   };
 }
 
@@ -207,18 +232,31 @@ function syntheticEml(args: {
   inReplyTo?: string;
   date?: string;
   subject: string;
+  attachment?: { filename: string; base64: string };
 }): Buffer {
   const lines = [`From: ${args.from}`, `To: ${args.to}`];
   if (args.messageId) lines.push(`Message-ID: <${args.messageId}>`);
   if (args.inReplyTo) lines.push(`In-Reply-To: <${args.inReplyTo}>`);
-  lines.push(
-    `Date: ${args.date ?? SHARED_DATE}`,
-    `Subject: ${args.subject}`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=utf-8',
-    '',
-    'Synthetic body.',
-  );
+  lines.push(`Date: ${args.date ?? SHARED_DATE}`, `Subject: ${args.subject}`, 'MIME-Version: 1.0');
+  if (args.attachment) {
+    lines.push(
+      'Content-Type: multipart/mixed; boundary="fanout-att"',
+      '',
+      '--fanout-att',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Synthetic body.',
+      '--fanout-att',
+      `Content-Type: application/octet-stream; name="${args.attachment.filename}"`,
+      `Content-Disposition: attachment; filename="${args.attachment.filename}"`,
+      'Content-Transfer-Encoding: base64',
+      '',
+      args.attachment.base64,
+      '--fanout-att--',
+    );
+  } else {
+    lines.push('Content-Type: text/plain; charset=utf-8', '', 'Synthetic body.');
+  }
   return Buffer.from(lines.join('\r\n'), 'utf8');
 }
 
@@ -472,5 +510,129 @@ describe('cross-hotel fan-out', () => {
     expect(result.transportId).toBe(HOTEL_A.id);
     expect(fake.rows(message)).toHaveLength(1);
     expect(fake.rows<{ transportId: string }>(message)[0]!.transportId).toBe(HOTEL_A.id);
+  });
+
+  it('retries the same UIDL with no Message-ID as exactly one copy per hotel', async () => {
+    const fake = recordingDb([HOTEL_A, HOTEL_B]);
+    const raw = syntheticEml({
+      from: 'guest@example.test',
+      to: 'hotel-a@example.test, hotel-b@example.test',
+      subject: 'no rfc message id',
+    });
+    const first = await persistSynthetic(raw, 'uidl-fanout-noid', fake.db);
+    expect(['stored', 'reconciled']).toContain(first.kind);
+    expect(fake.rows(message)).toHaveLength(2);
+
+    const retry = await persistSynthetic(raw, 'uidl-fanout-noid', fake.db);
+    expect(['duplicate', 'reconciled', 'stored']).toContain(retry.kind);
+    expect(fake.rows(message)).toHaveLength(2);
+    expect(new Set(fake.rows<{ transportId: string }>(message).map((row) => row.transportId))).toEqual(
+      new Set([HOTEL_A.id, HOTEL_B.id]),
+    );
+  });
+
+  it('returns deferred when copy B fails, then retry stores B without duplicating A', async () => {
+    const fake = recordingDb([HOTEL_A, HOTEL_B]);
+    const raw = syntheticEml({
+      from: 'guest@example.test',
+      to: 'hotel-a@example.test, hotel-b@example.test',
+      subject: 'retry after extra copy defer',
+    });
+    fake.failNextExtraCopy();
+    const first = await persistSynthetic(raw, 'uidl-fanout-defer', fake.db);
+    expect(first.kind).toBe('deferred');
+    const afterFirst = fake.rows<{ transportId: string }>(message);
+    expect(afterFirst).toHaveLength(1);
+    expect(afterFirst[0]!.transportId).toBe(HOTEL_A.id);
+
+    const retry = await persistSynthetic(raw, 'uidl-fanout-defer', fake.db);
+    expect(['stored', 'duplicate', 'reconciled']).toContain(retry.kind);
+    expect(retry.kind).not.toBe('deferred');
+    const messages = fake.rows<{ transportId: string }>(message);
+    expect(messages).toHaveLength(2);
+    expect(new Set(messages.map((row) => row.transportId))).toEqual(
+      new Set([HOTEL_A.id, HOTEL_B.id]),
+    );
+
+    await persistSynthetic(raw, 'uidl-fanout-defer', fake.db);
+    expect(fake.rows(message)).toHaveLength(2);
+  });
+
+  it('does not delete B attachment object when A reconciles an existing copy', async () => {
+    const fake = recordingDb([HOTEL_A, HOTEL_B]);
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const raw = syntheticEml({
+      from: 'guest@example.test',
+      to: 'hotel-a@example.test, hotel-b@example.test',
+      messageId: SHARED_MID,
+      subject: 'attached quote',
+      attachment: { filename: 'quote.bin', base64: 'cXVvdGU=' },
+    });
+    const messageId = generateMessageId();
+    const parsed = await parseRawMessage(raw, { messageId, storage });
+    const uploaded = parsed.attachments[0];
+    expect(uploaded).toBeDefined();
+    if (!uploaded) return;
+
+    const historyId = '11111111-2222-4333-8444-555555555555';
+    const threadId = '11111111-2222-4333-8444-666666666666';
+    fake.seed(mailThread, {
+      id: threadId,
+      transportId: HOTEL_A.id,
+      threadRootId: historyId,
+      historyOnly: true,
+      isRead: true,
+      subject: parsed.subject,
+      latestMessageAt: parsed.receivedAt,
+    });
+    fake.seed(message, {
+      id: historyId,
+      transportId: HOTEL_A.id,
+      threadId,
+      direction: 'inbound',
+      messageIdHeader: SHARED_MID,
+      fromAddress: parsed.fromAddress ?? '',
+      toAddresses: parsed.toAddresses,
+      ccAddresses: parsed.ccAddresses,
+      textBody: parsed.textBody,
+      htmlBody: parsed.htmlBody,
+      receivedAt: parsed.receivedAt,
+      sentAt: null,
+    });
+    fake.seed(attachment, {
+      id: '11111111-2222-4333-8444-777777777777',
+      messageId: historyId,
+      filename: uploaded.filename,
+      mimeType: uploaded.mimeType,
+      sizeBytes: uploaded.sizeBytes,
+      sha256: uploaded.sha256 ?? null,
+      s3Key: 'attachments/history-a/quote.bin',
+      contentId: uploaded.contentId,
+      isInline: uploaded.isInline,
+    });
+    await storage.putObject({
+      key: 'attachments/history-a/quote.bin',
+      body: Buffer.from('quote'),
+      contentType: uploaded.mimeType,
+    });
+
+    const result = await persistInboundMessage(
+      parsed,
+      raw,
+      { ingestMailboxId: 'ingest-nava-legacy', pop3Uidl: 'uidl-fanout-att', messageId },
+      { db: fake.db, storage, skipAiEnqueue: true },
+    );
+    expect(['stored', 'reconciled', 'duplicate']).toContain(result.kind);
+    expect(result.kind).not.toBe('deferred');
+
+    const copyB = fake
+      .rows<{ id: string; transportId: string }>(message)
+      .find((row) => row.transportId === HOTEL_B.id);
+    expect(copyB).toBeDefined();
+    const bAttachment = fake
+      .rows<{ messageId: string; s3Key: string }>(attachment)
+      .find((row) => row.messageId === copyB?.id);
+    expect(bAttachment?.s3Key).toBe(uploaded.s3Key);
+    expect(storage.get(uploaded.s3Key)).toBeDefined();
   });
 });

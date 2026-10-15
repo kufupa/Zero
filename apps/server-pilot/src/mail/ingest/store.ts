@@ -242,6 +242,8 @@ export interface PersistOptions {
    * source receipt. Extra copies persist with those columns null.
    */
   claimIngestIdentity?: boolean;
+  /** Internal fan-out: delay candidate-upload deletion until every copy finishes. */
+  skipAttachmentCleanup?: boolean;
 }
 
 /**
@@ -279,6 +281,18 @@ export async function persistInboundMessage(
   }
 
   const claimIngestIdentity = opts.claimIngestIdentity !== false;
+  const skipAttachmentCleanup = opts.skipAttachmentCleanup === true;
+  const cleanupIfNeeded = (canonicalMessageId?: string) =>
+    skipAttachmentCleanup
+      ? Promise.resolve(0)
+      : cleanupCandidateAttachmentTasks({
+          db,
+          storage,
+          attachments: parsed.attachments,
+          meta,
+          canonicalMessageId,
+          activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+        });
   const existingMessage = claimIngestIdentity
     ? await findExistingMessageByIngestIdentity(db, meta)
     : undefined;
@@ -287,13 +301,7 @@ export async function persistInboundMessage(
     ? undefined
     : await findExistingQuarantine(db, meta);
   if (existingQuarantine) {
-    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
-      db,
-      storage,
-      attachments: parsed.attachments,
-      meta,
-      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
-    });
+    const candidateAttachmentCleanupFailureCount = await cleanupIfNeeded();
     return {
       kind: 'quarantined',
       quarantineId: existingQuarantine.id,
@@ -437,15 +445,12 @@ export async function persistInboundMessage(
     });
   }
 
+  const messageId = claimIngestIdentity
+    ? meta.messageId
+    : fanOutCopyMessageId(meta.ingestMailboxId, meta.pop3Uidl, transport.id);
+
   if (existingMessage) {
-    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
-      db,
-      storage,
-      attachments: parsed.attachments,
-      meta,
-      canonicalMessageId: existingMessage.id,
-      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
-    });
+    const candidateAttachmentCleanupFailureCount = await cleanupIfNeeded(existingMessage.id);
     return {
       kind: 'duplicate',
       transportId: existingMessage.transportId,
@@ -454,8 +459,6 @@ export async function persistInboundMessage(
       candidateAttachmentCleanupFailureCount,
     };
   }
-
-  const messageId = claimIngestIdentity ? meta.messageId : randomUUID();
   let threadId = '';
   let duplicate: PersistDuplicateResult | null = null;
   let duplicateCanonicalMessageId = messageId;
@@ -485,7 +488,7 @@ export async function persistInboundMessage(
     };
     const existingSource = claimIngestIdentity
       ? await findExistingMessageByIngestIdentity(transactionDb, meta)
-      : undefined;
+      : await findMessageByIdAndTransport(transactionDb, messageId, transport.id);
     if (existingSource) {
       duplicate = {
         kind: 'duplicate',
@@ -992,17 +995,9 @@ export async function persistInboundMessage(
   });
 
   if (duplicate) {
-    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
-      db,
-      storage,
-      attachments: parsed.attachments,
-      meta,
-      canonicalMessageId: duplicateCanonicalMessageId,
-      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
-    });
     return withCandidateAttachmentCleanupFailures(
       duplicate,
-      candidateAttachmentCleanupFailureCount,
+      await cleanupIfNeeded(duplicateCanonicalMessageId),
     );
   }
   const deferredResult = deferred as Omit<
@@ -1010,16 +1005,9 @@ export async function persistInboundMessage(
     'candidateAttachmentCleanupFailureCount'
   > | null;
   if (deferredResult) {
-    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
-      db,
-      storage,
-      attachments: parsed.attachments,
-      meta,
-      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
-    });
     return {
       ...deferredResult,
-      candidateAttachmentCleanupFailureCount,
+      candidateAttachmentCleanupFailureCount: await cleanupIfNeeded(),
     };
   }
   if (malformedDeliveryOutcomeQuarantine) {
@@ -1031,19 +1019,12 @@ export async function persistInboundMessage(
       rawMimeS3Key,
       reason: 'malformed_delivery_outcome',
       activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+      skipAttachmentCleanup,
     });
   }
   const reconciledResult = reconciliation as PersistReconciledResult | null;
   if (reconciledResult) {
-    if (parsed.attachments.length)
-      await cleanupCandidateAttachmentTasks({
-        db,
-        storage,
-        attachments: parsed.attachments,
-        meta,
-        canonicalMessageId: reconciledResult.messageId,
-        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
-      });
+    if (parsed.attachments.length) await cleanupIfNeeded(reconciledResult.messageId);
     return reconciledResult;
   }
 
@@ -1918,6 +1899,33 @@ async function loadActiveTransportsByIds(
   });
 }
 
+function fanOutCopyMessageId(
+  ingestMailboxId: string,
+  pop3Uidl: string,
+  transportId: string,
+): string {
+  const hash = createHash('sha256')
+    .update(`fanout:${ingestMailboxId}:${pop3Uidl}:${transportId}`)
+    .digest('hex');
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(
+    17,
+    20,
+  )}-${hash.slice(20, 32)}`;
+}
+
+async function findMessageByIdAndTransport(
+  db: DB,
+  id: string,
+  transportId: string,
+): Promise<{ id: string; transportId: string } | undefined> {
+  const rows = await db
+    .select({ id: message.id, transportId: message.transportId })
+    .from(message)
+    .where(and(eq(message.id, id), eq(message.transportId, transportId)))
+    .limit(1);
+  return rows[0];
+}
+
 async function persistMultiTransportFanOut(args: {
   parsed: ParsedInboundMessage;
   raw: Buffer;
@@ -1940,23 +1948,52 @@ async function persistMultiTransportFanOut(args: {
     });
   }
 
-  let stored: PersistResult | null = null;
-  let fallback: PersistResult | null = null;
+  let firstOwner: PersistResult | null = null;
+  let incomplete = false;
   for (let i = 0; i < transports.length; i++) {
-    const one = await persistInboundMessage(
-      args.parsed,
-      args.raw,
-      { ...args.meta, rawMimeS3Key: args.rawMimeS3Key },
-      {
-        ...args.opts,
-        routedTransport: transports[i],
-        claimIngestIdentity: i === 0,
-      },
-    );
-    if (one.kind === 'stored' || one.kind === 'reconciled') stored = one;
-    else fallback ??= one;
+    try {
+      const one = await persistInboundMessage(
+        args.parsed,
+        args.raw,
+        { ...args.meta, rawMimeS3Key: args.rawMimeS3Key },
+        {
+          ...args.opts,
+          routedTransport: transports[i],
+          claimIngestIdentity: i === 0,
+          skipAttachmentCleanup: true,
+        },
+      );
+      if (i === 0) firstOwner = one;
+      if (one.kind === 'deferred') incomplete = true;
+    } catch {
+      incomplete = true;
+    }
   }
-  return stored ?? fallback!;
+
+  const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+    db: args.opts.db,
+    storage: args.storage,
+    attachments: args.parsed.attachments,
+    meta: args.meta,
+    activeIngestUidlClaimToken: args.opts.activeIngestUidlClaimToken,
+  });
+
+  if (incomplete || !firstOwner) {
+    return {
+      kind: 'deferred',
+      transportId:
+        firstOwner && 'transportId' in firstOwner ? firstOwner.transportId : transports[0]!.id,
+      messageId:
+        firstOwner && 'messageId' in firstOwner ? firstOwner.messageId : args.meta.messageId,
+      rawMimeS3Key: args.rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount,
+    };
+  }
+
+  if (firstOwner.kind !== 'stored' && firstOwner.kind !== 'reconciled') {
+    return { ...firstOwner, candidateAttachmentCleanupFailureCount };
+  }
+  return firstOwner;
 }
 
 async function findDirectToTransport(
@@ -2203,9 +2240,13 @@ async function quarantineWithAttachmentCleanup(
   args: Parameters<typeof quarantineUnrouted>[0] & {
     storage: S3Storage;
     activeIngestUidlClaimToken?: string;
+    skipAttachmentCleanup?: boolean;
   },
 ): Promise<PersistQuarantinedResult> {
   const result = await quarantineUnrouted(args);
+  if (args.skipAttachmentCleanup) {
+    return { ...result, candidateAttachmentCleanupFailureCount: 0 };
+  }
   const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
     db: args.db,
     storage: args.storage,
