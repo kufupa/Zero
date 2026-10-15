@@ -27,13 +27,28 @@ export type PartyFindReply = {
   searchedFor?: string | null;
 };
 
+/** Mail the search belongs to. Pane callers send threadId; omit only for non-thread callers. */
+export type PartyFindMail = {
+  threadId?: string | null;
+  messageId?: string | null;
+};
+
 /** One search for a name over HMS companies and agencies, or over one kind when given. */
-export type PartyFinder = (name: string, kind?: StaffQuoteParty['kind']) => Promise<PartyFindReply>;
+export type PartyFinder = (
+  name: string,
+  kind?: StaffQuoteParty['kind'],
+  mail?: PartyFindMail,
+) => Promise<PartyFindReply>;
 
 type TrpcPanePartyRoutes = {
   panePartyLookup?: {
     findParty?: {
-      mutate: (input: { name: string; kind?: StaffQuoteParty['kind'] }) => Promise<PartyFindReply>;
+      mutate: (input: {
+        name: string;
+        kind?: StaffQuoteParty['kind'];
+        threadId?: string;
+        messageId?: string;
+      }) => Promise<PartyFindReply>;
     };
   };
 };
@@ -41,12 +56,22 @@ type TrpcPanePartyRoutes = {
 /**
  * Binds panePartyLookup.findParty off a tRPC client. Null when the route is missing. The real client is a
  * function-backed proxy (typeof 'function'), so a function is accepted too, as in the other *FromTrpc helpers.
+ * Pane searches must pass the active thread so the route can refuse Da Vinci origin before HMS.
  */
 export function partyFinderFromTrpc(trpc: unknown): PartyFinder | null {
   if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const find = (trpc as TrpcPanePartyRoutes).panePartyLookup?.findParty;
   if (!find) return null;
-  return (name, kind) => find.mutate(kind ? { name, kind } : { name });
+  return (name, kind, mail) => {
+    const threadId = mail?.threadId?.trim();
+    const messageId = mail?.messageId?.trim();
+    return find.mutate({
+      name,
+      ...(kind ? { kind } : {}),
+      ...(threadId ? { threadId } : {}),
+      ...(messageId ? { messageId } : {}),
+    });
+  };
 }
 
 /** The chip text for a picked party. */

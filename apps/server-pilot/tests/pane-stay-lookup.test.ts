@@ -1,7 +1,7 @@
 import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildStayLookupArgs,
   findStay,
@@ -18,9 +18,18 @@ import {
 } from '../src/ai/pane-stay-lookup.js';
 import { type PaneStayLock, paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
+import {
+  CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+  mailboxHmsOriginBindLoaders,
+} from '../src/hms/mailbox-hms-origin-bind.js';
 import { appRouter } from '../src/trpc/router.js';
 
-const jobMocks = vi.hoisted(() => ({ readHmsJobView: vi.fn() }));
+const jobMocks = vi.hoisted(() => ({
+  readHmsJobView: vi.fn(),
+  queueUserHmsJob: vi.fn(),
+  queueUserPartyHmsJob: vi.fn(),
+  enqueueHmsBatch: vi.fn(),
+}));
 
 vi.mock('../src/db/client.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/db/client.js')>()),
@@ -32,6 +41,9 @@ vi.mock('../src/db/client.js', async (importOriginal) => ({
 vi.mock('../src/ai/hms-jobs.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/ai/hms-jobs.js')>()),
   readHmsJobView: jobMocks.readHmsJobView,
+  queueUserHmsJob: jobMocks.queueUserHmsJob,
+  queueUserPartyHmsJob: jobMocks.queueUserPartyHmsJob,
+  enqueueHmsBatch: jobMocks.enqueueHmsBatch,
 }));
 
 const STAY: PaneStayFields = {
@@ -103,13 +115,26 @@ function mailboxCaller() {
 
 const cleanupDirs: string[] = [];
 
+beforeEach(() => {
+  mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+    fromAddress: 'guest@example.invalid',
+    toAddresses: ['centurion@legacyhotels.co.za'],
+  });
+});
+
 afterEach(async () => {
   jobMocks.readHmsJobView.mockReset().mockResolvedValue(null);
+  jobMocks.queueUserHmsJob.mockReset();
+  jobMocks.queueUserPartyHmsJob.mockReset();
+  jobMocks.enqueueHmsBatch.mockReset();
   paneStayLookupLoaders.spawn = null;
   paneStayLookupLoaders.lock = null;
   paneStayLookupLoaders.enabled = null;
   paneStaySaveLoaders.lock = null;
   paneStaySaveLoaders.osressGuestDatesSearch = null;
+  mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+  mailboxHmsOriginBindLoaders.loadWorkItemAnchors = null;
   vi.unstubAllEnvs();
   await Promise.all(cleanupDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -472,6 +497,282 @@ describe('save path wiring', () => {
       else process.env.PANE_STAY_DUP_CHECK = saved;
       vi.resetModules();
     }
+  });
+});
+
+describe('paneStayLookup router origin guard', () => {
+  it('queueFind refuses Da Vinci-origin and does not enqueue', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['centurion@legacyhotels.co.za', 'davinci@legacyhotels.co.za'],
+    });
+    jobMocks.queueUserHmsJob.mockResolvedValue({ id: 'should-not-enqueue' });
+    await expect(
+      mailboxCaller().paneStayLookup.queueFind({
+        threadId: 'thread-dv',
+        confirmation: '57291630-1',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(jobMocks.queueUserHmsJob).not.toHaveBeenCalled();
+  });
+
+  it('queueFind allows Centurion-origin and enqueues', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['centurion@legacyhotels.co.za'],
+    });
+    jobMocks.queueUserHmsJob.mockResolvedValue({ id: 'run-queued' });
+    await expect(
+      mailboxCaller().paneStayLookup.queueFind({
+        threadId: 'thread-cen',
+        confirmation: '57291630-1',
+      }),
+    ).resolves.toEqual({ runId: 'run-queued' });
+    expect(jobMocks.queueUserHmsJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('findStay refuses Da Vinci-origin before any lock or spawn', async () => {
+    const seen: string[] = [];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['centurion@legacyhotels.co.za', 'davinci@legacyhotels.co.za'],
+    });
+    paneStayLookupLoaders.lock = passingLock(seen);
+    paneStayLookupLoaders.spawn = vi.fn(async () => lookupResult());
+    await expect(
+      mailboxCaller().paneStayLookup.findStay({
+        confirmation: '57291630-1',
+        threadId: 'thread-dv',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(seen).toEqual([]);
+    expect(paneStayLookupLoaders.spawn).not.toHaveBeenCalled();
+  });
+
+  it('searchGuest refuses Da Vinci-origin before any lock or spawn', async () => {
+    const seen: string[] = [];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['davinci@legacyhotels.co.za'],
+    });
+    paneStayLookupLoaders.lock = passingLock(seen);
+    paneStayLookupLoaders.spawn = vi.fn(async () => lookupResult({ outcome: 'ok', stay: null, rows: [] }));
+    await expect(
+      mailboxCaller().paneStayLookup.searchGuest({
+        lastName: 'Mokoena',
+        arrival: '2027-09-14',
+        threadId: 'thread-dv',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(seen).toEqual([]);
+    expect(paneStayLookupLoaders.spawn).not.toHaveBeenCalled();
+  });
+
+  it('findStay omits the origin guard when threadId is missing', async () => {
+    const loadThreadOrigin = vi.fn(async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['davinci@legacyhotels.co.za'],
+    }));
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = loadThreadOrigin;
+    paneStayLookupLoaders.lock = passingLock();
+    paneStayLookupLoaders.spawn = async () => lookupResult();
+    await expect(
+      mailboxCaller().paneStayLookup.findStay({ confirmation: '57291630-1' }),
+    ).resolves.toMatchObject({ outcome: 'found' });
+    expect(loadThreadOrigin).not.toHaveBeenCalled();
+  });
+
+  it('queueSearchGuest refuses Da Vinci-origin and does not enqueue', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['davinci@legacyhotels.co.za'],
+    });
+    jobMocks.queueUserHmsJob.mockResolvedValue({ id: 'should-not-enqueue' });
+    await expect(
+      mailboxCaller().paneStayLookup.queueSearchGuest({
+        threadId: 'thread-dv',
+        lastName: 'Mokoena',
+        arrival: '2027-09-14',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(jobMocks.queueUserHmsJob).not.toHaveBeenCalled();
+  });
+
+  it('queueParty refuses Da Vinci-origin and does not enqueue', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['davinci@legacyhotels.co.za'],
+    });
+    jobMocks.queueUserPartyHmsJob.mockResolvedValue({ id: 'should-not-enqueue' });
+    await expect(
+      mailboxCaller().paneStayLookup.queueParty({
+        threadId: 'thread-dv',
+        name: 'Acme',
+        partyKind: 'agency',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(jobMocks.queueUserPartyHmsJob).not.toHaveBeenCalled();
+  });
+
+  it('findStay and queueFind pass the selected message id into the origin guard', async () => {
+    const seen: Array<{ threadId: string; messageId?: string }> = [];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async (input) => {
+      seen.push({ threadId: input.threadId, messageId: input.messageId });
+      return {
+        fromAddress: 'guest@example.invalid',
+        toAddresses: ['davinci@legacyhotels.co.za'],
+      };
+    };
+    paneStayLookupLoaders.spawn = vi.fn(async () => lookupResult());
+    jobMocks.queueUserHmsJob.mockResolvedValue({ id: 'should-not-enqueue' });
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    await expect(
+      mailboxCaller().paneStayLookup.findStay({
+        confirmation: '57291630-1',
+        threadId: 'thread-mixed',
+        messageId: 'msg-older-dv',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    await expect(
+      mailboxCaller().paneStayLookup.queueFind({
+        threadId: 'thread-mixed',
+        confirmation: '57291630-1',
+        messageId: 'msg-older-dv',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(seen).toEqual([
+      { threadId: 'thread-mixed', messageId: 'msg-older-dv' },
+      { threadId: 'thread-mixed', messageId: 'msg-older-dv' },
+    ]);
+    expect(paneStayLookupLoaders.spawn).not.toHaveBeenCalled();
+    expect(jobMocks.queueUserHmsJob).not.toHaveBeenCalled();
+  });
+
+  it('queueBatch skips Da Vinci-origin items before enqueue and still queues Centurion items', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    const dvItem = '11111111-1111-4111-8111-111111111111';
+    const cenItem = '22222222-2222-4222-8222-222222222222';
+    const batchId = '33333333-3333-4333-8333-333333333333';
+    const order: string[] = [];
+    mailboxHmsOriginBindLoaders.loadWorkItemAnchors = async () => [
+      { workItemId: dvItem, threadId: 'thread-dv', messageId: 'msg-dv' },
+      { workItemId: cenItem, threadId: 'thread-cen', messageId: 'msg-cen' },
+    ];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async (input) => {
+      order.push(`origin:${input.threadId}:${input.messageId ?? ''}`);
+      return {
+        fromAddress: 'guest@example.invalid',
+        toAddresses:
+          input.threadId === 'thread-dv'
+            ? ['davinci@legacyhotels.co.za']
+            : ['centurion@legacyhotels.co.za'],
+      };
+    };
+    jobMocks.enqueueHmsBatch.mockImplementation(async (input) => {
+      order.push('enqueue');
+      return {
+        batchId: input.batchId,
+        status: 'queued',
+        summary: {
+          total: input.workItemIds.length,
+          queued: input.workItemIds.length,
+          running: 0,
+          retrying: 0,
+          done: 0,
+          failed: 0,
+          cancelled: 0,
+          skipped: 0,
+          reused: 0,
+        },
+        items: [],
+      };
+    });
+    await expect(
+      mailboxCaller().paneStayLookup.queueBatch({
+        batchId,
+        workItemIds: [dvItem, cenItem],
+      }),
+    ).resolves.toMatchObject({ batchId, status: 'queued' });
+    expect(order).toEqual([
+      'origin:thread-dv:msg-dv',
+      'origin:thread-cen:msg-cen',
+      'enqueue',
+    ]);
+    expect(jobMocks.enqueueHmsBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchId,
+        transportId: 'transport-1',
+        userId: 'user-ropperman',
+        workItemIds: [dvItem, cenItem],
+        originRefusedWorkItemIds: [dvItem],
+      }),
+    );
+  });
+
+  it('queueBatch still enqueues when every item is Centurion-origin', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    const cenItem = '22222222-2222-4222-8222-222222222222';
+    const batchId = '33333333-3333-4333-8333-333333333333';
+    mailboxHmsOriginBindLoaders.loadWorkItemAnchors = async () => [
+      { workItemId: cenItem, threadId: 'thread-cen', messageId: 'msg-cen' },
+    ];
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['centurion@legacyhotels.co.za'],
+    });
+    jobMocks.enqueueHmsBatch.mockResolvedValue({
+      batchId,
+      status: 'queued',
+      summary: {
+        total: 1,
+        queued: 1,
+        running: 0,
+        retrying: 0,
+        done: 0,
+        failed: 0,
+        cancelled: 0,
+        skipped: 0,
+        reused: 0,
+      },
+      items: [],
+    });
+    await expect(
+      mailboxCaller().paneStayLookup.queueBatch({
+        batchId,
+        workItemIds: [cenItem],
+      }),
+    ).resolves.toMatchObject({ batchId });
+    expect(jobMocks.enqueueHmsBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workItemIds: [cenItem],
+        originRefusedWorkItemIds: [],
+      }),
+    );
   });
 });
 

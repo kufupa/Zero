@@ -145,7 +145,7 @@ function Harness({
       </button>
       <HmsJobStatusLine view={job.view} queuing={job.queuing} detail={DETAIL} onRetry={job.retry} />
       {job.view?.status === 'done' ? <HmsAsOf asOf={job.view.asOf} /> : null}
-      {job.queueFailed ? <p>The lookup could not be queued.</p> : null}
+      {job.queueFailed ? <p>{job.queueFailureMessage ?? 'The lookup could not be queued.'}</p> : null}
     </div>
   );
 }
@@ -603,6 +603,21 @@ describe('a failed lookup', () => {
     await advance(0);
     expect(screen.getByText('The lookup could not be queued.')).toBeTruthy();
     expect(screen.queryByTestId('hms-job-status')).toBeNull();
+  });
+
+  it('keeps the server message when queueing is refused as PRECONDITION_FAILED', async () => {
+    const refusal = 'This mail is for Da Vinci — Centurion HMS not searched';
+    const transport: HmsJobTransport = {
+      queue: vi.fn(async () => {
+        throw Object.assign(new Error(refusal), { data: { code: 'PRECONDITION_FAILED' } });
+      }),
+      status: vi.fn(async () => null),
+    };
+    render(<Harness transport={transport} request={FIND} />);
+    await lookUp();
+    await advance(0);
+    expect(screen.getByText(refusal)).toBeTruthy();
+    expect(screen.queryByText('The lookup could not be queued.')).toBeNull();
   });
 
   it('uses a fresh queue request when retrying an auto-started job with a terminal failure', async () => {

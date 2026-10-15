@@ -30,7 +30,7 @@ import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
-import { isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
+import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -233,7 +233,7 @@ export type HmsJobView = {
 
 export type HmsBatchStatus = 'queued' | 'running' | 'partial' | 'done' | 'failed' | 'cancelled';
 export type HmsBatchItemStatus = HmsJobStatus | 'skipped' | 'reused' | 'cancelled';
-export type HmsBatchSkipReason = 'insufficient_data' | 'spam';
+export type HmsBatchSkipReason = 'insufficient_data' | 'spam' | 'davinci_origin';
 
 export type HmsBatchItemView = {
   itemIndex: number;
@@ -803,6 +803,7 @@ type HmsBatchEnqueueInput = {
   transportId: string;
   userId: string;
   workItemIds: string[];
+  originRefusedWorkItemIds?: readonly string[];
 };
 
 type HmsBatchScope = { batchId: string; transportId: string };
@@ -1220,17 +1221,27 @@ export async function enqueueHmsBatch(
     const now = new Date();
     // Spam gets no lookup: the thread-state gate (spamAt) the automatic prefetch also applies. An extraction label
     // alone is not spam, because staff can clear spam on a thread whose extraction still says spam.
-    const selections = orderedSources.map(
-      (source): { skipped: HmsBatchSkipReason } | { request: HmsJobRequest } => {
-        if (source.spamAt) return { skipped: 'spam' };
-        // No succeeded extraction still leaves the message text, so a confirmation in the subject or body queues.
-        return selectHmsBatchRequest({
-          kind: source.extraction?.kind ?? null,
-          payload: source.extraction?.payload ?? null,
-          subject: source.subject,
-          textBody: source.textBody,
-        });
-      },
+    const originRefused = new Set(input.originRefusedWorkItemIds ?? []);
+    const selections = await Promise.all(
+      orderedSources.map(
+        async (source): Promise<{ skipped: HmsBatchSkipReason } | { request: HmsJobRequest }> => {
+          if (source.spamAt) return { skipped: 'spam' };
+          if (originRefused.has(source.workItemId)) return { skipped: 'davinci_origin' };
+          const guard = await guardCenturionHmsMailboxOrigin({
+            transportId: input.transportId,
+            threadId: source.threadId,
+            messageId: source.triggerMessageId,
+          });
+          if (!guard.ok) return { skipped: 'davinci_origin' };
+          // No succeeded extraction still leaves the message text, so a confirmation in the subject or body queues.
+          return selectHmsBatchRequest({
+            kind: source.extraction?.kind ?? null,
+            payload: source.extraction?.payload ?? null,
+            subject: source.subject,
+            textBody: source.textBody,
+          });
+        },
+      ),
     );
     const requested = orderedSources.flatMap((source, itemIndex) => {
       const selection = selections[itemIndex]!;
@@ -1573,6 +1584,12 @@ export async function prefetchHmsConfirmations(
     run.triggerMessageId,
   );
   if (triggerItem?.status === 'done' || triggerItem?.status === 'dismissed') return 0;
+  const origin = await guardCenturionHmsMailboxOrigin({
+    transportId: run.transportId,
+    threadId: run.threadId,
+    messageId: run.triggerMessageId,
+  });
+  if (!origin.ok) return 0;
   const workItemId = triggerItem?.id ?? null;
   let created = 0;
   const numbers = prefetchConfirmations(source.payload, source.subject, source.textBody);
@@ -1667,6 +1684,12 @@ export async function prefetchAvailabilityForExtraction(
     .orderBy(desc(mailExtraction.createdAt))
     .limit(1);
   if (!extraction || extraction.spamAt) return 0;
+  const origin = await guardCenturionHmsMailboxOrigin({
+    transportId: run.transportId,
+    threadId: extraction.threadId,
+    messageId: run.triggerMessageId,
+  });
+  if (!origin.ok) return 0;
   const perHour = availabilityProbesPerHour(env);
   const workItemId = await latestWorkItemId(db, run.transportId, extraction.threadId);
   const dayKey = new Date().toISOString().slice(0, 10);
@@ -1759,16 +1782,12 @@ export async function prefetchPartyForExtraction(
   const from = normalizeEmailAddress(source.fromAddress);
   const mailbox = normalizeEmailAddress(source.mailboxEmail);
   if (from === mailbox) return 0;
-  if (
-    isDaVinciMailboxOrigin({
-      fromAddress: source.fromAddress,
-      ownerHeaderValue: source.ownerHeaderValue,
-      toAddresses: source.toAddresses,
-      ccAddresses: source.ccAddresses,
-    })
-  ) {
-    return 0;
-  }
+  const origin = await guardCenturionHmsMailboxOrigin({
+    transportId: run.transportId,
+    threadId: source.threadId,
+    messageId: run.triggerMessageId,
+  });
+  if (!origin.ok) return 0;
   if (isStaffSender(source.fromAddress, source.mailboxEmail)) {
     const sentFrom = await knownSenders(db, run.transportId, [source.fromAddress]);
     if (sentFrom.has(from)) return 0;
@@ -2058,6 +2077,12 @@ export async function prefetchQuoteReadyForExtraction(
     now,
   );
   if (!evaluation.plan?.inputs.length || !evaluation.transportId || !evaluation.threadId) return 0;
+  const origin = await guardCenturionHmsMailboxOrigin({
+    transportId: evaluation.transportId,
+    threadId: evaluation.threadId,
+    messageId: evaluation.messageId,
+  });
+  if (!origin.ok) return 0;
   const workItemId = await latestWorkItemId(db, evaluation.transportId, evaluation.threadId);
   const perHour = quotePreparationPerHour(env);
   let created = 0;
@@ -2221,7 +2246,12 @@ async function executePartyMatchV2(input: {
     toAddresses: source.toAddresses,
     ccAddresses: source.ccAddresses,
   };
-  if (isDaVinciMailboxOrigin(mailboxOrigin)) {
+  const origin = await guardCenturionHmsMailboxOrigin({
+    transportId: input.run.transportId,
+    threadId: input.run.threadId,
+    messageId: input.run.triggerMessageId,
+  });
+  if (!origin.ok) {
     return {
       ...partyMatchV2NoMatch('Da Vinci mailbox origin is not bound to Centurion HMS'),
       outcome: 'refused_origin_mismatch',
@@ -2628,6 +2658,20 @@ export async function executeHmsJob(input: {
     return 'dead_letter';
   }
   const request = parsed.data;
+  // Worker-time origin recheck: jobs queued before the enqueue guard, or whose
+  // thread became mixed-origin after enqueue, must not reach Centurion HMS.
+  // Party V2 keeps its own refusal result shape below.
+  if (!(request.kind === 'party' && request.matchVersion === 2) && run.threadId) {
+    const origin = await guardCenturionHmsMailboxOrigin({
+      transportId: run.transportId,
+      threadId: run.threadId,
+      messageId: run.triggerMessageId,
+    });
+    if (!origin.ok) {
+      await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
+      return 'dead_letter';
+    }
+  }
   const metrics = objectRecord(run.metrics) as {
     userId?: string | null;
     owner?: string;
@@ -3284,7 +3328,9 @@ export async function readHmsBatchView(
           workItemId: run.workItemId ?? '',
           status: 'skipped',
           reason:
-            metrics.batchItemReason === 'insufficient_data' || metrics.batchItemReason === 'spam'
+            metrics.batchItemReason === 'insufficient_data' ||
+            metrics.batchItemReason === 'spam' ||
+            metrics.batchItemReason === 'davinci_origin'
               ? metrics.batchItemReason
               : null,
           runId: null,

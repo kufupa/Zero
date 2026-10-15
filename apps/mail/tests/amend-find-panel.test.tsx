@@ -939,7 +939,12 @@ describe('AmendLookupPanel with the job queue off', () => {
         'Email departure 14 Oct 2026; HMS departure 13 Oct 2026',
       ),
     );
-    expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    expect(findStay).toHaveBeenCalledWith({
+      confirmation: CONFIRMATION,
+      arrival: '2026-10-12',
+      threadId: THREAD,
+      messageId: 'msg-1',
+    });
     expect(jobStatus.mock.calls.some(([input]) => 'runId' in input)).toBe(false);
     expect(screen.queryByTestId('hms-as-of')).toBeNull();
   });
@@ -950,7 +955,44 @@ describe('AmendLookupPanel with the job queue off', () => {
     render(<AmendLookupPanel session={sessionWith({ ...AMEND, confirmationNumber: null })} trpc={trpc} />);
     await pressSearch();
     await screen.findByRole('list', { name: 'Bookings found in HMS' });
-    expect(search).toHaveBeenCalledWith({ lastName: 'Mokoena', arrival: '2026-10-12', departure: '2026-10-14' });
+    expect(search).toHaveBeenCalledWith({
+      lastName: 'Mokoena',
+      arrival: '2026-10-12',
+      departure: '2026-10-14',
+      threadId: THREAD,
+      messageId: 'msg-1',
+    });
+  });
+
+  it('passes the selected message id on queue-off findStay and searchGuest', async () => {
+    const findStay = vi.fn().mockResolvedValue(found());
+    const searchGuest = vi.fn().mockResolvedValue({
+      outcome: 'ok',
+      rows: [ROW_MOKOENA],
+      screenshots: [],
+      runId: null,
+    });
+    const { trpc } = syncTrpc(findStay, searchGuest);
+    const transport = hmsJobTransport(amendFindClientFromTrpc(trpc), THREAD, 'msg-older-dv');
+    expect(transport).not.toBeNull();
+    await transport!.queue({ kind: 'find', confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    expect(findStay).toHaveBeenCalledWith({
+      confirmation: CONFIRMATION,
+      arrival: '2026-10-12',
+      threadId: THREAD,
+      messageId: 'msg-older-dv',
+    });
+    await transport!.queue({
+      kind: 'search_guest',
+      lastName: 'Mokoena',
+      arrival: '2026-10-12',
+    });
+    expect(searchGuest).toHaveBeenCalledWith({
+      lastName: 'Mokoena',
+      arrival: '2026-10-12',
+      threadId: THREAD,
+      messageId: 'msg-older-dv',
+    });
   });
 
   it('does not run an automatic find inline when the queue is off, while a manual find stays synchronous', async () => {
@@ -965,7 +1007,11 @@ describe('AmendLookupPanel with the job queue off', () => {
     expect(findStay).not.toHaveBeenCalled();
 
     const started = await transport!.queue({ kind: 'find', confirmation: CONFIRMATION, arrival: '2026-10-12' });
-    expect(findStay).toHaveBeenCalledWith({ confirmation: CONFIRMATION, arrival: '2026-10-12' });
+    expect(findStay).toHaveBeenCalledWith({
+      confirmation: CONFIRMATION,
+      arrival: '2026-10-12',
+      threadId: THREAD,
+    });
     expect(started.view).toMatchObject({ status: 'done', outcome: 'found' });
   });
 
@@ -1001,7 +1047,11 @@ describe('party lookup transport with the job queue off', () => {
     expect(transport).not.toBeNull();
 
     const started = await transport!.queue(request);
-    expect(findParty).toHaveBeenCalledWith({ name: 'ABC Travel', kind: 'company' });
+    expect(findParty).toHaveBeenCalledWith({
+      name: 'ABC Travel',
+      kind: 'company',
+      threadId: THREAD,
+    });
     expect(started).toMatchObject({
       runId: null,
       view: { status: 'done', outcome: 'no_match', result: reply },
@@ -1631,6 +1681,20 @@ describe.skip('AmendLookupPanel cancel from the pane (writes paused)', () => {
 });
 
 describe('amend find helpers', () => {
+  it('shows the origin refusal on a failed find or search queue instead of generic copy', () => {
+    const refusal = 'This mail is for Da Vinci — Centurion HMS not searched';
+    expect(findRunFromJob(null, true)).toEqual({
+      kind: 'error',
+      message: AMEND_FIND_COPY.lookupFailed,
+    });
+    expect(findRunFromJob(null, true, refusal)).toEqual({ kind: 'error', message: refusal });
+    expect(searchRunFromJob(null, true)).toEqual({
+      kind: 'error',
+      message: AMEND_FIND_COPY.searchFailed,
+    });
+    expect(searchRunFromJob(null, true, refusal)).toEqual({ kind: 'error', message: refusal });
+  });
+
   it('binds no client when the paneStayLookup routes are missing', () => {
     expect(amendFindClientFromTrpc({ workstation: {} })).toBeNull();
   });

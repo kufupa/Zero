@@ -103,7 +103,12 @@ export type StayCommercialWire = {
 };
 
 /** The email's arrival, when it is a real ISO day, moves HMS quick search to cover that day. */
-export type FindStayInput = { confirmation: string; arrival?: string };
+export type FindStayInput = {
+  confirmation: string;
+  arrival?: string;
+  threadId?: string;
+  messageId?: string;
+};
 
 /**
  * The reply a find job stores. Refusals and failures carry no stay. With an arrival sent, HMS refuses a record that
@@ -138,7 +143,13 @@ export type GuestSearchRow = {
   departure: string | null;
 };
 
-export type GuestSearchInput = { lastName: string; arrival: string; departure?: string };
+export type GuestSearchInput = {
+  lastName: string;
+  arrival: string;
+  departure?: string;
+  threadId?: string;
+  messageId?: string;
+};
 
 /** The reply a search job stores. rows are complete only for outcome ok. */
 export type GuestSearchReply = {
@@ -198,6 +209,7 @@ export type HmsJobClient = {
   ) => Promise<QueuedHmsJob>;
   queueParty?: (input: {
     threadId: string;
+    messageId?: string;
     name: string;
     partyKind?: 'company' | 'agency';
     retry?: true;
@@ -207,7 +219,12 @@ export type HmsJobClient = {
   /** The synchronous find and search, used while the server's job queue is off. */
   findStay?: (input: FindStayInput) => Promise<FindStayReply>;
   searchGuest?: (input: GuestSearchInput) => Promise<GuestSearchReply>;
-  findParty?: (input: { name: string; kind?: 'company' | 'agency' }) => Promise<PartyFindReply>;
+  findParty?: (input: {
+    name: string;
+    kind?: 'company' | 'agency';
+    threadId?: string;
+    messageId?: string;
+  }) => Promise<PartyFindReply>;
   jobStatus: (
     input:
       | { runId: string }
@@ -279,7 +296,14 @@ export function amendFindClientFromTrpc(trpc: unknown): HmsJobClient | null {
     ...(find ? { findStay: (input: FindStayInput) => find.mutate(input) } : {}),
     ...(search ? { searchGuest: (input: GuestSearchInput) => search.mutate(input) } : {}),
     ...(party
-      ? { findParty: (input: { name: string; kind?: 'company' | 'agency' }) => party.mutate(input) }
+      ? {
+          findParty: (input: {
+            name: string;
+            kind?: 'company' | 'agency';
+            threadId?: string;
+            messageId?: string;
+          }) => party.mutate(input),
+        }
       : {}),
     jobStatus: (input) => status.query(input),
     screenshot: (input) => shot.query(input),
@@ -313,11 +337,18 @@ function syncView(
  * The job call includes one thread, or returns null if client/thread is missing.
  * With the queue off, manual lookup stays inline. Auto-start does not rerun on each pane open.
  */
+function mailAnchor(threadId: string, messageId?: string | null): { threadId: string; messageId?: string } {
+  const selected = messageId?.trim();
+  return selected ? { threadId, messageId: selected } : { threadId };
+}
+
 export function hmsJobTransport(
   client: HmsJobClient | null,
   threadId: string | null,
+  messageId?: string | null,
 ): HmsJobTransport | null {
   if (!client || !threadId) return null;
+  const mail = mailAnchor(threadId, messageId);
   return {
     ...(client.jobQueueEnabled ? { jobQueueEnabled: client.jobQueueEnabled } : {}),
     queue: async (request, options) => {
@@ -326,21 +357,21 @@ export function hmsJobTransport(
           ? { confirmation: request.confirmation, arrival: request.arrival }
           : { confirmation: request.confirmation };
         const { runId } = await client.queueFind({
-          threadId,
+          ...mail,
           ...input,
           ...(options?.autoStart ? { autoStart: true } : {}),
         });
         if (runId) return { runId };
         if (options?.autoStart) return { runId: null };
         if (!client.findStay) throw new Error('paneStayLookup.findStay unavailable');
-        return { runId: null, view: syncView(request, await client.findStay(input)) };
+        return { runId: null, view: syncView(request, await client.findStay({ ...input, ...mail })) };
       }
       if (request.kind === 'party') {
         // Party reads are never generated from read-back: only the pane's explicit Find action may queue one.
         if (options?.autoStart) return { runId: null };
         const queued = client.queueParty
           ? await client.queueParty({
-              threadId,
+              ...mail,
               name: request.name,
               ...(request.partyKind ? { partyKind: request.partyKind } : {}),
               ...(options?.retry ? { retry: true } : {}),
@@ -355,6 +386,7 @@ export function hmsJobTransport(
             await client.findParty({
               name: request.name,
               ...(request.partyKind ? { kind: request.partyKind } : {}),
+              ...mail,
             }),
           ),
         };
@@ -363,7 +395,7 @@ export function hmsJobTransport(
         ? { lastName: request.lastName, arrival: request.arrival, departure: request.departure }
         : { lastName: request.lastName, arrival: request.arrival };
       const { runId } = await client.queueSearchGuest({
-        threadId,
+        ...mail,
         ...input,
         ...(options?.autoStart ? { autoStart: true } : {}),
       });
@@ -371,7 +403,7 @@ export function hmsJobTransport(
       // Auto-start with the queue off must not run the live search: it would repeat on every card open.
       if (options?.autoStart) return { runId: null };
       if (!client.searchGuest) throw new Error('paneStayLookup.searchGuest unavailable');
-      return { runId: null, view: syncView(request, await client.searchGuest(input)) };
+      return { runId: null, view: syncView(request, await client.searchGuest({ ...input, ...mail })) };
     },
     status: (input) => client.jobStatus('runId' in input ? input : { threadId, ...input }),
   };
@@ -465,8 +497,14 @@ export function findRunFromReply(reply: FindStayReply): HmsFindRun {
  * The find run a job shows. Null while the job is still queued, running or retrying. A queue call that failed is an
  * error here, since no job exists to wait for.
  */
-export function findRunFromJob(view: HmsJobView | null, queueFailed: boolean): HmsFindRun | null {
-  if (queueFailed) return { kind: 'error', message: AMEND_FIND_COPY.lookupFailed };
+export function findRunFromJob(
+  view: HmsJobView | null,
+  queueFailed: boolean,
+  queueFailureMessage?: string | null,
+): HmsFindRun | null {
+  if (queueFailed) {
+    return { kind: 'error', message: queueFailureMessage?.trim() || AMEND_FIND_COPY.lookupFailed };
+  }
   if (!view || !isSettled(view)) return null;
   if (view.status === 'failed')
     return { kind: 'error', message: failedCopy(view.failureClass, 'find') };
@@ -638,8 +676,11 @@ export function searchRunFromReply(
 export function searchRunFromJob(
   view: HmsJobView | null,
   queueFailed: boolean,
+  queueFailureMessage?: string | null,
 ): HmsSearchRun | null {
-  if (queueFailed) return { kind: 'error', message: AMEND_FIND_COPY.searchFailed };
+  if (queueFailed) {
+    return { kind: 'error', message: queueFailureMessage?.trim() || AMEND_FIND_COPY.searchFailed };
+  }
   if (!view || !isSettled(view)) return null;
   if (view.status === 'failed')
     return { kind: 'error', message: failedCopy(view.failureClass, 'search_guest') };

@@ -18,7 +18,7 @@ import {
 } from '../../lib/quote-workflow/amend-find';
 import type { StaffQuoteParties, StaffQuoteParty } from '../../lib/quote-workflow/types';
 import { LinkButton, Notice, SecondaryButton } from '../nava-pane/pane-ui';
-import { useHmsJob } from '../../lib/quote-workflow/use-hms-job';
+import { preconditionFailedMessage, useHmsJob } from '../../lib/quote-workflow/use-hms-job';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { HmsAsOf, HmsJobStatusLine, HmsLookupProgress } from './hms-queue-status';
 
@@ -83,6 +83,7 @@ const PARTY_JOB_OUTCOMES = new Set<PartyFindReply['outcome']>([
   'external_system_unavailable',
   'refused_flag_off',
   'refused_input_invalid',
+  'refused_origin_mismatch',
   'refused_lock_unavailable',
   'refused_lock_busy',
 ]);
@@ -150,6 +151,21 @@ function uniqueCandidates(candidates: PartyCandidate[]): PartyCandidate[] {
     seen.add(key);
     return true;
   });
+}
+
+function findWithMail(
+  find: PartyFinder,
+  query: string,
+  kind: StaffQuoteParty['kind'] | undefined,
+  threadId: string | null | undefined,
+  messageId?: string | null,
+): Promise<PartyFindReply> {
+  const thread = threadId?.trim();
+  const selected = messageId?.trim();
+  const mail = thread
+    ? { threadId: thread, ...(selected ? { messageId: selected } : {}) }
+    : undefined;
+  return mail ? find(query, kind, mail) : kind ? find(query, kind) : find(query);
 }
 
 function sameJobName(left: string, right: string): boolean {
@@ -350,7 +366,7 @@ export function PartyPicker({
   }, [jobTransport?.jobQueueEnabled]);
   const autoMemoKey =
     autoLookup && (!jobTransport || queueMode === 'off') && kind && query.length >= AUTO_LOOKUP_MIN_CHARS
-      ? `${kind}:${searchKey(query)}`
+      ? `${kind}:${searchKey(query)}:${threadId ?? ''}:${sourceMessageId ?? ''}`
       : null;
   const autoKey = pickedHere ? null : autoMemoKey;
   const jobResume =
@@ -424,7 +440,9 @@ export function PartyPicker({
     const searchKind = kind;
     let live = true;
     const timer = setTimeout(() => {
-      const entry = startAutoSearch(autoKey, () => find(query, searchKind));
+      const entry = startAutoSearch(autoKey, () =>
+        findWithMail(find, query, searchKind, threadId, sourceMessageId),
+      );
       // A search for this name may have finished while the field showed another name: render its reply now.
       if (entry.reply) rerender();
       else void entry.promise.then(() => live && rerender());
@@ -451,7 +469,7 @@ export function PartyPicker({
     }
     setState({ status: 'busy', query });
     try {
-      const reply: PartyFindReply = kind ? await find(query, kind) : await find(query);
+      const reply: PartyFindReply = await findWithMail(find, query, kind, threadId, sourceMessageId);
       if (token !== latest.current) return;
       const results = reply.results.filter(inScope);
       if (results.length) {
@@ -459,12 +477,13 @@ export function PartyPicker({
         return;
       }
       setState({ status: 'none', query, note: noCandidateNote(reply, kind, query) });
-    } catch {
+    } catch (error) {
       if (token !== latest.current) return;
       setState({
         status: 'none',
         query,
-        note: partyNoCandidateNote('execution_failure', kind, query),
+        note:
+          preconditionFailedMessage(error) ?? partyNoCandidateNote('execution_failure', kind, query),
       });
     }
   };
@@ -649,7 +668,9 @@ export function PartyPicker({
           queueFailed={partyJob.queueFailed}
           failureMessage={partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
           failedMessage={partySearchTimedOut ? timeoutMessage : partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
-          queueFailureMessage={partyNoCandidateNote('execution_failure', kind, query)}
+          queueFailureMessage={
+            partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', kind, query)
+          }
         />
       ) : null}
       {v2NeedsPick ? (

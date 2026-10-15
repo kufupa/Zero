@@ -144,6 +144,12 @@ describe('PartyPicker outcome copy', () => {
     ['execution_failure', 'company', 'Acme Travel', "Couldn't reach HMS. Try again in a minute."],
     ['refused_flag_off', 'company', 'Acme Travel', 'Company and agency rates are switched off.'],
     ['refused_input_invalid', 'agency', '', 'Type a company or agency name.'],
+    [
+      'refused_origin_mismatch',
+      'agency',
+      'Acme',
+      'This email is Da Vinci mail. Centurion HMS will not look it up.',
+    ],
   ] as const)('names %s as an actionable state', (outcome, kind, name, expected) => {
     expect(partyNoCandidateNote(outcome, kind, name)).toBe(expected);
   });
@@ -556,6 +562,52 @@ describe('PartyPicker queued party jobs', () => {
     expect(onPick).not.toHaveBeenCalled();
     fireEvent.click(within(results).getByRole('button', { name: 'ABC Travel' }));
     expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL);
+  });
+
+  it('shows the server refusal when queueing Find in HMS is refused', async () => {
+    const refusal = 'This mail is for Da Vinci — Centurion HMS not searched';
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(async () => {
+        throw Object.assign(new Error(refusal), { data: { code: 'PRECONDITION_FAILED' } });
+      }),
+      status: vi.fn(async () => null),
+    };
+    render(
+      <PartyPicker
+        name="Acme"
+        kind="agency"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-dv"
+        autoLookup={false}
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(findButton().disabled).toBe(false));
+    fireEvent.click(findButton());
+    expect((await screen.findByRole('alert')).textContent).toContain(refusal);
+  });
+
+  it('shows the server refusal when Find in HMS is refused with the queue off', async () => {
+    const refusal = 'This mail is for Da Vinci — Centurion HMS not searched';
+    const find = vi.fn(async () => {
+      throw Object.assign(new Error(refusal), { data: { code: 'PRECONDITION_FAILED' } });
+    });
+    render(
+      <PartyPicker
+        name="Acme"
+        kind="agency"
+        parties={{}}
+        find={find}
+        threadId="thread-dv"
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+      />,
+    );
+    fireEvent.click(findButton());
+    expect((await screen.findByText(refusal)).textContent).toContain(refusal);
   });
 
   it('shows a queue-off manual result when the synchronous view has no source message id', async () => {

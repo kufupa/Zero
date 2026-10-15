@@ -1,5 +1,10 @@
 import { findParty, panePartyLookupLoaders } from '../src/ai/pane-party-lookup.js';
-import { bindCenturionHmsMailboxProperty } from '../src/hms/mailbox-hms-origin-bind.js';
+import {
+  bindCenturionHmsMailboxProperty,
+  CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+  guardCenturionHmsMailboxOrigin,
+  mailboxHmsOriginBindLoaders,
+} from '../src/hms/mailbox-hms-origin-bind.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 describe('bindCenturionHmsMailboxProperty', () => {
@@ -64,6 +69,118 @@ describe('bindCenturionHmsMailboxProperty', () => {
         },
       }),
     ).toEqual({ ok: true, propertyCode: 'HRCEN' });
+  });
+});
+
+describe('guardCenturionHmsMailboxOrigin', () => {
+  afterEach(() => {
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+  });
+
+  it('refuses Da Vinci-origin with the pane message', async () => {
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['centurion@legacyhotels.co.za', 'davinci@legacyhotels.co.za'],
+    });
+    await expect(
+      guardCenturionHmsMailboxOrigin({ transportId: 'transport-1', threadId: 'thread-dv' }),
+    ).resolves.toEqual({
+      ok: false,
+      code: 'READ_DAVINCI_ORIGIN_REFUSED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+    expect(CENTURION_HMS_ORIGIN_REFUSED_MESSAGE).toBe(
+      'This mail is for Da Vinci — Centurion HMS not searched',
+    );
+  });
+
+  it('allows Centurion-origin', async () => {
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['centurion@legacyhotels.co.za'],
+    });
+    await expect(
+      guardCenturionHmsMailboxOrigin({ transportId: 'transport-1', threadId: 'thread-cen' }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('refuses when an older inbound is Da Vinci even if the newest inbound is Centurion', async () => {
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+      selected: null,
+      selectedFound: true,
+      inbounds: [
+        {
+          fromAddress: 'guest@example.invalid',
+          toAddresses: ['centurion@legacyhotels.co.za'],
+        },
+        {
+          fromAddress: 'guest@example.invalid',
+          toAddresses: ['davinci@legacyhotels.co.za'],
+        },
+      ],
+    });
+    await expect(
+      guardCenturionHmsMailboxOrigin({ transportId: 'transport-1', threadId: 'thread-mixed' }),
+    ).resolves.toEqual({
+      ok: false,
+      code: 'READ_DAVINCI_ORIGIN_REFUSED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+  });
+
+  it('refuses the selected message origin even when the newest inbound is Centurion', async () => {
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async (input) => {
+      expect(input.messageId).toBe('msg-older-dv');
+      return {
+        selected: {
+          fromAddress: 'guest@example.invalid',
+          toAddresses: ['davinci@legacyhotels.co.za'],
+        },
+        selectedFound: true,
+        inbounds: [
+          {
+            fromAddress: 'guest@example.invalid',
+            toAddresses: ['centurion@legacyhotels.co.za'],
+          },
+        ],
+      };
+    };
+    await expect(
+      guardCenturionHmsMailboxOrigin({
+        transportId: 'transport-1',
+        threadId: 'thread-mixed',
+        messageId: 'msg-older-dv',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      code: 'READ_DAVINCI_ORIGIN_REFUSED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
+  });
+
+  it('refuses when the selected message id is missing from the thread', async () => {
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+      selected: null,
+      selectedFound: false,
+      inbounds: [
+        {
+          fromAddress: 'guest@example.invalid',
+          toAddresses: ['centurion@legacyhotels.co.za'],
+        },
+      ],
+    });
+    await expect(
+      guardCenturionHmsMailboxOrigin({
+        transportId: 'transport-1',
+        threadId: 'thread-cen',
+        messageId: 'msg-missing',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      code: 'READ_DAVINCI_ORIGIN_REFUSED',
+      message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+    });
   });
 });
 

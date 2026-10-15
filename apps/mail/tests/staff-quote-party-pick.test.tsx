@@ -42,13 +42,42 @@ describe('partyFinderFromTrpc', () => {
     expect(mutate).toHaveBeenCalledWith({ name: 'Safari' });
   });
 
-  it('calls panePartyLookup.findParty with the typed name only', async () => {
+  it('calls panePartyLookup.findParty with the typed name only when there is no thread', async () => {
     const reply: PartyFindReply = { outcome: 'no_match', results: [], truncated: false };
     const mutate = vi.fn(async () => reply);
     const find = partyFinderFromTrpc({ panePartyLookup: { findParty: { mutate } } });
     expect(find).not.toBeNull();
     await expect(find!('Safari')).resolves.toEqual(reply);
     expect(mutate).toHaveBeenCalledWith({ name: 'Safari' });
+  });
+
+  it('passes the active thread id so the route can refuse Da Vinci origin', async () => {
+    const reply: PartyFindReply = { outcome: 'no_match', results: [], truncated: false };
+    const mutate = vi.fn(async () => reply);
+    const find = partyFinderFromTrpc({ panePartyLookup: { findParty: { mutate } } });
+    expect(find).not.toBeNull();
+    await expect(find!('Safari', 'company', { threadId: 'thread-dv' })).resolves.toEqual(reply);
+    expect(mutate).toHaveBeenCalledWith({
+      name: 'Safari',
+      kind: 'company',
+      threadId: 'thread-dv',
+    });
+  });
+
+  it('passes the selected message id with the thread so origin is checked on that mail', async () => {
+    const reply: PartyFindReply = { outcome: 'no_match', results: [], truncated: false };
+    const mutate = vi.fn(async () => reply);
+    const find = partyFinderFromTrpc({ panePartyLookup: { findParty: { mutate } } });
+    expect(find).not.toBeNull();
+    await expect(
+      find!('Safari', 'company', { threadId: 'thread-dv', messageId: 'msg-older-dv' }),
+    ).resolves.toEqual(reply);
+    expect(mutate).toHaveBeenCalledWith({
+      name: 'Safari',
+      kind: 'company',
+      threadId: 'thread-dv',
+      messageId: 'msg-older-dv',
+    });
   });
 });
 

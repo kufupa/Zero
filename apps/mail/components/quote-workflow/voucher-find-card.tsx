@@ -76,7 +76,11 @@ export function VoucherFindCard({
   const checkedFor = useRef<string | null>(null);
   // The search job runs on the voucher mail's thread, which the check's reply names.
   const replyThread = reply?.status === 'voucher' ? (reply.threadId ?? null) : null;
-  const transport = useMemo(() => hmsJobTransport(jobClient, replyThread), [jobClient, replyThread]);
+  const replyMessageId = reply?.status === 'voucher' ? reply.messageId : null;
+  const transport = useMemo(
+    () => hmsJobTransport(jobClient, replyThread, replyMessageId),
+    [jobClient, replyThread, replyMessageId],
+  );
   // Read back only a search for this voucher's guest: one thread can carry vouchers for different guests.
   const voucherSearch =
     reply?.status === 'voucher' && canSearchVoucher(reply.guest)
@@ -94,7 +98,11 @@ export function VoucherFindCard({
     autoStartIfMissing: canSearch,
     targetId: 'quote-voucher-find',
   });
-  const searchRun: HmsSearchRun | null = searchRunFromJob(searchJob.view, searchJob.queueFailed);
+  const searchRun: HmsSearchRun | null = searchRunFromJob(
+    searchJob.view,
+    searchJob.queueFailed,
+    searchJob.queueFailureMessage,
+  );
   const voucherGuest = reply?.status === 'voucher' ? reply.guest : null;
   const singleMatch =
     searchRun?.kind === 'rows' &&
@@ -120,7 +128,11 @@ export function VoucherFindCard({
     scope: internetMessageId,
     targetId: 'quote-voucher-find',
   });
-  const detailsRun: HmsFindRun | null = findRunFromJob(detailsJob.view, detailsJob.queueFailed);
+  const detailsRun: HmsFindRun | null = findRunFromJob(
+    detailsJob.view,
+    detailsJob.queueFailed,
+    detailsJob.queueFailureMessage,
+  );
   const retryableDetails =
     detailsRequested && detailsJob.view?.status === 'done' && detailsRun !== null && detailsRun.kind !== 'found';
   const showReadDetails = singleMatch !== null && (!detailsRequested || retryableDetails);
@@ -285,7 +297,7 @@ export function VoucherFindCard({
         onRetry={searchJob.retry}
         statusFailed={searchJob.statusFailed}
         queueFailed={searchJob.queueFailed}
-        queueFailureMessage={AMEND_FIND_COPY.searchFailed}
+        queueFailureMessage={searchJob.queueFailureMessage ?? AMEND_FIND_COPY.searchFailed}
       />
       {searchRun && !singleMatch && !searchJob.queueFailed ? <SearchResult run={searchRun} /> : null}
       {searchJob.view?.status === 'done' ? <HmsAsOf asOf={searchJob.view.asOf} /> : null}
@@ -320,6 +332,7 @@ export function VoucherFindCard({
             detailView={detailsJob.view}
             detailQueuing={detailsJob.queuing}
             detailQueueFailed={detailsJob.queueFailed}
+            detailQueueFailureMessage={detailsJob.queueFailureMessage}
             detailStatusFailed={detailsJob.statusFailed}
             checkingDetails={detailsRequested && !detailsJob.readBackSettled && !detailsJob.statusFailed}
             showReadDetails={showReadDetails}
@@ -383,6 +396,7 @@ function MatchedBooking({
   detailView,
   detailQueuing,
   detailQueueFailed,
+  detailQueueFailureMessage,
   detailStatusFailed,
   checkingDetails,
   showReadDetails,
@@ -394,6 +408,7 @@ function MatchedBooking({
   detailView: HmsJobView | null;
   detailQueuing: boolean;
   detailQueueFailed: boolean;
+  detailQueueFailureMessage?: string | null;
   detailStatusFailed: boolean;
   checkingDetails: boolean;
   showReadDetails: boolean;
@@ -428,7 +443,7 @@ function MatchedBooking({
         onRetry={onRetryDetails}
         statusFailed={detailStatusFailed}
         queueFailed={detailQueueFailed}
-        queueFailureMessage={AMEND_FIND_COPY.lookupFailed}
+        queueFailureMessage={detailQueueFailureMessage ?? AMEND_FIND_COPY.lookupFailed}
       />
       <HmsLinkActions confirmation={row.confirmation} guestSurname={row.lastName} arrival={row.arrival} />
     </div>

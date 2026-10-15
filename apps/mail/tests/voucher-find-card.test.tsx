@@ -204,7 +204,11 @@ describe('voucher find card: what shows', () => {
     const saveAndMatch = screen.getByTestId('voucher-save-and-match');
     expect(saveAndMatch.contains(screen.getByRole('button', { name: VOUCHER_COPY.save }))).toBe(true);
     expect(saveAndMatch.contains(screen.getByRole('button', { name: 'Copy confirmation' }))).toBe(true);
-    expect(searchGuest).toHaveBeenCalledWith({ lastName: 'Smith', arrival: '2026-11-12' });
+    expect(searchGuest).toHaveBeenCalledWith({
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      messageId: 'm1',
+    });
   });
 
   it('says what it could not read and offers no search when the surname or arrival is missing', async () => {
@@ -243,9 +247,14 @@ describe('voucher find card: the existing search', () => {
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('John Smith · 57291630-1')).toBeTruthy());
     expect(searchGuest).toHaveBeenCalledTimes(1);
-    expect(searchGuest).toHaveBeenCalledWith({ lastName: 'Smith', arrival: '2026-11-12' });
+    expect(searchGuest).toHaveBeenCalledWith({
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      messageId: 'm1',
+    });
     expect(queueSearchGuest).toHaveBeenCalledWith({
       threadId: 'thread-1',
+      messageId: 'm1',
       lastName: 'Smith',
       arrival: '2026-11-12',
       autoStart: true,
@@ -300,9 +309,43 @@ describe('voucher find card: the existing search', () => {
     expect(screen.getByText('Booking agency: Harbor Travel')).toBeTruthy();
     expect(queueFind).toHaveBeenCalledWith({
       threadId: 'thread-1',
+      messageId: 'm1',
       confirmation: '57291630-1',
       arrival: '2026-11-12',
     });
+  });
+
+  it('passes the selected voucher message id on guest search and stay find', async () => {
+    const { trpc, queueSearchGuest, queueFind, searchGuest, findStay } = fakeTrpc({
+      reply: VOUCHER,
+      queueOff: true,
+    });
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.search }));
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(queueSearchGuest).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-1', messageId: 'm1', lastName: 'Smith' }),
+    );
+    expect(searchGuest).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-1', messageId: 'm1', lastName: 'Smith' }),
+    );
+    fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.readDetails }));
+    await waitFor(() =>
+      expect(queueFind).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: 'thread-1',
+          messageId: 'm1',
+          confirmation: '57291630-1',
+        }),
+      ),
+    );
+    expect(findStay).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread-1',
+        messageId: 'm1',
+        confirmation: '57291630-1',
+      }),
+    );
   });
 
   it('with the job queue off, opening the card runs no HMS search and the Find button runs one on click', async () => {
@@ -313,7 +356,12 @@ describe('voucher find card: the existing search', () => {
     fireEvent.click(await screen.findByRole('button', { name: VOUCHER_COPY.search }));
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
     expect(searchGuest).toHaveBeenCalledTimes(1);
-    expect(searchGuest).toHaveBeenCalledWith({ lastName: 'Smith', arrival: '2026-11-12' });
+    expect(searchGuest).toHaveBeenCalledWith({
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      threadId: 'thread-1',
+      messageId: 'm1',
+    });
   });
 
   it('hydrates a matching prefetched result on open and never queues another lookup', async () => {
@@ -417,11 +465,16 @@ describe('voucher find card: the existing search', () => {
     });
     expect(queueSearchGuest).toHaveBeenCalledWith({
       threadId: 'thread-1',
+      messageId: 'm1',
       lastName: 'Smith',
       arrival: '2026-11-12',
       autoStart: true,
     });
-    expect(searchGuest).toHaveBeenCalledWith({ lastName: 'Smith', arrival: '2026-11-12' });
+    expect(searchGuest).toHaveBeenCalledWith({
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      messageId: 'm1',
+    });
   });
 
   it('surfaces a failed resume read and retries it before queueing', async () => {
@@ -541,6 +594,7 @@ describe('voucher find card: the existing search', () => {
     expect(queueSearchGuest).toHaveBeenCalledTimes(2);
     const idempotentAutoStart = {
       threadId: 'thread-1',
+      messageId: 'm1',
       lastName: 'Smith',
       arrival: '2026-11-12',
       autoStart: true,
