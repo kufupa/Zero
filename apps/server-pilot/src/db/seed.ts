@@ -113,7 +113,7 @@ export type SeedOptions = {
   precomputedCredentials?: Record<string, { password: string }>;
 };
 
-function credentialAccountId(specId: string): string {
+export function credentialAccountId(specId: string): string {
   return `cred-${specId}`;
 }
 
@@ -219,6 +219,8 @@ export async function planPilotCredentials(
 
 /**
  * Seed all pilot rows against the given DB handle.
+ *
+ * NEVER run on prod; use provision:prod (additive, never prunes).
  *
  * Idempotent: re-running upserts rows. The DB handle may be a normal
  * connection (production) or a transaction-scoped handle (tests with
@@ -415,19 +417,32 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
   };
 }
 
-async function seedAiManagedCategories(db: DB, transportId: string): Promise<void> {
+export async function seedAiManagedCategories(
+  db: DB,
+  transportId: string,
+  opts?: { onConflict?: 'update' | 'nothing' },
+): Promise<void> {
+  const onConflict = opts?.onConflict ?? 'update';
   for (const row of AI_MANAGED_CATEGORY_SEED_ROWS) {
+    const values = {
+      id: `category-${transportId}-${row.slug}`,
+      transportId,
+      slug: row.slug,
+      name: row.name,
+      color: row.color,
+      sortOrder: row.sortOrder,
+      isActive: true,
+    };
+    if (onConflict === 'nothing') {
+      await db
+        .insert(mailCategory)
+        .values(values)
+        .onConflictDoNothing({ target: [mailCategory.transportId, mailCategory.slug] });
+      continue;
+    }
     await db
       .insert(mailCategory)
-      .values({
-        id: `category-${transportId}-${row.slug}`,
-        transportId,
-        slug: row.slug,
-        name: row.name,
-        color: row.color,
-        sortOrder: row.sortOrder,
-        isActive: true,
-      })
+      .values(values)
       .onConflictDoUpdate({
         target: [mailCategory.transportId, mailCategory.slug],
         set: {
@@ -441,7 +456,7 @@ async function seedAiManagedCategories(db: DB, transportId: string): Promise<voi
   }
 }
 
-async function seedSpamLabel(db: DB, transportId: string): Promise<void> {
+export async function seedSpamLabel(db: DB, transportId: string): Promise<void> {
   await db
     .insert(mailLabel)
     .values({
