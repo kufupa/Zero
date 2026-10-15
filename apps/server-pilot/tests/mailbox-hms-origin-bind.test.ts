@@ -1,11 +1,22 @@
 import { findParty, panePartyLookupLoaders } from '../src/ai/pane-party-lookup.js';
 import {
+  AYANDA_MAILBOX_IDENTITIES,
   bindCenturionHmsMailboxProperty,
   CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+  EPICK_MAILBOX_IDENTITIES,
+  FAITH_MAILBOX_IDENTITIES,
   guardCenturionHmsMailboxOrigin,
+  KMGIDI_MAILBOX_IDENTITIES,
   mailboxHmsOriginBindLoaders,
 } from '../src/hms/mailbox-hms-origin-bind.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const DAVINCI_STAFF_TRANSPORT_ORIGIN = [
+  { transportId: 'transport-faith', ownerHeaderValue: FAITH_MAILBOX_IDENTITIES[0] },
+  { transportId: 'transport-ayanda', ownerHeaderValue: AYANDA_MAILBOX_IDENTITIES[0] },
+  { transportId: 'transport-epick', ownerHeaderValue: EPICK_MAILBOX_IDENTITIES[0] },
+  { transportId: 'transport-kmgidi', ownerHeaderValue: KMGIDI_MAILBOX_IDENTITIES[0] },
+] as const;
 
 describe('bindCenturionHmsMailboxProperty', () => {
   it('refuses Da Vinci fromAddress before any HRCEN bind', () => {
@@ -104,6 +115,38 @@ describe('guardCenturionHmsMailboxOrigin', () => {
       guardCenturionHmsMailboxOrigin({ transportId: 'transport-1', threadId: 'thread-cen' }),
     ).resolves.toEqual({ ok: true });
   });
+
+  it('allows Centurion ownerHeaderValue even when From/To are external', async () => {
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      ownerHeaderValue: 'centurion@legacyhotels.co.za',
+      toAddresses: ['guest-desk@example.invalid'],
+    });
+    await expect(
+      guardCenturionHmsMailboxOrigin({
+        transportId: 'transport-centurion',
+        threadId: 'thread-cen',
+      }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it.each([...DAVINCI_STAFF_TRANSPORT_ORIGIN])(
+    'refuses $transportId when inbound From/To are external and ownerHeaderValue is the staff mailbox',
+    async ({ transportId, ownerHeaderValue }) => {
+      mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+        fromAddress: 'guest@example.invalid',
+        ownerHeaderValue,
+        toAddresses: ['guest-desk@example.invalid'],
+      });
+      await expect(
+        guardCenturionHmsMailboxOrigin({ transportId, threadId: 'thread-staff' }),
+      ).resolves.toEqual({
+        ok: false,
+        code: 'READ_DAVINCI_ORIGIN_REFUSED',
+        message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
+      });
+    },
+  );
 
   it('refuses when an older inbound is Da Vinci even if the newest inbound is Centurion', async () => {
     mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({

@@ -29,9 +29,15 @@ import {
   AYANDA_MAILBOX_IDENTITIES,
   AYANDA_TRANSPORT_DISPLAY_NAME,
   AYANDA_TRANSPORT_ID,
+  EPICK_MAILBOX_IDENTITIES,
+  EPICK_TRANSPORT_DISPLAY_NAME,
+  EPICK_TRANSPORT_ID,
   FAITH_MAILBOX_IDENTITIES,
   FAITH_TRANSPORT_DISPLAY_NAME,
   FAITH_TRANSPORT_ID,
+  KMGIDI_MAILBOX_IDENTITIES,
+  KMGIDI_TRANSPORT_DISPLAY_NAME,
+  KMGIDI_TRANSPORT_ID,
 } from '../src/db/seed';
 
 const reachable = await probeTestDb();
@@ -899,6 +905,66 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       },
       30000,
     );
+
+    it('unstamped mail with epick only in Cc routes to transport-epick, not quarantine', async () => {
+      const storage = withFakeS3();
+      const raw = Buffer.from(
+        'From: guest@example.com\r\nTo: someone@example.com\r\n' +
+          `Cc: ${EPICK_MAILBOX_IDENTITIES[0]}\r\nSubject: epick cc only\r\n` +
+          'MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nCc only.',
+      );
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const result = await withSeededTestDb(async (db) => {
+          await seedHotelMailboxIdentities(db, {
+            id: EPICK_TRANSPORT_ID,
+            identities: EPICK_MAILBOX_IDENTITIES,
+            displayName: EPICK_TRANSPORT_DISPLAY_NAME,
+          });
+          const messageId = generateMessageId();
+          const parsed = await parseRawMessage(raw, { messageId, storage });
+          return persistInboundMessage(parsed, raw, {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-epick-cc',
+            messageId,
+          }, { db, storage });
+        });
+        expect(result.kind).toBe('stored');
+        if (result.kind !== 'stored') return;
+        expect(result.transportId).toBe(EPICK_TRANSPORT_ID);
+      });
+    }, 30000);
+
+    it('kmgidi From to guest is hotel-sent outbound on transport-kmgidi', async () => {
+      const storage = withFakeS3();
+      const raw = Buffer.from(
+        `From: ${KMGIDI_MAILBOX_IDENTITIES[0]}\r\nTo: guest@example.com\r\n` +
+          'Subject: kmgidi outbound copy\r\nMIME-Version: 1.0\r\n' +
+          'Content-Type: text/plain; charset=utf-8\r\n\r\nHotel sent copy on sink.',
+      );
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const { result, stored } = await withSeededTestDb(async (db) => {
+          await seedHotelMailboxIdentities(db, {
+            id: KMGIDI_TRANSPORT_ID,
+            identities: KMGIDI_MAILBOX_IDENTITIES,
+            displayName: KMGIDI_TRANSPORT_DISPLAY_NAME,
+          });
+          const messageId = generateMessageId();
+          const parsed = await parseRawMessage(raw, { messageId, storage });
+          const r = await persistInboundMessage(parsed, raw, {
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-kmgidi-from-guest',
+            messageId,
+          }, { db, storage });
+          if (r.kind !== 'stored') return { result: r, stored: undefined };
+          const rows = await db.select().from(message).where(eq(message.id, r.messageId));
+          return { result: r, stored: rows[0] };
+        });
+        expect(result.kind).toBe('stored');
+        if (result.kind !== 'stored') return;
+        expect(result.transportId).toBe(KMGIDI_TRANSPORT_ID);
+        expect(stored?.direction).toBe('outbound');
+      });
+    }, 30000);
 
     it(
       'AE4: strict toggle quarantines unstamped Centurion-equated mail without direct-To',

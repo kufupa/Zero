@@ -12,14 +12,24 @@ import {
 } from '../src/db/provision.js';
 import {
   applyAfterReservingCredentialsFile,
+  loadCredentialsIn,
   parseFlags,
   printPlan,
   ProvisionUsageError,
+  redactCredentialsOut,
 } from '../scripts/provision-prod.js';
 import {
+  AYANDA_TRANSPORT_EMAIL,
+  DAVINCI_TRANSPORT_EMAIL,
+  DAVINCI_TRANSPORT_ID,
+  EPICK_TRANSPORT_EMAIL,
+  EPICK_TRANSPORT_ID,
+  FAITH_TRANSPORT_EMAIL,
+  KMGIDI_TRANSPORT_EMAIL,
+  KMGIDI_TRANSPORT_ID,
   NAVA_USER_ID,
-  TRANSPORT_ALIASES,
   TRANSPORT_ID,
+  TRANSPORT_ALIASES,
   TRANSPORT_OWNER_HEADER,
 } from '../src/db/seed.js';
 import { mailCategory, mailboxAccess, mailboxTransport, mailLabel } from '../src/db/schema/mail.js';
@@ -28,7 +38,15 @@ import { TEST_DB_AVAILABLE, withTestDb } from './helpers/test-db.js';
 import type { DB } from '../src/db/client.js';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { inspect } from 'node:util';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -449,6 +467,21 @@ describe('planProvision', () => {
     expect(plan.alreadyPresent.grants).toHaveLength(6);
   });
 
+  it('existing user with a different name is alreadyPresent and is not a plan error', async () => {
+    const existing = TEST_SPEC.users[0]!;
+    const { db, state } = createFakeDb({
+      users: [
+        navaUser,
+        { id: existing.id, name: 'Old Name', email: existing.email, emailVerified: true },
+      ],
+    });
+    const plan = await planProvision(db, ONE_HOTEL);
+    expect(plan.usersToCreate).toEqual([]);
+    expect(plan.alreadyPresent.users).toEqual([existing.id]);
+    await applyProvision(db, plan, {});
+    expect(state.users.find((u) => u.id === existing.id)?.name).toBe('Old Name');
+  });
+
   it('email under another id is alreadyPresent; grants use the existing id', async () => {
     const { db } = createFakeDb({
       users: [
@@ -558,6 +591,38 @@ describe('planProvision', () => {
     expect(plan.inactiveTransports).toEqual(['transport-hotel-a']);
     expect(plan.aliasesToAdd).toEqual([]);
     expect('transportsToActivate' in plan).toBe(false);
+  });
+
+  it('does not plan or append an alias that matches stored casing', async () => {
+    const spec: ProvisionSpec = {
+      users: [],
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          aliases: ['desk@x'],
+        },
+      ],
+      grants: [],
+    };
+    const { db, state } = createFakeDb({
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          isActive: true,
+          sendFromConfig: { aliases: ['Desk@X'] },
+        },
+      ],
+    });
+    const plan = await planProvision(db, spec);
+    expect(plan.aliasesToAdd).toEqual([]);
+    await applyProvision(db, plan, {});
+    expect(state.transports[0]?.sendFromConfig).toEqual({ aliases: ['Desk@X'] });
   });
 
   it('lists only aliases missing from an existing transport send_from_config', async () => {
@@ -796,7 +861,9 @@ describe('fencedAliasAppendSql', () => {
     expect(text).toMatch(/is_active IS TRUE/);
     expect(text).toContain('EXISTS');
     expect(text).toContain("send_from_config->'aliases'");
-    expect(text).toContain('? w.alias');
+    expect(text).toContain('jsonb_array_elements_text');
+    expect(text).toContain('lower(s.a) = lower(w.alias)');
+    expect(text).not.toContain('? w.alias');
     expect(text).toContain('jsonb_set');
     expect(text).toContain('jsonb_agg');
   });
@@ -1056,6 +1123,53 @@ describe('applyProvision', () => {
   });
 });
 
+describe('PROVISION_SPEC', () => {
+  it('uses full names for new users and grants kmgidi own transport only', () => {
+    expect(PROVISION_SPEC.users).toEqual([
+      { id: 'user-davinci', name: 'Da Vinci Reservations', email: DAVINCI_TRANSPORT_EMAIL },
+      { id: 'user-faith', name: 'Faith Khumalo', email: FAITH_TRANSPORT_EMAIL },
+      { id: 'user-ayanda', name: 'Ayanda Dladla', email: AYANDA_TRANSPORT_EMAIL },
+      { id: 'user-epick', name: 'Elizabeth Pick', email: EPICK_TRANSPORT_EMAIL },
+      { id: 'user-kmgidi', name: 'Khanyisile Mgidi', email: KMGIDI_TRANSPORT_EMAIL },
+    ]);
+    const byUser = (id: string) => PROVISION_SPEC.grants.filter((g) => g.userId === id);
+    expect(byUser('user-epick')).toEqual([
+      {
+        userId: 'user-epick',
+        transportId: EPICK_TRANSPORT_ID,
+        role: 'owner',
+        isDefault: true,
+      },
+    ]);
+    expect(byUser('user-kmgidi')).toEqual([
+      {
+        userId: 'user-kmgidi',
+        transportId: KMGIDI_TRANSPORT_ID,
+        role: 'owner',
+        isDefault: true,
+      },
+    ]);
+    expect(
+      byUser('user-kmgidi').every(
+        (g) => g.transportId !== DAVINCI_TRANSPORT_ID && g.transportId !== TRANSPORT_ID,
+      ),
+    ).toBe(true);
+    expect(
+      PROVISION_SPEC.grants.some(
+        (g) =>
+          g.userId === 'user-kmgidi' &&
+          (g.transportId === DAVINCI_TRANSPORT_ID || g.transportId === TRANSPORT_ID),
+      ),
+    ).toBe(false);
+    expect(byUser(NAVA_USER_ID).filter((g) => g.transportId === EPICK_TRANSPORT_ID)).toEqual([
+      { userId: NAVA_USER_ID, transportId: EPICK_TRANSPORT_ID, role: 'owner', isDefault: false },
+    ]);
+    expect(byUser(NAVA_USER_ID).filter((g) => g.transportId === KMGIDI_TRANSPORT_ID)).toEqual([
+      { userId: NAVA_USER_ID, transportId: KMGIDI_TRANSPORT_ID, role: 'owner', isDefault: false },
+    ]);
+  });
+});
+
 describe('printPlan', () => {
   it('prints aliasesToAdd as transportId and count without addresses', () => {
     const plan: ProvisionPlan = {
@@ -1103,7 +1217,35 @@ describe('parseFlags', () => {
     expect(parseFlags(['--apply', '--credentials-out', '/tmp/out.json'])).toEqual({
       apply: true,
       credentialsOut: '/tmp/out.json',
+      credentialsIn: null,
     });
+  });
+
+  it('accepts --credentials-in with --apply --credentials-out', () => {
+    expect(
+      parseFlags([
+        '--apply',
+        '--credentials-out',
+        '/tmp/out.json',
+        '--credentials-in',
+        '/tmp/in.json',
+      ]),
+    ).toEqual({
+      apply: true,
+      credentialsOut: '/tmp/out.json',
+      credentialsIn: '/tmp/in.json',
+    });
+  });
+
+  it('rejects a missing or flag-like --credentials-in value with exit 2', () => {
+    expect(() => parseFlags(['--credentials-in'])).toThrow(ProvisionUsageError);
+    expect(() => parseFlags(['--credentials-in', '--apply'])).toThrow(ProvisionUsageError);
+  });
+
+  it('rejects --apply --credentials-in without --credentials-out', () => {
+    expect(() => parseFlags(['--apply', '--credentials-in', '/tmp/in.json'])).toThrow(
+      ProvisionUsageError,
+    );
   });
 
   it('rejects a missing or flag-like --credentials-out value with exit 2 and no file', () => {
@@ -1134,6 +1276,185 @@ describe('parseFlags', () => {
   });
 });
 
+const CREDENTIALS_LEAK_SECRET = 'NEVER-LOG-THIS-password-99';
+const CREDENTIALS_OK = 'ninecharsX';
+const SPEC_EMAILS = TEST_SPEC.users.map((u) => u.email);
+const CREATE_EMAILS = [TEST_SPEC.users[0]!.email];
+
+function writeCredentialsInFile(
+  root: string,
+  body: string,
+  mode: number,
+  name = 'in.json',
+): string {
+  const path = join(root, name);
+  writeFileSync(path, body, { encoding: 'utf8', mode });
+  chmodSync(path, mode);
+  return path;
+}
+
+function captureConsoleAndStderr(run: () => void): string {
+  const chunks: string[] = [];
+  const spy = (...args: unknown[]) => {
+    chunks.push(args.map((a) => (typeof a === 'string' ? a : inspect(a, { depth: 8 }))).join(' '));
+  };
+  const origLog = console.log;
+  const origErr = console.error;
+  const origInfo = console.info;
+  const origWarn = console.warn;
+  const origStdout = process.stdout.write.bind(process.stdout);
+  const origStderr = process.stderr.write.bind(process.stderr);
+  console.log = spy as typeof console.log;
+  console.error = spy as typeof console.error;
+  console.info = spy as typeof console.info;
+  console.warn = spy as typeof console.warn;
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+    chunks.push(String(chunk));
+    return origStdout(chunk as never, ...(rest as []));
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+    chunks.push(String(chunk));
+    return origStderr(chunk as never, ...(rest as []));
+  }) as typeof process.stderr.write;
+  try {
+    run();
+  } catch (err) {
+    spy(err);
+    if (err instanceof Error) spy(err.message, err.stack);
+  } finally {
+    console.log = origLog;
+    console.error = origErr;
+    console.info = origInfo;
+    console.warn = origWarn;
+    process.stdout.write = origStdout;
+    process.stderr.write = origStderr;
+  }
+  return chunks.join('\n');
+}
+
+describe('loadCredentialsIn', () => {
+  const specEmails = SPEC_EMAILS;
+  const usersToCreate = CREATE_EMAILS;
+
+  it('reads 0600 object passwords for usersToCreate', () => {
+    const root = mkdtempSync(join(tmpdir(), 'provision-cin-'));
+    try {
+      const path = writeCredentialsInFile(
+        root,
+        JSON.stringify({
+          [TEST_SPEC.users[0]!.email]: CREDENTIALS_OK,
+          [TEST_SPEC.users[1]!.email]: CREDENTIALS_OK,
+        }),
+        0o600,
+      );
+      expect(loadCredentialsIn(path, specEmails, usersToCreate)).toEqual({
+        [TEST_SPEC.users[0]!.email]: CREDENTIALS_OK,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('never logs a password substring on every error path', () => {
+    const root = mkdtempSync(join(tmpdir(), 'provision-cin-err-'));
+    const createEmail = TEST_SPEC.users[0]!.email;
+    const extraEmail = 'outsider@example.test';
+    const errorPaths: Array<() => void> = [
+      () => loadCredentialsIn(join(root, 'missing.json'), specEmails, usersToCreate),
+      () => {
+        const path = writeCredentialsInFile(
+          root,
+          JSON.stringify({ [createEmail]: CREDENTIALS_LEAK_SECRET }),
+          0o644,
+          'not-0600.json',
+        );
+        loadCredentialsIn(path, specEmails, usersToCreate);
+      },
+      () => {
+        const path = writeCredentialsInFile(
+          root,
+          JSON.stringify([CREDENTIALS_LEAK_SECRET]),
+          0o600,
+          'array.json',
+        );
+        loadCredentialsIn(path, specEmails, usersToCreate);
+      },
+      () => {
+        const path = writeCredentialsInFile(
+          root,
+          JSON.stringify({ [TEST_SPEC.users[1]!.email]: CREDENTIALS_LEAK_SECRET }),
+          0o600,
+          'missing-create.json',
+        );
+        loadCredentialsIn(path, specEmails, usersToCreate);
+      },
+      () => {
+        const path = writeCredentialsInFile(
+          root,
+          JSON.stringify({ [createEmail]: 'shortpw' }),
+          0o600,
+          'short.json',
+        );
+        loadCredentialsIn(path, specEmails, usersToCreate);
+      },
+      () => {
+        const path = writeCredentialsInFile(
+          root,
+          JSON.stringify({ [createEmail]: 'x'.repeat(65) }),
+          0o600,
+          'long.json',
+        );
+        loadCredentialsIn(path, specEmails, usersToCreate);
+      },
+      () => {
+        const path = writeCredentialsInFile(
+          root,
+          JSON.stringify({
+            [createEmail]: CREDENTIALS_LEAK_SECRET,
+            [extraEmail]: CREDENTIALS_LEAK_SECRET,
+          }),
+          0o600,
+          'extra.json',
+        );
+        loadCredentialsIn(path, specEmails, usersToCreate);
+      },
+      () => {
+        const path = writeCredentialsInFile(
+          root,
+          `{"${createEmail}": "${CREDENTIALS_LEAK_SECRET}"`,
+          0o600,
+          'bad-json.json',
+        );
+        loadCredentialsIn(path, specEmails, usersToCreate);
+      },
+    ];
+    try {
+      for (const run of errorPaths) {
+        const blob = captureConsoleAndStderr(() => expect(run).toThrow());
+        expect(blob).not.toContain(CREDENTIALS_LEAK_SECRET);
+        expect(blob).not.toContain('shortpw');
+        expect(blob).not.toContain('x'.repeat(65));
+      }
+      const extraBlob = captureConsoleAndStderr(() => {
+        loadCredentialsIn(join(root, 'extra.json'), specEmails, usersToCreate);
+      });
+      expect(extraBlob).toContain(extraEmail);
+      expect(extraBlob).not.toContain(CREDENTIALS_LEAK_SECRET);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts credentials-out when sourced from credentials-in', () => {
+    const payload = { [TEST_SPEC.users[0]!.email]: { password: CREDENTIALS_LEAK_SECRET } };
+    const redacted = redactCredentialsOut(payload);
+    expect(redacted).toEqual({
+      [TEST_SPEC.users[0]!.email]: { password: '<from credentials-in>' },
+    });
+    expect(inspect(redacted)).not.toContain(CREDENTIALS_LEAK_SECRET);
+  });
+});
+
 describe('applyAfterReservingCredentialsFile', () => {
   it('fails before apply when credentials parent dir is missing', async () => {
     const root = mkdtempSync(join(tmpdir(), 'provision-creds-'));
@@ -1148,6 +1469,28 @@ describe('applyAfterReservingCredentialsFile', () => {
         }),
       ).rejects.toMatchObject({ code: 'ENOENT' });
       expect(apply).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('writes <from credentials-in> to credentials-out, never the password', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'provision-creds-redact-'));
+    const path = join(root, 'creds.json');
+    try {
+      await applyAfterReservingCredentialsFile({
+        path,
+        apply: async (writeCredentials) => {
+          writeCredentials(
+            redactCredentialsOut({
+              [TEST_SPEC.users[0]!.email]: { password: CREDENTIALS_LEAK_SECRET },
+            }),
+          );
+        },
+      });
+      const written = readFileSync(path, 'utf8');
+      expect(written).toContain('<from credentials-in>');
+      expect(written).not.toContain(CREDENTIALS_LEAK_SECRET);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
