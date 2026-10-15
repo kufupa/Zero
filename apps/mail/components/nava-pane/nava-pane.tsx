@@ -580,28 +580,35 @@ export function NavaPane({
   documentContactRef.current = documentContact;
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
-  const [partySuggestions, setPartySuggestions] = useState<PartySuggestion[]>([]);
+  const [partySuggestionState, setPartySuggestionState] = useState<{
+    contactMessageKey: string;
+    suggestions: PartySuggestion[];
+  }>({ contactMessageKey: '', suggestions: [] });
   const senderEmail = activeEmail?.senderEmail ?? '';
   const bodyText = activeEmail?.bodyText ?? '';
+  const signedInForSuggest = Boolean(session?.user) && !requiresRelogin;
   useEffect(() => {
-    setPartySuggestions([]);
-    if (!PANE_PARTY_SUGGESTER || !contactMessageKey) return;
+    if (!PANE_PARTY_SUGGESTER || !contactMessageKey || !signedInForSuggest) return;
     let cancelled = false;
     void PANE_PARTY_SUGGESTER({
       sender: senderEmail,
       body: bodyText.slice(0, 20_000),
     }).then(
       (reply) => {
-        if (!cancelled) setPartySuggestions(reply.suggestions);
+        if (!cancelled) {
+          setPartySuggestionState({ contactMessageKey, suggestions: reply.suggestions });
+        }
       },
       () => {
-        if (!cancelled) setPartySuggestions([]);
+        if (!cancelled) setPartySuggestionState({ contactMessageKey, suggestions: [] });
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [contactMessageKey, senderEmail, bodyText]);
+  }, [contactMessageKey, senderEmail, bodyText, signedInForSuggest]);
+  const partySuggestions =
+    partySuggestionState.contactMessageKey === contactMessageKey ? partySuggestionState.suggestions : [];
   const suppressAutoStaffQuoteForCurrentEmail = () => {
     if (!contactMessageKey) return;
     staffQuoteAutoSuppressed.current.add(contactMessageKey);

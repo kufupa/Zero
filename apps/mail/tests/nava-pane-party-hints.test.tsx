@@ -17,21 +17,32 @@ const SENDER_HINT: PartySuggestion = {
 
 const BODY_LIMIT = 20_000;
 
-const { suggestQuery, findPartyMutation, lastStaffQuoteInput, sendCommandMock } = vi.hoisted(() => ({
-  suggestQuery: vi.fn(),
-  findPartyMutation: vi.fn().mockResolvedValue({
-    outcome: 'no_match',
-    results: [],
-    truncated: false,
-    best: null,
-    searchedFor: null,
+const { suggestQuery, findPartyMutation, lastStaffQuoteInput, sendCommandMock, sessionState } = vi.hoisted(
+  () => ({
+    suggestQuery: vi.fn(),
+    findPartyMutation: vi.fn().mockResolvedValue({
+      outcome: 'no_match',
+      results: [],
+      truncated: false,
+      best: null,
+      searchedFor: null,
+    }),
+    lastStaffQuoteInput: { current: null as null | Record<string, unknown> },
+    sendCommandMock: vi.fn(async (action: string): Promise<unknown> => {
+      if (action === 'GET_ACTIVE_EMAIL') return { entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' };
+      return { entryId: 'draft-default', storeId: 'store-1', folderEntryId: 'folder-drafts', displayed: true };
+    }),
+    sessionState: {
+      current: {
+        user: { id: 'staff-1', email: 'staff@example.test', name: 'Staff Example' },
+        session: { id: 'session-1' },
+      } as null | {
+        user: { id: string; email: string; name: string };
+        session: { id: string };
+      },
+    },
   }),
-  lastStaffQuoteInput: { current: null as null | Record<string, unknown> },
-  sendCommandMock: vi.fn(async (action: string): Promise<unknown> => {
-    if (action === 'GET_ACTIVE_EMAIL') return { entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' };
-    return { entryId: 'draft-default', storeId: 'store-1', folderEntryId: 'folder-drafts', displayed: true };
-  }),
-}));
+);
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
@@ -39,10 +50,7 @@ vi.mock('sonner', () => ({
 
 vi.mock('../lib/auth-client', () => ({
   useSession: () => ({
-    data: {
-      user: { id: 'staff-1', email: 'staff@example.test', name: 'Staff Example' },
-      session: { id: 'session-1' },
-    },
+    data: sessionState.current,
     isLoading: false,
   }),
   signIn: { email: vi.fn() },
@@ -164,10 +172,27 @@ const fakeBridge = {
   pairDevice: vi.fn(async () => {}),
 } as unknown as PaneBridge;
 
+const SIGNED_IN = {
+  user: { id: 'staff-1', email: 'staff@example.test', name: 'Staff Example' },
+  session: { id: 'session-1' },
+};
+
+function bridgeForEmail(overrides: {
+  entryId: string;
+  internetMessageId: string;
+  senderEmail: string;
+}): PaneBridge {
+  return {
+    ...fakeBridge,
+    activeEmail: { ...fakeBridge.activeEmail!, ...overrides },
+  } as unknown as PaneBridge;
+}
+
 describe('NavaPane mail-derived party hints', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     lastStaffQuoteInput.current = null;
+    sessionState.current = SIGNED_IN;
     findPartyMutation.mockClear();
     suggestQuery.mockReset();
     suggestQuery.mockResolvedValue({ suggestions: [SENDER_HINT] });
@@ -206,5 +231,52 @@ describe('NavaPane mail-derived party hints', () => {
     expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
     expect(screen.queryByText('Example Travel Agency')).toBeNull();
     expect(screen.queryByText(/✓ /)).toBeNull();
+  });
+
+  it("switching email A to B never shows A's hint under B", async () => {
+    const hintA: PartySuggestion = { ...SENDER_HINT, name: 'Alpha Travel Agency' };
+    const hintB: PartySuggestion = { ...SENDER_HINT, name: 'Beta Travel Agency' };
+    let resolveB: (value: { suggestions: PartySuggestion[] }) => void = () => undefined;
+    suggestQuery.mockImplementation(async (input: { sender: string; body: string }) => {
+      if (input.sender === 'ops-a@example.test') return { suggestions: [hintA] };
+      return new Promise((resolve) => {
+        resolveB = resolve;
+      });
+    });
+
+    const { rerender } = render(
+      <NavaPane
+        bridge={bridgeForEmail({
+          entryId: '001',
+          internetMessageId: '<mail-a@example.invalid>',
+          senderEmail: 'ops-a@example.test',
+        })}
+        preview
+      />,
+    );
+    await screen.findByText('Alpha Travel Agency (Agency), not confirmed in HMS');
+
+    rerender(
+      <NavaPane
+        bridge={bridgeForEmail({
+          entryId: '002',
+          internetMessageId: '<mail-b@example.invalid>',
+          senderEmail: 'ops-b@example.test',
+        })}
+        preview
+      />,
+    );
+    expect(screen.queryByText(/Alpha Travel Agency/)).toBeNull();
+
+    resolveB({ suggestions: [hintB] });
+    await screen.findByText('Beta Travel Agency (Agency), not confirmed in HMS');
+    expect(screen.queryByText(/Alpha Travel Agency/)).toBeNull();
+  });
+
+  it('does not request suggestions when signed out', async () => {
+    sessionState.current = null;
+    render(<NavaPane bridge={fakeBridge} preview />);
+    expect(await screen.findByText(/Nava Assistant Sign In/i)).toBeTruthy();
+    expect(suggestQuery).not.toHaveBeenCalled();
   });
 });
