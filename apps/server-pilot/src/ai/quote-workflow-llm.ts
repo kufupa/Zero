@@ -75,6 +75,8 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   .update('\nparty-not-guest/2')
   // Group date normalization changes cached payloads without changing the model prompt or schema.
   .update('\nluna-group-dates/1')
+  // One-date stays now default to one night, so cached analyses without a checkout must be remapped.
+  .update('\none-night-default/1')
   .digest('hex')
   .slice(0, 16);
 
@@ -544,6 +546,11 @@ export function mapLlmDecision(
       case 'occupancy':
       case 'numberofguestsperroom':
         return groups.every((group) => group.adults !== undefined);
+      case 'departure':
+      case 'departuredate':
+      case 'checkout':
+      case 'checkoutdate':
+        return groups.every((group) => group.departureDate !== undefined);
       default:
         return false;
     }

@@ -232,7 +232,7 @@ describe('QUOTE_WORKFLOW_PROMPT_VERSION', () => {
       .update(K2_MAPPING)
       .update('\n')
       .update(JSON.stringify(zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' })))
-      .update('\nattachment-review/2\nparty-not-guest/2\nluna-group-dates/1')
+      .update('\nattachment-review/2\nparty-not-guest/2\nluna-group-dates/1\none-night-default/1')
       .digest('hex')
       .slice(0, 16);
     const promptOnly = createHash('sha256')
@@ -546,6 +546,21 @@ describe('mapLlmDecision', () => {
       fields: { arrivalDate: 'extracted', departureDate: 'defaulted' },
     });
     expect(mapped.missingQuoteReplyFields).toEqual([]);
+  });
+
+  it('drops the checkout question once the one-night default fills departure', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, arrival: '2026-11-12', departure: null, dateEvidence: '12 Nov' }],
+          missing: [{ field: 'departureDate', question: 'What is the checkout date?' }],
+        }),
+      ),
+    );
+
+    expect(mapped.groups[0]?.departureDate).toBe('2026-11-13');
+    expect(mapped.missing.map((item) => item.field)).not.toContain('departureDate');
   });
 
   it('keeps checkout derived from stated nights instead of replacing it with one night', () => {
