@@ -523,12 +523,22 @@ async function waitCancelDialog(page) {
   return dialog;
 }
 
-async function readReasonList(page, dialog) {
-  await dialog.locator('.x-form-arrow-trigger').first().click({ force: true });
-  await page.waitForTimeout(400);
+// HMS fills the reason list after "Processing request…" clears, so an early look finds it empty. Look again for up to
+// REASON_LIST_WAIT_MS, opening the list again only when no item is showing, before calling it empty.
+const REASON_LIST_WAIT_MS = 15_000;
+export async function readReasonList(page, dialog, { waitMs = REASON_LIST_WAIT_MS } = {}) {
   const items = page.locator('.x-boundlist-item:visible');
-  const texts = await items.allInnerTexts();
-  return { items, texts, reasons: normalizeReasons(texts) };
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    if ((await items.count()) === 0) {
+      await dialog.locator('.x-form-arrow-trigger').first().click({ force: true });
+    }
+    await page.waitForTimeout(400);
+    const texts = await items.allInnerTexts();
+    const reasons = normalizeReasons(texts);
+    if (reasons.length > 0 || Date.now() >= deadline) return { items, texts, reasons };
+    await page.waitForTimeout(800);
+  }
 }
 
 // Dismisses the reason dialog without confirming: Escape collapses the open list, a second Escape closes the window,
