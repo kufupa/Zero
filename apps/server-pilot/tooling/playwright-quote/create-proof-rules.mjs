@@ -55,8 +55,30 @@ function exactGuestRows(rows, expected) {
       && comparable(stay?.departure) === comparable(expected?.departure));
 }
 
-export async function reconcileCreateSave({ save, expected, readByConfirmation, searchByGuestDates }) {
+function possibleGuestRows(rows, expected) {
+  return (Array.isArray(rows) ? rows : []).filter((stay) =>
+    ['firstName', 'lastName', 'arrival', 'departure'].every((field) => {
+      const actual = comparable(stay?.[field]);
+      return !actual || actual === comparable(expected?.[field]);
+    }));
+}
+
+function activeStay(stay) {
+  return ['reserved', 'confirmed'].includes(comparable(stay?.status));
+}
+
+export async function reconcileCreateSave({
+  save, expected, existingRows, readByConfirmation, searchByGuestDates,
+}) {
   const result = { confNo: null, readbackMatch: null, mismatches: [], screenshot: null, unknownOutcome: null };
+  if (!Array.isArray(existingRows)) return { ...result, unknownOutcome: 'unresolved' };
+  const possibleExistingRows = possibleGuestRows(existingRows, expected);
+  if (possibleExistingRows.some((stay) => !String(stay?.confirmation ?? '').trim())) {
+    return { ...result, unknownOutcome: 'unresolved' };
+  }
+  const existingConfirmations = new Set(
+    possibleExistingRows.map((stay) => String(stay.confirmation).trim()),
+  );
   let confNo = save?.confirmed === true ? String(save.confirmationNumber ?? '').trim() : '';
 
   if (!confNo) {
@@ -68,30 +90,53 @@ export async function reconcileCreateSave({ save, expected, readByConfirmation, 
     }
     result.screenshot = search?.screenshot ?? null;
     if (search?.outcome === 'not_found') return { ...result, unknownOutcome: 'not_found' };
-    if (search?.outcome !== 'ok') return { ...result, unknownOutcome: 'unresolved' };
-    const matches = exactGuestRows(search.matches, expected);
-    if (matches.length === 0) return { ...result, unknownOutcome: 'not_found' };
-    if (matches.length !== 1 || !String(matches[0]?.confirmation ?? '').trim()) {
+    if (search?.outcome !== 'ok' || !Array.isArray(search.rows)) {
       return { ...result, unknownOutcome: 'unresolved' };
     }
-    confNo = String(matches[0].confirmation).trim();
+    const possibleMatches = possibleGuestRows(search.rows, expected);
+    if (possibleMatches.length === 0) return { ...result, unknownOutcome: 'not_found' };
+    if (possibleMatches.some((stay) => !String(stay?.confirmation ?? '').trim())) {
+      return { ...result, unknownOutcome: 'unresolved' };
+    }
+    const newMatches = possibleMatches.filter((stay) =>
+      !existingConfirmations.has(String(stay.confirmation).trim()));
+    if (newMatches.length !== 1
+      || exactGuestRows(newMatches, expected).length !== 1
+      || !activeStay(newMatches[0])) {
+      return { ...result, unknownOutcome: 'unresolved' };
+    }
+    confNo = String(newMatches[0].confirmation).trim();
     result.unknownOutcome = 'found';
   }
 
-  result.confNo = confNo;
+  if (existingConfirmations.has(confNo)) return { ...result, unknownOutcome: 'unresolved' };
   let readback;
   try {
     readback = await readByConfirmation(confNo);
   } catch {
-    result.readbackMatch = false;
-    result.mismatches = [mismatch('reservation', 'found by confirmation', 'readback_error')];
-    return result;
+    return {
+      ...result,
+      unknownOutcome: 'unresolved',
+      mismatches: [mismatch('reservation', 'found active confirmation', 'readback_error')],
+    };
   }
   result.screenshot = readback?.screenshot ?? result.screenshot;
   if (readback?.outcome !== 'found' || !readback.stay) {
-    result.readbackMatch = false;
-    result.mismatches = [mismatch('reservation', 'found by confirmation', readback?.outcome ?? 'unavailable')];
-    return result;
+    return {
+      ...result,
+      unknownOutcome: 'unresolved',
+      mismatches: [
+        mismatch('reservation', 'found active confirmation', readback?.outcome ?? 'unavailable'),
+      ],
+    };
   }
+  if (!activeStay(readback.stay)) {
+    return {
+      ...result,
+      unknownOutcome: 'unresolved',
+      mismatches: [mismatch('status', 'Reserved or Confirmed', readback.stay.status)],
+    };
+  }
+  result.confNo = confNo;
   return { ...result, ...compareCreatedStay(expected, readback.stay) };
 }

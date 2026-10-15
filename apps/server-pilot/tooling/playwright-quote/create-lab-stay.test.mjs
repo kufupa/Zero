@@ -228,3 +228,36 @@ test('childAges passes and --shop returns BAR rows without a row click', async (
   assert.deepEqual(shopRowsFromTexts(['HRCEN: The Centurion Hotel 160']), []);
   assert.throws(() => refuseRateRowClick(), /RATE_ROW_CLICK_REFUSED/);
 });
+
+test('create CLI exits after cleanup and both output streams have flushed', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const cleanup = source.indexOf('await context.close().catch(() => {});');
+  const launcher = source.indexOf('main().then(', cleanup);
+  const flushHelper = source.indexOf('async function flushOutput()', cleanup);
+  assert.ok(cleanup !== -1 && launcher > cleanup);
+  assert.ok(flushHelper > cleanup && flushHelper < launcher);
+  assert.match(source, /process\.stdout\.write\('', resolveOutput\)/);
+  assert.match(source, /process\.stderr\.write\('', resolveError\)/);
+  const completion = source.slice(launcher);
+  const stdoutFlush = completion.indexOf('await flushOutput()');
+  const successExit = completion.indexOf('process.exit(process.exitCode ?? 0)');
+  const errorHandler = completion.indexOf('(error) => {');
+  const stderrWrite = completion.indexOf('process.stderr.write(', errorHandler);
+  const stderrFlush = completion.indexOf('await flushOutput()', errorHandler);
+  const errorExit = completion.indexOf('process.exit(2)', errorHandler);
+  assert.ok(stdoutFlush !== -1 && successExit > stdoutFlush);
+  assert.ok(errorHandler !== -1);
+  assert.ok(stderrWrite > errorHandler);
+  assert.ok(stderrFlush > stderrWrite);
+  assert.ok(errorExit > stderrFlush);
+});
+
+test('proof mode captures parsed search rows before Save', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const baseline = source.indexOf('const existingRows = proofMode');
+  const saveClick = source.indexOf("await clickTip(page, '^Save')");
+  assert.ok(baseline !== -1 && saveClick > baseline);
+  assert.match(source, /return \{\s*outcome: found\.outcome,\s*rows: found\.rows,/);
+  assert.match(source, /Array\.isArray\(search\.rows\) \? search\.rows : null/);
+  assert.match(source, /existingRows\s*,/);
+});

@@ -188,10 +188,35 @@ async function withReadOnlyGuestStay(browser, secret, dir, args, read) {
   }
 }
 
-async function runProofReadback(browser, secret, stay, dir, save, savedScreenshot) {
+async function searchGuestByDates(browser, secret, dir, expected) {
+  const { searchGuestOnOpenGuestStay } = await import('./stay-lookup.mjs');
+  return withReadOnlyGuestStay(browser, secret, dir, {
+    mode: 'search-guest', confirmation: null, lastName: expected.lastName,
+    arrival: expected.arrival, departure: expected.departure, debugHtml: false,
+  }, async (ctx) => {
+    const found = await searchGuestOnOpenGuestStay(ctx);
+    return {
+      outcome: found.outcome,
+      rows: found.rows,
+      screenshot: found.screenshots.at(-1) ?? null,
+    };
+  });
+}
+
+async function readExistingGuestRows(browser, secret, stay, dir) {
+  try {
+    const search = await searchGuestByDates(browser, secret, dir, stay);
+    return search?.outcome === 'ok' && Array.isArray(search.rows) ? search.rows : null;
+  } catch {
+    return null;
+  }
+}
+
+async function runProofReadback(browser, secret, stay, dir, save, savedScreenshot, existingRows) {
   const proof = await reconcileCreateSave({
     save,
     expected: stay,
+    existingRows,
     readByConfirmation: async (confirmation) => {
       const { findOnOpenGuestStay } = await import('./stay-lookup.mjs');
       return withReadOnlyGuestStay(browser, secret, dir, {
@@ -205,16 +230,7 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
         };
       });
     },
-    searchByGuestDates: async (expected) => {
-      const { searchGuestOnOpenGuestStay } = await import('./stay-lookup.mjs');
-      return withReadOnlyGuestStay(browser, secret, dir, {
-        mode: 'search-guest', confirmation: null, lastName: expected.lastName,
-        arrival: expected.arrival, departure: expected.departure, debugHtml: false,
-      }, async (ctx) => {
-        const found = await searchGuestOnOpenGuestStay(ctx);
-        return { outcome: found.outcome, matches: found.matches, screenshot: found.screenshots.at(-1) ?? null };
-      });
-    },
+    searchByGuestDates: (expected) => searchGuestByDates(browser, secret, dir, expected),
   });
   return {
     confNo: proof.confNo,
@@ -357,6 +373,9 @@ async function main() {
       process.stdout.write(`${result.outcome}\n`);
       return;
     }
+    const existingRows = proofMode
+      ? await readExistingGuestRows(browser, secret, stay, dir)
+      : null;
     let saveClickUnknown = false;
     try {
       await clickTip(page, '^Save');
@@ -394,7 +413,9 @@ async function main() {
       ? await shot(page, dir, 'saved.png').catch(() => null)
       : await shot(page, dir, 'saved.png');
     if (proofMode) {
-      const proof = await runProofReadback(browser, secret, stay, dir, save, savedScreenshot);
+      const proof = await runProofReadback(
+        browser, secret, stay, dir, save, savedScreenshot, existingRows,
+      );
       result.confirmationNumber = proof.confNo;
       result.saved = proof.confNo ? true : null;
       result.proof = proof;
@@ -450,9 +471,23 @@ async function main() {
   if (result.outcome !== 'saved_then_cancelled') process.exitCode = 2;
 }
 
+async function flushOutput() {
+  await Promise.all([
+    new Promise((resolveOutput) => process.stdout.write('', resolveOutput)),
+    new Promise((resolveError) => process.stderr.write('', resolveError)),
+  ]);
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
-    process.stderr.write(`${error.message || error}\n`);
-    process.exitCode = 2;
-  });
+  main().then(
+    async () => {
+      await flushOutput();
+      process.exit(process.exitCode ?? 0);
+    },
+    async (error) => {
+      process.stderr.write(`${error.message || error}\n`);
+      await flushOutput();
+      process.exit(2);
+    },
+  );
 }
