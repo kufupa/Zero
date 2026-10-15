@@ -10,6 +10,7 @@ import {
   RATES_SECTION,
   READ_ROWS_JS,
   RUN_STEP,
+  stepKeyOf,
   AE1_WRITE_PROCEDURES,
   blockerOfPlan,
   classifyAe1Request,
@@ -197,11 +198,11 @@ describe('room rows', () => {
     ...extra,
   });
   // No default count: a run uses the read's counts, and NAVA_AE1_ROOMS only where the read has none.
-  const inputs = { roomSplit: [] as number[], adultsSplit: [], board: 'bb' as const, allowEdits: true };
+  const inputs = { roomSplit: [] as number[], adultsSplit: [], allowEdits: true };
 
   it('fills the rows NAVA_AE1_ROOMS counts 15 + 15 for, and records what it used', () => {
     const rows = [1, 2].flatMap((stayNumber) => [
-      row({ stay: stayNumber, room: 1, roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single') }),
+      row({ stay: stayNumber, room: 1, roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single'), board: 'bb' }),
       row({ stay: stayNumber, room: 2, roomValue: 'Double/twin', roomOptions: ROOM_OPTIONS('Double/twin'), board: 'bb' }),
     ]);
     const { plans, split } = planRoomRows(rows, { ...inputs, roomSplit: [15, 15] });
@@ -213,14 +214,14 @@ describe('room rows', () => {
       [2, 1, 'Single', 'STQN', 15, 1, 'bb'],
       [2, 2, 'Double/twin', 'STWN', 15, 2, 'bb'],
     ]);
-    expect(split.rows[1]).toMatchObject({ roomTypeFilled: true, roomsFilled: true, boardFilled: false });
-    expect(plans[0]).toEqual({ index: 0, roomType: 'STQN', rooms: 15, adults: 1, board: 'bb' });
-    expect(plans[1]).toEqual({ index: 1, roomType: 'STWN', rooms: 15, adults: 2, board: null });
+    expect(split.rows[1]).toMatchObject({ roomTypeFilled: true, roomsFilled: true, board: 'bb' });
+    expect(plans[0]).toEqual({ index: 0, roomType: 'STQN', rooms: 15, adults: 1 });
+    expect(plans[1]).toEqual({ index: 1, roomType: 'STWN', rooms: 15, adults: 2 });
   });
 
   it('keeps what the pane already has', () => {
     const { plans, split } = planRoomRows([row({ roomValue: 'SKNG', rooms: 4, adults: 3, board: 'dinner_bb' })], inputs);
-    expect(plans).toEqual([{ index: 0, roomType: null, rooms: null, adults: null, board: null }]);
+    expect(plans).toEqual([{ index: 0, roomType: null, rooms: null, adults: null }]);
     expect(split.rows[0]).toMatchObject({ askedType: null, roomType: 'SKNG', rooms: 4, adults: 3, board: 'dinner_bb' });
   });
 
@@ -234,26 +235,23 @@ describe('room rows', () => {
       row({ room: 5, ...full, roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single') }),
     ];
     const { plans, split } = planRoomRows(rows, { ...inputs, roomSplit: [15, 15, 15, 15, 15], adultsSplit: [2, 2, 2, 2, 2] });
-    // Each row fills only its one missing value; every present value comes back unchanged.
+    // Each row fills only its one missing value; every present value comes back unchanged. A meal plan is never filled.
     expect(plans).toEqual([
-      { index: 0, roomType: null, rooms: null, adults: null, board: null },
-      { index: 1, roomType: null, rooms: 15, adults: null, board: null },
-      { index: 2, roomType: null, rooms: null, adults: 2, board: null },
-      { index: 3, roomType: null, rooms: null, adults: null, board: 'bb' },
-      { index: 4, roomType: 'STQN', rooms: null, adults: null, board: null },
+      { index: 0, roomType: null, rooms: null, adults: null },
+      { index: 1, roomType: null, rooms: 15, adults: null },
+      { index: 2, roomType: null, rooms: null, adults: 2 },
+      { index: 3, roomType: null, rooms: null, adults: null },
+      { index: 4, roomType: 'STQN', rooms: null, adults: null },
     ]);
     for (const used of split.rows) {
       if (!used.roomTypeFilled) expect(used.roomType).toBe('STWN');
       if (!used.roomsFilled) expect(used.rooms).toBe(7);
       if (!used.adultsFilled) expect(used.adults).toBe(1);
-      if (!used.boardFilled) expect(used.board).toBe('room_only');
     }
-    expect(filledFieldsOf(split)).toEqual([
-      'stay1.room2.rooms',
-      'stay1.room3.adults',
-      'stay1.room4.board',
-      'stay1.room5.roomType',
-    ]);
+    expect(split.rows.map((used) => used.board)).toEqual(['room_only', 'room_only', 'room_only', 'unknown', 'room_only']);
+    expect(filledFieldsOf(split)).toEqual(['stay1.room2.rooms', 'stay1.room3.adults', 'stay1.room5.roomType']);
+    // The row with no meal plan stops the run even with edits allowed: the pane has no control that sets it.
+    expect(blockerOfPlan(split, { allowEdits: true })).toBe('needs_edits:board');
   });
 
   it('uses the read counts as they are, and no default', () => {
@@ -325,7 +323,7 @@ describe('room rows', () => {
 });
 
 describe('the blocker a run stops with', () => {
-  const inputs = { roomSplit: [] as number[], adultsSplit: [], board: 'bb' as const, allowEdits: false };
+  const inputs = { roomSplit: [] as number[], adultsSplit: [], allowEdits: false };
   const pane = (extra: Partial<PaneRoomRow>): PaneRoomRow => ({
     stay: 1,
     room: 1,
@@ -342,7 +340,7 @@ describe('the blocker a run stops with', () => {
       [pane({ roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single'), rooms: null, adults: null, board: 'unknown' })],
       { ...inputs, roomSplit: [15] },
     );
-    expect(fillKindsOf(split)).toEqual(['rooms', 'roomType', 'adults', 'board']);
+    expect(fillKindsOf(split)).toEqual(['rooms', 'roomType', 'adults']);
   });
 
   it('is null for a complete pane', () => {
@@ -351,12 +349,19 @@ describe('the blocker a run stops with', () => {
   });
 
   it('names the fills without edits, and runs them with edits allowed', () => {
-    const { split } = planRoomRows(
-      [pane({ roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single'), board: 'unknown' })],
-      inputs,
-    );
-    expect(blockerOfPlan(split, { allowEdits: false })).toBe('needs_edits:roomType,board');
+    const { split } = planRoomRows([pane({ roomValue: 'Single', roomOptions: ROOM_OPTIONS('Single'), adults: null })], inputs);
+    expect(blockerOfPlan(split, { allowEdits: false })).toBe('needs_edits:roomType,adults');
     expect(blockerOfPlan(split, { allowEdits: true })).toBeNull();
+  });
+
+  it('never fills a meal plan: a stay with none stops on needs_edits:board, edits allowed or not', () => {
+    const { split } = planRoomRows([pane({ board: 'unknown' })], inputs);
+    expect(blockerOfPlan(split, { allowEdits: false })).toBe('needs_edits:board');
+    expect(blockerOfPlan(split, { allowEdits: true })).toBe('needs_edits:board');
+    // Rows whose boards differ show "All meal plans"; each row still carries its own board, so that is not a stop.
+    expect(blockerOfPlan(planRoomRows([pane({ board: 'all' })], inputs).split, inputs)).toBeNull();
+    const both = planRoomRows([pane({ rooms: null, board: 'unknown' })], inputs).split;
+    expect(blockerOfPlan(both, { allowEdits: true })).toBe('needs_edits:rooms,board');
   });
 
   it('states where the counts came from', () => {
@@ -420,7 +425,6 @@ describe('dry plan', () => {
             adults: 1,
             adultsFilled: true,
             board: 'bb',
-            boardFilled: false,
           },
           {
             stay: 1,
@@ -434,7 +438,6 @@ describe('dry plan', () => {
             adults: 2,
             adultsFilled: false,
             board: 'bb',
-            boardFilled: false,
           },
         ],
       },
@@ -468,10 +471,10 @@ describe('config', () => {
     ...extra,
   });
 
-  it('has no default room count, and defaults the meal plan to bed and breakfast', () => {
+  it('has no default room count and no meal-plan input', () => {
     const config = parseAe1Config(['--threads', 't-1', '--out', dir], env(), dir);
     expect(config.threadId).toBe('t-1');
-    expect(config.inputs).toEqual({ roomSplit: [], adultsSplit: [], board: 'bb', allowEdits: false });
+    expect(config.inputs).toEqual({ roomSplit: [], adultsSplit: [], allowEdits: false });
     expect(config.dryPlan).toBe(false);
   });
 
@@ -493,7 +496,6 @@ describe('config', () => {
     expect(() => parseAe1Config(['--threads', 'a'], env({ NAVA_AE1_ROOMS: 'half' }), dir)).toThrow('NAVA_AE1_ROOMS');
     expect(() => parseAe1Config(['--threads', 'a'], env({ NAVA_AE1_ROOMS: '0/30' }), dir)).toThrow('1 to 99');
     expect(() => parseAe1Config(['--threads', 'a'], env({ NAVA_AE1_ADULTS: '12' }), dir)).toThrow('1 to 9');
-    expect(() => parseAe1Config(['--threads', 'a'], env({ NAVA_AE1_BOARD: 'all' }), dir)).toThrow('NAVA_AE1_BOARD');
   });
 });
 
@@ -555,8 +557,8 @@ describe('verdict', () => {
   });
 
   it('reports a blocker', () => {
-    expect(ae1Failures({ ...passing, blocker: 'Get rates from HMS is disabled: x' })[0]).toBe(
-      'blocker: Get rates from HMS is disabled: x',
+    expect(ae1Failures({ ...passing, blocker: 'Search availability is disabled: x' })[0]).toBe(
+      'blocker: Search availability is disabled: x',
     );
   });
 });
@@ -569,23 +571,46 @@ describe('the pane markup the driver reads', () => {
     const session = mail('lib', 'quote-workflow', 'session.ts');
     const documents = mail('components', 'quote-workflow', 'document-review.tsx');
     const ui = mail('components', 'nava-pane', 'pane-ui.tsx');
+    const driver = readFileSync(join(here, '..', 'scripts', 'nava-ae1-rates-proof.ts'), 'utf8');
     expect(ui).toContain('<section id={id} aria-label={title}');
     expect(ui).toContain('<div role="group" aria-label={label}');
-    expect(panel).toContain('<Section step={1} title="Stay details">');
-    expect(RATES_SECTION).toContain('aria-label="Rates from HMS"');
-    expect(panel).toContain('<Section step={2} title="Rates from HMS">');
-    expect(DOCUMENTS_SECTION).toContain('aria-label="Quote documents"');
-    expect(panel).toContain('<Section step={3} title="Quote documents">');
-    expect(panel).toContain('Get rates from HMS');
-    expect(panel).toContain('{`${rated} of ${total} stays rated`}');
+    expect(panel).toContain('<Section step={3} title="Stay"');
+    expect(READ_ROWS_JS).toContain('section[aria-label="Stay"]');
+    expect(RATES_SECTION).toContain('aria-label="Availability & rates"');
+    expect(panel).toContain('<Section step={4} title="Availability & rates"');
+    expect(DOCUMENTS_SECTION).toContain('aria-label="Documents"');
+    expect(panel).toContain('<Section step={6} title="Documents"');
+    expect(panel).toContain('Search availability');
+    expect(driver).toContain('name: QUOTE_SEARCH_BUTTON');
+    expect(panel).toContain(
+      '${quotationTotal.rated} of ${quotationTotal.stays} stays rated. Search each date range for the complete total.',
+    );
     expect(card).toContain('const where = `stay ${stayNumber}, room ${roomNumber}`;');
     expect(card).toContain('label={`Rooms for ${where}`}');
-    expect(card).toContain('Email asked for {unknownValue} — pick a room type');
-    for (const label of ['Room type', 'Rooms', 'Adults', 'Meal plan']) expect(card).toContain(`aria-label="${label}"`);
-    expect(steps).toContain('Run {step.title}');
+    expect(card).toContain("Email said '${unknownValue}' →");
+    for (const label of ['Room type', 'Rooms', 'Meal plan']) expect(card).toContain(`aria-label="${label}"`);
+    // No per-row Adults input or Meal plan select: adults are a text line plus a stepper, the meal plan is one per stay.
+    expect(card).not.toContain('aria-label="Adults"');
+    expect(card).toContain('label={`Adult guests per room for ${where}`}');
+    expect(card).toContain('aria-label={`Edit adults per room for ${where}`}');
+    expect(card).toContain("`${group.adults} ${group.adults === 1 ? 'adult' : 'adults'} per room`");
+    expect(card).toContain("'Adults per room not set'");
+    expect(card).toContain('<article aria-label={`Stay ${stayNumber} details`}');
+    expect(card).toContain('<div role="row" aria-label={displayName}');
+    expect(card).toContain('<option value="unknown">Not stated in email</option>');
+    expect(ui).toContain('aria-label={`More: ${label}`}');
+    expect(driver).not.toContain('aria-label="Adults"');
+    expect(steps).toContain('<span>Run</span>');
+    expect(steps).toContain('<span>{step.title}</span>');
     expect(session).toContain("title: `Search availability ${key.replace(':', ' → ')}`");
-    expect(RUN_STEP.test('Run Search availability 2026-10-26 → 2026-10-27')).toBe(true);
-    expect(documents).toContain("{isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF'}");
+    // The two spans have no text space between them, so the button text reads "RunSearch availability …".
+    for (const name of ['RunSearch availability 2026-10-26 → 2026-10-27', 'Run Search availability 2026-10-26 → 2026-10-27']) {
+      expect(RUN_STEP.test(name)).toBe(true);
+      expect(stepKeyOf(name)).toBe('2026-10-26:2026-10-27');
+    }
+    expect(documents).toContain(
+      "const pdfButtonLabel = isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF';",
+    );
     expect(documents).toContain('Download Excel');
   });
 
@@ -595,28 +620,34 @@ describe('the pane markup the driver reads', () => {
       const browser = await chromium.launch({ executablePath: chromiumBinary, headless: true });
       try {
         const page = await browser.newPage();
-        const roomRow = (stayNumber: number, roomNumber: number, asked: string, rooms: string) => `
-          <div><select aria-label="Room type">
-            <option value="">Choose a room type</option>
+        // requirement-card.tsx: per row the Room type select, the Rooms stepper group and sr-only input, and the adults
+        // line; one Meal plan select per stay article, offering "unknown" only while the stay's rows carry no board.
+        const roomRow = (stayNumber: number, roomNumber: number, asked: string, rooms: string, adults: string) => `
+          <div role="row" aria-label="${asked} ×${rooms || '?'}"><div role="cell"><select aria-label="Room type">
+            <option value="">Choose room type</option>
             <option value="${asked}" selected>Email asked for ${asked} — pick a room type</option>
             <option value="STWN">Standard Twin (STWN)</option><option value="STQN">Standard Queen (STQN)</option>
           </select>
-          <div role="group" aria-label="Rooms for stay ${stayNumber}, room ${roomNumber}"></div>
+          <div role="group" aria-label="Rooms for stay ${stayNumber}, room ${roomNumber}"><span>${rooms || '–'}</span></div>
           <input aria-hidden="true" type="number" aria-label="Rooms" class="sr-only" value="${rooms}">
-          <input aria-hidden="true" type="number" aria-label="Adults" class="sr-only" value="">
-          <select aria-label="Meal plan"><option value="unknown" selected>Not stated yet</option><option value="bb">B&amp;B</option></select></div>`;
-        await page.setContent(`<div data-preview-pane><section aria-label="Stay details">
-          ${roomRow(1, 1, 'Single', '')}${roomRow(1, 2, 'Double/twin', '')}${roomRow(2, 1, 'Single', '4')}
-        </section><section aria-label="Rates from HMS"><input aria-label="Rooms" value="9"></section></div>`);
+          <span><span>${adults ? `${adults} ${adults === '1' ? 'adult' : 'adults'} per room` : 'Adults per room not set'}</span></span>
+          <button aria-label="Edit adults per room for stay ${stayNumber}, room ${roomNumber}">Tap to edit</button></div></div>`;
+        const meal = (unknown: boolean) =>
+          `<select aria-label="Meal plan"><option value="all">All meal plans</option><option value="bb"${unknown ? '' : ' selected'}>Bed &amp; breakfast</option>` +
+          `${unknown ? '<option value="unknown">Not stated in email</option>' : ''}</select>`;
+        await page.setContent(`<div data-preview-pane><section aria-label="Stay">
+          <article aria-label="Stay 1 details">${meal(true)}${roomRow(1, 1, 'Single', '', '')}${roomRow(1, 2, 'Double/twin', '', '2')}</article>
+          <article aria-label="Stay 2 details">${meal(false)}${roomRow(2, 1, 'Single', '4', '1')}</article>
+        </section><section aria-label="Availability & rates"><input aria-label="Rooms" value="9"></section></div>`);
         const read = (await page.evaluate(`(${READ_ROWS_JS})()`)) as {
           counts: number[];
-          rows: Array<{ stay: number; room: number; roomValue: string; roomOptions: SelectOption[]; rooms: string; board: string }>;
+          rows: Array<{ stay: number; room: number; roomValue: string; roomOptions: SelectOption[]; rooms: string; adults: string; board: string }>;
         };
         expect(read.counts).toEqual([3, 3, 3, 3, 3]);
-        expect(read.rows.map((row) => [row.stay, row.room, row.roomValue, row.rooms, row.board])).toEqual([
-          [1, 1, 'Single', '', 'unknown'],
-          [1, 2, 'Double/twin', '', 'unknown'],
-          [2, 1, 'Single', '4', 'unknown'],
+        expect(read.rows.map((row) => [row.stay, row.room, row.roomValue, row.rooms, row.adults, row.board])).toEqual([
+          [1, 1, 'Single', '', '', 'unknown'],
+          [1, 2, 'Double/twin', '', '2', 'unknown'],
+          [2, 1, 'Single', '4', '1', 'bb'],
         ]);
         expect(pickRoomOption('Double/twin', read.rows[1]!.roomOptions)?.value).toBe('STWN');
       } finally {

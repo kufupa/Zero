@@ -24,6 +24,7 @@ import {
 } from './nava-proof-kit';
 import { quoteProofPass } from './nava-quote-proof-result.js';
 export { isNamedRefusal, quoteProofPass } from './nava-quote-proof-result.js';
+import { QUOTE_SEARCH_BUTTON } from './nava-quote-selectors';
 import {
   ANALYSIS_PROCEDURES,
   fitPaneToContent,
@@ -52,7 +53,7 @@ const MESSAGE_LIMIT = 220;
 /** Page targets use accessible names, except the read-as kind which has stable pane metadata. */
 export const QUOTE_SELECTORS = {
   intent: '[data-preview-pane] [data-read-as]',
-  contactRegion: 'Guest & contact',
+  contactRegion: 'Quote contact — printed on the PDF',
   contactNameValue: '[data-contact-field="name"] dd > span',
   contactEmailValue: '[data-contact-field="email"] dd > span',
   stayRegion: 'Stay',
@@ -80,18 +81,17 @@ export const QUOTE_SELECTORS = {
   selectedParty: /✓\s*(.+?)\s+\(#([^)]+)\)(?:\s+— picked by Nava)?/,
   advanced: 'Advanced',
   ratePlan: 'Rate plan',
-  ratesRegion: 'Rates',
+  ratesRegion: 'Availability & rates',
   rateHeading: 'Availability for this date range',
   rateArticleAncestor: 'xpath=ancestor::article[1]',
-  searchButton: /^(?:Search availability|Retry search|Search again)$/,
-  getRatesButton: /^Get rates(?: from HMS)?$/,
+  searchButton: QUOTE_SEARCH_BUTTON,
   rateCardsGroup: 'Room rates from HMS',
   pricedCard: /avg\s*\/\s*room\s*\/\s*night/i,
   detailsButton: 'Details',
   pendingParty: /Searching HMS for|Queued(?:\s|\(|$)|Running(?:\s|\(|\.|$)|Retrying/i,
   pendingPartyReadBack: /Checking for a background HMS lookup/i,
   pendingRate: /Starting the HMS run|Getting rates from HMS|Queued(?:\s|\(|$)|Running(?:\s|\(|\.|$)|Retrying/i,
-  docsRegion: 'Quote',
+  docsRegion: 'Documents',
   prepareButton: /^Prepare (?:quote|PDF)$/,
   excelButton: 'Download Excel',
   screenshotMask: '[data-runner-mask], [data-pii]',
@@ -1149,8 +1149,8 @@ async function rateSearchButtonEnabled(article: Locator | null, rates: Locator):
   ) {
     return true;
   }
-  const getRatesButton = rates.getByRole('button', { name: QUOTE_SELECTORS.getRatesButton });
-  return (await getRatesButton.count()) > 0 && (await getRatesButton.first().isEnabled());
+  const fallbackButton = rates.getByRole('button', { name: QUOTE_SELECTORS.searchButton });
+  return (await fallbackButton.count()) > 0 && (await fallbackButton.first().isEnabled());
 }
 
 async function ratePending(region: Locator, deadline: number): Promise<boolean> {
@@ -1377,7 +1377,7 @@ async function runRates(
         throw error;
       }
       let button = article?.getByRole('button', { name: QUOTE_SELECTORS.searchButton });
-      if (!button || !(await button.count())) button = rates.getByRole('button', { name: QUOTE_SELECTORS.getRatesButton });
+      if (!button || !(await button.count())) button = rates.getByRole('button', { name: QUOTE_SELECTORS.searchButton });
       try {
         await waitForRate('the availability search to be enabled', deadline, async () => {
           return button && (await button.count()) > 0 && (await button.first().isEnabled()) ? true : null;

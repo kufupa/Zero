@@ -75,6 +75,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { strFromU8, unzipSync } from 'fflate';
+import { QUOTE_SEARCH_BUTTON } from './nava-quote-selectors';
 import {
   ANALYSIS_PROCEDURES,
   fitPaneToContent,
@@ -260,7 +261,7 @@ export function classifyAe4Request(url: string, postData: string | null, state: 
 // ---------------------------------------------------------------------------------------------------------------------
 // The stay
 
-/** The pane's Stay details step as the page shows it. Values are the inputs' own ('' when empty). */
+/** The pane's Stay step as the page shows it. Values are the inputs' own ('' when empty). */
 export type Ae4StayRead = {
   /** Room rows (Room type selects) across every stay. */
   rows: number;
@@ -816,7 +817,7 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
 
         // 4. The stay: the pane's own. Only what it is missing is filled, and only with NAVA_PROOF_ALLOW_EDITS=1.
         const stayRead = (await page.evaluate(`(${READ_STAY_JS})()`)) as Ae4StayRead | null;
-        if (!stayRead) throw new Blocker('the Stay details step is missing');
+        if (!stayRead) throw new Blocker('the Stay step is missing');
         const fills = planAe4Stay(stayRead, inputs);
         if (fills.length && !inputs.allowEdits) throw new Blocker(needsEditsMessage(fills.map((fill) => fill.field)));
         const fillOf = (field: Ae4StayField) => fills.find((fill) => fill.field === field)?.value ?? null;
@@ -877,13 +878,13 @@ export async function runAe4(config: Ae4Config, log: (line: string) => void): Pr
         await save.click();
         log('override saved');
 
-        // A saved price starts the stay's run by itself. If it did not, "Get rates from HMS" runs it with the same price.
+        // A saved price starts the stay's run by itself. If it did not, search availability again with the same price.
         await new Promise((resolve) => setTimeout(resolve, 10_000));
         if (state.hmsReads === 0) {
-          const getRates = pane.getByRole('button', { name: 'Get rates from HMS' });
-          if ((await getRates.count()) && (await getRates.isEnabled())) {
-            await getRates.click();
-            log('rates started from Get rates from HMS');
+          const searchButton = pane.getByRole('button', { name: QUOTE_SEARCH_BUTTON }).first();
+          if ((await searchButton.count()) && (await searchButton.isEnabled())) {
+            await searchButton.click();
+            log('rates started from availability search fallback');
           }
         }
         if (state.hmsReads === 0) {
