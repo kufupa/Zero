@@ -215,12 +215,13 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.system).toMatch(/treat this mail as a quote/i);
   });
 
-  it('asks for amendments and cancellations as amend or cancel, and keeps invoices as other', () => {
+  it('asks for amendments and cancellations as amend or cancel, and maps invoice asks onto other in this schema', () => {
     const prompt = buildQuoteWorkflowPrompt(selection);
     expect(prompt.system).toMatch(
       /Amendments and cancellations of an existing booking: workflow=amend or cancel\./,
     );
-    expect(prompt.system).toMatch(/Invoices, folios, payment queries stay other\./);
+    expect(prompt.system).toMatch(/workflow=send_document/);
+    expect(prompt.system).toMatch(/"forward_to_partner", "send_document"/);
     expect(prompt.system).not.toMatch(/Cancellations, amendments, invoices/);
   });
 });

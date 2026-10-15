@@ -370,10 +370,32 @@ export function extractFields(extraction: GoldenExtraction | null): GoldenFields
  */
 const WORKFLOW_FOLD: Record<BacktestTarget, Record<string, string>> = {
   agent: {},
-  // K2_MAPPING: create is create_booking; skip and spam are other.
-  pane: { create_booking: 'create', skip: 'other', spam: 'other' },
-  // EXTRACTION_RULES: create is booking, amend amendment, cancel cancellation, skip other. A voucher or POP is other.
-  extract: { booking: 'create', amendment: 'amend', cancellation: 'cancel', voucher_pop: 'other', skip: 'other' },
+  // K2_MAPPING: create is create_booking; skip, spam and holding moves are other.
+  pane: {
+    create_booking: 'create',
+    skip: 'other',
+    spam: 'other',
+    forward_to_partner: 'other',
+    send_document: 'other',
+    payment_ack: 'other',
+    clarify: 'other',
+    acknowledge: 'other',
+    hms_todo: 'other',
+  },
+  // EXTRACTION_RULES: create is booking, amend amendment, cancel cancellation, skip/holding moves other. A voucher or POP is other.
+  extract: {
+    booking: 'create',
+    amendment: 'amend',
+    cancellation: 'cancel',
+    voucher_pop: 'other',
+    skip: 'other',
+    forward_to_partner: 'other',
+    send_document: 'other',
+    payment_ack: 'other',
+    clarify: 'other',
+    acknowledge: 'other',
+    hms_todo: 'other',
+  },
 };
 
 /** A trace without a target is an agent trace (runs recorded before targets existed). */
