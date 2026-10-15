@@ -1,6 +1,23 @@
 import type { PartyFindReply } from './party-lookup';
 import type { QuoteAmendment } from './types';
 
+export type StayPick = {
+  status: 'pick' | 'check_conf' | 'none';
+  confirmationNumber: string | null;
+  why: string[];
+};
+
+/** Staff line. Omits the confirmation when that number is already on the selected row. */
+export function stayPickCaption(pick: StayPick, shownConfirmation?: string | null): string | null {
+  if (pick.status === 'none') return null;
+  const reason = pick.why[0] ?? '';
+  if (pick.status === 'check_conf') return reason ? `Check conf# · ${reason}` : 'Check conf#';
+  const conf = pick.confirmationNumber;
+  if (conf && shownConfirmation === conf) return reason ? `Likely stay · ${reason}` : 'Likely stay';
+  if (conf) return reason ? `Likely stay: ${conf} · ${reason}` : `Likely stay: ${conf}`;
+  return reason ? `Likely stay · ${reason}` : 'Likely stay';
+}
+
 /**
  * Shared HMS read helpers for quote, amend and cancel mail.
  * Find, guest-search, and party-search may use persisted jobs when enabled.
@@ -126,6 +143,7 @@ export type FindStayReply = {
   arrivalMismatch?: boolean;
   requestedArrival?: string | null;
   hmsArrival?: string | null;
+  stayPick?: StayPick;
 };
 
 export type ScreenshotInput = { runId: string; name: string };
@@ -157,6 +175,7 @@ export type GuestSearchReply = {
   rows: GuestSearchRow[];
   screenshots: string[];
   runId: string | null;
+  stayPick?: StayPick;
 };
 
 export type HmsJobKind = 'find' | 'search_guest' | 'party';
@@ -190,6 +209,7 @@ export type HmsJobView = {
   createdAt?: string | null;
   outcome?: string | null;
   result: Record<string, unknown> | null;
+  stayPick?: StayPick | null;
 };
 
 /** runId is null when the server's job queue is off (HMS_JOB_QUEUE): the lookup then runs synchronously instead. */
@@ -330,6 +350,7 @@ function syncView(
     createdAt: null,
     outcome: reply.outcome,
     result: reply as unknown as Record<string, unknown>,
+    stayPick: 'stayPick' in reply ? reply.stayPick : undefined,
   };
 }
 

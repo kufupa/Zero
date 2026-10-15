@@ -126,7 +126,19 @@ function stayRecord(overrides: Partial<StayRecordWire> = {}): StayRecordWire {
 }
 
 function found(stay: Partial<StayRecordWire> = {}, screenshots: string[] = ['record.png', 'panel.png']): FindStayReply {
-  return { outcome: 'found', reason: null, stay: stayRecord(stay), screenshots, runId: RUN_ID };
+  const record = stayRecord(stay);
+  return {
+    outcome: 'found',
+    reason: null,
+    stay: record,
+    screenshots,
+    runId: RUN_ID,
+    stayPick: {
+      status: 'pick',
+      confirmationNumber: record.confirmation,
+      why: ['confirmation number matches'],
+    },
+  };
 }
 
 const NOT_FOUND: FindStayReply = { outcome: 'not_found', reason: null, stay: null, screenshots: [], runId: null };
@@ -187,6 +199,7 @@ function lookupTrpc(
     // A call that answers with nothing is a failed call, as it was before the job route.
     if (!reply) throw new Error('no reply from HMS');
     const runId = `run-${++issued}`;
+    const body = reply as Record<string, unknown>;
     jobs.set(runId, {
       runId,
       request,
@@ -196,7 +209,8 @@ function lookupTrpc(
       attempts: 1,
       failureClass: null,
       asOf: AS_OF,
-      result: { ...(reply as Record<string, unknown>), kind: request.kind, asOf: AS_OF },
+      result: { ...body, kind: request.kind, asOf: AS_OF },
+      stayPick: body.stayPick as HmsJobView['stayPick'],
     });
     return { runId };
   };
@@ -1244,6 +1258,18 @@ describe('AmendLookupPanel guest-name search', () => {
     await expectFoundBooking();
     expect(screen.queryByRole('button', { name: 'Find this booking in HMS' })).toBeNull();
     expect(screen.queryByText('Takes about 1–2 minutes. Quotes wait while it runs.')).toBeNull();
+  });
+
+  it('shows a neutral likely-stay line without repeating the selected confirmation', async () => {
+    const findStay = vi.fn().mockResolvedValue(found());
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    await pressFind();
+    await expectFoundBooking();
+    const line = screen.getByTestId('stay-pick-line');
+    expect(line.className).not.toMatch(/amber/);
+    expect(line.textContent).toMatch(/Likely stay/);
+    expect(line.textContent).toMatch(/confirmation number matches/);
+    expect(line.textContent).not.toContain(CONFIRMATION);
   });
 
   it('shows email-to-HMS booking-date mismatches separately, not as requested changes (AE2)', async () => {

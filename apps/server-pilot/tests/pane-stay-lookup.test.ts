@@ -855,7 +855,7 @@ describe('paneStayLookup router', () => {
   it('findStay is registered as a read-only mutation with a strict input and returns the find shape', async () => {
     paneStayLookupLoaders.lock = passingLock();
     paneStayLookupLoaders.spawn = async () => lookupResult({ runId: undefined, runDir: undefined });
-    await expect(mailboxCaller().paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
+    await expect(mailboxCaller().paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toMatchObject({
       outcome: 'found',
       reason: null,
       stay: STAY,
@@ -1104,7 +1104,12 @@ describe('paneStayLookup.searchGuest route', () => {
 
     await expect(
       mailboxCaller().paneStayLookup.searchGuest({ lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-15' }),
-    ).resolves.toEqual({ outcome: 'ok', rows: [SEARCH_ROW], screenshots: ['panel.png'], runId });
+    ).resolves.toMatchObject({
+      outcome: 'ok',
+      rows: [SEARCH_ROW],
+      screenshots: ['panel.png'],
+      runId,
+    });
     await expect(mailboxCaller().paneStayLookup.screenshot({ runId, name: 'panel.png' })).resolves.toEqual({
       status: 'ok',
       dataUrl: `data:image/png;base64,${Buffer.from('panel-bytes').toString('base64')}`,
@@ -1117,7 +1122,12 @@ describe('paneStayLookup.searchGuest route', () => {
       lookupResult({ outcome: 'ambiguous_capped', stay: null, rows: [SEARCH_ROW], screenshots: [] });
     await expect(
       mailboxCaller().paneStayLookup.searchGuest({ lastName: 'Labtest', arrival: '2027-09-14' }),
-    ).resolves.toEqual({ outcome: 'ambiguous_capped', rows: [], screenshots: [], runId: null });
+    ).resolves.toMatchObject({
+      outcome: 'ambiguous_capped',
+      rows: [],
+      screenshots: [],
+      runId: null,
+    });
 
     paneStayLookupLoaders.lock = { withLock: async () => { throw busyLockError(); } };
     await expect(

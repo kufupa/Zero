@@ -30,6 +30,7 @@ import {
   searchRequestFor,
   searchRunFromJob,
   stayGuest,
+  stayPickCaption,
   stayText,
   type AmendDiff,
   type GuestSearchRow,
@@ -37,6 +38,7 @@ import {
   type HmsSearchRun,
   type ScreenshotInput,
   type ScreenshotReply,
+  type StayPick,
   type StayRecordWire,
 } from '@/lib/quote-workflow/amend-find';
 import { amendmentOf } from '@/lib/quote-workflow/session';
@@ -119,6 +121,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   if (!amendment) return null;
 
   const findView: HmsJobView | null = find.view;
+  const nonePick: StayPick = { status: 'none', confirmationNumber: null, why: [] };
+  const findStayPick = findView?.stayPick ?? nonePick;
   const findRun = findRunFromJob(findView, find.queueFailed, find.queueFailureMessage);
   const running = find.queuing || (findView !== null && !isSettled(findView));
   const found = findRun?.kind === 'found' ? findRun : null;
@@ -138,6 +142,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const searchRun: HmsSearchRun | null = refusedNow
     ? { kind: 'error', message: refusedNow }
     : searchRunFromJob(searchView, search.queueFailed, search.queueFailureMessage);
+  const searchStayPick = searchView?.stayPick ?? nonePick;
   const searching = search.queuing || (searchView !== null && !isSettled(searchView));
   // A background prefetch shows its status but never blocks a staff Find: the staff run queues ahead of it.
   const findBusy = find.queuing || (findView !== null && !isSettled(findView) && !findView.prefetch);
@@ -262,6 +267,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
                 <HmsFact field="status" label="Status" value={hmsStatus ?? 'Not shown'} />
                 <HmsFact field="rate-plan" label="Rate plan" value={ratePlan ?? 'Not shown'} />
               </dl>
+              <StayPickNote pick={findStayPick} shownConfirmation={foundNumber} />
               {matchWarningParts.length ? (
                 <p data-testid="amend-match-warning" data-pii className="text-[10.5px] text-[#64748b]">
                   <span className="font-semibold">Doesn't match HMS: </span>
@@ -380,6 +386,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           view={searchView}
           statusFailed={search.statusFailed}
           run={searchRun}
+          stayPick={searchStayPick}
           onRetry={search.retry}
           onSearch={(form) => {
             if (!key) return;
@@ -438,6 +445,7 @@ function GuestSearchSection({
   view,
   statusFailed,
   run,
+  stayPick,
   onRetry,
   onSearch,
   onPick,
@@ -452,6 +460,7 @@ function GuestSearchSection({
   view: HmsJobView | null;
   statusFailed: boolean;
   run: HmsSearchRun | null;
+  stayPick: StayPick;
   onRetry: () => void;
   onSearch: (form: SearchForm) => void;
   onPick: (row: GuestSearchRow) => void;
@@ -518,10 +527,20 @@ function GuestSearchSection({
           onRetry={onRetry}
           statusFailed={statusFailed}
         />
-        {run ? <SearchResult run={run} busy={busy} onPick={onPick} /> : null}
+        {run ? <SearchResult run={run} busy={busy} onPick={onPick} stayPick={stayPick} /> : null}
         {view?.status === 'done' ? <HmsAsOf asOf={view.asOf} /> : null}
       </div>
     </div>
+  );
+}
+
+function StayPickNote({ pick, shownConfirmation }: { pick: StayPick; shownConfirmation?: string | null }) {
+  const text = stayPickCaption(pick, shownConfirmation);
+  if (!text) return null;
+  return (
+    <p data-testid="stay-pick-line" className={infoNoteClass}>
+      {text}
+    </p>
   );
 }
 
@@ -529,15 +548,19 @@ function SearchResult({
   run,
   busy,
   onPick,
+  stayPick,
 }: {
   run: HmsSearchRun;
   busy: boolean;
   onPick: (row: GuestSearchRow) => void;
+  stayPick: StayPick;
 }) {
   if (run.kind === 'rows') {
     const rows = run.rows.slice(0, 5);
+    const shown = rows.length === 1 ? rows[0]!.confirmation : null;
     return (
       <div className="flex flex-col gap-2">
+        <StayPickNote pick={stayPick} shownConfirmation={shown} />
         <ul aria-label="Bookings found in HMS" className="flex flex-col gap-1.5">
           {rows.map((row) => (
             <li key={row.confirmation}>

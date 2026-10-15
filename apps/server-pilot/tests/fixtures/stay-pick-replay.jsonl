@@ -1,0 +1,3 @@
+{"runId":"run-match","ask":{"lastName":"Smith","arrival":"2026-11-12"},"rows":[{"confirmation":"9999901-1","lastName":"Smith","arrival":"2026-11-12","departure":"2026-11-14","status":"Reserved"}],"workflow":"amend","goldConf":"9999901-1"}
+{"runId":"run-two","ask":{"lastName":"Smith","arrival":"2026-11-12"},"rows":[{"confirmation":"9999901-1","lastName":"Smith","arrival":"2026-11-12","departure":"2026-11-14","status":"Reserved"},{"confirmation":"9999902-1","lastName":"Smith","arrival":"2026-11-12","departure":"2026-11-14","status":"Reserved"}],"workflow":"amend","goldConf":"9999901-1"}
+{"runId":"run-none","ask":{"lastName":"Smith","arrival":"2026-11-12"},"rows":[],"workflow":"amend","goldConf":null}

@@ -37,9 +37,18 @@ import {
   guardCenturionHmsMailboxOrigin,
   loadWorkItemMailboxHmsOriginAnchors,
 } from '../../hms/mailbox-hms-origin-bind.js';
+import {
+  lookupRowsFromResult,
+  pickStayFromFindRows,
+  type StayPickAsk,
+} from '../../ai/aop/stay-pick.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
+
+function stayPickFor(ask: StayPickAsk, result: unknown) {
+  return pickStayFromFindRows({ ask, rows: lookupRowsFromResult(result), workflow: 'other' });
+}
 
 const confirmation = z.string().regex(/^\d+-\d+$/);
 const arrival = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -175,7 +184,7 @@ export const paneStayLookupRouter = router({
         );
       }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      return findStay(
+      const result = await findStay(
         input.arrival
           ? { confirmation: input.confirmation, arrival: input.arrival }
           : { confirmation: input.confirmation },
@@ -184,6 +193,13 @@ export const paneStayLookupRouter = router({
           onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
         },
       );
+      return {
+        ...result,
+        stayPick: stayPickFor(
+          { lastName: '', arrival: input.arrival ?? '', confirmationNumber: input.confirmation },
+          result,
+        ),
+      };
     }),
   searchGuest: mailboxProcedure
     .input(searchGuestInput)
@@ -210,7 +226,7 @@ export const paneStayLookupRouter = router({
         );
       }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      return searchGuest(
+      const result = await searchGuest(
         input.departure
           ? { lastName: input.lastName, arrival: input.arrival, departure: input.departure }
           : { lastName: input.lastName, arrival: input.arrival },
@@ -219,6 +235,17 @@ export const paneStayLookupRouter = router({
           onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
         },
       );
+      return {
+        ...result,
+        stayPick: stayPickFor(
+          {
+            lastName: input.lastName,
+            arrival: input.arrival,
+            ...(input.departure ? { departure: input.departure } : {}),
+          },
+          result,
+        ),
+      };
     }),
   // HMS_JOB_QUEUE off (the default): nothing is queued. runId null tells the pane to run findStay or searchGuest above.
   queueFind: mailboxProcedure.input(queueFindInput).mutation(async ({ input, ctx }) => {
@@ -339,7 +366,7 @@ export const paneStayLookupRouter = router({
         ? cancelHmsBatch({ batchId: input.batchId, transportId: ctx.activeTransportId })
         : null,
     ),
-  jobStatus: mailboxProcedure.input(jobStatusInput).query(({ input, ctx }) => {
+  jobStatus: mailboxProcedure.input(jobStatusInput).query(async ({ input, ctx }) => {
     if (!hmsJobQueueEnabled()) return null;
     const jobInput =
       'runId' in input
@@ -349,7 +376,20 @@ export const paneStayLookupRouter = router({
             staffQuoteOwnerId: ctx.sessionUser.id,
           }
         : { transportId: ctx.activeTransportId, ...input };
-    return readHmsJobView(jobInput);
+    const view = await readHmsJobView(jobInput);
+    if (!view) return null;
+    const request = view.request;
+    const ask: StayPickAsk =
+      request?.kind === 'find'
+        ? { lastName: '', arrival: request.arrival ?? '', confirmationNumber: request.confirmation }
+        : request?.kind === 'search_guest'
+          ? {
+              lastName: request.lastName,
+              arrival: request.arrival,
+              ...(request.departure ? { departure: request.departure } : {}),
+            }
+          : { lastName: '', arrival: '' };
+    return { ...view, stayPick: stayPickFor(ask, view.result) };
   }),
   // Same reader as paneStayCancel.paneStayScreenshot. A lookup the hms worker ran is not in this process's registry,
   // so on a miss its job record registers the directory, and the read is tried once more.
