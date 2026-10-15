@@ -164,17 +164,11 @@ export type BuildThreadContextInput = {
 const CONFIRMATION_RE =
   /\b(?:confirmation|conf)\s*(?:#|no\.?|number)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{3,31})\b/gi;
 const BARE_CONF_RE = /\b(CONF-[A-Z0-9-]{2,28})\b/gi;
-/** Centurion confirmation-letter subjects: `… (n°79798256-1)`. Not VAT/Reg/Tax n°. */
-const N_DEGREE_CONF_RE =
-  /(?<!(?:\b(?:VAT|Reg(?:istration)?|Tax|Company|Acc(?:ount)?)\b|Co\.?\s*Reg)[^\n]{0,25})\bn[°º]\s*([0-9]{6,10}(?:-\d{1,4})?)\b/gi;
-/** Subject/thread tags like `#88001122` — 8-10 digit confirmation bases. */
-const HASH_CONF_RE = /(?:^|[^\w])#(\d{8,10})(?!\d)/g;
+/** Centurion confirmation-letter subjects: `… (n°79798256-1)`. */
+const N_DEGREE_CONF_RE = /\bn[°ºo]\s*([0-9]{6,14}(?:-\d{1,4})?)\b/gi;
 const EXTERNAL_RE =
   /\b(?:external\s+reference|ext(?:ernal)?\s*(?:ref(?:erence)?)?)\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{3,31})\b/gi;
 const BARE_EXT_RE = /\b(EXT-[A-Z0-9-]{2,28})\b/gi;
-/** Agent-owned refs (HMS external reference), not confirmation numbers. */
-const AGENT_PA_RE = /\b(PA\d{6,16})\b/gi;
-const AGENT_MIXED_RE = /\b(\d{2,8}[A-Z]{2,8}\d{4,16})\b/gi;
 const SURNAME_DATES_RE =
   /\b(?:guest|mr\.?|mrs\.?|ms\.?|surname)?\s*([A-Z][a-z]{1,40})\s+(?:arriv(?:ing|al)|check[- ]?in)\s+(\d{4}-\d{2}-\d{2})\s+(?:depart(?:ing|ure)|check[- ]?out)\s+(\d{4}-\d{2}-\d{2})\b/gi;
 
@@ -212,42 +206,6 @@ export function canonicalLookupCandidateId(kind: LookupCandidate['kind'], value:
   return createHash('sha256').update(`${kind}:${value}`).digest('hex').slice(0, 16);
 }
 
-function isConfNoise(value: string): boolean {
-  const v = value.toUpperCase();
-  if (/^0\d{9,10}$/.test(v)) return true;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return true;
-  if (/^(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$/.test(v)) return true;
-  if (/^\d+\.\d{2}$/.test(v)) return true;
-  return false;
-}
-
-function isAgentRefToken(value: string): boolean {
-  const v = value.toUpperCase();
-  return /^PA\d{6,16}$/.test(v) || /^\d{2,8}[A-Z]{2,8}\d{4,16}$/.test(v);
-}
-
-function exactKindForToken(value: string): 'confirmation' | 'external_reference' | null {
-  if (isConfNoise(value)) return null;
-  if (isAgentRefToken(value) || value.startsWith('EXT-')) return 'external_reference';
-  return 'confirmation';
-}
-
-function pushExact(
-  push: (c: LookupCandidate) => void,
-  kind: 'confirmation' | 'external_reference',
-  value: string,
-): void {
-  if (!isPlausibleExactReservationValue(value)) return;
-  const resolved = exactKindForToken(value);
-  if (!resolved) return;
-  const finalKind = kind === 'external_reference' ? 'external_reference' : resolved;
-  push({
-    id: canonicalLookupCandidateId(finalKind, value),
-    kind: finalKind,
-    value,
-  });
-}
-
 /** Extract opaque lookup candidates from thread-present text only. */
 export function extractLookupCandidates(normalizedText: string): LookupCandidate[] {
   const out: LookupCandidate[] = [];
@@ -260,19 +218,31 @@ export function extractLookupCandidates(normalizedText: string): LookupCandidate
     out.push(c);
   };
 
-  for (const re of [CONFIRMATION_RE, BARE_CONF_RE, N_DEGREE_CONF_RE, HASH_CONF_RE]) {
+  for (const re of [CONFIRMATION_RE, BARE_CONF_RE, N_DEGREE_CONF_RE]) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(normalizedText)) !== null) {
-      pushExact(push, 'confirmation', m[1]!.toUpperCase());
+      const value = m[1]!.toUpperCase();
+      if (!isPlausibleExactReservationValue(value)) continue;
+      push({
+        id: canonicalLookupCandidateId('confirmation', value),
+        kind: 'confirmation',
+        value,
+      });
     }
   }
 
-  for (const re of [EXTERNAL_RE, BARE_EXT_RE, AGENT_PA_RE, AGENT_MIXED_RE]) {
+  for (const re of [EXTERNAL_RE, BARE_EXT_RE]) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(normalizedText)) !== null) {
-      pushExact(push, 'external_reference', m[1]!.toUpperCase());
+      const value = m[1]!.toUpperCase();
+      if (!isPlausibleExactReservationValue(value)) continue;
+      push({
+        id: canonicalLookupCandidateId('external_reference', value),
+        kind: 'external_reference',
+        value,
+      });
     }
   }
 
