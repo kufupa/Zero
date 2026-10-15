@@ -1852,7 +1852,7 @@ async function findExistingQuarantine(
   return rows[0];
 }
 
-async function findDirectToTransport(
+export async function findDirectToTransport(
   db: DB,
   toAddresses: string[],
 ): Promise<TransportMatchResult<RoutedTransport>> {
@@ -1976,7 +1976,7 @@ function quarantineReasonForMatch(match: { kind: 'ambiguous' | 'multi' }): Quara
   return match.kind === 'ambiguous' ? 'ambiguous_transport' : 'multi_transport';
 }
 
-async function findTransportByStamp(
+export async function findTransportByStamp(
   db: DB,
   ownerHeaderValue: string,
 ): Promise<TransportMatchResult<RoutedTransport>> {
@@ -2013,7 +2013,7 @@ async function findTransportByStamp(
   return unique ? { kind: 'unique', transport: unique } : { kind: 'none' };
 }
 
-async function findEquatedHotelTransport(
+export async function findEquatedHotelTransport(
   db: DB,
   parsed: ParsedInboundMessage,
 ): Promise<TransportMatchResult<RoutedTransport>> {
