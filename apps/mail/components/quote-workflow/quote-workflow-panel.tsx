@@ -12,6 +12,7 @@ import {
   newQuoteToken,
   partyDecisionWaitReason,
   partyLookupWaitReason,
+  quotePublicRateChoiceVisible,
   quoteRunBlockReason,
   requestedQuoteKeys,
   rowRoomCode,
@@ -1660,7 +1661,7 @@ export function QuoteWorkflowPanel({
               Search availability
             </SecondaryButton>
           ) : null}
-          {partyDecisionWaitReason(session) && onPartyPublicConfirmed ? (
+          {quotePublicRateChoiceVisible(session) && onPartyPublicConfirmed ? (
             <SecondaryButton className="w-full" onClick={onPartyPublicConfirmed}>
               No company/agency — public rate
             </SecondaryButton>

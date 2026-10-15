@@ -1390,7 +1390,9 @@ export function NavaPane({
       toast.warning(waiting);
       return;
     }
-    dispatchQuote({ type: 'step_running', stepId: step.id });
+    if (!readBack) {
+      dispatchQuote({ type: 'step_running', stepId: step.id });
+    }
     const selectionEpoch = quoteSession.binding?.selectionEpoch ?? 0;
     const inputRevision = quoteSession.inputRevision;
     if (isQuoteFixturePreview()) {
@@ -1550,6 +1552,7 @@ export function NavaPane({
         return;
       }
       if (remote === null) {
+        if (readBack) return;
         dispatchQuote({
           type: 'results_unavailable',
           stepId: staffQuoteStep.id,
@@ -1559,6 +1562,7 @@ export function NavaPane({
         });
         return;
       }
+      if (readBack && remote.status !== 'ok') return;
       if (remote.status !== 'ok') {
         dispatchQuote({
           type: 'results_unavailable',
@@ -1609,7 +1613,7 @@ export function NavaPane({
         });
       }
     }
-    void runNoticed(run).then(applyStaffQuoteResult);
+    void (readBack ? run : runNoticed(run)).then(applyStaffQuoteResult);
   };
 
   const autoStartStaffQuoteStep = () => {
@@ -1654,15 +1658,7 @@ export function NavaPane({
       ) {
         return false;
       }
-      const wouldReadBack = staffQuoteAutoAttempted.current.has(
-        staffQuoteAttemptKey(
-          binding.transportId,
-          source.messageId,
-          source.sourceHash,
-          candidate.shareKey,
-        ),
-      );
-      if (quoteRunBlockReason(quoteSession, candidate, { skipPartyDecision: wouldReadBack })) {
+      if (quoteRunBlockReason(quoteSession, candidate, { skipPartyDecision: true })) {
         return false;
       }
       return canBuildStaffQuoteRequest({
@@ -1681,9 +1677,15 @@ export function NavaPane({
       source.sourceHash,
       step.shareKey,
     );
-    const readBack = staffQuoteAutoAttempted.current.has(attemptKey);
+    const seenAttempt = staffQuoteAutoAttempted.current.has(attemptKey);
+    const partyWait = Boolean(partyDecisionWaitReason(quoteSession));
+    if (partyWait && !seenAttempt) {
+      // Existing job/result is server state. The in-memory attempt set is empty after remount.
+      runQuoteStep(step.id, true, true);
+      return;
+    }
     staffQuoteAutoAttempted.current.add(attemptKey);
-    runQuoteStep(step.id, true, readBack);
+    runQuoteStep(step.id, true, seenAttempt);
   };
   autoStartStaffQuoteStepRef.current = autoStartStaffQuoteStep;
 

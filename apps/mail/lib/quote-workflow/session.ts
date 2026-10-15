@@ -199,6 +199,16 @@ export function partyDecisionWaitReason(
   return "Pick the company or agency in HMS, or choose 'No company/agency — public rate'.";
 }
 
+/** Public-rate releases a new quote. Voucher, booking, and non-quote views have no quote to start. */
+export function quotePublicRateChoiceVisible(
+  session: Pick<QuoteSession, 'partyDecision' | 'staffHeader' | 'analysis'>,
+): boolean {
+  if (!partyDecisionWaitReason(session)) return false;
+  if (session.analysis?.intent === 'other') return false;
+  const workflow = session.analysis?.luna?.workflow;
+  return workflow !== 'create_booking' && workflow !== 'other';
+}
+
 /** Auto-start/read-back keep BAR only when the session has no other sales strategy. */
 export function salesStrategyForQueuedQuote(
   header: Pick<StaffQuoteHeader, 'salesStrategy'>,

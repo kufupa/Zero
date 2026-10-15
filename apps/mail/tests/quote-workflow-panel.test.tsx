@@ -1927,6 +1927,32 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
   });
 
+  it('hides the public-rate action on a voucher view', () => {
+    const base = headerSession({ company: '' });
+    render(
+      <QuoteWorkflowPanel
+        session={{
+          ...base,
+          analysis: {
+            ...base.analysis!,
+            luna: {
+              workflow: 'create_booking',
+              flags: [],
+              groups: [],
+              party: { kind: null, name: null, reference: null },
+              rateClaims: [],
+              missing: [],
+              evidence: [],
+              tasks: [],
+            },
+          },
+        }}
+        onPartyPublicConfirmed={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
+  });
+
   it('hides the public-rate choice once a verified company is picked', () => {
     render(
       <QuoteWorkflowPanel

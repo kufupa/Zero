@@ -1990,6 +1990,43 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2);
   });
 
+  it('reads back a finished quote on a fresh mount while party is still undecided', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(
+      completedStaffQuoteJob({ ...STAFF_QUOTE_READY, description: 'Allocation for mail-1' }),
+    );
+
+    const first = render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
+      input: expect.objectContaining({ messageId: 'mail-1' }),
+    });
+
+    first.unmount();
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
+  it('does not offer public-rate on a voucher email', async () => {
+    analysisForBookingVoucher();
+    voucherFindQuery.mockResolvedValue({
+      status: 'voucher',
+      messageId: 'mail-1',
+      guest: { lastName: 'Smith', arrival: '2026-11-12' },
+      file: null,
+    });
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByRole('region', { name: 'Find the booking' }, { timeout: 5000 })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'No company/agency — public rate' })).toBeNull();
+  });
+
   // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
   it.skip('does not auto-run again after a failed background quote; Get rates remains a manual retry', async () => {
     bridgeMockState.storedWork = STORED_READY;

@@ -279,4 +279,15 @@ describe('NavaPane mail-derived party hints', () => {
     expect(await screen.findByText(/Nava Assistant Sign In/i)).toBeTruthy();
     expect(suggestQuery).not.toHaveBeenCalled();
   });
+
+  it('does not request suggestions when a signed-in session requires relogin', async () => {
+    render(
+      <NavaPane
+        bridge={{ ...fakeBridge, requiresRelogin: true } as unknown as PaneBridge}
+        preview
+      />,
+    );
+    expect(await screen.findByText(/Nava Assistant Sign In/i)).toBeTruthy();
+    expect(suggestQuery).not.toHaveBeenCalled();
+  });
 });
