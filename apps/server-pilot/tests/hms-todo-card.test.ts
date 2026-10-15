@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildHmsTodoCard } from '../src/ai/hms-todo-card.js';
+import {
+  buildHmsTodoCard,
+  extractBillingAskKind,
+  extractPopFacts,
+} from '../src/ai/hms-todo-card.js';
 import {
   analyseCachePath,
   analyseSyncedSelection,
@@ -461,5 +465,226 @@ describe('analyseSyncedSelection hmsTodoCard', () => {
     expect(stepValue(card!, 'Arrival')).toBe('2026-11-12');
     expect(stepValue(card!, 'Adults per room')).toBe('2');
     expect(stepValue(card!, 'Attachments')).toBe('request.pdf');
+  });
+});
+
+const SMITH_STAY = {
+  confirmationNumber: '9999901-1',
+  lastName: 'Smith',
+  arrival: '2026-11-12',
+  departure: '2026-11-14',
+  balanceDue: 1850,
+  company: 'Northwind Travel',
+};
+
+describe('buildHmsTodoCard payment_proof', () => {
+  it('posts a matched stay and the mail amount, never an amount the mail lacks', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'payment_ack',
+      stayCandidates: [SMITH_STAY],
+      pop: {
+        amount: 1850,
+        amountText: 'R 1,850.00',
+        currency: 'ZAR',
+        reference: 'EFT 9999901-1',
+        payerName: 'Smith',
+        paidOn: '2026-11-10',
+      },
+    });
+
+    expect(card).toMatchObject({
+      kind: 'payment_proof',
+      title: 'Post payment',
+      writesEnabled: false,
+    });
+    expect(stepValue(card!, 'Confirmation number')).toBe('9999901-1');
+    expect(stepValue(card!, 'Guest last name')).toBe('Smith');
+    expect(stepValue(card!, 'Amount')).toBe('R 1,850.00');
+    expect(stepValue(card!, 'Currency')).toBe('ZAR');
+    expect(stepValue(card!, 'Payment date')).toBe('2026-11-10');
+    expect(labelsOf(card!)).not.toContain('Next step');
+  });
+
+  it('shows check conf# when the match is unsure and never copies a mail conf#', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'hms_todo',
+      todoTarget: 'post_payment',
+      confirmationNumber: '8888888-1',
+      stayCandidates: [SMITH_STAY, { ...SMITH_STAY, confirmationNumber: '9999902-1', lastName: 'Jones' }],
+      pop: {
+        amount: 1850,
+        amountText: 'R1850',
+        currency: 'ZAR',
+        reference: 'EFT same-day',
+        payerName: null,
+        paidOn: null,
+      },
+    });
+
+    expect(card).toMatchObject({ kind: 'payment_proof', title: 'Post payment' });
+    expect(stepValue(card!, 'Confirmation number')).toBeNull();
+    expect(stepValue(card!, 'Next step')).toBe('check conf#');
+    expect(stepValue(card!, 'Amount')).toBe('R1850');
+  });
+
+  it('shows extracted amount/ref/payer and find the stay when no candidates', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'payment_ack',
+      stayCandidates: [],
+      pop: {
+        amount: 2400,
+        amountText: 'ZAR 2400.00',
+        currency: 'ZAR',
+        reference: 'ABSA 123',
+        payerName: 'Jones',
+        paidOn: '2026-10-01',
+      },
+    });
+
+    expect(stepValue(card!, 'Amount')).toBe('ZAR 2400.00');
+    expect(stepValue(card!, 'Payment reference')).toBe('ABSA 123');
+    expect(stepValue(card!, 'Payer')).toBe('Jones');
+    expect(stepValue(card!, 'Next step')).toBe('find the stay');
+    expect(stepValue(card!, 'Confirmation number')).toBeNull();
+  });
+});
+
+describe('extractPopFacts', () => {
+  it('takes the unique R amount from attachment text and ignores a rateClaim not in the mail', () => {
+    const source = 'Please find attached POP for Smith. Paid R 1,850.00 on 2026-11-10. Ref ABSA 99.';
+    const facts = extractPopFacts(source, {
+      rateClaims: [{ kind: 'paid', amount: '99999', currency: 'ZAR', quote: 'R 99,999.00' }],
+      guestLastName: 'Smith',
+      party: { reference: 'ABSA 99' },
+    });
+    expect(facts.amount).toBe(1850);
+    expect(facts.amountText).toMatch(/1,?850/);
+    expect(facts.currency).toBe('ZAR');
+    expect(facts.payerName).toBe('Smith');
+    expect(facts.reference).toBe('ABSA 99');
+    expect(facts.paidOn).toBe('2026-11-10');
+  });
+
+  it('returns no amount when the mail contains two different amounts', () => {
+    const facts = extractPopFacts('POP R 100.00 and also R 200.00', {});
+    expect(facts.amount).toBeNull();
+    expect(facts.amountText).toBeNull();
+  });
+});
+
+describe('buildHmsTodoCard send_document', () => {
+  it('shows the asked kind, stay, reply line and HMS → Documents, never a filename', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'send_document',
+      confirmationNumber: '57291630-1',
+      guestLastName: 'Example',
+      stayAsk: { arrivalDate: '2026-11-12', departureDate: '2026-11-14' },
+      documentKind: 'invoice',
+    });
+
+    expect(card).toMatchObject({
+      kind: 'send_document',
+      title: 'Send document',
+      writesEnabled: false,
+    });
+    expect(stepValue(card!, 'Document')).toBe('invoice');
+    expect(stepValue(card!, 'Confirmation number')).toBe('57291630-1');
+    expect(stepValue(card!, 'Guest last name')).toBe('Example');
+    expect(stepValue(card!, 'Reply')).toMatch(/please see attached/i);
+    expect(stepValue(card!, 'Next step')).toBe('HMS → Documents');
+    expect(labelsOf(card!).some((label) => /filename/i.test(label))).toBe(false);
+  });
+
+  it('lists ask kinds when the mail does not name one document', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'hms_todo',
+      todoTarget: 'document',
+      documentKind: null,
+    });
+    expect(stepValue(card!, 'Document')).toBe('invoice / pro forma / folio / statement / credit note');
+    expect(stepValue(card!, 'Next step')).toBe('HMS → Documents');
+  });
+});
+
+describe('extractBillingAskKind', () => {
+  it('reads tax invoice and ignores a second different kind', () => {
+    expect(extractBillingAskKind('Please send the tax invoice for 57291630-1')).toBe('invoice');
+    expect(extractBillingAskKind('Need the folio and a credit note')).toBeNull();
+  });
+});
+
+describe('analyseSyncedSelection payment and billing cards', () => {
+  const promptVersion = 'hms-todo-pop-billing';
+  const transportId = 'transport-todo-pop';
+
+  function options(adapter: ModelAdapter) {
+    return {
+      selectionEpoch: 1,
+      cacheDir: null as string | null,
+      promptVersion,
+      transportId,
+      llmEnabled: () => true,
+      adapter,
+    };
+  }
+
+  it('builds a Post payment card from payment_ack and attachment amount', async () => {
+    const { payload } = await analyseSyncedSelection(
+      {
+        subject: 'POP',
+        bodyText: 'Kindly find attached proof of payment.',
+        receivedAt: '2026-10-06T08:00:00.000Z',
+        preceding: [],
+        attachments: [
+          { id: 'pop-1', filename: 'pop.pdf', bytesPresent: true, text: 'Paid R 1,850.00 Smith EFT 9999901-1 2026-11-10' },
+        ],
+      },
+      options(
+        adapterReturning(
+          lunaBooking({
+            workflow: 'payment_ack',
+            groups: [],
+            tasks: [],
+            guestLastName: 'Smith',
+            confirmationNumber: '9999901-1',
+            party: { kind: null, name: null, reference: 'EFT 9999901-1' },
+          }),
+        ),
+      ),
+    );
+
+    const card = todoCardOf(payload);
+    expect(card).toMatchObject({ kind: 'payment_proof', title: 'Post payment', writesEnabled: false });
+    expect(stepValue(card!, 'Amount')).toMatch(/1,?850/);
+    expect(stepValue(card!, 'Next step')).toBe('find the stay');
+  });
+
+  it('builds a Send document card from send_document', async () => {
+    const { payload } = await analyseSyncedSelection(
+      {
+        subject: 'Tax invoice',
+        bodyText: 'Please send the tax invoice for booking 57291630-1 Example.',
+        receivedAt: '2026-10-06T08:00:00.000Z',
+        preceding: [],
+        attachments: [],
+      },
+      options(
+        adapterReturning(
+          lunaBooking({
+            workflow: 'send_document',
+            groups: [],
+            tasks: [],
+            guestLastName: 'Example',
+            confirmationNumber: '57291630-1',
+          }),
+        ),
+      ),
+    );
+
+    const card = todoCardOf(payload);
+    expect(card).toMatchObject({ kind: 'send_document', title: 'Send document' });
+    expect(stepValue(card!, 'Document')).toBe('invoice');
+    expect(stepValue(card!, 'Reply')).toMatch(/please see attached/i);
+    expect(stepValue(card!, 'Next step')).toBe('HMS → Documents');
   });
 });
