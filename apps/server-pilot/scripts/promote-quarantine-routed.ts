@@ -62,6 +62,7 @@ async function main(): Promise<void> {
       dup_stored,
       cross_hotel_violations,
       ingestMailboxes,
+      requireOwnerHeader,
     } = result;
     console.log(
       JSON.stringify({
@@ -74,6 +75,7 @@ async function main(): Promise<void> {
         dup_stored,
         cross_hotel_violations,
         ingestMailboxes,
+        requireOwnerHeader,
       }),
     );
   } finally {

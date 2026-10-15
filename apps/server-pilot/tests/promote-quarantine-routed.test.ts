@@ -60,7 +60,11 @@ function fakeDb(rows: unknown[], writes: string[], existing: unknown[] = []): DB
   } as unknown as DB;
 }
 
-async function run(items: Array<{ uidl: string; from: string; to: string }>, existing: unknown[] = []) {
+async function run(
+  items: Array<{ uidl: string; from: string; to: string }>,
+  existing: unknown[] = [],
+  opts: { requireOwnerHeader?: boolean } = {},
+) {
   const storage = new FakeS3Storage();
   const writes: string[] = [];
   const rows = items.map((item) => ({
@@ -77,7 +81,11 @@ async function run(items: Array<{ uidl: string; from: string; to: string }>, exi
     });
   }
   storage.calls.length = 0;
-  return { result: await dryRunRoutedPromote({ db: fakeDb(rows, writes, existing), storage }), writes, storage };
+  return {
+    result: await dryRunRoutedPromote({ db: fakeDb(rows, writes, existing), storage, ...opts }),
+    writes,
+    storage,
+  };
 }
 
 describe('promote-quarantine-routed dry-run', () => {
@@ -133,9 +141,24 @@ describe('promote-quarantine-routed dry-run', () => {
   });
 
   it('counts a cross-hotel invariant when recipients do not name T', async () => {
-    const { result } = await run([{ uidl: 'from-only', from: D.email, to: 'guest@example.test' }]);
+    const { result } = await run([{ uidl: 'from-only', from: D.email, to: 'guest@example.test' }], [], {
+      requireOwnerHeader: false,
+    });
     expect(result.byTransport).toEqual({ 'transport-davinci': 1 });
     expect(result.cross_hotel_violations).toBe(1);
     expect(result.crossHotelViolationIds).toEqual(['q-from-only']);
+  });
+
+  it('counts equated-only From as unknown when requireOwnerHeader is true', async () => {
+    const item = { uidl: 'equated-from', from: D.email, to: 'guest@example.test' };
+    const strict = await run([item], [], { requireOwnerHeader: true });
+    expect(strict.result.requireOwnerHeader).toBe(true);
+    expect(strict.result.unknown).toBe(1);
+    expect(strict.result.byTransport).toEqual({});
+
+    const relaxed = await run([item], [], { requireOwnerHeader: false });
+    expect(relaxed.result.requireOwnerHeader).toBe(false);
+    expect(relaxed.result.unknown).toBe(0);
+    expect(relaxed.result.byTransport).toEqual({ 'transport-davinci': 1 });
   });
 });

@@ -11,6 +11,7 @@ import {
   type TransportMatchCandidate,
 } from './store.js';
 import type { ParsedInboundMessage } from './parse-message.js';
+import { ingestRequireOwnerHeader } from '../../env.js';
 import { simpleParser, type AddressObject, type EmailAddress } from 'mailparser';
 import { and, asc, eq } from 'drizzle-orm';
 
@@ -43,6 +44,7 @@ export type RoutedPromoteDryRunResult = {
   cross_hotel_violations: number;
   ingestMailboxes: string[];
   crossHotelViolationIds: string[];
+  requireOwnerHeader: boolean;
 };
 
 export function parseRoutedPromoteCliArgs(argv: string[]): RoutedPromoteCliArgs {
@@ -80,6 +82,7 @@ export async function dryRunRoutedPromote(opts: {
   storage: S3Storage;
   limit?: number;
   transportId?: string;
+  requireOwnerHeader?: boolean;
 }): Promise<RoutedPromoteDryRunResult> {
   const listed = opts.db
     .select({
@@ -92,6 +95,7 @@ export async function dryRunRoutedPromote(opts: {
     .where(eq(mailIngestQuarantine.reason, 'missing_owner_header'))
     .orderBy(asc(mailIngestQuarantine.createdAt));
   const rows = await (opts.limit !== undefined ? listed.limit(opts.limit) : listed);
+  const requireOwnerHeader = opts.requireOwnerHeader ?? ingestRequireOwnerHeader();
   const result: RoutedPromoteDryRunResult = {
     scanned: rows.length,
     byTransport: {},
@@ -103,6 +107,7 @@ export async function dryRunRoutedPromote(opts: {
     cross_hotel_violations: 0,
     ingestMailboxes: [...new Set(rows.map((row) => row.ingestMailboxId))].sort(),
     crossHotelViolationIds: [],
+    requireOwnerHeader,
   };
   for (const row of rows) {
     const existing = await opts.db
@@ -123,7 +128,7 @@ export async function dryRunRoutedPromote(opts: {
       result.error += 1;
       continue;
     }
-    const route = await routeLikeLiveIngest(opts.db, parsed);
+    const route = await routeLikeLiveIngest(opts.db, parsed, requireOwnerHeader);
     if (route.kind !== 'unique') {
       result[route.kind === 'ambiguous' || route.kind === 'multi_transport' ? route.kind : 'unknown'] += 1;
       continue;
@@ -146,7 +151,7 @@ export async function dryRunRoutedPromote(opts: {
 }
 
 /** Same dispatch as persistInboundMessage — store.ts helpers, no forked matcher. */
-async function routeLikeLiveIngest(db: DB, parsed: ParsedInboundMessage) {
+async function routeLikeLiveIngest(db: DB, parsed: ParsedInboundMessage, requireOwnerHeader: boolean) {
   const closed = (
     match: { kind: 'ambiguous' | 'multi' } | { kind: 'unique'; transport: TransportMatchCandidate } | { kind: 'none' },
   ) =>
@@ -163,6 +168,7 @@ async function routeLikeLiveIngest(db: DB, parsed: ParsedInboundMessage) {
     if (isStampCorroborated(stamped.transport, parsed)) return closed(stamped);
   }
   if (direct.kind === 'unique') return closed(direct);
+  if (requireOwnerHeader) return { kind: 'unknown' } as const;
   return closed(await findEquatedHotelTransport(db, parsed));
 }
 
