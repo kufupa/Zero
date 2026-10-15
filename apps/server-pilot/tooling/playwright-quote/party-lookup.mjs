@@ -820,7 +820,7 @@ export async function searchKind(page, request) {
   if (await searchBtn.count()) searched = await clicked(searchBtn.first());
   else if (await searchAnchor.count()) searched = await clicked(searchAnchor.last());
   else if (await searchText.count()) searched = await clicked(searchText.last());
-  else searched = (await fillLookupFilter(page, 'guest', request.query.lastName)) && (await runLookupFilter(page, 'guest'));
+  else return filterNotVerified('search_not_found');
   if (!searched) return filterNotVerified('search_not_clicked');
   const settled = await waitForFreshGrid(page, 'guest', before, { run });
   if (settled === 'busy') return lookupBusyTimeout();
