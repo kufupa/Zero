@@ -213,11 +213,6 @@ describe('demo mail list perf guards', () => {
 
   it('shows retryable search error before zero-result copy', () => {
     const refetch = vi.fn();
-    mocks.searchValue = {
-      ...EMPTY_SEARCH_VALUE,
-      value: 'deposit is:unread',
-      highlight: 'deposit is:unread',
-    };
     mocks.useThreads.mockReturnValue([
       {
         refetch,
@@ -239,31 +234,6 @@ describe('demo mail list perf guards', () => {
     expect(screen.queryByText('No emails match “deposit is:unread”')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry search' }));
-    expect(refetch).toHaveBeenCalledTimes(1);
-  });
-
-  it('labels idle-folder transport failures as mail load errors, not search', () => {
-    const refetch = vi.fn();
-    mocks.searchValue = EMPTY_SEARCH_VALUE;
-    mocks.useThreads.mockReturnValue([
-      {
-        refetch,
-        isLoading: false,
-        isFetching: false,
-        isFetchingNextPage: false,
-        hasNextPage: false,
-        isError: true,
-        error: new Error('request failed'),
-      },
-      [],
-      true,
-      vi.fn(),
-    ]);
-
-    render(createElement(MailList));
-
-    expect(screen.getByRole('alert').textContent).toContain('Unable to load mail');
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(refetch).toHaveBeenCalledTimes(1);
   });
 

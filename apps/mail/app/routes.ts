@@ -24,13 +24,6 @@ export default [
   layout('(routes)/layout.tsx', [
     route('/developer', '(routes)/developer/page.tsx'),
     layout(
-      '(routes)/lab/layout.tsx',
-      prefix('/lab', [
-        route('/centurion', '(routes)/lab/centurion/page.tsx'),
-        route('/centurion/:tool', '(routes)/lab/centurion/[tool]/page.tsx'),
-      ]),
-    ),
-    layout(
       '(routes)/mail/layout.tsx',
       prefix('/mail', [
         index('(routes)/mail/page.tsx'),

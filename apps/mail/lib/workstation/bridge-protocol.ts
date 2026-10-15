@@ -1,12 +1,9 @@
 import { z } from 'zod';
 
-export const BRIDGE_PROTOCOL_VERSION = 3;
+export const BRIDGE_PROTOCOL_VERSION = 1;
 
 export const WorkstationEmailPayloadSchema = z.object({
   entryId: z.string(),
-  storeId: z.string().optional(),
-  folderEntryId: z.string().optional(),
-  folderName: z.string().optional(),
   subject: z.string(),
   senderEmail: z.string(),
   senderName: z.string(),
@@ -24,8 +21,6 @@ export type WorkstationEmailPayload = z.infer<typeof WorkstationEmailPayloadSche
 
 export const FolderEmailSummarySchema = z.object({
   entryId: z.string(),
-  storeId: z.string().optional(),
-  folderEntryId: z.string().optional(),
   subject: z.string(),
   senderName: z.string(),
   receivedTime: z.string(),
@@ -34,225 +29,16 @@ export const FolderEmailSummarySchema = z.object({
 
 export type FolderEmailSummary = z.infer<typeof FolderEmailSummarySchema>;
 
-export const FolderEmailPageSchema = z.object({
-  items: z.array(FolderEmailSummarySchema).max(200),
-  continuationToken: z.string().nullable(),
-  snapshotTruncated: z.boolean(),
-  totalItems: z.number().int().nonnegative().max(5000),
-  storeId: z.string(),
-  folderEntryId: z.string(),
-});
-
-export type FolderEmailPage = z.infer<typeof FolderEmailPageSchema>;
-
-export const StoreSummarySchema = z.object({
-  storeId: z.string(),
-  displayName: z.string(),
-  isDefault: z.boolean().optional(),
-});
-
-export type StoreSummary = z.infer<typeof StoreSummarySchema>;
-
-export const StorePageSchema = z.object({
-  items: z.array(StoreSummarySchema).max(200),
-  totalItems: z.number().int().nonnegative(),
-  continuationToken: z.string().nullable(),
-  truncated: z.boolean(),
-});
-
-export type StorePage = z.infer<typeof StorePageSchema>;
-// Requests with pageSize/continuationToken opt in to a bounded live collection page.
-// Existing callers still receive an array if it fits; oversized arrays fail explicitly.
-export const StoreCollectionResultSchema = z.union([
-  z.array(StoreSummarySchema).max(200),
-  StorePageSchema,
-]);
-export type StoreCollectionResult = z.infer<typeof StoreCollectionResultSchema>;
-
-export const FolderSummarySchema = z.object({
-  storeId: z.string(),
-  entryId: z.string(),
-  parentEntryId: z.string().optional(),
-  name: z.string(),
-  path: z.string(),
-  depth: z.number(),
-  defaultFolderType: z.number().nullable().optional(),
-});
-
-export type FolderSummary = z.infer<typeof FolderSummarySchema>;
-
-export const FolderCollectionEnvelopeSchema = z.object({
-  items: z.array(FolderSummarySchema).max(5000),
-  truncated: z.boolean(),
-});
-
-// Unnegotiated callers keep the legacy array when complete. Protocol v3
-// callers receive an explicit completeness flag for bounded folder scans.
-export const FolderCollectionResultSchema = z.union([
-  z.array(FolderSummarySchema).max(5000),
-  FolderCollectionEnvelopeSchema,
-]);
-export type FolderCollectionResult = z.infer<typeof FolderCollectionResultSchema>;
-
-export const AccountSummarySchema = z.object({
-  smtpAddress: z.string(),
-  displayName: z.string(),
-});
-
-export type AccountSummary = z.infer<typeof AccountSummarySchema>;
-
-export const AccountPageSchema = z.object({
-  items: z.array(AccountSummarySchema).max(200),
-  totalItems: z.number().int().nonnegative(),
-  continuationToken: z.string().nullable(),
-  truncated: z.boolean(),
-});
-
-export type AccountPage = z.infer<typeof AccountPageSchema>;
-// totalItems and continuation count usable SMTP accounts, excluding provider
-// slots without addresses. Pages are drawn from the same selectable set.
-export const AccountCollectionResultSchema = z.union([
-  z.array(AccountSummarySchema).max(200),
-  AccountPageSchema,
-]);
-export type AccountCollectionResult = z.infer<typeof AccountCollectionResultSchema>;
-
-export const MailLocationSchema = z.object({
-  entryId: z.string(),
-  storeId: z.string(),
-  folderEntryId: z.string(),
-  folderName: z.string(),
-  displayed: z.boolean().optional(),
-  moved: z.boolean().optional(),
-  composerWarning: z.string().optional(),
-  draftPlacementWarning: z.string().optional(),
-  folderPlacementWarning: z.string().optional(),
-  locationUnverified: z.boolean().optional(),
-});
-
-export type MailLocation = z.infer<typeof MailLocationSchema>;
-
-// A provider returning no MailItem cannot confirm that Move occurred. Its
-// expected target is informational only; cache the unconfirmed outcome on retry.
-export const MoveEmailResultSchema = z.discriminatedUnion('moveStatus', [
-  MailLocationSchema.extend({ moveStatus: z.literal('confirmed'), moved: z.literal(true) }),
-  MailLocationSchema.extend({
-    moveStatus: z.literal('unconfirmed'),
-    moved: z.never().optional(),
-    locationUnverified: z.literal(true),
-    folderPlacementWarning: z.string(),
-  }),
-]);
-export type MoveEmailResult = z.infer<typeof MoveEmailResultSchema>;
-
-export const BridgeCapabilitiesSchema = z.object({
-  bridgeProtocolVersion: z.number(),
-  addinVersion: z.string(),
-  outlookVersion: z.string(),
-  runtime: z.string(),
-  newOutlookSupported: z.boolean(),
-  interactiveProfileRequired: z.boolean(),
-  maxPageSize: z.number(),
-  maxFolderDepth: z.number(),
-  maxFolderCount: z.number(),
-  maxFolderSnapshotItems: z.number(),
-  supportedActions: z.array(z.string()),
-});
-
-export type BridgeCapabilities = z.infer<typeof BridgeCapabilitiesSchema>;
-
-export const SendDraftResultSchema = z.object({
-  submitted: z.boolean(),
-  usedDefaultAccount: z.boolean(),
-  accountSmtpAddress: z.string().nullable(),
-});
-
-export type SendDraftResult = z.infer<typeof SendDraftResultSchema>;
-
-export const DeleteEmailResultSchema = z.object({
-  deleted: z.boolean(),
-  permanent: z.boolean(),
-  exchangeRetentionMayKeepRecoverableCopy: z.boolean().optional(),
-});
-
-export type DeleteEmailResult = z.infer<typeof DeleteEmailResultSchema>;
-
-export const TemplateSummarySchema = z.object({
-  name: z.string(),
-  fileName: z.string(),
-  path: z.string(),
-  modifiedTime: z.string(),
-  byteSize: z.number().optional(),
-});
-
-export type TemplateSummary = z.infer<typeof TemplateSummarySchema>;
-
-export const TemplateContentSchema = z.object({
-  path: z.string(),
-  subject: z.string(),
-  to: z.string().optional(),
-  cc: z.string().optional(),
-  htmlBody: z.string(),
-  plainBody: z.string(),
-});
-
-export type TemplateContent = z.infer<typeof TemplateContentSchema>;
-
-export const SignatureSummarySchema = z.object({
-  name: z.string(),
-  fileName: z.string(),
-  htmlBody: z.string(),
-});
-
-export type SignatureSummary = z.infer<typeof SignatureSummarySchema>;
-
-export const AttachmentMetaSchema = z.object({
-  index: z.number(),
-  fileName: z.string(),
-  displayName: z.string().optional(),
-  byteSize: z.number(),
-  type: z.string().optional(),
-});
-
-export type AttachmentMeta = z.infer<typeof AttachmentMetaSchema>;
-
-export const AttachmentContentSchema = z.object({
-  index: z.number(),
-  fileName: z.string(),
-  byteSize: z.number(),
-  base64Data: z.string(),
-});
-
-export type AttachmentContent = z.infer<typeof AttachmentContentSchema>;
-
 export type BridgeAction =
   | 'PING'
-  | 'GET_CAPABILITIES'
-  | 'LIST_STORES'
-  | 'LIST_FOLDERS'
   | 'GET_ACTIVE_EMAIL'
   | 'GET_FOLDER_EMAILS'
   | 'GET_EMAIL_BY_ENTRY_ID'
   | 'CREATE_DRAFT'
-  | 'UPDATE_DRAFT'
   | 'CREATE_REPLY_DRAFT'
-  | 'LIST_ACCOUNTS'
-  | 'SEND_DRAFT'
   | 'MOVE_EMAIL'
   | 'MOVE_TO_SPAM'
-  | 'DELETE_EMAIL'
-  | 'DELETE_EMAIL_PERMANENTLY'
   | 'CREATE_FOLDER'
-  | 'LIST_TEMPLATES'
-  | 'GET_TEMPLATE_CONTENT'
-  | 'LIST_SIGNATURES'
-  | 'GET_ATTACHMENT_METADATA'
-  | 'READ_ATTACHMENT_BASE64'
-  | 'ADD_ATTACHMENT_TO_DRAFT'
-  | 'SET_EMAIL_CATEGORY'
-  | 'SET_FOLLOW_UP_FLAG'
-  | 'MARK_EMAIL_READ'
-  | 'GET_CONVERSATION_THREAD'
   | 'ON_SELECTION_CHANGED';
 
 export interface BridgeRequest<T = unknown> {
@@ -269,7 +55,6 @@ export interface BridgeResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
-  errorCode?: string;
 }
 
 export function createBridgeRequest<T>(action: BridgeAction, payload: T): BridgeRequest<T> {
@@ -279,10 +64,6 @@ export function createBridgeRequest<T>(action: BridgeAction, payload: T): Bridge
     action,
     payload,
   };
-}
-
-export function createOperationId(): string {
-  return `op_${Date.now()}_${crypto.randomUUID().replace(/-/g, '')}`;
 }
 
 export function parseBridgeMessage<T = unknown>(raw: string): BridgeResponse<T> {
@@ -295,7 +76,6 @@ export function parseBridgeMessage<T = unknown>(raw: string): BridgeResponse<T> 
       success: Boolean(json.success),
       data: json.data as T | undefined,
       error: typeof json.error === 'string' ? json.error : undefined,
-      errorCode: typeof json.errorCode === 'string' ? json.errorCode : undefined,
     };
   } catch (err) {
     return {

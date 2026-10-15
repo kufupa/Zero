@@ -1,7 +1,6 @@
 import { LoginClient } from './login-client';
 import { useLoaderData } from 'react-router';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { publicBackendPath } from '@/lib/public-backend-url';
 
 export async function clientLoader() {
   const isProd = !import.meta.env.DEV;
@@ -35,7 +34,7 @@ export async function clientLoader() {
   ];
 
   try {
-    const response = await fetch(publicBackendPath('/api/public/providers'));
+    const response = await fetch(import.meta.env.VITE_PUBLIC_BACKEND_URL + '/api/public/providers');
 
     if (!response.ok) {
       return {

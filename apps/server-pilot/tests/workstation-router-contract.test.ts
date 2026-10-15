@@ -1,7 +1,6 @@
-import { workstationPingInput } from '../src/trpc/routes/workstation.js';
-import { appRouter } from '../src/trpc/router.js';
 import { describe, it, expect } from 'vitest';
 import { TRPCError } from '@trpc/server';
+import { appRouter } from '../src/trpc/router.js';
 
 function sessionCaller() {
   return appRouter.createCaller({
@@ -27,10 +26,6 @@ function anonymousCaller() {
 }
 
 describe('Workstation tRPC Router Contract', () => {
-  it('does not invent an Outlook product version when the caller omits it', () => {
-    expect(workstationPingInput.parse({}).outlookVersion).toBe('unknown');
-  });
-
   it('responds to workstation.ping with server timestamp and ok status', async () => {
     const res = await sessionCaller().workstation.ping({
       workstationUser: 'ropperman',

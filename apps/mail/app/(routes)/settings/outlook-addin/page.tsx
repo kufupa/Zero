@@ -1,5 +1,5 @@
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
 import { Download } from 'lucide-react';
 
 export default function OutlookAddinDownloadPage() {
@@ -8,7 +8,7 @@ export default function OutlookAddinDownloadPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Nava Outlook Assistant</h1>
         <p className="text-muted-foreground text-sm">
-          Integrate Nava AI Reservationist directly into your Classic Outlook for Windows sidebar.
+          Integrate Nava AI Reservationist directly into your Classic Outlook 2016 desktop sidebar.
         </p>
       </div>
 
@@ -16,10 +16,10 @@ export default function OutlookAddinDownloadPage() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
             <Download className="h-5 w-5 text-amber-500" />
-            Install Nava for Classic Outlook
+            Install Nava for Outlook 2016
           </CardTitle>
           <CardDescription>
-            Zero-admin per-user installer. New Outlook does not support VSTO/COM add-ins.
+            Zero-admin per-user installer. No IT administrator password required.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -30,7 +30,7 @@ export default function OutlookAddinDownloadPage() {
             </a>
           </Button>
 
-          <div className="border-border grid grid-cols-1 gap-4 border-t pt-4 md:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 border-t border-border pt-4 md:grid-cols-3">
             <div className="space-y-1">
               <div className="flex items-center gap-1.5 text-sm font-semibold">
                 <span className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-500/20 text-xs font-bold text-amber-400">
@@ -51,8 +51,7 @@ export default function OutlookAddinDownloadPage() {
                 Step 2: Run Installer
               </div>
               <p className="text-muted-foreground text-xs">
-                Double-click the downloaded file and click “Install”. Setup finishes in 5 seconds
-                without admin prompts.
+                Double-click the downloaded file and click “Install”. Setup finishes in 5 seconds without admin prompts.
               </p>
             </div>
 
@@ -64,16 +63,10 @@ export default function OutlookAddinDownloadPage() {
                 Step 3: Launch Outlook
               </div>
               <p className="text-muted-foreground text-xs">
-                Open Classic Outlook. The Nava Assistant pane will appear docked on the right-hand
-                side automatically.
+                Open Outlook 2016. The Nava Assistant pane will appear docked on the right-hand side automatically.
               </p>
             </div>
           </div>
-          <p className="border-border text-muted-foreground border-t pt-3 text-xs">
-            Microsoft documents the VSTO compatibility matrix for Office 2013 and 2016. Later Office
-            products also report version 16.0, but this add-in has not been runtime-tested against
-            those exact products/builds.
-          </p>
         </CardContent>
       </Card>
     </div>

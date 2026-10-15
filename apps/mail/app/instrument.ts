@@ -1,6 +1,5 @@
 import * as Sentry from '@sentry/react';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
-import { publicBackendPath } from '@/lib/public-backend-url';
 
 const sentryDisabled =
   import.meta.env.VITE_DISABLE_SENTRY === '1' ||
@@ -12,7 +11,7 @@ const sentryDisabled =
 if (!sentryDisabled) {
   Sentry.init({
     dsn: 'https://03f6397c0eb458bf1e37c4776a31797c@o4509328786915328.ingest.us.sentry.io/4509328795303936',
-    tunnel: publicBackendPath('/monitoring/sentry'),
+    tunnel: import.meta.env.VITE_PUBLIC_BACKEND_URL + '/monitoring/sentry',
     integrations: [Sentry.replayIntegration()],
     tracesSampleRate: 1,
     replaysSessionSampleRate: 0.1,

@@ -2,12 +2,11 @@ import { phoneNumberClient } from 'better-auth/client/plugins';
 import { createAuthClient } from 'better-auth/react';
 import { useQuery } from '@tanstack/react-query';
 import type { Auth } from '@zero/server/auth';
-import { resolvePublicBackendUrl } from './public-backend-url';
 import { isFrontendOnlyDemo } from './demo/runtime';
 import { getDemoSession } from './demo/session';
 
 export const authClient = createAuthClient({
-  baseURL: resolvePublicBackendUrl(),
+  baseURL: import.meta.env.VITE_PUBLIC_BACKEND_URL,
   fetchOptions: {
     credentials: 'include',
   },
