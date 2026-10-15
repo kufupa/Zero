@@ -7,6 +7,7 @@
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { opsMatch } from './same-move-ops.js';
 
 export const DEFAULT_SYNTHETIC_GOLD_PAIR_IN = 'evals/same-move/synthetic-gold-pair.json';
 export const DEFAULT_JOINED_OPS_OUT = 'evals/same-move/joined-ops.jsonl';
@@ -89,7 +90,7 @@ const R3_ACTION_OPERATION: Record<string, string> = {
   cancel: 'cancel',
   amend: 'amend',
   payment_proof: 'post_payment',
-  billing: 'post_payment',
+  billing: 'unknown',
   group_event: 'unknown',
   other_actionable: 'unknown',
   no_action: 'none',
@@ -156,6 +157,7 @@ export function staffMoveToOperations(
   const implied = [
     ...new Set(
       hmsWorkImplied
+        .filter((token) => token !== 'none')
         .map((token) => HMS_WORK_OPERATION[token])
         .filter((token): token is string => Boolean(token)),
     ),
@@ -202,17 +204,6 @@ function cloneOps(operations: readonly GoldOperation[]): GoldOperation[] {
     candidateTool: operation.candidateTool,
     unknownReason: operation.unknownReason,
   }));
-}
-
-function opsMatch(predicted: readonly GoldOperation[], claimed: readonly GoldOperation[]): boolean {
-  if (predicted.length === 0 || claimed.length === 0) return false;
-  const predictedOps = new Set(predicted.map((row) => row.operation));
-  const claimedOps = new Set(claimed.map((row) => row.operation));
-  if (predictedOps.size !== claimedOps.size) return false;
-  for (const operation of predictedOps) {
-    if (!claimedOps.has(operation)) return false;
-  }
-  return true;
 }
 
 type IndexedOps = {

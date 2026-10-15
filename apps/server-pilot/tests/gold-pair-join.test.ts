@@ -61,6 +61,24 @@ describe('staffMoveToOperations', () => {
       'none',
     ]);
   });
+
+  it('maps party_lookup implied work to read and ignores the none token', () => {
+    expect(
+      staffMoveToOperations('no_visible_action', ['party_lookup']).map((row) => row.operation),
+    ).toEqual(['read']);
+    expect(
+      staffMoveToOperations('silent_hms_work', ['party_lookup']).map((row) => row.operation),
+    ).toEqual(['read']);
+    expect(
+      staffMoveToOperations('silent_hms_work', ['none', 'party_lookup']).map((row) => row.operation),
+    ).toEqual(['read']);
+    expect(staffMoveToOperations('silent_hms_work', ['none']).map((row) => row.operation)).toEqual([
+      'none',
+    ]);
+    expect(staffMoveToOperations('no_visible_action', []).map((row) => row.operation)).toEqual([
+      'none',
+    ]);
+  });
 });
 
 describe('predictedActionToOperations', () => {
@@ -74,7 +92,8 @@ describe('predictedActionToOperations', () => {
     expect(predictedActionToOperations('payment_proof').map((row) => row.operation)).toEqual([
       'post_payment',
     ]);
-    expect(predictedActionToOperations('billing').map((row) => row.operation)).toEqual(['post_payment']);
+    expect(predictedActionToOperations('billing').map((row) => row.operation)).toEqual(['unknown']);
+    expect(predictedActionToOperations('billing')[0]?.unknownReason).toBe('billing');
     expect(predictedActionToOperations('no_action').map((row) => row.operation)).toEqual(['none']);
     expect(predictedActionToOperations('group_event').map((row) => row.operation)).toEqual(['unknown']);
     expect(predictedActionToOperations('other_actionable').map((row) => row.operation)).toEqual([
@@ -142,7 +161,7 @@ describe('parseGoldPairFixture', () => {
       'pred-cancel': 'cancel',
       'pred-amend': 'amend',
       'pred-pay': 'post_payment',
-      'pred-bill': 'post_payment',
+      'pred-bill': 'unknown',
       'pred-none': 'none',
       'pred-unk': 'unknown',
     });
@@ -253,6 +272,33 @@ describe('joinGoldPairOps', () => {
     expect(rows[0]?.expectPass).toBe(false);
     expect(rows[0]?.claimed[0]?.operation).toBe('cancel');
     expect(rows[0]?.predicted[0]?.operation).toBe('create');
+  });
+
+  it('sets expectPass false when predicted lacks a claimed requiredField', () => {
+    const rows = joinGoldPairOps({
+      labels: [label({ staff_move: 'booked_confirmed' })],
+      claimed: [{ messageId: 'msg-1', operations: [op('create', ['arrival'])] }],
+      predicted: [{ messageId: 'msg-1', operations: [op('create')] }],
+    });
+    expect(rows[0]?.expectPass).toBe(false);
+  });
+
+  it('sets expectPass true when predicted has every claimed requiredField plus extras', () => {
+    const rows = joinGoldPairOps({
+      labels: [label({ staff_move: 'booked_confirmed' })],
+      claimed: [{ messageId: 'msg-1', operations: [op('create', ['arrival'])] }],
+      predicted: [{ messageId: 'msg-1', operations: [op('create', ['arrival', 'departure'])] }],
+    });
+    expect(rows[0]?.expectPass).toBe(true);
+  });
+
+  it('treats empty claimed requiredFields as no constraint', () => {
+    const rows = joinGoldPairOps({
+      labels: [label({ staff_move: 'booked_confirmed' })],
+      claimed: [{ messageId: 'msg-1', operations: [op('create')] }],
+      predicted: [{ messageId: 'msg-1', operations: [op('create', ['arrival'])] }],
+    });
+    expect(rows[0]?.expectPass).toBe(true);
   });
 
   it('throws when a join input carries mail fields', () => {

@@ -3,11 +3,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  formatSameMoveOpsBaseline,
+  majorityBaseline,
+  opsMatch,
+  type GoldOperation,
+} from '../src/ai/same-move-ops';
+import {
   loadSameMoveOpsJsonl,
   parseSameMoveEvalCli,
+  runSameMoveOpsEval,
   scoreSameMoveOps,
 } from '../src/ai/same-move-scorer';
-import type { GoldOperation } from '../src/ai/same-move-ops';
 
 const temps = new Set<string>();
 
@@ -107,5 +113,111 @@ describe('same-move ops JSONL report', () => {
     if (parsed.mode === 'ops') {
       expect(parsed.opsPath).toMatch(/joined\.jsonl$/);
     }
+  });
+
+  it('report match count equals opsMatch-based majorityBaseline modelMatch', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'same-move-ops-'));
+    temps.add(dir);
+    const jsonl = path.join(dir, 'joined.jsonl');
+    const predictedCreate = op('create', ['arrival', 'departure'], 'hms_create');
+    const claimedSubset = op('create', ['arrival'], 'hms_create');
+    const predictedArrival = op('create', ['arrival'], 'hms_create');
+    const claimedEmptyFields = op('create', [], 'hms_create');
+    const claimedCancel = op('cancel', ['reservationRef'], 'hms_cancel');
+    await writeFile(
+      jsonl,
+      [
+        {
+          id: 'create-claimed-subset',
+          expectPass: true,
+          predicted: [predictedCreate],
+          claimed: [claimedSubset],
+        },
+        {
+          id: 'create-empty-claimed-fields',
+          expectPass: true,
+          predicted: [predictedArrival],
+          claimed: [claimedEmptyFields],
+        },
+        {
+          id: 'create-vs-cancel',
+          expectPass: false,
+          predicted: [predictedCreate],
+          claimed: [claimedCancel],
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join('\n') + '\n',
+    );
+
+    const rows = loadSameMoveOpsJsonl(jsonl);
+    const report = runSameMoveOpsEval(jsonl);
+    const opsMatchCount = rows.filter((row) => opsMatch(row.predicted, row.claimed)).length;
+    const baseline = majorityBaseline(rows);
+
+    expect(opsMatchCount).toBe(2);
+    expect(baseline.modelMatch).toBe(opsMatchCount);
+    expect(report.match).toBe(opsMatchCount);
+    expect(report.grades.partial + report.grades.mismatch).toBe(1);
+  });
+});
+
+describe('opsMatch requiredFields', () => {
+  it('matches the same operation when claimed requiredFields are empty', () => {
+    expect(opsMatch([op('create', ['arrival'], 'hms_create')], [op('create', [], 'hms_create')])).toBe(
+      true,
+    );
+  });
+
+  it('matches only when every claimed requiredField is on the predicted op', () => {
+    const claimed = [op('create', ['arrival', 'departure'], 'hms_create')];
+    expect(opsMatch([op('create', ['arrival'], 'hms_create')], claimed)).toBe(false);
+    expect(opsMatch([op('create', ['arrival', 'departure', 'adults'], 'hms_create')], claimed)).toBe(
+      true,
+    );
+  });
+
+  it('does not match different operations even with empty fields', () => {
+    expect(opsMatch([op('create', [], 'hms_create')], [op('cancel', [], 'hms_cancel')])).toBe(false);
+  });
+});
+
+describe('majority baseline', () => {
+  it('prints majority baseline beside model match and a per-workflow table', () => {
+    const create = op('create', [], 'hms_create_reservation');
+    const none = op('none', [], 'none');
+    const rows = [
+      { predicted: [create], claimed: [create] },
+      { predicted: [create], claimed: [none] },
+      { predicted: [none], claimed: [none] },
+    ];
+    const baseline = majorityBaseline(rows);
+    expect(baseline.set).toBe('none');
+    expect(baseline.match).toBe(2);
+    expect(baseline.n).toBe(3);
+    expect(baseline.modelMatch).toBe(2);
+    expect(baseline.byWorkflow).toEqual([
+      { workflow: 'none', model: 1, baseline: 2, n: 2 },
+      { workflow: 'create', model: 1, baseline: 0, n: 1 },
+    ]);
+    const printed = formatSameMoveOpsBaseline(baseline);
+    expect(printed).toContain('model match=2/3 (66.7%)  baseline majority=none match=2/3 (66.7%)');
+    expect(printed).toContain('workflow\tmodel\tbaseline\tn');
+    expect(printed).toContain('none\t1/2\t2/2\t2');
+    expect(printed).toContain('create\t1/1\t0/1\t1');
+  });
+
+  it('uses opsMatch requiredFields when scoring the constant majority prediction', () => {
+    const claimedCreate = op('create', ['arrival'], 'hms_create_reservation');
+    const predictedCreate = op('create', ['arrival'], 'hms_create_reservation');
+    const none = op('none', [], 'none');
+    const rows = [
+      { predicted: [predictedCreate], claimed: [claimedCreate] },
+      { predicted: [none], claimed: [claimedCreate] },
+    ];
+    const baseline = majorityBaseline(rows);
+    expect(baseline.set).toBe('create');
+    expect(baseline.match).toBe(0);
+    expect(baseline.modelMatch).toBe(1);
   });
 });
