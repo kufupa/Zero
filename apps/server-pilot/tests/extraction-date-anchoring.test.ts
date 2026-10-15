@@ -272,6 +272,50 @@ describe('received-time date anchoring', () => {
     expected: unknown;
   }> = [
     {
+      name: 'December stay with a trailing year keeps its January checkout',
+      run: () =>
+        anchorStayDateRange(
+          { arrival: '2026-12-30', departure: '2027-01-01' },
+          { receivedAt: '2026-10-15T12:00:00.000Z', sourceText: '30 Dec and 31 Dec 2026, two nights' },
+        ),
+      expected: { arrival: '2026-12-30', departure: '2027-01-01' },
+    },
+    {
+      name: '"the year after next" keeps the model year',
+      run: () =>
+        anchorStayDateRange(
+          { arrival: '2028-03-12', departure: '2028-03-14' },
+          { receivedAt: '2026-12-20T12:00:00.000Z', sourceText: '12–14 March the year after next' },
+        ),
+      expected: { arrival: '2028-03-12', departure: '2028-03-14' },
+    },
+    {
+      name: 'a stated trip year away from the date is kept',
+      run: () =>
+        anchorStayDateRange(
+          { arrival: '2028-03-12', departure: '2028-03-14' },
+          {
+            receivedAt: '2026-12-20T12:00:00.000Z',
+            sourceText: '2028 tour: 12–14 March',
+            yearEvidenceText: '2028 tour: 12–14 March',
+          },
+        ),
+      expected: { arrival: '2028-03-12', departure: '2028-03-14' },
+    },
+    {
+      name: 'an old subject phrase does not override new body dates',
+      run: () =>
+        anchorStayDateRange(
+          { arrival: '2027-03-12', departure: '2027-03-14' },
+          {
+            receivedAt: '2026-12-18T12:00:00.000Z',
+            sourceText: 'Instead, please quote 12–14 March',
+            subjectText: 'Re: Quote next Friday',
+          },
+        ),
+      expected: { arrival: '2027-03-12', departure: '2027-03-14' },
+    },
+    {
       name: 'explicit ISO year wins over yearless rollover',
       run: async () =>
         (await extractRequestedDates({

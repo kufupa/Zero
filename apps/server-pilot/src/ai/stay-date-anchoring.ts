@@ -155,6 +155,12 @@ function nextOccurrence(value: string, referenceDate: string): string | null {
   return null;
 }
 
+/** A future model year that the current message states on its own ("2028 tour") is the guest's, not a guess. */
+function statesModelYear(text: string | undefined, arrival: string, referenceDate: string): boolean {
+  if (!text || arrival < referenceDate) return false;
+  return new RegExp(`\\b${arrival.slice(0, 4)}\\b`).test(text);
+}
+
 function nextWeekdayAfter(referenceDate: string, weekday: string): string | null {
   const target = WEEKDAYS.findIndex((day) => day.toLowerCase() === weekday.toLowerCase());
   if (target < 0) return null;
@@ -191,14 +197,20 @@ export function anchorStayDateRange(
   if (hasValidDeparture && explicitEndYear && Number(departure.slice(5, 7)) < Number(arrival.slice(5, 7))) {
     const mixedYearArrival = dateInYear(arrival, explicitEndYear - 1);
     const mixedYearDeparture = dateInYear(departure, explicitEndYear);
-    if (mixedYearArrival && mixedYearDeparture) {
+    // A trailing year names the checkout year only if that keeps the stay in the future.
+    if (
+      mixedYearArrival &&
+      mixedYearDeparture &&
+      mixedYearArrival >= referenceDate
+    ) {
       return { arrival: mixedYearArrival, departure: mixedYearDeparture };
     }
   }
   if (
     hasExplicitYear(context.sourceText) ||
     hasUnambiguousYearForStay(context.yearEvidenceText) ||
-    hasExplicitYear(context.subjectText)
+    hasExplicitYear(context.subjectText) ||
+    statesModelYear(context.yearEvidenceText, arrival, referenceDate)
   ) {
     return { arrival, departure: departure ?? null };
   }
@@ -206,7 +218,9 @@ export function anchorStayDateRange(
     return { arrival, departure: departure ?? null };
   }
 
-  const selectedDateText = [context.sourceText, context.subjectText].filter(Boolean).join('\n');
+  // A subject's relative phrase applies only when the body gives no dates of its own.
+  const bodyHasDates = Boolean(context.sourceText && MONTH_DAY.test(context.sourceText));
+  const selectedDateText = [context.sourceText, bodyHasDates ? '' : context.subjectText].filter(Boolean).join('\n');
   if (RELATIVE_NEXT_YEAR.test(selectedDateText)) {
     const anchoredArrival = dateInYear(arrival, Number(referenceDate.slice(0, 4)) + 1);
     return anchoredArrival ? withArrival(anchoredArrival) : { arrival, departure: departure ?? null };
@@ -225,6 +239,10 @@ export function anchorStayDateRange(
         (MONTH_DAY.test(context.subjectText) || RELATIVE_NEXT_YEAR.test(context.subjectText) || RELATIVE_WEEKDAY.test(context.subjectText)),
     );
   if (!checkedStayText) return { arrival, departure: departure ?? null };
+  // Rollover covers bare yearless dates only; other relative years ("the year after next") keep the model's year.
+  if (/\byear after next\b|\bin (?:two|three|2|3) years\b/i.test(selectedDateText)) {
+    return { arrival, departure: departure ?? null };
+  }
 
   const anchoredArrival = nextOccurrence(arrival, referenceDate);
   return anchoredArrival ? withArrival(anchoredArrival) : { arrival, departure: departure ?? null };
