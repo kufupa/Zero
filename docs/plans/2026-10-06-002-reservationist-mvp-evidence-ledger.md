@@ -1,5 +1,7 @@
 # Reservationist MVP — evidence ledger (Oct 6 2026)
 
+> Correction 22:45: `rate-check.ts` is on main (`0a924c0c`), not parked-branch-only. See `2026-10-06-003-case-coverage-gap-audit.md`.
+
 Source of truth for the retro + sprint plan (`2026-10-06-002-reservationist-mvp-retro-and-sprint-plan.md`).
 Every claim: locator + status (supported / disputed / unresolved). No raw PII here.
 
@@ -41,7 +43,7 @@ Every claim: locator + status (supported / disputed / unresolved). No raw PII he
 | 21 | Time split Oct 2–6: 44.5 wall-clock active h = 13.75 useful-now / 8.5 long-term / 14.25 overbuilt / 8.0 steering | A §1–2 (15-min tool-call bins + labelled blocks) | supported (labelling is judgement) |
 | 22 | Pane attachments hard-coded `bytesPresent:false` → route returns `missing_source` → emails with attachments skip analysis | main `quote-workflow-synced-selection.ts:113`, `trpc/routes/quote-workflow.ts:54` (verified directly) | supported |
 | 23 | Main has compact Luna agent `reservationist-agent.ts` (decision schema quote/create/skip/spam/other + `CENTURION_HOTEL_RULES`), used only by backtest; main worker has no reservationist | C; verified lines 27–58 | supported |
-| 24 | Azure Luna adapter only uncommitted in feature worktree; main factory uses Bedrock (payment errors per docs/solutions) | C, D | supported |
+| 24 | ~~Azure Luna adapter only uncommitted in feature worktree~~ **Corrected 23:15:** `createAzureLunaModel` (`luna.ts:90`) + `LunaModelAdapter` (`:106`) ARE on main; only the reasoning-effort option (`lunaProviderOptions`) is uncommitted in `luna-mvp`. Main default factory `createLunaModel` uses Bedrock (payment errors per docs/solutions) | C, D, direct `git show HEAD:` check | supported (corrected) |
 | 25 | Create reservation is lab-only (`create-lab-stay.mjs` saves then cancels; `--stop-before` dry-run); needs roomType/ratePlan/track/sourceOfBusiness/guaranteeType that emails rarely carry | C, B | supported |
 | 26 | Volume per working day: inbound ~150–180; quote requests in ~6 (4–8); new-booking requests ~10 (8–14); confirmations sent 13.4; quotes sent 3.8. "~10 quotes/day" unsupported | B (Oct 3 22:34–22:57 Cursor `d2499be3`/`74b47470` table + 846-week AI review) | supported ±40%, not human-adjudicated |
 | 27 | Phase B create 0/10 causes: ~5 mislabelled; PMS codes absent from email; agent asked customers for codes; no voucher PDFs; lenient scorer | B | supported |
