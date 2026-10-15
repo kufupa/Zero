@@ -315,8 +315,9 @@ export function fencedAliasAppendSql(transportId: string, aliases: string[]) {
     aliases.map((alias) => sql`${alias}`),
     sql`, `,
   )}]::text[]`;
-  const stillMissing = sql`EXISTS (SELECT 1 FROM unnest(${wanted}) AS w(alias) WHERE NOT (COALESCE(send_from_config->'aliases', '[]'::jsonb) ? w.alias))`;
-  return sql`UPDATE ${mailboxTransport} SET send_from_config = jsonb_set(COALESCE(send_from_config, '{}'::jsonb), '{aliases}', COALESCE(send_from_config->'aliases', '[]'::jsonb) || COALESCE((SELECT jsonb_agg(to_jsonb(w.alias) ORDER BY w.ord) FROM unnest(${wanted}) WITH ORDINALITY AS w(alias, ord) WHERE NOT (COALESCE(send_from_config->'aliases', '[]'::jsonb) ? w.alias)), '[]'::jsonb)), updated_at = now() WHERE id = ${transportId} AND is_active IS TRUE AND ${stillMissing} RETURNING id`;
+  const aliasNotStored = sql`NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(send_from_config->'aliases', '[]'::jsonb)) s(a) WHERE lower(s.a) = lower(w.alias))`;
+  const stillMissing = sql`EXISTS (SELECT 1 FROM unnest(${wanted}) AS w(alias) WHERE ${aliasNotStored})`;
+  return sql`UPDATE ${mailboxTransport} SET send_from_config = jsonb_set(COALESCE(send_from_config, '{}'::jsonb), '{aliases}', COALESCE(send_from_config->'aliases', '[]'::jsonb) || COALESCE((SELECT jsonb_agg(to_jsonb(w.alias) ORDER BY w.ord) FROM unnest(${wanted}) WITH ORDINALITY AS w(alias, ord) WHERE ${aliasNotStored}), '[]'::jsonb)), updated_at = now() WHERE id = ${transportId} AND is_active IS TRUE AND ${stillMissing} RETURNING id`;
 }
 
 export async function applyProvision(

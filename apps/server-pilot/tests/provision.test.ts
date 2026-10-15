@@ -593,6 +593,38 @@ describe('planProvision', () => {
     expect('transportsToActivate' in plan).toBe(false);
   });
 
+  it('does not plan or append an alias that matches stored casing', async () => {
+    const spec: ProvisionSpec = {
+      users: [],
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          aliases: ['desk@x'],
+        },
+      ],
+      grants: [],
+    };
+    const { db, state } = createFakeDb({
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          isActive: true,
+          sendFromConfig: { aliases: ['Desk@X'] },
+        },
+      ],
+    });
+    const plan = await planProvision(db, spec);
+    expect(plan.aliasesToAdd).toEqual([]);
+    await applyProvision(db, plan, {});
+    expect(state.transports[0]?.sendFromConfig).toEqual({ aliases: ['Desk@X'] });
+  });
+
   it('lists only aliases missing from an existing transport send_from_config', async () => {
     const spec: ProvisionSpec = {
       users: [],
@@ -829,7 +861,9 @@ describe('fencedAliasAppendSql', () => {
     expect(text).toMatch(/is_active IS TRUE/);
     expect(text).toContain('EXISTS');
     expect(text).toContain("send_from_config->'aliases'");
-    expect(text).toContain('? w.alias');
+    expect(text).toContain('jsonb_array_elements_text');
+    expect(text).toContain('lower(s.a) = lower(w.alias)');
+    expect(text).not.toContain('? w.alias');
     expect(text).toContain('jsonb_set');
     expect(text).toContain('jsonb_agg');
   });

@@ -18,7 +18,20 @@ import {
   mailLabel,
 } from './schema/mail.js';
 import type { DB } from './client.js';
-import { DAVINCI_MAILBOX_IDENTITIES } from '../hms/mailbox-hms-origin-bind.js';
+import {
+  AYANDA_MAILBOX_IDENTITIES,
+  DAVINCI_MAILBOX_IDENTITIES,
+  EPICK_MAILBOX_IDENTITIES,
+  FAITH_MAILBOX_IDENTITIES,
+  KMGIDI_MAILBOX_IDENTITIES,
+} from '../hms/mailbox-hms-origin-bind.js';
+
+export {
+  AYANDA_MAILBOX_IDENTITIES,
+  EPICK_MAILBOX_IDENTITIES,
+  FAITH_MAILBOX_IDENTITIES,
+  KMGIDI_MAILBOX_IDENTITIES,
+};
 
 export type PilotUserSpec = {
   id: string;
@@ -76,48 +89,28 @@ export const DAVINCI_TRANSPORT_OWNER_HEADER = DAVINCI_MAILBOX_IDENTITIES[0];
 export const DAVINCI_TRANSPORT_DISPLAY_NAME = 'Da Vinci Hotel Reservations';
 export const DAVINCI_TRANSPORT_ALIASES = DAVINCI_MAILBOX_IDENTITIES.slice(1);
 
-/** Faith hotel mailbox + documented domain spellings. Not HMS origin; not TRANSPORT_ALIASES. */
-export const FAITH_MAILBOX_IDENTITIES = [
-  'fkhumalo@legacyhotels.co.za',
-  'fkhumalo@legacyhotels.com',
-  'fkhumalo@legacyhotel.com',
-] as const;
+/** Faith Da Vinci staff mailbox. Origin-refused for Centurion HMS; not TRANSPORT_ALIASES. */
 export const FAITH_TRANSPORT_ID = 'transport-faith';
 export const FAITH_TRANSPORT_EMAIL = FAITH_MAILBOX_IDENTITIES[0];
 export const FAITH_TRANSPORT_OWNER_HEADER = FAITH_MAILBOX_IDENTITIES[0];
 export const FAITH_TRANSPORT_DISPLAY_NAME = 'Faith Hotel Reservations';
 export const FAITH_TRANSPORT_ALIASES = FAITH_MAILBOX_IDENTITIES.slice(1);
 
-/** Ayanda hotel mailbox (adladla) + documented domain spellings. Not HMS origin; not TRANSPORT_ALIASES. */
-export const AYANDA_MAILBOX_IDENTITIES = [
-  'adladla@legacyhotels.co.za',
-  'adladla@legacyhotels.com',
-  'adladla@legacyhotel.com',
-] as const;
+/** Ayanda Da Vinci staff mailbox. Origin-refused for Centurion HMS; not TRANSPORT_ALIASES. */
 export const AYANDA_TRANSPORT_ID = 'transport-ayanda';
 export const AYANDA_TRANSPORT_EMAIL = AYANDA_MAILBOX_IDENTITIES[0];
 export const AYANDA_TRANSPORT_OWNER_HEADER = AYANDA_MAILBOX_IDENTITIES[0];
 export const AYANDA_TRANSPORT_DISPLAY_NAME = 'Ayanda Hotel Reservations';
 export const AYANDA_TRANSPORT_ALIASES = AYANDA_MAILBOX_IDENTITIES.slice(1);
 
-/** Elizabeth Pick mailbox + documented domain spellings. Not HMS origin; not TRANSPORT_ALIASES. */
-export const EPICK_MAILBOX_IDENTITIES = [
-  'epick@legacyhotels.co.za',
-  'epick@legacyhotels.com',
-  'epick@legacyhotel.com',
-] as const;
+/** Elizabeth Pick Da Vinci staff mailbox. Origin-refused for Centurion HMS; not TRANSPORT_ALIASES. */
 export const EPICK_TRANSPORT_ID = 'transport-epick';
 export const EPICK_TRANSPORT_EMAIL = EPICK_MAILBOX_IDENTITIES[0];
 export const EPICK_TRANSPORT_OWNER_HEADER = EPICK_MAILBOX_IDENTITIES[0];
 export const EPICK_TRANSPORT_DISPLAY_NAME = 'Elizabeth Pick Reservations';
 export const EPICK_TRANSPORT_ALIASES = EPICK_MAILBOX_IDENTITIES.slice(1);
 
-/** Khanyisile Mgidi mailbox + documented domain spellings. Not HMS origin; not TRANSPORT_ALIASES. */
-export const KMGIDI_MAILBOX_IDENTITIES = [
-  'kmgidi@legacyhotels.co.za',
-  'kmgidi@legacyhotels.com',
-  'kmgidi@legacyhotel.com',
-] as const;
+/** Khanyisile Mgidi Da Vinci staff (default; owner confirms at dry run). Grants: own transport only. */
 export const KMGIDI_TRANSPORT_ID = 'transport-kmgidi';
 export const KMGIDI_TRANSPORT_EMAIL = KMGIDI_MAILBOX_IDENTITIES[0];
 export const KMGIDI_TRANSPORT_OWNER_HEADER = KMGIDI_MAILBOX_IDENTITIES[0];

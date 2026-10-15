@@ -11,7 +11,42 @@ export const DAVINCI_MAILBOX_IDENTITIES = [
   'davinci@legacyhotel.com',
 ] as const;
 
-const DAVINCI_MAILBOX_IDENTITY_SET: ReadonlySet<string> = new Set(DAVINCI_MAILBOX_IDENTITIES);
+export const FAITH_MAILBOX_IDENTITIES = [
+  'fkhumalo@legacyhotels.co.za',
+  'fkhumalo@legacyhotels.com',
+  'fkhumalo@legacyhotel.com',
+] as const;
+
+export const AYANDA_MAILBOX_IDENTITIES = [
+  'adladla@legacyhotels.co.za',
+  'adladla@legacyhotels.com',
+  'adladla@legacyhotel.com',
+] as const;
+
+export const EPICK_MAILBOX_IDENTITIES = [
+  'epick@legacyhotels.co.za',
+  'epick@legacyhotels.com',
+  'epick@legacyhotel.com',
+] as const;
+
+export const KMGIDI_MAILBOX_IDENTITIES = [
+  'kmgidi@legacyhotels.co.za',
+  'kmgidi@legacyhotels.com',
+  'kmgidi@legacyhotel.com',
+] as const;
+
+/** Shared + personal Da Vinci staff mailboxes. Centurion HMS reads refuse all of them. */
+export const DAVINCI_STAFF_MAILBOX_IDENTITIES = [
+  ...DAVINCI_MAILBOX_IDENTITIES,
+  ...FAITH_MAILBOX_IDENTITIES,
+  ...AYANDA_MAILBOX_IDENTITIES,
+  ...EPICK_MAILBOX_IDENTITIES,
+  ...KMGIDI_MAILBOX_IDENTITIES,
+] as const;
+
+const DAVINCI_STAFF_MAILBOX_IDENTITY_SET: ReadonlySet<string> = new Set(
+  DAVINCI_STAFF_MAILBOX_IDENTITIES,
+);
 
 /** Staff-facing copy when Centurion HMS must not search a Da Vinci-origin thread. */
 export const CENTURION_HMS_ORIGIN_REFUSED_MESSAGE =
@@ -78,7 +113,7 @@ function collectNormalizedAddresses(origin: MailboxHmsOriginFields): string[] {
 
 export function isDaVinciMailboxOrigin(origin: MailboxHmsOriginFields): boolean {
   return collectNormalizedAddresses(origin).some((email) =>
-    DAVINCI_MAILBOX_IDENTITY_SET.has(email),
+    DAVINCI_STAFF_MAILBOX_IDENTITY_SET.has(email),
   );
 }
 
