@@ -1,4 +1,8 @@
 import {
+  isDaVinciMailboxOrigin,
+  type MailboxHmsOriginFields,
+} from '../hms/mailbox-hms-origin-bind.js';
+import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
   PANE_PROPERTY_LOCK_WAIT_MS,
@@ -45,6 +49,7 @@ export type PanePartyOutcome =
   | 'external_system_unavailable'
   | 'refused_flag_off'
   | 'refused_input_invalid'
+  | 'refused_origin_mismatch'
   | 'refused_lock_unavailable'
   | 'refused_lock_busy';
 
@@ -472,12 +477,17 @@ export async function findParty(
     exactTerm?: boolean;
     /** Wider aggregate input for the V2 LLM (still capped before it is sent). */
     resultCap?: number;
+    /** Trigger mailbox origin. Da Vinci identity must not take the Centurion HMS slot. */
+    origin?: MailboxHmsOriginFields;
   } = {},
 ): Promise<PanePartyFindResult> {
   const enabled = panePartyLookupLoaders.enabled ?? (() => quoteRateContextEnabled());
   if (!enabled()) return replyWithout('refused_flag_off');
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   if (!name || name.length > 256) return replyWithout('refused_input_invalid');
+  if (options.origin && isDaVinciMailboxOrigin(options.origin)) {
+    return replyWithout('refused_origin_mismatch');
+  }
   const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
   if (!lock) return replyWithout('refused_lock_unavailable');
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;

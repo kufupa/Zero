@@ -30,6 +30,7 @@ import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
+import { isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -2165,6 +2166,9 @@ async function executePartyMatchV2(input: {
       extractionStatus: mailExtraction.status,
       extractionKind: mailExtraction.kind,
       fromAddress: message.fromAddress,
+      ownerHeaderValue: message.ownerHeaderValue,
+      toAddresses: message.toAddresses,
+      ccAddresses: message.ccAddresses,
       subject: message.subject,
       textBody: message.textBody,
       direction: message.direction,
@@ -2197,6 +2201,16 @@ async function executePartyMatchV2(input: {
     return partyMatchV2NoMatch('The source email is no longer eligible for party prefetch.');
   }
 
+  const mailboxOrigin = {
+    fromAddress: source.fromAddress,
+    ownerHeaderValue: source.ownerHeaderValue,
+    toAddresses: source.toAddresses,
+    ccAddresses: source.ccAddresses,
+  };
+  if (isDaVinciMailboxOrigin(mailboxOrigin)) {
+    return partyMatchV2NoMatch('Da Vinci mailbox origin is not bound to Centurion HMS');
+  }
+
   const quoteLlmParty = await existingQuoteWorkflowParty(
     input.db,
     input.run.transportId,
@@ -2220,7 +2234,12 @@ async function executePartyMatchV2(input: {
   for (const search of plan) {
     const result = await findParty(
       { name: search.term, kind: search.kind },
-      { acquisition: input.acquisition, exactTerm: true, resultCap: PARTY_MATCH_V2_ROW_CAP },
+      {
+        acquisition: input.acquisition,
+        exactTerm: true,
+        resultCap: PARTY_MATCH_V2_ROW_CAP,
+        origin: mailboxOrigin,
+      },
     );
     searchesTried.push({
       term: search.term,
@@ -2868,6 +2887,7 @@ const PARTY_JOB_OUTCOMES = new Set([
   'external_system_unavailable',
   'refused_flag_off',
   'refused_input_invalid',
+  'refused_origin_mismatch',
   'refused_lock_unavailable',
   'refused_lock_busy',
 ]);
