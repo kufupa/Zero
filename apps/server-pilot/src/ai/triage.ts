@@ -846,23 +846,45 @@ function isVoucherInvoiceOrPaymentRequest(haystack: string): boolean {
 
 /** A voucher asking the hotel to book or record a stay is new booking work. */
 function isVoucherNewBookingRequest(haystack: string): boolean {
+  const normalized = haystack.replace(/\s+/g, ' ');
   const asksToBook =
-    /\b(?:please|kindly|can you|could you|would you|we request you to)\b.{0,40}\b(?:book|make|create)\b.{0,50}\b(?:stay|reservation|booking|accommodation)\b/i.test(
-      haystack,
+    /\b(?:please|kindly|can you|could you|would you|we request you to)\b.{0,40}\b(?:book|make|create)\s+(?:(?:a|an|new)\s+)?(?:room|stay|reservation|booking|accommodation)\b/i.test(
+      normalized,
+    );
+  const asksToRecordPayment =
+    /\b(?:log|enter|register|record|load|add)\s+(?:(?:the|this|our|a)\s+)?(?:payment|remittance|invoice|proof\s+of\s+payment|pop)\b/i.test(
+      normalized,
+    );
+  const mentionsPaymentArtifact =
+    /\b(?:remittance|proof\s+of\s+payment|pop|(?:tax\s+)?invoice)\b/i.test(normalized);
+  const hasBookedStayReference =
+    /\b(?:already\s+)?booked\s+(?:(?:a|an|the|this|our)\s+)?(?:room|stay|reservation|booking|accommodation)\b/i.test(
+      normalized,
     );
   const asksToLog =
-    /\b(?:please|kindly|can you|could you|would you|we request you to)\b.{0,40}\b(?:log|enter|register|record|load|add)\b.{0,60}\b(?:stay|reservation|booking|hotel\s+system|(?:the|our)\s+system|pms)\b/i.test(
-      haystack,
+    /\b(?:please|kindly|can you|could you|would you|we request you to)\b.{0,40}\b(?:log|enter|register|record|load|add)\s+(?:(?:the|this|our|a)\s+)?(?:stay|reservation|booking)\b/i.test(
+      normalized,
     ) ||
-    /\b(?:log|enter|register|record|load|add)\s+(?:it|this|the booking|the reservation|the stay|this stay|our booking)\b.{0,40}\b(?:in|into|on)\b/i.test(
-      haystack,
-    );
+    (!asksToRecordPayment && !mentionsPaymentArtifact && hasBookedStayReference &&
+      /\b(?:log|enter|register|record|load|add)\s+(?:it|this)\s+(?:in|into|on)\s+(?:the\s+)?(?:hotel\s+)?(?:system|pms)\b/i.test(
+        normalized,
+      ));
 
   return asksToBook || asksToLog;
 }
 
 /** Payment language is a sender claim unless backed by proof for an existing confirmation. */
 function hasSenderPaidClaim(haystack: string): boolean {
+  const deniesPayment =
+    /\bno\s+payment\s+(?:(?:has|was|is)\s+)?(?:been\s+)?(?:made|received|settled|completed)\b/i.test(
+      haystack,
+    ) ||
+    /\bpayment\s+(?:(?:has|was|is)\s+)?not\s+(?:been\s+)?(?:made|received|settled|completed)\b/i.test(
+      haystack,
+    ) ||
+    /\b(?:we|i|our client)\s+(?:have\s+)?not\s+paid\b/i.test(haystack);
+  if (deniesPayment) return false;
+
   return /\b(?:already\s+(?:paid|settled)|paid\s+in\s+full|payment\s+(?:has\s+been|was|is)\s+(?:made|received|settled|completed)|payment\s+received|(?:we|i|our client)\s+(?:have\s+)?(?:already\s+)?paid)\b/i.test(
     haystack,
   );
@@ -1096,7 +1118,8 @@ function refineWorkflowTriageOutput(
       rationale: `${next.rationale} Internal hotel rate/system configuration is internal-partner.`,
     };
   } else if (isAgencyTravelVoucher(input, haystack)) {
-    if (isExistingConfirmationPaymentProof(haystack)) {
+    const asksForNewBooking = isVoucherNewBookingRequest(haystack);
+    if (isExistingConfirmationPaymentProof(haystack) && !asksForNewBooking) {
       next = {
         ...next,
         primaryFolder: 'money-billing',
@@ -1110,7 +1133,7 @@ function refineWorkflowTriageOutput(
         ),
         rationale: `${next.rationale} POP/proof of payment for an existing hotel confirmation is money-billing payment work.`,
       };
-    } else if (isVoucherNewBookingRequest(haystack)) {
+    } else if (asksForNewBooking) {
       const reportsPaid = hasSenderPaidClaim(haystack);
       const voucherAttached =
         /\b(?:attached|enclosed|herewith)\b.{0,30}\bvouchers?\b|\bvouchers?\b.{0,30}\b(?:attached|enclosed)\b/i.test(

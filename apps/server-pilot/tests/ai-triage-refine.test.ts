@@ -1021,6 +1021,111 @@ describe('workflow source and automation refinement', () => {
       });
     });
 
+    it.each([
+      { name: 'ordinary room request', body: 'Please book a room for Jane.' },
+      { name: 'line-wrapped booking request', body: 'Please create a\nbooking for Jane.' },
+    ])('routes voucher $name to bookings', ({ body }) => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Reservations Desk <booking-agent@example.test>',
+          subject: 'Travel voucher',
+          body,
+        },
+        workflowOutput({
+          primaryFolder: 'documents-delivery',
+          humanAction: 'document_or_delivery',
+          suggestedTools: ['hms_list_documents'],
+          isSpam: false,
+        }),
+      );
+
+      expect(refined).toMatchObject({
+        primaryFolder: 'bookings',
+        overlays: { booking: true },
+        humanAction: 'create_or_reconcile',
+      });
+      expect(refined.policyFlags).toContain('refine:voucher-new-booking');
+    });
+
+    it.each([
+      {
+        name: 'remittance recorded against a booking',
+        body:
+          'Please record the remittance against this booking. Please record it in the hotel system.',
+      },
+      {
+        name: 'remittance described before the recording request',
+        body: 'The remittance is attached. Please record it in the hotel system.',
+      },
+    ])('keeps $name as payment work', ({ body }) => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Reservations Desk <booking-agent@example.test>',
+          subject: 'Travel voucher',
+          body,
+        },
+        workflowOutput({
+          primaryFolder: 'money-billing',
+          overlays: { payment: true },
+          humanAction: 'payment_or_finance',
+          suggestedTools: ['hms_read_folio'],
+          isSpam: false,
+        }),
+      );
+
+      expect(refined).toMatchObject({
+        primaryFolder: 'money-billing',
+        overlays: { payment: true },
+        humanAction: 'payment_or_finance',
+      });
+      expect(refined.policyFlags).toContain('refine:voucher-invoice-request');
+      expect(refined.policyFlags).not.toContain('refine:voucher-new-booking');
+    });
+
+    it('preserves a new booking request when POP also names an existing confirmation', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Reservations Desk <booking-agent@example.test>',
+          subject: 'Travel voucher and POP for confirmation no. 57291630-1',
+          body: 'Please create a booking for Jane. POP for existing confirmation no. 57291630-1.',
+        },
+        workflowOutput({ primaryFolder: 'money-billing', overlays: { payment: true }, isSpam: false }),
+      );
+
+      expect(refined).toMatchObject({
+        primaryFolder: 'bookings',
+        overlays: { booking: true },
+        humanAction: 'create_or_reconcile',
+      });
+      expect(refined.policyFlags).toContain('refine:voucher-new-booking');
+      expect(refined.policyFlags).not.toContain(
+        'refine:voucher-existing-confirmation-payment-proof',
+      );
+    });
+
+    it.each([
+      'Please create a booking for Jane. No payment has been made.',
+      'Please create a booking for Jane. No payment received.',
+    ])('does not treat a negated payment statement as paid: %s', (body) => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Reservations Desk <booking-agent@example.test>',
+          subject: 'Travel voucher',
+          body,
+        },
+        workflowOutput({ primaryFolder: 'documents-delivery', isSpam: false }),
+      );
+
+      expect(refined).toMatchObject({
+        primaryFolder: 'bookings',
+        overlays: { booking: true, payment: false },
+        humanAction: 'create_or_reconcile',
+      });
+      expect(refined.rationale).not.toContain(
+        'Sender reports payment already made; not independently verified.',
+      );
+    });
+
     it('routes agency travel vouchers with invoice requests to money-billing', () => {
       const refined = refineTriageOutput(
         {
