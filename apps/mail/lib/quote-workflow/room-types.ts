@@ -8,7 +8,20 @@ export type RoomTypeMatch = { code?: RoomTypeCode; suggestions: RoomTypeCode[] }
 /** Every known code, in the order the builder lists them. */
 export const ROOM_TYPE_CODES = Object.keys(ROOM_TYPE_NAMES) as RoomTypeCode[];
 
-const IGNORED_ROOM_WORDS = new Set(['room', 'bedroom', 'bed', 'type']);
+const IGNORED_ROOM_WORDS = new Set([
+  'room',
+  'bedroom',
+  'bed',
+  'type',
+  'sharing',
+  'occupancy',
+  'share',
+  'with',
+  'two',
+  'and',
+  'per',
+  'person',
+]);
 const MATCHABLE_ROOM_WORDS = new Set(
   Object.values(ROOM_TYPE_NAMES).flatMap((name) => name.toLowerCase().split(' ')),
 );
