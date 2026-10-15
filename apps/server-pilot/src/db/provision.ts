@@ -24,8 +24,10 @@ const grant = (userId: string, transportId: string, isDefault: boolean) => ({
 export const PROVISION_SPEC = {
   users: [
     { id: 'user-davinci', name: 'Da Vinci Reservations', email: seed.DAVINCI_TRANSPORT_EMAIL },
-    { id: 'user-faith', name: 'Faith', email: seed.FAITH_TRANSPORT_EMAIL },
-    { id: 'user-ayanda', name: 'Ayanda', email: seed.AYANDA_TRANSPORT_EMAIL },
+    { id: 'user-faith', name: 'Faith Khumalo', email: seed.FAITH_TRANSPORT_EMAIL },
+    { id: 'user-ayanda', name: 'Ayanda Dladla', email: seed.AYANDA_TRANSPORT_EMAIL },
+    { id: 'user-epick', name: 'Elizabeth Pick', email: seed.EPICK_TRANSPORT_EMAIL },
+    { id: 'user-kmgidi', name: 'Khanyisile Mgidi', email: seed.KMGIDI_TRANSPORT_EMAIL },
   ],
   transports: [
     hotel(
@@ -46,14 +48,30 @@ export const PROVISION_SPEC = {
       seed.AYANDA_TRANSPORT_DISPLAY_NAME,
       seed.AYANDA_TRANSPORT_ALIASES,
     ),
+    hotel(
+      seed.EPICK_TRANSPORT_ID,
+      seed.EPICK_TRANSPORT_EMAIL,
+      seed.EPICK_TRANSPORT_DISPLAY_NAME,
+      seed.EPICK_TRANSPORT_ALIASES,
+    ),
+    hotel(
+      seed.KMGIDI_TRANSPORT_ID,
+      seed.KMGIDI_TRANSPORT_EMAIL,
+      seed.KMGIDI_TRANSPORT_DISPLAY_NAME,
+      seed.KMGIDI_TRANSPORT_ALIASES,
+    ),
   ],
   grants: [
     grant('user-davinci', seed.DAVINCI_TRANSPORT_ID, true),
     grant('user-faith', seed.FAITH_TRANSPORT_ID, true),
     grant('user-ayanda', seed.AYANDA_TRANSPORT_ID, true),
+    grant('user-epick', seed.EPICK_TRANSPORT_ID, true),
+    grant('user-kmgidi', seed.KMGIDI_TRANSPORT_ID, true),
     grant(seed.NAVA_USER_ID, seed.DAVINCI_TRANSPORT_ID, false),
     grant(seed.NAVA_USER_ID, seed.FAITH_TRANSPORT_ID, false),
     grant(seed.NAVA_USER_ID, seed.AYANDA_TRANSPORT_ID, false),
+    grant(seed.NAVA_USER_ID, seed.EPICK_TRANSPORT_ID, false),
+    grant(seed.NAVA_USER_ID, seed.KMGIDI_TRANSPORT_ID, false),
   ],
 };
 
@@ -137,6 +155,8 @@ function resolveSpecUsers(spec: ProvisionSpec, rows: Array<{ id: string; email: 
     }
     const existing = idMatch ?? emailMatch;
     if (existing) {
+      // Name is not compared: a different spec name on an existing row is not an
+      // error and is never rewritten (planner is insert-only).
       alreadyUsers.push(existing.id);
       effectiveUserId.set(user.id, existing.id);
     } else {
@@ -149,6 +169,7 @@ function resolveSpecUsers(spec: ProvisionSpec, rows: Array<{ id: string; email: 
 }
 
 export async function planProvision(db: DB, spec: ProvisionSpec): Promise<ProvisionPlan> {
+  // id+email only — name is intentionally not selected or compared.
   const userRows = await db.select({ id: userTable.id, email: userTable.email }).from(userTable);
   const transportRows = await db
     .select({

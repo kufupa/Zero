@@ -100,6 +100,30 @@ export const AYANDA_TRANSPORT_OWNER_HEADER = AYANDA_MAILBOX_IDENTITIES[0];
 export const AYANDA_TRANSPORT_DISPLAY_NAME = 'Ayanda Hotel Reservations';
 export const AYANDA_TRANSPORT_ALIASES = AYANDA_MAILBOX_IDENTITIES.slice(1);
 
+/** Elizabeth Pick mailbox + documented domain spellings. Not HMS origin; not TRANSPORT_ALIASES. */
+export const EPICK_MAILBOX_IDENTITIES = [
+  'epick@legacyhotels.co.za',
+  'epick@legacyhotels.com',
+  'epick@legacyhotel.com',
+] as const;
+export const EPICK_TRANSPORT_ID = 'transport-epick';
+export const EPICK_TRANSPORT_EMAIL = EPICK_MAILBOX_IDENTITIES[0];
+export const EPICK_TRANSPORT_OWNER_HEADER = EPICK_MAILBOX_IDENTITIES[0];
+export const EPICK_TRANSPORT_DISPLAY_NAME = 'Elizabeth Pick Reservations';
+export const EPICK_TRANSPORT_ALIASES = EPICK_MAILBOX_IDENTITIES.slice(1);
+
+/** Khanyisile Mgidi mailbox + documented domain spellings. Not HMS origin; not TRANSPORT_ALIASES. */
+export const KMGIDI_MAILBOX_IDENTITIES = [
+  'kmgidi@legacyhotels.co.za',
+  'kmgidi@legacyhotels.com',
+  'kmgidi@legacyhotel.com',
+] as const;
+export const KMGIDI_TRANSPORT_ID = 'transport-kmgidi';
+export const KMGIDI_TRANSPORT_EMAIL = KMGIDI_MAILBOX_IDENTITIES[0];
+export const KMGIDI_TRANSPORT_OWNER_HEADER = KMGIDI_MAILBOX_IDENTITIES[0];
+export const KMGIDI_TRANSPORT_DISPLAY_NAME = 'Khanyisile Mgidi Reservations';
+export const KMGIDI_TRANSPORT_ALIASES = KMGIDI_MAILBOX_IDENTITIES.slice(1);
+
 export type SeedResult = {
   pilotCredentials: Record<string, { password: string }>;
   transportCount: number;
@@ -288,6 +312,20 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
     displayName: AYANDA_TRANSPORT_DISPLAY_NAME,
     aliases: AYANDA_TRANSPORT_ALIASES,
   });
+  await upsertHotelMailboxTransport(db, {
+    id: EPICK_TRANSPORT_ID,
+    email: EPICK_TRANSPORT_EMAIL,
+    ownerHeaderValue: EPICK_TRANSPORT_OWNER_HEADER,
+    displayName: EPICK_TRANSPORT_DISPLAY_NAME,
+    aliases: EPICK_TRANSPORT_ALIASES,
+  });
+  await upsertHotelMailboxTransport(db, {
+    id: KMGIDI_TRANSPORT_ID,
+    email: KMGIDI_TRANSPORT_EMAIL,
+    ownerHeaderValue: KMGIDI_TRANSPORT_OWNER_HEADER,
+    displayName: KMGIDI_TRANSPORT_DISPLAY_NAME,
+    aliases: KMGIDI_TRANSPORT_ALIASES,
+  });
 
   await db
     .insert(mailboxTransport)
@@ -391,6 +429,8 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
   await seedSpamLabel(db, DAVINCI_TRANSPORT_ID);
   await seedSpamLabel(db, FAITH_TRANSPORT_ID);
   await seedSpamLabel(db, AYANDA_TRANSPORT_ID);
+  await seedSpamLabel(db, EPICK_TRANSPORT_ID);
+  await seedSpamLabel(db, KMGIDI_TRANSPORT_ID);
   await seedSpamLabel(db, NAVA_TRANSPORT_ID);
 
   const activeTransportRows = await db

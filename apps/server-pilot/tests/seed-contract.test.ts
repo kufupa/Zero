@@ -44,6 +44,16 @@ import {
   AYANDA_TRANSPORT_EMAIL,
   AYANDA_TRANSPORT_ALIASES,
   AYANDA_TRANSPORT_DISPLAY_NAME,
+  EPICK_MAILBOX_IDENTITIES,
+  EPICK_TRANSPORT_ID,
+  EPICK_TRANSPORT_EMAIL,
+  EPICK_TRANSPORT_ALIASES,
+  EPICK_TRANSPORT_DISPLAY_NAME,
+  KMGIDI_MAILBOX_IDENTITIES,
+  KMGIDI_TRANSPORT_ID,
+  KMGIDI_TRANSPORT_EMAIL,
+  KMGIDI_TRANSPORT_ALIASES,
+  KMGIDI_TRANSPORT_DISPLAY_NAME,
 } from '../src/db/seed';
 import { DAVINCI_MAILBOX_IDENTITIES } from '../src/hms/mailbox-hms-origin-bind';
 import * as pilotSeed from '../src/db/seed';
@@ -108,16 +118,28 @@ describe('seed identity constants', () => {
     expect(AYANDA_TRANSPORT_EMAIL).toBe(AYANDA_MAILBOX_IDENTITIES[0]);
     expect(AYANDA_TRANSPORT_ALIASES).toEqual(AYANDA_MAILBOX_IDENTITIES.slice(1));
     expect(AYANDA_TRANSPORT_DISPLAY_NAME).toBe('Ayanda Hotel Reservations');
+    expect(EPICK_TRANSPORT_ID).toBe('transport-epick');
+    expect(EPICK_TRANSPORT_EMAIL).toBe(EPICK_MAILBOX_IDENTITIES[0]);
+    expect(EPICK_TRANSPORT_ALIASES).toEqual(EPICK_MAILBOX_IDENTITIES.slice(1));
+    expect(EPICK_TRANSPORT_DISPLAY_NAME).toBe('Elizabeth Pick Reservations');
+    expect(KMGIDI_TRANSPORT_ID).toBe('transport-kmgidi');
+    expect(KMGIDI_TRANSPORT_EMAIL).toBe(KMGIDI_MAILBOX_IDENTITIES[0]);
+    expect(KMGIDI_TRANSPORT_ALIASES).toEqual(KMGIDI_MAILBOX_IDENTITIES.slice(1));
+    expect(KMGIDI_TRANSPORT_DISPLAY_NAME).toBe('Khanyisile Mgidi Reservations');
     expect(TRANSPORT_ALIASES).not.toEqual(
       expect.arrayContaining([
         ...FAITH_MAILBOX_IDENTITIES,
         ...AYANDA_MAILBOX_IDENTITIES,
+        ...EPICK_MAILBOX_IDENTITIES,
+        ...KMGIDI_MAILBOX_IDENTITIES,
       ]),
     );
     expect(DAVINCI_MAILBOX_IDENTITIES).not.toEqual(
       expect.arrayContaining([
         ...FAITH_MAILBOX_IDENTITIES,
         ...AYANDA_MAILBOX_IDENTITIES,
+        ...EPICK_MAILBOX_IDENTITIES,
+        ...KMGIDI_MAILBOX_IDENTITIES,
       ]),
     );
   });
@@ -585,6 +607,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           DAVINCI_TRANSPORT_ID,
           FAITH_TRANSPORT_ID,
           AYANDA_TRANSPORT_ID,
+          EPICK_TRANSPORT_ID,
+          KMGIDI_TRANSPORT_ID,
         ]) {
           for (const slug of AI_MANAGED_CATEGORY_SLUGS) {
             expect(categories).toContainEqual({ transportId, slug });
