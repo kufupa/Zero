@@ -13,7 +13,12 @@ import { extractOsressPageData } from './live-guest-stay-driver.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
 import { buildQuoteStayReadData } from './quote-stay-contract.js';
 import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
+import { HRCEN_PROPERTY_CODE } from './property-registry.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
+import {
+  isPropertyReadLockHeld,
+  type PropertyReadLock,
+} from './property-read-lock.js';
 import { createQuoteStayFacade } from './quote-stay-facade.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -403,7 +408,7 @@ function quoteToolResult(input: {
       id: randomUUID(),
       toolId: 'hms_quote_stay',
       toolVersion: '2.0.0',
-      propertyCode: input.propertyCode ?? 'HRCEN',
+      propertyCode: input.propertyCode ?? HRCEN_PROPERTY_CODE,
       observedAt: input.observedAt.toISOString(),
       expiresAt: new Date(input.observedAt.getTime() + 15 * 60_000).toISOString(),
       claimKeys,
@@ -411,7 +416,7 @@ function quoteToolResult(input: {
         canonicalJson({
           candidate: input.candidate,
           data: input.data,
-          propertyCode: input.propertyCode ?? 'HRCEN',
+          propertyCode: input.propertyCode ?? HRCEN_PROPERTY_CODE,
           sourceSeed: input.sourceSeed,
           unresolvedFields: input.unresolvedFields,
         }),
@@ -425,8 +430,9 @@ async function observeQuoteWithinSession(input: {
   candidate: QuoteStayCandidate;
   signal: AbortSignal;
   observedAt: Date;
+  propertyCode: string;
 }): Promise<ToolResult<QuoteStayReadData>> {
-  const { session, candidate, signal, observedAt } = input;
+  const { session, candidate, signal, observedAt, propertyCode } = input;
   assertNotAborted(signal);
   const facade = createQuoteStayFacade(session);
   await facade.navigate();
@@ -435,6 +441,7 @@ async function observeQuoteWithinSession(input: {
   if (session.terminal() || session.violation()) {
     return quoteToolResult({
       candidate,
+      propertyCode,
       status: 'manual_required',
       data: emptyQuoteData(candidate, ['request_policy']),
       unresolvedFields: ['request_policy'],
@@ -449,6 +456,7 @@ async function observeQuoteWithinSession(input: {
   if (!parsed.envelopeRecognized) {
     return quoteToolResult({
       candidate,
+      propertyCode,
       status: 'manual_required',
       data: emptyQuoteData(candidate, parsed.unresolvedFields),
       unresolvedFields: parsed.unresolvedFields,
@@ -468,6 +476,7 @@ async function observeQuoteWithinSession(input: {
   ) {
     return quoteToolResult({
       candidate,
+      propertyCode,
       status: 'unverified_negative',
       data: emptyQuoteData(candidate, ['unverified_negative']),
       unresolvedFields: ['unverified_negative'],
@@ -519,6 +528,7 @@ async function observeQuoteWithinSession(input: {
   });
   return quoteToolResult({
     candidate,
+    propertyCode,
     status: draftReady ? 'ok' : 'manual_required',
     data,
     unresolvedFields: uniqueUnresolved,
@@ -611,13 +621,26 @@ export type LiveQuoteStayDriver = {
 export function createLiveQuoteStayDriver(input: {
   runtime: HmsRuntime;
   transportId: string;
+  propertyCode?: string;
   /** Normal read sessions require the same audited execution seam as find. */
   auditSpecFor?: (input: { candidate: QuoteStayCandidate }) => HmsBrowserAuditSpec | undefined;
+  /** Cross-process credential lock, held through login, reads, and context close. */
+  propertyReadLock?: PropertyReadLock;
 }): LiveQuoteStayDriver {
-  const { runtime, transportId } = input;
+  const { runtime, transportId, propertyCode = HRCEN_PROPERTY_CODE } = input;
 
   return {
     async observeExactQuote(authorization, candidate, signal) {
+      if (input.propertyReadLock && !isPropertyReadLockHeld(input.propertyReadLock.key)) {
+        return input.propertyReadLock.withLock(
+          () =>
+            createLiveQuoteStayDriver({
+              ...input,
+              propertyReadLock: undefined,
+            }).observeExactQuote(authorization, candidate, signal),
+          { signal },
+        );
+      }
       assertNotAborted(signal);
       if (authorization.toolId !== 'hms_quote_stay') {
         throw new HmsRuntimeError(
@@ -647,6 +670,7 @@ export function createLiveQuoteStayDriver(input: {
       if (nights.length === 0) {
         return quoteToolResult({
           candidate,
+          propertyCode,
           status: 'manual_required',
           data: emptyQuoteData(candidate, ['quote_input']),
           unresolvedFields: ['quote_input'],
@@ -671,6 +695,7 @@ export function createLiveQuoteStayDriver(input: {
           candidate,
           signal,
           observedAt,
+          propertyCode,
         });
       } finally {
         await session.close();

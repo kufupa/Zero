@@ -212,6 +212,8 @@ export type HmsSecretLoader = (input: {
 
 export type HmsRuntime = {
   start(signal: AbortSignal): Promise<void>;
+  /** Non-secret login identity used by the per-credential advisory lock. */
+  credentialUsername(): string;
   openReadSession(input: {
     transportId: string;
     signal: AbortSignal;
@@ -254,6 +256,8 @@ export type HmsRuntimeOptions = {
   manifest: RequestPolicyManifest;
   /** Exact Secrets Manager ARN in production; tests use fake ARNs + injectable loader. */
   secretArn: string;
+  /** Non-secret username identity, copied from the validated credential binding. */
+  credentialUsername?: string;
   loadSecret: HmsSecretLoader;
   browserFactory: BrowserFactory;
   executablePath?: string;
@@ -3259,6 +3263,17 @@ function createHmsRuntimeInternal(
   }
 
   return {
+    credentialUsername() {
+      const username = options.credentialUsername ?? cachedSecret?.username;
+      if (!username) {
+        throw new HmsRuntimeError(
+          'credential_identity_unavailable',
+          'HMS credential identity is not loaded',
+        );
+      }
+      return username;
+    },
+
     async start(signal: AbortSignal) {
       assertNotAborted(signal);
       if (closing) {

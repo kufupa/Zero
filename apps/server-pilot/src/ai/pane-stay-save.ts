@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { readInstalledStaffQuoteCredentialUsername } from './staff-quote-installation.js';
 import {
   acquisitionWithin,
   createPostgresPropertyReadLock,
@@ -19,8 +20,8 @@ const execFileAsync = promisify(execFile);
 const CREATE_LAB_STAY = fileURLToPath(
   new URL('../../tooling/playwright-quote/create-lab-stay.mjs', import.meta.url),
 );
-// The hotel this HMS session runs on. The CLI never receives a propertyCode (paneStayRequestBody strips it),
-// so every property lock is keyed on this value, whatever the stay asks for.
+// The hotel bound to this HMS session. The CLI never receives a propertyCode (paneStayRequestBody strips it),
+// so requests cannot claim another property's identity; the lock uses the configured credential/property key mode.
 export const PANE_STAY_PROPERTY_CODE = 'HRCEN';
 // A successful preview can be committed for this long, once, and only for the same stay.
 export const PANE_PREVIEW_TTL_MS = 10 * 60_000;
@@ -311,12 +312,21 @@ export function paneStayTenantId(env: NodeJS.Dict<string> = process.env): string
 }
 
 // Production lock for the session's hotel. Cancel and save share this key, so they serialize with each other.
-export function paneStayPropertyLock(): PaneStayLock | null {
+export function paneStayPropertyLock(username?: string): PaneStayLock | null {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return null;
+  let credentialUsername = username?.trim();
+  if (!credentialUsername) {
+    try {
+      credentialUsername = readInstalledStaffQuoteCredentialUsername();
+    } catch {
+      return null;
+    }
+  }
   return createPostgresPropertyReadLock({
     tenantId: paneStayTenantId(),
     propertyCode: PANE_STAY_PROPERTY_CODE,
+    username: credentialUsername,
     databaseUrl,
   });
 }
@@ -361,7 +371,14 @@ export async function runPaneStay(input: {
       return { status: 'refused', reason: 'pane_save_digest_mismatch' };
     }
   }
-  const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock();
+  let lock = paneStaySaveLoaders.lock;
+  if (!lock) {
+    try {
+      lock = paneStayPropertyLock(readInstalledStaffQuoteCredentialUsername());
+    } catch {
+      return { status: 'refused', reason: 'pane_save_lock_unavailable' };
+    }
+  }
   if (!lock) {
     return { status: 'refused', reason: 'pane_save_lock_unavailable' };
   }

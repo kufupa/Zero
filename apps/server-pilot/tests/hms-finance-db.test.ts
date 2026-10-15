@@ -390,6 +390,7 @@ function makeLowerIoRuntime(
       }
     | undefined;
   const runtime = {
+    credentialUsername: () => 'synthetic-user',
     start: async () => undefined,
     openReadSession: async (input: {
       sessionAuthorization?: {

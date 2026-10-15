@@ -30,6 +30,7 @@ vi.mock('../src/db/client.js', async (importOriginal) => ({
 }));
 vi.mock('../src/ai/staff-quote-installation.js', () => ({
   readInstalledStaffQuoteConfiguration: hoisted.configure,
+  readInstalledStaffQuoteCredentialUsername: () => 'synthetic-user',
   getInstalledStaffQuoteServices: hoisted.services,
 }));
 vi.mock('../src/ai/staff-quote-workflow.js', async (importOriginal) => ({

@@ -20,7 +20,12 @@ import type { ExactReservationCandidate } from './live-read-manifest.js';
 import { extractOsressPageData } from './live-guest-stay-driver.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
 import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
+import { HRCEN_PROPERTY_CODE } from './property-registry.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
+import {
+  isPropertyReadLockHeld,
+  type PropertyReadLock,
+} from './property-read-lock.js';
 import { createFolioReadFacade } from './folio-read-facade.js';
 import { projectFolioBalanceFromDetailDump } from './folio-detail-projection.js';
 import { parseFolioFolTransport } from './folio-fol-parse.js';
@@ -830,6 +835,7 @@ function emptyEvidence(
   observedAt: string,
   sourceSeed: string,
   extras?: { artifactRefs?: readonly string[]; scopeVerified?: boolean },
+  propertyCode = HRCEN_PROPERTY_CODE,
 ): Extract<ToolResult<FolioReadData>['evidence'], { kind: 'hms' }> {
   const artifactRefs = extras?.artifactRefs ? [...new Set(extras.artifactRefs)] : [];
   return {
@@ -837,7 +843,7 @@ function emptyEvidence(
     id: randomUUID(),
     toolId: 'hms_read_folio',
     toolVersion: '1.0.0',
-    propertyCode: 'HRCEN',
+    propertyCode,
     observedAt,
     expiresAt: new Date(Date.parse(observedAt) + FOLIO_READ_MAX_SOURCE_AGE_MS).toISOString(),
     claimKeys: [],
@@ -971,6 +977,7 @@ export function mergeFolioEvidence(
     observedAt,
     JSON.stringify(steps.map((s) => s.evidenceId)),
     binding ? { scopeVerified: false } : undefined,
+    binding?.propertyCode ?? HRCEN_PROPERTY_CODE,
   );
 
   if (!trustedDisclosure) {
@@ -1288,6 +1295,8 @@ export type LiveFolioReadDriverInput = {
   transportId: string;
   expectedConfirmationToken: string;
   expectedPropertyCode?: string;
+  /** Cross-process credential lock, held through login, reads, and context close. */
+  propertyReadLock?: PropertyReadLock;
   auditSpecFor?: (input: {
     branchId: 'folio_summary' | 'deposit_ledger_summary';
   }) => HmsBrowserAuditSpec | undefined;
@@ -1302,10 +1311,25 @@ export type LiveFolioReadDriverInput = {
 };
 
 export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): LiveFolioReadDriver {
-  const { runtime, transportId, expectedConfirmationToken, expectedPropertyCode = 'HRCEN' } = input;
+  const {
+    runtime,
+    transportId,
+    expectedConfirmationToken,
+    expectedPropertyCode = HRCEN_PROPERTY_CODE,
+  } = input;
 
   return {
     async observeFolioBalance(authorization, child, signal) {
+      if (input.propertyReadLock && !isPropertyReadLockHeld(input.propertyReadLock.key)) {
+        return input.propertyReadLock.withLock(
+          () =>
+            createLiveFolioReadDriver({
+              ...input,
+              propertyReadLock: undefined,
+            }).observeFolioBalance(authorization, child, signal),
+          { signal },
+        );
+      }
       assertNotAborted(signal);
       assertFolioAuth(
         authorization,
@@ -1515,6 +1539,16 @@ export function createLiveFolioReadDriver(input: LiveFolioReadDriverInput): Live
     },
 
     async observeDepositSummary(authorization, child, signal) {
+      if (input.propertyReadLock && !isPropertyReadLockHeld(input.propertyReadLock.key)) {
+        return input.propertyReadLock.withLock(
+          () =>
+            createLiveFolioReadDriver({
+              ...input,
+              propertyReadLock: undefined,
+            }).observeDepositSummary(authorization, child, signal),
+          { signal },
+        );
+      }
       assertNotAborted(signal);
       assertFolioAuth(
         authorization,

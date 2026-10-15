@@ -214,7 +214,7 @@ describe('U15 normal admission and queue boundary', () => {
         cutoverComplete: false,
       };
       const factory = createLiveHmsCandidateSessionFactory({
-        runtime: {} as never,
+        runtime: { credentialUsername: () => 'synthetic-user' } as never,
         activeReadState: activeReadState as never,
       });
       const session = await factory({

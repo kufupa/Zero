@@ -100,6 +100,16 @@ describe('live event list summary (blocked surface)', () => {
     expect(JSON.stringify(result)).not.toContain('notes');
   });
 
+  it('binds blocked evidence to the explicit property', async () => {
+    const result = await createLiveEventReadDriver('DVIN').observeEventListSummary(
+      auth(),
+      candidate(),
+      new AbortController().signal,
+    );
+
+    expect(result.evidence?.propertyCode).toBe('DVIN');
+  });
+
   it('rejects stale / cross-tool / unknown branch / hash mismatch', async () => {
     const signal = new AbortController().signal;
     await expect(

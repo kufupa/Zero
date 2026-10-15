@@ -45,7 +45,11 @@ describe('advisory lock key mapping (pg_locks coordinates)', () => {
       ['synthetic-hotel', 'HRCEN'],
       ['tenant-other', 'XXPRP'],
     ] as const) {
-      const key = propertyReadLockKey(tenant, property);
+      const key = propertyReadLockKey({
+        tenantId: tenant,
+        propertyCode: property,
+        username: 'synthetic-user',
+      });
       const { classid, objid } = advisoryLockCoordinates(key);
       const rebuilt = BigInt.asIntN(64, (BigInt(classid) << 32n) | BigInt(objid));
       expect(rebuilt.toString()).toBe(key);

@@ -35,7 +35,7 @@ export type QuoteRunRecord = {
   generationId: string;
   transportId: string;
   userId: string;
-  /** Decimal int32 from propertyReadLockKey(tenantId, propertyCode). */
+  /** Decimal int32 from the configured propertyReadLockKey identity (per-credential by default). */
   lockKey: string;
   startedAtMs: number;
   /** First moment this run held the property lock; undefined while still waiting. */

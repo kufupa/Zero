@@ -17,6 +17,7 @@ import { eq } from 'drizzle-orm';
 const installation = vi.hoisted(() => ({ configure: vi.fn(), services: vi.fn() }));
 vi.mock('../src/ai/staff-quote-installation.js', () => ({
   readInstalledStaffQuoteConfiguration: installation.configure,
+  readInstalledStaffQuoteCredentialUsername: () => 'synthetic-user',
   getInstalledStaffQuoteServices: installation.services,
 }));
 

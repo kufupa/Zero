@@ -13,7 +13,6 @@ import {
 } from '../src/hms/sent-email-audit-contract.js';
 import {
   createLiveDocumentListDriver,
-  observeTaxInvoiceMetadata,
   TAX_INVOICE_SURFACE_BLOCKER,
 } from '../src/hms/live-document-list-driver.js';
 import {
@@ -519,6 +518,7 @@ describe('live observer binding + denied actions', () => {
       transportId: 't1',
       expectedRecipient: RECIPIENT,
       expectedAccountToken: ACCOUNT,
+      propertyCode: 'DVIN',
     });
     const a = auth({
       toolId: 'hms_list_documents',
@@ -527,9 +527,11 @@ describe('live observer binding + denied actions', () => {
     const c = child({
       toolId: 'hms_list_documents',
       requestBranchId: 'sent_email_documents',
+      propertyCode: 'DVIN',
     });
     const docs = await driver.observeSentDocumentMetadata(a, c, new AbortController().signal);
     expect(docs.status).toBe('ok');
+    expect(docs.evidence?.propertyCode).toBe('DVIN');
     expect(docs.data.sourceClass).toBe('sent_email_attachment');
 
     const taxAuth = auth({
@@ -540,8 +542,10 @@ describe('live observer binding + denied actions', () => {
     const taxChild = child({
       toolId: 'hms_list_documents',
       requestBranchId: 'tax_invoice_documents',
+      propertyCode: 'DVIN',
     });
-    const tax = await observeTaxInvoiceMetadata(taxAuth, taxChild, new AbortController().signal);
+    const tax = await driver.observeTaxInvoiceMetadata(taxAuth, taxChild, new AbortController().signal);
+    expect(tax.evidence?.propertyCode).toBe('DVIN');
     expect(tax.status).toBe('manual_required');
     expect(tax.unresolvedFields).toContain(TAX_INVOICE_SURFACE_BLOCKER);
   });

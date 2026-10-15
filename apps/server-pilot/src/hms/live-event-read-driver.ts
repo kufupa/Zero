@@ -12,6 +12,7 @@ import {
 } from './event-read-contract.js';
 import type { EventReadCandidate } from './event-read-candidate.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
+import { HRCEN_PROPERTY_CODE } from './property-registry.js';
 import { HmsRuntimeError } from './runtime.js';
 
 export { EVENT_READ_SURFACE_BLOCKER };
@@ -68,6 +69,7 @@ export async function observeEventListSummary(
   authorization: HmsSessionAuthorization,
   candidate: EventReadCandidate,
   signal: AbortSignal,
+  propertyCode = HRCEN_PROPERTY_CODE,
 ): Promise<ToolResult<EventReadData>> {
   if (signal.aborted) {
     const err = new Error('event observe aborted');
@@ -86,7 +88,7 @@ export async function observeEventListSummary(
       id: randomUUID(),
       toolId: 'hms_event_read',
       toolVersion: '1.0.0',
-      propertyCode: 'HRCEN',
+      propertyCode,
       observedAt,
       expiresAt: new Date(Date.parse(observedAt) + 60 * 60 * 1000).toISOString(),
       claimKeys: [],
@@ -95,8 +97,13 @@ export async function observeEventListSummary(
   };
 }
 
-export function createLiveEventReadDriver(): {
+export function createLiveEventReadDriver(
+  propertyCode = HRCEN_PROPERTY_CODE,
+): {
   observeEventListSummary: typeof observeEventListSummary;
 } {
-  return { observeEventListSummary };
+  return {
+    observeEventListSummary: (authorization, candidate, signal) =>
+      observeEventListSummary(authorization, candidate, signal, propertyCode),
+  };
 }

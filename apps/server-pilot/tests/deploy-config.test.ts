@@ -5038,6 +5038,7 @@ if (!realMailGate) {
       expect(script).toMatch(/NAVA_BUILD_COMMIT/);
       expect(script).toMatch(/HMS_READ_ROLE_PROOF_PATH/);
       expect(script).toMatch(/HMS_EXPECTED_PROPERTY_CODE|HRCEN/);
+      expect(script).toMatch(/HMS_PROPERTY_READ_LOCK_MODE.*per-credential/);
       expect(script).toMatch(/PLAYWRIGHT_BROWSERS_PATH.*\/opt\/nava\/ms-playwright/);
       const pm2 = readFileSync(join(here, '..', 'deploy', 'pm2.config.cjs'), 'utf8');
       expect(pm2).toMatch(/PLAYWRIGHT_BROWSERS_PATH.*\/opt\/nava\/ms-playwright/s);

@@ -44,6 +44,8 @@ const configurationSchema = z
         cdpUrl: z.string().url(),
         browserOwnership: z.literal('borrowed'),
         propertyCode: z.string().min(1),
+        /** Non-secret login identity; older installations derive it from the credential file. */
+        username: z.string().trim().min(1).optional(),
         secretPath: z.string().min(1),
       })
       .strict(),
@@ -132,6 +134,27 @@ export function readInstalledStaffQuoteConfiguration(): StaffQuoteInstallationCo
   const path = process.env.RESERVATIONIST_STAFF_QUOTE_CONFIGURATION;
   if (!path) throw new Error('staff_quote_installation_unavailable');
   return validateConfiguration(JSON.parse(checkedPrivateFile(path, 1024 * 1024).toString()));
+}
+
+/** Returns only the login name needed for a hashed lock key; never returns or logs credential material. */
+export function readInstalledStaffQuoteCredentialUsername(
+  configuration: StaffQuoteInstallationConfiguration = readInstalledStaffQuoteConfiguration(),
+): string {
+  const configuredUsername = configuration.owner.username?.trim();
+  if (configuredUsername) return configuredUsername;
+  try {
+    const parsed: unknown = JSON.parse(
+      checkedPrivateFile(configuration.owner.secretPath, 1024 * 1024).toString(),
+    );
+    const username =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as { username?: unknown }).username
+        : undefined;
+    if (typeof username !== 'string' || !username.trim()) throw new Error('missing');
+    return username.trim();
+  } catch {
+    throw new Error('staff_quote_credential_identity_unavailable');
+  }
 }
 
 // The same installed, networkless Poppler sandbox used by the original source owner.

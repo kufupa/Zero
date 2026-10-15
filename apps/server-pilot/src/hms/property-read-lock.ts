@@ -1,10 +1,11 @@
 /**
- * Property-scoped serialization for PMS reads.
+ * Credential-aware serialization for PMS reads.
  *
  * The connection is deliberately supplied by the caller.  An advisory lock
  * is only useful when it is held on the same dedicated connection as the
  * read, so this module does not reach into a shared pool or cache one.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import postgres from 'postgres';
 
@@ -14,6 +15,10 @@ export interface PropertyReadConnection {
 }
 
 const activePropertyReadConnections = new WeakMap<PropertyReadConnection, string>();
+const propertyReadLockContext = new AsyncLocalStorage<{
+  connection: PropertyReadConnection;
+  key: string;
+}>();
 
 /** Internal ownership proof for the connection currently inside withLock. */
 export function isPropertyReadConnectionHeld(
@@ -23,9 +28,30 @@ export function isPropertyReadConnectionHeld(
   return activePropertyReadConnections.get(connection) === key;
 }
 
+/** True inside any same-key withLock callback, including across lock instances. */
+export function isPropertyReadLockHeld(key: string): boolean {
+  const current = propertyReadLockContext.getStore();
+  return Boolean(current && current.key === key && isPropertyReadConnectionHeld(current.connection, key));
+}
+
+export type PropertyReadLockMode = 'per-property' | 'per-credential';
+
+export function resolvePropertyReadLockMode(
+  raw: string | undefined = process.env.HMS_PROPERTY_READ_LOCK_MODE,
+): PropertyReadLockMode {
+  const value = raw?.trim() || 'per-credential';
+  if (value !== 'per-property' && value !== 'per-credential') {
+    throw new Error('property_read_lock_mode_invalid');
+  }
+  return value;
+}
+
 export interface PropertyReadLockOptions {
   tenantId: string;
   propertyCode: string;
+  /** Login identity; required by default per-credential serialization. */
+  username?: string;
+  mode?: PropertyReadLockMode;
   connectionFactory: () => Promise<PropertyReadConnection>;
 }
 
@@ -73,9 +99,24 @@ export function isPropertyReadLockDeadline(error: unknown): boolean {
   return false;
 }
 
-export function propertyReadLockKey(tenantId: string, propertyCode: string): string {
-  const digest = createHash('sha256').update(`${tenantId}\0${propertyCode}`, 'utf8').digest();
-  // Keep the decimal representation explicit in SQL and in receipts.  A
+export function propertyReadLockKey(input: {
+  tenantId: string;
+  propertyCode: string;
+  username?: string;
+  mode?: PropertyReadLockMode;
+}): string {
+  const mode = input.mode ?? resolvePropertyReadLockMode();
+  let identity: string;
+  if (mode === 'per-credential') {
+    const username = input.username?.trim().toLowerCase();
+    if (!username) throw new Error('property_read_lock_username_required');
+    identity = `credential\0${username}`;
+  } else {
+    // Preserve the pre-mode property key so explicit legacy-mode instances coordinate.
+    identity = `${input.tenantId}\0${input.propertyCode}`;
+  }
+  const digest = createHash('sha256').update(identity, 'utf8').digest();
+  // Keep the decimal representation explicit in SQL and in receipts. A
   // signed 32-bit value is accepted by PostgreSQL's advisory-lock overload.
   return String(digest.readInt32BE(0));
 }
@@ -242,7 +283,8 @@ async function acquireAdvisoryLock(
 }
 
 export function createPropertyReadLock(options: PropertyReadLockOptions) {
-  const key = propertyReadLockKey(options.tenantId, options.propertyCode);
+  const mode = options.mode ?? resolvePropertyReadLockMode();
+  const key = propertyReadLockKey({ ...options, mode });
 
   return {
     key,
@@ -250,6 +292,10 @@ export function createPropertyReadLock(options: PropertyReadLockOptions) {
       callback: (connection: PropertyReadConnection) => Promise<T>,
       acquisitionOptions: PropertyReadLockAcquisitionOptions = {},
     ): Promise<T> {
+      const current = propertyReadLockContext.getStore();
+      if (current?.key === key && isPropertyReadConnectionHeld(current.connection, key)) {
+        return callback(current.connection);
+      }
       let connection: PropertyReadConnection | undefined;
       try {
         connection = await withAcquisitionBounds(
@@ -276,7 +322,10 @@ export function createPropertyReadLock(options: PropertyReadLockOptions) {
       try {
         activePropertyReadConnections.set(acquiredConnection, key);
         try {
-          result = await callback(acquiredConnection);
+          result = await propertyReadLockContext.run(
+            { connection: acquiredConnection, key },
+            () => callback(acquiredConnection),
+          );
         } catch (cause) {
           callbackError = cause;
         }
@@ -330,11 +379,15 @@ export type PropertyReadLock = ReturnType<typeof createPropertyReadLock>;
 export function createPostgresPropertyReadLock(input: {
   tenantId: string;
   propertyCode: string;
+  username?: string;
+  mode?: PropertyReadLockMode;
   databaseUrl: string;
 }) {
   return createPropertyReadLock({
     tenantId: input.tenantId,
     propertyCode: input.propertyCode,
+    username: input.username,
+    mode: input.mode,
     connectionFactory: async () => {
       const client = postgres(input.databaseUrl, {
         max: 1,

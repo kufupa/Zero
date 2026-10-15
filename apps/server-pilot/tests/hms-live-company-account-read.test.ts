@@ -78,6 +78,16 @@ describe('live company account read (blocked surface)', () => {
     expect(JSON.stringify(result)).not.toContain('contactEmail');
   });
 
+  it('binds evidence and child validation to the explicit property', async () => {
+    const result = await createLiveCompanyAccountReadDriver('DVIN').observeReservationLinkedBilling(
+      auth(),
+      child({ propertyCode: 'DVIN' }),
+      new AbortController().signal,
+    );
+
+    expect(result.evidence?.propertyCode).toBe('DVIN');
+  });
+
   it('rejects stale / cross-tool / unknown branch / third-party property', async () => {
     const signal = new AbortController().signal;
     await expect(

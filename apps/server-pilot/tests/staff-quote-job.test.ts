@@ -52,6 +52,7 @@ vi.mock('../src/hms/property-queue-state.js', async (importOriginal) => ({
 
 vi.mock('../src/ai/staff-quote-installation.js', () => ({
   readInstalledStaffQuoteConfiguration: quoteRunMocks.readConfiguration,
+  readInstalledStaffQuoteCredentialUsername: () => 'synthetic-user',
   getInstalledStaffQuoteServices: quoteRunMocks.getServices,
 }));
 

@@ -151,6 +151,7 @@ function runtimeFixture(options: { receiptExpiresAt?: string } = {}) {
     return session;
   });
   const runtime = {
+    credentialUsername: () => 'synthetic-user',
     openReadSession,
   } as unknown as HmsRuntime;
   return { runtime, posts, session };

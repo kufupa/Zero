@@ -13,12 +13,30 @@ import { buildLiveGroupBlockListManifest } from '../src/hms/live-read-manifest.j
 import type { HmsSessionAuthorization } from '../src/hms/release-kernel.js';
 import { HmsRuntimeError } from '../src/hms/runtime.js';
 import { READ_TOOLS } from '../src/hms/read-tools.js';
+import {
+  createPropertyReadLock,
+  isPropertyReadLockHeld,
+} from '../src/hms/property-read-lock.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
+
+function testPropertyReadLock() {
+  return createPropertyReadLock({
+    tenantId: 'HMS_LEGACY',
+    propertyCode: 'HRCEN',
+    username: 'synthetic-user',
+    connectionFactory: async () => ({
+      query: vi.fn(async (sql: string) =>
+        sql.includes('pg_try_advisory_lock') ? [{ acquired: true }] : [{ released: true }],
+      ),
+      close: vi.fn(async () => undefined),
+    }),
+  });
+}
 
 function auth(overrides: Partial<HmsSessionAuthorization> = {}): HmsSessionAuthorization {
   const manifest = buildLiveGroupBlockListManifest(ORIGIN);
@@ -337,8 +355,11 @@ describe('live group block aggregate (blocked counts)', () => {
       trace: { sha256: 'a'.repeat(64), bytes: 1 },
       video: null,
     } as never;
+    const propertyReadLock = testPropertyReadLock();
     const runtime = {
-      openReadSession: vi.fn(async () => ({
+      openReadSession: vi.fn(async () => {
+        expect(isPropertyReadLockHeld(propertyReadLock.key)).toBe(true);
+        return {
         origin: ORIGIN,
         page: {
           postForm,
@@ -349,12 +370,14 @@ describe('live group block aggregate (blocked counts)', () => {
         violation: () => null,
         close,
         lastReceipt: () => receipt,
-      })),
+        };
+      }),
     };
     const result = await createLiveGroupBlockDriver({
       runtime: runtime as never,
       transportId: 'transport-u15',
       auditSpec,
+      propertyReadLock,
     }).observeGroupBlockContext(auth(), candidate(), new AbortController().signal);
 
     expect(result.status).toBe('partial');
@@ -411,6 +434,16 @@ describe('live group block aggregate (blocked counts)', () => {
     expect(JSON.stringify(result)).not.toContain('rooming');
   });
 
+  it('binds blocked aggregate evidence to the explicit property', async () => {
+    const result = await createLiveGroupBlockDriver({ propertyCode: 'DVIN' }).observeGroupBlockAggregate(
+      auth(),
+      candidate(),
+      new AbortController().signal,
+    );
+
+    expect(result.evidence?.propertyCode).toBe('DVIN');
+  });
+
   it.each(receiptMutations)('rejects a finalized receipt with %s', async ({ mutate }) => {
     const transport = JSON.stringify({
       pageData: {
@@ -437,6 +470,7 @@ describe('live group block aggregate (blocked counts)', () => {
       runtime: groupRuntimeForReceipt(transport, receipt) as never,
       transportId: 'transport-u15',
       auditSpec,
+      propertyReadLock: testPropertyReadLock(),
     }).observeGroupBlockContext(auth(), candidate(), new AbortController().signal);
 
     expect(result.status).toBe('manual_required');

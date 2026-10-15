@@ -1283,11 +1283,18 @@ async function runCanary(): Promise<void> {
   const runtime = await createProductionHmsRuntime(hmsConfig, {
     sourceRevision: commit,
   });
+  const propertyReadLock = createPostgresPropertyReadLock({
+    tenantId: hmsConfig.expectedTenant,
+    propertyCode: hmsConfig.expectedPropertyCode,
+    username: runtime.credentialUsername(),
+    databaseUrl: env.DATABASE_URL,
+  });
   try {
     await runtime.start(signal);
     const driver = createLiveGuestStayDriver({
       runtime,
       transportId: hmsConfig.expectedTransportId,
+      propertyReadLock,
       auditSpecFor: ({ inputClass }) => ({
         operationId: randomUUID(),
         toolId: 'hms_find_reservation',
@@ -1995,18 +2002,19 @@ async function runProofVideo(): Promise<PhaseAProofEvidence> {
   const artifactRoot =
     process.env.HMS_BROWSER_ARTIFACT_ROOT?.trim() ||
     '/opt/nava/shared/hms-browser-artifacts';
-  const propertyReadLock = createPostgresPropertyReadLock({
-    tenantId: hmsConfig.expectedTenant,
-    propertyCode: hmsConfig.expectedPropertyCode,
-    databaseUrl: env.DATABASE_URL,
-  });
-  assertPhaseAProofPropertyReadLock(propertyReadLock);
   const proofDb = getDb();
   const runtimeBinding = await createPhaseAProofRuntime(hmsConfig, {
     sourceRevision: commit,
     artifactRoot,
   });
   const runtime = runtimeBinding.runtime;
+  const propertyReadLock = createPostgresPropertyReadLock({
+    tenantId: hmsConfig.expectedTenant,
+    propertyCode: hmsConfig.expectedPropertyCode,
+    username: runtime.credentialUsername(),
+    databaseUrl: env.DATABASE_URL,
+  });
+  assertPhaseAProofPropertyReadLock(propertyReadLock);
   const proofAuthorizationExpiresAt = (): string => {
     const roleExpiry = Date.parse(role.expiresAt);
     const budgetExpiry = Date.now() + Math.max(1, hmsConfig.runDeadlineMs);
@@ -2429,12 +2437,6 @@ async function runDetailDump(): Promise<void> {
   if (anchors.length === 0) emitWait('NO_EXACT_CANDIDATE');
   const proofUserId = process.env.HMS_SHADOW_SERVICE_USER_ID?.trim();
   if (!proofUserId) emitFail('POLICY_BLOCK');
-  const propertyReadLock = createPostgresPropertyReadLock({
-    tenantId: hmsConfig.expectedTenant,
-    propertyCode: hmsConfig.expectedPropertyCode,
-    databaseUrl: env.DATABASE_URL,
-  });
-  assertPhaseAProofPropertyReadLock(propertyReadLock);
   const proofDb = getDb();
   const runtimeBinding = await createPhaseAProofRuntime(hmsConfig, {
     sourceRevision: commit,
@@ -2443,6 +2445,13 @@ async function runDetailDump(): Promise<void> {
       '/opt/nava/shared/hms-browser-artifacts',
   });
   const runtime = runtimeBinding.runtime;
+  const propertyReadLock = createPostgresPropertyReadLock({
+    tenantId: hmsConfig.expectedTenant,
+    propertyCode: hmsConfig.expectedPropertyCode,
+    username: runtime.credentialUsername(),
+    databaseUrl: env.DATABASE_URL,
+  });
+  assertPhaseAProofPropertyReadLock(propertyReadLock);
   const { buildExactOsressSearchThenDetailManifest } = await import(
     '../hms/live-read-manifest.js'
   );

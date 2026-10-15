@@ -19,11 +19,16 @@ import {
   LIVE_SENT_EMAIL_OPEN_PATH,
 } from './live-read-manifest.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
+import { HRCEN_PROPERTY_CODE } from './property-registry.js';
 import {
   HmsRuntimeError,
   type HmsPage,
   type HmsRuntime,
 } from './runtime.js';
+import {
+  isPropertyReadLockHeld,
+  type PropertyReadLock,
+} from './property-read-lock.js';
 import {
   SENT_EMAIL_AUDIT_MAX_BYTES,
   SENT_EMAIL_AUDIT_MAX_DURATION_MS,
@@ -346,6 +351,7 @@ export function minimizeCorrelatedSentEmailRows(input: {
 /** Map minimized rows → document metadata (sent attachment source class). */
 export function toSentDocumentMetadata(
   rows: MinimizedSentEmailRows,
+  propertyCode = HRCEN_PROPERTY_CODE,
 ): ToolResult<DocumentListReadData> {
   const start = Date.now();
   const observedAt = rows.observedAt;
@@ -361,6 +367,7 @@ export function toSentDocumentMetadata(
       unresolvedFields: ['document_list_bounds'],
       observedAt,
       sourceSeed: 'doc-bounds',
+      propertyCode,
     });
   }
 
@@ -394,6 +401,7 @@ export function toSentDocumentMetadata(
     unresolvedFields: data.rows.length === 0 ? ['documents'] : [],
     observedAt,
     sourceSeed: `doc-sent:${data.rows.length}`,
+    propertyCode,
     draftReady: data.rows.length > 0,
   });
 }
@@ -401,6 +409,7 @@ export function toSentDocumentMetadata(
 /** Map minimized rows → sent-email audit claim data. */
 export function toSentEmailAudit(
   rows: MinimizedSentEmailRows,
+  propertyCode = HRCEN_PROPERTY_CODE,
 ): ToolResult<SentEmailAuditReadData> {
   if (
     rows.durationMs > SENT_EMAIL_AUDIT_MAX_DURATION_MS ||
@@ -413,6 +422,7 @@ export function toSentEmailAudit(
       unresolvedFields: ['sent_email_bounds'],
       observedAt: rows.observedAt,
       sourceSeed: 'audit-bounds',
+      propertyCode,
     });
   }
 
@@ -440,6 +450,7 @@ export function toSentEmailAudit(
     unresolvedFields: data.rows.length === 0 ? ['sent_email'] : [],
     observedAt: rows.observedAt,
     sourceSeed: `audit-sent:${data.rows.length}`,
+    propertyCode,
     draftReady: data.rows.length > 0,
   });
 }
@@ -477,6 +488,7 @@ function documentToolResult(input: {
   unresolvedFields: string[];
   observedAt: string;
   sourceSeed: string;
+  propertyCode: string;
   draftReady?: boolean;
 }): ToolResult<DocumentListReadData> {
   return {
@@ -489,7 +501,7 @@ function documentToolResult(input: {
       id: randomUUID(),
       toolId: 'hms_list_documents',
       toolVersion: '1.0.0',
-      propertyCode: 'HRCEN',
+      propertyCode: input.propertyCode,
       observedAt: input.observedAt,
       expiresAt: new Date(
         Date.parse(input.observedAt) + 60 * 60 * 1000,
@@ -506,6 +518,7 @@ function auditToolResult(input: {
   unresolvedFields: string[];
   observedAt: string;
   sourceSeed: string;
+  propertyCode: string;
   draftReady?: boolean;
 }): ToolResult<SentEmailAuditReadData> {
   return {
@@ -518,7 +531,7 @@ function auditToolResult(input: {
       id: randomUUID(),
       toolId: 'hms_sent_email_audit',
       toolVersion: '1.0.0',
-      propertyCode: 'HRCEN',
+      propertyCode: input.propertyCode,
       observedAt: input.observedAt,
       expiresAt: new Date(
         Date.parse(input.observedAt) + 60 * 60 * 1000,
@@ -540,10 +553,13 @@ export type LiveSentEmailObserver = {
 export type LiveSentEmailObserverInput = {
   runtime: HmsRuntime;
   transportId: string;
+  propertyCode?: string;
   /** Exact recipient for server-side correlation; never returned. */
   expectedRecipient: string;
   /** Account/confirmation token bound to parent scopeHash. */
   expectedAccountToken: string;
+  /** Cross-process credential lock held through login, reads, and context close. */
+  propertyReadLock?: PropertyReadLock;
   scopeClass?: 'reservation' | 'account';
 };
 
@@ -552,6 +568,7 @@ function assertSentEmailAuth(
   child: ReadCandidateChild,
   allowedToolIds: ReadonlySet<string>,
   allowedBranches: ReadonlySet<string>,
+  propertyCode: string,
 ): void {
   if (!allowedToolIds.has(authorization.toolId)) {
     throw new HmsRuntimeError(
@@ -589,7 +606,7 @@ function assertSentEmailAuth(
   if (Date.parse(child.expiresAt) <= Date.now()) {
     throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'candidate child expired');
   }
-  if (child.propertyCode !== 'HRCEN') {
+  if (child.propertyCode !== propertyCode) {
     throw new HmsRuntimeError(
       'ROLE_SCOPE_INVALID',
       'child propertyCode denied',
@@ -605,17 +622,29 @@ export function createLiveSentEmailObserver(
     transportId,
     expectedRecipient,
     expectedAccountToken,
+    propertyCode = HRCEN_PROPERTY_CODE,
     scopeClass = 'reservation',
   } = input;
 
   return {
     async observeSentEmailRows(authorization, child, signal) {
+      if (input.propertyReadLock && !isPropertyReadLockHeld(input.propertyReadLock.key)) {
+        return input.propertyReadLock.withLock(
+          () =>
+            createLiveSentEmailObserver({
+              ...input,
+              propertyReadLock: undefined,
+            }).observeSentEmailRows(authorization, child, signal),
+          { signal },
+        );
+      }
       assertNotAborted(signal);
       assertSentEmailAuth(
         authorization,
         child,
         new Set(['hms_sent_email_audit', 'hms_list_documents']),
         new Set(['sent_email_audit', 'sent_email_documents']),
+        propertyCode,
       );
 
       const observedAt = new Date();

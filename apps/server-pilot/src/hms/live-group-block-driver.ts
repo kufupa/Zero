@@ -18,7 +18,12 @@ import { readResultSchema, unknownFact } from './read-service-contracts.js';
 import { createGroupBlockReadFacade } from './group-block-read-facade.js';
 import type { GroupReadCandidate } from './group-read-candidate.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
+import { HRCEN_PROPERTY_CODE } from './property-registry.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
+import {
+  isPropertyReadLockHeld,
+  type PropertyReadLock,
+} from './property-read-lock.js';
 import type { ReadResult } from './read-service-contracts.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -276,6 +281,7 @@ export async function observeGroupBlockAggregate(
   authorization: HmsSessionAuthorization,
   candidate: GroupReadCandidate,
   signal: AbortSignal,
+  propertyCode = HRCEN_PROPERTY_CODE,
 ): Promise<ToolResult<GroupBlockReadData>> {
   if (signal.aborted) {
     const err = new Error('group observe aborted');
@@ -294,7 +300,7 @@ export async function observeGroupBlockAggregate(
       id: randomUUID(),
       toolId: 'hms_group_block_read',
       toolVersion: '1.0.0',
-      propertyCode: 'HRCEN',
+      propertyCode,
       observedAt,
       expiresAt: new Date(Date.parse(observedAt) + 60 * 60 * 1000).toISOString(),
       claimKeys: [],
@@ -463,6 +469,9 @@ export type LiveGroupBlockDriverOptions = {
   runtime?: HmsRuntime;
   transportId?: string;
   auditSpec?: HmsBrowserAuditSpec;
+  propertyCode?: string;
+  /** Cross-process credential lock held from before session open through close. */
+  propertyReadLock?: PropertyReadLock;
 };
 
 function finalizedGroupReceipt(
@@ -560,7 +569,26 @@ export async function observeGroupBlockContext(
   const expiresAt = new Date(
     Math.min(Date.parse(authorization.expiresAt), observedAt.getTime() + 5 * 60_000),
   );
-  if (!options.runtime || !options.transportId) {
+  if (
+    options.propertyReadLock &&
+    !isPropertyReadLockHeld(options.propertyReadLock.key)
+  ) {
+    try {
+      return await options.propertyReadLock.withLock(
+        () => observeGroupBlockContext(options, authorization, candidate, signal),
+        { signal },
+      );
+    } catch {
+      return groupContextUnavailable({
+        groupRef: candidate.exactGroupReference,
+        reasonCode: 'SOURCE_UNAVAILABLE',
+        observedAt,
+        expiresAt,
+        manifestSha256: authorization.manifestSha256,
+      });
+    }
+  }
+  if (!options.runtime || !options.transportId || !options.propertyReadLock) {
     return groupContextUnavailable({
       groupRef: candidate.exactGroupReference,
       reasonCode: 'SOURCE_UNAVAILABLE',
@@ -749,8 +777,10 @@ export function createLiveGroupBlockDriver(options: LiveGroupBlockDriverOptions 
     signal: AbortSignal,
   ) => Promise<ReadResult<GroupBlockContextData>>;
 } {
+  const propertyCode = options.propertyCode ?? HRCEN_PROPERTY_CODE;
   return {
-    observeGroupBlockAggregate,
+    observeGroupBlockAggregate: (authorization, candidate, signal) =>
+      observeGroupBlockAggregate(authorization, candidate, signal, propertyCode),
     observeGroupBlockContext: (authorization, candidate, signal) =>
       observeGroupBlockContext(options, authorization, candidate, signal),
   };

@@ -1090,6 +1090,14 @@ describe('live folio driver binding + denied actions', () => {
     const merged = mergeFolioEvidence([balance], disclosure, ['balance'], binding);
     expect(merged.status).toBe('ok');
     expect(merged.evidence.kind).toBe('hms');
+    const otherProperty = mergeFolioEvidence([balance], disclosure, ['balance'], {
+      ...binding,
+      propertyCode: 'DVIN',
+    });
+    expect(otherProperty.evidence.kind).toBe('hms');
+    if (otherProperty.evidence.kind === 'hms') {
+      expect(otherProperty.evidence.propertyCode).toBe('DVIN');
+    }
     if (merged.evidence.kind === 'hms') {
       expect(merged.evidence.artifactRef).toBe('balance-artifact');
       expect(merged.evidence.artifactRefs).toEqual(['balance-artifact']);

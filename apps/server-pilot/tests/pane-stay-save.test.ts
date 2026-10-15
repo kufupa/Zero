@@ -203,9 +203,22 @@ describe('pane stay save guards', () => {
     vi.stubEnv('DATABASE_URL', 'postgres://user:secret@127.0.0.1:5432/zero_test');
     vi.stubEnv('PANE_STAY_TENANT_ID', '');
     vi.stubEnv('HMS_EXPECTED_TENANT', 'centurion');
-    const lock = paneStayPropertyLock() as unknown as { key: string } | null;
-    expect(lock?.key).toBe(propertyReadLockKey('centurion', 'HRCEN'));
-    expect(lock?.key).not.toBe(propertyReadLockKey('centurion', 'OTHER'));
+    const lock = paneStayPropertyLock('synthetic-user') as unknown as { key: string } | null;
+    expect(lock?.key).toBe(
+      propertyReadLockKey({
+        tenantId: 'centurion',
+        propertyCode: 'HRCEN',
+        username: 'synthetic-user',
+      }),
+    );
+    expect(lock?.key).not.toBe(
+      propertyReadLockKey({
+        tenantId: 'centurion',
+        propertyCode: 'OTHER',
+        username: 'synthetic-user',
+        mode: 'per-property',
+      }),
+    );
   });
 
   it('the lock tenant is PANE_STAY_TENANT_ID, then HMS_EXPECTED_TENANT, then legacy', () => {

@@ -1,4 +1,7 @@
-import type { StaffQuoteInstallationConfiguration } from '../src/ai/staff-quote-installation.js';
+import {
+  readInstalledStaffQuoteCredentialUsername,
+  type StaffQuoteInstallationConfiguration,
+} from '../src/ai/staff-quote-installation.js';
 import {
   PANE_CLI_ENV_ALLOWLIST,
   paneStaySpawnEnv,
@@ -19,6 +22,17 @@ const configuration = {
 } as StaffQuoteInstallationConfiguration;
 
 afterEach(() => vi.restoreAllMocks());
+
+describe('installed staff quote credential identity', () => {
+  it('returns only the explicitly configured non-secret username', () => {
+    expect(
+      readInstalledStaffQuoteCredentialUsername({
+        ...configuration,
+        owner: { ...configuration.owner, username: 'synthetic-user' },
+      } as StaffQuoteInstallationConfiguration),
+    ).toBe('synthetic-user');
+  });
+});
 
 describe('paneStaySpawnEnv', () => {
   it('passes the installed borrowed browser and credential file, like the staff quote spawner', () => {

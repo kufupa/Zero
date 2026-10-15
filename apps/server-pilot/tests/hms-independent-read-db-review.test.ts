@@ -2925,11 +2925,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
     const firstLock = createPostgresPropertyReadLock({
       tenantId: 'tenant-u8-review',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       databaseUrl,
     });
     const secondLock = createPostgresPropertyReadLock({
       tenantId: 'tenant-u8-review',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       databaseUrl,
     });
 
@@ -2974,11 +2976,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
     const firstLock = createPostgresPropertyReadLock({
       tenantId: 'tenant-u8-cancellation',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       databaseUrl,
     });
     const secondLock = createPostgresPropertyReadLock({
       tenantId: 'tenant-u8-cancellation',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       databaseUrl,
     });
 

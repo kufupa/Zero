@@ -121,6 +121,22 @@ describe('hms live proof Phase A contracts', () => {
     );
   });
 
+  it('holds the credential lock for production canary browser sessions', () => {
+    const proof = readFileSync(
+      join(here, '..', 'src', 'ops', 'hms-live-proof.ts'),
+      'utf8',
+    );
+    const start = proof.indexOf('async function runCanary(): Promise<void> {');
+    const end = proof.indexOf('async function deadLetterScopedProofRuns(', start);
+    const canary = proof.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(canary).toMatch(/createPostgresPropertyReadLock\(\{/);
+    expect(canary).toMatch(/username: runtime\.credentialUsername\(\)/);
+    expect(canary).toMatch(/databaseUrl: env\.DATABASE_URL/);
+    expect(canary).toMatch(/createLiveGuestStayDriver\(\{[\s\S]*?propertyReadLock,/);
+  });
+
   it('discovers proof candidates beyond oldest-250 and includes outbound n° subjects', () => {
     const proof = readFileSync(
       join(here, '..', 'src', 'ops', 'hms-live-proof.ts'),

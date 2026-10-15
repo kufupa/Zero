@@ -500,9 +500,11 @@ describe('live quote stay driver', () => {
     const driver = createLiveQuoteStayDriver({
       runtime,
       transportId: 'transport-centurion',
+      propertyCode: 'DVIN',
     });
     const result = await driver.observeExactQuote(auth(), c, new AbortController().signal);
     expect(result.status).toBe('ok');
+    expect(result.evidence?.propertyCode).toBe('DVIN');
     expect(result.data.nightlyObservations).toHaveLength(2);
     expect(posts[0]?.path).toBe(LIVE_QUOTE_STAY_SEARCH_PATH);
     expect(posts[0]?.fields.roomtypes).toBe('STD');

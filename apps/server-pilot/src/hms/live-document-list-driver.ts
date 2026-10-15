@@ -11,6 +11,7 @@ import {
   type DocumentListReadData,
 } from './document-list-contract.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
+import { HRCEN_PROPERTY_CODE } from './property-registry.js';
 import { HmsRuntimeError } from './runtime.js';
 import {
   createLiveSentEmailObserver,
@@ -40,6 +41,7 @@ function emptyTaxInvoiceData(observedAt: string): DocumentListReadData {
 
 function taxInvoiceBlockedResult(
   observedAt: string,
+  propertyCode: string,
 ): ToolResult<DocumentListReadData> {
   return {
     status: 'manual_required',
@@ -51,7 +53,7 @@ function taxInvoiceBlockedResult(
       id: randomUUID(),
       toolId: 'hms_list_documents',
       toolVersion: '1.0.0',
-      propertyCode: 'HRCEN',
+      propertyCode,
       observedAt,
       expiresAt: new Date(
         Date.parse(observedAt) + 60 * 60 * 1000,
@@ -65,6 +67,7 @@ function taxInvoiceBlockedResult(
 function assertTaxAuth(
   authorization: HmsSessionAuthorization,
   child: ReadCandidateChild,
+  propertyCode: string,
 ): void {
   if (authorization.toolId !== 'hms_list_documents') {
     throw new HmsRuntimeError(
@@ -99,6 +102,9 @@ function assertTaxAuth(
   if (Date.parse(child.expiresAt) <= Date.now()) {
     throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'candidate child expired');
   }
+  if (child.propertyCode !== propertyCode) {
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'child propertyCode denied');
+  }
 }
 
 /**
@@ -111,14 +117,15 @@ export async function observeTaxInvoiceMetadata(
   authorization: HmsSessionAuthorization,
   child: ReadCandidateChild,
   signal: AbortSignal,
+  propertyCode = HRCEN_PROPERTY_CODE,
 ): Promise<ToolResult<DocumentListReadData>> {
   if (signal.aborted) {
     const err = new Error('tax-invoice observe aborted');
     err.name = 'AbortError';
     throw err;
   }
-  assertTaxAuth(authorization, child);
-  return taxInvoiceBlockedResult(new Date().toISOString());
+  assertTaxAuth(authorization, child, propertyCode);
+  return taxInvoiceBlockedResult(new Date().toISOString(), propertyCode);
 }
 
 export type LiveDocumentListDriver = {
@@ -137,13 +144,15 @@ export type LiveDocumentListDriver = {
 export function createLiveDocumentListDriver(
   input: LiveSentEmailObserverInput,
 ): LiveDocumentListDriver {
-  const sentObserver = createLiveSentEmailObserver(input);
+  const propertyCode = input.propertyCode ?? HRCEN_PROPERTY_CODE;
+  const sentObserver = createLiveSentEmailObserver({ ...input, propertyCode });
   return {
-    observeTaxInvoiceMetadata,
+    observeTaxInvoiceMetadata: (authorization, child, signal) =>
+      observeTaxInvoiceMetadata(authorization, child, signal, propertyCode),
     async observeSentDocumentMetadata(authorization, child, signal) {
       const rows: MinimizedSentEmailRows =
         await sentObserver.observeSentEmailRows(authorization, child, signal);
-      return toSentDocumentMetadata(rows);
+      return toSentDocumentMetadata(rows, propertyCode);
     },
   };
 }

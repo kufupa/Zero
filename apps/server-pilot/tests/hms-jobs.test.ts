@@ -89,6 +89,7 @@ function lockWith(acquired: boolean): PaneStayLock {
   const lock = createPropertyReadLock({
     tenantId: TENANT,
     propertyCode: 'HRCEN',
+    username: 'synthetic-user',
     connectionFactory: async () => ({
       query: async <T = unknown>(statement: string) =>
         (statement.includes('pg_try_advisory_lock')

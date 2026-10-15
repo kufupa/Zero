@@ -23,6 +23,7 @@ import {
 import {
   getInstalledStaffQuoteServices,
   readInstalledStaffQuoteConfiguration,
+  readInstalledStaffQuoteCredentialUsername,
 } from './staff-quote-installation.js';
 import {
   listQuoteRunScreenshots,
@@ -538,8 +539,10 @@ export async function runStaffQuote(
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
   const systemPrepared = identity.user === undefined;
   let config: ReturnType<typeof readInstalledStaffQuoteConfiguration>;
+  let credentialUsername: string;
   try {
     config = readInstalledStaffQuoteConfiguration();
+    credentialUsername = readInstalledStaffQuoteCredentialUsername(config);
   } catch {
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
@@ -653,7 +656,11 @@ export async function runStaffQuote(
         generationId,
         transportId: scope.transportId,
         userId: identity.user!.id,
-        lockKey: propertyReadLockKey(config.tenantId, scope.propertyCode),
+        lockKey: propertyReadLockKey({
+          tenantId: config.tenantId,
+          propertyCode: scope.propertyCode,
+          username: credentialUsername,
+        }),
       });
   // Provisional mode (QUOTE_TRACE_ASYNC=on): the quote is returned once captured, while the lock
   // and the run's record wait for the trace. Flag off, none of this changes the sequential flow.
@@ -666,6 +673,7 @@ export async function runStaffQuote(
     const lock = createPostgresPropertyReadLock({
       tenantId: config.tenantId,
       propertyCode: scope.propertyCode,
+      username: credentialUsername,
       databaseUrl,
     });
     let revision: QuoteRevision;

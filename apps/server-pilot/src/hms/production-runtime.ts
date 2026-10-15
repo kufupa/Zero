@@ -335,6 +335,7 @@ async function createProductionHmsRuntimeInternal(
   return createRuntime({
     manifest,
     secretArn: config.secretArn,
+    credentialUsername: secret.username,
     loadSecret: async () => ({
       secret,
       versionId: version?.versionId,

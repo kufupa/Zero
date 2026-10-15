@@ -1,6 +1,9 @@
+import { createHash } from 'node:crypto';
 import {
   createPropertyReadLock,
   isPropertyReadLockDeadline,
+  isPropertyReadLockHeld,
+  resolvePropertyReadLockMode,
   PROPERTY_READ_LOCK_DEADLINE_MESSAGE,
   propertyReadLockKey,
   type PropertyReadConnection,
@@ -17,6 +20,44 @@ function connection(): PropertyReadConnection {
 }
 
 describe('U8 property-scoped read lock', () => {
+  it('defaults to per-credential mode and supports explicit per-property mode', () => {
+    expect(resolvePropertyReadLockMode()).toBe('per-credential');
+    expect(resolvePropertyReadLockMode('per-property')).toBe('per-property');
+    expect(resolvePropertyReadLockMode('per-credential')).toBe('per-credential');
+    expect(() => resolvePropertyReadLockMode('anything-else')).toThrow(
+      'property_read_lock_mode_invalid',
+    );
+
+    const centurion = propertyReadLockKey({
+      tenantId: 'tenant-centurion',
+      propertyCode: 'HRCEN',
+      username: 'shared-user',
+      mode: 'per-property',
+    });
+    const davinci = propertyReadLockKey({
+      tenantId: 'tenant-davinci',
+      propertyCode: 'DVIN',
+      username: 'shared-user',
+      mode: 'per-property',
+    });
+    expect(centurion).not.toBe(davinci);
+  });
+  it('preserves legacy advisory key for explicit per-property mode', () => {
+    const expected = String(
+      createHash('sha256')
+        .update('tenant-centurion\0HRCEN', 'utf8')
+        .digest()
+        .readInt32BE(0),
+    );
+    expect(
+      propertyReadLockKey({
+        tenantId: 'tenant-centurion',
+        propertyCode: 'HRCEN',
+        mode: 'per-property',
+      }),
+    ).toBe(expected);
+  });
+
   it('gives up at the acquisition deadline with an error isPropertyReadLockDeadline recognises, and closes the connection', async () => {
     const handle: PropertyReadConnection = {
       query: vi.fn(async () => [{ pg_try_advisory_lock: false }]),
@@ -25,6 +66,7 @@ describe('U8 property-scoped read lock', () => {
     const lock = createPropertyReadLock({
       tenantId: 'tenant-centurion',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       connectionFactory: async () => handle,
     });
     const failure = await lock.withLock(async () => 'never reached', { deadlineAt: Date.now() + 60 }).then(
@@ -48,9 +90,26 @@ describe('U8 property-scoped read lock', () => {
     ).toBe(true);
   });
 
-  it('derives a stable tenant/property advisory key without raw identifiers in output', () => {
-    const first = propertyReadLockKey('tenant-centurion', 'HRCEN');
-    expect(first).toBe(propertyReadLockKey('tenant-centurion', 'HRCEN'));
+  it('derives a stable credential advisory key without raw identifiers in output', () => {
+    const first = propertyReadLockKey({
+      tenantId: 'tenant-centurion',
+      propertyCode: 'HRCEN',
+      username: 'shared-user',
+    });
+    expect(first).toBe(
+      propertyReadLockKey({
+        tenantId: 'tenant-davinci',
+        propertyCode: 'DVIN',
+        username: 'shared-user',
+      }),
+    );
+    expect(first).not.toBe(
+      propertyReadLockKey({
+        tenantId: 'tenant-centurion',
+        propertyCode: 'HRCEN',
+        username: 'different-user',
+      }),
+    );
     expect(first).toMatch(/^-?\d+$/);
     expect(first).not.toContain('tenant-centurion');
     expect(first).not.toContain('HRCEN');
@@ -62,6 +121,7 @@ describe('U8 property-scoped read lock', () => {
     const lock = createPropertyReadLock({
       tenantId: 'tenant-centurion',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       connectionFactory: factory,
     });
     const result = await lock.withLock(async (held) => {
@@ -76,6 +136,30 @@ describe('U8 property-scoped read lock', () => {
     expect(handle.close).toHaveBeenCalledOnce();
   });
 
+  it('reuses a held per-credential lock for nested entrypoints', async () => {
+    const handle = connection();
+    const factory = vi.fn(async () => handle);
+    const lock = createPropertyReadLock({
+      tenantId: 'tenant-centurion',
+      propertyCode: 'HRCEN',
+      username: 'shared-user',
+      connectionFactory: factory,
+    });
+
+    await lock.withLock(async (outerConnection) => {
+      expect(isPropertyReadLockHeld(lock.key)).toBe(true);
+      await lock.withLock(async (innerConnection) => {
+        expect(innerConnection).toBe(outerConnection);
+        expect(isPropertyReadLockHeld(lock.key)).toBe(true);
+      });
+    });
+
+    expect(factory).toHaveBeenCalledOnce();
+    expect(handle.query).toHaveBeenCalledTimes(2);
+    expect(handle.close).toHaveBeenCalledOnce();
+    expect(isPropertyReadLockHeld(lock.key)).toBe(false);
+  });
+
   it('does not run the read callback when lock acquisition fails', async () => {
     const handle = connection();
     handle.query = vi.fn(async (sql: string) => {
@@ -87,6 +171,7 @@ describe('U8 property-scoped read lock', () => {
     const lock = createPropertyReadLock({
       tenantId: 'tenant-centurion',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       connectionFactory: async () => handle,
     });
     await expect(lock.withLock(callback)).rejects.toMatchObject({
@@ -105,6 +190,7 @@ describe('U8 property-scoped read lock', () => {
     const lock = createPropertyReadLock({
       tenantId: 'tenant-centurion',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       connectionFactory: factory,
     });
 
@@ -140,6 +226,7 @@ describe('U8 property-scoped read lock', () => {
     const lock = createPropertyReadLock({
       tenantId: 'tenant-centurion',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       connectionFactory: async () => handle,
     });
 
@@ -179,6 +266,7 @@ describe('U23 try-once acquisition', () => {
     const lock = createPropertyReadLock({
       tenantId: 'tenant-centurion',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       connectionFactory: async () => handle,
     });
     const body = vi.fn(async () => 'never reached');
@@ -198,6 +286,7 @@ describe('U23 try-once acquisition', () => {
     const lock = createPropertyReadLock({
       tenantId: 'tenant-centurion',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       connectionFactory: async () => connection(),
     });
     await expect(lock.withLock(async () => 'read-result', { tryOnce: true })).resolves.toBe(

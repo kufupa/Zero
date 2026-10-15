@@ -28,6 +28,7 @@ describe('createPostgresPropertyReadLock client options', () => {
     const lock = createPostgresPropertyReadLock({
       tenantId: 'tenant-lock-idle',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       databaseUrl: 'postgres://lock-idle-test.invalid/db',
     });
 

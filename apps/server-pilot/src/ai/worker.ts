@@ -968,12 +968,24 @@ export function createLiveHmsCandidateSessionFactory(
     const { CENTURION_HMS_PRODUCTION_ORIGIN, resolveHmsSourceRevision } = await import(
       '../hms/production-runtime.js'
     );
+    const { createHmsPropertyRegistry } = await import('../hms/property-registry.js');
+    const property = createHmsPropertyRegistry([
+      {
+        propertyCode,
+        tenantId: config.expectedTenant,
+        username: runtime.credentialUsername(),
+        mailboxTransportId: config.expectedTransportId,
+        hmsBaseUrl: CENTURION_HMS_PRODUCTION_ORIGIN,
+        credentialSecretRef: config.secretArn,
+      },
+    ]).resolve(propertyCode);
     const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
     const { createPostgresPropertyReadLock } = await import('../hms/property-read-lock.js');
     const workerEnv = parseEnv(process.env as Record<string, string | undefined>);
     const propertyReadLock = createPostgresPropertyReadLock({
-      tenantId: config.expectedTenant,
-      propertyCode: config.expectedPropertyCode,
+      tenantId: property.tenantId,
+      propertyCode: property.propertyCode,
+      username: property.username,
       databaseUrl: workerEnv.DATABASE_URL,
     });
     const sourceRevision = resolveHmsSourceRevision();
@@ -1124,15 +1136,16 @@ export function createLiveHmsCandidateSessionFactory(
         }
         return auth;
       },
-      // Draft sessions keep their driver-level lock. The independent read
-      // adapter instead owns this same dedicated lock around the full typed
-      // dispatch, avoiding nested advisory locks on separate connections.
-      propertyReadLock: input.readOnly ? undefined : propertyReadLock,
+      // Every browser-session path starts under the credential lock. Typed
+      // dispatch reuses this held connection through the reentrant lock helper.
+      propertyReadLock,
     });
     const quoteDriver = quoteRelease
       ? createLiveQuoteStayDriver({
           runtime,
           transportId: input.transportId,
+          propertyCode: property.propertyCode,
+          propertyReadLock,
           auditSpecFor: () => ({
             operationId,
             toolId: 'hms_quote_stay',
@@ -1179,7 +1192,8 @@ export function createLiveHmsCandidateSessionFactory(
               runtime,
               transportId: input.transportId,
               expectedConfirmationToken: candidate.value,
-              expectedPropertyCode: propertyCode,
+              expectedPropertyCode: property.propertyCode,
+              propertyReadLock,
               detailDumpFor: async () => {
                 const { dump } = await driver.searchExactThenDetailDump(candidate, signal);
                 return dump;
@@ -1369,7 +1383,7 @@ export function createLiveHmsCandidateSessionFactory(
               release: companyRelease,
               branchId: branch.id,
             });
-            await createLiveCompanyAccountReadDriver().observeReservationLinkedBilling(
+            await createLiveCompanyAccountReadDriver(property.propertyCode).observeReservationLinkedBilling(
               authorization,
               child,
               signal,
@@ -1428,6 +1442,8 @@ export function createLiveHmsCandidateSessionFactory(
             return createLiveGroupBlockDriver({
               runtime,
               transportId: input.transportId,
+              propertyCode: property.propertyCode,
+              propertyReadLock,
               auditSpec: input.runId
                 ? {
                     operationId,
@@ -1478,7 +1494,7 @@ export function createLiveHmsCandidateSessionFactory(
               release: eventRelease as NonNullable<typeof companyRelease>,
               branchId: branch.id,
             });
-            await createLiveEventReadDriver().observeEventListSummary(
+            await createLiveEventReadDriver(property.propertyCode).observeEventListSummary(
               authorization,
               candidate,
               signal,
@@ -2933,6 +2949,7 @@ async function executeProductionReadTool(input: {
     const mailReadLock = createPostgresPropertyReadLock({
       tenantId: input.run.transportId,
       propertyCode: 'MAIL',
+      mode: 'per-property',
       databaseUrl: workerEnv.DATABASE_URL,
     });
     const readContext: ReadExecutionContext = {

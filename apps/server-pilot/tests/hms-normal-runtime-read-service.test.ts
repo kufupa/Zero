@@ -60,6 +60,7 @@ function trustedSyncFixture(
   const propertyReadLock = createPropertyReadLock({
     tenantId: 'tenant-sync',
     propertyCode: source.propertyCode,
+    username: 'synthetic-user',
     connectionFactory: async () => ({
       query: async (statement: string) => {
         queries.push(statement);
@@ -216,6 +217,7 @@ describe('U8 normal runtime read_tool path', () => {
     const propertyReadLock = createPropertyReadLock({
       tenantId: 'tenant-sync',
       propertyCode: source.propertyCode,
+      username: 'synthetic-user',
       connectionFactory: async () => ({
         query: async (statement: string) => {
           queries.push(statement);
@@ -439,6 +441,7 @@ describe('U8 normal runtime read_tool path', () => {
     const delayedPropertyReadLock = createPropertyReadLock({
       tenantId: 'tenant-sync-delayed',
       propertyCode: 'HRCEN',
+      username: 'synthetic-user',
       connectionFactory: async () => ({
         query: async (statement: string) => {
           if (statement.includes('pg_try_advisory_lock') && lockAttempts++ === 0) {

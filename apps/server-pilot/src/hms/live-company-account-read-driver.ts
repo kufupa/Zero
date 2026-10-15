@@ -14,6 +14,7 @@ import {
   type CompanyAccountReadData,
 } from './company-account-read-contract.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
+import { HRCEN_PROPERTY_CODE } from './property-registry.js';
 import { HmsRuntimeError } from './runtime.js';
 
 export { COMPANY_ACCOUNT_READ_SURFACE_BLOCKER };
@@ -25,6 +26,7 @@ function sha256Hex(input: string): string {
 function assertCompanyAuth(
   authorization: HmsSessionAuthorization,
   child: ReadCandidateChild,
+  propertyCode: string,
 ): void {
   if (authorization.toolId !== 'hms_company_account_read') {
     throw new HmsRuntimeError(
@@ -64,7 +66,7 @@ function assertCompanyAuth(
   if (Date.parse(child.expiresAt) <= Date.now()) {
     throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'candidate child expired');
   }
-  if (child.propertyCode !== 'HRCEN') {
+  if (child.propertyCode !== propertyCode) {
     throw new HmsRuntimeError(
       'ROLE_SCOPE_INVALID',
       'child propertyCode denied',
@@ -81,13 +83,14 @@ export async function observeReservationLinkedBilling(
   authorization: HmsSessionAuthorization,
   child: ReadCandidateChild,
   signal: AbortSignal,
+  propertyCode = HRCEN_PROPERTY_CODE,
 ): Promise<ToolResult<CompanyAccountReadData>> {
   if (signal.aborted) {
     const err = new Error('company observe aborted');
     err.name = 'AbortError';
     throw err;
   }
-  assertCompanyAuth(authorization, child);
+  assertCompanyAuth(authorization, child, propertyCode);
   const observedAt = new Date().toISOString();
   return {
     status: 'manual_required',
@@ -99,7 +102,7 @@ export async function observeReservationLinkedBilling(
       id: randomUUID(),
       toolId: 'hms_company_account_read',
       toolVersion: '1.0.0',
-      propertyCode: 'HRCEN',
+      propertyCode,
       observedAt,
       expiresAt: new Date(Date.parse(observedAt) + 60 * 60 * 1000).toISOString(),
       claimKeys: [],
@@ -108,8 +111,13 @@ export async function observeReservationLinkedBilling(
   };
 }
 
-export function createLiveCompanyAccountReadDriver(): {
+export function createLiveCompanyAccountReadDriver(
+  propertyCode = HRCEN_PROPERTY_CODE,
+): {
   observeReservationLinkedBilling: typeof observeReservationLinkedBilling;
 } {
-  return { observeReservationLinkedBilling };
+  return {
+    observeReservationLinkedBilling: (authorization, child, signal) =>
+      observeReservationLinkedBilling(authorization, child, signal, propertyCode),
+  };
 }
