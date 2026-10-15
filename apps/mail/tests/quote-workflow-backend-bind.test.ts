@@ -14,6 +14,7 @@ import {
   bindQualifiedStaffProposalPdf,
   nativeRoomCodes,
   resolveNativeRoomCodes,
+  staffQuoteGroupsFromStay,
   sha256HexOfBytes,
 } from '../lib/quote-workflow/staff-quote-bind';
 import { emptyStaffQuoteHeader } from '../lib/quote-workflow/types';
@@ -900,6 +901,33 @@ describe('staff quote execute/PDF header bind', () => {
       expectedTotalMinor: 850000,
     });
     expect(result).toEqual({ status: 'unavailable', reason: 'GOTENBERG_URL missing' });
+  });
+
+  it('lets a defaulted unresolved room preference quote any type', () => {
+    const result = staffQuoteGroupsFromStay([{
+      id: 'g1',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      quantity: 1,
+      roomPreference: 'Twin',
+      adults: 2,
+      childrenAges: [],
+      board: 'bb',
+      specialRequests: [],
+      fields: { roomPreference: 'defaulted' },
+    }]);
+
+    expect(result).toEqual({
+      ok: [{
+        id: 'g1',
+        arrivalDate: '2026-11-12',
+        departureDate: '2026-11-14',
+        quantity: 1,
+        adults: 2,
+        childrenAges: [],
+        board: 'bb',
+      }],
+    });
   });
 });
 
