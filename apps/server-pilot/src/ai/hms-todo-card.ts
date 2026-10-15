@@ -2,14 +2,17 @@
  * Key into HMS to-do card.
  *
  * What: a structured staff checklist of facts to type into HMS (new booking, amend,
- * cancel, proof of payment) from fields Nava already extracted.
+ * cancel) from fields Nava already extracted.
  * Why: HMS writes stay off. Staff still need what to key, the extracted values, and
  * what is missing — without Nava writing, calling HMS, or sending mail.
  * No-write guarantee: this module only shapes already-extracted fields. It never
  * calls HMS, never sends, and always returns `writesEnabled: false`.
+ *
+ * payment_proof is not a LunaAnalysis.workflow value, so this card does not invent
+ * a payment kind. Proof-of-payment classification is a follow-up.
  */
 
-export type HmsTodoKind = 'new_booking' | 'amend' | 'cancel' | 'payment_proof';
+export type HmsTodoKind = 'new_booking' | 'amend' | 'cancel';
 
 export type HmsTodoStepSource = 'mail' | 'attachment' | 'missing';
 
@@ -35,18 +38,13 @@ export type HmsTodoStayAsk = {
   rooms?: number | null;
 };
 
-export type HmsTodoRateClaim = {
-  kind: string;
-  amount?: string | null;
-  currency?: string | null;
-};
-
 export type HmsTodoGroup = {
   arrival?: string | null;
   departure?: string | null;
   rooms?: number | null;
   adultsPerRoom?: number | null;
   childAges?: readonly number[] | null;
+  guestNames?: readonly string[] | null;
 };
 
 export type HmsTodoCardInput = {
@@ -56,9 +54,6 @@ export type HmsTodoCardInput = {
   confirmationNumber?: string | null;
   guestLastName?: string | null;
   requestedChange?: string | null;
-  paymentAmount?: string | null;
-  paymentReference?: string | null;
-  rateClaims?: readonly HmsTodoRateClaim[] | null;
   party?: { reference?: string | null } | null;
   attachmentFilenames?: readonly string[] | null;
 };
@@ -74,9 +69,6 @@ const WORKFLOW_KIND: Record<string, HmsTodoKind> = {
   amendment: 'amend',
   cancel: 'cancel',
   cancellation: 'cancel',
-  payment_proof: 'payment_proof',
-  voucher_pop: 'payment_proof',
-  pop: 'payment_proof',
 };
 
 function text(value: string | number | null | undefined): string | null {
@@ -98,32 +90,11 @@ function kindOf(workflow: string | null | undefined): HmsTodoKind | null {
   return key ? (WORKFLOW_KIND[key] ?? null) : null;
 }
 
-function stayFields(input: HmsTodoCardInput): {
-  arrival: string | null;
-  departure: string | null;
-  rooms: string | null;
-  adults: string | null;
-  children: string | null;
-} {
-  const group = input.groups?.[0];
-  const childCount = group?.childAges?.length;
-  return {
-    arrival: text(input.stayAsk?.arrivalDate) ?? text(group?.arrival),
-    departure: text(input.stayAsk?.departureDate) ?? text(group?.departure),
-    rooms: positiveCount(input.stayAsk?.rooms) ?? positiveCount(group?.rooms ?? null),
-    adults: positiveCount(input.stayAsk?.adults) ?? positiveCount(group?.adultsPerRoom ?? null),
-    children: positiveCount(input.stayAsk?.children) ?? positiveCount(childCount ?? null),
-  };
-}
-
-function paidAmount(input: HmsTodoCardInput): string | null {
-  const direct = text(input.paymentAmount);
-  if (direct) return direct;
-  const paid = input.rateClaims?.find((claim) => claim.kind === 'paid');
-  const amount = text(paid?.amount);
-  if (!amount) return null;
-  const currency = text(paid?.currency);
-  return currency && !amount.startsWith(currency) ? `${currency} ${amount}` : amount;
+function guestsOf(group: HmsTodoGroup): string | null {
+  const names = (group.guestNames ?? [])
+    .map((name) => text(name))
+    .filter((name): name is string => Boolean(name));
+  return names.length ? names.join(', ') : null;
 }
 
 function attachments(input: HmsTodoCardInput): string | null {
@@ -151,42 +122,79 @@ function pushFact(
   steps.push({ label, value, source });
 }
 
+function appendStayAsk(
+  steps: HmsTodoStep[],
+  missing: string[],
+  stayAsk: HmsTodoStayAsk | null | undefined,
+  required: boolean,
+): void {
+  pushFact(steps, missing, 'Arrival', text(stayAsk?.arrivalDate), required);
+  pushFact(steps, missing, 'Departure', text(stayAsk?.departureDate), required);
+  pushFact(steps, missing, 'Rooms', positiveCount(stayAsk?.rooms), required);
+  pushFact(steps, missing, 'Adults', positiveCount(stayAsk?.adults), required);
+  pushFact(steps, missing, 'Children', positiveCount(stayAsk?.children), false);
+}
+
+function appendGroups(
+  steps: HmsTodoStep[],
+  missing: string[],
+  groups: readonly HmsTodoGroup[],
+  required: boolean,
+): void {
+  const total = groups.length;
+  for (const [index, group] of groups.entries()) {
+    const prefix = total > 1 ? `Group ${index + 1} ` : '';
+    pushFact(steps, missing, `${prefix}Arrival`, text(group.arrival), required);
+    pushFact(steps, missing, `${prefix}Departure`, text(group.departure), required);
+    pushFact(steps, missing, `${prefix}Rooms`, positiveCount(group.rooms ?? null), required);
+    pushFact(
+      steps,
+      missing,
+      `${prefix}Adults per room`,
+      positiveCount(group.adultsPerRoom ?? null),
+      required,
+    );
+    pushFact(
+      steps,
+      missing,
+      `${prefix}Children`,
+      positiveCount(group.childAges?.length ?? null),
+      false,
+    );
+    pushFact(steps, missing, `${prefix}Guests`, guestsOf(group), false);
+  }
+}
+
 export function buildHmsTodoCard(input: HmsTodoCardInput): HmsTodoCard | null {
   const kind = kindOf(input.workflow);
   if (!kind) return null;
 
-  const stay = stayFields(input);
   const confirmation = text(input.confirmationNumber);
   const lastName = text(input.guestLastName);
   const change = text(input.requestedChange);
-  const amount = paidAmount(input);
-  const reference = text(input.paymentReference) ?? text(input.party?.reference);
   const files = attachments(input);
+  const groups = input.groups ?? [];
+  const stayRequired = kind === 'new_booking';
 
   const steps: HmsTodoStep[] = [];
   const missing: string[] = [];
 
-  if (kind === 'new_booking') {
-    pushFact(steps, missing, 'Arrival', stay.arrival, true);
-    pushFact(steps, missing, 'Departure', stay.departure, true);
-    pushFact(steps, missing, 'Rooms', stay.rooms, true);
-    pushFact(steps, missing, 'Adults', stay.adults, true);
-    pushFact(steps, missing, 'Children', stay.children, false);
-    pushFact(steps, missing, 'Guest last name', lastName, false);
-  } else if (kind === 'amend') {
+  if (kind === 'amend') {
     pushFact(steps, missing, 'Confirmation number', confirmation, true);
     pushFact(steps, missing, 'Guest last name', lastName, false);
     pushFact(steps, missing, 'Requested change', change, true);
-    pushFact(steps, missing, 'Arrival', stay.arrival, false);
-    pushFact(steps, missing, 'Departure', stay.departure, false);
   } else if (kind === 'cancel') {
     pushFact(steps, missing, 'Confirmation number', confirmation, true);
     pushFact(steps, missing, 'Guest last name', lastName, false);
-  } else {
-    pushFact(steps, missing, 'Confirmation number', confirmation, false);
+  }
+
+  if (kind === 'new_booking' || kind === 'amend') {
+    if (groups.length > 0) appendGroups(steps, missing, groups, stayRequired);
+    else appendStayAsk(steps, missing, input.stayAsk, stayRequired);
+  }
+
+  if (kind === 'new_booking') {
     pushFact(steps, missing, 'Guest last name', lastName, false);
-    pushFact(steps, missing, 'Payment amount', amount, true);
-    pushFact(steps, missing, 'Payment reference', reference, false);
   }
 
   pushFact(steps, missing, 'Attachments', files, false, 'attachment');
