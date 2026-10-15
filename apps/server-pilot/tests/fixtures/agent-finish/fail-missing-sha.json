@@ -1,0 +1,6 @@
+{
+  "tests_pass": true,
+  "typecheck_new": 0,
+  "files": ["apps/server-pilot/src/ai/agent-finish-check.ts"],
+  "tests": ["tests/agent-finish-check.test.ts"]
+}

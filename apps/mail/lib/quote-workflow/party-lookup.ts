@@ -14,6 +14,7 @@ export type PartyFindReply = {
     | 'external_system_unavailable'
     | 'refused_flag_off'
     | 'refused_input_invalid'
+    | 'refused_origin_mismatch'
     | 'refused_lock_unavailable'
     | 'refused_lock_busy';
   /** Best first, at most five for a kind search. */
@@ -74,6 +75,9 @@ export function partyNoCandidateNote(
   if (outcome === 'refused_lock_busy') return 'HMS is busy with another lookup. Nava will retry.';
   if (outcome === 'refused_flag_off') return 'Company and agency rates are switched off.';
   if (outcome === 'refused_input_invalid') return 'Type a company or agency name.';
+  if (outcome === 'refused_origin_mismatch') {
+    return 'This email is Da Vinci mail. Centurion HMS will not look it up.';
+  }
   if (outcome === 'external_system_unavailable') {
     return "Nava couldn't check HMS for this name. Try again, or quote at public rates.";
   }

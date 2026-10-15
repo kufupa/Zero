@@ -3,6 +3,15 @@ import {
   lunaAnalysisSchema,
   type LunaAnalysis,
 } from './reservationist-decision.js';
+import {
+  aopQuoteDelivery,
+  aopQuoteInstructions,
+  decideAopQuoteRatePlan,
+  isAopPartyBound,
+  type AopQuoteChannel,
+  type AopQuoteDelivery,
+  type AopQuoteRatePlan,
+} from './aop-playbook.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
 import type { ModelAdapter, ModelInvokeResult } from './bedrock/adapter.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
@@ -68,6 +77,8 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   .update('\n')
   .update(K2_MAPPING)
   .update('\n')
+  .update(aopQuoteInstructions())
+  .update('\n')
   .update(LUNA_RESPONSE_JSON)
   // Bumped with the review rows a cached analysis carries, so no cache entry replays the old rows.
   .update('\nattachment-review/2')
@@ -77,6 +88,7 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   .update('\nluna-group-dates/1')
   // One-date stays now default to one night, so cached analyses without a checkout must be remapped.
   .update('\none-night-default/1')
+  .update('\naop-quote-spine/1')
   .digest('hex')
   .slice(0, 16);
 
@@ -157,6 +169,9 @@ export type MappedQuoteDecision = {
   secondaryAsks: string[];
   alternatives: string[];
   missing: Array<{ field: string; question: string }>;
+  /** AOP-1 rate-plan label for the pane/prefill. Not a price. */
+  ratePlan: AopQuoteRatePlan;
+  delivery: AopQuoteDelivery;
 };
 
 function isPdfMagic(data: Uint8Array): boolean {
@@ -258,7 +273,7 @@ export function buildQuoteWorkflowPrompt(
     ? 'The staff note is a first-class evidence source. rateClaims and evidence quotes may be exact contiguous substrings of the staff note.'
     : '';
   return {
-    system: `${CENTURION_HOTEL_RULES}\n${K2_MAPPING}${treatAsLine ? `\n${treatAsLine}` : ''}${staffNoteLine ? `\n${staffNoteLine}` : ''}`,
+    system: `${CENTURION_HOTEL_RULES}\n${K2_MAPPING}\n${aopQuoteInstructions()}${treatAsLine ? `\n${treatAsLine}` : ''}${staffNoteLine ? `\n${staffNoteLine}` : ''}`,
     user: parts.join('\n\n'),
     files,
   };
@@ -395,10 +410,23 @@ function groundedAmendmentFields(
   };
 }
 
+function aopQuoteSpineOf(
+  analysis: LunaAnalysis,
+  channel?: AopQuoteChannel,
+): Pick<MappedQuoteDecision, 'ratePlan' | 'delivery'> {
+  return {
+    ratePlan: decideAopQuoteRatePlan({
+      partyBound: isAopPartyBound(analysis.party),
+      channel,
+    }),
+    delivery: aopQuoteDelivery(),
+  };
+}
+
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
 export function mapLlmDecision(
   analysis: LunaAnalysis,
-  options?: { treatAs?: QuoteTreatAs; dateAnchor?: StayDateAnchorContext },
+  options?: { treatAs?: QuoteTreatAs; dateAnchor?: StayDateAnchorContext; channel?: AopQuoteChannel },
 ): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
   const staffQuote = Boolean(options?.treatAs);
@@ -406,10 +434,17 @@ export function mapLlmDecision(
     ? options.treatAs === 'quote'
     : analysis.workflow === 'quote';
   const notQuote = analysis.workflow === 'other' || isAmendOrCancelWorkflow(analysis.workflow);
+  const aop = aopQuoteSpineOf(analysis, options?.channel);
   if ((notQuote || venueOrEventManual(analysis)) && !staffQuote) {
     const routed = analysis.missing.filter((item) => !hotelDefaultedQuestion(item.field));
     if (venueOrEventManual(analysis)) {
       routed.unshift({ field: 'handle_manually', question: VENUE_MANUAL_QUESTION });
+    }
+    if (aop.ratePlan.skipQuote) {
+      routed.unshift({
+        field: 'channel',
+        question: aop.ratePlan.staffLabel,
+      });
     }
     return {
       intent: 'other',
@@ -418,6 +453,7 @@ export function mapLlmDecision(
       secondaryAsks: [],
       alternatives: [],
       missing: routed,
+      ...aop,
     };
   }
   const groups = analysis.groups.map((group, index) => {
@@ -561,13 +597,17 @@ export function mapLlmDecision(
   if (roomsOnlyInfoNeeded(analysis)) {
     missing.unshift({ field: 'rooms_only_group', question: ROOMS_ONLY_INFO_QUESTION });
   }
+  if (aop.ratePlan.skipQuote) {
+    missing.unshift({ field: 'channel', question: aop.ratePlan.staffLabel });
+  }
   return {
-    intent: 'quote',
-    groups,
-    missingQuoteReplyFields: missingQuoteReplyFields(groups),
+    intent: aop.ratePlan.skipQuote ? 'other' : 'quote',
+    groups: aop.ratePlan.skipQuote ? [] : groups,
+    missingQuoteReplyFields: aop.ratePlan.skipQuote ? [] : missingQuoteReplyFields(groups),
     secondaryAsks: [],
     alternatives: [],
     missing,
+    ...aop,
   };
 }
 

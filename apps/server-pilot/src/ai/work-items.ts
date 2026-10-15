@@ -17,6 +17,7 @@ import {
   questionItems,
 } from './quote-workflow-analyse-selection.js';
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
+import { aopQuoteChannelFromSender } from './aop-playbook.js';
 import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
@@ -218,6 +219,9 @@ export type StoredRead = {
   kind: MailKind;
   payload: MailExtractionPayload;
   attachments: AttachmentRead[] | null;
+  fromAddress?: string | null;
+  subject?: string | null;
+  bodyText?: string | null;
 };
 /** Where one pane group's values live: its stay, and its row when it has one. */
 export type GroupRef = { stayId: string; rowId: string | null };
@@ -326,7 +330,13 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
     requestedDeparture: validIsoDate(requested?.departure ?? null) ?? null,
     requestedChange: null,
   };
-  const mapped = mapLlmDecision(luna);
+  const mapped = mapLlmDecision(luna, {
+    channel: aopQuoteChannelFromSender({
+      fromAddress: read.fromAddress,
+      subject: read.subject,
+      bodyText: read.bodyText,
+    }),
+  });
   mapped.groups.forEach((group, index) => {
     const slot = order[index];
     if (!slot) return;
@@ -376,6 +386,8 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
       aiUnavailable: false as const,
       luna,
       amendment: amendmentFromAnalysis(luna),
+      ratePlan: mapped.ratePlan,
+      delivery: mapped.delivery,
     },
     refs,
   };
@@ -1227,6 +1239,7 @@ async function messageFor(db: DB, input: { transportId: string; internetMessageI
       threadId: message.threadId,
       fromAddress: message.fromAddress,
       subject: message.subject,
+      textBody: message.textBody,
       mailboxAddress: mailboxTransport.email,
     })
     .from(message)
@@ -1245,6 +1258,7 @@ async function readyView(
     id: string;
     fromAddress: string | null;
     subject: string | null;
+    textBody: string | null;
     mailboxAddress: string | null;
   },
   latest: ReadyRead,
@@ -1263,7 +1277,15 @@ async function readyView(
   });
   const paneItem = existingStayInformation ? null : item;
   const state = paneItem?.state ?? {};
-  const stored = storedAnalysis(read, state);
+  const stored = storedAnalysis(
+    {
+      ...read,
+      fromAddress: msg.fromAddress,
+      subject: msg.subject,
+      bodyText: msg.textBody,
+    },
+    state,
+  );
   return {
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,

@@ -13,6 +13,7 @@ import {
   lunaAnalysisSchema,
   reservationistDecisionSchema,
 } from '../src/ai/reservationist-decision.js';
+import { aopQuoteInstructions } from '../src/ai/aop-playbook.js';
 import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
 import type { ModelAdapter, ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
 import { LunaModelAdapter } from '../src/ai/bedrock/luna.js';
@@ -231,8 +232,12 @@ describe('QUOTE_WORKFLOW_PROMPT_VERSION', () => {
       .update('\n')
       .update(K2_MAPPING)
       .update('\n')
+      .update(aopQuoteInstructions())
+      .update('\n')
       .update(JSON.stringify(zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' })))
-      .update('\nattachment-review/2\nparty-not-guest/2\nluna-group-dates/1\none-night-default/1')
+      .update(
+        '\nattachment-review/2\nparty-not-guest/2\nluna-group-dates/1\none-night-default/1\naop-quote-spine/1',
+      )
       .digest('hex')
       .slice(0, 16);
     const promptOnly = createHash('sha256')
@@ -527,7 +532,8 @@ describe('mapLlmDecision', () => {
         },
       },
     ]);
-    expect(JSON.stringify(mapped)).not.toMatch(/price|rate"|amount/i);
+    expect(JSON.stringify(mapped.groups)).not.toMatch(/price|rate"|amount/i);
+    expect(mapped.ratePlan.source).toBe('party_contract');
   });
 
   it('defaults a one-date quote to one night and marks departure defaulted', () => {

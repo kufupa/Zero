@@ -29,6 +29,7 @@ import type {
 } from './quote-workflow-synced-selection.js';
 import { attachmentMattersForReview, unreadReasonWords } from './quote-attachment-review.js';
 import { stayDateSourceText, stayDateYearEvidenceText } from './stay-date-anchoring.js';
+import { aopQuoteChannelFromSender } from './aop-playbook.js';
 
 /**
  * Luna analyse of a synced mail, shared by the pane route and the inbound
@@ -480,6 +481,11 @@ export async function analyseSyncedSelection(
         yearEvidenceText: stayDateYearEvidenceText(synced),
         staffNote,
       },
+      channel: aopQuoteChannelFromSender({
+        fromAddress: synced.fromAddress,
+        subject: synced.subject,
+        bodyText: synced.bodyText,
+      }),
     });
     const payload = {
       status: 'ready' as const,
@@ -495,6 +501,8 @@ export async function analyseSyncedSelection(
       workflow: luna.workflow,
       amendment: amendmentFromAnalysis(luna),
       sourceRevision: options.selectionEpoch,
+      ratePlan: mapped.ratePlan,
+      delivery: mapped.delivery,
     };
     // Record first, so the cache entry can name the run that produced it. Recording is capped, so the
     // entry is written without a run id when the ledger is slow, off, or failed.
