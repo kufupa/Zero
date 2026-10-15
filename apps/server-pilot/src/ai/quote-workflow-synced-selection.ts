@@ -4,6 +4,7 @@ import { attachment, message } from '../db/schema/mail.js';
 import {
   readAuthorizedArtifact,
   readAuthorizedArtifactBytes,
+  isDocxMimeType,
   sniffImageBytes,
   type AttachmentLocator,
   type SandboxRunner,
@@ -65,7 +66,6 @@ export type QuoteAttachmentReader = (
 export const QUOTE_ATTACHMENT_MAX_FILES = 3;
 export const QUOTE_ATTACHMENT_MAX_TOTAL_BYTES = 5 * 1024 * 1024;
 const OVER_LIMIT = 'over the 3 file / 5 MB analysis limit';
-const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 type ArtifactReaderOptions = {
   revalidateOffice?: (row: QuoteAttachmentRow) => Promise<boolean>;
@@ -74,7 +74,7 @@ type ArtifactReaderOptions = {
 };
 
 function isDocxAttachment(row: Pick<QuoteAttachmentRow, 'mimeType'>): boolean {
-  return row.mimeType.split(';')[0]?.trim().toLowerCase() === DOCX_MIME;
+  return isDocxMimeType(row.mimeType);
 }
 
 function reviewFacts(row: QuoteAttachmentRow) {
@@ -158,7 +158,8 @@ export function createArtifactReader(
   return async (row) => {
     const common = { attachmentId: row.id, authorizedAttachmentIds, s3, signal, resolveLocator };
     if (isDocxAttachment(row)) {
-      if (!options.revalidateOffice || !/^[a-f0-9]{64}$/.test(row.sha256 ?? '')) {
+      if (!options.revalidateOffice) return { text: null, reason: 'not a PDF' };
+      if (!/^[a-f0-9]{64}$/.test(row.sha256 ?? '')) {
         return { text: null, reason: 'identity or authorization changed' };
       }
       const expectedLocator = await resolveLocator(row.id);

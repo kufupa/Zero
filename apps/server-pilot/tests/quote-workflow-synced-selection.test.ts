@@ -64,6 +64,7 @@ function row(overrides: Partial<QuoteAttachmentRow> & { id: string }): QuoteAtta
 }
 
 const docxMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const docxMimeWithParams = 'Application/vnd.openxmlformats-officedocument.wordprocessingml.document; name="x.docx"';
 
 function crc32(bytes: Buffer): number {
   let crc = 0xffffffff;
@@ -283,7 +284,7 @@ describe('readQuoteAttachments', () => {
     const doc = row({
       id: 'request',
       filename: 'stay-request.docx',
-      mimeType: docxMime,
+      mimeType: docxMimeWithParams,
       sizeBytes: docx.length,
       sha256,
     });
@@ -291,7 +292,7 @@ describe('readQuoteAttachments', () => {
       expect(input.allowOffice).toBe(true);
       expect(input.expectedLocator).toMatchObject({
         s3Key: doc.s3Key,
-        mimeType: docxMime,
+        mimeType: docxMimeWithParams,
         sizeBytes: docx.length,
         messageId: doc.messageId,
         sha256,
@@ -300,7 +301,7 @@ describe('readQuoteAttachments', () => {
       expect(await input.revalidate?.()).toBe(true);
       return {
         body: docx,
-        contentType: docxMime,
+        contentType: docxMimeWithParams,
         sha256,
         locator: input.expectedLocator!,
       };
@@ -346,6 +347,15 @@ describe('readQuoteAttachments', () => {
     expect(prompt).toContain('ARRIVAL: 30 September 2026');
     expect(prompt).toContain('DEPARTURE: 02 October 2026');
     expect(buildQuoteWorkflowPrompt(selection).user).toContain('DEPARTURE: 02 October 2026');
+  });
+
+  it('does not report DOCX as an identity change when office revalidation is unavailable', async () => {
+    const doc = row({ id: 'voucher', filename: 'voucher.docx', mimeType: docxMime, sha256: 'a'.repeat(64) });
+    const reader = createArtifactReader([doc], new AbortController().signal);
+    vi.mocked(readAuthorizedArtifactBytes).mockClear();
+
+    expect(await reader(doc)).toEqual({ text: null, reason: 'not a PDF' });
+    expect(readAuthorizedArtifactBytes).not.toHaveBeenCalled();
   });
 
   it('drops an unknown-type part whose bytes are an image, and lists a non-image one as not a PDF', async () => {

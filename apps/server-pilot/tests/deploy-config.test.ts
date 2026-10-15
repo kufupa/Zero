@@ -5599,9 +5599,10 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(allowlist).toBeTruthy();
       const keys = allowlist!.trim().split(/\s+/);
       expect(new Set(keys).size).toBe(keys.length);
+      expect(keys).toContain('GOTENBERG_URL');
       expect(allowlist).not.toContain('BETTER_AUTH_');
       expect(allowlist).not.toContain('POP3_');
-      expect(allowlist).not.toContain('HMS_');
+      expect(keys.filter((key) => key.startsWith('HMS_'))).toEqual(['HMS_JOB_QUEUE']);
       expect(allowlist).not.toContain('GOOGLE_');
       expect(writer).toContain('const parsed = JSON.parse(data);');
       expect(writer).toContain('process.stdout.write(parsed.BETTER_AUTH_SECRET)');
@@ -5695,7 +5696,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
 
     it('decodes required remote-common values during --validate', async () => {
       const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
-      const { spawnSync } = await import('node:child_process');
+      const { runInNewContext } = await import('node:vm');
       const { tmpdir } = await import('node:os');
       const { fileURLToPath } = await import('node:url');
       const { dirname, join } = await import('node:path');
@@ -5713,6 +5714,30 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
           : writer.slice(validatorStart + start.length, validatorEnd);
 
       expect(validator).toBeTruthy();
+      const validate = (path: string) => {
+        let status = 0;
+        let stderr = '';
+        try {
+          runInNewContext(validator!, {
+            require: (name: string) => {
+              expect(name).toBe('fs');
+              return { readFileSync: (file: string, encoding: string) => readFileSync(file, encoding as BufferEncoding) };
+            },
+            process: {
+              argv: ['node', '-', path, 'common'],
+              stderr: { write: (message: string) => { stderr += message; } },
+              exit: (code: number) => {
+                status = code;
+                throw new Error('validator exit');
+              },
+            },
+            URL,
+          });
+        } catch (error) {
+          if (status === 0) throw error;
+        }
+        return { status, stderr };
+      };
       const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-common-validate-test-'));
       const commonEnv = join(tempDir, '.env.remote-common');
       const valid = [
@@ -5724,11 +5749,24 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       ].join('\n');
       try {
         writeFileSync(commonEnv, valid, 'utf8');
-        const validResult = spawnSync(process.execPath, ['-', commonEnv, 'common'], {
-          input: validator!,
-          encoding: 'utf8',
-        });
-        expect(validResult.status).toBe(0);
+        expect(validate(commonEnv).status).toBe(0);
+
+        for (const url of ['http://127.0.0.1:3000', 'https://converter.example']) {
+          writeFileSync(commonEnv, `${valid}GOTENBERG_URL='${url}'\n`, 'utf8');
+          const urlResult = validate(commonEnv);
+          expect(urlResult.status, `--validate rejected ${url}`).toBe(0);
+        }
+
+        for (const [label, url] of [
+          ['blank GOTENBERG_URL', ''],
+          ['malformed GOTENBERG_URL', 'not a URL'],
+          ['non-HTTP GOTENBERG_URL', 'ftp://127.0.0.1:3000'],
+        ] as const) {
+          writeFileSync(commonEnv, `${valid}GOTENBERG_URL='${url}'\n`, 'utf8');
+          const urlResult = validate(commonEnv);
+          expect(urlResult.status, `--validate accepted ${label}`).toBe(2);
+          expect(urlResult.stderr).toContain('remote env malformed');
+        }
 
         // The pane queue flag and the Needs-you cutoff are the only non-secret pane switches webmail needs.
         writeFileSync(
@@ -5736,11 +5774,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
           `${valid}HMS_JOB_QUEUE='on'\nNEEDS_YOU_SINCE='2026-10-12T15:00:00Z'\n`,
           'utf8',
         );
-        const flagsResult = spawnSync(process.execPath, ['-', commonEnv, 'common'], {
-          input: validator!,
-          encoding: 'utf8',
-        });
-        expect(flagsResult.status).toBe(0);
+        expect(validate(commonEnv).status).toBe(0);
 
         for (const [label, replacement] of [
           ['blank DATABASE_URL', "DATABASE_URL=' \t '"],
@@ -5757,10 +5791,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
                 : line,
             );
           writeFileSync(commonEnv, lines.join('\n'), 'utf8');
-          const result = spawnSync(process.execPath, ['-', commonEnv, 'common'], {
-            input: validator!,
-            encoding: 'utf8',
-          });
+          const result = validate(commonEnv);
           expect(result.status, `--validate accepted ${label}`).toBe(2);
           expect(result.stderr).toContain('remote env malformed');
         }

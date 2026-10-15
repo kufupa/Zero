@@ -3,6 +3,7 @@ import {createHash} from 'node:crypto';
 import {
   ARTIFACT_MAX_INPUT_BYTES,
   ARTIFACT_MAX_OUTPUT_BYTES,
+  isDocxMimeType,
   readAuthorizedArtifactBytes,
   extractEmbeddedPdfText,
   type AuthorizedArtifactBytes,
@@ -56,7 +57,6 @@ export type AttachmentAdmission = {
   draftReady: false;
 };
 export type ReservationistOfficeConverter = (originalDocx: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>;
-const DOCX_MIME='application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 export async function extractReservationistOfficeText(input:{body:Uint8Array;attachmentId:string;signal:AbortSignal;officeConverter:ReservationistOfficeConverter;runner?:SandboxRunner;revalidate:()=>Promise<boolean>}):Promise<{reason:string;pdfBody:Buffer|null;pages:readonly string[]|null;pageCount:number|null}>{
  const fail=(reason:string)=>({reason,pdfBody:null,pages:null,pageCount:null});
  const stillAuthorized=async()=>{try{return await input.revalidate();}catch{return false;}};
@@ -161,9 +161,9 @@ export async function admitReservationistAttachment(input: {
       return {status:'admitted',reason:'visual_review_required',metadata:m,relation:at===requestAt?'current':'prior',bytes:{body:object.body,contentType:m.mimeType,sha256:m.sourceHash,locator},source:{attachmentId:m.attachmentId,sourceHash:m.sourceHash,disclosure:m.disclosure,pages:null,pageCount:1},draftReady:false};
     }catch{input.read.signal.throwIfAborted();return fail('malformed_or_unsupported_raster');}
   }
-  const office=m.mimeType===DOCX_MIME;
+  const office=isDocxMimeType(m.mimeType);
   if(office&&!input.officeConverter)return fail('office_converter_unavailable');
-  if (!['application/pdf', 'text/plain',DOCX_MIME].includes(m.mimeType))
+  if (!['application/pdf', 'text/plain'].includes(m.mimeType) && !office)
     return fail('unsupported_business_attachment');
   const bytes = await readAuthorizedArtifactBytes({
     ...input.read,

@@ -202,14 +202,16 @@ it('keeps raster facts visual-only and denies metadata/scope mutation during the
 });
 
 const docxMime='application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-function officeInput(){
- const body=Buffer.from('PK\u0003\u0004synthetic-docx'),candidate=rasterInput(docxMime,body);
- return {...candidate,read:{...candidate.read,expectedLocator:{messageId:'m',mimeType:docxMime,sizeBytes:body.length,s3Key:'attachments/m/image'}}};
+function officeInput(mimeType=docxMime){
+ const body=Buffer.from('PK\u0003\u0004synthetic-docx'),candidate=rasterInput(mimeType,body);
+ return {...candidate,read:{...candidate.read,expectedLocator:{messageId:'m',mimeType,sizeBytes:body.length,s3Key:'attachments/m/image'}}};
 }
 it('extracts derived DOCX PDF pages while retaining original bytes and explicit rendering hashes',async()=>{
- const candidate=officeInput(),pdf=Buffer.from('%PDF-derived-office');
+ const mimeType='Application/vnd.openxmlformats-officedocument.wordprocessingml.document; name="x.docx"';
+ const candidate=officeInput(mimeType),pdf=Buffer.from('%PDF-derived-office');
  const result=await admitReservationistAttachment({...candidate,officeConverter:async(original,signal)=>{expect(original).toEqual(Buffer.from('PK\u0003\u0004synthetic-docx'));signal.throwIfAborted();return pdf;},runner:async tool=>({stdout:Buffer.from(tool==='pdfinfo'?'Pages: 1\nEncrypted: no':'CHECK IN: 30 September 2026\f'),stderr:Buffer.alloc(0),exitCode:0})});
  expect(result.status).toBe('admitted');expect(result.bytes?.sha256).toBe(candidate.metadata.sourceHash);expect(result.bytes?.body).toEqual(Buffer.from('PK\u0003\u0004synthetic-docx'));
+ expect(result.bytes?.locator.mimeType).toBe(mimeType);
  expect(result.source).toMatchObject({sourceHash:candidate.metadata.sourceHash,pages:['CHECK IN: 30 September 2026'],pageCount:1,rendering:{method:'gotenberg_libreoffice',originalSourceHash:candidate.metadata.sourceHash,derivedPdfSHA256:createHash('sha256').update(pdf).digest('hex'),pageProvenance:'derived_pdf'}});
  expect(()=>validateDocumentPlan({facts:[],tasks:[],unresolvedAsks:[]},[result.source!])).not.toThrow();
  for(const source of [{...result.source!,sourceHash:'b'.repeat(64)},{...result.source!,pages:['invented']},{...result.source!,rendering:{...result.source!.rendering!,derivedPdfSHA256:'invalid'}}])expect(()=>validateDocumentPlan({facts:[],tasks:[],unresolvedAsks:[]},[source])).toThrow('Invalid derived document rendering');

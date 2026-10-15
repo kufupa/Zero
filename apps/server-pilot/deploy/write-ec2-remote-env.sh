@@ -45,6 +45,7 @@ REMOTE_COMMON_ALLOWLIST=(
   BEDROCK_GUARDRAIL_ID
   BEDROCK_GUARDRAIL_VERSION
   MASTRA_STORAGE_PATH
+  GOTENBERG_URL
   NAVA_BUILD_COMMIT
   HMS_JOB_QUEUE
   NEEDS_YOU_SINCE
@@ -72,7 +73,7 @@ const common = new Set([
   "INGEST_REQUIRE_OWNER_HEADER", "AI_ENABLED", "AI_WRITE_GATE_ENABLED",
   "AI_DRAFTS_ENABLED", "CATCHUP_UPLOAD_ENABLED", "AI_STALE_RUN_TIMEOUT_MS", "AI_MODEL_ID",
   "AI_WORKER_IDEMPOTENCY_PREFIX", "BEDROCK_REGION", "BEDROCK_GUARDRAIL_ID",
-  "BEDROCK_GUARDRAIL_VERSION", "MASTRA_STORAGE_PATH", "NAVA_BUILD_COMMIT",
+  "BEDROCK_GUARDRAIL_VERSION", "MASTRA_STORAGE_PATH", "GOTENBERG_URL", "NAVA_BUILD_COMMIT",
   "HMS_JOB_QUEUE", "NEEDS_YOU_SINCE",
 ]);
 try {
@@ -89,6 +90,10 @@ try {
       if (!values.has(key) || values.get(key).trim().length === 0) {
         throw new Error("invalid");
       }
+    }
+    if (values.has("GOTENBERG_URL")) {
+      const url = new URL(values.get("GOTENBERG_URL"));
+      if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("invalid");
     }
   } else if (
     values.size !== 2 ||
