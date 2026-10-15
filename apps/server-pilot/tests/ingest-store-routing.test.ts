@@ -399,7 +399,7 @@ describe('isStampCorroborated', () => {
     ).toBe(true);
   });
 
-  it('accepts Delivered-To naming the stamped transport', () => {
+  it('rejects Delivered-To naming the stamped transport (sender-forgeable)', () => {
     expect(
       isStampCorroborated(
         HOTEL_A,
@@ -409,10 +409,10 @@ describe('isStampCorroborated', () => {
           ],
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it('accepts X-Original-To naming the stamped transport', () => {
+  it('rejects X-Original-To naming the stamped transport (sender-forgeable)', () => {
     expect(
       isStampCorroborated(
         HOTEL_A,
@@ -422,10 +422,10 @@ describe('isStampCorroborated', () => {
           ],
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it('rejects a stamp with no matching recipient, From, or envelope header', () => {
+  it('rejects a stamp with no matching To/Cc/Bcc/From identity', () => {
     expect(
       isStampCorroborated(
         HOTEL_A,
@@ -443,6 +443,24 @@ describe('isStampCorroborated', () => {
   it('does not treat another hotel as corroboration', () => {
     expect(
       isStampCorroborated(HOTEL_A, parsedForStamp({ toAddresses: [HOTEL_B.email] })),
+    ).toBe(false);
+  });
+
+  // Invariant: stamp may only select a transport unstamped routing would
+  // also accept from the same parsed To/Cc/Bcc/From. Envelope headers
+  // cannot move mail to a hotel those fields do not name.
+  it('never corroborates a hotel absent from To/Cc/Bcc/From', () => {
+    expect(
+      isStampCorroborated(
+        HOTEL_A,
+        parsedForStamp({
+          toAddresses: [HOTEL_B.email],
+          rawHeaderLines: [
+            { key: 'delivered-to', line: `Delivered-To: ${HOTEL_A.email}` },
+            { key: 'x-original-to', line: `X-Original-To: ${HOTEL_A.email}` },
+          ],
+        }),
+      ),
     ).toBe(false);
   });
 });
@@ -622,6 +640,48 @@ describe('persistInboundMessage fail-closed transport match', () => {
         subject: 'forged stamp onto other hotel',
       }),
       'uidl-forged-stamp-to-b',
+      fake.db,
+    );
+    expect(result.kind).toBe('stored');
+    if (result.kind !== 'stored') return;
+    expect(result.transportId).toBe(HOTEL_B.id);
+  });
+
+  it('stores To B plus stamp A plus X-Original-To A under B, never A', async () => {
+    const fake = dbWithActiveTransports([
+      { ...HOTEL_A, ownerHeaderValue: HOTEL_A.email },
+      { ...HOTEL_B, ownerHeaderValue: HOTEL_B.email },
+    ]);
+    const result = await persistSynthetic(
+      syntheticEml({
+        from: 'guest@example.test',
+        to: HOTEL_B.email,
+        ownerHeader: HOTEL_A.email,
+        extraHeaders: [`X-Original-To: ${HOTEL_A.email}`],
+        subject: 'forged original-to onto other hotel',
+      }),
+      'uidl-forged-x-original-to-a',
+      fake.db,
+    );
+    expect(result.kind).toBe('stored');
+    if (result.kind !== 'stored') return;
+    expect(result.transportId).toBe(HOTEL_B.id);
+  });
+
+  it('stores To B plus stamp A plus Delivered-To A under B, never A', async () => {
+    const fake = dbWithActiveTransports([
+      { ...HOTEL_A, ownerHeaderValue: HOTEL_A.email },
+      { ...HOTEL_B, ownerHeaderValue: HOTEL_B.email },
+    ]);
+    const result = await persistSynthetic(
+      syntheticEml({
+        from: 'guest@example.test',
+        to: HOTEL_B.email,
+        ownerHeader: HOTEL_A.email,
+        extraHeaders: [`Delivered-To: ${HOTEL_A.email}`],
+        subject: 'forged delivered-to onto other hotel',
+      }),
+      'uidl-forged-delivered-to-a',
       fake.db,
     );
     expect(result.kind).toBe('stored');
