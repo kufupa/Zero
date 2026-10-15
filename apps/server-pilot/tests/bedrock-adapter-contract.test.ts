@@ -5,8 +5,9 @@ import {
   NOVA_LITE_RATE_TABLE_VERSION,
 } from '../src/ai/bedrock/bedrock.js';
 import { createFakeModelAdapter } from '../src/ai/bedrock/fake.js';
-import { resolveModelAdapter } from '../src/ai/bedrock/factory.js';
+import { resolveModelAdapter, triageModelLabels } from '../src/ai/bedrock/factory.js';
 import { AzureLunaModelAdapter } from '../src/ai/bedrock/luna.js';
+import { loadConfiguredDraftModelRoute } from '../src/ai/draft-route-factory.js';
 import { validateStructuredJsonOutput } from '../src/ai/security/policy.js';
 
 afterEach(() => {
@@ -63,14 +64,89 @@ describe('bedrock adapter contract', () => {
     expect(adapter.constructor.name).toBe('FakeModelAdapter');
   });
 
-  it('resolveModelAdapter returns bedrock when AI enabled in production', () => {
+  it('resolveModelAdapter defaults to Azure Luna when the profile is omitted', () => {
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', 'https://example.invalid/openai/v1');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', 'test-key');
     const adapter = resolveModelAdapter({
       NODE_ENV: 'production',
       AI_ENABLED: true,
       AI_MODEL_ID: 'amazon.nova-lite-v1:0',
       BEDROCK_REGION: 'us-east-1',
     });
+    expect(adapter).toBeInstanceOf(AzureLunaModelAdapter);
+    expect(adapter).not.toBeInstanceOf(BedrockModelAdapter);
+  });
+
+  it('resolveModelAdapter keeps nova_lite on Bedrock when that profile is explicit', () => {
+    const adapter = resolveModelAdapter({
+      NODE_ENV: 'production',
+      AI_ENABLED: true,
+      AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+      BEDROCK_REGION: 'us-east-1',
+      AI_TRIAGE_MODEL_PROFILE: 'nova_lite',
+    });
     expect(adapter).toBeInstanceOf(BedrockModelAdapter);
+  });
+
+  it('resolveModelAdapter fails loud on missing Azure env and never falls back to Bedrock', () => {
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', '');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', '');
+    expect(() =>
+      resolveModelAdapter({
+        NODE_ENV: 'production',
+        AI_ENABLED: true,
+        AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+        BEDROCK_REGION: 'us-east-1',
+      }),
+    ).toThrow(/AZURE_OPENAI_BASE_URL|AZURE_FOUNDRY_API_KEY|refusing silent Bedrock fallback/i);
+  });
+
+  it('triageModelLabels defaults to Azure GPT-6 Luna', () => {
+    expect(triageModelLabels({})).toEqual({
+      modelId: 'gpt-6-luna',
+      routeId: 'azure_luna_max',
+      protocol: 'azure-foundry-responses',
+    });
+  });
+
+  it('triageModelLabels follows nova_lite to Bedrock Nova, not Azure', () => {
+    expect(
+      triageModelLabels({
+        AI_TRIAGE_MODEL_PROFILE: 'nova_lite',
+        AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+      }),
+    ).toEqual({
+      modelId: 'amazon.nova-lite-v1:0',
+      routeId: 'nova_lite',
+      protocol: 'bedrock-converse',
+    });
+    expect(
+      triageModelLabels({
+        AI_TRIAGE_MODEL_PROFILE: 'nova_lite',
+        AI_MODEL_ID: 'amazon.nova-lite-v1:0-custom',
+      }).modelId,
+    ).toBe('amazon.nova-lite-v1:0-custom');
+  });
+
+  it('loadConfiguredDraftModelRoute defaults to Azure Luna and fails loud without Azure env', () => {
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', '');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', '');
+    vi.stubEnv('AI_MODEL_ROUTE', '');
+    expect(() => loadConfiguredDraftModelRoute()).toThrow(
+      /AZURE_OPENAI_BASE_URL|AZURE_FOUNDRY_API_KEY/,
+    );
+
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', 'https://example.invalid/openai/v1');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', 'test-key');
+    const configured = loadConfiguredDraftModelRoute();
+    expect(configured?.route).toMatchObject({
+      routeId: 'azure_luna_max',
+      purpose: 'draft',
+      protocol: 'azure-foundry-responses',
+      egress: 'azure-foundry',
+      modelId: 'gpt-6-luna',
+    });
+    expect(typeof configured?.transport).toBe('function');
   });
 
   it('routes the GPT-6 Luna triage profile to Azure without making a model request', () => {
