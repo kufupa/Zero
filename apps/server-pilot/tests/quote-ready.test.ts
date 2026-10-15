@@ -180,6 +180,20 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.reason).toBeNull();
   });
 
+  it('does not default a reversed checkout dropped as stayDates to one night', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{ ...stay, requested: { arrival: '2026-10-20', departure: null } }],
+      missing: [{
+        field: 'stayDates',
+        question: 'Departure date must be after arrival; confirm the requested stay dates.',
+      }],
+    });
+
+    expect(plan.inputs).toEqual([]);
+    expect(plan.reason).toBe('invalid_dates');
+  });
+
   it('preserves an extraction checkout derived from stated nights', () => {
     const stay = payload().stays[0]!;
     const plan = build({

@@ -36,11 +36,16 @@ function nightsBetween(arrival: string, departure: string): number {
 function groupForStay(
   stay: NonNullable<ReturnType<typeof mailExtractionPayloadSchema.parse>['stays'][number]>,
   today: string,
+  missing: ReadonlyArray<{ field: string }> = [],
 ): { groups: StaffQuoteInput['groups']; reason?: string } {
   const { arrival } = stay.requested;
+  const reversedStayDates = missing.some((item) => item.field === 'stayDates');
   const departure =
-    stay.requested.departure || (validIsoDay(arrival) ? addDays(arrival, 1) : null);
-  if (!arrival || !departure) return { groups: [], reason: 'missing_dates' };
+    stay.requested.departure ||
+    (!reversedStayDates && validIsoDay(arrival) ? addDays(arrival, 1) : null);
+  if (!arrival || !departure) {
+    return { groups: [], reason: reversedStayDates ? 'invalid_dates' : 'missing_dates' };
+  }
   if (!validIsoDay(arrival) || !validIsoDay(departure) || departure <= arrival) {
     return { groups: [], reason: 'invalid_dates' };
   }
@@ -177,7 +182,7 @@ export function buildPreparedStaffQuotePlan(input: {
   const payload = parsedPayload.data;
   const today = (input.now ?? new Date()).toISOString().slice(0, 10);
   const stays: PreparedStaffQuoteStay[] = payload.stays.map((stay) => {
-    const groupResult = groupForStay(stay, today);
+    const groupResult = groupForStay(stay, today, payload.missing);
     if (groupResult.reason) return { stayId: stay.id, reason: groupResult.reason };
     const built = staffQuoteInput.safeParse({
       messageId: input.messageId,
