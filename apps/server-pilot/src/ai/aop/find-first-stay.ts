@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { dayFromText, surnameFrom } from '../voucher-find.js';
+import { dayFromText } from '../voucher-find.js';
 
 const stayCandidateSchema = z.object({
   confirmationNumber: z.string(),
@@ -33,11 +33,11 @@ export type FindFirstStayMatchInput = z.infer<typeof findFirstStayMatchInputSche
 export type FindFirstStayMatchOutput = z.infer<typeof findFirstStayMatchOutputSchema>;
 
 export const findFirstStayMatchDescription =
-  'Pick the existing HMS stay for a booking ask so create does not double-book. Call after hms find, before create_reservation_dry_run. Pass lastName + arrival (departure, rooms, voucherNumber, confirmationNumber if known) and the find rows. Exact surname + same arrival, or voucher number in notes, is a match. A stated confirmation base (digits only) matches every HMS leg base-N; a full base-leg confirmation matches only that leg. A stated confirmation decides alone: one matching live leg is a match; several legs is possible listing all legs (do not pick); no matching leg is none with stated_conf_not_found (check the number; never fall back to surname/dates). Confirmation match + surname contradiction is conflict. Same surname ±1 day or same arrival + different surname is possible (staff decide; do not pick). Two matches is conflict (do not pick). Cancelled stays never match.';
+  'Pick the existing HMS stay for a booking ask so create does not double-book. Call after hms find, before create_reservation_dry_run. Pass lastName + arrival (departure, rooms, voucherNumber, confirmationNumber if known) and the find rows. Exact surname + same arrival, or voucher number in notes, is a match. A stated confirmation base (digits only) matches every HMS leg base-N; a full base-leg confirmation matches only that leg; any other stated value matches only an identical confirmation. A stated confirmation decides alone: one matching live leg is a match; several legs is possible listing all legs (do not pick); no matching leg is none with stated_conf_not_found (check the number; never fall back to surname/dates). Confirmation match + surname contradiction is conflict. Same surname ±1 day or same arrival + different surname is possible (staff decide; do not pick). Two matches is conflict (do not pick). Cancelled stays never match.';
 
+// The whole lastName is the surname: "De la Rey" must never fold down to "Rey".
 function foldSurname(value: string): string {
-  const surname = surnameFrom(value) ?? value.trim();
-  return surname.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  return value.trim().replace(/\s+/g, ' ').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 }
 
 function toDay(value: string): string | null {
@@ -66,19 +66,20 @@ function voucherHitsNotes(voucherNumber: string | undefined, notes: string | und
 const FULL_CONF = /^\d{6,10}-\d{1,2}$/;
 const BASE_CONF = /^\d{6,10}$/;
 
-type StatedConf = { kind: 'full' | 'base'; value: string };
+type StatedConf = { kind: 'full' | 'base' | 'other'; value: string };
 
 function statedConf(raw: string | null | undefined): StatedConf | null {
   const value = raw?.trim() ?? '';
   if (!value) return null;
   if (FULL_CONF.test(value)) return { kind: 'full', value };
   if (BASE_CONF.test(value)) return { kind: 'base', value };
-  return null;
+  // Any other stated value still counts as stated: it can only match exactly, never fall back to surname/dates.
+  return { kind: 'other', value };
 }
 
 function candidateMatchesStatedConf(stayConf: string, stated: StatedConf): boolean {
   const have = stayConf.trim();
-  if (stated.kind === 'full') return have === stated.value;
+  if (stated.kind !== 'base') return have === stated.value;
   const prefix = `${stated.value}-`;
   if (!have.startsWith(prefix)) return false;
   return /^\d{1,2}$/.test(have.slice(prefix.length));

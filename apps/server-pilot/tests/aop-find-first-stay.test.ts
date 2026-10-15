@@ -242,6 +242,25 @@ describe('findFirstStayMatch', () => {
     expect(result.confirmationNumber).toBe('9999928-1');
   });
 
+  it('fails closed on a stated confirmation in an unknown format instead of falling back to surname', () => {
+    const result = findFirstStayMatch({
+      ask: { lastName: 'Smith', arrival: '2026-11-12', confirmationNumber: '12345678901' },
+      candidates: [stay({ confirmationNumber: '9999929-1', lastName: 'Smith', arrival: '2026-11-12' })],
+    });
+    expect(result.status).toBe('none');
+    expect(result.confirmationNumber).toBeNull();
+    expect(result.why.join(' ')).toContain('stated_conf_not_found');
+  });
+
+  it('keeps a multi-word surname whole', () => {
+    const result = findFirstStayMatch({
+      ask: { lastName: 'De la Rey', arrival: '2026-11-12' },
+      candidates: [stay({ confirmationNumber: '9999930-1', lastName: 'Rey', arrival: '2026-11-12' })],
+    });
+    expect(result.status).not.toBe('match');
+    expect(result.confirmationNumber).toBeNull();
+  });
+
   it('ignores a cancelled leg when matching a stated base confirmation', () => {
     const result = findFirstStayMatch({
       ask: { lastName: 'Smith', arrival: '2026-11-12', confirmationNumber: '9999924' },
