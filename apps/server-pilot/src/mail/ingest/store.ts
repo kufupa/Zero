@@ -8,8 +8,11 @@
  *      `message` + `attachment` rows).
  *   3. If the header is missing, try direct `To` identity match (email +
  *      aliases). Unique → route. One identity matching ≥2 transports →
- *      `ambiguous_transport`. Distinct addresses matching ≥2 transports →
- *      `multi_transport`. A fail-closed step does not fall through. When
+ *      `ambiguous_transport`. Distinct addresses matching ≥2 hotel
+ *      transports → store one copy per hotel (first owns the POP identity;
+ *      extra copies use null ingest UIDL + fan-out provenance). `transport-nava`
+ *      is dropped from unique/multi sets when a hotel also matches; ambiguous
+ *      stays fail-closed. A fail-closed step does not fall through. When
  *      `INGEST_REQUIRE_OWNER_HEADER=false` and Direct-To is none, also match
  *      hotel transport identities on To/Cc/Bcc then From. On miss quarantine
  *      with `missing_owner_header`. If the header is present: unique owner
@@ -83,6 +86,7 @@ const CENTURION_TRANSPORT_ID = 'transport-centurion';
 const DAVINCI_TRANSPORT_ID = 'transport-davinci';
 const FAITH_TRANSPORT_ID = 'transport-faith';
 const AYANDA_TRANSPORT_ID = 'transport-ayanda';
+const NAVA_TRANSPORT_ID = 'transport-nava';
 const HOTEL_EQUATED_TRANSPORT_IDS = [
   CENTURION_TRANSPORT_ID,
   DAVINCI_TRANSPORT_ID,
@@ -231,6 +235,13 @@ export interface PersistOptions {
    * uploads while unrelated sweepers must defer until the lease is released.
    */
   activeIngestUidlClaimToken?: string;
+  /** Internal fan-out: already-resolved hotel route; skip mailbox matching. */
+  routedTransport?: TransportMatchCandidate;
+  /**
+   * Internal fan-out: first copy owns `(ingestMailboxId, pop3Uidl)` and the
+   * source receipt. Extra copies persist with those columns null.
+   */
+  claimIngestIdentity?: boolean;
 }
 
 /**
@@ -267,24 +278,10 @@ export async function persistInboundMessage(
     });
   }
 
-  const existingMessage = await findExistingMessageByIngestIdentity(db, meta);
-  if (existingMessage) {
-    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
-      db,
-      storage,
-      attachments: parsed.attachments,
-      meta,
-      canonicalMessageId: existingMessage.id,
-      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
-    });
-    return {
-      kind: 'duplicate',
-      transportId: existingMessage.transportId,
-      messageId: existingMessage.id,
-      rawMimeS3Key,
-      candidateAttachmentCleanupFailureCount,
-    };
-  }
+  const claimIngestIdentity = opts.claimIngestIdentity !== false;
+  const existingMessage = claimIngestIdentity
+    ? await findExistingMessageByIngestIdentity(db, meta)
+    : undefined;
 
   const existingQuarantine = opts.promoteQuarantineId
     ? undefined
@@ -307,9 +304,11 @@ export async function persistInboundMessage(
   }
 
   // Routing ------------------------------------------------------------
-  let transport: RoutedTransport | null = null;
+  let transport: RoutedTransport | null = opts.routedTransport ?? null;
 
-  if (opts.transportOverride !== undefined) {
+  if (opts.routedTransport) {
+    transport = opts.routedTransport;
+  } else if (opts.transportOverride !== undefined) {
     // Promotion has already applied its exact sender/recipient gate. Still
     // resolve the requested route from the active transport row; never trust
     // a caller-supplied id or a stale/hard-coded transport address.
@@ -330,28 +329,48 @@ export async function persistInboundMessage(
     const direct = await findDirectToTransport(db, parsed.toAddresses);
     if (direct.kind === 'unique') {
       transport = direct.transport;
-    } else if (direct.kind === 'ambiguous' || direct.kind === 'multi') {
+    } else if (direct.kind === 'multi') {
+      return persistMultiTransportFanOut({
+        parsed,
+        raw,
+        meta,
+        opts,
+        storage,
+        rawMimeS3Key,
+        ids: direct.ids,
+      });
+    } else if (direct.kind === 'ambiguous') {
       return quarantineWithAttachmentCleanup({
         db,
         storage,
         parsed,
         meta,
         rawMimeS3Key,
-        reason: quarantineReasonForMatch(direct),
+        reason: 'ambiguous_transport',
         activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
       });
     } else if (!ingestRequireOwnerHeader()) {
       const equated = await findEquatedHotelTransport(db, parsed);
       if (equated.kind === 'unique') {
         transport = equated.transport;
-      } else if (equated.kind === 'ambiguous' || equated.kind === 'multi') {
+      } else if (equated.kind === 'multi') {
+        return persistMultiTransportFanOut({
+          parsed,
+          raw,
+          meta,
+          opts,
+          storage,
+          rawMimeS3Key,
+          ids: equated.ids,
+        });
+      } else if (equated.kind === 'ambiguous') {
         return quarantineWithAttachmentCleanup({
           db,
           storage,
           parsed,
           meta,
           rawMimeS3Key,
-          reason: quarantineReasonForMatch(equated),
+          reason: 'ambiguous_transport',
           activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
         });
       }
@@ -373,14 +392,24 @@ export async function persistInboundMessage(
     const stamped = await findTransportByStamp(db, parsed.ownerHeaderValue);
     if (stamped.kind === 'unique') {
       transport = stamped.transport;
-    } else if (stamped.kind === 'ambiguous' || stamped.kind === 'multi') {
+    } else if (stamped.kind === 'multi') {
+      return persistMultiTransportFanOut({
+        parsed,
+        raw,
+        meta,
+        opts,
+        storage,
+        rawMimeS3Key,
+        ids: stamped.ids,
+      });
+    } else if (stamped.kind === 'ambiguous') {
       return quarantineWithAttachmentCleanup({
         db,
         storage,
         parsed,
         meta,
         rawMimeS3Key,
-        reason: quarantineReasonForMatch(stamped),
+        reason: 'ambiguous_transport',
         activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
       });
     } else {
@@ -396,7 +425,37 @@ export async function persistInboundMessage(
     }
   }
 
-  const messageId = meta.messageId;
+  if (!transport) {
+    return quarantineWithAttachmentCleanup({
+      db,
+      storage,
+      parsed,
+      meta,
+      rawMimeS3Key,
+      reason: 'missing_owner_header',
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+    });
+  }
+
+  if (existingMessage) {
+    const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
+      db,
+      storage,
+      attachments: parsed.attachments,
+      meta,
+      canonicalMessageId: existingMessage.id,
+      activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+    });
+    return {
+      kind: 'duplicate',
+      transportId: existingMessage.transportId,
+      messageId: existingMessage.id,
+      rawMimeS3Key,
+      candidateAttachmentCleanupFailureCount,
+    };
+  }
+
+  const messageId = claimIngestIdentity ? meta.messageId : randomUUID();
   let threadId = '';
   let duplicate: PersistDuplicateResult | null = null;
   let duplicateCanonicalMessageId = messageId;
@@ -408,6 +467,7 @@ export async function persistInboundMessage(
     const transactionDb = tx as unknown as DB;
     await lockCanonicalMailbox(transactionDb, transport.id);
     const retainSource = async (canonicalMessageId: string) => {
+      if (!claimIngestIdentity) return;
       await tx
         .insert(mailIngestSourceReceipt)
         .values({
@@ -423,7 +483,9 @@ export async function persistInboundMessage(
           target: [mailIngestSourceReceipt.ingestMailboxId, mailIngestSourceReceipt.pop3Uidl],
         });
     };
-    const existingSource = await findExistingMessageByIngestIdentity(transactionDb, meta);
+    const existingSource = claimIngestIdentity
+      ? await findExistingMessageByIngestIdentity(transactionDb, meta)
+      : undefined;
     if (existingSource) {
       duplicate = {
         kind: 'duplicate',
@@ -659,8 +721,10 @@ export async function persistInboundMessage(
       await tx
         .update(message)
         .set({
-          ingestMailboxId: found.ingestMailboxId ?? meta.ingestMailboxId,
-          pop3Uidl: found.pop3Uidl ?? meta.pop3Uidl,
+          ingestMailboxId: claimIngestIdentity
+            ? (found.ingestMailboxId ?? meta.ingestMailboxId)
+            : found.ingestMailboxId,
+          pop3Uidl: claimIngestIdentity ? (found.pop3Uidl ?? meta.pop3Uidl) : found.pop3Uidl,
           rawMimeS3Key: found.rawMimeS3Key ?? rawMimeS3Key,
           textBody: found.textBody ?? parsed.textBody,
           htmlBody: found.htmlBody ?? sanitizeHtmlBodyForStorage(parsed.htmlBody),
@@ -750,17 +814,25 @@ export async function persistInboundMessage(
     const sourceProvenance = {
       ...(ambiguousSource ? { source: 'pop3', attention: 'AMBIGUOUS_IDENTITY' } : {}),
       ...(parsed.deliveredAt ? { deliveredAt: parsed.deliveredAt.toISOString() } : {}),
+      ...(!claimIngestIdentity
+        ? {
+            fanoutFrom: {
+              ingestMailboxId: meta.ingestMailboxId,
+              pop3Uidl: meta.pop3Uidl,
+            },
+          }
+        : {}),
     };
 
     await tx.insert(message).values({
       id: messageId,
       transportId: transport.id,
       threadId,
-      ingestMailboxId: meta.ingestMailboxId,
+      ingestMailboxId: claimIngestIdentity ? meta.ingestMailboxId : null,
       direction: isHotelSent ? 'outbound' : 'inbound',
       historyOnly: ambiguousSource,
       sourceProvenance: Object.keys(sourceProvenance).length > 0 ? sourceProvenance : null,
-      pop3Uidl: meta.pop3Uidl,
+      pop3Uidl: claimIngestIdentity ? meta.pop3Uidl : null,
       ownerHeaderValue: parsed.ownerHeaderValue,
       messageIdHeader: persistedHeaders.messageIdHeader,
       inReplyTo: persistedHeaders.inReplyTo,
@@ -1826,6 +1898,67 @@ async function findExistingQuarantine(
   return rows[0];
 }
 
+async function loadActiveTransportsByIds(
+  db: DB,
+  ids: string[],
+): Promise<RoutedTransport[]> {
+  if (ids.length === 0) return [];
+  const rows = await db
+    .select({
+      id: mailboxTransport.id,
+      email: mailboxTransport.email,
+      sendFromConfig: mailboxTransport.sendFromConfig,
+    })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.isActive, true));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return ids.flatMap((id) => {
+    const row = byId.get(id);
+    return row ? [row] : [];
+  });
+}
+
+async function persistMultiTransportFanOut(args: {
+  parsed: ParsedInboundMessage;
+  raw: Buffer;
+  meta: IngestMeta;
+  opts: PersistOptions;
+  storage: S3Storage;
+  rawMimeS3Key: string;
+  ids: string[];
+}): Promise<PersistResult> {
+  const transports = await loadActiveTransportsByIds(args.opts.db, args.ids);
+  if (transports.length < 2) {
+    return quarantineWithAttachmentCleanup({
+      db: args.opts.db,
+      storage: args.storage,
+      parsed: args.parsed,
+      meta: args.meta,
+      rawMimeS3Key: args.rawMimeS3Key,
+      reason: 'multi_transport',
+      activeIngestUidlClaimToken: args.opts.activeIngestUidlClaimToken,
+    });
+  }
+
+  let stored: PersistResult | null = null;
+  let fallback: PersistResult | null = null;
+  for (let i = 0; i < transports.length; i++) {
+    const one = await persistInboundMessage(
+      args.parsed,
+      args.raw,
+      { ...args.meta, rawMimeS3Key: args.rawMimeS3Key },
+      {
+        ...args.opts,
+        routedTransport: transports[i],
+        claimIngestIdentity: i === 0,
+      },
+    );
+    if (one.kind === 'stored' || one.kind === 'reconciled') stored = one;
+    else fallback ??= one;
+  }
+  return stored ?? fallback!;
+}
+
 async function findDirectToTransport(
   db: DB,
   toAddresses: string[],
@@ -1909,15 +2042,15 @@ export function resolveTransportMatch<T extends TransportMatchCandidate>(
   if (ambiguousIds.size > 0) {
     return { kind: 'ambiguous', ids: [...ambiguousIds].sort() };
   }
+  if (byId.size >= 2 && byId.has(NAVA_TRANSPORT_ID)) {
+    const hotelMatched = [...byId.keys()].some((id) => id !== NAVA_TRANSPORT_ID);
+    if (hotelMatched) byId.delete(NAVA_TRANSPORT_ID);
+  }
   if (byId.size >= 2) {
     return { kind: 'multi', ids: [...byId.keys()].sort() };
   }
   const unique = [...byId.values()][0];
   return unique ? { kind: 'unique', transport: unique } : { kind: 'none' };
-}
-
-function quarantineReasonForMatch(match: { kind: 'ambiguous' | 'multi' }): QuarantineReason {
-  return match.kind === 'ambiguous' ? 'ambiguous_transport' : 'multi_transport';
 }
 
 async function findTransportByStamp(

@@ -428,7 +428,7 @@ describe('persistInboundMessage fail-closed transport match', () => {
     expect(result.transportId).toBe(HOTEL_A.id);
   });
 
-  it('quarantines To two hotels as multi_transport', async () => {
+  it('fans out To two hotels instead of quarantining as multi_transport', async () => {
     const fake = dbWithActiveTransports([
       { ...HOTEL_A, ownerHeaderValue: HOTEL_A.email },
       { ...HOTEL_B, ownerHeaderValue: HOTEL_B.email },
@@ -442,9 +442,7 @@ describe('persistInboundMessage fail-closed transport match', () => {
       'uidl-multi-transport',
       fake.db,
     );
-    expect(result.kind).toBe('quarantined');
-    if (result.kind !== 'quarantined') return;
-    expect(result.reason).toBe('multi_transport');
+    expect(['stored', 'reconciled']).toContain(result.kind);
   });
 
   it('quarantines a shared alias as ambiguous_transport', async () => {
