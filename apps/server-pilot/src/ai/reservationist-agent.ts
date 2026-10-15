@@ -11,7 +11,7 @@ import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { QUOTE_MEALS } from '../quote-proposal/description.js';
 import { buildQuoteProposalPdf, type ProposalPdfInput } from '../quote-proposal/proposal-pdf.js';
-import { createLunaModel } from './bedrock/luna.js';
+import { createAzureLunaModel } from './bedrock/luna.js';
 import { aopQuoteInstructions } from './aop-playbook.js';
 import type { ReservationistDecision } from './reservationist-decision.js';
 
@@ -156,6 +156,7 @@ export function createReservationistTools(
 export function createReservationistAgent(options: {
   model?: ConstructorParameters<typeof Agent>[0]['model'];
   runners?: ReservationistRunners;
+  tools?: ConstructorParameters<typeof Agent>[0]['tools'];
   aopSops?: Partial<Record<ReservationistDecision['workflow'], string>>;
 }) {
   return new Agent({
@@ -174,8 +175,8 @@ ${rc.get('hotelRules')}
 
 ${aopQuoteInstructions()}${sops ? `\n${sops}` : ''}`;
     },
-    model: options.model ?? createLunaModel(),
-    tools: createReservationistTools(options.runners),
+    model: options.model ?? createAzureLunaModel(),
+    tools: options.tools ?? createReservationistTools(options.runners),
   });
 }
 

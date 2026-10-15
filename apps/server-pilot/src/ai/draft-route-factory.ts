@@ -4,6 +4,7 @@ import type { AiRunFence } from './run-ledger.js';
 import type { DraftArtifactStorage, GeneratedDraftArtifact } from './drafts.js';
 import type { ReservationistRuntimeInput, runReservationistRuntime } from './reservationist-runtime.js';
 import type { LocalModelAdapterConfig, LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
+import { AzureLunaModelAdapter } from './bedrock/luna.js';
 import { createRequire } from 'node:module';
 
 /** Server-owned release identity for the configured draft-purpose route. */
@@ -25,6 +26,17 @@ export type DraftRouteAuthority = {
 };
 /** Explicit installed hosted route; this does not confer a release or source grant. */
 export type AzureDraftModelRouteEvidence = Omit<LocalModelRouteEvidence,'purpose'|'protocol'|'egress'> & {purpose:'draft';protocol:'azure-foundry-responses';egress:'azure-foundry'};
+
+export const AZURE_DRAFT_ROUTE: AzureDraftModelRouteEvidence = {
+  routeId: 'azure_luna_max',
+  purpose: 'draft',
+  protocol: 'azure-foundry-responses',
+  access: 'current_app',
+  egress: 'azure-foundry',
+  retention: 'bounded',
+  usage: 'reported',
+  modelId: 'gpt-6-luna',
+};
 
 export type ReservationistProviderContext = {
   db: DB; transportId: string; threadId: string; requestedByUserId: string;
@@ -185,32 +197,71 @@ function parseConfiguredDraftRouteDescriptor(): ConfiguredDraftRouteDescriptor |
   }
 }
 
+function createAzureDraftModelRoute(): DraftModelRouteConfig {
+  const adapter = new AzureLunaModelAdapter();
+  return {
+    route: AZURE_DRAFT_ROUTE,
+    async transport(request) {
+      const result = await adapter.invoke({
+        modelId: request.modelId,
+        systemPrompt: request.systemPrompt,
+        userPrompt: request.userPrompt,
+        ...(request.files?.length ? { files: request.files } : {}),
+        ...(request.images?.length ? { images: request.images } : {}),
+        ...(request.maxOutputTokens ? { maxOutputTokens: request.maxOutputTokens } : {}),
+        ...(request.maxInputBytes ? { maxInputBytes: request.maxInputBytes } : {}),
+        responseSchema: request.responseSchema,
+        signal: request.signal,
+      });
+      return {
+        output: result.output,
+        usage: {
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          latencyMs: result.usage.latencyMs,
+        },
+      };
+    },
+  };
+}
+
 /**
- * Load only an explicitly installed, purpose-bound in-process route. A
- * missing or malformed descriptor remains unavailable; it never creates a
- * hosted client, infers a transport, or silently changes workflow purpose.
+ * Load an explicitly installed in-process route, else Azure GPT-6 Luna.
+ * Missing Azure env fails loud; it never falls back to a playbook or Bedrock.
  */
 export function loadConfiguredDraftModelRoute(): DraftModelRouteConfig | undefined {
-  if (process.env.AI_MODEL_ROUTE !== 'approved-local') return undefined;
-  const descriptor = parseConfiguredDraftRouteDescriptor();
-  if (!descriptor || !isActiveDraftRouteRelease(descriptor.release)) return undefined;
-  try {
-    const loaded = createRequire(import.meta.url)(descriptor.module) as ConfiguredDraftRouteModule;
-    const configured = loaded.createDraftModelRoute
-      ? loaded.createDraftModelRoute()
-      : loaded.createApprovedLocalDraftRoute
-        ? loaded.createApprovedLocalDraftRoute()
-        : (loaded.default ?? loaded);
-    if (!isDraftRouteConfig(configured) || !sameRouteEvidence(configured.route, descriptor.route)) {
-      return undefined;
+  if (process.env.AI_MODEL_ROUTE === 'approved-local') {
+    const descriptor = parseConfiguredDraftRouteDescriptor();
+    if (descriptor && isActiveDraftRouteRelease(descriptor.release)) {
+      try {
+        const loaded = createRequire(import.meta.url)(descriptor.module) as ConfiguredDraftRouteModule;
+        const configured = loaded.createDraftModelRoute
+          ? loaded.createDraftModelRoute()
+          : loaded.createApprovedLocalDraftRoute
+            ? loaded.createApprovedLocalDraftRoute()
+            : (loaded.default ?? loaded);
+        if (isDraftRouteConfig(configured) && sameRouteEvidence(configured.route, descriptor.route)) {
+          if (!configured.release || sameDraftRouteRelease(configured.release, descriptor.release)) {
+            return { ...configured, release: descriptor.release };
+          }
+        }
+      } catch {
+        // Fall through to the Azure default rather than a silent playbook.
+      }
     }
-    if (configured.release && !sameDraftRouteRelease(configured.release, descriptor.release)) {
-      return undefined;
-    }
-    return { ...configured, release: descriptor.release };
-  } catch {
-    return undefined;
   }
+  return createAzureDraftModelRoute();
+}
+
+/** Enqueue labels only — does not construct a client. */
+export function draftRouteEnqueueLabels(): { modelId: string } {
+  if (process.env.AI_MODEL_ROUTE === 'approved-local') {
+    const descriptor = parseConfiguredDraftRouteDescriptor();
+    if (descriptor && isActiveDraftRouteRelease(descriptor.release)) {
+      return { modelId: descriptor.route.modelId };
+    }
+  }
+  return { modelId: AZURE_DRAFT_ROUTE.modelId };
 }
 
 /** Current server-owned authority used when revalidating a reviewed draft. */
