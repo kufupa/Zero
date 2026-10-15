@@ -52,6 +52,15 @@ describe('matchPaymentProof', () => {
     expect(result.score).toBeGreaterThan(0);
   });
 
+  it('never salvages the base of a malformed leg token into a match on another leg', () => {
+    const result = matchPaymentProof({
+      pop: pop({ reference: 'EFT 9999901-1A' }),
+      candidates: [{ ...stay, confirmationNumber: '9999901-2' }],
+    });
+    expect(result.status).not.toBe('exact');
+    expect(result.confirmationNumber).toBeNull();
+  });
+
   it('does not treat a confirmation number as a digit substring of the reference', () => {
     const result = matchPaymentProof({
       pop: pop({ reference: 'EFT 0123456' }),

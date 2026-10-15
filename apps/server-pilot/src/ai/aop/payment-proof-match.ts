@@ -61,7 +61,8 @@ const SCORE_DATE = 1;
 const MIN_EXACT = SCORE_NAME;
 const STATED_CONF_NOT_FOUND = 'stated_conf_not_found';
 const BASE_CONF = /^\d{6,10}$/;
-const STATED_CONF_TOKEN = /(?<![A-Za-z0-9])(\d{6,10}-\d+|\d{6,10})(?![A-Za-z0-9])/g;
+// A base never stands in for a malformed leg: "9999901-1A" yields no token, not the base 9999901.
+const STATED_CONF_TOKEN = /(?<![A-Za-z0-9-])(\d{6,10}-\d{1,2}|\d{6,10})(?![A-Za-z0-9]|-[A-Za-z0-9])/g;
 
 type Candidate = MatchPaymentProofInput['candidates'][number];
 type Scored = {
