@@ -20,6 +20,7 @@ import {
   type ReservationistDecision,
   type ReservationistRunners,
 } from '../../src/ai/reservationist-agent.js';
+import { assertNotTestSplit } from './split.js';
 
 const SCORABLE = new Set(['confirmationNumber', 'arrivalDate', 'departureDate', 'rooms', 'adults']);
 
@@ -165,6 +166,7 @@ export async function runReservationistEvalAgent(
   deps: AgentEvalDeps = {},
 ): Promise<{ decision: ReservationistDecision | null; tools: string[]; error?: string }> {
   try {
+    assertNotTestSplit(row);
     const model = (deps.createModel ?? createAzureLunaModel)();
     const runners = deps.runners ?? stubHmsRunners();
     const aopSops = deps.aopSops && agentAcceptsAopSops() ? deps.aopSops : undefined;

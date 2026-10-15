@@ -11,6 +11,15 @@ import {
   runReservationistEvalAgent,
   type AgentEvalDeps,
 } from './score-row.js';
+import {
+  LOCKED_TEST_SPLIT,
+  assertNotTestSplit,
+  evalTestSplitUnlocked,
+  isLockedTestSplit,
+  rowMessageId,
+  warnUnlockedTestSplit,
+  type SplitTaggedRow,
+} from './split.js';
 
 export type AgentReplayDeps = AgentEvalDeps;
 export type AgentPromptfooTest = {
@@ -29,7 +38,7 @@ export type AgentPromptfooTest = {
 export type AgentEvalGenerateCli = {
   labelsPath: string;
   pairsPath: string;
-  split: 'train' | 'dev';
+  split: 'train' | 'dev' | 'test';
   limit: number;
   offset: number;
   sops?: string;
@@ -53,8 +62,12 @@ function loadSops(sopsPath: string, readFile?: AgentReplayDeps['readFile']): Rec
 function loadSnapshotRow(pairsPath: string, messageId: string, readFile?: AgentReplayDeps['readFile']): SnapshotRow {
   for (const line of readUtf8(pairsPath, readFile).split('\n')) {
     if (!line.trim()) continue;
-    const row = JSON.parse(line) as SnapshotRow;
-    if (row.inbound?.id === messageId) return row;
+    const row = JSON.parse(line) as SnapshotRow & SplitTaggedRow;
+    const id = rowMessageId(row);
+    if (!id) continue;
+    if (id !== messageId) continue;
+    assertNotTestSplit(row);
+    return row;
   }
   throw new Error(`snapshot row not found: ${messageId}`);
 }
@@ -109,8 +122,13 @@ export function parseAgentEvalGenerateCli(argv: readonly string[]): AgentEvalGen
     else if (flag === '--pairs') out.pairsPath = take();
     else if (flag === '--split') {
       const split = take();
-      if (split === 'test') throw new Error('never generate the test split');
-      if (split !== 'train' && split !== 'dev') throw new Error('--split must be train|dev');
+      if (split !== 'train' && split !== 'dev' && split !== 'test') {
+        throw new Error('--split must be train|dev');
+      }
+      if (split === 'test') {
+        if (!evalTestSplitUnlocked()) throw new Error(LOCKED_TEST_SPLIT);
+        warnUnlockedTestSplit();
+      }
       out.split = split;
     } else if (flag === '--limit') out.limit = Number(take());
     else if (flag === '--offset') out.offset = Number(take());
@@ -131,13 +149,23 @@ export function generateAgentPromptfooTests(
   cli: Omit<AgentEvalGenerateCli, 'outPath'>,
   deps: Pick<AgentReplayDeps, 'readFile'> = {},
 ): { tests: AgentPromptfooTest[] } {
-  const splits = new Map<string, string | undefined>();
+  if (cli.split === 'test') {
+    if (!evalTestSplitUnlocked()) throw new Error(LOCKED_TEST_SPLIT);
+    warnUnlockedTestSplit();
+  }
+  const allowed = new Set<string>();
+  const testIds = new Set<string>();
   for (const line of readUtf8(cli.pairsPath, deps.readFile).split('\n')) {
     if (!line.trim()) continue;
-    const row = JSON.parse(line) as { split?: unknown; inbound?: { id?: unknown } };
-    if (typeof row.inbound?.id === 'string' && row.inbound.id) {
-      splits.set(row.inbound.id, typeof row.split === 'string' ? row.split : undefined);
+    const row = JSON.parse(line) as SplitTaggedRow;
+    const id = rowMessageId(row);
+    if (!id) continue;
+    if (isLockedTestSplit(row)) {
+      testIds.add(id);
+      if (cli.split === 'test') allowed.add(id);
+      continue;
     }
+    if (row.split === cli.split) allowed.add(id);
   }
   const tests: AgentPromptfooTest[] = [];
   for (const line of readUtf8(cli.labelsPath, deps.readFile).split('\n')) {
@@ -151,7 +179,9 @@ export function generateAgentPromptfooTests(
       workflow?: string;
     };
     const messageId = (row.message_id ?? row.messageId)?.trim();
-    if (!messageId || !splits.has(messageId) || splits.get(messageId) !== cli.split) continue;
+    if (!messageId) continue;
+    if (cli.split !== 'test' && testIds.has(messageId)) continue;
+    if (!allowed.has(messageId)) continue;
     const workflow = row.workflow || 'unknown';
     tests.push({
       description: messageId,
