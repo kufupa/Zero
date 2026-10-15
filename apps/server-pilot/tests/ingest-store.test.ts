@@ -24,6 +24,14 @@ import {
 import type { DB } from '../src/db/client';
 import { readFixture } from './helpers/fixtures';
 import { DAVINCI_MAILBOX_IDENTITIES } from '../src/hms/mailbox-hms-origin-bind';
+import {
+  AYANDA_MAILBOX_IDENTITIES,
+  AYANDA_TRANSPORT_DISPLAY_NAME,
+  AYANDA_TRANSPORT_ID,
+  FAITH_MAILBOX_IDENTITIES,
+  FAITH_TRANSPORT_DISPLAY_NAME,
+  FAITH_TRANSPORT_ID,
+} from '../src/db/seed';
 
 const reachable = await probeTestDb();
 
@@ -62,16 +70,23 @@ async function seedCenturionAliases(db: DB): Promise<void> {
     .where(eq(mailboxTransport.id, 'transport-centurion'));
 }
 
-async function seedDavinciIdentities(db: DB): Promise<void> {
-  const [email, ...aliases] = DAVINCI_MAILBOX_IDENTITIES;
+async function seedHotelMailboxIdentities(
+  db: DB,
+  spec: {
+    id: string;
+    identities: readonly string[];
+    displayName: string;
+  },
+): Promise<void> {
+  const [email, ...aliases] = spec.identities;
   await db
     .insert(mailboxTransport)
     .values({
-      id: 'transport-davinci',
+      id: spec.id,
       email,
       ownerHeaderValue: email,
       mailboxType: 'personal',
-      displayName: 'Da Vinci Hotel Reservations',
+      displayName: spec.displayName,
       isActive: true,
       sendFromConfig: { aliases: [...aliases] },
     })
@@ -84,6 +99,30 @@ async function seedDavinciIdentities(db: DB): Promise<void> {
         isActive: true,
       },
     });
+}
+
+async function seedDavinciIdentities(db: DB): Promise<void> {
+  await seedHotelMailboxIdentities(db, {
+    id: 'transport-davinci',
+    identities: DAVINCI_MAILBOX_IDENTITIES,
+    displayName: 'Da Vinci Hotel Reservations',
+  });
+}
+
+async function seedFaithIdentities(db: DB): Promise<void> {
+  await seedHotelMailboxIdentities(db, {
+    id: FAITH_TRANSPORT_ID,
+    identities: FAITH_MAILBOX_IDENTITIES,
+    displayName: FAITH_TRANSPORT_DISPLAY_NAME,
+  });
+}
+
+async function seedAyandaIdentities(db: DB): Promise<void> {
+  await seedHotelMailboxIdentities(db, {
+    id: AYANDA_TRANSPORT_ID,
+    identities: AYANDA_MAILBOX_IDENTITIES,
+    displayName: AYANDA_TRANSPORT_DISPLAY_NAME,
+  });
 }
 
 /** Missing X-Zero-Mailbox, To not a known transport — quarantine path. */
@@ -650,6 +689,210 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           expect(result.kind).toBe('stored');
           if (result.kind !== 'stored') return;
           expect(result.transportId).toBe('transport-davinci');
+          expect(stored?.direction).toBe('inbound');
+        });
+      },
+      30000,
+    );
+
+    it.each([...FAITH_MAILBOX_IDENTITIES])(
+      'Faith From %s to guest is hotel-sent outbound on transport-faith',
+      async (fromAddress) => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            `From: ${fromAddress}`,
+            'To: guest@example.com',
+            'Subject: faith outbound copy',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'Hotel sent copy on sink.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const { result, stored } = await withSeededTestDb(async (db) => {
+            await seedFaithIdentities(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            const r = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: `uidl-faith-from-${fromAddress}`,
+                messageId,
+              },
+              { db, storage },
+            );
+            if (r.kind !== 'stored') {
+              return { result: r, stored: undefined };
+            }
+            const messages = await db
+              .select()
+              .from(message)
+              .where(eq(message.id, r.messageId));
+            return { result: r, stored: messages[0] };
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe(FAITH_TRANSPORT_ID);
+          expect(stored?.direction).toBe('outbound');
+        });
+      },
+      30000,
+    );
+
+    it(
+      'R6: pmbobo@ From to Faith is inbound, not hotel-sent outbound',
+      async () => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            'From: pmbobo@legacyhotels.co.za',
+            `To: ${FAITH_MAILBOX_IDENTITIES[0]}`,
+            'Subject: staff note to faith inbox',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'Not a Faith hotel-sent outbound.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const { result, stored } = await withSeededTestDb(async (db) => {
+            await seedFaithIdentities(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            const r = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-r6-pmbobo-faith',
+                messageId,
+              },
+              { db, storage },
+            );
+            if (r.kind !== 'stored') {
+              return { result: r, stored: undefined };
+            }
+            const messages = await db
+              .select()
+              .from(message)
+              .where(eq(message.id, r.messageId));
+            return { result: r, stored: messages[0] };
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe(FAITH_TRANSPORT_ID);
+          expect(stored?.direction).toBe('inbound');
+        });
+      },
+      30000,
+    );
+
+    it.each([...AYANDA_MAILBOX_IDENTITIES])(
+      'Ayanda From %s to guest is hotel-sent outbound on transport-ayanda',
+      async (fromAddress) => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            `From: ${fromAddress}`,
+            'To: guest@example.com',
+            'Subject: ayanda outbound copy',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'Hotel sent copy on sink.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const { result, stored } = await withSeededTestDb(async (db) => {
+            await seedAyandaIdentities(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            const r = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: `uidl-ayanda-from-${fromAddress}`,
+                messageId,
+              },
+              { db, storage },
+            );
+            if (r.kind !== 'stored') {
+              return { result: r, stored: undefined };
+            }
+            const messages = await db
+              .select()
+              .from(message)
+              .where(eq(message.id, r.messageId));
+            return { result: r, stored: messages[0] };
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe(AYANDA_TRANSPORT_ID);
+          expect(stored?.direction).toBe('outbound');
+        });
+      },
+      30000,
+    );
+
+    it(
+      'R6: pmbobo@ From to Ayanda is inbound, not hotel-sent outbound',
+      async () => {
+        const storage = withFakeS3();
+        const raw = Buffer.from(
+          [
+            'From: pmbobo@legacyhotels.co.za',
+            `To: ${AYANDA_MAILBOX_IDENTITIES[0]}`,
+            'Subject: staff note to ayanda inbox',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=utf-8',
+            '',
+            'Not an Ayanda hotel-sent outbound.',
+          ].join('\r\n'),
+          'utf-8',
+        );
+
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const { result, stored } = await withSeededTestDb(async (db) => {
+            await seedAyandaIdentities(db);
+            const messageId = generateMessageId();
+            const parsed = await parseRawMessage(raw, { messageId, storage });
+            const r = await persistInboundMessage(
+              parsed,
+              raw,
+              {
+                ingestMailboxId: 'ingest-nava-legacy',
+                pop3Uidl: 'uidl-r6-pmbobo-ayanda',
+                messageId,
+              },
+              { db, storage },
+            );
+            if (r.kind !== 'stored') {
+              return { result: r, stored: undefined };
+            }
+            const messages = await db
+              .select()
+              .from(message)
+              .where(eq(message.id, r.messageId));
+            return { result: r, stored: messages[0] };
+          });
+
+          expect(result.kind).toBe('stored');
+          if (result.kind !== 'stored') return;
+          expect(result.transportId).toBe(AYANDA_TRANSPORT_ID);
           expect(stored?.direction).toBe('inbound');
         });
       },

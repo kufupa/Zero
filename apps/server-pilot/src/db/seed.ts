@@ -76,6 +76,30 @@ export const DAVINCI_TRANSPORT_OWNER_HEADER = DAVINCI_MAILBOX_IDENTITIES[0];
 export const DAVINCI_TRANSPORT_DISPLAY_NAME = 'Da Vinci Hotel Reservations';
 export const DAVINCI_TRANSPORT_ALIASES = DAVINCI_MAILBOX_IDENTITIES.slice(1);
 
+/** Faith hotel mailbox + documented domain spellings. Not HMS origin; not TRANSPORT_ALIASES. */
+export const FAITH_MAILBOX_IDENTITIES = [
+  'fkhumalo@legacyhotels.co.za',
+  'fkhumalo@legacyhotels.com',
+  'fkhumalo@legacyhotel.com',
+] as const;
+export const FAITH_TRANSPORT_ID = 'transport-faith';
+export const FAITH_TRANSPORT_EMAIL = FAITH_MAILBOX_IDENTITIES[0];
+export const FAITH_TRANSPORT_OWNER_HEADER = FAITH_MAILBOX_IDENTITIES[0];
+export const FAITH_TRANSPORT_DISPLAY_NAME = 'Faith Hotel Reservations';
+export const FAITH_TRANSPORT_ALIASES = FAITH_MAILBOX_IDENTITIES.slice(1);
+
+/** Ayanda hotel mailbox (adladla) + documented domain spellings. Not HMS origin; not TRANSPORT_ALIASES. */
+export const AYANDA_MAILBOX_IDENTITIES = [
+  'adladla@legacyhotels.co.za',
+  'adladla@legacyhotels.com',
+  'adladla@legacyhotel.com',
+] as const;
+export const AYANDA_TRANSPORT_ID = 'transport-ayanda';
+export const AYANDA_TRANSPORT_EMAIL = AYANDA_MAILBOX_IDENTITIES[0];
+export const AYANDA_TRANSPORT_OWNER_HEADER = AYANDA_MAILBOX_IDENTITIES[0];
+export const AYANDA_TRANSPORT_DISPLAY_NAME = 'Ayanda Hotel Reservations';
+export const AYANDA_TRANSPORT_ALIASES = AYANDA_MAILBOX_IDENTITIES.slice(1);
+
 export type SeedResult = {
   pilotCredentials: Record<string, { password: string }>;
   transportCount: number;
@@ -91,6 +115,41 @@ export type SeedOptions = {
 
 function credentialAccountId(specId: string): string {
   return `cred-${specId}`;
+}
+
+async function upsertHotelMailboxTransport(
+  db: DB,
+  spec: {
+    id: string;
+    email: string;
+    ownerHeaderValue: string;
+    displayName: string;
+    aliases: readonly string[];
+  },
+): Promise<void> {
+  await db
+    .insert(mailboxTransport)
+    .values({
+      id: spec.id,
+      email: spec.email,
+      ownerHeaderValue: spec.ownerHeaderValue,
+      mailboxType: 'personal',
+      displayName: spec.displayName,
+      isActive: true,
+      sendFromConfig: { aliases: [...spec.aliases] },
+    })
+    .onConflictDoUpdate({
+      target: mailboxTransport.id,
+      set: {
+        email: spec.email,
+        ownerHeaderValue: spec.ownerHeaderValue,
+        mailboxType: 'personal',
+        displayName: spec.displayName,
+        isActive: true,
+        sendFromConfig: { aliases: [...spec.aliases] },
+        updatedAt: new Date(),
+      },
+    });
 }
 
 function pilotUserIds(): string[] {
@@ -206,29 +265,27 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
       },
     });
 
-  await db
-    .insert(mailboxTransport)
-    .values({
-      id: DAVINCI_TRANSPORT_ID,
-      email: DAVINCI_TRANSPORT_EMAIL,
-      ownerHeaderValue: DAVINCI_TRANSPORT_OWNER_HEADER,
-      mailboxType: 'personal',
-      displayName: DAVINCI_TRANSPORT_DISPLAY_NAME,
-      isActive: true,
-      sendFromConfig: { aliases: [...DAVINCI_TRANSPORT_ALIASES] },
-    })
-    .onConflictDoUpdate({
-      target: mailboxTransport.id,
-      set: {
-        email: DAVINCI_TRANSPORT_EMAIL,
-        ownerHeaderValue: DAVINCI_TRANSPORT_OWNER_HEADER,
-        mailboxType: 'personal',
-        displayName: DAVINCI_TRANSPORT_DISPLAY_NAME,
-        isActive: true,
-        sendFromConfig: { aliases: [...DAVINCI_TRANSPORT_ALIASES] },
-        updatedAt: new Date(),
-      },
-    });
+  await upsertHotelMailboxTransport(db, {
+    id: DAVINCI_TRANSPORT_ID,
+    email: DAVINCI_TRANSPORT_EMAIL,
+    ownerHeaderValue: DAVINCI_TRANSPORT_OWNER_HEADER,
+    displayName: DAVINCI_TRANSPORT_DISPLAY_NAME,
+    aliases: DAVINCI_TRANSPORT_ALIASES,
+  });
+  await upsertHotelMailboxTransport(db, {
+    id: FAITH_TRANSPORT_ID,
+    email: FAITH_TRANSPORT_EMAIL,
+    ownerHeaderValue: FAITH_TRANSPORT_OWNER_HEADER,
+    displayName: FAITH_TRANSPORT_DISPLAY_NAME,
+    aliases: FAITH_TRANSPORT_ALIASES,
+  });
+  await upsertHotelMailboxTransport(db, {
+    id: AYANDA_TRANSPORT_ID,
+    email: AYANDA_TRANSPORT_EMAIL,
+    ownerHeaderValue: AYANDA_TRANSPORT_OWNER_HEADER,
+    displayName: AYANDA_TRANSPORT_DISPLAY_NAME,
+    aliases: AYANDA_TRANSPORT_ALIASES,
+  });
 
   await db
     .insert(mailboxTransport)
@@ -330,6 +387,8 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
 
   await seedSpamLabel(db, TRANSPORT_ID);
   await seedSpamLabel(db, DAVINCI_TRANSPORT_ID);
+  await seedSpamLabel(db, FAITH_TRANSPORT_ID);
+  await seedSpamLabel(db, AYANDA_TRANSPORT_ID);
   await seedSpamLabel(db, NAVA_TRANSPORT_ID);
 
   const activeTransportRows = await db

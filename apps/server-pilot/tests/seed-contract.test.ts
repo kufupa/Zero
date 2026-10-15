@@ -34,6 +34,16 @@ import {
   DAVINCI_TRANSPORT_EMAIL,
   DAVINCI_TRANSPORT_ALIASES,
   DAVINCI_TRANSPORT_DISPLAY_NAME,
+  FAITH_MAILBOX_IDENTITIES,
+  FAITH_TRANSPORT_ID,
+  FAITH_TRANSPORT_EMAIL,
+  FAITH_TRANSPORT_ALIASES,
+  FAITH_TRANSPORT_DISPLAY_NAME,
+  AYANDA_MAILBOX_IDENTITIES,
+  AYANDA_TRANSPORT_ID,
+  AYANDA_TRANSPORT_EMAIL,
+  AYANDA_TRANSPORT_ALIASES,
+  AYANDA_TRANSPORT_DISPLAY_NAME,
 } from '../src/db/seed';
 import { DAVINCI_MAILBOX_IDENTITIES } from '../src/hms/mailbox-hms-origin-bind';
 import * as pilotSeed from '../src/db/seed';
@@ -86,6 +96,29 @@ describe('seed identity constants', () => {
     );
     expect(TRANSPORT_ALIASES.every((alias) => alias.startsWith('centurion@'))).toBe(
       true,
+    );
+  });
+
+  it('keeps Faith and Ayanda hotel-mailbox identities off TRANSPORT_ALIASES and Da Vinci HMS origin', () => {
+    expect(FAITH_TRANSPORT_ID).toBe('transport-faith');
+    expect(FAITH_TRANSPORT_EMAIL).toBe(FAITH_MAILBOX_IDENTITIES[0]);
+    expect(FAITH_TRANSPORT_ALIASES).toEqual(FAITH_MAILBOX_IDENTITIES.slice(1));
+    expect(FAITH_TRANSPORT_DISPLAY_NAME).toBe('Faith Hotel Reservations');
+    expect(AYANDA_TRANSPORT_ID).toBe('transport-ayanda');
+    expect(AYANDA_TRANSPORT_EMAIL).toBe(AYANDA_MAILBOX_IDENTITIES[0]);
+    expect(AYANDA_TRANSPORT_ALIASES).toEqual(AYANDA_MAILBOX_IDENTITIES.slice(1));
+    expect(AYANDA_TRANSPORT_DISPLAY_NAME).toBe('Ayanda Hotel Reservations');
+    expect(TRANSPORT_ALIASES).not.toEqual(
+      expect.arrayContaining([
+        ...FAITH_MAILBOX_IDENTITIES,
+        ...AYANDA_MAILBOX_IDENTITIES,
+      ]),
+    );
+    expect(DAVINCI_MAILBOX_IDENTITIES).not.toEqual(
+      expect.arrayContaining([
+        ...FAITH_MAILBOX_IDENTITIES,
+        ...AYANDA_MAILBOX_IDENTITIES,
+      ]),
     );
   });
 });
@@ -288,7 +321,65 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.transport!.mailboxType).toBe('personal');
         expect(outcome.transport!.isActive).toBe(true);
         expect(outcome.transport!.sendFromConfig).toEqual({
-          aliases: [...DAVINCI_MAILBOX_IDENTITIES.slice(1)],
+          aliases: DAVINCI_MAILBOX_IDENTITIES.slice(1),
+        });
+        expect(outcome.access).toEqual([]);
+      },
+      30000,
+    );
+
+    it(
+      'seeds transport-faith with Faith mailbox identities and grants nobody',
+      async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          const rows = await db
+            .select()
+            .from(mailboxTransport)
+            .where(eq(mailboxTransport.id, FAITH_TRANSPORT_ID));
+          const access = await db
+            .select({ userId: mailboxAccess.userId })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.transportId, FAITH_TRANSPORT_ID));
+          return { transport: rows[0], access };
+        });
+        expect(outcome.transport).toBeDefined();
+        expect(outcome.transport!.id).toBe('transport-faith');
+        expect(outcome.transport!.email).toBe(FAITH_MAILBOX_IDENTITIES[0]);
+        expect(outcome.transport!.ownerHeaderValue).toBe(FAITH_MAILBOX_IDENTITIES[0]);
+        expect(outcome.transport!.displayName).toBe('Faith Hotel Reservations');
+        expect(outcome.transport!.mailboxType).toBe('personal');
+        expect(outcome.transport!.isActive).toBe(true);
+        expect(outcome.transport!.sendFromConfig).toEqual({
+          aliases: FAITH_MAILBOX_IDENTITIES.slice(1),
+        });
+        expect(outcome.access).toEqual([]);
+      },
+      30000,
+    );
+
+    it(
+      'seeds transport-ayanda with Ayanda mailbox identities and grants nobody',
+      async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          const rows = await db
+            .select()
+            .from(mailboxTransport)
+            .where(eq(mailboxTransport.id, AYANDA_TRANSPORT_ID));
+          const access = await db
+            .select({ userId: mailboxAccess.userId })
+            .from(mailboxAccess)
+            .where(eq(mailboxAccess.transportId, AYANDA_TRANSPORT_ID));
+          return { transport: rows[0], access };
+        });
+        expect(outcome.transport).toBeDefined();
+        expect(outcome.transport!.id).toBe('transport-ayanda');
+        expect(outcome.transport!.email).toBe(AYANDA_MAILBOX_IDENTITIES[0]);
+        expect(outcome.transport!.ownerHeaderValue).toBe(AYANDA_MAILBOX_IDENTITIES[0]);
+        expect(outcome.transport!.displayName).toBe('Ayanda Hotel Reservations');
+        expect(outcome.transport!.mailboxType).toBe('personal');
+        expect(outcome.transport!.isActive).toBe(true);
+        expect(outcome.transport!.sendFromConfig).toEqual({
+          aliases: AYANDA_MAILBOX_IDENTITIES.slice(1),
         });
         expect(outcome.access).toEqual([]);
       },
@@ -492,6 +583,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           'transport-centurion',
           'transport-nava',
           DAVINCI_TRANSPORT_ID,
+          FAITH_TRANSPORT_ID,
+          AYANDA_TRANSPORT_ID,
         ]) {
           for (const slug of AI_MANAGED_CATEGORY_SLUGS) {
             expect(categories).toContainEqual({ transportId, slug });

@@ -8,7 +8,7 @@
  *      `message` + `attachment` rows).
  *   3. If the header is missing, try direct `To` match against active transport
  *      emails; when `INGEST_REQUIRE_OWNER_HEADER=false`, also match hotel
- *      transport email/aliases (Centurion, Da Vinci) on To/Cc/Bcc/From. On miss quarantine with
+ *      transport email/aliases (Centurion, Da Vinci, Faith, Ayanda) on To/Cc/Bcc/From. On miss quarantine with
  *      reason `missing_owner_header`. If the header is present but no matching
  *      transport (owner header or alias) -> quarantine with reason
  *      `unknown_transport`.
@@ -78,7 +78,14 @@ import type { DB } from '../../db/client.js';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
 const DAVINCI_TRANSPORT_ID = 'transport-davinci';
-const HOTEL_EQUATED_TRANSPORT_IDS = [CENTURION_TRANSPORT_ID, DAVINCI_TRANSPORT_ID] as const;
+const FAITH_TRANSPORT_ID = 'transport-faith';
+const AYANDA_TRANSPORT_ID = 'transport-ayanda';
+const HOTEL_EQUATED_TRANSPORT_IDS = [
+  CENTURION_TRANSPORT_ID,
+  DAVINCI_TRANSPORT_ID,
+  FAITH_TRANSPORT_ID,
+  AYANDA_TRANSPORT_ID,
+] as const;
 export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
 export const CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT = 500;
 const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS = 1_000;
