@@ -46,9 +46,9 @@ function buildUnanimousDomainMap(domains: readonly DomainTruth[]) {
 }
 
 function candidateForMap(name: string, kind: PartyMatchKind): PartyMatchCandidate {
-  // Prototype only: unanimous, repeated historical labels are treated as a strong claim. The
-  // production binder remains unchanged and still enforces kind/name/uniqueness/truncation gates.
-  return { name, kind, source: 'sender_domain_label', strength: 'strong' };
+  // Repeated in-sample labels are not independent staff-confirmed evidence. Keep the candidate weak
+  // so sender-domain history can improve retrieval but cannot bypass the production bind gate.
+  return { name, kind, source: 'sender_domain_label', strength: 'weak' };
 }
 
 function expectedMatch(
@@ -136,9 +136,14 @@ function metrics(rows: Awaited<ReturnType<typeof scoreTestEmail>>[], total: numb
   let perfectCorrect = 0;
   let retrieved = 0;
   let pickerRows = 0;
+  const perfectGateRejections = new Map<string, number>();
   for (const row of rows) {
     if (row.truthRetrieved) retrieved += 1;
     if (row.truthInPickerRows) pickerRows += 1;
+    if (row.truthInPickerRows && !row.perfectDecision.boundParty) {
+      const reason = row.perfectDecision.reason;
+      perfectGateRejections.set(reason, (perfectGateRejections.get(reason) ?? 0) + 1);
+    }
     if (row.perfectDecision.boundParty) {
       perfectBinds += 1;
       if (expectedMatch(row.perfectDecision.boundParty, row.testEmail.expected))
@@ -157,6 +162,9 @@ function metrics(rows: Awaited<ReturnType<typeof scoreTestEmail>>[], total: numb
     rate: `${((binds / total) * 100).toFixed(1)}% (${binds}/${total})`,
     retrieved: `${retrieved}/${total}`,
     pickerRows: `${pickerRows}/${total}`,
+    perfectGateRejections: [...perfectGateRejections.entries()].sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
   };
 }
 
@@ -216,10 +224,15 @@ async function main() {
       '| Scenario | Auto-bind | Correct binds | Precision | Truth retrieved | Truth in picker rows |',
       '| --- | ---: | ---: | ---: | ---: | ---: |',
       `| Existing scorer | ${before.rate} | ${before.correct}/${before.binds} | ${before.precision} | ${before.retrieved} | ${before.pickerRows} |`,
-      `| + unanimous domain candidate | ${after.rate} | ${after.correct}/${after.binds} | ${after.precision} | ${after.retrieved} | ${after.pickerRows} |`,
+      `| + weak unanimous-domain candidate | ${after.rate} | ${after.correct}/${after.binds} | ${after.precision} | ${after.retrieved} | ${after.pickerRows} |`,
       '',
       `Net auto-bind change: ${bindGain >= 0 ? '+' : ''}${bindGain}/${sample.selected.length}; precision ${precisionDelta}.`,
       `Perfect-picker ceiling (same strict bind gate): ${before.perfectCorrect}/${sample.selected.length} → ${after.perfectCorrect}/${sample.selected.length}.`,
+      '',
+      'Perfect-picker gate rejections despite expected truth in picker rows (aggregate reasons):',
+      '| Gate reason | Cases |',
+      '| --- | ---: |',
+      ...before.perfectGateRejections.map(([reason, count]) => `| ${reason} | ${count} |`),
       '',
       'Reconstructed no-retrieval miss signatures (heuristics over extracted candidates; not the missing live-picker trace):',
       '| Category | Cases |',
