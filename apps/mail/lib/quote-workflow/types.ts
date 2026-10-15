@@ -199,6 +199,7 @@ export type QuoteAnalysis = {
     steps: Array<{ label: string; value: string | null; source: 'mail' | 'attachment' | 'missing' }>;
     missing: string[];
     writesEnabled: false;
+    prefill?: { fields: Array<{ label: string; value: string }>; stillNeeded: string[] };
   } | null;
   /** The email came from an automated mailbox staff cannot answer. The pane hides Insert draft for it. */
   noReplySender?: boolean;

@@ -93,6 +93,35 @@ describe('HmsTodoCard', () => {
     const { container } = render(<HmsTodoCard card={null} />);
     expect(container.innerHTML).toBe('');
   });
+
+  it('renders HMS fields and Still needed when prefill is present, nothing extra when absent', () => {
+    const { rerender } = render(
+      <HmsTodoCard
+        card={{
+          ...NEW_BOOKING,
+          prefill: {
+            fields: [
+              { label: 'Room type', value: 'STQN' },
+              { label: 'Rate plan', value: 'BAR' },
+            ],
+            stillNeeded: ['Track for this booking?'],
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText('HMS fields')).toBeDefined();
+    expect(screen.getByText('Room type')).toBeDefined();
+    expect(screen.getByText('STQN')).toBeDefined();
+    expect(screen.getByText('Still needed')).toBeDefined();
+    expect(screen.getByText('Track for this booking?')).toBeDefined();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByText(/edit/i)).toBeNull();
+    expect(document.querySelectorAll('[class*="amber"], [class*="orange"]').length).toBe(0);
+
+    rerender(<HmsTodoCard card={NEW_BOOKING} />);
+    expect(screen.queryByText('HMS fields')).toBeNull();
+    expect(screen.queryByText('Still needed')).toBeNull();
+  });
 });
 
 describe('Outlook NavaPane tree', () => {

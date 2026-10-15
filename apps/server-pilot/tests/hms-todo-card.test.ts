@@ -207,6 +207,84 @@ describe('buildHmsTodoCard', () => {
     expect(labelsOf(card!)).not.toContain('Adults');
     expect(new Set(labelsOf(card!)).size).toBe(card!.steps.length);
   });
+
+  const codes = {
+    roomType: 'STQN',
+    ratePlan: 'BAR',
+    track: 'BAR',
+    sourceOfBusiness: 'Travel Agent',
+    guaranteeType: 'Guaranteed By Agent',
+    agency: 'Northwind Travel',
+    billingReference: '9999901-1',
+  };
+  const prefillOut = (
+    requests: Record<string, unknown>[],
+    missing: Array<{ field: string; question: string }> = [],
+  ) => ({
+    requests,
+    missing,
+    schemaErrors: requests.map(() => [] as string[]),
+    todoNextStep: 'Key into HMS',
+  });
+
+  it('shows HMS codes on new_booking only, once each, with stillNeeded deduped', () => {
+    const prefill = prefillOut(
+      [{ arrival: '2026-11-12', departure: '2026-11-14', adults: 2, ...codes }],
+      [
+        { field: 'track', question: 'Track for this booking?' },
+        { field: 'track', question: 'Track for this booking?' },
+        { field: 'arrival', question: 'Arrival date for this booking?' },
+        { field: 'ratePlan', question: 'Rate plan code for this booking?' },
+      ],
+    );
+    const booking = buildHmsTodoCard({
+      workflow: 'create_booking',
+      stayAsk: { arrivalDate: null, departureDate: '2026-11-14', adults: 2, rooms: 1 },
+      guestLastName: 'Labtest',
+      prefill,
+    });
+    expect(booking).toMatchObject({ kind: 'new_booking', writesEnabled: false, missing: ['Arrival'] });
+    expect(booking!.prefill).toEqual({
+      fields: [
+        { label: 'Room type', value: 'STQN' },
+        { label: 'Rate plan', value: 'BAR' },
+        { label: 'Track', value: 'BAR' },
+        { label: 'Source of business', value: 'Travel Agent' },
+        { label: 'Guarantee', value: 'Guaranteed By Agent' },
+        { label: 'Agency', value: 'Northwind Travel' },
+        { label: 'Billing reference', value: '9999901-1' },
+      ],
+      stillNeeded: ['Track for this booking?', 'Rate plan code for this booking?'],
+    });
+    expect(booking!.prefill!.fields.some((row) => /arrival|departure|adults|children|guests/i.test(row.label))).toBe(
+      false,
+    );
+
+    const rooms = buildHmsTodoCard({
+      workflow: 'create_booking',
+      stayAsk: { arrivalDate: '2026-11-12', departureDate: '2026-11-14', adults: 2, rooms: 2 },
+      prefill: prefillOut([
+        { roomType: 'STQN', track: 'BAR' },
+        { roomType: 'STWN', track: 'BAR' },
+      ]),
+    });
+    expect(rooms!.prefill?.fields).toEqual([
+      { label: 'Room type', value: 'STQN' },
+      { label: 'Track', value: 'BAR' },
+      { label: 'Room 2 room type', value: 'STWN' },
+    ]);
+
+    for (const workflow of ['amend', 'cancel'] as const) {
+      const card = buildHmsTodoCard({
+        workflow,
+        confirmationNumber: '9999901-1',
+        requestedChange: 'Change departure to 17 Nov',
+        prefill,
+      });
+      expect(card).toMatchObject({ writesEnabled: false });
+      expect(card).not.toHaveProperty('prefill');
+    }
+  });
 });
 
 describe('analyseSyncedSelection hmsTodoCard', () => {
