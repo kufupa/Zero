@@ -1,8 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RequestContext } from '@mastra/core/request-context';
-import { createTool } from '@mastra/core/tools';
-import { z } from 'zod';
 
 const analyseSelectionWithAgent = vi.hoisted(() => vi.fn());
 
@@ -24,8 +22,6 @@ import {
   CENTURION_HOTEL_RULES,
   createReservationistAgent,
   type ReservationistRunners,
-  assertAopToolsReadOnly,
-  createReservationistTools,
 } from '../src/ai/reservationist-agent.js';
 import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
 import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
@@ -185,44 +181,6 @@ describe('reservationist agent SOP and tool hooks', () => {
     const instructions = String(await agent.getInstructions({ requestContext: ctx() }));
     expect(instructions).toContain('Bind party before BAR.');
     expect(instructions).toContain('OTA and system mail: no action.');
-  });
-
-  it('merges registered aopTools into the toolset', async () => {
-    const folioRead = createTool({
-      id: 'aop_folio_read',
-      description: 'Read-only folio lookup.',
-      inputSchema: z.object({ confirmationNumber: z.string() }),
-      execute: async () => ({ ok: true }),
-    });
-    const registry = { aop_folio_read: folioRead };
-    expect(assertAopToolsReadOnly({ aop_folio_read: folioRead }, registry)).toEqual(registry);
-    const tools = createReservationistTools(fakeRunners(), { aop_folio_read: folioRead }, registry);
-    expect(Object.keys(tools).sort()).toEqual([
-      'aop_folio_read',
-      'create_reservation_dry_run',
-      'party_lookup',
-      'quote_proposal_pdf',
-      'quote_stay',
-    ]);
-  });
-
-  it('refuses aopTools that are not the exact registered objects', () => {
-    const tool = (id: string) =>
-      createTool({ id, description: 'x', inputSchema: z.object({}), execute: async () => ({}) });
-    const registered = tool('aop_folio_read');
-    // An unregistered tool under an allowed-looking id is refused.
-    expect(() =>
-      createReservationistAgent({ model: 'openai/gpt-5', runners: fakeRunners(), aopTools: { aop_folio_read: tool('aop_folio_read') } }),
-    ).toThrow(/AOP_TOOL_REFUSED/);
-    // A different object under a registered key is refused.
-    expect(() =>
-      assertAopToolsReadOnly({ aop_folio_read: tool('aop_folio_read') }, { aop_folio_read: registered }),
-    ).toThrow(/AOP_TOOL_REFUSED/);
-    for (const id of ['send_reply', 'hms_cancel_reservation']) {
-      expect(() =>
-        createReservationistAgent({ model: 'openai/gpt-5', runners: fakeRunners(), aopTools: { [id]: tool(id) } }),
-      ).toThrow(/AOP_TOOL_REFUSED/);
-    }
   });
 });
 

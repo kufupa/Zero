@@ -14,7 +14,6 @@ import { buildQuoteProposalPdf, type ProposalPdfInput } from '../quote-proposal/
 import { createLunaModel } from './bedrock/luna.js';
 import { aopQuoteInstructions } from './aop-playbook.js';
 import type { ReservationistDecision } from './reservationist-decision.js';
-import { AOP_TOOL_REGISTRY } from './aop/tool-registry.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const TOOLING = fileURLToPath(new URL('../../tooling/playwright-quote/', import.meta.url));
@@ -106,26 +105,8 @@ const createSchema = JSON.parse(readFileSync(join(TOOLING, 'create-tool.schema.j
 };
 const { shopRow: _shopRow, shop: _shop, result: _result, ...createDefs } = createSchema.$defs;
 
-/** aopTools must be the exact registered objects; names alone prove nothing about side effects. */
-export function assertAopToolsReadOnly(
-  aopTools?: Record<string, ReturnType<typeof createTool>>,
-  registry: Readonly<Record<string, ReturnType<typeof createTool>>> = AOP_TOOL_REGISTRY,
-) {
-  for (const [key, tool] of Object.entries(aopTools ?? {})) {
-    if (!Object.hasOwn(registry, key) || registry[key] !== tool) {
-      throw new Error(`AOP_TOOL_REFUSED: ${key} is not in AOP_TOOL_REGISTRY`);
-    }
-  }
-  return aopTools ?? {};
-}
-
-export function createReservationistTools(
-  runners?: ReservationistRunners,
-  aopTools?: Record<string, ReturnType<typeof createTool>>,
-  registry: Readonly<Record<string, ReturnType<typeof createTool>>> = AOP_TOOL_REGISTRY,
-) {
-  const aop = assertAopToolsReadOnly(aopTools, registry);
-  if (!runners) return { ...aop };
+export function createReservationistTools(runners?: ReservationistRunners) {
+  if (!runners) return {};
   return {
     quote_stay: createTool({
       id: 'quote_stay',
@@ -166,7 +147,6 @@ export function createReservationistTools(
         ...(await runners.validateCreate(request)),
       }),
     }),
-    ...aop,
   };
 }
 
@@ -174,7 +154,6 @@ export function createReservationistAgent(options: {
   model?: ConstructorParameters<typeof Agent>[0]['model'];
   runners?: ReservationistRunners;
   aopSops?: Partial<Record<ReservationistDecision['workflow'], string>>;
-  aopTools?: Record<string, ReturnType<typeof createTool>>;
 }) {
   return new Agent({
     id: 'reservationist',
@@ -193,7 +172,7 @@ ${rc.get('hotelRules')}
 ${aopQuoteInstructions()}${sops ? `\n${sops}` : ''}`;
     },
     model: options.model ?? createLunaModel(),
-    tools: createReservationistTools(options.runners, options.aopTools),
+    tools: createReservationistTools(options.runners),
   });
 }
 
