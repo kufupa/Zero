@@ -64,7 +64,7 @@ export type TriageModelLabels = {
 
 /** Ledger/enqueue labels for the profile `resolveModelAdapter` will actually run. */
 export function triageModelLabels(
-  env: { AI_TRIAGE_MODEL_PROFILE?: string; AI_MODEL_ID?: string } = process.env,
+  env: Record<string, string | undefined> = process.env,
 ): TriageModelLabels {
   const profile = parseAiTriageModelProfile(
     env.AI_TRIAGE_MODEL_PROFILE as MailEnv['AI_TRIAGE_MODEL_PROFILE'] | undefined,
