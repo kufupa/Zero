@@ -55,7 +55,7 @@ const KIND_ALIASES: Record<BillingDocumentAskKind, readonly string[]> = {
   pro_forma: ['pro_forma', 'pro-forma', 'proforma', 'pro forma'],
   folio: ['folio', 'guest_folio', 'guest-folio', 'guestfolio'],
   statement: ['statement'],
-  credit_note: ['credit_note', 'credit-note', 'creditnote', 'credit note', 'credit'],
+  credit_note: ['credit_note', 'credit-note', 'creditnote', 'credit note'],
 };
 
 const FILENAME_KIND_ORDER: readonly BillingDocumentAskKind[] = [
@@ -79,10 +79,11 @@ function mapKindToken(raw: string | undefined): BillingDocumentAskKind | null {
   return null;
 }
 
+// Whole words only, so "credit-card" never reads as a credit note.
 function inferKindFromFilename(filename: string): BillingDocumentAskKind | null {
-  const name = filename.toLowerCase();
+  const name = ` ${filename.toLowerCase().replace(/[^a-z0-9]+/g, ' ')} `;
   for (const ask of FILENAME_KIND_ORDER) {
-    if (KIND_ALIASES[ask].some((alias) => name.includes(alias))) return ask;
+    if (KIND_ALIASES[ask].some((alias) => name.includes(` ${alias.replace(/[^a-z0-9]+/g, ' ')} `))) return ask;
   }
   return null;
 }
@@ -117,7 +118,7 @@ function rowHasConf(row: BillingDocumentRow, stated: StatedConf): boolean {
     const escaped = stated.raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`, 'i').test(text);
   }
-  for (const m of text.matchAll(/(?<![A-Za-z0-9])(\d{6,10})(?:-(\d+))?(?![0-9])/g)) {
+  for (const m of text.matchAll(/(?<![A-Za-z0-9])(\d{6,10})(?:-(\d+))?(?![A-Za-z0-9])/g)) {
     if (m[1] !== stated.base) continue;
     if (stated.leg === null || m[2] === stated.leg) return true;
   }

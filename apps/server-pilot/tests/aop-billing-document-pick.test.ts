@@ -118,6 +118,31 @@ describe('pickBillingDocument', () => {
     expect(picked.document).toBeNull();
   });
 
+  it('does not match a leg followed by a letter suffix', () => {
+    const picked = pickBillingDocument({
+      kind: 'invoice',
+      confirmationNumber: CONF,
+      documents: [row('d1', 'invoice-9999901-1A.pdf', { kind: 'invoice' })],
+    });
+    expect(picked.status).toBe('none');
+    const base = pickBillingDocument({
+      kind: 'invoice',
+      confirmationNumber: '9999901',
+      documents: [row('d1', 'invoice-9999901-1A.pdf', { kind: 'invoice' })],
+    });
+    expect(base.status).toBe('none');
+  });
+
+  it('never reads a credit-card receipt as a credit note', () => {
+    const picked = pickBillingDocument({
+      kind: 'credit_note',
+      confirmationNumber: CONF,
+      documents: [row('d1', 'credit-card-9999901-1.pdf')],
+    });
+    expect(picked.status).toBe('none');
+    expect(picked.document).toBeNull();
+  });
+
   it('lets a stated base match each of its legs', () => {
     const picked = pickBillingDocument({
       kind: 'invoice',
