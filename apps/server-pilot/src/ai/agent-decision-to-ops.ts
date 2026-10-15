@@ -44,22 +44,12 @@ function goldOp(operation: string, unknownReason: string | null = null): GoldOpe
 
 export function decisionToOperations(
   decision: ReservationistDecision,
-  toolCalls: { toolName: string }[],
+  _toolCalls: { toolName: string }[],
 ): GoldOperation[] {
   const mapped = WORKFLOW_OPERATION[decision.workflow];
   const operation = mapped ?? 'unknown';
   const unknownReason = operation === 'unknown' ? 'other' : null;
-  const ops: GoldOperation[] = [goldOp(operation, unknownReason)];
-  const calledParty = toolCalls.some((call) => call.toolName === 'party_lookup');
-  if (calledParty && !ops.some((row) => row.operation === 'read')) {
-    ops.push(goldOp('read'));
-  }
-  const seen = new Set<string>();
-  return ops.filter((row) => {
-    if (seen.has(row.operation)) return false;
-    seen.add(row.operation);
-    return true;
-  });
+  return [goldOp(operation, unknownReason)];
 }
 
 export type SnapshotMail = {
@@ -130,11 +120,26 @@ function snapshotMailToCaseMessage(mail: SnapshotMail): AgentCaseMessage {
   };
 }
 
-/** Context (older) + inbound. Outbound is the answer key and is ignored. */
+function mailInstant(mail: SnapshotMail): number | null {
+  const raw = mail.received_at || mail.sent_at || '';
+  if (!raw) return null;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isStrictlyEarlierThanInbound(mail: SnapshotMail, inbound: SnapshotMail): boolean {
+  const inboundAt = mailInstant(inbound);
+  const mailAt = mailInstant(mail);
+  return inboundAt !== null && mailAt !== null && mailAt < inboundAt;
+}
+
+/** Context strictly earlier than inbound. Outbound answer key is ignored. */
 export function snapshotRowToAgentCase(row: SnapshotRow): AgentCase {
   return {
     trigger: snapshotMailToCaseMessage(row.inbound),
-    context: (row.context ?? []).map(snapshotMailToCaseMessage),
+    context: (row.context ?? [])
+      .filter((mail) => isStrictlyEarlierThanInbound(mail, row.inbound))
+      .map(snapshotMailToCaseMessage),
   };
 }
 
