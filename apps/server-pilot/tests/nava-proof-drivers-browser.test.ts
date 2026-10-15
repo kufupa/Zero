@@ -134,28 +134,50 @@ const STAYS = [
 ] as const;
 
 /**
- * The AE1 pane: two stays with two room rows each. `rooms` is the count the read gives every row ('' for none); `single`
- * is the room type the email asks for on the single rows. `notQuote` is a thread read as not a quote: the pane shows no
- * Stay rows until its type is set to Quote, and then shows them.
+ * The AE1 pane, as requirement-card.tsx draws it: two stays (article "Stay n details", one Meal plan select each) with two
+ * room rows each (role row: Room type select, the "Rooms for stay n, room m" stepper and its sr-only Rooms input, the
+ * adults line with "Tap to edit" opening the "Adult guests per room" stepper). `rooms` is the count the read gives every
+ * row ('' for none); `single` is the room type the email asks for on the single rows; `board` is the meal plan every row
+ * carries ('unknown' for none). `notQuote` is a thread read as not a quote: the pane shows no Stay rows until its type is
+ * set to Quote, and then shows them.
  */
 function ae1Page(
   rooms = '30',
-  options: { single?: string; notQuote?: boolean; kind?: 'quote' | 'group' } = {},
+  options: { single?: string; notQuote?: boolean; kind?: 'quote' | 'group'; board?: 'bb' | 'unknown' } = {},
 ): string {
-  const row = (stay: number, room: number, asked: string) => `
-    <div class="room" data-stay="${stay - 1}">
-      <select aria-label="Room type">
-        <option value="">Choose a room type</option>
-        <option value="${asked}" selected>Email asked for ${asked} — pick a room type</option>
-        <option value="STWN">Standard Twin (STWN)</option><option value="STQN">Standard Queen (STQN)</option>
-      </select>
-      <div role="group" aria-label="Rooms for stay ${stay}, room ${room}"></div>
-      <input aria-hidden="true" type="number" aria-label="Rooms" class="sr-only" value="${rooms}">
-      <input aria-hidden="true" type="number" aria-label="Adults" class="sr-only" value="">
-      <select aria-label="Meal plan"><option value="unknown" selected>Not stated yet</option><option value="bb">B&amp;B</option></select>
+  const board = options.board ?? 'bb';
+  const row = (stay: number, room: number, asked: string) => {
+    const where = `stay ${stay}, room ${room}`;
+    return `
+    <div role="row" class="room" data-stay="${stay - 1}" data-adults="" aria-label="${asked} ×${rooms || '?'}">
+      <div role="cell">
+        <select aria-label="Room type">
+          <option value="">Choose room type</option>
+          <option value="${asked}" selected>Email asked for ${asked} — pick a room type</option>
+          <option value="STWN">Standard Twin (STWN)</option><option value="STQN">Standard Queen (STQN)</option>
+        </select>
+        <span role="group" aria-label="Rooms, from email"><span>Rooms</span></span>
+        <div role="group" aria-label="Rooms for ${where}"><button aria-label="Fewer: Rooms for ${where}">−</button><span aria-live="polite">${rooms || '–'}</span><button aria-label="More: Rooms for ${where}">+</button></div>
+        <input aria-hidden="true" tabindex="-1" type="number" aria-label="Rooms" class="sr-only" value="${rooms}">
+        <div class="adults"><span><span class="adults-text">Adults per room not set</span></span>
+          <button type="button" class="tap" aria-label="Edit adults per room for ${where}">Tap to edit</button>
+          <div class="stepper" hidden><div role="group" aria-label="Adult guests per room for ${where}"><button aria-label="Fewer: Adult guests per room for ${where}">−</button><span aria-live="polite">–</span><button class="more" aria-label="More: Adult guests per room for ${where}">+</button></div></div>
+        </div>
+      </div>
     </div>`;
-  const single = options.single ?? 'Single';
-  const stayDetails = `<section aria-label="Stay">${row(1, 1, single)}${row(1, 2, 'Double/twin')}${row(2, 1, single)}${row(2, 2, 'Double/twin')}</section>`;
+  };
+  const stay = (n: number) => `
+    <article aria-label="Stay ${n} details">
+      <select aria-label="Meal plan">
+        <option value="all">All meal plans</option><option value="room_only">Room only</option>
+        <option value="bb"${board === 'bb' ? ' selected' : ''}>Bed &amp; breakfast</option><option value="dinner_bb">Dinner, bed &amp; breakfast</option>
+        ${board === 'unknown' ? '<option value="unknown">Not stated in email</option>' : ''}
+      </select>
+      <section aria-label="Room types and occupancy"><div role="table" aria-label="Room types & occupancy"><div role="rowgroup">
+        ${row(n, 1, options.single ?? 'Single')}${row(n, 2, 'Double/twin')}
+      </div></div></section>
+    </article>`;
+  const stayDetails = `<section aria-label="Stay">${stay(1)}${stay(2)}</section>`;
   const initialKind = options.notQuote ? 'new_booking' : (options.kind ?? 'quote');
   const body = `
     ${readAsBadge(initialKind)}
@@ -174,7 +196,7 @@ function ae1Page(
           `<div class="stay-search" data-stay="${i}">` +
           `<button class="date-range" data-stay="${i}">Search this date range for Stay ${i + 1}</button>` +
           `<details><summary>Details</summary>` +
-          `<div><button class="step" data-stay="${i}">Run Search availability ${a} → ${d}</button></div>` +
+          `<div><button class="step" data-stay="${i}"><span>Run</span><span>Search availability ${a} → ${d}</span></button></div>` +
           `</details></div>`,
       ).join('')}
     </section>
@@ -194,14 +216,28 @@ function ae1Page(
         readAs.textContent = 'Quote';
         readAs.closest('[role="status"]').setAttribute('aria-label', 'Nava reads this as: Quote');
         document.querySelector('[data-preview-pane] main').insertAdjacentHTML('afterbegin', ${JSON.stringify(stayDetails)});
+        wire();
       }
     });`
         : ''
     }
     // The pane logs every field edit (workItems.recordEvent); the drivers must not cause one without leave.
-    document.querySelectorAll('section[aria-label="Stay"] input, section[aria-label="Stay"] select').forEach((el) =>
-      el.addEventListener('input', () => trpc('workItems.recordEvent', { field: el.getAttribute('aria-label') })),
-    );
+    const wire = () => {
+      document.querySelectorAll('section[aria-label="Stay"] input, section[aria-label="Stay"] select').forEach((el) =>
+        el.addEventListener('input', () => trpc('workItems.recordEvent', { field: el.getAttribute('aria-label') })),
+      );
+      document.querySelectorAll('.room').forEach((room) => {
+        room.querySelector('button.tap').onclick = () => { room.querySelector('.stepper').hidden = false; };
+        room.querySelector('button.more').onclick = () => {
+          const next = room.dataset.adults ? Number(room.dataset.adults) + 1 : 1;
+          room.dataset.adults = String(next);
+          room.querySelector('.stepper span').textContent = String(next);
+          room.querySelector('.adults-text').textContent = next + (next === 1 ? ' adult' : ' adults') + ' per room';
+          trpc('workItems.recordEvent', { field: 'adults' });
+        };
+      });
+    };
+    wire();
     trpc('workItems.getByMessage', { messageId: 'm1' });
     // The pane searches the company and the agency by itself; the guard lets only the first through.
     trpc('panePartyLookup.findParty', { name: 'Org', kind: 'company' });
@@ -215,8 +251,8 @@ function ae1Page(
           departureDate: stays[i][1],
           roomPreference: room.querySelector('select[aria-label="Room type"]').value,
           quantity: Number(room.querySelector('input[aria-label="Rooms"]').value),
-          adults: Number(room.querySelector('input[aria-label="Adults"]').value),
-          board: room.querySelector('select[aria-label="Meal plan"]').value,
+          adults: Number(room.dataset.adults),
+          board: ${JSON.stringify(board)},
         }));
         const result = await trpc('workstation.executeStaffQuote', { messageId: 'm1', groups });
         if (!result) return;
@@ -355,7 +391,7 @@ describe('AE1 driver against a scripted pane', () => {
       );
       const summary = await runAe1(config, () => undefined);
       expect(summary.ok).toBe(false);
-      expect(summary.blocker).toBe('the pane did not take the room type, room count, adults or meal plan typed into a row');
+      expect(summary.blocker).toBe('the pane did not take the room type, room count or adults typed into a row');
       expect(summary.ratesRuns).toBe(0);
       expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
     },
@@ -370,7 +406,7 @@ describe('AE1 driver against a scripted pane', () => {
       const summary = await runAe1(config, () => undefined);
       expect(summary.ok).toBe(false);
       expect(summary.editsAllowed).toBe(false);
-      expect(summary.blocker).toBe('needs_edits:roomType,adults,board');
+      expect(summary.blocker).toBe('needs_edits:roomType,adults');
       expect(summary.filledFields).toEqual([]);
       expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
       expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
@@ -411,6 +447,26 @@ describe('AE1 driver against a scripted pane', () => {
       const summary = await runAe1(config, () => undefined);
       expect(summary.ok).toBe(false);
       expect(summary.blocker).toBe('needs_edits:rooms');
+      expect(summary.filledFields).toEqual([]);
+      expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
+      expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
+    },
+    120_000,
+  );
+
+  it.skipIf(!chromiumBinary)(
+    'a stay whose rows carry no meal plan stops on needs_edits:board even with edits allowed, and types nothing',
+    async () => {
+      // The per-stay Meal plan select only filters rate cards, so the driver has nothing it may type to set a board.
+      const base = await serve(ae1Page('30', { board: 'unknown' }), ae1Handlers());
+      const config = parseAe1Config(
+        ['--threads', 't-1', '--out', join(dir, 'ae1-no-board'), '--timeout-ms', '20000'],
+        env(base, { NAVA_PROOF_ALLOW_EDITS: '1' }),
+        dir,
+      );
+      const summary = await runAe1(config, () => undefined);
+      expect(summary.blocker).toBe('needs_edits:board');
+      expect(summary.paneRows).toBe(4);
       expect(summary.filledFields).toEqual([]);
       expect(calls.some((call) => call.procedure === 'workItems.recordEvent')).toBe(false);
       expect(calls.some((call) => call.procedure === 'workstation.executeStaffQuote')).toBe(false);
@@ -508,7 +564,7 @@ describe('AE1 dry plan against a scripted pane', () => {
       const base = await serve(ae1Page(), ae1Handlers());
       const config = parseAe1Config(['--threads', 't-1', '--out', join(dir, 'ae1-plan'), '--dry-plan'], env(base), dir);
       const plan = await readAe1Plan(config, () => undefined);
-      expect(plan.blocker).toBe('needs_edits:roomType,adults,board');
+      expect(plan.blocker).toBe('needs_edits:roomType,adults');
       expect(plan.editsAllowed).toBe(false);
       expect(plan.paneRows).toBe(4);
       expect(plan.roomSplit?.rule).toBe("the read's counts only (NAVA_AE1_ROOMS unset)");
@@ -518,7 +574,7 @@ describe('AE1 dry plan against a scripted pane', () => {
         [2, 1, 30, 'read'],
         [2, 2, 30, 'read'],
       ]);
-      expect(plan.wouldFill).toHaveLength(12);
+      expect(plan.wouldFill).toHaveLength(8);
       expect(plan.wouldFill.filter((field) => field.endsWith('.rooms'))).toEqual([]);
       // The pane's own party search is refused, and it is the only request the plan saw refused.
       expect(plan.blocked).toEqual(['panePartyLookup.findParty (hms)']);
@@ -551,7 +607,7 @@ describe('AE1 dry plan against a scripted pane', () => {
         [15, 'NAVA_AE1_ROOMS'],
         [15, 'NAVA_AE1_ROOMS'],
       ]);
-      expect(plan.blocker).toBe('needs_edits:rooms,roomType,adults,board');
+      expect(plan.blocker).toBe('needs_edits:rooms,roomType,adults');
     },
     120_000,
   );

@@ -15,8 +15,9 @@
  *     "needs_edits:rooms";
  *   - room type: where the select says "Email asked for X — pick a room type", the first listed HMS room type that
  *     matches X (Twin for "double/twin"; Queen, then King, for "single" or "double");
- *   - adults per room: 1 for a single, else 2 (NAVA_AE1_ADULTS overrides, e.g. "1/2");
- *   - meal plan: NAVA_AE1_BOARD (default bb) only where the pane has none.
+ *   - adults per room: 1 for a single, else 2 (NAVA_AE1_ADULTS overrides, e.g. "1/2"), set with the row's adults stepper;
+ *   - meal plan: never filled. The pane's per-stay Meal plan select only filters the rate cards and sets no row's board,
+ *     so a stay whose rows carry no meal plan stops the run with "needs_edits:board", edits allowed or not.
  * A value the pane already has is kept, never overwritten. If the pane refuses a value (it does not take, or Search availability stays disabled), the
  * run stops with a blocker; it never works around a product rule.
  *
@@ -42,8 +43,8 @@
  * hitl_tool_run kind pdf when the ledger is on. The Excel writes nothing.
  *
  * Environment (values are never printed): NAVA_PREVIEW_BASE_URL, NAVA_PREVIEW_STORAGE_STATE, NAVA_PREVIEW_RESOLVE_TO,
- * NAVA_PREVIEW_TRANSPORT_ID, NAVA_PREVIEW_CHROMIUM as nava-preview-run.ts; NAVA_AE1_ROOMS, NAVA_AE1_ADULTS, NAVA_AE1_BOARD;
- * NAVA_PROOF_ALLOW_EDITS=1 to let it fill missing room counts, adults, meal plans and room types. A room count is filled
+ * NAVA_PREVIEW_TRANSPORT_ID, NAVA_PREVIEW_CHROMIUM as nava-preview-run.ts; NAVA_AE1_ROOMS, NAVA_AE1_ADULTS;
+ * NAVA_PROOF_ALLOW_EDITS=1 to let it fill missing room counts, adults and room types. A room count is filled
  * only from NAVA_AE1_ROOMS, never a default.
  *
  * Usage: NAVA_PROOF_ALLOW_EDITS=1 nava-preview-gate.sh --ae1-rates <thread-id>   (signs in, then runs:)
@@ -128,13 +129,11 @@ export const AE1_WRITE_PROCEDURES: ReadonlySet<string> = new Set([
 // ---------------------------------------------------------------------------------------------------------------------
 // Config
 
-export type Board = 'room_only' | 'bb' | 'dinner_bb';
 export type Ae1Inputs = {
   /** Rooms for room 1, room 2, … of each stay, used only where the pane has no count. */
   roomSplit: number[];
   /** Adults per room for room 1, room 2, …; empty derives them from the asked room type. */
   adultsSplit: number[];
-  board: Board;
   /** NAVA_PROOF_ALLOW_EDITS=1: the driver may fill what the pane is missing. Off, a needed fill stops the run. */
   allowEdits: boolean;
 };
@@ -145,7 +144,8 @@ export type Ae1Config = RunConfig & {
   dryPlan: boolean;
 };
 
-const BOARDS: ReadonlySet<string> = new Set(['room_only', 'bb', 'dinner_bb']);
+/** A stay's meal plan as READ_ROWS_JS reads it: one board, or "all" when its rows carry different boards. */
+const READ_BOARDS: ReadonlySet<string> = new Set(['room_only', 'bb', 'dinner_bb', 'all']);
 
 function parseSplit(raw: string, name: string, max: number): number[] {
   if (!/^\d{1,2}(\/\d{1,2}){0,8}$/.test(raw)) throw new Error(`${name} must be counts like 15/15`);
@@ -165,12 +165,10 @@ export function parseAe1Config(argv: readonly string[], env: NodeJS.ProcessEnv, 
   const roomSplit = roomsRaw ? parseSplit(roomsRaw, 'NAVA_AE1_ROOMS', 99) : [];
   const adultsRaw = env.NAVA_AE1_ADULTS?.trim() || '';
   const adultsSplit = adultsRaw ? parseSplit(adultsRaw, 'NAVA_AE1_ADULTS', 9) : [];
-  const board = env.NAVA_AE1_BOARD?.trim() || 'bb';
-  if (!BOARDS.has(board)) throw new Error('NAVA_AE1_BOARD must be room_only, bb or dinner_bb');
   return {
     ...base,
     threadId: base.selection.ids[0]!,
-    inputs: { roomSplit, adultsSplit, board: board as Board, allowEdits: allowEditsFrom(env) },
+    inputs: { roomSplit, adultsSplit, allowEdits: allowEditsFrom(env) },
     dryPlan: argv.includes('--dry-plan'),
   };
 }
@@ -309,6 +307,7 @@ export type PaneRoomRow = {
   roomOptions: SelectOption[];
   rooms: number | null;
   adults: number | null;
+  /** The stay's meal plan: a board, "all" when its rows differ, "unknown" when a row has none. */
   board: string;
 };
 
@@ -329,8 +328,8 @@ export type RoomRowUsed = {
   roomsSource: RoomsSource;
   adults: number;
   adultsFilled: boolean;
+  /** The stay's meal plan as read. Never filled: the pane has no control that sets it. */
   board: string;
-  boardFilled: boolean;
 };
 
 export type RoomSplit = { rule: string; rows: RoomRowUsed[] };
@@ -387,7 +386,6 @@ export type RowPlan = {
   roomType: string | null;
   rooms: number | null;
   adults: number | null;
-  board: Board | null;
 };
 
 /**
@@ -429,14 +427,11 @@ export function planRoomRows(rows: readonly PaneRoomRow[], inputs: Ae1Inputs): {
     if (adults === null) {
       adults = nth(inputs.adultsSplit) ?? (/\b(single|sgl)\b/i.test(askedType ?? '') ? 1 : 2);
     }
-    const boardFilled = !BOARDS.has(row.board);
-    const board = boardFilled ? inputs.board : row.board;
     plans.push({
       index,
       roomType: roomTypeFilled ? roomType : null,
       rooms: roomsFilled ? rooms : null,
       adults: adultsFilled ? adults : null,
-      board: boardFilled ? inputs.board : null,
     });
     used.push({
       stay: row.stay,
@@ -449,8 +444,7 @@ export function planRoomRows(rows: readonly PaneRoomRow[], inputs: Ae1Inputs): {
       roomsSource,
       adults,
       adultsFilled,
-      board,
-      boardFilled,
+      board: row.board,
     });
   });
   return { plans, split: { rule: roomRuleOf(inputs), rows: used } };
@@ -464,7 +458,6 @@ export function filledFieldsOf(split: RoomSplit): string[] {
       row.roomTypeFilled ? `${where}.roomType` : null,
       row.roomsFilled ? `${where}.rooms` : null,
       row.adultsFilled ? `${where}.adults` : null,
-      row.boardFilled ? `${where}.board` : null,
     ].filter((field): field is string => field !== null);
   });
 }
@@ -472,7 +465,7 @@ export function filledFieldsOf(split: RoomSplit): string[] {
 /** The kinds of value the run would type, in the order a blocker lists them: rooms first. */
 export function fillKindsOf(split: RoomSplit): string[] {
   const kinds = new Set(filledFieldsOf(split).map((field) => field.split('.').pop()));
-  return ['rooms', 'roomType', 'adults', 'board'].filter((kind) => kinds.has(kind));
+  return ['rooms', 'roomType', 'adults'].filter((kind) => kinds.has(kind));
 }
 
 /**
@@ -481,7 +474,12 @@ export function fillKindsOf(split: RoomSplit): string[] {
  * NAVA_PROOF_ALLOW_EDITS=1; without it the blocker names the kinds of value the run would type.
  */
 export function blockerOfPlan(split: RoomSplit, inputs: Pick<Ae1Inputs, 'allowEdits'>): string | null {
-  if (split.rows.some((row) => row.roomsSource === 'missing')) return needsEditsMessage(['rooms']);
+  // Neither is typed: a count only NAVA_AE1_ROOMS gives, and a meal plan the pane has no control for.
+  const unfillable = [
+    split.rows.some((row) => row.roomsSource === 'missing') ? 'rooms' : null,
+    split.rows.some((row) => !READ_BOARDS.has(row.board)) ? 'board' : null,
+  ].filter((kind): kind is string => kind !== null);
+  if (unfillable.length) return needsEditsMessage(unfillable);
   const fills = fillKindsOf(split);
   return fills.length && !inputs.allowEdits ? needsEditsMessage(fills) : null;
 }
@@ -507,30 +505,45 @@ export function planStopBeforeRows(typeIsQuote: boolean, allowEdits: boolean): s
     : needsEditsMessage(['type']);
 }
 
-/** Browser-side: the Stay step's room rows, in page order. Plain JS, no DOM types. */
+/**
+ * Browser-side: the Stay step's room rows, in page order. Plain JS, no DOM types. The pane (requirement-card.tsx) puts the
+ * room type, the room count and the adults line in each room row, and one Meal plan select on each stay. That select only
+ * filters the rate cards; it shows the board the stay's rows carry, or offers "Not stated in email" when they carry none.
+ */
 export const READ_ROWS_JS = `() => {
   const pane = document.querySelector('[data-preview-pane]');
   const section = pane ? pane.querySelector('section[aria-label="Stay"]') : null;
   if (!section) return null;
-  const all = (selector) => Array.from(section.querySelectorAll(selector));
-  const groups = all('[role="group"][aria-label^="Rooms for stay "]');
-  const selects = all('select[aria-label="Room type"]');
-  const rooms = all('input[aria-label="Rooms"]');
-  const adults = all('input[aria-label="Adults"]');
-  const boards = all('select[aria-label="Meal plan"]');
+  const groups = Array.from(section.querySelectorAll('[role="group"][aria-label^="Rooms for stay "]'));
+  const ADULTS = /^(?:(\\d+) adults? per room|Adults per room not set)$/i;
+  const parts = groups.map((group) => {
+    const row = group.closest('[role="row"]');
+    const stay = group.closest('article[aria-label$=" details"]');
+    const adultsLine = row
+      ? Array.from(row.querySelectorAll('span')).map((el) => (el.textContent || '').trim()).find((text) => ADULTS.test(text))
+      : undefined;
+    return {
+      group,
+      select: row ? row.querySelector('select[aria-label="Room type"]') : null,
+      rooms: row ? row.querySelector('input[aria-label="Rooms"]') : null,
+      adultsLine,
+      meal: stay ? stay.querySelector('select[aria-label="Meal plan"]') : null,
+    };
+  });
+  const have = (key) => parts.filter((part) => part[key] !== null && part[key] !== undefined).length;
   return {
-    counts: [groups.length, selects.length, rooms.length, adults.length, boards.length],
-    rows: groups.map((group, i) => {
+    counts: [groups.length, have('select'), have('rooms'), have('adultsLine'), have('meal')],
+    rows: parts.map(({ group, select, rooms, adultsLine, meal }) => {
       const match = /^Rooms for stay (\\d+), room (\\d+)$/.exec(group.getAttribute('aria-label') || '');
-      const select = selects[i];
+      const adults = adultsLine ? ADULTS.exec(adultsLine) : null;
       return {
         stay: match ? Number(match[1]) : 0,
         room: match ? Number(match[2]) : 0,
         roomValue: select ? select.value : '',
         roomOptions: select ? Array.from(select.options).map((o) => ({ value: o.value, label: (o.textContent || '').trim() })) : [],
-        rooms: rooms[i] ? rooms[i].value : '',
-        adults: adults[i] ? adults[i].value : '',
-        board: boards[i] ? boards[i].value : '',
+        rooms: rooms ? rooms.value : '',
+        adults: adults && adults[1] ? adults[1] : '',
+        board: meal ? (meal.querySelector('option[value="unknown"]') ? 'unknown' : meal.value) : '',
       };
     }),
   };
@@ -547,6 +560,23 @@ async function readRoomRows(page: Page): Promise<PaneRoomRow[]> {
     throw new Blocker(`the Stay rows do not line up (groups, room types, rooms, adults, meal plans: ${raw.counts.join('/')})`);
   }
   return raw.rows.map((row) => ({ ...row, rooms: countOf(row.rooms), adults: countOf(row.adults) }));
+}
+
+/** Sets a row's adults per room the way staff do: "Tap to edit", then + on the stepper until it shows the count. */
+async function fillAdults(details: Locator, where: string, adults: number): Promise<void> {
+  const edit = details.locator(`button[aria-label="Edit adults per room for ${where}"]`);
+  if (await edit.count()) await edit.click();
+  const stepper = details.locator(`[role="group"][aria-label="Adult guests per room for ${where}"]`);
+  const more = stepper.locator(`button[aria-label="More: Adult guests per room for ${where}"]`);
+  await more.waitFor({ state: 'visible', timeout: STEP_MS }).catch(() => {
+    throw new Blocker(`the adults stepper for ${where} is missing`);
+  });
+  for (let press = 0; press < 10; press++) {
+    const shown = countOf((await stepper.locator('span').first().innerText().catch(() => '')).trim());
+    if (shown === adults) return;
+    if (shown !== null && shown > adults) throw new Blocker(`the adults for ${where} already show ${shown}`);
+    await more.click();
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -626,7 +656,16 @@ export const RATES_SECTION = '[data-preview-pane] section[aria-label="Availabili
 /** The pane's company search gives up after 6 minutes (trpc-request-timeout.ts), so this wait always settles. */
 const PARTY_SETTLE_MS = 6 * 60_000 + 30_000;
 export const DOCUMENTS_SECTION = '[data-preview-pane] section[aria-label="Documents"]';
-export const RUN_STEP = /^Run Search availability /;
+/**
+ * A stay's step button (tool-step-list.tsx): <span>Run</span><span>{step.title}</span>, with no text space between the spans,
+ * so its text reads "RunSearch availability …". The separator is optional to match either way.
+ */
+export const RUN_STEP = /^Run\s*Search availability\s+/;
+
+/** The stay key a step button runs: "RunSearch availability 2026-10-26 → 2026-10-27" -> "2026-10-26:2026-10-27". */
+export function stepKeyOf(name: string): string {
+  return name.replace(/\s+/g, ' ').trim().replace(RUN_STEP, '').replace(/\s*→\s*/, ':');
+}
 
 /** The step buttons, one per date option, with the stay key each runs ("2026-10-26 → 2026-10-27" -> "2026-10-26:2026-10-27"). */
 async function stepButtons(rates: Locator): Promise<Array<{ key: string; button: Locator }>> {
@@ -636,7 +675,7 @@ async function stepButtons(rates: Locator): Promise<Array<{ key: string; button:
   for (let i = 0; i < count; i++) {
     const button = buttons.nth(i);
     const name = ((await button.textContent()) ?? '').replace(/\s+/g, ' ').trim();
-    out.push({ key: name.replace(RUN_STEP, '').replace(/^Search availability /, '').replace(' → ', ':'), button });
+    out.push({ key: stepKeyOf(name), button });
   }
   return out;
 }
@@ -730,14 +769,13 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
     summary.filledFields.push(...filledFieldsOf(planned.split));
     const details = pane.locator('section[aria-label="Stay"]');
     for (const plan of planned.plans) {
+      const where = `stay ${rows[plan.index]!.stay}, room ${rows[plan.index]!.room}`;
       if (plan.roomType) await details.locator('select[aria-label="Room type"]').nth(plan.index).selectOption(plan.roomType);
       if (plan.rooms !== null) {
         await details.locator('input[aria-label="Rooms"]').nth(plan.index).fill(String(plan.rooms), { force: true });
       }
-      if (plan.adults !== null) {
-        await details.locator('input[aria-label="Adults"]').nth(plan.index).fill(String(plan.adults), { force: true });
-      }
-      if (plan.board) await details.locator('select[aria-label="Meal plan"]').nth(plan.index).selectOption(plan.board);
+      // Adults sit behind "Tap to edit": a stepper that + starts at 1 from no value, so it takes one press per adult.
+      if (plan.adults !== null) await fillAdults(details, where, plan.adults);
     }
     log(`rows filled: ${planned.split.rows.filter((row) => row.roomsFilled || row.roomTypeFilled).length} of ${rows.length}`);
     await waitFor('the edits to land', STEP_MS, async () => {
@@ -752,7 +790,7 @@ export async function runAe1(config: Ae1Config, log: (line: string) => void): Pr
         ? true
         : null;
     }).catch(() => {
-      throw new Blocker('the pane did not take the room type, room count, adults or meal plan typed into a row');
+      throw new Blocker('the pane did not take the room type, room count or adults typed into a row');
     });
 
     // 4. One rates run per stay, through each stay's own search.
@@ -1006,6 +1044,7 @@ export async function readAe1Plan(config: Ae1Config, log: (line: string) => void
       plan.blocker = typeStop;
       return;
     }
+    const pane = page.locator('[data-preview-pane]');
     await waitFor('the room rows', SETTLE_MS, async () =>
       (await pane.locator('section[aria-label="Stay"] [role="group"][aria-label^="Rooms for stay "]').count()) > 0
         ? true
@@ -1054,7 +1093,7 @@ export function dryPlanLines(plan: Ae1DryPlan): string[] {
     lines.push(
       `stay ${row.stay} room ${row.room}: rooms ${row.rooms ?? 'none'} from ${row.roomsSource}; ` +
         `room type ${row.roomType}${row.roomTypeFilled ? ' (fill)' : ''}; adults ${row.adults}${row.adultsFilled ? ' (fill)' : ''}; ` +
-        `meal plan ${row.board}${row.boardFilled ? ' (fill)' : ''}`,
+        `meal plan ${row.board}`,
     );
   }
   lines.push(`would fill: ${plan.wouldFill.join(' ') || 'nothing'}`);
