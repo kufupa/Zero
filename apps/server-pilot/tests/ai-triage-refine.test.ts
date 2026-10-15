@@ -1047,6 +1047,32 @@ describe('workflow source and automation refinement', () => {
       expect(refined.policyFlags).toContain('refine:voucher-new-booking');
     });
 
+    it('keeps a stay-logging request in bookings when an attached tax invoice is mentioned', () => {
+      const refined = refineTriageOutput(
+        {
+          from: 'Reservations Desk <booking-agent@example.test>',
+          subject: 'Travel voucher',
+          body: "We've already booked this stay. Please log it into the hotel system. Voucher and tax invoice attached.",
+        },
+        workflowOutput({
+          primaryFolder: 'bookings',
+          overlays: { booking: true },
+          humanAction: 'create_or_reconcile',
+          suggestedTools: ['hms_find_reservation'],
+          isSpam: false,
+        }),
+      );
+
+      expect(refined).toMatchObject({
+        primaryFolder: 'bookings',
+        overlays: { booking: true, payment: false },
+        humanAction: 'create_or_reconcile',
+      });
+      expect(refined.suggestedTools).toEqual(['hms_find_reservation']);
+      expect(refined.policyFlags).toContain('refine:voucher-new-booking');
+      expect(refined.policyFlags).not.toContain('refine:voucher-invoice-request');
+    });
+
     it.each([
       {
         name: 'remittance recorded against a booking',

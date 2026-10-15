@@ -855,8 +855,6 @@ function isVoucherNewBookingRequest(haystack: string): boolean {
     /\b(?:log|enter|register|record|load|add)\s+(?:(?:the|this|our|a)\s+)?(?:payment|remittance|invoice|proof\s+of\s+payment|pop)\b/i.test(
       normalized,
     );
-  const mentionsPaymentArtifact =
-    /\b(?:remittance|proof\s+of\s+payment|pop|(?:tax\s+)?invoice)\b/i.test(normalized);
   const hasBookedStayReference =
     /\b(?:already\s+)?booked\s+(?:(?:a|an|the|this|our)\s+)?(?:room|stay|reservation|booking|accommodation)\b/i.test(
       normalized,
@@ -865,7 +863,7 @@ function isVoucherNewBookingRequest(haystack: string): boolean {
     /\b(?:please|kindly|can you|could you|would you|we request you to)\b.{0,40}\b(?:log|enter|register|record|load|add)\s+(?:(?:the|this|our|a)\s+)?(?:stay|reservation|booking)\b/i.test(
       normalized,
     ) ||
-    (!asksToRecordPayment && !mentionsPaymentArtifact && hasBookedStayReference &&
+    (!asksToRecordPayment && hasBookedStayReference &&
       /\b(?:log|enter|register|record|load|add)\s+(?:it|this)\s+(?:in|into|on)\s+(?:the\s+)?(?:hotel\s+)?(?:system|pms)\b/i.test(
         normalized,
       ));
