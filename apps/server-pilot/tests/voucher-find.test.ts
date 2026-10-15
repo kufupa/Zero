@@ -360,6 +360,16 @@ describe('guest under a Client Details heading', () => {
     expect(read('Client Details\nProof Mary Anne Jane Labtest Sample (1 Pax)')).toEqual({ lastName: null, arrival: null });
   });
 
+  it('gives no name at all when the guest line is a labelled or company field, or names several guests', () => {
+    expect(read('Client Details\nCompany: Sample (1 Pax)')).toEqual({ lastName: null, arrival: null });
+    expect(read('Client Details\nSample Travel Agency (1 Pax)')).toEqual({ lastName: null, arrival: null });
+    expect(read('Client Details\nProof Labtest & Mary Sample (1 Pax)\nGuest: Sample')).toEqual({ lastName: null, arrival: null });
+  });
+
+  it('still reads a Guest label when a heading has no pax line under it', () => {
+    expect(read('Guest Details\nGuest name: Labtest, Proof')).toEqual({ lastName: 'Labtest', arrival: null });
+  });
+
   it('gives no name when the heading line itself carries text, such as an agency name', () => {
     expect(read('Client Details  Sample Travel\nProof Labtest (1 Pax)')).toEqual({ lastName: null, arrival: null });
   });

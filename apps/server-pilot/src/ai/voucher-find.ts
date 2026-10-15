@@ -231,15 +231,19 @@ const HOTEL_PREFIX = /^\s*(?:the\s+)?(?:[A-Za-z'-]+\s+){0,3}hotel\s+/i;
 const HEADED_NAME_WORDS_MAX = 4;
 const HEADING_LOOKAHEAD_LINES = 3;
 
-/** The surname under a guest heading, or null when the block is not one named guest. */
-function headedGuestSurname(lines: string[], index: number): string | null {
+/**
+ * The guest line under a heading: its surname, 'unclear' when the line is there but is not one named guest (several
+ * guests, a labelled or company field, a long line), or null when the heading has no "(N Pax)" line under it.
+ */
+function headedGuestSurname(lines: string[], index: number): string | 'unclear' | null {
   const next = lines.slice(index + 1, index + 1 + HEADING_LOOKAHEAD_LINES).find((line) => line.trim());
   const match = next ? HEADED_GUEST.exec(next) : null;
-  if (!match || Number(match[2]) !== 1) return null;
+  if (!match) return null;
   const name = match[1]!.replace(HOTEL_PREFIX, '');
   const words = name.split(/\s+/).filter((word) => word && !TITLE.test(word));
-  if (words.length > HEADED_NAME_WORDS_MAX || /[&,]|\band\b/i.test(name)) return null;
-  return surnameFrom(name);
+  if (Number(match[2]) !== 1 || words.length > HEADED_NAME_WORDS_MAX) return 'unclear';
+  if (/[&,:]|\band\b/i.test(name) || NOT_THE_GUEST.test(name)) return 'unclear';
+  return surnameFrom(name) ?? 'unclear';
 }
 
 type LabelledValue = { label: string; value: string; before: string };
@@ -281,8 +285,10 @@ export function extractVoucherGuest(input: {
   const lines = sources.join('\n').split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
     if (GUEST_HEADING.test(line)) {
+      // A guest line that is not one named guest makes the whole read unclear, so a later label cannot pick one of them.
       const surname = headedGuestSurname(lines, index);
-      if (surname && !surnames.has(surname.toLowerCase())) surnames.set(surname.toLowerCase(), surname);
+      if (surname === 'unclear') guestUnclear = true;
+      else if (surname && !surnames.has(surname.toLowerCase())) surnames.set(surname.toLowerCase(), surname);
     }
     for (const field of labelledValues(line, GUEST_LABEL_START)) {
       // The exclusion is per field: "Agency guest: ..." is skipped, but "Guest: Smith, John  Company: Acme" keeps Smith.
