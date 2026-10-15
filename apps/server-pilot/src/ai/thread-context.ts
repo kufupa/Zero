@@ -164,8 +164,9 @@ export type BuildThreadContextInput = {
 const CONFIRMATION_RE =
   /\b(?:confirmation|conf)\s*(?:#|no\.?|number)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{3,31})\b/gi;
 const BARE_CONF_RE = /\b(CONF-[A-Z0-9-]{2,28})\b/gi;
-/** Centurion confirmation-letter subjects: `… (n°79798256-1)`. */
-const N_DEGREE_CONF_RE = /\bn[°ºo]\s*([0-9]{6,14}(?:-\d{1,4})?)\b/gi;
+/** Centurion confirmation-letter subjects: `… (n°79798256-1)`. Not VAT/Reg/Tax n°. */
+const N_DEGREE_CONF_RE =
+  /(?<!(?:\b(?:VAT|Reg(?:istration)?|Tax|Company|Acc(?:ount)?)\b|Co\.?\s*Reg)[^\n]{0,25})\bn[°º]\s*([0-9]{6,10}(?:-\d{1,4})?)\b/gi;
 /** Subject/thread tags like `#88001122` — 8-10 digit confirmation bases. */
 const HASH_CONF_RE = /(?:^|[^\w])#(\d{8,10})(?!\d)/g;
 const EXTERNAL_RE =

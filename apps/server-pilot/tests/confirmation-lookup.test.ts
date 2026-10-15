@@ -200,6 +200,24 @@ describe('extraction', () => {
       [],
     );
   });
+
+  it.each([
+    ['VAT Reg n° 4123456789', []],
+    ['VAT Reg No 4123456789', []],
+    ['Company Reg No 2019/123456/07', []],
+    ['Reservation n° 26050420', ['26050420']],
+    ['(n°79798256-1)', ['79798256-1']],
+    [
+      'VAT Reg n° 4123456789\nPlease check confirmation number 88001122',
+      ['88001122'],
+    ],
+  ])('extracts conf from %j', (text, values) => {
+    expect(
+      extractLookupCandidates(text)
+        .filter((c) => c.kind === 'confirmation' || c.kind === 'external_reference')
+        .map((c) => ('value' in c ? c.value : '')),
+    ).toEqual(values);
+  });
 });
 
 describe('resolveThreadConfirmationEvidence', () => {
@@ -250,5 +268,19 @@ describe('resolveThreadConfirmationEvidence', () => {
     expect(
       resolveThreadConfirmationEvidence([{ filename: 'scan.pdf', text: '8212345678' }]),
     ).toEqual({ confirmation: null, reason: null });
+  });
+
+  it.each([
+    ['VAT Reg n° 4123456789', { confirmation: null, reason: null }],
+    [
+      'VAT Reg n° 4123456789\nPlease check confirmation number 88001122',
+      { confirmation: BASE, reason: null },
+    ],
+    ['Reservation n° 26050420', { confirmation: '26050420', reason: null }],
+    ['(n°79798256-1)', { confirmation: '79798256-1', reason: null }],
+  ])('thread evidence %j', (text, expected) => {
+    expect(resolveThreadConfirmationEvidence([{ filename: 'letter.pdf', text }])).toEqual(
+      expected,
+    );
   });
 });

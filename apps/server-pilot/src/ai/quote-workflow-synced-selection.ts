@@ -54,8 +54,9 @@ const LABELLED_BARE_BASE =
   /\b(?:conf(?:irmation)?|booking|res(?:ervation)?)\s*(?:#|n[o°º.]?|number)?\s*[:#]?\s*(\d{8,10})(?![0-9-])/gi;
 /** Subject/thread `#88001122` tags. */
 const HASH_BARE_BASE = /(?:^|[^\w])#(\d{8,10})(?![0-9-])/g;
-/** Confirmation-letter `n°88001122` tags. */
-const N_DEGREE_BARE_BASE = /\bn[°ºo]\s*(\d{8,10})(?![0-9-])/gi;
+/** Confirmation-letter `n°88001122` / `nº…-1`. Not VAT/Reg/Tax/Company/Account n°. */
+const N_DEGREE_BARE_BASE =
+  /(?<!(?:\b(?:VAT|Reg(?:istration)?|Tax|Company|Acc(?:ount)?)\b|Co\.?\s*Reg)[^\n]{0,25})\bn[°º]\s*(\d{6,10}(?:-\d{1,4})?)(?![0-9-])/gi;
 
 export const THREAD_CONFIRMATION_AMBIGUOUS =
   'This thread has more than one booking number on its confirmation files. Check HMS for the right one.';

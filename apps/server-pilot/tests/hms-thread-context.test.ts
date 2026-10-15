@@ -239,6 +239,24 @@ describe('hms thread context', () => {
     expect(exact[0]!.value).toBe('79798256-1');
   });
 
+  it.each([
+    ['VAT Reg n° 4123456789', []],
+    ['VAT Reg No 4123456789', []],
+    ['Company Reg No 2019/123456/07', []],
+    ['Reservation n° 26050420', ['26050420']],
+    ['(n°79798256-1)', ['79798256-1']],
+    [
+      'VAT Reg n° 4123456789\nPlease check confirmation number 88001122',
+      ['88001122'],
+    ],
+  ])('n° conf extract %j', (text, values) => {
+    expect(
+      extractLookupCandidates(text)
+        .filter((c) => c.kind === 'confirmation' || c.kind === 'external_reference')
+        .map((c) => ('value' in c ? c.value : '')),
+    ).toEqual(values);
+  });
+
   it('filterExact drops pure-alpha false positives but keeps explicit prefixes', () => {
     const mixed: LookupCandidate[] = [
       { id: 'junk', kind: 'confirmation', value: 'LETTER' },
