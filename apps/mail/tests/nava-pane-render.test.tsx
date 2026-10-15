@@ -18,6 +18,7 @@ import {
 import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
 import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
+import { HMS_JOB_POLL_MS } from '../lib/quote-workflow/amend-find';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 
 // The pane reloads only through reloadPane(). Tests observe it; the real reload is never called.
@@ -2013,6 +2014,90 @@ describe('NavaPane screen states', () => {
     expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
+
+  it('keeps Search disabled while a running job is read back, then clears the guard', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    let jobStatus: 'running' | 'done' = 'running';
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(async () =>
+      jobStatus === 'running'
+        ? {
+            runId: 'staff-job-running',
+            status: 'running' as const,
+            result: null,
+            failureClass: null,
+            asOf: new Date().toISOString(),
+          }
+        : completedStaffQuoteJob({ ...STAFF_QUOTE_READY, description: 'Allocation after wait' }),
+    );
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await waitFor(() => expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalled());
+    confirmPublicRate();
+
+    await waitFor(() => {
+      const searches = screen.getAllByRole('button', { name: /^Search availability$/i });
+      expect(searches.length).toBeGreaterThan(0);
+      expect(searches.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: /^Search availability$/i })[0]!);
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+
+    jobStatus = 'done';
+    expect(
+      await screen.findByRole('button', { name: /Allocation after wait/ }, { timeout: HMS_JOB_POLL_MS + 4000 }),
+    ).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(screen.queryByText('An HMS search is already running. You can keep working.')).toBeNull();
+  }, 15_000);
+
+  it('walks to a later stay’s saved quote after an empty first-stay probe, without starting pricing', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    const firstGroup = STORED_READY.analysis.groups[0]!;
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      refs: {
+        r_1: { stayId: 's_1', rowId: 'r_1' },
+        r_2: { stayId: 's_2', rowId: 'r_2' },
+      },
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: [
+          { ...firstGroup, id: 'r_1' },
+          { ...firstGroup, id: 'r_2', arrivalDate: '2026-11-05', departureDate: '2026-11-07' },
+        ],
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(
+      async (input: { runId?: string; input?: { groups?: Array<{ arrivalDate?: string }> } }) => {
+        const arrival = input.input?.groups?.[0]?.arrivalDate;
+        if (arrival === '2026-11-05') {
+          return completedStaffQuoteJob({
+            ...STAFF_QUOTE_READY,
+            arrivalDate: '2026-11-05',
+            departureDate: '2026-11-07',
+            description: 'Allocation for stay 2',
+            workflowRunId: 'workflow-stay-2',
+            revisionRef: 'revision-stay-2',
+          });
+        }
+        return null;
+      },
+    );
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    expect(await screen.findByRole('button', { name: /Allocation for stay 2/ })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
+      input: expect.objectContaining({
+        groups: [expect.objectContaining({ arrivalDate: '2026-11-05' })],
+      }),
+    });
+  }, 15_000);
 
   it('does not offer public-rate on a voucher email', async () => {
     analysisForBookingVoucher();

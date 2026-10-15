@@ -276,8 +276,10 @@ export function NavaPane({
   const staffQuoteNoticeSequence = useRef(0);
   const staffQuoteAutoAttempted = useRef(new Set<string>());
   const staffQuoteAutoSuppressed = useRef(new Set<string>());
+  const staffQuoteReadBackProbed = useRef(new Set<string>());
   const staffQuoteRunCount = useRef(0);
   const staffQuoteReadBackInFlight = useRef(false);
+  const staffQuoteStepReadBackInFlight = useRef(false);
   const staffQuoteReadBackGeneration = useRef(0);
   const autoStartStaffQuoteStepRef = useRef<() => void>(() => undefined);
   const {
@@ -1034,6 +1036,13 @@ export function NavaPane({
     };
   }, [priorQuoteKey, isNonActionableMessage]);
 
+  const readBackEmailKey = useRef(contactMessageKey);
+  if (readBackEmailKey.current !== contactMessageKey) {
+    readBackEmailKey.current = contactMessageKey;
+    staffQuoteReadBackProbed.current = new Set();
+    staffQuoteStepReadBackInFlight.current = false;
+  }
+
   useEffect(() => {
     if (staffQuoteQueueMode !== 'on') return;
     autoStartStaffQuoteStepRef.current();
@@ -1452,10 +1461,21 @@ export function NavaPane({
     const originalStaffQuoteJob = staff.workstation.staffQuoteJob?.query;
     let lastStaffQuoteRunId: string | null = null;
     let pollLostRunId: string | null = null;
+    let readBackArmedGuard = false;
     const observedStaffQuoteJob: StaffQuoteJobQuery | undefined = originalStaffQuoteJob
       ? async (input, options) => {
           if ('runId' in input) lastStaffQuoteRunId = input.runId;
-          return originalStaffQuoteJob(input, options);
+          const view = await originalStaffQuoteJob(input, options);
+          if (
+            readBack &&
+            !readBackArmedGuard &&
+            view &&
+            (view.status === 'queued' || view.status === 'running' || view.status === 'retrying')
+          ) {
+            readBackArmedGuard = true;
+            dispatchQuote({ type: 'step_running', stepId: step.id });
+          }
+          return view;
         }
       : undefined;
     const runHeader = autoStart || readBack
@@ -1535,6 +1555,25 @@ export function NavaPane({
             : null;
         return remote;
       });
+    const readBackProbeKey = staffQuoteAttemptKey(
+      quoteSession.binding?.transportId ?? '',
+      staffQuoteSource.messageId,
+      staffQuoteSource.sourceHash,
+      staffQuoteStep.shareKey ?? '',
+    );
+    const completeReadBack = (probed: boolean) => {
+      if (!readBack) return;
+      staffQuoteStepReadBackInFlight.current = false;
+      if (!probed) return;
+      staffQuoteReadBackProbed.current.add(readBackProbeKey);
+      if (quoteSessionRef.current.staffSource?.messageId !== staffQuoteSource.messageId) return;
+      autoStartStaffQuoteStepRef.current();
+    };
+    const releaseReadBackGuard = () => {
+      if (quoteSessionRef.current.runningStepId === staffQuoteStep.id) {
+        dispatchQuote({ type: 'step_stale', stepId: staffQuoteStep.id, selectionEpoch, inputRevision });
+      }
+    };
     function applyStaffQuoteResult(remote: BoundExecuteStaffQuote | null) {
       if (
         !quoteStayRunIsCurrent(quoteSessionRef.current, {
@@ -1549,10 +1588,28 @@ export function NavaPane({
         if (remote !== null) {
           toast.warning('Details changed while HMS was searching — search availability again.');
         }
+        completeReadBack(false);
+        return;
+      }
+      const displayed = staffQuoteStep.shareKey
+        ? quoteSessionRef.current.staffQuotes[staffQuoteStep.shareKey]
+        : undefined;
+      if (
+        readBack &&
+        remote?.status === 'ok' &&
+        displayed &&
+        displayed.revisionRef !== remote.staffQuote.revisionRef
+      ) {
+        releaseReadBackGuard();
+        completeReadBack(true);
         return;
       }
       if (remote === null) {
-        if (readBack) return;
+        if (readBack) {
+          releaseReadBackGuard();
+          completeReadBack(true);
+          return;
+        }
         dispatchQuote({
           type: 'results_unavailable',
           stepId: staffQuoteStep.id,
@@ -1562,7 +1619,11 @@ export function NavaPane({
         });
         return;
       }
-      if (readBack && remote.status !== 'ok') return;
+      if (readBack && remote.status !== 'ok') {
+        releaseReadBackGuard();
+        completeReadBack(true);
+        return;
+      }
       if (remote.status !== 'ok') {
         dispatchQuote({
           type: 'results_unavailable',
@@ -1612,7 +1673,9 @@ export function NavaPane({
           });
         });
       }
+      completeReadBack(true);
     }
+    if (readBack) staffQuoteStepReadBackInFlight.current = true;
     void (readBack ? run : runNoticed(run)).then(applyStaffQuoteResult);
   };
 
@@ -1628,6 +1691,7 @@ export function NavaPane({
       isQuoteFixturePreview() ||
       quoteRunPending ||
       staffQuoteReadBackInFlight.current ||
+      staffQuoteStepReadBackInFlight.current ||
       quoteSession.runningStepId ||
       quoteSession.analysis?.intent !== 'quote' ||
       !quoteSession.binding ||
@@ -1648,6 +1712,7 @@ export function NavaPane({
       ...quoteSession.staffHeader,
       salesStrategy: salesStrategyForQueuedQuote(quoteSession.staffHeader),
     };
+    const partyWait = Boolean(partyDecisionWaitReason(quoteSession));
     const step = quoteSession.steps.find((candidate) => {
       if (
         candidate.kind !== 'quote_stay' ||
@@ -1657,6 +1722,15 @@ export function NavaPane({
         quoteSession.staffQuotes[candidate.shareKey]
       ) {
         return false;
+      }
+      if (partyWait) {
+        const probedKey = staffQuoteAttemptKey(
+          binding.transportId,
+          source.messageId,
+          source.sourceHash,
+          candidate.shareKey,
+        );
+        if (staffQuoteReadBackProbed.current.has(probedKey)) return false;
       }
       if (quoteRunBlockReason(quoteSession, candidate, { skipPartyDecision: true })) {
         return false;
@@ -1678,7 +1752,6 @@ export function NavaPane({
       step.shareKey,
     );
     const seenAttempt = staffQuoteAutoAttempted.current.has(attemptKey);
-    const partyWait = Boolean(partyDecisionWaitReason(quoteSession));
     if (partyWait && !seenAttempt) {
       // Existing job/result is server state. The in-memory attempt set is empty after remount.
       runQuoteStep(step.id, true, true);
