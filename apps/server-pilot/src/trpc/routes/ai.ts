@@ -52,6 +52,7 @@ function existingDocumentAdmissionRelease() {
   return {
     releaseId: EXISTING_DOCUMENT_RELEASE_ID,
     requestBranchId: EXISTING_DOCUMENT_BRANCH_ID,
+    propertyCode: 'HRCEN',
   };
 }
 
@@ -89,6 +90,7 @@ async function activeFindAdmission() {
     releaseId: hmsRelease.releaseId,
     requestBranchId: branch.id,
     manifestSha256: branch.manifestSha256,
+    propertyCode: 'HRCEN',
   };
 }
 
@@ -158,6 +160,7 @@ async function activeFolioAdmission(sections: readonly string[]) {
     releaseId: hmsRelease.releaseId,
     requestBranchId: branch.id,
     manifestSha256: branch.manifestSha256,
+    propertyCode: 'HRCEN',
   };
 }
 

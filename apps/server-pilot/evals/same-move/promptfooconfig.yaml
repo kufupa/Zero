@@ -1,0 +1,29 @@
+# Local MIT CLI only. Ops JSON — no mail bodies. Do not share to Promptfoo Cloud.
+description: Centurion same-move gold (ops JSON; local only)
+sharing: false
+commandLineOptions:
+  share: false
+  cache: false
+prompts:
+  - 'same-move {{id}}'
+providers:
+  - file://echo-predicted.mjs
+tests:
+  - description: match-create
+    vars:
+      id: match-create
+      expectPass: true
+      predicted: file://fixtures/match-create.json
+      claimed: file://fixtures/match-create.json
+    assert:
+      - type: javascript
+        value: file://assert-same-move.mjs
+  - description: mismatch-create-vs-cancel
+    vars:
+      id: mismatch-create-vs-cancel
+      expectPass: false
+      predicted: file://fixtures/mismatch-create-vs-cancel.json
+      claimed: file://fixtures/mismatch-create-vs-cancel.json
+    assert:
+      - type: javascript
+        value: file://assert-same-move.mjs

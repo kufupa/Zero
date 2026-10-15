@@ -134,3 +134,8 @@ archive/lab-scratch/_local-pii/
 
 # Local Mastra runtime store written by tests
 apps/server-pilot/data/mastra/
+
+# Promptfoo local eval artifacts (never share / never commit)
+.promptfoo/
+promptfoo-cache/
+apps/server-pilot/evals/same-move/output/

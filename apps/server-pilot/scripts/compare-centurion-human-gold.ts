@@ -1041,7 +1041,7 @@ function operationMap(operations: readonly GoldOperation[]): Map<string, GoldOpe
   return new Map(operations.map((operation) => [operation.operation, operation]));
 }
 
-function compareSemantics(
+export function compareSemantics(
   predicted: readonly GoldOperation[],
   claimed: readonly GoldOperation[],
   predictionError: string | null,

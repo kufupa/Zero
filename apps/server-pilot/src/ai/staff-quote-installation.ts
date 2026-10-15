@@ -16,6 +16,10 @@ import {
 import { createExistingOwnerNativeQuoteReader } from './reservationist-evaluation-composition.js';
 import { PartyRateFailure } from './party-rate-failure.js';
 import {
+  bindCenturionHmsMailboxProperty,
+  type MailboxHmsOriginFields,
+} from '../hms/mailbox-hms-origin-bind.js';
+import {
   PROVISIONAL_QUOTE_SCRIPT,
   quoteTraceAsyncEnabled,
   runProvisionalQuoteChild,
@@ -69,6 +73,8 @@ export type InstalledStaffQuoteServiceOptions = Pick<
   onEvidenceDirectory?: (evidenceDirectory: string) => void;
   /** Provisional mode only (QUOTE_TRACE_ASYNC=on): settles when that capture's trace has finished. */
   onTraceFinish?: (finished: Promise<void>) => void;
+  /** Trigger mailbox origin. Da Vinci identity must not take the Centurion HMS slot. */
+  mailboxOrigin?: MailboxHmsOriginFields;
 };
 
 /** Provisional mode: the final result must match the provisional capture the reader accepted. */
@@ -636,6 +642,11 @@ export function getInstalledStaffQuoteServices(
   ): Promise<ReservationistPartyRead> => {
     guard();
     signal.throwIfAborted();
+    const bound = bindCenturionHmsMailboxProperty({
+      propertyCode: configuration.owner.propertyCode,
+      origin: options.mailboxOrigin ?? {},
+    });
+    if (!bound.ok) throw new PartyRateFailure(bound.code);
     await mkdir(configuration.outputDir, { recursive: true, mode: 0o700 });
     const requestPath = join(configuration.outputDir, `party-${randomUUID()}.json`),
       resultPath = requestPath + '.result.json';

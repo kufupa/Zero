@@ -843,6 +843,7 @@ describe('U17 finance normal-runtime DB RED contract', () => {
               sections: ['balance', 'deposits'],
               releaseId: installed.releaseId,
               requestBranchId: 'deposit_ledger_summary',
+              propertyCode: 'HRCEN',
               manifestSha256:
                 installed.active.releases.get('hms_read_folio')!.requestBranches[1]!.manifestSha256,
               captureBindingRef: `u17-finance-${mode}-${randomUUID()}`,

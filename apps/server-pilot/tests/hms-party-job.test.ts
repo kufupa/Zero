@@ -74,7 +74,17 @@ function lockThatRuns(): PaneStayLock {
   return { withLock: async (run) => run() } as unknown as PaneStayLock;
 }
 
-async function seedQuote(db: DB, kind: string, agency: string | null, spam = false) {
+async function seedQuote(
+  db: DB,
+  kind: string,
+  agency: string | null,
+  spam = false,
+  origin: {
+    toAddresses?: string[];
+    ccAddresses?: string[];
+    ownerHeaderValue?: string | null;
+  } = {},
+) {
   const threadId = `thread-${randomUUID()}`;
   const messageId = `message-${randomUUID()}`;
   await db.insert(mailThread).values({
@@ -89,6 +99,9 @@ async function seedQuote(db: DB, kind: string, agency: string | null, spam = fal
     threadId,
     direction: 'inbound',
     fromAddress: 'agent@example.test',
+    ...(origin.toAddresses ? { toAddresses: origin.toAddresses } : {}),
+    ...(origin.ccAddresses ? { ccAddresses: origin.ccAddresses } : {}),
+    ...(origin.ownerHeaderValue != null ? { ownerHeaderValue: origin.ownerHeaderValue } : {}),
     subject: 'Rate request',
     textBody: 'Travel Agency Details: Suggested Agency',
     receivedAt: new Date(),
@@ -379,6 +392,56 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(
           await prefetchPartyForExtraction(quote, db, prefetchEnv({ HMS_PREFETCH_PER_HOUR: 0 })),
         ).toBe(0);
+      }));
+
+    it('does not enqueue or consume the hourly cap for Da Vinci-origin mail', () =>
+      withSeededTestDb(async (db) => {
+        const davinci = await seedQuote(db, 'quote', 'Horizon Trail Tours', false, {
+          toAddresses: ['centurion@legacyhotels.co.za', 'davinci@legacyhotels.co.za'],
+        });
+        const env = prefetchEnv({ HMS_PREFETCH_PER_HOUR: 1, PARTY_MATCH_V2: true });
+        expect(await prefetchPartyForExtraction(davinci, db, env)).toBe(0);
+
+        const centurion = await seedQuote(db, 'quote', 'Horizon Trail Tours');
+        expect(await prefetchPartyForExtraction(centurion, db, env)).toBe(1);
+
+        const rows = await db
+          .select({ triggerMessageId: aiWorkflowRun.triggerMessageId })
+          .from(aiWorkflowRun)
+          .where(
+            and(
+              eq(aiWorkflowRun.transportId, TRANSPORT_ID),
+              eq(aiWorkflowRun.runKind, 'read_tool'),
+              sql`${aiWorkflowRun.readRequest}->>'kind' = 'party'`,
+            ),
+          );
+        expect(rows).toEqual([{ triggerMessageId: centurion.triggerMessageId }]);
+      }));
+
+    it('records a queued Da Vinci V2 job as origin refusal, not missing match', () =>
+      withSeededTestDb(async (db) => {
+        vi.stubEnv('PARTY_MATCH_V2', '1');
+        const quote = await seedQuote(db, 'quote', 'Horizon Trail Tours', false, {
+          toAddresses: ['centurion@legacyhotels.co.za', 'davinci@legacyhotels.co.za'],
+        });
+        const run = {
+          ...runningRun(
+            { kind: 'party', name: 'Horizon Trail Tours', matchVersion: 2 },
+            HMS_JOB_PRIORITY_PREFETCH,
+          ),
+          transportId: quote.transportId,
+          threadId: quote.threadId,
+          triggerMessageId: quote.triggerMessageId,
+        };
+        await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
+        expect(runLedger.markAiRunDeadLetter).toHaveBeenCalledWith(
+          expect.objectContaining({
+            lastError: 'refused_origin_mismatch',
+            failureClass: 'POLICY_BLOCK',
+          }),
+          db,
+        );
+        expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
       }));
   },
 );

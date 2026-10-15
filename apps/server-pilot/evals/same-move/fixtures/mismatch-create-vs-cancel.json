@@ -1,0 +1,22 @@
+{
+  "id": "mismatch-create-vs-cancel",
+  "expectPass": false,
+  "predicted": [
+    {
+      "operation": "create",
+      "needLevel": "required",
+      "requiredFields": ["arrival", "departure"],
+      "candidateTool": "hms_create_reservation",
+      "unknownReason": null
+    }
+  ],
+  "claimed": [
+    {
+      "operation": "cancel",
+      "needLevel": "required",
+      "requiredFields": ["reservationRef"],
+      "candidateTool": "hms_cancel_reservation",
+      "unknownReason": null
+    }
+  ]
+}
