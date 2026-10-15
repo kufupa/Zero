@@ -2657,6 +2657,23 @@ export async function executeHmsJob(input: {
     return 'dead_letter';
   }
   const request = parsed.data;
+  // Worker-time origin recheck: jobs queued before the enqueue guard, or whose
+  // thread became mixed-origin after enqueue, must not reach Centurion HMS.
+  // Party V2 keeps its own refusal result shape below.
+  if (!(request.kind === 'party' && request.matchVersion === 2) && run.threadId) {
+    const origin = await guardCenturionHmsMailboxOrigin({
+      transportId: run.transportId,
+      threadId: run.threadId,
+      messageId: run.triggerMessageId,
+    });
+    if (!origin.ok) {
+      await markAiRunDeadLetter(
+        { ...mark, lastError: 'davinci_origin_refused', failureClass: 'POLICY_BLOCK' },
+        db,
+      );
+      return 'dead_letter';
+    }
+  }
   const metrics = objectRecord(run.metrics) as {
     userId?: string | null;
     owner?: string;

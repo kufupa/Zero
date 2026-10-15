@@ -377,4 +377,39 @@ describe('Da Vinci mixed-origin thread refuse', () => {
     expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
     expect(originScan).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ['find (generic lookup)', { kind: 'find', confirmation: '12345678-1' }],
+    ['search_guest', { kind: 'search_guest', lastName: 'Labtest', arrival: '2027-01-10' }],
+    ['party V1', { kind: 'party', name: 'Horizon Trail Tours' }],
+  ])('worker refuses already-queued %s on a mixed-origin thread', async (_label, readRequest) => {
+    const db = sequentialDb([[quoteSource()]]);
+    const fence: AiRunFence = {
+      runId: RUN_ID,
+      claimOwner: 'hms-ai-worker-111',
+      claimToken: 'claim-token',
+      deadlineAt: new Date(Date.now() + 60_000),
+    };
+    const run = {
+      id: RUN_ID,
+      transportId: TRANSPORT_ID,
+      threadId: THREAD_ID,
+      triggerMessageId: TRIGGER_ID,
+      runKind: 'read_tool',
+      idempotencyKey: 'hms-job:queued-before-guard',
+      promptVersion: HMS_JOB_PROMPT_VERSION,
+      readRequest,
+      executorLane: 'hms',
+      priority: HMS_JOB_PRIORITY_PREFETCH,
+      state: 'running',
+      attempts: 0,
+      metrics: { hmsJob: true, userId: 'user-1' },
+    } as unknown as AiWorkflowRun;
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
+    expect(runLedger.markAiRunDeadLetter).toHaveBeenCalledWith(
+      expect.objectContaining({ lastError: 'davinci_origin_refused', failureClass: 'POLICY_BLOCK' }),
+      db,
+    );
+    expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
+  });
 });
