@@ -1,32 +1,95 @@
 import {
   assertAdminDashboardAccess,
+  assertAdminDashboardGrant,
   isAdminDashboardEmail,
+  resolveAdminDashboardGrant,
 } from '../src/metrics/admin-dashboard-access.js';
 import { resolveAdminDashboardWindow } from '../src/trpc/routes/admin-dashboard.js';
+import { CENTURION_USER_EMAIL, NAVA_USER_EMAIL } from '../src/db/seed.js';
+import { __setDbForTests } from '../src/db/client.js';
+import { appRouter } from '../src/trpc/router.js';
 import { describe, expect, it } from 'vitest';
 import { TRPCError } from '@trpc/server';
 
+const STAFF_EMAIL = CENTURION_USER_EMAIL;
+const GRANT_KINDS = ['aggregate', 'drilldown', 'export'] as const;
+
+function expectDashboardForbidden(run: () => unknown): void {
+  try {
+    run();
+    expect.unreachable('should throw');
+  } catch (error) {
+    expect(error).toBeInstanceOf(TRPCError);
+    expect((error as TRPCError).code).toBe('FORBIDDEN');
+    expect((error as TRPCError).message).toBe('ADMIN_DASHBOARD_FORBIDDEN');
+  }
+}
+
 describe('admin dashboard access', () => {
-  it('allows every authenticated user email for the configured dashboard grant', () => {
-    expect(isAdminDashboardEmail('navaai@legacyhotels.co.za')).toBe(true);
+  it('allows the owner email for aggregate, drilldown, and export', () => {
+    expect(isAdminDashboardEmail(NAVA_USER_EMAIL)).toBe(true);
+    const grant = resolveAdminDashboardGrant(NAVA_USER_EMAIL);
+    expect(grant).toMatchObject({
+      email: NAVA_USER_EMAIL,
+      aggregate: true,
+      drilldown: true,
+      export: true,
+    });
+    expect(() => assertAdminDashboardAccess(NAVA_USER_EMAIL)).not.toThrow();
+    for (const kind of GRANT_KINDS) {
+      expect(() => assertAdminDashboardGrant(grant, kind)).not.toThrow();
+    }
+  });
+
+  it('normalizes owner email case and surrounding whitespace', () => {
     expect(isAdminDashboardEmail('  NavaAI@LegacyHotels.co.za ')).toBe(true);
-    expect(isAdminDashboardEmail('martha@legacyhotels.co.za')).toBe(true);
-    expect(isAdminDashboardEmail('new-pilot-user@example.com')).toBe(true);
-    expect(() => assertAdminDashboardAccess('navaai@legacyhotels.co.za')).not.toThrow();
-    expect(() => assertAdminDashboardAccess('martha@legacyhotels.co.za')).not.toThrow();
-    expect(() => assertAdminDashboardAccess('new-pilot-user@example.com')).not.toThrow();
+    const grant = resolveAdminDashboardGrant('  NavaAI@LegacyHotels.co.za ');
+    expect(grant.email).toBe(NAVA_USER_EMAIL);
+    for (const kind of GRANT_KINDS) {
+      expect(() => assertAdminDashboardGrant(grant, kind)).not.toThrow();
+    }
+  });
+
+  it('forbids centurion and staff emails for aggregate, drilldown, and export', () => {
+    expect(isAdminDashboardEmail(STAFF_EMAIL)).toBe(false);
+    expect(isAdminDashboardEmail('ropperman@legacyhotels.co.za')).toBe(false);
+    expectDashboardForbidden(() => resolveAdminDashboardGrant(STAFF_EMAIL));
+    expectDashboardForbidden(() => resolveAdminDashboardGrant('ropperman@legacyhotels.co.za'));
+    expectDashboardForbidden(() => assertAdminDashboardAccess(STAFF_EMAIL));
+    expectDashboardForbidden(() => assertAdminDashboardAccess('martha@legacyhotels.co.za'));
+    expectDashboardForbidden(() => resolveAdminDashboardGrant(STAFF_EMAIL, 'centurion'));
   });
 
   it('denies missing authenticated identity', () => {
     expect(isAdminDashboardEmail('')).toBe(false);
     expect(isAdminDashboardEmail(null)).toBe(false);
+    expect(isAdminDashboardEmail('   ')).toBe(false);
+    expectDashboardForbidden(() => assertAdminDashboardAccess(null));
+    expectDashboardForbidden(() => resolveAdminDashboardGrant(''));
+  });
+
+  it('rejects a non-admin export on the router without touching the database', async () => {
+    const throwingDb = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('DB queried before admin dashboard grant');
+        },
+      },
+    );
+    __setDbForTests({ db: throwingDb as never, conn: null as never });
     try {
-      assertAdminDashboardAccess(null);
-      expect.unreachable('should throw');
-    } catch (error) {
-      expect(error).toBeInstanceOf(TRPCError);
-      expect((error as TRPCError).code).toBe('FORBIDDEN');
-      expect((error as TRPCError).message).toBe('ADMIN_DASHBOARD_FORBIDDEN');
+      const caller = appRouter.createCaller({
+        auth: null as never,
+        reqHeaders: new Headers(),
+        sessionUser: { id: 'u-staff-export', email: STAFF_EMAIL, name: null },
+      });
+      await expect(caller.adminDashboard.getMetrics({ operation: 'export' })).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+        message: 'ADMIN_DASHBOARD_FORBIDDEN',
+      });
+    } finally {
+      __setDbForTests(null);
     }
   });
 });

@@ -20,12 +20,13 @@ import { TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 import { __setDbForTests } from '../src/db/client.js';
 import { appRouter } from '../src/trpc/router.js';
 import { describe, expect, it } from 'vitest';
+import { TRPCError } from '@trpc/server';
 
 const CUTOFF = '2026-08-08T00:00:00.000Z';
 
 describe('executive dashboard query and grants', () => {
-  it('authorizes the cohort and operation independently before any data load', () => {
-    const client = resolveAdminDashboardGrant('ropperman@legacyhotels.co.za', 'centurion');
+  it('authorizes the owner for every cohort operation before any data load', () => {
+    const client = resolveAdminDashboardGrant('navaai@legacyhotels.co.za', 'centurion');
     expect(client).toMatchObject({
       cohortId: 'centurion',
       aggregate: true,
@@ -36,23 +37,20 @@ describe('executive dashboard query and grants', () => {
     expect(() => assertAdminDashboardGrant(client, 'drilldown')).not.toThrow();
     expect(() => assertAdminDashboardGrant(client, 'export')).not.toThrow();
 
-    for (const email of [
-      'navaai@legacyhotels.co.za',
-      'ropperman@legacyhotels.co.za',
-      'dbezuidenhout@legacyhotels.co.za',
-    ]) {
-      const researchGrant = resolveAdminDashboardGrant(email, 'research');
-      expect(researchGrant).toMatchObject({
-        cohortId: 'research',
-        aggregate: true,
-        drilldown: true,
-        export: true,
-      });
-    }
+    const researchGrant = resolveAdminDashboardGrant('navaai@legacyhotels.co.za', 'research');
+    expect(researchGrant).toMatchObject({
+      cohortId: 'research',
+      aggregate: true,
+      drilldown: true,
+      export: true,
+    });
 
-    expect(() =>
-      resolveAdminDashboardGrant('new-pilot-user@example.com', 'centurion'),
-    ).not.toThrow();
+    expect(() => resolveAdminDashboardGrant('centurion@legacyhotels.co.za', 'centurion')).toThrow(
+      TRPCError,
+    );
+    expect(() => resolveAdminDashboardGrant('new-pilot-user@example.com', 'centurion')).toThrow(
+      TRPCError,
+    );
   });
 
   it('rejects a caller without an authenticated identity before resolving the database', async () => {
@@ -102,16 +100,16 @@ describe('executive dashboard query and grants', () => {
     ).toThrow(/window/i);
   });
 
-  it('allows configured pilot users to use all configured dashboard operations', async () => {
+  it('allows only the owner to use all configured dashboard operations', async () => {
     expect(() =>
       assertAdminDashboardGrant(
-        resolveAdminDashboardGrant('ropperman@legacyhotels.co.za'),
+        resolveAdminDashboardGrant('navaai@legacyhotels.co.za'),
         'drilldown',
       ),
     ).not.toThrow();
     expect(() =>
       assertAdminDashboardGrant(
-        resolveAdminDashboardGrant('ropperman@legacyhotels.co.za'),
+        resolveAdminDashboardGrant('navaai@legacyhotels.co.za'),
         'export',
       ),
     ).not.toThrow();
@@ -205,7 +203,7 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
             reqHeaders: new Headers(),
             sessionUser: {
               id: 'u12-over-cap-viewer',
-              email: 'ropperman@legacyhotels.co.za',
+              email: 'navaai@legacyhotels.co.za',
               name: null,
             },
           });
@@ -351,7 +349,7 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
               reqHeaders: new Headers(),
               sessionUser: {
                 id: 'u2-second-authorized-export',
-                email: 'ropperman@legacyhotels.co.za',
+                email: 'navaai@legacyhotels.co.za',
                 name: null,
               },
             });
@@ -480,7 +478,7 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
               reqHeaders: new Headers(),
               sessionUser: {
                 id: 'u2-second-authorized-missing-t0',
-                email: 'ropperman@legacyhotels.co.za',
+                email: 'navaai@legacyhotels.co.za',
                 name: null,
               },
             });
@@ -643,7 +641,7 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
 
     it('authorizes and returns a bounded export through the real router', async () => {
       const grant: AdminDashboardGrant = resolveAdminDashboardGrant(
-        'ropperman@legacyhotels.co.za',
+        'navaai@legacyhotels.co.za',
         'centurion',
       );
       expect(grant.aggregate).toBe(true);
@@ -655,7 +653,7 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
         reqHeaders: new Headers(),
         sessionUser: {
           id: 'u10a-export-authorized',
-          email: 'ropperman@legacyhotels.co.za',
+          email: 'navaai@legacyhotels.co.za',
           name: null,
         },
       });
@@ -1106,7 +1104,7 @@ if (process.env.CONFIRM_DISPOSABLE_TEST_DB === '1' && process.env.TEST_DATABASE_
             reqHeaders: new Headers(),
             sessionUser: {
               id: 'u13-residual-fr3-user',
-              email: 'ropperman@legacyhotels.co.za',
+              email: 'navaai@legacyhotels.co.za',
               name: null,
             },
           });
