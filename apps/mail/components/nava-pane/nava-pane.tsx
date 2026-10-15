@@ -47,6 +47,7 @@ import {
   bindGetPriorStaffQuoteRequote,
   bindListThreadQuoteRevisions,
   bindPrepareBookingDraft,
+  bindPrepareUnquotedBookingDraft,
   bindUsePriorQuoteForBooking,
   buildExpiredPriorRequoteBindArgs,
   EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
@@ -133,7 +134,11 @@ import { useSavedReply } from './use-saved-reply';
 import { useSystemCheck } from './use-system-check';
 import { classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
 import { isSelfSentPreStayInformationMail } from '../../../server-pilot/src/ai/existing-stay-information.js';
-import { readAsForAnalysis, workStateForStatus } from '@/lib/quote-workflow/workflow-vocabulary';
+import {
+  isUnquotedNewBookingWorkflow,
+  readAsForAnalysis,
+  workStateForStatus,
+} from '@/lib/quote-workflow/workflow-vocabulary';
 import { GOLD_ACTION_FOR_READ_AS } from '@/lib/workflow-action-labels';
 
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
@@ -1025,6 +1030,53 @@ export function NavaPane({
       }
     };
   }, [priorQuoteKey, isNonActionableMessage]);
+
+  const unquotedDraftKey = [
+    quoteSession.analysis?.luna?.workflow ?? '',
+    quoteSession.analysis?.luna?.todoTarget ?? '',
+    quoteSession.staffSource?.sourceHash ?? '',
+    String(quoteSession.binding?.selectionEpoch ?? 0),
+    String(quoteSession.inputRevision),
+    Object.keys(quoteSession.staffQuotes).join(','),
+    Object.keys(quoteSession.bookingDrafts).join(','),
+  ].join(':');
+  useEffect(() => {
+    if (isNonActionableMessage) return;
+    const luna = quoteSession.analysis?.luna;
+    const source = quoteSession.staffSource;
+    const binding = quoteSession.binding;
+    if (!luna || !source || !binding || !isUnquotedNewBookingWorkflow(luna)) return;
+    const stayKeys = requestedQuoteKeys(quoteSession.groups);
+    const waiting = (stayKeys.length <= 1 ? [stayKeys[0] ?? 'unknown:unknown'] : stayKeys).filter(
+      (key) => !quoteSession.staffQuotes[key] && !quoteSession.bookingDrafts[key],
+    );
+    if (waiting.length === 0) return;
+    const mutate = staffQuoteFromTrpc(trpcClient).workstation.prepareUnquotedBookingDraft?.mutate;
+    if (!mutate) return;
+    const selectionEpoch = binding.selectionEpoch;
+    const inputRevision = quoteSession.inputRevision;
+    const stayRevision = quoteSession.stayRevision;
+    let cancelled = false;
+    void bindPrepareUnquotedBookingDraft({
+      mutate,
+      source,
+      messageId: source.messageId,
+      selectionEpoch,
+      inputRevision,
+      analysis: { ...luna, groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups) },
+    }).then((draftRemote) => {
+      if (cancelled || draftRemote.status !== 'ok') return;
+      if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) return;
+      dispatchQuote({
+        type: 'booking_draft_ready',
+        payload: draftRemote.payload,
+        sourceHash: source.sourceHash,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [unquotedDraftKey, isNonActionableMessage]);
 
   useEffect(() => {
     if (staffQuoteQueueMode !== 'on') return;

@@ -20,6 +20,15 @@ export type PrepareBookingDraftInput = {
   analysis: LunaAnalysisWire;
 };
 
+export const UNQUOTED_BOOKING_REVISION_REF = 'unquoted';
+
+export type PrepareUnquotedBookingDraftInput = {
+  messageId: string;
+  selectionEpoch: number;
+  inputRevision: number;
+  analysis: LunaAnalysisWire;
+};
+
 export type PrepareBookingDraftResult =
   | { status: 'unavailable'; reason?: string }
   | ({ status: 'ready' } & BookingDraftReady);
@@ -80,6 +89,65 @@ export async function bindPrepareBookingDraft(args: {
     }
     if (!ready.draft || !Array.isArray(ready.draft.rooms) || !ready.options) {
       return { status: 'unavailable', reason: 'HMS returned an incomplete booking draft. Try again.' };
+    }
+    return {
+      status: 'ok',
+      payload: {
+        draft: ready.draft,
+        options: ready.options,
+        messageId: ready.messageId,
+        selectionEpoch: ready.selectionEpoch,
+        inputRevision: ready.inputRevision,
+        revisionRef: ready.revisionRef,
+      },
+    };
+  } catch (error) {
+    return { status: 'unavailable', reason: rejectionReason(error) };
+  }
+}
+
+export async function bindPrepareUnquotedBookingDraft(args: {
+  mutate?: (input: PrepareUnquotedBookingDraftInput) => Promise<PrepareBookingDraftResult | { status?: string }>;
+  source: StaffQuoteSource;
+  messageId: string;
+  selectionEpoch: number;
+  inputRevision: number;
+  analysis: LunaAnalysisWire;
+}): Promise<BoundPrepareBookingDraft> {
+  if (!args.mutate) {
+    return {
+      status: 'unavailable',
+      reason: 'The booking draft cannot be prepared from this pane yet. Refresh the pane and try again.',
+    };
+  }
+  try {
+    const result = await args.mutate({
+      messageId: args.messageId,
+      selectionEpoch: args.selectionEpoch,
+      inputRevision: args.inputRevision,
+      analysis: args.analysis,
+    });
+    if (!result || typeof result !== 'object' || result.status !== 'ready') {
+      const reason =
+        result && typeof result === 'object' && 'reason' in result && typeof result.reason === 'string'
+          ? result.reason
+          : 'Nava could not prefill this booking from the email.';
+      return { status: 'unavailable', reason };
+    }
+    const ready = result as { status: 'ready' } & BookingDraftReady;
+    if (
+      ready.selectionEpoch !== args.selectionEpoch ||
+      ready.inputRevision !== args.inputRevision ||
+      ready.messageId !== args.source.messageId ||
+      ready.revisionRef !== UNQUOTED_BOOKING_REVISION_REF
+    ) {
+      return {
+        status: 'unavailable',
+        reason: 'The booking draft is out of date because the selection changed. Select the email again.',
+      };
+    }
+    if (!ready.draft || !Array.isArray(ready.draft.rooms) || !ready.options) {
+      return { status: 'unavailable', reason: 'Nava returned an incomplete booking draft. Try again.' };
     }
     return {
       status: 'ok',

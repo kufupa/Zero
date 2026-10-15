@@ -492,6 +492,7 @@ type RoomChoice = {
   track: string;
   sourceOfBusiness: string;
   guaranteeType: string;
+  ratePlan: string;
   bookingAgency: string;
   organization: string;
   reservationNote: string;
@@ -504,6 +505,7 @@ const NO_CHOICE: RoomChoice = {
   track: '',
   sourceOfBusiness: '',
   guaranteeType: '',
+  ratePlan: '',
   bookingAgency: '',
   organization: '',
   reservationNote: '',
@@ -543,6 +545,7 @@ export function BookingCards({
               track: textValue(room.request.track),
               sourceOfBusiness: textValue(room.request.sourceOfBusiness),
               guaranteeType: textValue(room.request.guaranteeType),
+              ratePlan: textValue(room.request.ratePlan),
               bookingAgency: textValue(room.request.agency) || pickedName(parties?.agency),
               organization: textValue(room.request.organization) || pickedName(parties?.company),
               reservationNote: textValue(room.request.reservationNote),
@@ -698,7 +701,18 @@ export function BookingCards({
               </label>
               <CopyButton label="Room type" roomLabel={roomLabel} value={choice.roomType} />
             </div>
-            <CopyRow roomLabel={roomLabel} label="Rate code" value={textValue(request.ratePlan)} />
+            {textValue(request.ratePlan) ? (
+              <CopyRow roomLabel={roomLabel} label="Rate code" value={textValue(request.ratePlan)} />
+            ) : (
+              <RoomTextField
+                roomLabel={roomLabel}
+                label="Rate code"
+                value={choice.ratePlan}
+                disabled={locked}
+                maxLength={10}
+                onChange={(value) => setChoice({ ratePlan: value.toUpperCase() })}
+              />
+            )}
             <CopyRow roomLabel={roomLabel} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
             <CopyRow roomLabel={roomLabel} label="Last name" value={textValue(request.lastName)} pii />
             <CopyRow roomLabel={roomLabel} label="First name" value={textValue(request.firstName)} pii />

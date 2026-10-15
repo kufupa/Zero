@@ -51,6 +51,62 @@ export const buildCreatePrefillDescription =
   'Build HMS create-form requests for a new stay after findFirstStayMatch returned none. Call with the stay facts already read from the mail/voucher plus BookingDraftDefaults. Maps free text to enum codes only by exact case/space-insensitive match; never guesses. Output.requests is one create-tool request per room; missing holds staff questions; todoNextStep is the Key into HMS line.';
 
 const NATIVE_RATE_CODE = /^[A-Z0-9]{2,10}$/;
+const MAX_PREFILL_ROOMS = 20;
+
+type LunaStayFacts = {
+  groups?: Array<{
+    arrival?: string | null;
+    departure?: string | null;
+    rooms?: number | null;
+    adultsPerRoom?: number | null;
+    childAges?: number[] | null;
+    board?: string | null;
+    roomPreference?: string | null;
+    guestNames?: string[] | null;
+  }> | null;
+  party?: { kind?: string | null; name?: string | null; reference?: string | null } | null;
+};
+
+/** Stay facts already on Luna analysis → create-prefill. Null when dates or room count cannot be mapped. */
+export async function buildCreatePrefillFromLuna(
+  luna: LunaStayFacts,
+): Promise<BuildCreatePrefillOutput | null> {
+  const groups = luna.groups;
+  if (!Array.isArray(groups) || groups.length === 0) return null;
+  const arrival = groups[0]?.arrival?.trim() || null;
+  if (!arrival) return null;
+  const roomTotal = groups.reduce((sum, group) => sum + (group.rooms ?? 1), 0);
+  if (!Number.isSafeInteger(roomTotal) || roomTotal <= 0 || roomTotal > MAX_PREFILL_ROOMS) return null;
+  const party = luna.party;
+  try {
+    return await buildCreatePrefill({
+      arrival,
+      departure: groups[0]?.departure ?? null,
+      nights: null,
+      rooms: groups.flatMap((group) =>
+        Array.from({ length: Math.max(group.rooms ?? 1, 0) }, (_, index) => ({
+          adults: group.adultsPerRoom ?? 1,
+          childAges: [...(group.childAges ?? [])],
+          roomTypeText: group.roomPreference ?? null,
+          guestName: group.guestNames?.[index] ?? null,
+        })),
+      ),
+      boardText: groups[0]?.board ?? null,
+      rateText: null,
+      agencyName: party?.kind === 'agency' ? (party.name ?? null) : null,
+      organizationName:
+        party?.kind === 'organization' || party?.kind === 'government' ? (party.name ?? null) : null,
+      voucherNumber: null,
+      bookerName: null,
+      bookerEmail: null,
+      billingReference: party?.reference ?? null,
+      paidBy: null,
+      defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
+    });
+  } catch {
+    return null;
+  }
+}
 
 function foldToken(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();

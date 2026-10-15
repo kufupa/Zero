@@ -2229,6 +2229,50 @@ describe('quote session staff review items', () => {
     expect(patched.bookingDrafts).toEqual({});
   });
 
+  it('keys an unquoted booking_draft_ready by stay when there is no staff quote', () => {
+    const payload = {
+      draft: {
+        rooms: [
+          {
+            groupId: 'g1',
+            roomIndex: 1,
+            request: { arrival: '2026-11-12', departure: '2026-11-14', roomType: 'STQN' },
+            schemaErrors: [] as string[],
+          },
+        ],
+        rateCheck: [],
+        missing: [],
+        flags: [] as string[],
+      },
+      options: {
+        track: [] as string[],
+        sourceOfBusiness: [] as string[],
+        guaranteeType: [] as string[],
+        roomType: [] as string[],
+      },
+      messageId: 'mail-1',
+      selectionEpoch: 1,
+      inputRevision: 1,
+      revisionRef: 'unquoted',
+    };
+    let s = analysisReady();
+    s = withStaffSource(s);
+    expect(s.staffQuotes).toEqual({});
+    const ready = reduceQuoteSession(s, {
+      type: 'booking_draft_ready',
+      payload,
+      sourceHash: STAFF_HASH,
+    });
+    expect(ready.bookingDrafts[STAY_A]?.revisionRef).toBe('unquoted');
+    expect(ready.bookingDrafts[STAY_A]?.draft.rooms).toHaveLength(1);
+    const otherMail = reduceQuoteSession(s, {
+      type: 'booking_draft_ready',
+      payload: { ...payload, messageId: 'other' },
+      sourceHash: STAFF_HASH,
+    });
+    expect(otherMail.bookingDrafts).toEqual({});
+  });
+
   it('prefills government party into company and salesStrategy when header is empty', () => {
     const s = analysisReady({
       ...quoteAnalysis,

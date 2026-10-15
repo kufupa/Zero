@@ -8,7 +8,15 @@ import {
   type StaffQuoteAttestation,
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
-import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
+import {
+  bookingDraftFromPrefill,
+  buildBookingDrafts,
+  createRequestFieldOptions,
+  isUnquotedNewBooking,
+  prefillBoardsFromLuna,
+  UNQUOTED_BOOKING_REVISION_REF,
+} from '../../ai/booking-draft.js';
+import { buildCreatePrefillFromLuna } from '../../ai/aop/create-prefill.js';
 import {
   collectThreadQuoteRevisions,
   priorStaffQuoteRequotePayload,
@@ -154,6 +162,15 @@ export const prepareBookingDraftInput = z
   .object({
     workflowRunId: z.string().min(1),
     revisionRef: z.string().min(1),
+    messageId: z.string().min(1),
+    selectionEpoch: z.number().int().nonnegative(),
+    inputRevision: z.number().int().nonnegative(),
+    analysis: lunaAnalysisSchema,
+  })
+  .strict();
+
+export const prepareUnquotedBookingDraftInput = z
+  .object({
     messageId: z.string().min(1),
     selectionEpoch: z.number().int().nonnegative(),
     inputRevision: z.number().int().nonnegative(),
@@ -951,6 +968,31 @@ export const workstationRouter = router({
           reason: error instanceof Error ? error.message : 'quote_revision_unavailable',
         };
       }
+    }),
+  prepareUnquotedBookingDraft: mailboxProcedure
+    .input(prepareUnquotedBookingDraftInput)
+    .mutation(async ({ input }) => {
+      if (!isUnquotedNewBooking(input.analysis)) {
+        return { status: 'unavailable' as const, reason: 'not_a_new_booking' };
+      }
+      const prefill = await buildCreatePrefillFromLuna(input.analysis);
+      if (!prefill?.requests.length) {
+        return { status: 'unavailable' as const, reason: 'prefill_unavailable' };
+      }
+      return {
+        status: 'ready' as const,
+        draft: bookingDraftFromPrefill({
+          requests: prefill.requests,
+          missing: prefill.missing,
+          schemaErrors: prefill.schemaErrors,
+          boards: prefillBoardsFromLuna(input.analysis.groups),
+        }),
+        options: createRequestFieldOptions(),
+        messageId: input.messageId,
+        selectionEpoch: input.selectionEpoch,
+        inputRevision: input.inputRevision,
+        revisionRef: UNQUOTED_BOOKING_REVISION_REF,
+      };
     }),
   listThreadQuoteRevisions: mailboxProcedure
     .input(listThreadQuoteRevisionsInput)

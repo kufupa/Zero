@@ -32,6 +32,71 @@ export type BookingDraft = {
   flags: string[];
 };
 
+/** Sentinel revisionRef for a mail-prefill draft that has no priced QuoteRevision. */
+export const UNQUOTED_BOOKING_REVISION_REF = 'unquoted';
+
+export function isUnquotedNewBooking(analysis: {
+  workflow?: string | null;
+  todoTarget?: string | null;
+}): boolean {
+  const workflow = analysis.workflow?.trim().toLowerCase() ?? '';
+  if (
+    workflow === 'create' ||
+    workflow === 'create_booking' ||
+    workflow === 'new_booking' ||
+    workflow === 'booking'
+  ) {
+    return true;
+  }
+  return workflow === 'hms_todo' && analysis.todoTarget === 'create';
+}
+
+function stayKeyFromRequest(request: Record<string, unknown>): string {
+  const arrival = typeof request.arrival === 'string' ? request.arrival : 'unknown';
+  const departure = typeof request.departure === 'string' ? request.departure : 'unknown';
+  return `${arrival}:${departure}`;
+}
+
+export function prefillBoardsFromLuna(
+  groups: Array<{ rooms?: number | null; board?: string | null }>,
+): QuotedBoard[] {
+  return groups.flatMap((group) => {
+    const count = Math.max(group.rooms ?? 1, 0);
+    const board: QuotedBoard =
+      group.board === 'room_only'
+        ? 'room_only'
+        : group.board === 'bb'
+          ? 'bb'
+          : group.board === 'dbb' || group.board === 'dinner_bb'
+            ? 'dinner_bb'
+            : 'unknown';
+    return Array.from({ length: count }, () => board);
+  });
+}
+
+/** Map a create-prefill result onto booking-card rooms. No priced quote, so rateCheck stays empty. */
+export function bookingDraftFromPrefill(input: {
+  requests: Record<string, unknown>[];
+  missing: BookingDraftMissing[];
+  schemaErrors: string[][];
+  boards?: QuotedBoard[];
+}): BookingDraft {
+  const counts = new Map<string, number>();
+  const rooms: BookingDraftRoom[] = input.requests.map((request, index) => {
+    const groupId = stayKeyFromRequest(request);
+    const roomIndex = (counts.get(groupId) ?? 0) + 1;
+    counts.set(groupId, roomIndex);
+    return {
+      groupId,
+      roomIndex,
+      board: input.boards?.[index] ?? 'unknown',
+      request,
+      schemaErrors: input.schemaErrors[index] ?? [],
+    };
+  });
+  return { rooms, rateCheck: [], missing: input.missing, flags: [] };
+}
+
 const TITLE = /\b(?:Mr|Mrs|Ms|Miss|Dr|Prof)\b\.?/gi;
 
 export function splitGuestName(raw: string): { firstName: string; lastName: string } {

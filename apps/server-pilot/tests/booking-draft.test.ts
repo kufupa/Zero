@@ -1,15 +1,20 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  bookingDraftFromPrefill,
   buildBookingDrafts,
   createRequestFieldOptions,
   requestFromQuotedRoom,
   splitGuestName,
+  UNQUOTED_BOOKING_REVISION_REF,
 } from '../src/ai/booking-draft.js';
 import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { appRouter } from '../src/trpc/router.js';
-import { prepareBookingDraftInput } from '../src/trpc/routes/workstation.js';
+import {
+  prepareBookingDraftInput,
+  prepareUnquotedBookingDraftInput,
+} from '../src/trpc/routes/workstation.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import type { QuoteRevision } from '../src/quote-proposal/quote-revision.js';
 
@@ -602,5 +607,84 @@ describe('prepareBookingDraft route', () => {
     const result = await draftCaller('transport-nava').workstation.prepareBookingDraft(draftInput);
     expect(result).toMatchObject({ status: 'unavailable' });
     expect(result).toHaveProperty('reason');
+  });
+});
+
+describe('bookingDraftFromPrefill', () => {
+  it('maps prefill requests to rooms with an empty rateCheck', () => {
+    const draft = bookingDraftFromPrefill({
+      requests: [
+        {
+          arrival: '2027-09-14',
+          departure: '2027-09-16',
+          adults: 1,
+          childAges: [],
+          firstName: 'Ada',
+          lastName: 'Lovelace',
+          roomType: 'STQN',
+        },
+      ],
+      missing: [{ field: 'ratePlan', question: 'Rate plan code for this booking?' }],
+      schemaErrors: [['ratePlan']],
+      boards: ['bb'],
+    });
+    expect(draft.rateCheck).toEqual([]);
+    expect(draft.flags).toEqual([]);
+    expect(draft.missing).toEqual([{ field: 'ratePlan', question: 'Rate plan code for this booking?' }]);
+    expect(draft.rooms).toEqual([
+      {
+        groupId: '2027-09-14:2027-09-16',
+        roomIndex: 1,
+        board: 'bb',
+        request: expect.objectContaining({ firstName: 'Ada', lastName: 'Lovelace', roomType: 'STQN' }),
+        schemaErrors: ['ratePlan'],
+      },
+    ]);
+  });
+});
+
+const unquotedInput = {
+  messageId: 'message-1',
+  selectionEpoch: 1,
+  inputRevision: 1,
+  analysis: analysis(),
+};
+
+describe('prepareUnquotedBookingDraft route', () => {
+  it('rejects an extra input key', () => {
+    expect(() => prepareUnquotedBookingDraftInput.parse({ ...unquotedInput, extra: true })).toThrow();
+  });
+
+  it('returns a booking draft with empty rateCheck for create_booking analysis', async () => {
+    const result = await draftCaller().workstation.prepareUnquotedBookingDraft(unquotedInput);
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(result.revisionRef).toBe(UNQUOTED_BOOKING_REVISION_REF);
+    expect(result.draft.rateCheck).toEqual([]);
+    expect(result.draft.rooms.length).toBeGreaterThan(0);
+    expect(result.draft.rooms[0]?.request).toMatchObject({
+      arrival: '2026-10-12',
+      departure: '2026-10-13',
+    });
+    expect(result.draft.rooms[0]?.request).not.toHaveProperty('ratePlan');
+  });
+
+  it('returns a booking draft for hms_todo create', async () => {
+    const result = await draftCaller().workstation.prepareUnquotedBookingDraft({
+      ...unquotedInput,
+      analysis: analysis({ workflow: 'hms_todo', todoTarget: 'create' }),
+    });
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(result.draft.rateCheck).toEqual([]);
+    expect(result.draft.rooms[0]?.request).toMatchObject({ firstName: 'John', lastName: 'Smith' });
+  });
+
+  it('returns unavailable for a quote workflow', async () => {
+    const result = await draftCaller().workstation.prepareUnquotedBookingDraft({
+      ...unquotedInput,
+      analysis: analysis({ workflow: 'quote' }),
+    });
+    expect(result).toMatchObject({ status: 'unavailable' });
   });
 });

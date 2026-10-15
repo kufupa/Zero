@@ -6,7 +6,8 @@ import type { ModelAdapter } from './bedrock/adapter.js';
 import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { analyseQuoteSources, type QuoteWorkflowAnalysis } from './quote-workflow-analyse.js';
-import { buildCreatePrefill, type BuildCreatePrefillOutput } from './aop/create-prefill.js';
+import { buildCreatePrefillFromLuna, type BuildCreatePrefillOutput } from './aop/create-prefill.js';
+import { isUnquotedNewBooking } from './booking-draft.js';
 import { buildHmsTodoCard, type HmsTodoCardInput } from './hms-todo-card.js';
 import {
   amendmentFromAnalysis,
@@ -401,53 +402,14 @@ function lunaWithMappedDates(luna: LunaAnalysis, mapped: MappedQuoteDecision): L
   };
 }
 
-const MAX_PREFILL_ROOMS = 20;
-
 async function hmsTodoCardFromLuna(
   luna: LunaAnalysis | HmsTodoCardInput | null | undefined,
   attachments: SyncedQuoteAttachment[],
 ) {
   if (!luna) return null;
-  const workflow = luna.workflow?.trim().toLowerCase();
-  const groups = (luna as LunaAnalysis).groups;
-  const arrival = groups?.[0]?.arrival?.trim() || null;
-  const isNewBooking =
-    Array.isArray(groups) &&
-    (workflow === 'create' || workflow === 'create_booking' || workflow === 'new_booking' || workflow === 'booking');
-  let prefill: BuildCreatePrefillOutput | null = null;
-  // Group-sized asks (or a bad count) get no per-room prefill; the card still shows.
-  const roomTotal = Array.isArray(groups) ? groups.reduce((sum, group) => sum + (group.rooms ?? 1), 0) : 0;
-  if (isNewBooking && arrival && Number.isSafeInteger(roomTotal) && roomTotal <= MAX_PREFILL_ROOMS) {
-    try {
-      const party = (luna as LunaAnalysis).party;
-      prefill = await buildCreatePrefill({
-        arrival,
-        departure: groups[0]?.departure ?? null,
-        nights: null,
-        rooms: groups.flatMap((group) =>
-          Array.from({ length: Math.max(group.rooms ?? 1, 0) }, (_, index) => ({
-            adults: group.adultsPerRoom ?? 1,
-            childAges: [...(group.childAges ?? [])],
-            roomTypeText: group.roomPreference ?? null,
-            guestName: group.guestNames?.[index] ?? null,
-          })),
-        ),
-        boardText: groups[0]?.board ?? null,
-        rateText: null,
-        agencyName: party?.kind === 'agency' ? (party.name ?? null) : null,
-        organizationName:
-          party?.kind === 'organization' || party?.kind === 'government' ? (party.name ?? null) : null,
-        voucherNumber: null,
-        bookerName: null,
-        bookerEmail: null,
-        billingReference: party?.reference ?? null,
-        paidBy: null,
-        defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
-      });
-    } catch {
-      prefill = null;
-    }
-  }
+  const prefill: BuildCreatePrefillOutput | null = isUnquotedNewBooking(luna)
+    ? await buildCreatePrefillFromLuna(luna as LunaAnalysis)
+    : null;
   return buildHmsTodoCard({
     ...luna,
     attachmentFilenames: attachments.map((attachment) => attachment.filename),

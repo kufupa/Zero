@@ -82,6 +82,15 @@ export function quoteOrBookingWorkflow(
   return null;
 }
 
+/** New-booking mail that should show a BookingCards card without a priced quote. */
+export function isUnquotedNewBookingWorkflow(
+  luna: { workflow?: string | null; todoTarget?: string | null } | null | undefined,
+): boolean {
+  if (!luna) return false;
+  if (luna.workflow === 'create_booking') return true;
+  return luna.workflow === 'hms_todo' && luna.todoTarget === 'create';
+}
+
 export function readAsForAnalysis(
   analysis: QuoteAnalysis | null | undefined,
   options: {
