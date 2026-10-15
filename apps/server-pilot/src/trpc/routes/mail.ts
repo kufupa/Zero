@@ -54,7 +54,6 @@ import {
   stableConversationId,
 } from '../../mail/conversation-group.js';
 import {
-  DEFAULT_AI_MODEL_ID,
   DEFAULT_FEEDBACK_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
@@ -1523,7 +1522,7 @@ export const mailRouter = tRouter({
               triggerMessageId: messageId,
               runKind: 'feedback_extraction',
               idempotencyKey: `feedback:${input.draftId}`,
-              modelId: DEFAULT_AI_MODEL_ID,
+              modelId: 'gpt-6-luna',
               promptVersion: DEFAULT_FEEDBACK_PROMPT_VERSION,
             },
             tx as unknown as typeof db,

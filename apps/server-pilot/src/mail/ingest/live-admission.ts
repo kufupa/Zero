@@ -10,10 +10,10 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import {
-  DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import { triageModelLabels } from '../../ai/bedrock/factory.js';
 import { enqueueShadowPrediction } from '../../ai/shadow-evaluation.js';
 import { refreshThreadWork } from '../../ai/work-items.js';
 import {
@@ -519,11 +519,14 @@ export async function admitLiveMessage(
           trigger.direction === 'outbound'
             ? `external-sent-baseline:${trigger.id}`
             : `inbound-triage:${trigger.id}`,
-        modelId: DEFAULT_AI_MODEL_ID,
+        modelId: triageModelLabels().modelId,
         promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
         admissionSnapshotId: id,
         admissionSnapshotHash: snapshotHash,
-        ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
+        metrics: {
+          ...triageModelLabels(),
+          ...(mailSourceDecision ? { mailSourceDecision } : {}),
+        },
       },
       db,
     );

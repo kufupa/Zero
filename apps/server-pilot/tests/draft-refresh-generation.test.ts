@@ -33,4 +33,13 @@ describe('visible draft refresh safety', () => {
     expect(source).toMatch(/isVisibleDraftAssistanceEnabled/);
     expect(source).toMatch(/refreshHmsCandidate/);
   });
+
+  it('labels candidate-draft enqueue from the configured draft route, not Nova Lite', () => {
+    const source = readFileSync(new URL('../src/trpc/routes/drafts.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/draftRouteEnqueueLabels/);
+    expect(source).not.toMatch(/modelId: input\.modelId \?\? DEFAULT_AI_MODEL_ID/);
+    const worker = readFileSync(new URL('../src/ai/worker.ts', import.meta.url), 'utf8');
+    expect(worker).toMatch(/AzureLunaModelAdapter/);
+    expect(worker).toMatch(/azure-foundry-responses/);
+  });
 });

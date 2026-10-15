@@ -24,9 +24,9 @@ const AI_MODEL_ROUTES: readonly AiModelRoute[] = ['unavailable', 'approved-local
 export type AiTriageModelProfile = 'nova_lite' | 'gpt6_luna_max';
 export const AI_TRIAGE_MODEL_PROFILES: readonly AiTriageModelProfile[] = ['nova_lite', 'gpt6_luna_max'];
 
-/** Missing means Nova; anything else unknown throws so no silent fallback. */
+/** Missing means Azure GPT-6 Luna; `nova_lite` stays selectable. Unknown throws so no silent fallback. */
 export function parseAiTriageModelProfile(raw: string | undefined): AiTriageModelProfile {
-  const value = raw ?? 'nova_lite';
+  const value = raw ?? 'gpt6_luna_max';
   if (!AI_TRIAGE_MODEL_PROFILES.includes(value as AiTriageModelProfile)) {
     throw new Error(
       `env AI_TRIAGE_MODEL_PROFILE must be one of ${AI_TRIAGE_MODEL_PROFILES.join(', ')}, got: ${value}`,
@@ -419,7 +419,7 @@ export function parseEnv(input: EnvInput): MailEnv {
     ),
     AI_ENABLED: false,
     AI_MODEL_ROUTE: 'unavailable',
-    AI_TRIAGE_MODEL_PROFILE: 'nova_lite',
+    AI_TRIAGE_MODEL_PROFILE: 'gpt6_luna_max',
     AI_WRITE_GATE_ENABLED: false,
     AI_DRAFTS_ENABLED: false,
     CATCHUP_UPLOAD_ENABLED: isCatchupUploadEnabled(input),
