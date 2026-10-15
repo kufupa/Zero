@@ -38,6 +38,20 @@ export type SameMoveFixture = {
   claimed: GoldOperation[];
 };
 
+/** Joined ops JSONL row — same shape as a fixture. */
+export type SameMoveOpsRow = SameMoveFixture;
+
+export type SameMoveEvalCli = { mode: 'promptfoo' } | { mode: 'ops'; opsPath: string };
+
+export type SameMoveOpsReport = {
+  n: number;
+  match: number;
+  mismatch: number;
+  not_scored: number;
+  rate: number;
+  grades: Record<GoldGrade, number>;
+};
+
 export type SameMovePromptfooCase = {
   id: string;
   grade: GoldGrade;
@@ -78,6 +92,76 @@ function assertNoMailPii(value: unknown, trail: string): void {
     }
     assertNoMailPii(child, `${trail}.${key}`);
   }
+}
+
+function emptyGrades(): Record<GoldGrade, number> {
+  return {
+    match: 0,
+    partial: 0,
+    mismatch: 0,
+    prediction_error: 0,
+    unavailable: 0,
+    not_scored: 0,
+  };
+}
+
+function parseOpsRow(raw: unknown, trail: string): SameMoveOpsRow {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error(`invalid same-move ops row ${trail}`);
+  }
+  const row = raw as SameMoveOpsRow;
+  if (!row.id || !Array.isArray(row.predicted) || !Array.isArray(row.claimed)) {
+    throw new Error(`invalid same-move ops row ${trail}`);
+  }
+  assertNoMailPii(row, row.id);
+  return row;
+}
+
+export function parseSameMoveEvalCli(argv: readonly string[]): SameMoveEvalCli {
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    const value = argv[i + 1];
+    if (flag === '--ops') {
+      if (!value || value.startsWith('--')) {
+        throw new Error('same-move --ops requires a jsonl path');
+      }
+      return { mode: 'ops', opsPath: path.resolve(value) };
+    }
+  }
+  return { mode: 'promptfoo' };
+}
+
+export function loadSameMoveOpsJsonl(opsPath: string): SameMoveOpsRow[] {
+  const lines = readFileSync(opsPath, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) throw new Error(`no same-move ops rows in ${opsPath}`);
+  return lines.map((line, index) => parseOpsRow(JSON.parse(line), `${opsPath}:${index + 1}`));
+}
+
+export function scoreSameMoveOps(rows: readonly SameMoveOpsRow[]): SameMoveOpsReport {
+  const grades = emptyGrades();
+  for (const row of rows) {
+    const scored = scoreSameMove({
+      predicted: row.predicted,
+      claimed: row.claimed,
+    });
+    grades[scored.grade] += 1;
+  }
+  const n = rows.length;
+  return {
+    n,
+    match: grades.match,
+    mismatch: grades.mismatch,
+    not_scored: grades.not_scored,
+    rate: n === 0 ? 0 : grades.match / n,
+    grades,
+  };
+}
+
+export function runSameMoveOpsEval(opsPath: string): SameMoveOpsReport {
+  return scoreSameMoveOps(loadSameMoveOpsJsonl(opsPath));
 }
 
 export function loadSameMoveFixtures(
