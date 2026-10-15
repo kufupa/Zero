@@ -1,7 +1,10 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { validateStaffQuoteInstallationConfiguration } from '../src/ai/staff-quote-installation.js';
+import {
+  CENTURION_DINNER_ADD_ON,
+  validateStaffQuoteInstallationConfiguration,
+} from '../src/ai/staff-quote-installation.js';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const privateRoot = resolve(repo, '.private');
@@ -48,5 +51,20 @@ describe('staff quote installation defaults', () => {
       unit: 'per_person',
       label: 'Staff configured',
     });
+  });
+
+  it('returns a fresh dinner default so mutating one result does not change the next', () => {
+    expect(Object.isFrozen(CENTURION_DINNER_ADD_ON)).toBe(true);
+    const first = validateStaffQuoteInstallationConfiguration(configuration('HRCEN'));
+    expect(first.dinnerAddOn).toBeDefined();
+    first.dinnerAddOn!.amountMinor = 1;
+    const second = validateStaffQuoteInstallationConfiguration(configuration('HRCEN'));
+
+    expect(second.dinnerAddOn).toEqual({
+      amountMinor: 35_000,
+      unit: 'per_person_per_night',
+      label: 'Dinner Allowance',
+    });
+    expect(CENTURION_DINNER_ADD_ON.amountMinor).toBe(35_000);
   });
 });

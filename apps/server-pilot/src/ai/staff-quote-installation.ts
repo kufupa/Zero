@@ -65,6 +65,13 @@ const configurationSchema = z
   })
   .strict();
 export type StaffQuoteInstallationConfiguration = z.infer<typeof configurationSchema>;
+
+/** Centurion default dinner add-on. Same values validation already applied for HRCEN. */
+export const CENTURION_DINNER_ADD_ON = Object.freeze({
+  amountMinor: 35_000,
+  unit: 'per_person_per_night' as const,
+  label: 'Dinner Allowance',
+});
 export type InstalledStaffQuoteServiceOptions = Pick<
   BusinessOptions,
   'authorizationId' | 'authorizeContext' | 'signer'
@@ -136,11 +143,7 @@ export function validateStaffQuoteInstallationConfiguration(
   return configuration.owner.propertyCode === 'HRCEN' && !configuration.dinnerAddOn
     ? {
         ...configuration,
-        dinnerAddOn: {
-          amountMinor: 35_000,
-          unit: 'per_person_per_night',
-          label: 'Dinner Allowance',
-        },
+        dinnerAddOn: { ...CENTURION_DINNER_ADD_ON },
       }
     : configuration;
 }
