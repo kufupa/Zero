@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { LookupCandidate } from '../src/ai/thread-context.js';
 import { extractLookupCandidates } from '../src/ai/thread-context.js';
-import { resolveThreadConfirmationEvidence } from '../src/ai/quote-workflow-synced-selection.js';
+import {
+  resolveThreadConfirmationEvidence,
+  THREAD_CONFIRMATION_AMBIGUOUS,
+} from '../src/ai/quote-workflow-synced-selection.js';
 import {
   confirmationBase,
   confirmationMatches,
@@ -201,6 +204,24 @@ describe('extraction', () => {
 
 describe('resolveThreadConfirmationEvidence', () => {
   it('treats a bare base and matching dashed conf as the same booking', () => {
+    expect(
+      resolveThreadConfirmationEvidence([
+        { filename: '88001122-1.pdf' },
+        { filename: 'note.txt', text: 'confirmation number 88001122' },
+      ]),
+    ).toEqual({ confirmation: LEG1, reason: null });
+  });
+
+  it('fails closed when a labelled bare base disagrees with the dashed conf base', () => {
+    expect(
+      resolveThreadConfirmationEvidence([
+        { filename: '88001122-1.pdf' },
+        { filename: 'note.txt', text: 'confirmation number 99002233' },
+      ]),
+    ).toEqual({ confirmation: null, reason: THREAD_CONFIRMATION_AMBIGUOUS });
+  });
+
+  it('keeps one dashed conf when the labelled bare base is the same booking', () => {
     expect(
       resolveThreadConfirmationEvidence([
         { filename: '88001122-1.pdf' },

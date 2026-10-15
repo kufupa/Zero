@@ -10,6 +10,7 @@ import {
   type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
+import { confirmationBase } from '../hms/confirmation-match.js';
 import { convertDocxWithGotenberg } from '../quote-proposal/gotenberg.js';
 import {
   extractReservationistOfficeText,
@@ -101,7 +102,12 @@ export function resolveThreadConfirmationEvidence(
     }
   }
   if (dashed.size === 1) {
-    return { confirmation: [...dashed][0]!, reason: null };
+    const only = [...dashed][0]!;
+    const dashedBase = confirmationBase(only);
+    if ([...labelledBare].some((base) => confirmationBase(base) !== dashedBase)) {
+      return { confirmation: null, reason: THREAD_CONFIRMATION_AMBIGUOUS };
+    }
+    return { confirmation: only, reason: null };
   }
   if (dashed.size > 1) {
     return { confirmation: null, reason: THREAD_CONFIRMATION_AMBIGUOUS };
