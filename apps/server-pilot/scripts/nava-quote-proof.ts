@@ -22,6 +22,8 @@ import {
   stayKeyOfRatesInput,
   type GuardDecision,
 } from './nava-proof-kit';
+import { quoteProofPass } from './nava-quote-proof-result.js';
+export { isNamedRefusal, quoteProofPass } from './nava-quote-proof-result.js';
 import {
   ANALYSIS_PROCEDURES,
   fitPaneToContent,
@@ -313,7 +315,6 @@ export type QuoteProofThread = {
   edits: string[];
   blocker: string | null;
 };
-type QuoteProofScore = Pick<QuoteProofThread, 'rates' | 'blocker'>;
 
 export type PartyLookupReadiness = {
   pending: boolean;
@@ -421,27 +422,6 @@ export function liveHmsCandidateFromText(kind: PartyKind, text: string): QuotePa
   const match = /^(.+)\s+\(#([^)]+)\)$/.exec(text.trim());
   if (!match) return null;
   return { kind, name: match[1]!.trim(), source: 'live_hms', nativeId: match[2]!.trim() };
-}
-
-export function isNamedRefusal(outcome: string | null | undefined): boolean {
-  const match = /^refused:\s*(.+)$/i.exec(outcome?.trim() ?? '');
-  if (!match) return false;
-  const reason = match[1]!.trim();
-  return (
-    reason.length >= 8 &&
-    !/^(?:refused|failed|failure|error|unknown|unavailable|not available|timeout|timed out)\.?$/i.test(reason)
-  );
-}
-
-export function quoteProofPass(threads: readonly QuoteProofScore[]): boolean {
-  return (
-    threads.length > 0 &&
-    threads.every(
-      (thread) =>
-        thread.blocker === null &&
-        (thread.rates.outcome === 'priced' || isNamedRefusal(thread.rates.outcome)),
-    )
-  );
 }
 
 export type QuoteProofConfig = RunConfig & {
