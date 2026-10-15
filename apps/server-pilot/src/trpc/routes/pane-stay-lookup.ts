@@ -163,7 +163,12 @@ export const paneStayLookupRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       if (input.threadId) {
-        await assertCenturionHmsMailboxOrigin(originGuardInput(input, ctx.activeTransportId));
+        await assertCenturionHmsMailboxOrigin(
+          originGuardInput(
+            { threadId: input.threadId, messageId: input.messageId },
+            ctx.activeTransportId,
+          ),
+        );
       }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
       return findStay(
@@ -193,7 +198,12 @@ export const paneStayLookupRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       if (input.threadId) {
-        await assertCenturionHmsMailboxOrigin(originGuardInput(input, ctx.activeTransportId));
+        await assertCenturionHmsMailboxOrigin(
+          originGuardInput(
+            { threadId: input.threadId, messageId: input.messageId },
+            ctx.activeTransportId,
+          ),
+        );
       }
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
       return searchGuest(
