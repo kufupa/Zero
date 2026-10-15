@@ -39,6 +39,7 @@ import {
   reservationFindResultSchema,
   type ReservationFindResult,
 } from './reservation-context-contract.js';
+import { bindCenturionHmsMailboxProperty } from './mailbox-hms-origin-bind.js';
 import { extractLookupCandidates, filterExactReservationCandidates } from '../ai/thread-context.js';
 import { DOCUMENT_LIST_MAX_ROWS } from './document-list-contract.js';
 import { normalizeMessageText } from '../ai/thread-context.js';
@@ -164,6 +165,10 @@ async function loadTrigger(
       textBody: message.textBody,
       htmlBody: message.htmlBody,
       subject: message.subject,
+      fromAddress: message.fromAddress,
+      ownerHeaderValue: message.ownerHeaderValue,
+      toAddresses: message.toAddresses,
+      ccAddresses: message.ccAddresses,
       receivedAt: message.receivedAt,
       createdAt: message.createdAt,
     })
@@ -210,6 +215,10 @@ async function loadTrigger(
       quoteRequest: normalized.request,
       text: triggerText,
       observedAt: trigger.receivedAt,
+      fromAddress: trigger.fromAddress,
+      ownerHeaderValue: trigger.ownerHeaderValue,
+      toAddresses: trigger.toAddresses,
+      ccAddresses: trigger.ccAddresses,
     };
   }
   const exact = filterExactReservationCandidates(extractLookupCandidates(triggerText));
@@ -229,6 +238,10 @@ async function loadTrigger(
     text: triggerText,
     observedAt: trigger.receivedAt,
     quoteRequest: null,
+    fromAddress: trigger.fromAddress,
+    ownerHeaderValue: trigger.ownerHeaderValue,
+    toAddresses: trigger.toAddresses,
+    ccAddresses: trigger.ccAddresses,
   };
 }
 
@@ -544,6 +557,23 @@ export async function issueReadAdmissionFromMailbox(
     transportId: input.transportId,
   });
   const trigger = await loadTrigger(input, db, dependencies);
+  const bound = bindCenturionHmsMailboxProperty({
+    propertyCode: input.propertyCode,
+    origin: {
+      fromAddress: trigger.fromAddress,
+      ownerHeaderValue: trigger.ownerHeaderValue,
+      toAddresses: trigger.toAddresses,
+      ccAddresses: trigger.ccAddresses,
+    },
+  });
+  if (!bound.ok) {
+    throw authError(
+      bound.code,
+      bound.code === 'READ_DAVINCI_ORIGIN_REFUSED'
+        ? 'Da Vinci mailbox origin is not bound to Centurion HMS'
+        : 'read admission requires an explicit property code',
+    );
+  }
   const source: ReadAdmissionSource = {
     userId: grant.userId,
     mailboxAccessId: grant.accessId,
@@ -552,7 +582,7 @@ export async function issueReadAdmissionFromMailbox(
     triggerMessageId: trigger.triggerMessageId,
     releaseId: input.releaseId,
     requestBranchId: input.requestBranchId,
-    propertyCode: input.propertyCode ?? process.env.HMS_EXPECTED_PROPERTY_CODE?.trim() ?? 'HRCEN',
+    propertyCode: bound.propertyCode,
     sourceRevision: input.sourceRevision ?? process.env.NAVA_BUILD_COMMIT?.trim() ?? 'unknown',
     ...(input.manifestSha256 ? { manifestSha256: input.manifestSha256 } : {}),
     ...(input.captureBindingRef ? { captureBindingRef: input.captureBindingRef } : {}),

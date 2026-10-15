@@ -437,6 +437,7 @@ async function readRunInput(
     toolId: 'hms_find_reservation',
     releaseId: 'release-red',
     requestBranchId: 'guest_stay_search',
+    propertyCode: 'HRCEN',
     manifestSha256: READ_MANIFEST_SHA256,
     captureBindingRef: readResultRef,
   });
@@ -594,6 +595,7 @@ async function contextReadRunInput(
     toolId: 'hms_find_reservation',
     releaseId: 'release-red',
     requestBranchId: 'guest_stay_search',
+    propertyCode: 'HRCEN',
     manifestSha256: READ_MANIFEST_SHA256,
     captureBindingRef: parentRef,
   });
@@ -630,6 +632,7 @@ async function contextReadRunInput(
     detail: 'summary',
     releaseId: 'release-red',
     requestBranchId: 'guest_stay_search',
+    propertyCode: 'HRCEN',
     manifestSha256: READ_MANIFEST_SHA256,
     captureBindingRef: readResultRef,
   });
@@ -1061,6 +1064,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U8 independent review DB RED 
         toolId: 'hms_find_reservation',
         releaseId: 'release-red',
         requestBranchId: 'guest_stay_search',
+        propertyCode: 'HRCEN',
         manifestSha256: READ_MANIFEST_SHA256,
         captureBindingRef: `u8-nullable-clock-${randomUUID()}`,
         now: new Date(observedAt),

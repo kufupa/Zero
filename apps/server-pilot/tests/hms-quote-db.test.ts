@@ -320,6 +320,7 @@ async function issueAndEnqueueQuote(
       toolId: 'hms_quote_stay',
       releaseId,
       requestBranchId: 'quote_availability_search',
+      propertyCode: 'HRCEN',
       manifestSha256,
       detail: 'detail',
       captureBindingRef: readResultRef,
@@ -833,6 +834,7 @@ describe('U7 normal audited quote runtime with guarded PG16 lock', () => {
               toolId: 'hms_quote_stay',
               releaseId,
               requestBranchId: 'quote_availability_search',
+              propertyCode: 'HRCEN',
               manifestSha256:
                 activeReadState.releases.get('hms_quote_stay')!.requestBranches[0]!.manifestSha256,
               detail: 'detail',
