@@ -269,6 +269,96 @@ describe('generateAgentPromptfooTests', () => {
     expect(dumped).not.toMatch(/msg-test-a/);
     expect(dumped).toMatch(/msg-train-a/);
   });
+
+  it('excludes ids present in both locked and unlocked rows and warns with a count only', async () => {
+    const dir = await tmpDir();
+    const pairsPath = path.join(dir, 'pairs.jsonl');
+    const labelsPath = path.join(dir, 'labels.jsonl');
+    const previousUnlock = process.env.EVAL_UNLOCK_TEST;
+    delete process.env.EVAL_UNLOCK_TEST;
+    await writeFile(
+      pairsPath,
+      [
+        {
+          split: 'test',
+          inbound: {
+            id: 'msg-overlap',
+            direction: 'inbound',
+            from_address: 'agent@example.test',
+            subject: 'synthetic',
+            received_at: '2026-11-02T09:00:00Z',
+            body: 'synthetic body omitted from tests yaml',
+          },
+        },
+        {
+          split: 'train',
+          inbound: {
+            id: 'msg-overlap',
+            direction: 'inbound',
+            from_address: 'agent@example.test',
+            subject: 'synthetic',
+            received_at: '2026-11-02T09:00:00Z',
+            body: 'synthetic body omitted from tests yaml',
+          },
+        },
+        {
+          split: 'train',
+          inbound: {
+            id: 'msg-train-ok',
+            direction: 'inbound',
+            from_address: 'agent@example.test',
+            subject: 'synthetic',
+            received_at: '2026-11-02T09:00:00Z',
+            body: 'synthetic body omitted from tests yaml',
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join('\n') + '\n',
+    );
+    await writeFile(
+      labelsPath,
+      [
+        {
+          message_id: 'msg-overlap',
+          staff_move: 'amend_done',
+          workflow: 'amend',
+          required_fields: [],
+          hms_work_implied: [],
+        },
+        {
+          message_id: 'msg-train-ok',
+          staff_move: 'priced_quote',
+          workflow: 'quote_availability',
+          required_fields: [],
+          hms_work_implied: [],
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join('\n') + '\n',
+    );
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    };
+    try {
+      const generated = generateAgentPromptfooTests({
+        labelsPath,
+        pairsPath,
+        split: 'train',
+        limit: 25,
+        offset: 0,
+      });
+      expect(generated.tests.map((row) => row.vars.messageId)).toEqual(['msg-train-ok']);
+      expect(warnings.some((line) => /excluded 1\b/.test(line) && /locked/i.test(line))).toBe(true);
+      expect(warnings.join('\n')).not.toMatch(/msg-overlap|msg-train-ok/);
+    } finally {
+      console.warn = originalWarn;
+      if (previousUnlock === undefined) delete process.env.EVAL_UNLOCK_TEST;
+      else process.env.EVAL_UNLOCK_TEST = previousUnlock;
+    }
+  });
 });
 
 describe('locked test split isolation', () => {

@@ -16,6 +16,7 @@ import {
   LOCKED_TEST_SPLIT,
   assertNotTestSplit,
   evalTestSplitUnlocked,
+  isLockedTestSplit,
   rowMessageId,
   warnUnlockedTestSplit,
   type SplitTaggedRow,
@@ -151,10 +152,29 @@ export function generateAgentPromptfooTests(
     warnUnlockedTestSplit();
   }
   const allowed = new Set<string>();
-  for (const row of readUnlockedRows<SplitTaggedRow>(cli.pairsPath, deps.readFile)) {
+  const lockedIds = new Set<string>();
+  const unlockedIds = new Set<string>();
+  for (const line of readUtf8(cli.pairsPath, deps.readFile).split('\n')) {
+    if (!line.trim()) continue;
+    const row = JSON.parse(line) as SplitTaggedRow;
     const id = rowMessageId(row);
     if (!id) continue;
+    if (isLockedTestSplit(row)) {
+      lockedIds.add(id);
+      if (cli.split === 'test') allowed.add(id);
+      continue;
+    }
+    unlockedIds.add(id);
     if (row.split === cli.split) allowed.add(id);
+  }
+  let overlap = 0;
+  for (const id of lockedIds) {
+    if (!unlockedIds.has(id)) continue;
+    allowed.delete(id);
+    overlap += 1;
+  }
+  if (overlap > 0) {
+    console.warn(`excluded ${overlap} ids present in both locked and unlocked rows`);
   }
   const tests: AgentPromptfooTest[] = [];
   for (const line of readUtf8(cli.labelsPath, deps.readFile).split('\n')) {
