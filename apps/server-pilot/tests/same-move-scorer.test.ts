@@ -52,6 +52,31 @@ describe('same-move ops JSONL report', () => {
     expect(report.grades).toMatchObject({ match: 1, mismatch: 1, not_scored: 0 });
   });
 
+  it('exposes claimedOps predOps and pairTop so none→none matches cannot hide', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'same-move-ops-'));
+    temps.add(dir);
+    const jsonl = path.join(dir, 'joined.jsonl');
+    const none = op('none', [], 'none');
+    const create = op('create', ['arrival', 'departure'], 'hms_create_reservation');
+    await writeFile(
+      jsonl,
+      `${JSON.stringify({ id: 'match-none', expectPass: true, predicted: [none], claimed: [none] })}\n${JSON.stringify({ id: 'mismatch-create-vs-none', expectPass: false, predicted: [none], claimed: [create] })}\n`,
+    );
+
+    const report = scoreSameMoveOps(loadSameMoveOpsJsonl(jsonl));
+
+    expect(report).toMatchObject({ n: 2, match: 1, mismatch: 1, not_scored: 0, rate: 0.5 });
+    expect(report.claimedOps).toEqual({ none: 1, create: 1 });
+    expect(report.predOps).toEqual({ none: 2 });
+    expect(report.pairTop).toEqual(
+      expect.arrayContaining([
+        { pair: 'none→none', n: 1 },
+        { pair: 'create→none', n: 1 },
+      ]),
+    );
+    expect(report.pairTop).toHaveLength(2);
+  });
+
   it('counts empty predicted or claimed as not_scored', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'same-move-ops-'));
     temps.add(dir);
