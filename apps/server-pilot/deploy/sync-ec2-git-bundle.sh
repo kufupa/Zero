@@ -501,26 +501,47 @@ if [ "${ALLOW_UNPUSHED_DEPLOY:-0}" != "1" ]; then
     exit 2
   fi
 fi
+printf -v Q_EC2_REPO '%q' "$EC2_REPO_PATH"
 EC2_RAW="$(
   SSM_MAX_POLL_SECONDS=45 SSM_DELIVERY_TIMEOUT_SECONDS=30 SSM_EXECUTION_TIMEOUT_SECONDS=30 \
     bash "$SCRIPT_DIR/ssm-run-command.sh" \
-      "git -C $(printf '%q' "$EC2_REPO_PATH") rev-parse HEAD" 2>/dev/null || true
+      "if [ -d ${Q_EC2_REPO}/.git ]; then echo NAVA_EC2_CHECKOUT=present; git -C ${Q_EC2_REPO} rev-parse HEAD || true; else echo NAVA_EC2_CHECKOUT=absent; fi" 2>/dev/null || true
 )"
-EC2_COMMIT="$(node -e '
+EC2_INFO="$(node -e '
 const raw = process.argv[1] || "";
 let text = raw;
 try { const j = JSON.parse(raw); if (j && typeof j === "object") text = String(j.Stdout ?? raw); } catch {}
-const m = String(text).match(/\b([0-9a-f]{7,40})\b/i);
-if (m) process.stdout.write(m[1].toLowerCase());
+const t = String(text);
+let checkout = "unknown";
+if (/NAVA_EC2_CHECKOUT=absent/.test(t) && !/NAVA_EC2_CHECKOUT=present/.test(t)) checkout = "absent";
+else if (/NAVA_EC2_CHECKOUT=present/.test(t)) checkout = "present";
+const m = t.match(/\b([0-9a-f]{7,40})\b/i);
+process.stdout.write(checkout + "\n" + (m ? m[1].toLowerCase() : ""));
 ' "$EC2_RAW" 2>/dev/null || true)"
+EC2_CHECKOUT="${EC2_INFO%%$'\n'*}"
+EC2_COMMIT="${EC2_INFO#*$'\n'}"
+if [ "$EC2_COMMIT" = "$EC2_INFO" ]; then
+  EC2_COMMIT=""
+fi
 echo "shipping SHA: ${LOCAL_COMMIT}"
-echo "EC2 SHA: ${EC2_COMMIT:-unread}"
-if [ "$ALLOW_ROLLBACK" != "1" ] && [ -n "$EC2_COMMIT" ] && [ -n "$LOCAL_COMMIT" ] &&
-  [ "$LOCAL_COMMIT" != "$EC2_COMMIT" ] &&
-  git merge-base --is-ancestor "$LOCAL_COMMIT" "$EC2_COMMIT" 2>/dev/null; then
-  echo "error: shipping SHA ${LOCAL_COMMIT} is an ancestor of the EC2 SHA ${EC2_COMMIT} (rollback)" >&2
-  echo "  pass --allow-rollback to override" >&2
-  exit 2
+if [ "$EC2_CHECKOUT" = "absent" ]; then
+  echo "EC2 SHA: none"
+elif [ -n "$EC2_COMMIT" ]; then
+  echo "EC2 SHA: ${EC2_COMMIT}"
+  if [ "$ALLOW_ROLLBACK" != "1" ] && [ -n "$LOCAL_COMMIT" ] &&
+    [ "$LOCAL_COMMIT" != "$EC2_COMMIT" ] &&
+    git merge-base --is-ancestor "$LOCAL_COMMIT" "$EC2_COMMIT" 2>/dev/null; then
+    echo "error: shipping SHA ${LOCAL_COMMIT} is an ancestor of the EC2 SHA ${EC2_COMMIT} (rollback)" >&2
+    echo "  pass --allow-rollback to override" >&2
+    exit 2
+  fi
+else
+  echo "EC2 SHA: unread"
+  if [ "$ALLOW_ROLLBACK" != "1" ]; then
+    echo "error: EC2 checkout SHA is unreadable" >&2
+    echo "  re-run or pass --allow-rollback" >&2
+    exit 2
+  fi
 fi
 
 echo "Creating git bundle for $GIT_BRANCH..."

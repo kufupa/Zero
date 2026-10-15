@@ -34,6 +34,9 @@ function cleanEnv() {
         'BUNDLE_KEY',
         'BOOTSTRAP_BUCKET',
         'EC2_REPO_PATH',
+        'SANDBOX_EC2_SHA',
+        'SANDBOX_EC2_CHECKOUT',
+        'SANDBOX_SSM_FAIL',
       ].includes(key)
     )
       delete env[key];
@@ -70,7 +73,16 @@ function sandbox() {
     join(deploy, 'ssm-run-command.sh'),
     [
       '#!/usr/bin/env bash',
-      'if [ -n "${SANDBOX_EC2_SHA:-}" ]; then printf \'%s\\n\' "$SANDBOX_EC2_SHA"; fi',
+      'if [ "${SANDBOX_SSM_FAIL:-}" = 1 ]; then exit 70; fi',
+      'if [ -n "${SANDBOX_EC2_SHA:-}" ]; then',
+      '  printf \'NAVA_EC2_CHECKOUT=present\\n%s\\n\' "$SANDBOX_EC2_SHA"',
+      '  exit 0',
+      'fi',
+      'if [ "${SANDBOX_EC2_CHECKOUT:-}" = present ]; then',
+      '  printf \'NAVA_EC2_CHECKOUT=present\\n\'',
+      '  exit 0',
+      'fi',
+      'printf \'NAVA_EC2_CHECKOUT=absent\\n\'',
       'exit 0',
       '',
     ].join('\n'),
@@ -107,7 +119,7 @@ describe('sync-ec2-git-bundle refuses a local main that differs from origin', ()
     expect(result.stderr).not.toContain('does not match origin');
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(`shipping SHA: ${sha}`);
-    expect(result.stdout).toContain('EC2 SHA: unread');
+    expect(result.stdout).toContain('EC2 SHA: none');
     expect(box.uploaded()).toBe(true);
   });
 
@@ -171,6 +183,35 @@ describe('sync-ec2-git-bundle refuses a local main that differs from origin', ()
     expect(box.uploaded()).toBe(false);
   });
 
+  it('stops before upload when the EC2 checkout exists but its SHA is unreadable', () => {
+    const box = sandbox();
+    const result = box.run({ SANDBOX_EC2_CHECKOUT: 'present' });
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain('EC2 SHA: unread');
+    expect(result.stderr).toMatch(/unreadable|unread/i);
+    expect(result.stderr).toContain('re-run');
+    expect(result.stderr).toContain('--allow-rollback');
+    expect(box.uploaded()).toBe(false);
+  });
+
+  it('stops before upload when the EC2 SHA read fails over SSM', () => {
+    const box = sandbox();
+    const result = box.run({ SANDBOX_SSM_FAIL: '1' });
+    expect(result.status).toBe(2);
+    expect(result.stdout).toContain('EC2 SHA: unread');
+    expect(result.stderr).toContain('re-run');
+    expect(result.stderr).toContain('--allow-rollback');
+    expect(box.uploaded()).toBe(false);
+  });
+
+  it('--allow-rollback ships when the EC2 SHA is unreadable', () => {
+    const box = sandbox();
+    const result = box.run({ SANDBOX_EC2_CHECKOUT: 'present' }, ['--allow-rollback']);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('EC2 SHA: unread');
+    expect(box.uploaded()).toBe(true);
+  });
+
   it('--allow-rollback ships an ancestor of EC2 HEAD', () => {
     const box = sandbox();
     box.commit('newer-on-ec2');
@@ -197,5 +238,13 @@ describe('ops-deploy prints that bundle sync reports SHAs', () => {
     const ops = readFileSync(new URL('../deploy/ops-deploy.sh', import.meta.url), 'utf8');
     expect(ops).toMatch(/shipping SHA/);
     expect(ops).toMatch(/EC2 SHA/);
+  });
+
+  it('accepts --allow-rollback and forwards it to bundle sync', () => {
+    const ops = readFileSync(new URL('../deploy/ops-deploy.sh', import.meta.url), 'utf8');
+    expect(ops).toMatch(/--allow-rollback\) ALLOW_ROLLBACK=1/);
+    expect(ops).toContain('bash "${SCRIPT_DIR}/sync-ec2-git-bundle.sh" --allow-rollback');
+    expect(ops).toMatch(/usage: \$0 \[--migrate\] \[--quiesced\] \[--allow-rollback\]/);
+    expect(ops).toMatch(/unknown arg: \$arg \(try --migrate \/ --quiesced \/ --allow-rollback\)/);
   });
 });
