@@ -2640,10 +2640,7 @@ export async function executeHmsJob(input: {
     metrics.userId == null &&
     metrics.quotePrepared === true;
   if (systemPreparedQuote && !quotePreparationEnabled()) {
-    await markAiRunDeadLetter(
-      { ...mark, lastError: 'quote_preparation_disabled', failureClass: 'POLICY_BLOCK' },
-      db,
-    );
+    await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, db);
     return 'dead_letter';
   }
   if (systemPreparedQuote && run.attempts > 0) {

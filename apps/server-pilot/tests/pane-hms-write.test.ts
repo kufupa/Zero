@@ -367,6 +367,23 @@ describe('pane HMS write (U26)', () => {
         failureClass: 'POLICY_BLOCK',
         reason: 'refused_not_lab',
       });
+      expect(await runRow(db, attachRun.runId)).toMatchObject({
+        state: 'superseded',
+        failureClass: 'POLICY_BLOCK',
+        lastError: 'refused_not_lab',
+      });
+      expect(await eventsOf(db, attachId, 'status.changed')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            value: expect.objectContaining({
+              needsCheck: true,
+              runId: attachRun.runId,
+              failureClass: 'POLICY_BLOCK',
+              reason: 'refused_not_lab',
+            }),
+          }),
+        ]),
+      );
 
       const cancelId = await seedWriteItem(db, {
         n: 2,

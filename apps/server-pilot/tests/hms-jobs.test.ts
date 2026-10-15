@@ -1197,7 +1197,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(toolRun?.userId).toBeNull();
     }));
 
-  it('dead-letters a queued prepared quote while quote preparation is disabled', () =>
+  it('ends a queued prepared quote superseded while quote preparation is disabled', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'false');
@@ -1223,9 +1223,42 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
       const [stopped] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
       expect(stopped).toMatchObject({
-        state: 'dead_letter',
+        state: 'superseded',
         lastError: 'quote_preparation_disabled',
         failureClass: 'POLICY_BLOCK',
+      });
+      expect(staffQuoteRunner.run).not.toHaveBeenCalled();
+    }));
+
+  it('dead-letters an already-attempted prepared quote as exhausted', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      const { run } = await enqueueHmsJob({
+        transportId: TRANSPORT_ID,
+        threadId,
+        triggerMessageId: messageId,
+        workItemId: null,
+        userId: null,
+        request: {
+          kind: 'staff_quote',
+          input: staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId, selectionEpoch: 0, inputRevision: 0 }),
+        },
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: `hms-job:staff-quote-prepared:exhausted:${randomUUID()}`,
+        extraMetrics: { quotePrepared: true },
+      }, db);
+      await db.update(aiWorkflowRun).set({ attempts: 1 }).where(eq(aiWorkflowRun.id, run.id));
+
+      const claimed = await claimJob(db);
+      await expect(runClaimedJob(db, { ...claimed, attempts: 1 })).resolves.toBe('dead_letter');
+
+      const [stopped] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(stopped).toMatchObject({
+        state: 'dead_letter',
+        lastError: 'prepared_quote_attempt_exhausted',
+        failureClass: 'TRANSIENT_NETWORK',
       });
       expect(staffQuoteRunner.run).not.toHaveBeenCalled();
     }));

@@ -15,6 +15,7 @@ import {
   enqueueAiRun,
   heartbeatAiRun,
   markAiRunDeadLetter,
+  markAiRunPolicyRefused,
   type AiFailureClass,
   type AiRunFence,
 } from './run-ledger.js';
@@ -296,8 +297,9 @@ export async function storeHmsSnapshot(input: {
 }
 
 /**
- * Ends a claimed hms_write run as dead-letter and records a needs-check event in one transaction. A needs-check also
- * drops the stored snapshot, so the next approval re-reads HMS. Returns false when the claim is gone, so the caller
+ * Ends a claimed hms_write run and records a needs-check event in one transaction. POLICY_BLOCK is an expected
+ * refusal, so the run is superseded rather than dead-lettered. A needs-check also drops the stored snapshot when
+ * the class is NEEDS_CHECK, so the next approval re-reads HMS. Returns false when the claim is gone, so the caller
  * reports a lost lease and does not treat the run as ended. assertHmsUnchangedBeforeSave keeps its own block.
  */
 export async function endHmsWriteRun(input: {
@@ -309,17 +311,17 @@ export async function endHmsWriteRun(input: {
   const db = input.db ?? getDb();
   return db.transaction(async (tx) => {
     const now = new Date();
-    const row = await markAiRunDeadLetter(
-      {
-        runId: input.fence.runId,
-        claimOwner: input.fence.claimOwner,
-        claimToken: input.fence.claimToken,
-        expectedStates: ['claimed', 'running'],
-        lastError: input.reason,
-        failureClass: input.failureClass,
-      },
-      tx as DB,
-    );
+    const mark = {
+      runId: input.fence.runId,
+      claimOwner: input.fence.claimOwner,
+      claimToken: input.fence.claimToken,
+      expectedStates: ['claimed' as const, 'running' as const],
+      lastError: input.reason,
+    };
+    const row =
+      input.failureClass === 'POLICY_BLOCK'
+        ? await markAiRunPolicyRefused(mark, tx as DB)
+        : await markAiRunDeadLetter({ ...mark, failureClass: input.failureClass }, tx as DB);
     if (!row) return false;
     if (row.workItemId) {
       if (input.failureClass === 'NEEDS_CHECK') {
