@@ -3,12 +3,22 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  resolveAgentFinishCheckPath,
+  runAgentFinishCheck,
+} from '../scripts/agent-finish-check.js';
+import {
   evaluateAgentFinishCheck,
   evaluateAgentFinishCheckJson,
 } from '../src/ai/agent-finish-check.js';
 
-const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures/agent-finish');
+const here = dirname(fileURLToPath(import.meta.url));
+const fixtures = join(here, 'fixtures/agent-finish');
+const pkg = JSON.parse(readFileSync(join(here, '../package.json'), 'utf8')) as {
+  scripts: Record<string, string>;
+};
 const readFixture = (name: string) => readFileSync(join(fixtures, name), 'utf8');
+const defaultFixture = join(fixtures, 'pass.json');
+const failFixture = join(fixtures, 'fail-missing-sha.json');
 
 describe('agent-finish-check', () => {
   it('accepts the in-repo PASS fixture', () => {
@@ -70,5 +80,29 @@ describe('agent-finish-check', () => {
     });
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain('tests not listed');
+  });
+
+  it('leaves check:agent-finish without a baked fixture so npm extra args reach argv', () => {
+    expect(pkg.scripts['check:agent-finish']).toBe('tsx scripts/agent-finish-check.ts');
+  });
+
+  it('defaults to the PASS fixture when npm extra args are empty', () => {
+    expect(resolveAgentFinishCheckPath([])).toBe(defaultFixture);
+  });
+
+  it('uses the path passed after -- even when a baked fixture precedes it', () => {
+    expect(
+      resolveAgentFinishCheckPath([
+        'tests/fixtures/agent-finish/pass.json',
+        failFixture,
+      ]),
+    ).toBe(failFixture);
+  });
+
+  it('still fail-closes when that extra path is the missing-sha fixture', async () => {
+    const path = resolveAgentFinishCheckPath([failFixture]);
+    const verdict = await runAgentFinishCheck(path);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('missing sha');
   });
 });
