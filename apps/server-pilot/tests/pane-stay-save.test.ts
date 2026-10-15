@@ -172,7 +172,7 @@ describe('pane stay save guards', () => {
     ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy' });
   });
 
-  it('refuses an explicit propertyCode for another hotel before any lock or spawn', async () => {
+  it('refuses an explicit HRDAV propertyCode before any write lock or spawn', async () => {
     const locked: string[] = [];
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = passingLock(locked);
@@ -183,7 +183,7 @@ describe('pane stay save guards', () => {
       await expect(
         runPaneStay({
           mode,
-          stay: { ...labStay, propertyCode: 'OTHER' },
+          stay: { ...labStay, propertyCode: 'HRDAV' },
           owner: freshOwner(),
           previewDigest: '0'.repeat(64),
         }),

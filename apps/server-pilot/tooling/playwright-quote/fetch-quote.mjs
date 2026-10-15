@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createAudit } from './audit.mjs';
+import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
@@ -22,16 +23,16 @@ export function playwright() {
 export async function readSecret(env = process.env) {
   let raw;
   try {
-    if (env.HMS_QUOTE_SECRET_PATH) raw = await readFile(env.HMS_QUOTE_SECRET_PATH, 'utf8');
-    else if (env.HMS_READ_SECRET_ARN) raw = (await exec('aws', ['secretsmanager', 'get-secret-value',
-      '--secret-id', env.HMS_READ_SECRET_ARN, '--region', env.AWS_REGION ?? 'af-south-1',
+    const source = resolveSecretSource(env);
+    if (source.source === 'file') raw = await readFile(source.path, 'utf8');
+    else raw = (await exec('aws', ['secretsmanager', 'get-secret-value',
+      '--secret-id', source.secretId, '--region', env.AWS_REGION ?? 'af-south-1',
       '--query', 'SecretString', '--output', 'text'], { timeout: 20000, maxBuffer: 1000000 })).stdout;
-    else throw new Error('missing configuration');
     const secret = JSON.parse(raw);
     for (const key of ['loginUrl', 'username', 'password', 'expectedTenant', 'expectedPropertyCode', 'expectedPropertyName']) {
       if (typeof secret[key] !== 'string' || !secret[key]) throw new Error('missing field');
     }
-    return secret;
+    return source.property ? validateHmsPropertySecret(source.property, secret) : secret;
   } catch { throw new Error('PMS_CREDENTIAL_CONFIGURATION'); }
 }
 
@@ -849,7 +850,7 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
   if (outputRoot!==root && !outputRoot.startsWith(root+'/')) throw new Error('OUTPUT_MUST_BE_PRIVATE_PLAYWRIGHT_QUOTE_DIRECTORY');
   const directory=join(outputRoot,new Date().toISOString().replace(/[:.]/g,'-')+'-'+randomUUID().slice(0,8));
   await mkdir(directory,{recursive:true,mode:0o700});
-  let browser,context,page,secret,phase='input',result,auditReport;
+  let browser,context,page,secret,propertyRegistration,phase='input',result,auditReport;
   const audit=await createAudit(directory,{video});
   const started=Date.now();
   const clock=createPhaseClock();
@@ -868,6 +869,8 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       const url=new URL(env.HMS_STAGEHAND_CDP_URL);
       if(!['http:','ws:'].includes(url.protocol)||!['127.0.0.1','localhost','[::1]'].includes(url.hostname)||url.username||url.password||url.search) throw new Error('PRIVATE_CDP_REQUIRED');
       if(env.HMS_STAGEHAND_BROWSER_OWNERSHIP!=='borrowed') throw new Error('ATTACH_ONLY_REQUIRES_borrowed_OWNERSHIP');
+      if(env.HMS_PROPERTY_TRANSPORT_ID!==undefined)
+        propertyRegistration=getHmsPropertyRegistration(env.HMS_PROPERTY_TRANSPORT_ID);
       secret=await clock.time('secret',()=>readSecret(env));
       if(secret.expectedPropertyCode!==request.propertyCode) throw new Error('ACCOUNT_PROPERTY_MISMATCH');
       event('attach');
@@ -883,6 +886,8 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       await audit.checkpoint('login-complete');
       event('hotel_availability'); await clock.time('nav',()=>openHotelAvailability(page));
       await audit.checkpoint('hotel-availability');
+      if(propertyRegistration)
+        await installRegisteredAvailabilityReadOnlyGuard(context,propertyRegistration.transportId,new URL(secret.loginUrl).origin);
       result=await runInPage(page,request,directory,event,audit.checkpoint,clock);
       event(`result_${result.outcome}`);
       if(onCaptured&&quoteTraceAsyncEnabled(env)) {
@@ -1019,7 +1024,7 @@ export function summarize(result) {
 
 if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const args=process.argv.slice(2);
-  if(args.includes('--help')) console.log('node fetch-quote.mjs --request <private.json> --output <.private/playwright-quote/runs> [--video]\nRequires HMS_STAGEHAND_CDP_URL, HMS_STAGEHAND_BROWSER_OWNERSHIP=borrowed, HMS_QUOTE_SECRET_PATH or HMS_READ_SECRET_ARN and AWS_REGION. Video requires the pinned Playwright FFmpeg installation on this controller.');
+  if(args.includes('--help')) console.log('node fetch-quote.mjs --request <private.json> --output <.private/playwright-quote/runs> [--video]\nRequires HMS_STAGEHAND_CDP_URL, HMS_STAGEHAND_BROWSER_OWNERSHIP=borrowed, HMS_PROPERTY_TRANSPORT_ID or HMS_QUOTE_SECRET_PATH or HMS_READ_SECRET_ARN and AWS_REGION. Video requires the pinned Playwright FFmpeg installation on this controller.');
   else {
     const requestPath=args[args.indexOf('--request')+1];
     const outputDir=args[args.indexOf('--output')+1];

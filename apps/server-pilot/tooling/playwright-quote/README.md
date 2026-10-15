@@ -40,6 +40,22 @@ Alternatively set `HMS_QUOTE_SECRET_PATH` to private JSON containing `loginUrl`,
 uses the operator's existing configuration/credential files. No extension ID,
 LLM API key, spend ledger or telemetry configuration is required by this CLI.
 
+For the registered, read-only Da Vinci availability proof, select the transport
+instead of supplying a secret override. The registry fetches its mapped secret,
+checks the tenant/property/user/transport and `view_only` binding, then permits
+only the Hotel Availability inquiry POST while the read runs:
+
+```bash
+env -u HMS_READ_SECRET_ARN -u HMS_QUOTE_SECRET_PATH \
+  HMS_STAGEHAND_CDP_URL=http://127.0.0.1:19223 \
+  HMS_STAGEHAND_BROWSER_OWNERSHIP=borrowed \
+  HMS_PROPERTY_TRANSPORT_ID=transport-davinci \
+  AWS_REGION=af-south-1 \
+  node apps/server-pilot/tooling/playwright-quote/fetch-quote.mjs \
+    --request apps/server-pilot/tooling/playwright-quote/examples/davinci-availability.json \
+    --output .private/playwright-quote/runs
+```
+
 Each invocation writes a timestamped private audit bundle. Outputs must be inside
 this worktree's `.private/playwright-quote`. Exit 0 means `quote`, `no_match` or
 verified `unavailable` **and** complete requested capture. Exit 2 covers incomplete
