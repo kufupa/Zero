@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BedrockModelAdapter,
   estimateNovaLiteCostUsd,
@@ -6,7 +6,13 @@ import {
 } from '../src/ai/bedrock/bedrock.js';
 import { createFakeModelAdapter } from '../src/ai/bedrock/fake.js';
 import { resolveModelAdapter } from '../src/ai/bedrock/factory.js';
+import { AzureLunaModelAdapter } from '../src/ai/bedrock/luna.js';
 import { validateStructuredJsonOutput } from '../src/ai/security/policy.js';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
 
 describe('bedrock adapter contract', () => {
   it('fake adapter returns full usage shape', async () => {
@@ -65,6 +71,26 @@ describe('bedrock adapter contract', () => {
       BEDROCK_REGION: 'us-east-1',
     });
     expect(adapter).toBeInstanceOf(BedrockModelAdapter);
+  });
+
+  it('routes the GPT-6 Luna triage profile to Azure without making a model request', () => {
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', 'https://example.invalid/openai/v1');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', 'test-key');
+    const networkFetch = vi.fn(() => {
+      throw new Error('network disabled in adapter selection test');
+    });
+    vi.stubGlobal('fetch', networkFetch);
+
+    const adapter = resolveModelAdapter({
+      NODE_ENV: 'production',
+      AI_ENABLED: true,
+      AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+      BEDROCK_REGION: 'us-east-1',
+      AI_TRIAGE_MODEL_PROFILE: 'gpt6_luna_max',
+    });
+
+    expect(adapter).toBeInstanceOf(AzureLunaModelAdapter);
+    expect(networkFetch).not.toHaveBeenCalled();
   });
 
   it('resolveModelAdapter throws in production when AI_ENABLED is false', () => {

@@ -3,7 +3,7 @@ import type { LocalModelRouteEvidence, LocalModelTransport } from './local.js';
 import { LocalModelRouteUnavailableError } from './local.js';
 import { parseAiTriageModelProfile, type AiModelRoute, type MailEnv } from '../../env.js';
 import { createBedrockModelAdapter } from './bedrock.js';
-import { LunaModelAdapter } from './luna.js';
+import { AzureLunaModelAdapter } from './luna.js';
 import { createFakeModelAdapter } from './fake.js';
 import type { ModelAdapter } from './adapter.js';
 import { createRequire } from 'node:module';
@@ -38,7 +38,7 @@ export function resolveModelAdapter(
   }
 
   if (profile === 'gpt6_luna_max') {
-    return new LunaModelAdapter();
+    return new AzureLunaModelAdapter();
   }
 
   return createBedrockModelAdapter({

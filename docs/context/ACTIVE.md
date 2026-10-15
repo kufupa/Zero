@@ -1,6 +1,11 @@
 # Active context
 
-Updated 2026-10-14 after the product assessment. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+Updated 2026-10-15 after the Lane TRI handoff. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+
+## Lane TRI handoff — 2026-10-15
+
+- [PR #297](https://github.com/kufupa/Zero/pull/297) routes `gpt6_luna_max` triage through Azure GPT-6 Luna; the targeted adapter contract file passes 13/13 tests. No prod/EC2/env changes were made.
+- Hold: not merged, deployed, or live-proven. After merge and owner authorization, apply `AI_TRIAGE_MODEL_PROFILE=gpt6_luna_max` via the sanctioned #273 legacy env path, run `ops-restart.sh`, inspect `/proc/<pid>/environ` for the four named processes, and prove one new succeeded `inbound_triage` plus zero dead letters since switch; details are in the PR. Azure billing-rate parity remains unverified.
 
 ## Read without rediscovering
 
