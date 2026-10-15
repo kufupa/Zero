@@ -1,3 +1,5 @@
+import { classifyMailSource } from './mail-source.js';
+
 /**
  * AOP-1 Quote spine as typed playbook data — not a HotelPolicy settings form.
  * Clustered staff rules injected into analyse / prefill / draft. HMS writes stay off.
@@ -71,6 +73,18 @@ export function aopQuoteDelivery(): AopQuoteDelivery {
     autoSend: false,
     hmsWrites: false,
   };
+}
+
+/** Trusted sender classification → AOP channel. Body text is never enough on its own. */
+export function aopQuoteChannelFromSender(input: {
+  fromAddress?: string | null;
+  subject?: string | null;
+  bodyText?: string | null;
+}): AopQuoteChannel {
+  const source = classifyMailSource(input);
+  if (source.kind === 'channel') return 'ota';
+  if (source.kind === 'system') return 'system';
+  return 'direct';
 }
 
 /**

@@ -29,6 +29,7 @@ import type {
 } from './quote-workflow-synced-selection.js';
 import { attachmentMattersForReview, unreadReasonWords } from './quote-attachment-review.js';
 import { stayDateSourceText, stayDateYearEvidenceText } from './stay-date-anchoring.js';
+import { aopQuoteChannelFromSender } from './aop-playbook.js';
 
 /**
  * Luna analyse of a synced mail, shared by the pane route and the inbound
@@ -480,6 +481,11 @@ export async function analyseSyncedSelection(
         yearEvidenceText: stayDateYearEvidenceText(synced),
         staffNote,
       },
+      channel: aopQuoteChannelFromSender({
+        fromAddress: synced.fromAddress,
+        subject: synced.subject,
+        bodyText: synced.bodyText,
+      }),
     });
     const payload = {
       status: 'ready' as const,

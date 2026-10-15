@@ -9,6 +9,9 @@ import {
   isAopPartyBound,
 } from '../src/ai/aop-playbook.js';
 import { buildQuoteWorkflowPrompt, mapLlmDecision } from '../src/ai/quote-workflow-llm.js';
+import { analyseSyncedSelection } from '../src/ai/quote-workflow-analyse-selection.js';
+import { storedAnalysis } from '../src/ai/work-items.js';
+import type { MailExtractionPayload } from '../src/ai/extraction/schema.js';
 import { lunaAnalysisSchema } from '../src/ai/reservationist-decision.js';
 import {
   CENTURION_HOTEL_RULES,
@@ -179,5 +182,151 @@ describe('AOP-1 injected into analyse / prefill / draft', () => {
     expect(baseline.join(' ')).toMatch(/public rate/i);
     expect(bound.join(' ')).not.toMatch(/public|BAR/i);
     expect(bound.join(' ')).toMatch(/unsent draft/i);
+  });
+});
+
+const OTA_FROM = 'notifications@m.expediapartnercentral.com';
+const SYSTEM_FROM = 'alerts@trustyou.com';
+const DIRECT_FROM = 'ada@example.test';
+
+function quoteAdapter() {
+  return {
+    invoke: async () => ({
+      modelId: 'gpt-6-luna',
+      output: quoteAnalysis({ kind: 'organization', name: 'Acme Mining' }),
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        totalTokens: 2,
+        latencyMs: 1,
+        estimatedCostUsd: 0,
+        rateTableVersion: 't',
+      },
+    }),
+  };
+}
+
+function analyseOptions() {
+  return {
+    selectionEpoch: 1,
+    cacheDir: null,
+    promptVersion: 'aop-channel-route',
+    transportId: 'transport-aop',
+    llmEnabled: () => true,
+    adapter: quoteAdapter(),
+  };
+}
+
+function storedQuoteRead(): MailExtractionPayload {
+  return {
+    contact: { name: null, email: null, phone: null },
+    agency: 'Acme Mining',
+    endClient: null,
+    confirmationNumbers: [],
+    stays: [
+      {
+        id: 's_aop1',
+        hotel: 'Grand Hotel',
+        requested: { arrival: '2027-11-12', departure: '2027-11-14' },
+        booked: null,
+        totalRooms: null,
+        rows: [
+          {
+            id: 'r_aop1',
+            roomType: 'Twin',
+            rooms: 1,
+            adultsPerRoom: 2,
+            childAges: [],
+            board: 'bb',
+          },
+        ],
+      },
+    ],
+    missing: [],
+  };
+}
+
+describe('AOP-1 OTA/system skip on analyse and stored routes', () => {
+  it('analyseSyncedSelection skips an Expedia sender even when Luna returns a bound-party quote', async () => {
+    const { payload } = await analyseSyncedSelection(
+      { ...selection, fromAddress: OTA_FROM },
+      analyseOptions(),
+    );
+    expect(payload).toMatchObject({
+      status: 'ready',
+      source: 'luna',
+      intent: 'other',
+      ratePlan: { skipQuote: true, skipReason: 'ota', source: 'skip' },
+    });
+    expect(payload.reviewItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceLabel: 'channel',
+          text: expect.stringMatching(/skip OTA/i),
+        }),
+      ]),
+    );
+  });
+
+  it('analyseSyncedSelection skips a TrustYou system sender', async () => {
+    const { payload } = await analyseSyncedSelection(
+      { ...selection, fromAddress: SYSTEM_FROM },
+      analyseOptions(),
+    );
+    expect(payload).toMatchObject({
+      intent: 'other',
+      ratePlan: { skipQuote: true, skipReason: 'system', source: 'skip' },
+    });
+  });
+
+  it('analyseSyncedSelection still quotes a direct bound-party sender', async () => {
+    const { payload } = await analyseSyncedSelection(
+      { ...selection, fromAddress: DIRECT_FROM },
+      analyseOptions(),
+    );
+    expect(payload).toMatchObject({
+      status: 'ready',
+      source: 'luna',
+      intent: 'quote',
+      ratePlan: { skipQuote: false, source: 'party_contract' },
+    });
+  });
+
+  it('storedAnalysis skips an Expedia sender even when the stored read binds a party', () => {
+    const { analysis } = storedAnalysis(
+      {
+        kind: 'quote',
+        payload: storedQuoteRead(),
+        attachments: [],
+        fromAddress: OTA_FROM,
+        subject: 'New booking',
+      },
+      {},
+    );
+    expect(analysis.intent).toBe('other');
+    expect(analysis.ratePlan).toMatchObject({ skipQuote: true, skipReason: 'ota', source: 'skip' });
+    expect(analysis.reviewItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceLabel: 'channel',
+          text: expect.stringMatching(/skip OTA/i),
+        }),
+      ]),
+    );
+  });
+
+  it('storedAnalysis still quotes when the sender is a direct agency', () => {
+    const { analysis } = storedAnalysis(
+      {
+        kind: 'quote',
+        payload: storedQuoteRead(),
+        attachments: [],
+        fromAddress: DIRECT_FROM,
+        subject: 'Rooms',
+      },
+      {},
+    );
+    expect(analysis.intent).toBe('quote');
+    expect(analysis.ratePlan).toMatchObject({ skipQuote: false, source: 'party_contract' });
   });
 });
