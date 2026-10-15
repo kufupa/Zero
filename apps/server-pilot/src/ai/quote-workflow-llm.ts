@@ -1,6 +1,5 @@
 import {
   CENTURION_HOTEL_RULES,
-  HOLDING_MOVE_WORKFLOWS,
   isHoldingMoveWorkflow,
   lunaAnalysisSchema,
   type LunaAnalysis,
@@ -36,7 +35,8 @@ const DEFAULT_DEADLINE_MS = 25_000;
 
 export const K2_MAPPING = [
   'Map hotel-rule workflow names onto this schema: "create" is create_booking;',
-  `"skip", "spam", ${HOLDING_MOVE_WORKFLOWS.map((move) => `"${move}"`).join(', ')} are other.`,
+  '"skip" and "spam" are other.',
+  'Keep holding-move workflows from the hotel rules; do not fold them onto other.',
   'Rooms-only group asks are workflow=quote with the stated quantity even at 10+ rooms',
   '(engine quotes per group, max 8 groups); set rooms_only_group.',
   'Do not set conference_or_group for rooms-only.',

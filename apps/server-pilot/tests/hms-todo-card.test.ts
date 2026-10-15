@@ -146,7 +146,7 @@ describe('buildHmsTodoCard', () => {
     ]);
   });
 
-  it('returns null for payment_proof workflows until classification exists', () => {
+  it('returns null for unclassified payment-proof aliases', () => {
     expect(
       buildHmsTodoCard({
         workflow: 'voucher_pop',
@@ -154,6 +154,62 @@ describe('buildHmsTodoCard', () => {
         attachmentFilenames: ['receipt.pdf'],
       }),
     ).toBeNull();
+  });
+
+  it('names a forward_to_partner card with team, reason and next step once', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'forward_to_partner',
+      partnerDestination: 'Events',
+    });
+    expect(card).toMatchObject({
+      kind: 'forward_to_partner',
+      title: 'Forward to Events',
+      writesEnabled: false,
+    });
+    expect(card!.steps).toEqual([
+      { label: 'Reason', value: 'Mail belongs to another team, property or partner.', source: 'mail' },
+      {
+        label: 'Next step',
+        value: 'Staff forwards or redirects it. Nava does not send it.',
+        source: 'mail',
+      },
+    ]);
+    expect(new Set(labelsOf(card!)).size).toBe(card!.steps.length);
+    expect(labelsOf(card!)).not.toContain('Team');
+  });
+
+  it('names a send_document card Attach invoice/folio without claiming send', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'send_document',
+      documentKind: 'folio',
+      confirmationNumber: '57291630-1',
+    });
+    expect(card).toMatchObject({
+      kind: 'send_document',
+      title: 'Attach invoice/folio',
+      writesEnabled: false,
+    });
+    expect(stepValue(card!, 'Document')).toBe('folio');
+    expect(stepValue(card!, 'Confirmation number')).toBe('57291630-1');
+    expect(stepValue(card!, 'Next step')).toMatch(/does not send/i);
+    expect(new Set(labelsOf(card!)).size).toBe(card!.steps.length);
+  });
+
+  it('names a payment_ack card Record payment without claiming an HMS write', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'payment_ack',
+      confirmationNumber: '57291630-1',
+      attachmentFilenames: ['receipt.pdf'],
+    });
+    expect(card).toMatchObject({
+      kind: 'payment_ack',
+      title: 'Record payment',
+      writesEnabled: false,
+    });
+    expect(stepValue(card!, 'Confirmation number')).toBe('57291630-1');
+    expect(stepValue(card!, 'Attachments')).toBe('receipt.pdf');
+    expect(stepValue(card!, 'Next step')).toMatch(/does not post/i);
+    expect(new Set(labelsOf(card!)).size).toBe(card!.steps.length);
   });
 
   it('returns null for quote', () => {

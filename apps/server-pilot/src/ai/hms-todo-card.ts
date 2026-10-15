@@ -8,11 +8,18 @@
  * No-write guarantee: this module only shapes already-extracted fields. It never
  * calls HMS, never sends, and always returns `writesEnabled: false`.
  *
- * payment_proof is not a LunaAnalysis.workflow value, so this card does not invent
- * a payment kind. Proof-of-payment classification is a follow-up.
+ * Named holding moves (forward / document / payment) are staff to-dos, not writes.
  */
 
-export type HmsTodoKind = 'new_booking' | 'amend' | 'cancel';
+export type HmsTodoKind =
+  | 'new_booking'
+  | 'amend'
+  | 'cancel'
+  | 'forward_to_partner'
+  | 'send_document'
+  | 'payment_ack'
+  | 'clarify'
+  | 'acknowledge';
 
 export type HmsTodoStepSource = 'mail' | 'attachment' | 'missing';
 
@@ -54,6 +61,8 @@ export type HmsTodoCardInput = {
   confirmationNumber?: string | null;
   guestLastName?: string | null;
   requestedChange?: string | null;
+  partnerDestination?: string | null;
+  documentKind?: string | null;
   party?: { reference?: string | null } | null;
   attachmentFilenames?: readonly string[] | null;
 };
@@ -69,6 +78,11 @@ const WORKFLOW_KIND: Record<string, HmsTodoKind> = {
   amendment: 'amend',
   cancel: 'cancel',
   cancellation: 'cancel',
+  forward_to_partner: 'forward_to_partner',
+  send_document: 'send_document',
+  payment_ack: 'payment_ack',
+  clarify: 'clarify',
+  acknowledge: 'acknowledge',
 };
 
 function text(value: string | number | null | undefined): string | null {
@@ -165,9 +179,64 @@ function appendGroups(
   }
 }
 
+const NAMED_MOVE_COPY: Record<
+  Exclude<HmsTodoKind, 'new_booking' | 'amend' | 'cancel'>,
+  { title: (team: string | null) => string; reason: string; nextStep: string }
+> = {
+  forward_to_partner: {
+    title: (team) => `Forward to ${team ?? 'partner'}`,
+    reason: 'Mail belongs to another team, property or partner.',
+    nextStep: 'Staff forwards or redirects it. Nava does not send it.',
+  },
+  send_document: {
+    title: () => 'Attach invoice/folio',
+    reason: 'Guest asked for an invoice, folio, proforma or statement.',
+    nextStep: 'Staff attaches the document. Nava does not send it.',
+  },
+  payment_ack: {
+    title: () => 'Record payment',
+    reason: 'Guest sent proof of payment.',
+    nextStep: 'Staff records the payment in HMS. Nava does not post it.',
+  },
+  clarify: {
+    title: () => 'Ask a question',
+    reason: 'Dates, rooms or confirmation number are missing.',
+    nextStep: 'Staff send the question. Nava does not send it.',
+  },
+  acknowledge: {
+    title: () => 'Acknowledge',
+    reason: 'Thank-you or received with no remaining ask.',
+    nextStep: 'Staff send a short ack if needed. Nava does not send it.',
+  },
+};
+
+function buildNamedMoveCard(kind: keyof typeof NAMED_MOVE_COPY, input: HmsTodoCardInput): HmsTodoCard {
+  const copy = NAMED_MOVE_COPY[kind];
+  const team = text(input.partnerDestination);
+  const steps: HmsTodoStep[] = [];
+  const missing: string[] = [];
+  pushFact(steps, missing, 'Reason', copy.reason, true);
+  pushFact(steps, missing, 'Next step', copy.nextStep, true);
+  if (kind === 'send_document') {
+    pushFact(steps, missing, 'Document', text(input.documentKind), false);
+  }
+  if (kind === 'send_document' || kind === 'payment_ack') {
+    pushFact(steps, missing, 'Confirmation number', text(input.confirmationNumber), false);
+  }
+  pushFact(steps, missing, 'Attachments', attachments(input), false, 'attachment');
+  return {
+    kind,
+    title: copy.title(team),
+    steps,
+    missing,
+    writesEnabled: false,
+  };
+}
+
 export function buildHmsTodoCard(input: HmsTodoCardInput): HmsTodoCard | null {
   const kind = kindOf(input.workflow);
   if (!kind) return null;
+  if (kind in NAMED_MOVE_COPY) return buildNamedMoveCard(kind as keyof typeof NAMED_MOVE_COPY, input);
 
   const confirmation = text(input.confirmationNumber);
   const lastName = text(input.guestLastName);

@@ -116,7 +116,18 @@ export type ReservationistStaffAction = {
 
 /** Local wire type mirroring server lunaAnalysisSchema. Do not import the server module. */
 export type LunaAnalysisWire = {
-  workflow: 'quote' | 'create_booking' | 'other';
+  workflow:
+    | 'quote'
+    | 'create_booking'
+    | 'other'
+    | 'amend'
+    | 'cancel'
+    | 'forward_to_partner'
+    | 'send_document'
+    | 'payment_ack'
+    | 'clarify'
+    | 'acknowledge'
+    | 'hms_todo';
   flags: Array<
     | 'conference_or_group'
     | 'rooms_only_group'
@@ -192,9 +203,18 @@ export type QuoteAnalysis = {
   luna?: LunaAnalysisWire | null;
   /** Intent stays other for amend and cancel. This only feeds the HMS lookup panel. */
   amendment?: QuoteAmendment | null;
-  /** Staff checklist of facts to type into HMS. Null unless the mail is a booking, amend, cancel, or payment proof. */
+  /** Staff checklist of facts to type into HMS. Null unless the mail is a booking, amend, cancel, payment, forward, or document ask. */
   hmsTodoCard?: {
-    kind: 'new_booking' | 'amend' | 'cancel' | 'payment_proof';
+    kind:
+      | 'new_booking'
+      | 'amend'
+      | 'cancel'
+      | 'payment_proof'
+      | 'forward_to_partner'
+      | 'send_document'
+      | 'payment_ack'
+      | 'clarify'
+      | 'acknowledge';
     title: string;
     steps: Array<{ label: string; value: string | null; source: 'mail' | 'attachment' | 'missing' }>;
     missing: string[];

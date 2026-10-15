@@ -68,6 +68,33 @@ describe('paneAnalysisToOperations', () => {
     ]);
   });
 
+  it('maps pane holding moves onto partner, document and post_payment gold ops', () => {
+    expect(paneAnalysisToOperations({ workflow: 'forward_to_partner' })).toEqual([
+      {
+        operation: 'partner',
+        needLevel: 'required',
+        requiredFields: [],
+        candidateTool: null,
+        unknownReason: null,
+      },
+    ]);
+    expect(paneAnalysisToOperations({ workflow: 'send_document' })).toEqual([
+      requiredOp('document', 'hms_generate_invoice'),
+    ]);
+    expect(paneAnalysisToOperations({ workflow: 'payment_ack' })).toEqual([
+      requiredOp('post_payment', 'hms_post_payment'),
+    ]);
+  });
+
+  it('maps pane clarify and acknowledge the same way the agent path does', () => {
+    expect(paneAnalysisToOperations({ workflow: 'clarify' })).toEqual(
+      decisionToOperations(decision('clarify'), []),
+    );
+    expect(paneAnalysisToOperations({ workflow: 'acknowledge' })).toEqual(
+      decisionToOperations(decision('acknowledge'), []),
+    );
+  });
+
   it('matches decisionToOperations goldOp semantics for the shared workflows', () => {
     expect(paneAnalysisToOperations({ workflow: 'quote' })).toEqual(
       decisionToOperations(decision('quote'), []),

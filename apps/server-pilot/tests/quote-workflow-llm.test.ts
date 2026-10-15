@@ -142,6 +142,50 @@ describe('lunaAnalysisSchema', () => {
       requestedChange: 'Change departure from 15 Nov to 17 Nov',
     });
   });
+
+  it('parses a stored analysis from before holding-move workflows', () => {
+    const stored = {
+      workflow: 'other',
+      flags: [],
+      groups: [],
+      party: { kind: null, name: null, reference: null },
+      rateClaims: [],
+      missing: [],
+      evidence: [],
+      tasks: [],
+    };
+    expect(lunaAnalysisSchema.parse(stored).workflow).toBe('other');
+    expect(lunaAnalysisSchema.parse(stored).partnerDestination).toBeUndefined();
+    expect(lunaAnalysisSchema.parse(stored).documentKind).toBeUndefined();
+  });
+
+  it('accepts holding-move workflows and optional partner/document fields', () => {
+    expect(lunaAnalysisSchema.parse(analysis({ workflow: 'forward_to_partner' })).workflow).toBe(
+      'forward_to_partner',
+    );
+    expect(lunaAnalysisSchema.parse(analysis({ workflow: 'send_document' })).workflow).toBe(
+      'send_document',
+    );
+    expect(lunaAnalysisSchema.parse(analysis({ workflow: 'payment_ack' })).workflow).toBe(
+      'payment_ack',
+    );
+    expect(lunaAnalysisSchema.parse(analysis({ workflow: 'clarify' })).workflow).toBe('clarify');
+    expect(lunaAnalysisSchema.parse(analysis({ workflow: 'acknowledge' })).workflow).toBe(
+      'acknowledge',
+    );
+    expect(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'forward_to_partner',
+          partnerDestination: 'Events',
+        }),
+      ).partnerDestination,
+    ).toBe('Events');
+    expect(
+      lunaAnalysisSchema.parse(analysis({ workflow: 'send_document', documentKind: 'folio' }))
+        .documentKind,
+    ).toBe('folio');
+  });
 });
 
 describe('buildQuoteWorkflowPrompt', () => {
@@ -215,13 +259,20 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.system).toMatch(/treat this mail as a quote/i);
   });
 
-  it('asks for amendments and cancellations as amend or cancel, and maps invoice asks onto other in this schema', () => {
+  it('asks for amendments and cancellations as amend or cancel, and keeps holding moves off other', () => {
     const prompt = buildQuoteWorkflowPrompt(selection);
     expect(prompt.system).toMatch(
       /Amendments and cancellations of an existing booking: workflow=amend or cancel\./,
     );
+    expect(prompt.system).toMatch(/workflow=forward_to_partner/);
     expect(prompt.system).toMatch(/workflow=send_document/);
-    expect(prompt.system).toMatch(/"forward_to_partner", "send_document"/);
+    expect(prompt.system).toMatch(/workflow=payment_ack/);
+    expect(prompt.system).toMatch(/Never post payment/i);
+    expect(prompt.system).toMatch(/Never claim an HMS action was done/i);
+    expect(K2_MAPPING).toMatch(/"skip" and "spam" are other/);
+    expect(K2_MAPPING).not.toContain('"forward_to_partner"');
+    expect(K2_MAPPING).not.toContain('"send_document"');
+    expect(K2_MAPPING).not.toContain('"payment_ack"');
     expect(prompt.system).not.toMatch(/Cancellations, amendments, invoices/);
   });
 });

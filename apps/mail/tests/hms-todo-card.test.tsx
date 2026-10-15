@@ -101,3 +101,99 @@ describe('Outlook NavaPane tree', () => {
     expect(screen.getAllByRole('heading', { name: 'Key into HMS' })).toHaveLength(1);
   });
 });
+
+const FORWARD_CARD: HmsTodoCardPayload = {
+  kind: 'forward_to_partner',
+  title: 'Forward to Events',
+  writesEnabled: false,
+  missing: [],
+  steps: [
+    { label: 'Reason', value: 'Mail belongs to another team, property or partner.', source: 'mail' },
+    {
+      label: 'Next step',
+      value: 'Staff forwards or redirects it. Nava does not send it.',
+      source: 'mail',
+    },
+  ],
+};
+
+function sessionWithCard(card: HmsTodoCardPayload): QuoteSession {
+  return {
+    ...bookingSessionWithCard(),
+    analysis: {
+      ...bookingSessionWithCard().analysis!,
+      hmsTodoCard: card,
+      luna: {
+        ...bookingSessionWithCard().analysis!.luna!,
+        workflow: 'other',
+      },
+    },
+  };
+}
+
+/** Webmail panel quoting-tool tree: same QuoteWorkflowPanel host as NavaPane preview. */
+function webmailPanelTree(session: QuoteSession) {
+  return <QuoteWorkflowPanel session={session} />;
+}
+
+describe('named move cards', () => {
+  it('renders Forward to team, Attach invoice/folio and Record payment with no send or write controls', () => {
+    render(<HmsTodoCard card={FORWARD_CARD} />);
+    expect(screen.getByRole('heading', { name: 'Forward to Events' })).toBeDefined();
+    expect(screen.getByText('Mail belongs to another team, property or partner.')).toBeDefined();
+    expect(screen.getByText('Staff forwards or redirects it. Nava does not send it.')).toBeDefined();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(document.querySelectorAll('[class*="amber"]').length).toBe(0);
+
+    cleanup();
+    render(
+      <HmsTodoCard
+        card={{
+          kind: 'send_document',
+          title: 'Attach invoice/folio',
+          writesEnabled: false,
+          missing: [],
+          steps: [
+            { label: 'Reason', value: 'Guest asked for an invoice, folio, proforma or statement.', source: 'mail' },
+            { label: 'Next step', value: 'Staff attaches the document. Nava does not send it.', source: 'mail' },
+            { label: 'Document', value: 'folio', source: 'mail' },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByRole('heading', { name: 'Attach invoice/folio' })).toBeDefined();
+    expect(screen.queryByRole('button')).toBeNull();
+
+    cleanup();
+    render(
+      <HmsTodoCard
+        card={{
+          kind: 'payment_ack',
+          title: 'Record payment',
+          writesEnabled: false,
+          missing: [],
+          steps: [
+            { label: 'Reason', value: 'Guest sent proof of payment.', source: 'mail' },
+            { label: 'Next step', value: 'Staff records the payment in HMS. Nava does not post it.', source: 'mail' },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByRole('heading', { name: 'Record payment' })).toBeDefined();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+});
+
+describe('Outlook pane and webmail panel', () => {
+  it('shows the named move card once on the Outlook pane tree', () => {
+    render(outlookNavaPaneTree(sessionWithCard(FORWARD_CARD)));
+    expect(screen.getAllByRole('heading', { name: 'Forward to Events' })).toHaveLength(1);
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('shows the named move card once on the webmail panel', () => {
+    render(webmailPanelTree(sessionWithCard(FORWARD_CARD)));
+    expect(screen.getAllByRole('heading', { name: 'Forward to Events' })).toHaveLength(1);
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+});

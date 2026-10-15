@@ -86,13 +86,11 @@ describe('CENTURION_HOTEL_RULES move catalog', () => {
 });
 
 describe('consumers of hotel-rule workflow names', () => {
-  it('pane analysis maps holding moves onto other, like skip and spam', () => {
-    expect(K2_MAPPING).toMatch(/"skip"/);
-    expect(K2_MAPPING).toMatch(/"spam"/);
+  it('pane analysis keeps holding moves; only skip and spam fold onto other', () => {
+    expect(K2_MAPPING).toMatch(/"skip" and "spam" are other/);
     for (const move of HOLDING_MOVE_WORKFLOWS) {
-      expect(K2_MAPPING).toContain(`"${move}"`);
+      expect(K2_MAPPING).not.toContain(`"${move}"`);
     }
-    expect(K2_MAPPING).toMatch(/are other/);
   });
 
   it('inbound extraction maps holding moves onto other', () => {

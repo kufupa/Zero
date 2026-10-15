@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-/** Pane/extract fold these onto other. Agent scoring maps each to its gold op. */
+/** Extract folds these onto other. Pane keeps them; agent scoring maps each to its gold op. */
 export const HOLDING_MOVE_WORKFLOWS = [
   'forward_to_partner',
   'send_document',
@@ -203,5 +203,15 @@ export const lunaAnalysisSchema = z.object({
     .describe(
       'One short plain-English line describing the requested change, at most 300 characters, card numbers masked. Null if none.',
     ),
+  partnerDestination: z
+    .string()
+    .nullish()
+    .describe(
+      'Other team, property or partner staff should forward to (Events, Accounts, Da Vinci, another hotel). Null if none.',
+    ),
+  documentKind: z
+    .string()
+    .nullish()
+    .describe('invoice, folio, proforma or statement as asked. Null if none.'),
 });
 export type LunaAnalysis = z.infer<typeof lunaAnalysisSchema>;
