@@ -25,6 +25,7 @@ import { HmsRuntimeError, type HmsReadSession, type HmsRuntime } from './runtime
 import type { PropertyReadLock } from './property-read-lock.js';
 import { createHash } from 'node:crypto';
 import * as cheerio from 'cheerio';
+import { confirmationMatches } from './confirmation-match.js';
 
 export type { ExactReservationCandidate, ReservationSearchCandidate };
 
@@ -469,7 +470,7 @@ function rowMatchesCandidate(
   }
   const target = candidate.value.toUpperCase();
   if (candidate.kind === 'confirmation') {
-    return (row.confirmationNumber ?? '').toUpperCase() === target;
+    return confirmationMatches(candidate.value, row.confirmationNumber ?? '');
   }
   return (row.externalReference ?? '').toUpperCase() === target;
 }

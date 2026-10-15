@@ -10,6 +10,7 @@ import {
   type SandboxRunner,
 } from '../mail/artifacts/read-artifact.js';
 import { getS3Storage } from '../storage/s3.js';
+import { confirmationBase } from '../hms/confirmation-match.js';
 import { convertDocxWithGotenberg } from '../quote-proposal/gotenberg.js';
 import {
   extractReservationistOfficeText,
@@ -48,6 +49,14 @@ export type SyncedQuoteSelection = {
 
 const HMS_CONFIRMATION = /^\d{6,10}-\d{1,2}$/;
 const DASHED_CONFIRMATION = /(?<![0-9])(\d{6,10}-\d{1,2})(?![0-9])/g;
+/** Labelled 8–10 digit bases only: conf/confirmation/booking/res/reservation no/number. */
+const LABELLED_BARE_BASE =
+  /\b(?:conf(?:irmation)?|booking|res(?:ervation)?)\s*(?:#|n[o°º.]?|number)?\s*[:#]?\s*(\d{8,10})(?![0-9-])/gi;
+/** Subject/thread `#88001122` tags. */
+const HASH_BARE_BASE = /(?:^|[^\w])#(\d{8,10})(?![0-9-])/g;
+/** Confirmation-letter `n°88001122` / `nº…-1`. Not VAT/Reg/Tax/Company/Account n°. */
+const N_DEGREE_BARE_BASE =
+  /(?<!(?:\b(?:VAT|Reg(?:istration)?|Tax|Company|Acc(?:ount)?)\b|Co\.?\s*Reg)[^\n]{0,25})\bn[°º]\s*(\d{6,10}(?:-\d{1,4})?)(?![0-9-])/gi;
 
 export const THREAD_CONFIRMATION_AMBIGUOUS =
   'This thread has more than one booking number on its confirmation files. Check HMS for the right one.';
@@ -61,16 +70,52 @@ export function isHmsConfirmation(value: string): boolean {
   return HMS_CONFIRMATION.test(value);
 }
 
+function isSkippedBareBase(token: string): boolean {
+  return /^0\d+$/.test(token) || /^(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$/.test(token);
+}
+
+function collectDashedConfirmations(text: string, dashed: Set<string>): void {
+  DASHED_CONFIRMATION.lastIndex = 0;
+  for (const match of text.matchAll(DASHED_CONFIRMATION)) dashed.add(match[1]!);
+}
+
+function collectLabelledBareBases(text: string, bare: Set<string>): void {
+  for (const re of [LABELLED_BARE_BASE, HASH_BARE_BASE, N_DEGREE_BARE_BASE]) {
+    re.lastIndex = 0;
+    for (const match of text.matchAll(re)) {
+      const token = match[1]!;
+      if (isSkippedBareBase(token)) continue;
+      bare.add(token);
+    }
+  }
+}
+
 export function resolveThreadConfirmationEvidence(
   sources: Array<{ filename: string; text?: string }>,
 ): ThreadConfirmationResolution {
-  const found = new Set<string>();
+  const dashed = new Set<string>();
+  const labelledBare = new Set<string>();
   for (const source of sources) {
-    for (const match of source.filename.matchAll(DASHED_CONFIRMATION)) found.add(match[1]!);
-    if (source.text) for (const match of source.text.matchAll(DASHED_CONFIRMATION)) found.add(match[1]!);
+    collectDashedConfirmations(source.filename, dashed);
+    if (source.text) {
+      collectDashedConfirmations(source.text, dashed);
+      collectLabelledBareBases(source.text, labelledBare);
+    }
   }
-  if (found.size === 1) return { confirmation: [...found][0]!, reason: null };
-  if (found.size > 1) return { confirmation: null, reason: THREAD_CONFIRMATION_AMBIGUOUS };
+  if (dashed.size === 1) {
+    const only = [...dashed][0]!;
+    const dashedBase = confirmationBase(only);
+    if ([...labelledBare].some((base) => confirmationBase(base) !== dashedBase)) {
+      return { confirmation: null, reason: THREAD_CONFIRMATION_AMBIGUOUS };
+    }
+    return { confirmation: only, reason: null };
+  }
+  if (dashed.size > 1) {
+    return { confirmation: null, reason: THREAD_CONFIRMATION_AMBIGUOUS };
+  }
+  if (labelledBare.size === 1) {
+    return { confirmation: [...labelledBare][0]!, reason: null };
+  }
   return { confirmation: null, reason: null };
 }
 
