@@ -1,5 +1,6 @@
 import type { PreparedAsk, PreparedDraftAudience, PreparedFact } from './prepared-draft-input.js';
 import { formatMissingBracket, textToSafeHtml } from './draft-evidence.js';
+import { aopQuoteDraftClauses, decideAopQuoteRatePlan, partyBoundFromFacts } from './aop-playbook.js';
 
 export type ReplyOutcome = 'complete' | 'partial' | 'clarification' | 'internal_brief' | 'abstain';
 export type ReplyRequestKind =
@@ -290,6 +291,12 @@ export function buildReplyPlaybook(input: ReplyPlaybookInput): ReplyPlaybookResu
     outcome === 'internal_brief'
       ? renderInternal(input.requestKind, lines, questions, limitations)
       : renderGuest(outcome, lines, questions, limitations);
+  const aopNotes =
+    input.requestKind === 'quote'
+      ? [
+          `AOP-1 ${decideAopQuoteRatePlan({ partyBound: partyBoundFromFacts(input.facts) }).staffLabel}. Unsent draft. Human approval required. Never auto-send.`,
+        ]
+      : [];
   return {
     outcome,
     textBody,
@@ -301,14 +308,25 @@ export function buildReplyPlaybook(input: ReplyPlaybookInput): ReplyPlaybookResu
     internalNotes:
       input.requestKind === 'group'
         ? ['Group/commercial context remains staff-only; no guest confirmation is implied.']
-        : [],
+        : aopNotes,
   };
 }
 
 export const selectReplyPlaybook = buildReplyPlaybook;
 
 /** Two corpus-backed family frames; all substantive clauses are independently verified. */
-export function composeReservationistReply(family:'quote'|'booking',clauses:readonly string[]):{textBody:string;htmlBody:string}{
- const textBody=[family==='quote'?'Thank you for your enquiry.':'Thank you for your booking request.',...clauses,'Kind regards,\nCenturion Reservations'].join('\n\n');
- return {textBody,htmlBody:textToSafeHtml(textBody)};
+export function composeReservationistReply(
+  family: 'quote' | 'booking',
+  clauses: readonly string[],
+  options?: { partyBound?: boolean },
+): { textBody: string; htmlBody: string } {
+  const aopClauses =
+    family === 'quote' && options ? aopQuoteDraftClauses(options.partyBound === true) : [];
+  const textBody = [
+    family === 'quote' ? 'Thank you for your enquiry.' : 'Thank you for your booking request.',
+    ...aopClauses,
+    ...clauses,
+    'Kind regards,\nCenturion Reservations',
+  ].join('\n\n');
+  return { textBody, htmlBody: textToSafeHtml(textBody) };
 }
