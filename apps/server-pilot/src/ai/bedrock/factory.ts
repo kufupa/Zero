@@ -56,6 +56,36 @@ export function resolveModelAdapter(
   });
 }
 
+export type TriageModelLabels = {
+  modelId: string;
+  routeId: string;
+  protocol: string;
+};
+
+/** Ledger/enqueue labels for the profile `resolveModelAdapter` will actually run. */
+export function triageModelLabels(
+  env: {
+    AI_TRIAGE_MODEL_PROFILE?: MailEnv['AI_TRIAGE_MODEL_PROFILE'] | string;
+    AI_MODEL_ID?: string;
+  } = process.env,
+): TriageModelLabels {
+  const profile = parseAiTriageModelProfile(
+    env.AI_TRIAGE_MODEL_PROFILE as MailEnv['AI_TRIAGE_MODEL_PROFILE'] | undefined,
+  );
+  if (profile === 'nova_lite') {
+    return {
+      modelId: env.AI_MODEL_ID?.trim() || 'amazon.nova-lite-v1:0',
+      routeId: 'nova_lite',
+      protocol: 'bedrock-converse',
+    };
+  }
+  return {
+    modelId: 'gpt-6-luna',
+    routeId: 'azure_luna_max',
+    protocol: 'azure-foundry-responses',
+  };
+}
+
 export type ApprovedLocalModelAdapterInput = {
   purpose: ModelRoutePurpose;
   route?: LocalModelRouteEvidence;

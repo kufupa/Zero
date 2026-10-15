@@ -82,15 +82,14 @@ const history = (id: string, at = '2026-10-04T10:00:00Z') => ({
 });
 
 describe('live-admission Azure Luna labels', () => {
-  it('enqueues inbound triage as Azure Luna, not Nova Lite', () => {
+  it('enqueues inbound triage with labels from the resolved profile', () => {
     const source = readFileSync(
       new URL('../src/mail/ingest/live-admission.ts', import.meta.url),
       'utf8',
     );
-    expect(source).toMatch(/modelId: 'gpt-6-luna'/);
-    expect(source).toMatch(/routeId: 'azure_luna_max'/);
-    expect(source).toMatch(/protocol: 'azure-foundry-responses'/);
+    expect(source).toMatch(/triageModelLabels/);
     expect(source).not.toMatch(/modelId: DEFAULT_AI_MODEL_ID/);
+    expect(source).not.toMatch(/routeId: 'azure_luna_max'/);
   });
 });
 

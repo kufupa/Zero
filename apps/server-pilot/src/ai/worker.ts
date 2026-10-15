@@ -190,6 +190,7 @@ import type { GroupReadCandidate } from '../hms/group-read-candidate.js';
 import type { EventReadCandidate } from '../hms/event-read-candidate.js';
 import type { IndexableMessage } from '../mail/conversation-signals.js';
 import { LocalModelRouteUnavailableError } from './bedrock/local.js';
+import { AzureLunaModelAdapter } from './bedrock/luna.js';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
 import { and, asc, desc, eq, inArray, lt, lte, or } from 'drizzle-orm';
@@ -275,11 +276,13 @@ export async function runPreparedWorkerCandidateReply(
   try {
     adapter =
       input.adapter ??
-      createApprovedLocalModelAdapter({
-        purpose: 'draft',
-        route: input.route?.route.protocol === 'in_process' ? input.route.route : undefined,
-        transport: input.route?.transport,
-      });
+      (input.route?.route.protocol === 'azure-foundry-responses'
+        ? new AzureLunaModelAdapter()
+        : createApprovedLocalModelAdapter({
+            purpose: 'draft',
+            route: input.route?.route.protocol === 'in_process' ? input.route.route : undefined,
+            transport: input.route?.transport,
+          }));
   } catch (error) {
     if (!(error instanceof LocalModelRouteUnavailableError)) throw error;
     const fallback = buildReplyPlaybook({
@@ -5622,7 +5625,10 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   const composedShadowModelRoute =
     shadowModelRouteFactory?.() ?? createProductionShadowModelRouteFactory()();
   const composedCandidateDraftRoute =
-    candidateDraftRouteFactory?.() ?? createProductionDraftModelRouteFactory()();
+    candidateDraftRouteFactory?.() ??
+    (claimed.runKind === 'candidate_draft'
+      ? createProductionDraftModelRouteFactory()()
+      : undefined);
   const executed = await executeAiRun(claimed.id, {
     shutdownSignal,
     readToolExecutor,

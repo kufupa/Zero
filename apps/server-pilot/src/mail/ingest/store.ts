@@ -55,6 +55,7 @@ import {
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
+import { triageModelLabels } from '../../ai/bedrock/factory.js';
 import { enqueueInboundExtraction } from '../../ai/extraction/inbound-run.js';
 import { classifyMailSource } from '../../ai/mail-source.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
@@ -812,12 +813,10 @@ export async function persistInboundMessage(
             idempotencyKey: isHotelSent
               ? `external-sent-baseline:${messageId}`
               : `inbound-triage:${messageId}`,
-            modelId: 'gpt-6-luna',
+            modelId: triageModelLabels().modelId,
             promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
             metrics: {
-              routeId: 'azure_luna_max',
-              protocol: 'azure-foundry-responses',
-              modelId: 'gpt-6-luna',
+              ...triageModelLabels(),
               ...(mailSourceDecision ? { mailSourceDecision } : {}),
             },
           },

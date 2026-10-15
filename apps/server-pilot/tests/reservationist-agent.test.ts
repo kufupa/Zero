@@ -87,6 +87,8 @@ afterEach(() => {
 
 describe('reservationist agent', () => {
   it('defaults the agent model to Azure Luna and fails closed without Azure env', () => {
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', '');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', '');
     expect(() => createReservationistAgent({ runners: fakeRunners() })).toThrow(
       /AZURE_OPENAI_BASE_URL|AZURE_FOUNDRY_API_KEY/,
     );

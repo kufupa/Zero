@@ -45,6 +45,7 @@ import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
 import { readAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
+import { draftRouteEnqueueLabels } from '../../ai/draft-route-factory.js';
 import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
 import { sanitizeHtmlBodyForStorage } from '../../mail/sanitize-email-html.js';
 import { parseDraftSearchQueryOrThrow } from '../../mail/search/trpc.js';
@@ -1007,7 +1008,7 @@ export async function enqueueHmsCandidateRefresh(input: {
       triggerMessageId: input.triggerMessageId,
       runKind: 'candidate_draft',
       idempotencyKey,
-      modelId: input.modelId ?? 'gpt-6-luna',
+      modelId: input.modelId ?? draftRouteEnqueueLabels().modelId,
       promptVersion: input.promptVersion ?? DEFAULT_HMS_CANDIDATE_PROMPT_VERSION,
       // Visible drafting is owned by the normal default worker. The isolated
       // HMS lane remains read/shadow-only and cannot claim this run.
@@ -1038,7 +1039,7 @@ export async function enqueueHmsCandidateRefresh(input: {
         threadId: input.threadId,
         requestedByUserId: input.requestedByUserId,
         contextMessageIds: [input.triggerMessageId],
-        model: input.modelId ?? 'gpt-6-luna',
+        model: input.modelId ?? draftRouteEnqueueLabels().modelId,
         promptVersion: input.promptVersion ?? DEFAULT_HMS_CANDIDATE_PROMPT_VERSION,
         status: 'queued',
         threadStateVersion,
