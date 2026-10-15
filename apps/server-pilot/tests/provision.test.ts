@@ -1,15 +1,27 @@
 import {
   applyProvision,
   applyProvisionThenWriteCredentials,
+  CENTURION_EXTRA_ALIASES,
+  fencedAliasAppendSql,
+  missingAliases,
   planProvision,
+  PROVISION_SPEC,
+  STALE_PLAN_MESSAGE,
+  type ProvisionPlan,
   type ProvisionSpec,
 } from '../src/db/provision.js';
 import {
   applyAfterReservingCredentialsFile,
   parseFlags,
+  printPlan,
   ProvisionUsageError,
 } from '../scripts/provision-prod.js';
-import { NAVA_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
+import {
+  NAVA_USER_ID,
+  TRANSPORT_ALIASES,
+  TRANSPORT_ID,
+  TRANSPORT_OWNER_HEADER,
+} from '../src/db/seed.js';
 import { mailCategory, mailboxAccess, mailboxTransport, mailLabel } from '../src/db/schema/mail.js';
 import { account, user as userTable } from '../src/db/schema/auth.js';
 import { TEST_DB_AVAILABLE, withTestDb } from './helpers/test-db.js';
@@ -62,6 +74,56 @@ function tableKey(table: unknown): keyof FakeState | null {
   if (table === mailLabel) return 'labels';
   if (table === mailCategory) return 'categories';
   return null;
+}
+
+function flattenSqlText(node: unknown): string {
+  if (typeof node === 'string') return node;
+  if (!node || typeof node !== 'object') return '';
+  const n = node as { queryChunks?: unknown[]; value?: unknown };
+  if (Array.isArray(n.queryChunks)) return n.queryChunks.map(flattenSqlText).join('');
+  if (Array.isArray(n.value)) return n.value.filter((v) => typeof v === 'string').join('');
+  if (typeof n.value === 'string') return n.value;
+  return '';
+}
+
+function collectSqlStringParams(node: unknown, out: string[] = []): string[] {
+  if (typeof node === 'string') {
+    out.push(node);
+    return out;
+  }
+  if (!node || typeof node !== 'object') return out;
+  const n = node as { value?: unknown; encoder?: unknown; queryChunks?: unknown[] };
+  if (Array.isArray(n.queryChunks)) {
+    for (const chunk of n.queryChunks) collectSqlStringParams(chunk, out);
+    return out;
+  }
+  if ('encoder' in n && typeof n.value === 'string') out.push(n.value);
+  return out;
+}
+
+function uniqueTail(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function appendMissingToConfig(config: unknown, aliases: string[]): Record<string, unknown> | null {
+  const base =
+    config && typeof config === 'object' && !Array.isArray(config)
+      ? { ...(config as Record<string, unknown>) }
+      : {};
+  const current = Array.isArray(base.aliases)
+    ? base.aliases.filter((alias): alias is string => typeof alias === 'string')
+    : [];
+  const have = new Set(current.map((alias) => alias.toLowerCase()));
+  const add = aliases.filter((alias) => !have.has(alias.toLowerCase()));
+  if (add.length === 0) return null;
+  return { ...base, aliases: [...current, ...add] };
 }
 
 function createFakeDb(init: Partial<FakeState> & { failCommit?: boolean } = {}) {
@@ -159,8 +221,19 @@ function createFakeDb(init: Partial<FakeState> & { failCommit?: boolean } = {}) 
         };
         return query;
       },
-      execute() {
-        return Promise.resolve([]);
+      execute(query?: unknown) {
+        const sqlText = flattenSqlText(query);
+        if (!sqlText.includes('jsonb_set')) return Promise.resolve([]);
+        const params = collectSqlStringParams(query);
+        const transportId = params.find((value) => state.transports.some((row) => row.id === value));
+        if (!transportId) return Promise.resolve([]);
+        const aliases = uniqueTail(params.filter((value) => value !== transportId));
+        const row = state.transports.find((t) => t.id === transportId);
+        if (!row || row.isActive === false) return Promise.resolve([]);
+        const next = appendMissingToConfig(row.sendFromConfig, aliases);
+        if (!next) return Promise.resolve([]);
+        row.sendFromConfig = next;
+        return Promise.resolve([{ id: transportId }]);
       },
       delete() {
         throw new Error('delete forbidden');
@@ -243,6 +316,37 @@ const ONE_HOTEL: ProvisionSpec = {
   grants: TEST_SPEC.grants.filter((g) => g.transportId === 'transport-hotel-a'),
 };
 
+describe('missingAliases', () => {
+  it('lists only wanted aliases absent from existing, lowercased, without reordering existing', () => {
+    expect(missingAliases(undefined, ['Desk@Example.TEST', 'keep@example.test'])).toEqual([
+      'desk@example.test',
+      'keep@example.test',
+    ]);
+    expect(
+      missingAliases({ aliases: ['Keep@example.test'], otherKey: 1 }, [
+        'KEEP@example.test',
+        'desk@example.test',
+        'desk@example.test',
+      ]),
+    ).toEqual(['desk@example.test']);
+    expect(missingAliases({ aliases: ['keep@example.test', 'desk@example.test'] }, ['desk@example.test'])).toEqual(
+      [],
+    );
+  });
+});
+
+describe('PROVISION_SPEC Centurion aliases', () => {
+  it('adds Centurion transport extra aliases without new users or grants', () => {
+    const centurion = PROVISION_SPEC.transports.find((t) => t.id === TRANSPORT_ID);
+    expect(centurion).toBeDefined();
+    expect(centurion?.ownerHeaderValue).toBe(TRANSPORT_OWNER_HEADER);
+    expect(centurion?.aliases).toEqual([...TRANSPORT_ALIASES, ...CENTURION_EXTRA_ALIASES]);
+    expect(CENTURION_EXTRA_ALIASES).toHaveLength(2);
+    expect(PROVISION_SPEC.users.every((u) => u.id !== 'user-centurion')).toBe(true);
+    expect(PROVISION_SPEC.grants.every((g) => g.transportId !== TRANSPORT_ID)).toBe(true);
+  });
+});
+
 describe('synthetic provision spec', () => {
   it('covers three hotel logins and grants each only its own transport; navaai non-default on all three', () => {
     expect(TEST_SPEC.users.map((u) => u.id).sort()).toEqual([
@@ -308,6 +412,7 @@ describe('planProvision', () => {
     ]);
     expect(plan.grantsToCreate).toHaveLength(6);
     expect(plan.inactiveTransports).toEqual([]);
+    expect(plan.aliasesToAdd).toEqual([]);
     expect(plan.alreadyPresent.users).toEqual([]);
     expect(plan.alreadyPresent.transports).toEqual([]);
     expect(plan.alreadyPresent.grants).toEqual([]);
@@ -322,6 +427,7 @@ describe('planProvision', () => {
         ownerHeaderValue: t.ownerHeaderValue,
         displayName: t.displayName,
         isActive: true,
+        sendFromConfig: { aliases: [...t.aliases] },
       })),
       grants: TEST_SPEC.grants.map((g) => ({
         id: `access-${g.userId}-${g.transportId}`,
@@ -333,6 +439,7 @@ describe('planProvision', () => {
     expect(plan.transportsToCreate).toEqual([]);
     expect(plan.grantsToCreate).toEqual([]);
     expect(plan.inactiveTransports).toEqual([]);
+    expect(plan.aliasesToAdd).toEqual([]);
     expect(plan.alreadyPresent.users.sort()).toEqual(['user-hotel-a', 'user-hotel-b', 'user-hotel-c']);
     expect(plan.alreadyPresent.transports.sort()).toEqual([
       'transport-hotel-a',
@@ -449,7 +556,249 @@ describe('planProvision', () => {
     const plan = await planProvision(db, ONE_HOTEL);
     expect(plan.transportsToCreate).toEqual([]);
     expect(plan.inactiveTransports).toEqual(['transport-hotel-a']);
+    expect(plan.aliasesToAdd).toEqual([]);
     expect('transportsToActivate' in plan).toBe(false);
+  });
+
+  it('lists only aliases missing from an existing transport send_from_config', async () => {
+    const spec: ProvisionSpec = {
+      users: [],
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          aliases: ['Keep@example.test', 'desk-a@example.test'],
+        },
+      ],
+      grants: [],
+    };
+    const { db } = createFakeDb({
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          isActive: true,
+          sendFromConfig: { aliases: ['Keep@example.test'], smtpHost: 'mail.example.test' },
+        },
+      ],
+    });
+    const plan = await planProvision(db, spec);
+    expect(plan.transportsToCreate).toEqual([]);
+    expect(plan.aliasesToAdd).toEqual([
+      { transportId: 'transport-hotel-a', aliases: ['desk-a@example.test'] },
+    ]);
+  });
+
+  it('skips alias adds on an inactive transport', async () => {
+    const spec: ProvisionSpec = {
+      users: [],
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          aliases: ['desk-a@example.test'],
+        },
+      ],
+      grants: [],
+    };
+    const { db } = createFakeDb({
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          isActive: false,
+          sendFromConfig: { aliases: [] },
+        },
+      ],
+    });
+    const plan = await planProvision(db, spec);
+    expect(plan.inactiveTransports).toEqual(['transport-hotel-a']);
+    expect(plan.aliasesToAdd).toEqual([]);
+  });
+
+  it('throws when an alias to add already belongs to another transport', async () => {
+    const spec: ProvisionSpec = {
+      users: [],
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          aliases: ['shared-desk@example.test'],
+        },
+      ],
+      grants: [],
+    };
+    const { db } = createFakeDb({
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          isActive: true,
+          sendFromConfig: { aliases: [] },
+        },
+        {
+          id: 'transport-hotel-b',
+          email: 'hotel-b@example.test',
+          ownerHeaderValue: 'hotel-b@example.test',
+          displayName: 'Hotel B',
+          isActive: true,
+          sendFromConfig: { aliases: ['shared-desk@example.test'] },
+        },
+      ],
+    });
+    await expect(planProvision(db, spec)).rejects.toThrow(/ambiguous_transport/);
+  });
+
+  it('throws when an alias to add is another transport email', async () => {
+    const spec: ProvisionSpec = {
+      users: [],
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          aliases: ['hotel-b@example.test'],
+        },
+      ],
+      grants: [],
+    };
+    const { db } = createFakeDb({
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          isActive: true,
+          sendFromConfig: { aliases: [] },
+        },
+        {
+          id: 'transport-hotel-b',
+          email: 'hotel-b@example.test',
+          ownerHeaderValue: 'hotel-b@example.test',
+          displayName: 'Hotel B',
+          isActive: true,
+          sendFromConfig: { aliases: [] },
+        },
+      ],
+    });
+    await expect(planProvision(db, spec)).rejects.toThrow(/ambiguous_transport/);
+  });
+
+  it('throws when two existing transports request the same new alias', async () => {
+    const spec: ProvisionSpec = {
+      users: [],
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          aliases: ['shared-desk@example.test'],
+        },
+        {
+          id: 'transport-hotel-b',
+          email: 'hotel-b@example.test',
+          ownerHeaderValue: 'hotel-b@example.test',
+          displayName: 'Hotel B',
+          aliases: ['shared-desk@example.test'],
+        },
+      ],
+      grants: [],
+    };
+    const { db } = createFakeDb({
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          isActive: true,
+          sendFromConfig: { aliases: [] },
+        },
+        {
+          id: 'transport-hotel-b',
+          email: 'hotel-b@example.test',
+          ownerHeaderValue: 'hotel-b@example.test',
+          displayName: 'Hotel B',
+          isActive: true,
+          sendFromConfig: { aliases: [] },
+        },
+      ],
+    });
+    await expect(planProvision(db, spec)).rejects.toThrow(/ambiguous_transport/);
+  });
+
+  it('throws when two existing transports request the same new alias with different case', async () => {
+    const spec: ProvisionSpec = {
+      users: [],
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          aliases: ['Shared-Desk@example.test'],
+        },
+        {
+          id: 'transport-hotel-b',
+          email: 'hotel-b@example.test',
+          ownerHeaderValue: 'hotel-b@example.test',
+          displayName: 'Hotel B',
+          aliases: ['shared-desk@example.test'],
+        },
+      ],
+      grants: [],
+    };
+    const { db } = createFakeDb({
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          isActive: true,
+          sendFromConfig: { aliases: [] },
+        },
+        {
+          id: 'transport-hotel-b',
+          email: 'hotel-b@example.test',
+          ownerHeaderValue: 'hotel-b@example.test',
+          displayName: 'Hotel B',
+          isActive: true,
+          sendFromConfig: { aliases: [] },
+        },
+      ],
+    });
+    await expect(planProvision(db, spec)).rejects.toThrow(/ambiguous_transport/);
+  });
+});
+
+describe('fencedAliasAppendSql', () => {
+  it('keeps existing aliases via ||, appends only still-missing, and fences on is_active + still-missing', () => {
+    const text = flattenSqlText(
+      fencedAliasAppendSql('transport-hotel-a', ['desk-a@example.test']),
+    );
+    expect(text).toContain('||');
+    expect(text).toMatch(/is_active IS TRUE/);
+    expect(text).toContain('EXISTS');
+    expect(text).toContain("send_from_config->'aliases'");
+    expect(text).toContain('? w.alias');
+    expect(text).toContain('jsonb_set');
+    expect(text).toContain('jsonb_agg');
   });
 });
 
@@ -560,6 +909,80 @@ describe('applyProvision', () => {
     expect(second.usersToCreate).toEqual([]);
     expect(second.transportsToCreate).toEqual([]);
     expect(second.grantsToCreate).toEqual([]);
+    expect(second.aliasesToAdd).toEqual([]);
+  });
+
+  it('appends missing aliases without dropping existing aliases or other send_from_config keys', async () => {
+    const spec: ProvisionSpec = {
+      users: [],
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          aliases: ['keep-me@example.test', 'desk-a@example.test'],
+        },
+      ],
+      grants: [],
+    };
+    const { db, state } = createFakeDb({
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          isActive: true,
+          sendFromConfig: { aliases: ['keep-me@example.test'], smtpHost: 'mail.example.test' },
+        },
+      ],
+    });
+    const plan = await planProvision(db, spec);
+    await applyProvision(db, plan, {});
+    expect(state.transports[0]?.sendFromConfig).toEqual({
+      aliases: ['keep-me@example.test', 'desk-a@example.test'],
+      smtpHost: 'mail.example.test',
+    });
+    const second = await planProvision(db, spec);
+    expect(second.aliasesToAdd).toEqual([]);
+    await applyProvision(db, second, {});
+    expect(state.transports[0]?.sendFromConfig).toEqual({
+      aliases: ['keep-me@example.test', 'desk-a@example.test'],
+      smtpHost: 'mail.example.test',
+    });
+  });
+
+  it('throws stale plan when aliases to add are already present at apply', async () => {
+    const spec: ProvisionSpec = {
+      users: [],
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          aliases: ['desk-a@example.test'],
+        },
+      ],
+      grants: [],
+    };
+    const { db, state } = createFakeDb({
+      transports: [
+        {
+          id: 'transport-hotel-a',
+          email: 'hotel-a@example.test',
+          ownerHeaderValue: 'hotel-a@example.test',
+          displayName: 'Hotel A',
+          isActive: true,
+          sendFromConfig: { aliases: [] },
+        },
+      ],
+    });
+    const plan = await planProvision(db, spec);
+    expect(plan.aliasesToAdd).toHaveLength(1);
+    state.transports[0]!.sendFromConfig = { aliases: ['desk-a@example.test'] };
+    await expect(applyProvision(db, plan, {})).rejects.toThrow(STALE_PLAN_MESSAGE);
   });
 
   it('grants the existing user id when the spec email already belongs to another id', async () => {
@@ -630,6 +1053,37 @@ describe('applyProvision', () => {
         Object.fromEntries(plan.usersToCreate.map((u) => [u.email, `pw-${u.id}`])),
       ),
     ).rejects.toThrow('stale plan, re-run dry-run');
+  });
+});
+
+describe('printPlan', () => {
+  it('prints aliasesToAdd as transportId and count without addresses', () => {
+    const plan: ProvisionPlan = {
+      usersToCreate: [],
+      transportsToCreate: [],
+      inactiveTransports: [],
+      grantsToCreate: [],
+      alreadyPresent: { users: [], transports: [], grants: [] },
+      transportDrift: [],
+      aliasesToAdd: [
+        {
+          transportId: 'transport-hotel-a',
+          aliases: ['secret-desk@example.test', 'other-desk@example.test'],
+        },
+      ],
+    };
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printPlan(plan);
+      const text = spy.mock.calls.flat().map(String).join(' ');
+      expect(text).toContain('aliasesToAdd');
+      expect(text).toContain('transport-hotel-a');
+      expect(text).toContain('2');
+      expect(text).not.toContain('secret-desk@example.test');
+      expect(text).not.toContain('other-desk@example.test');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

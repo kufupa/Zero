@@ -7,6 +7,8 @@ import type { DB } from './client.js';
 import * as seed from './seed.js';
 import { sql } from 'drizzle-orm';
 
+export const CENTURION_EXTRA_ALIASES = ['centurionrec@legacyhotels.co.za', 'centurionbq@legacyhotels.co.za'] as const;
+
 const hotel = (id: string, email: string, displayName: string, aliases: readonly string[]) => ({
   id,
   email,
@@ -28,6 +30,10 @@ export const PROVISION_SPEC = {
     { id: 'user-ayanda', name: 'Ayanda', email: seed.AYANDA_TRANSPORT_EMAIL },
   ],
   transports: [
+    hotel(seed.TRANSPORT_ID, seed.TRANSPORT_EMAIL, seed.CENTURION_TRANSPORT_DISPLAY_NAME, [
+      ...seed.TRANSPORT_ALIASES,
+      ...CENTURION_EXTRA_ALIASES,
+    ]),
     hotel(
       seed.DAVINCI_TRANSPORT_ID,
       seed.DAVINCI_TRANSPORT_EMAIL,
@@ -82,6 +88,7 @@ export type ProvisionPlan = {
   grantsToCreate: ProvisionGrantSpec[];
   alreadyPresent: { users: string[]; transports: string[]; grants: string[] };
   transportDrift: Array<{ id: string; field: string; expected: unknown; actual: unknown }>;
+  aliasesToAdd: Array<{ transportId: string; aliases: string[] }>;
 };
 
 export const STALE_PLAN_MESSAGE = 'stale plan, re-run dry-run';
@@ -90,6 +97,46 @@ const grantRowId = (g: ProvisionGrantSpec) => `access-${g.userId}-${g.transportI
 
 function emailKey(email: string): string {
   return email.toLowerCase();
+}
+
+function readAliases(existing: unknown): string[] {
+  const aliases =
+    existing && typeof existing === 'object' ? (existing as { aliases?: unknown }).aliases : null;
+  return Array.isArray(aliases) ? aliases.filter((a): a is string => typeof a === 'string') : [];
+}
+
+export function missingAliases(existing: unknown, wanted: readonly string[]): string[] {
+  const have = new Set(readAliases(existing).map((alias) => alias.toLowerCase()));
+  const missing: string[] = [];
+  for (const raw of wanted) {
+    const alias = raw.toLowerCase();
+    if (alias && !have.has(alias) && !missing.includes(alias)) missing.push(alias);
+  }
+  return missing;
+}
+
+function addressMatches(key: string, email: string, aliases: readonly string[]): boolean {
+  return email.toLowerCase() === key || aliases.some((a) => a.toLowerCase() === key);
+}
+
+function otherOwnsAlias(
+  alias: string,
+  transportId: string,
+  rows: Array<{ id: string; email: string; sendFromConfig?: unknown }>,
+  creating: readonly ProvisionTransportSpec[],
+  pendingAdds: ReadonlyArray<{ transportId: string; aliases: readonly string[] }>,
+): string | undefined {
+  const key = alias.toLowerCase();
+  const row = rows.find(
+    (t) => t.id !== transportId && addressMatches(key, t.email, readAliases(t.sendFromConfig)),
+  );
+  if (row) return row.id;
+  const created = creating.find((t) => t.id !== transportId && addressMatches(key, t.email, t.aliases));
+  if (created) return created.id;
+  return pendingAdds.find(
+    (entry) =>
+      entry.transportId !== transportId && entry.aliases.some((a) => a.toLowerCase() === key),
+  )?.transportId;
 }
 
 function resolveSpecUsers(spec: ProvisionSpec, rows: Array<{ id: string; email: string }>): {
@@ -157,6 +204,7 @@ export async function planProvision(db: DB, spec: ProvisionSpec): Promise<Provis
       isActive: mailboxTransport.isActive,
       displayName: mailboxTransport.displayName,
       ownerHeaderValue: mailboxTransport.ownerHeaderValue,
+      sendFromConfig: mailboxTransport.sendFromConfig,
     })
     .from(mailboxTransport);
   const grantRows = await db
@@ -170,6 +218,7 @@ export async function planProvision(db: DB, spec: ProvisionSpec): Promise<Provis
   const transportsToCreate: ProvisionTransportSpec[] = [];
   const alreadyTransports: string[] = [];
   const inactiveTransports: string[] = [];
+  const aliasesToAdd: ProvisionPlan['aliasesToAdd'] = [];
   const transportDrift: ProvisionPlan['transportDrift'] = [];
   for (const transport of spec.transports) {
     const existing = transportsById.get(transport.id);
@@ -187,6 +236,25 @@ export async function planProvision(db: DB, spec: ProvisionSpec): Promise<Provis
           expected: transport[field],
           actual: existing[field],
         });
+      }
+    }
+    if (existing.isActive === false) continue;
+    const missing = missingAliases(existing.sendFromConfig, transport.aliases);
+    if (missing.length) aliasesToAdd.push({ transportId: transport.id, aliases: missing });
+  }
+  for (const entry of aliasesToAdd) {
+    for (const alias of entry.aliases) {
+      const owner = otherOwnsAlias(
+        alias,
+        entry.transportId,
+        transportRows,
+        transportsToCreate,
+        aliasesToAdd,
+      );
+      if (owner) {
+        throw new Error(
+          `provision plan error: ${entry.transportId} alias already belongs to ${owner} (ambiguous_transport)`,
+        );
       }
     }
   }
@@ -210,11 +278,24 @@ export async function planProvision(db: DB, spec: ProvisionSpec): Promise<Provis
     grantsToCreate,
     alreadyPresent: { users: alreadyUsers, transports: alreadyTransports, grants: alreadyGrants },
     transportDrift,
+    aliasesToAdd,
   };
 }
 
 function insertOrStale<T>(rows: T[]): void {
   if (rows.length === 0) throw new Error(STALE_PLAN_MESSAGE);
+}
+
+const executeRowCount = (result: unknown): number =>
+  Array.isArray(result) ? result.length : ((result as { rows?: unknown[] }).rows?.length ?? 0);
+
+export function fencedAliasAppendSql(transportId: string, aliases: string[]) {
+  const wanted = sql`ARRAY[${sql.join(
+    aliases.map((alias) => sql`${alias}`),
+    sql`, `,
+  )}]::text[]`;
+  const stillMissing = sql`EXISTS (SELECT 1 FROM unnest(${wanted}) AS w(alias) WHERE NOT (COALESCE(send_from_config->'aliases', '[]'::jsonb) ? w.alias))`;
+  return sql`UPDATE ${mailboxTransport} SET send_from_config = jsonb_set(COALESCE(send_from_config, '{}'::jsonb), '{aliases}', COALESCE(send_from_config->'aliases', '[]'::jsonb) || COALESCE((SELECT jsonb_agg(to_jsonb(w.alias) ORDER BY w.ord) FROM unnest(${wanted}) WITH ORDINALITY AS w(alias, ord) WHERE NOT (COALESCE(send_from_config->'aliases', '[]'::jsonb) ? w.alias)), '[]'::jsonb)), updated_at = now() WHERE id = ${transportId} AND is_active IS TRUE AND ${stillMissing} RETURNING id`;
 }
 
 export async function applyProvision(
@@ -282,6 +363,14 @@ export async function applyProvision(
           .onConflictDoNothing({ target: mailboxAccess.id })
           .returning({ id: mailboxAccess.id }),
       );
+    }
+    for (const entry of plan.aliasesToAdd) {
+      if (entry.aliases.length === 0) continue;
+      const updated = executeRowCount(
+        await tx.execute(fencedAliasAppendSql(entry.transportId, entry.aliases)),
+      );
+      if (updated === 0) throw new Error(STALE_PLAN_MESSAGE);
+      console.log('provision aliases appended', entry.transportId, entry.aliases.length);
     }
     if (beforeCommit) await beforeCommit();
   });
