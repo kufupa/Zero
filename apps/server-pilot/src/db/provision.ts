@@ -109,6 +109,7 @@ function resolveSpecUsers(spec: ProvisionSpec, rows: Array<{ id: string; email: 
   const usersToCreate: PilotUserSpec[] = [];
   const alreadyUsers: string[] = [];
   const effectiveUserId = new Map<string, string>();
+  const specUserIds = new Set(spec.users.map((row) => row.id));
 
   for (const user of spec.users) {
     const idMatch = byId.get(user.id);
@@ -119,9 +120,19 @@ function resolveSpecUsers(spec: ProvisionSpec, rows: Array<{ id: string; email: 
       );
     }
     const emailMatch = emailMatches[0];
+    if (idMatch && emailKey(idMatch.email) !== emailKey(user.email)) {
+      throw new Error(
+        `provision plan error: ${user.id} exists with a different email; aborting (no grants)`,
+      );
+    }
     if (idMatch && emailMatch && idMatch.id !== emailMatch.id) {
       throw new Error(
         `provision plan error: ${user.id} and email point to different existing users (${idMatch.id} vs ${emailMatch.id})`,
+      );
+    }
+    if (emailMatch && emailMatch.id !== user.id && specUserIds.has(emailMatch.id)) {
+      throw new Error(
+        `provision plan error: ${user.id} email resolves to a different spec user (${emailMatch.id}); aborting (no grants)`,
       );
     }
     const existing = idMatch ?? emailMatch;
@@ -210,6 +221,7 @@ export async function applyProvision(
   db: DB,
   plan: ProvisionPlan,
   credentials: Record<string, string>,
+  beforeCommit?: () => void | Promise<void>,
 ): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('nava-provision'), 0)`);
@@ -254,7 +266,7 @@ export async function applyProvision(
           .returning({ id: mailboxTransport.id }),
       );
       await seed.seedSpamLabel(tx, spec.id);
-      await seed.seedAiManagedCategories(tx, spec.id);
+      await seed.seedAiManagedCategories(tx, spec.id, { onConflict: 'nothing' });
     }
     for (const grant of plan.grantsToCreate) {
       insertOrStale(
@@ -271,6 +283,7 @@ export async function applyProvision(
           .returning({ id: mailboxAccess.id }),
       );
     }
+    if (beforeCommit) await beforeCommit();
   });
 }
 
@@ -280,12 +293,11 @@ export async function applyProvisionThenWriteCredentials(
   credentials: Record<string, string>,
   write: (payload: Record<string, { password: string }>) => void,
 ): Promise<void> {
-  await applyProvision(db, plan, credentials);
   const payload: Record<string, { password: string }> = {};
   for (const user of plan.usersToCreate) {
     const password = credentials[user.email];
     if (!password) throw new Error(`provision missing password for ${user.id}`);
     payload[user.email] = { password };
   }
-  write(payload);
+  await applyProvision(db, plan, credentials, () => write(payload));
 }

@@ -12,7 +12,7 @@ import {
 import { NAVA_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { mailCategory, mailboxAccess, mailboxTransport, mailLabel } from '../src/db/schema/mail.js';
 import { account, user as userTable } from '../src/db/schema/auth.js';
-import { TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
+import { TEST_DB_AVAILABLE, withTestDb } from './helpers/test-db.js';
 import type { DB } from '../src/db/client.js';
 import { describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
@@ -64,15 +64,37 @@ function tableKey(table: unknown): keyof FakeState | null {
   return null;
 }
 
-function createFakeDb(init: Partial<FakeState> = {}) {
+function createFakeDb(init: Partial<FakeState> & { failCommit?: boolean } = {}) {
+  const { failCommit = false, ...rows } = init;
   const state: FakeState = {
-    users: [...(init.users ?? [])],
-    accounts: [...(init.accounts ?? [])],
-    transports: [...(init.transports ?? [])],
-    grants: [...(init.grants ?? [])],
-    labels: [...(init.labels ?? [])],
-    categories: [...(init.categories ?? [])],
+    users: [...(rows.users ?? [])],
+    accounts: [...(rows.accounts ?? [])],
+    transports: [...(rows.transports ?? [])],
+    grants: [...(rows.grants ?? [])],
+    labels: [...(rows.labels ?? [])],
+    categories: [...(rows.categories ?? [])],
   };
+  const conflictUpdates: unknown[] = [];
+
+  function snapshotState(): FakeState {
+    return {
+      users: state.users.map((row) => ({ ...row })),
+      accounts: state.accounts.map((row) => ({ ...row })),
+      transports: state.transports.map((row) => ({ ...row })),
+      grants: state.grants.map((row) => ({ ...row })),
+      labels: state.labels.map((row) => ({ ...row })),
+      categories: state.categories.map((row) => ({ ...row })),
+    };
+  }
+
+  function restoreState(snapshot: FakeState): void {
+    state.users.splice(0, state.users.length, ...snapshot.users);
+    state.accounts.splice(0, state.accounts.length, ...snapshot.accounts);
+    state.transports.splice(0, state.transports.length, ...snapshot.transports);
+    state.grants.splice(0, state.grants.length, ...snapshot.grants);
+    state.labels.splice(0, state.labels.length, ...snapshot.labels);
+    state.categories.splice(0, state.categories.length, ...snapshot.categories);
+  }
 
   function makeHandle(): DB {
     const handle = {
@@ -121,7 +143,8 @@ function createFakeDb(init: Partial<FakeState> = {}) {
               onConflictDoNothing() {
                 return thenable;
               },
-              onConflictDoUpdate() {
+              onConflictDoUpdate(value?: unknown) {
+                conflictUpdates.push(value ?? true);
                 return thenable;
               },
               returning() {
@@ -145,14 +168,22 @@ function createFakeDb(init: Partial<FakeState> = {}) {
       update() {
         throw new Error('update forbidden');
       },
-      transaction(fn: (tx: DB) => Promise<unknown>) {
-        return fn(handle as unknown as DB);
+      async transaction(fn: (tx: DB) => Promise<unknown>) {
+        const snapshot = snapshotState();
+        try {
+          const result = await fn(handle as unknown as DB);
+          if (failCommit) throw new Error('commit failed');
+          return result;
+        } catch (err) {
+          restoreState(snapshot);
+          throw err;
+        }
       },
     };
     return handle as unknown as DB;
   }
 
-  return { db: makeHandle(), state };
+  return { db: makeHandle(), state, conflictUpdates };
 }
 
 const navaUser: UserRow = {
@@ -356,7 +387,48 @@ describe('planProvision', () => {
       ],
     });
     await expect(planProvision(db, ONE_HOTEL)).rejects.toThrow(
-      /provision plan error:.*different existing users/,
+      /provision plan error:.*exists with a different email/,
+    );
+  });
+
+  it('spec id present with a different email aborts the plan (no grants)', async () => {
+    const { db } = createFakeDb({
+      users: [
+        navaUser,
+        {
+          id: 'user-hotel-a',
+          name: 'Other',
+          email: 'other-hotel@example.test',
+          emailVerified: true,
+        },
+      ],
+    });
+    await expect(planProvision(db, ONE_HOTEL)).rejects.toThrow(
+      /provision plan error:.*exists with a different email.*no grants/,
+    );
+  });
+
+  it('email resolving to a different spec user id aborts the plan (no grants)', async () => {
+    const twoHotels: ProvisionSpec = {
+      users: [TEST_SPEC.users[0]!, TEST_SPEC.users[1]!],
+      transports: [TEST_SPEC.transports[0]!, TEST_SPEC.transports[1]!],
+      grants: TEST_SPEC.grants.filter(
+        (g) => g.transportId === 'transport-hotel-a' || g.transportId === 'transport-hotel-b',
+      ),
+    };
+    const { db } = createFakeDb({
+      users: [
+        navaUser,
+        {
+          id: 'user-hotel-b',
+          name: 'Hotel B',
+          email: 'hotel-a@example.test',
+          emailVerified: true,
+        },
+      ],
+    });
+    await expect(planProvision(db, twoHotels)).rejects.toThrow(
+      /provision plan error:.*different spec user.*no grants/,
     );
   });
 
@@ -383,13 +455,33 @@ describe('planProvision', () => {
 
 describe('applyProvision', () => {
   it('never issues delete or update', async () => {
-    const { db } = createFakeDb({ users: [navaUser] });
+    const { db, conflictUpdates } = createFakeDb({ users: [navaUser] });
     const plan = await planProvision(db, TEST_SPEC);
     await applyProvision(
       db,
       plan,
       Object.fromEntries(plan.usersToCreate.map((u) => [u.email, `pw-${u.id}`])),
     );
+    expect(conflictUpdates).toEqual([]);
+  });
+
+  it('rolls back users when credentials write fails', async () => {
+    const { db, state } = createFakeDb({ users: [navaUser] });
+    const plan = await planProvision(db, ONE_HOTEL);
+    await expect(
+      applyProvisionThenWriteCredentials(
+        db,
+        plan,
+        Object.fromEntries(plan.usersToCreate.map((u) => [u.email, `pw-${u.id}`])),
+        () => {
+          throw new Error('ENOSPC');
+        },
+      ),
+    ).rejects.toThrow('ENOSPC');
+    expect(state.users.map((u) => u.id)).toEqual([NAVA_USER_ID]);
+    expect(state.transports).toEqual([]);
+    expect(state.grants).toEqual([]);
+    expect(state.accounts).toEqual([]);
   });
 
   it('does not re-password an existing user', async () => {
@@ -559,6 +651,20 @@ describe('parseFlags', () => {
       credentialsOut: '/tmp/out.json',
     });
   });
+
+  it('rejects a missing or flag-like --credentials-out value with exit 2 and no file', () => {
+    expect(() => parseFlags(['--apply', '--credentials-out'])).toThrow(ProvisionUsageError);
+    expect(() => parseFlags(['--apply', '--credentials-out', '--bogus'])).toThrow(
+      ProvisionUsageError,
+    );
+    try {
+      parseFlags(['--apply', '--credentials-out', '--bogus']);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProvisionUsageError);
+      expect((err as ProvisionUsageError).exitCode).toBe(2);
+    }
+    expect(existsSync('--bogus')).toBe(false);
+  });
 });
 
 describe('applyAfterReservingCredentialsFile', () => {
@@ -569,7 +675,9 @@ describe('applyAfterReservingCredentialsFile', () => {
       await expect(
         applyAfterReservingCredentialsFile({
           path: join(root, 'missing-parent', 'creds.json'),
-          apply,
+          apply: async () => {
+            await apply();
+          },
         }),
       ).rejects.toMatchObject({ code: 'ENOENT' });
       expect(apply).not.toHaveBeenCalled();
@@ -595,11 +703,50 @@ describe('applyAfterReservingCredentialsFile', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('removes the credentials file when commit fails after a durable write', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'provision-creds-'));
+    const path = join(root, 'creds.json');
+    try {
+      const { db, state } = createFakeDb({ users: [navaUser], failCommit: true });
+      const plan = await planProvision(db, ONE_HOTEL);
+      await expect(
+        applyAfterReservingCredentialsFile({
+          path,
+          apply: async (writeCredentials) => {
+            await applyProvisionThenWriteCredentials(
+              db,
+              plan,
+              Object.fromEntries(plan.usersToCreate.map((u) => [u.email, `pw-${u.id}`])),
+              writeCredentials,
+            );
+          },
+        }),
+      ).rejects.toThrow('commit failed');
+      expect(existsSync(path)).toBe(false);
+      expect(existsSync(`${path}.ROLLED_BACK`)).toBe(false);
+      expect(state.users.map((u) => u.id)).toEqual([NAVA_USER_ID]);
+      expect(state.transports).toEqual([]);
+      expect(state.grants).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
+
+async function insertSyntheticNava(db: DB): Promise<void> {
+  await db.insert(userTable).values({
+    id: NAVA_USER_ID,
+    name: 'Nava AI',
+    email: 'nava@example.test',
+    emailVerified: true,
+  });
+}
 
 describe.skipIf(!TEST_DB_AVAILABLE)('planProvision/applyProvision (disposable PostgreSQL)', () => {
   it('grants an existing-email user and rolls back a stale apply', async () => {
-    await withSeededTestDb(async (db) => {
+    await withTestDb(async (db) => {
+      await insertSyntheticNava(db);
       await db.insert(userTable).values({
         id: 'legacy-7',
         name: 'Legacy Hotel A',
@@ -637,6 +784,30 @@ describe.skipIf(!TEST_DB_AVAILABLE)('planProvision/applyProvision (disposable Po
         .from(account)
         .where(eq(account.userId, 'user-hotel-a'));
       expect(accounts).toEqual([]);
+    });
+  });
+
+  it('write failure rolls back so no new users remain', async () => {
+    await withTestDb(async (db) => {
+      await insertSyntheticNava(db);
+      const plan = await planProvision(db, ONE_HOTEL);
+      await expect(
+        applyProvisionThenWriteCredentials(
+          db,
+          plan,
+          Object.fromEntries(plan.usersToCreate.map((u) => [u.email, `pw-${u.id}`])),
+          () => {
+            throw new Error('ENOSPC');
+          },
+        ),
+      ).rejects.toThrow('ENOSPC');
+      const users = await db.select({ id: userTable.id }).from(userTable);
+      expect(users.map((u) => u.id).sort()).toEqual([NAVA_USER_ID]);
+      const transports = await db
+        .select({ id: mailboxTransport.id })
+        .from(mailboxTransport)
+        .where(eq(mailboxTransport.id, 'transport-hotel-a'));
+      expect(transports).toEqual([]);
     });
   });
 });

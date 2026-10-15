@@ -417,19 +417,32 @@ export async function seedAll(db: DB, opts: SeedOptions = {}): Promise<SeedResul
   };
 }
 
-export async function seedAiManagedCategories(db: DB, transportId: string): Promise<void> {
+export async function seedAiManagedCategories(
+  db: DB,
+  transportId: string,
+  opts?: { onConflict?: 'update' | 'nothing' },
+): Promise<void> {
+  const onConflict = opts?.onConflict ?? 'update';
   for (const row of AI_MANAGED_CATEGORY_SEED_ROWS) {
+    const values = {
+      id: `category-${transportId}-${row.slug}`,
+      transportId,
+      slug: row.slug,
+      name: row.name,
+      color: row.color,
+      sortOrder: row.sortOrder,
+      isActive: true,
+    };
+    if (onConflict === 'nothing') {
+      await db
+        .insert(mailCategory)
+        .values(values)
+        .onConflictDoNothing({ target: [mailCategory.transportId, mailCategory.slug] });
+      continue;
+    }
     await db
       .insert(mailCategory)
-      .values({
-        id: `category-${transportId}-${row.slug}`,
-        transportId,
-        slug: row.slug,
-        name: row.name,
-        color: row.color,
-        sortOrder: row.sortOrder,
-        isActive: true,
-      })
+      .values(values)
       .onConflictDoUpdate({
         target: [mailCategory.transportId, mailCategory.slug],
         set: {
