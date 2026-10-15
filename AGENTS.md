@@ -34,7 +34,7 @@ Done = score on the golden set in `PRODUCT.md`, not a merge.
 | Stacking             | Never base a feature PR on an unmerged PR over 500 lines                                                                                                                                                                                                                  | #222 (quote-ready) waited on #214 and missed the 07:30Z target                                                     |
 | Main merges          | Merge `origin/main` into a long-lived PR before its first review, then freeze the diff                                                                                                                                                                                    | the late main merge into #214 brought 4 more rounds of new P1s                                                     |
 | Review rounds        | Two Greptile rounds. After that, validate each new P1 (real path, real impact); fix the real ones and send the rest to the owner with a one-line reason. Never merge with an unvalidated P1                                                                               | rounds r12–r16 on #214 cost ~2 h on the critical path                                                              |
-| Writers              | Unbounded writers **iff** disjoint files, own worktree, own branch from `origin/main`. Shared file = queued. One verifier **per PR** (Haiku/Luna), not a global mutex. Impl: Grok 4.6 HI (Cursor) or Luna max; merge/deploy/live HMS: Opus. No Fast. Cap **live** writers at 6 while `uptime` load < 6. Stale overnight worktrees are not live writers. | Cursor: 20 agents on a shared lock → 1–3 throughput. Isolation + file ownership scale; a count cap does not.     |
+| Writers              | Unbounded writers **iff** disjoint files, own worktree, own branch from `origin/main`. Shared file = queued. One verifier **per PR** (Haiku/Luna), not a global mutex. Impl: Grok 4.6 HI (Cursor) or Luna max; merge/deploy/live HMS: Opus. No Fast. | Cursor: 20 agents on a shared lock → 1–3 throughput. Isolation + file ownership scale; a count cap does not.     |
 | Orchestrator context | Opus orchestrator `/clear`s (or hands off) at each slice boundary; state lives in the scoreboard, not the chat. Wait for background work with run-in-background notifications, not `sleep` polls                                                                          | overnight 2026-10-14: 867 Opus turns at ~253k context = $44 of cache reads alone                                   |
 | Haiku                | Budget Haiku at the >100k tier ($0.50 / $2.50 per M): a 100k cap can't be enforced (owner, 2026-10-14). Still start a fresh agent per review/label task instead of resuming one; send long-context reading (transcripts, corpora) to Luna, whose cache reads are ~$0.01/M | 65% of overnight Haiku calls ran over 100k even with "keep under 100k" in every brief                              |
 | Slicing              | The orchestrator plans the PR slices before any lane starts (the owner doesn't): each slice = one behaviour, its test, its PR. Commit and push every green slice; deploy only when someone needs to see it                                                                | owner, 2026-10-14: "smaller PRs, more often, always — on you to plan it"                                           |
@@ -43,7 +43,7 @@ Done = score on the golden set in `PRODUCT.md`, not a merge.
 
 ## VPS resources: never overload this machine (owner, 2026-10-15)
 
-This 4-vCPU / 15 GB VPS runs every lane, the gateway and the owner's tools. Twice now, parallel heavy checks froze it (first `tsc --noEmit` ×2, then several full Vitest suites at once).
+This 8-vCPU / 30 GB VPS runs every lane, the gateway and the owner's tools. Twice now, parallel heavy checks froze it (first `tsc --noEmit` ×2, then several full Vitest suites at once).
 
 | Never | Instead |
 |---|---|
@@ -52,7 +52,22 @@ This 4-vCPU / 15 GB VPS runs every lane, the gateway and the owner's tools. Twic
 | Docker/bake-off installs while lanes run checks | Research lanes run no heavy installs. Typecheck only via remote-typecheck.sh |
 | Leaving servers, containers or test runners behind | Every lane kills what it started before it reports |
 
-A PreToolUse hook (`~/.claude/hooks/block-local-tsc.sh`) denies tsc and direct full Vitest runs. Before launching a lane, the coordinator checks `uptime`. If load is above 8, wait or cut lanes.
+A PreToolUse hook (`~/.claude/hooks/block-local-tsc.sh`) denies tsc and direct full Vitest runs. There is no lane or load cap (owner, 2026-10-15: "i didnt add this rule im ok w more load"). The limits are the heavy checks above, not lane count.
+
+## Gates, evals and instructions (2026-10-15 retro)
+
+All four drivers hit the same wall: **gate latency and eval validity, not lane count.**
+
+| Rule | Why |
+|---|---|
+| Chain gates in the lane's own background job: `lane && remote-typecheck && diff-only Luna verify`. A finished lane never waits for the driver | Main driver had 0 lanes running 19:30–20:00 while fix lanes sat finished ~35 min |
+| A Luna/Greptile P1 counts only if it is reachable from a staff action or a prod path **today**. Eval-only or unused code = P2, or strip the path | Diff-only verify found one fresh adjacent P1 per round (#310 ×3, #321 ×4, #318 ×3, #308 ×6) |
+| Round 3 with a fresh adjacent P1 = design flag: split, strip or redesign. Never a 4th round on the same design | #308 ran 6 rounds (~2.5 h) and is still blocked; #307 merged within the hour once split |
+| Replay/eval input must equal prod input (attachment text via prod's own `readQuoteAttachments` + `selectionToAgentPrompt`). Name the input parity in every eval brief | Every replay score on 2026-10-15 was body-only; 74% of gold inbound carry attachments |
+| Gate tuning on fresh rows with the baseline run ×2 (noise band) before any tuning. A single baseline run cannot pass or fail a change | No-SOP baseline varied 30↔37 on one 99-row set; tuning-slice SOP gains (7→27/30) vanished on fresh rows |
+| Kill and monitor by PID, never `pkill -f` / `pgrep -f` patterns | 3 drivers matched their own shell (exit 144) or a monitor's own command line |
+| Never relay an owner approval between sessions. Prod/auth approvals are given in the executing session's own chat | The watchdog relayed a "pre-approval" for `--apply`; the main driver correctly refused |
+| Live HMS tool path is DOM-verified with one read-only probe before any batch | 6 wasted live searches on an unverified Guest Search path |
 
 Run contracts, `/goal` vs `/loop`, and the overnight template: `docs/context/RUN-CONTRACT.md`.
 
