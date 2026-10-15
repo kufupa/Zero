@@ -19,6 +19,8 @@
  *   replay-pane-ops --snapshot FILE --out FILE [--concurrency 8]
  *                                  same snapshot as replay-ops, production pane analysis (analyseQuoteSelection via
  *                                  resolveAdapter / createAzureLunaModel). No HMS. Writes predicted GoldOperation JSONL.
+ *   replay-adapter-ops --snapshot FILE --out FILE [--limit N] [--offset K] [--concurrency 8]
+ *                                  same as replay-pane-ops via slice A analyseSelectionWithAgent (stub runners, Azure Luna).
  *
  * Input: apps/server-pilot/.private/reservationist-backtest/golden-set.jsonl (gitignored). It is not exported from
  * prod by this script; a missing file fails with the expected path. Traces and scores land in <run-id>/ beside it.
@@ -52,8 +54,10 @@ import {
   snapshotRowToAgentCase,
   type SnapshotRow,
 } from '../src/ai/agent-decision-to-ops.js';
-import { paneAnalysisToOperations } from '../src/ai/pane-analysis-to-ops.js';
+import { paneAnalysisToOperations, snapshotRowToPaneSelection } from '../src/ai/pane-analysis-to-ops.js';
 import { resolveAdapter } from '../src/ai/quote-workflow-analyse-selection.js';
+import type { AnalyseQuoteSelectionResult } from '../src/ai/quote-workflow-llm.js';
+import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
 import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
 import {
   BACKTEST_TARGETS,
@@ -91,7 +95,8 @@ const REASONING = 'medium' as const;
 const CONCURRENCY = 8;
 const MAX_STEPS = 10;
 const USAGE =
-  'usage: run-reservationist-backtest.ts check | run [--target pane|extract|agent] [--subset 30] [--run-id ID] | run --target extract --dataset FILE [--run-id ID] | score --run-id ID | replay-ops --snapshot FILE --out FILE [--limit N] [--concurrency 4] | replay-pane-ops --snapshot FILE --out FILE [--concurrency 8]';
+  'usage: run-reservationist-backtest.ts check | run [--target pane|extract|agent] [--subset 30] [--run-id ID] | run --target extract --dataset FILE [--run-id ID] | score --run-id ID | replay-ops --snapshot FILE --out FILE [--limit N] [--concurrency 4] | replay-pane-ops --snapshot FILE --out FILE [--concurrency 8] | replay-adapter-ops --snapshot FILE --out FILE [--limit N] [--offset K] [--concurrency 8]';
+const AGENT_PANE_ADAPTER = '../src/ai/agent-pane-adapter.js';
 
 type Trace = GoldenTrace & {
   id: string;
@@ -486,11 +491,15 @@ function predictedError(messageId: string, error: string): PredictedOpsRow {
   };
 }
 
-function loadSnapshotJobs(path: string, limit?: number): Array<{ messageId: string; row?: SnapshotRow; error?: string }> {
+function loadSnapshotJobs(
+  path: string,
+  limit?: number,
+  offset = 0,
+): Array<{ messageId: string; row?: SnapshotRow; error?: string }> {
   const lines = readFileSync(path, 'utf8')
     .split('\n')
     .filter((line) => line.trim());
-  const picked = limit === undefined ? lines : lines.slice(0, limit);
+  const picked = limit === undefined ? lines.slice(offset) : lines.slice(offset, offset + limit);
   return picked.map((line) => {
     try {
       const row = JSON.parse(line) as SnapshotRow;
@@ -660,7 +669,98 @@ async function replayPaneOps(args: {
   return 0;
 }
 
-async function main(argv: string[]): Promise<number> {
+export type ReplayAdapterOpsArgs = {
+  snapshot: string;
+  out: string;
+  limit?: number;
+  offset: number;
+  concurrency: number;
+};
+
+export type AnalyseSelectionWithAgentFn = (input: {
+  selection: SyncedQuoteSelection;
+  model: unknown;
+  runners: ReservationistRunners;
+  deadlineMs?: number;
+  treatAs?: LunaAnalysis['workflow'];
+  staffNote?: string;
+}) => Promise<AnalyseQuoteSelectionResult>;
+
+export function parseReplayAdapterOpsArgs(values: {
+  snapshot?: string;
+  out?: string;
+  limit?: string;
+  offset?: string;
+  concurrency?: string;
+}): ReplayAdapterOpsArgs | null {
+  const snapshot = values.snapshot;
+  const out = values.out;
+  const limit = values.limit === undefined ? undefined : Number(values.limit);
+  const offset = values.offset === undefined ? 0 : Number(values.offset);
+  const concurrency = values.concurrency === undefined ? 8 : Number(values.concurrency);
+  if (!snapshot || !out) return null;
+  if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) return null;
+  if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(concurrency) || concurrency < 1) return null;
+  return { snapshot, out, limit, offset, concurrency };
+}
+
+export async function replayAdapterOps(
+  args: ReplayAdapterOpsArgs,
+  deps: { analyse: AnalyseSelectionWithAgentFn; model: unknown },
+): Promise<number> {
+  const jobs = loadSnapshotJobs(args.snapshot, args.limit, args.offset);
+  const latestPrior = new Map(loadPanePredictedOps(args.out).map((row) => [row.message_id, row]));
+  const runners = unavailableRunners();
+  mkdirSync(dirname(args.out), { recursive: true });
+  const outputs: PanePredictedOpsRow[] = new Array(jobs.length);
+  for (const [index, job] of jobs.entries()) {
+    const existing = latestPrior.get(job.messageId);
+    if (existing && existing.error === null) outputs[index] = existing;
+  }
+  const indexed = jobs
+    .map((job, index) => ({ job, index }))
+    .filter(({ index }) => outputs[index] === undefined);
+  await mapLimit(indexed, args.concurrency, async ({ job, index }) => {
+    let row: PanePredictedOpsRow;
+    if (job.error || !job.row) {
+      row = panePredictedError(job.messageId, job.error ?? 'snapshot row invalid');
+    } else {
+      try {
+        const res = await deps.analyse({
+          selection: snapshotRowToPaneSelection(job.row),
+          model: deps.model,
+          runners,
+          deadlineMs: 25_000,
+        });
+        if (res.source !== 'luna') {
+          row = panePredictedError(job.messageId, res.fallbackReason);
+        } else {
+          row = {
+            kind: 'predicted',
+            message_id: job.messageId,
+            operations: paneAnalysisToOperations(res.analysis),
+            workflow: res.analysis.workflow,
+            error: null,
+          };
+        }
+      } catch (err) {
+        row = panePredictedError(job.messageId, err instanceof Error ? err.message : String(err));
+      }
+    }
+    outputs[index] = row;
+    appendPrivate(args.out, row);
+  });
+  const ok = outputs.filter((row) => row.error === null).length;
+  const errors = outputs.length - ok;
+  const workflows = tally(
+    outputs.filter((row): row is PanePredictedOpsRow & { workflow: string } => Boolean(row.workflow)),
+    (row) => row.workflow,
+  );
+  console.log(`replay-adapter-ops n=${outputs.length} ok=${ok} errors=${errors} workflows=${JSON.stringify(workflows)}`);
+  return 0;
+}
+
+export async function main(argv: string[]): Promise<number> {
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -672,6 +772,7 @@ async function main(argv: string[]): Promise<number> {
       snapshot: { type: 'string' },
       out: { type: 'string' },
       limit: { type: 'string' },
+      offset: { type: 'string' },
       concurrency: { type: 'string' },
     },
   });
@@ -729,6 +830,17 @@ async function main(argv: string[]): Promise<number> {
       return 2;
     }
     return replayPaneOps({ snapshot, out, concurrency });
+  }
+  if (command === 'replay-adapter-ops') {
+    const parsed = parseReplayAdapterOpsArgs(values);
+    if (!parsed) {
+      console.error(USAGE);
+      return 2;
+    }
+    const { analyseSelectionWithAgent } = (await import(AGENT_PANE_ADAPTER)) as {
+      analyseSelectionWithAgent: AnalyseSelectionWithAgentFn;
+    };
+    return replayAdapterOps(parsed, { analyse: analyseSelectionWithAgent, model: createAzureLunaModel() });
   }
   console.error(USAGE);
   return 2;
