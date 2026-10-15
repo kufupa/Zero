@@ -736,3 +736,161 @@ test('accents and punctuation do not drop a company whose name is the same text'
   assert.equal(lookup.filterReadsBack('Societe', 'Société'), true);
   assert.deepEqual(lookup.rowsMatchingQuery([{ nativeId: '9', displayName: 'Zoë Travel' }], 'zoe').map((r) => r.nativeId), ['9']);
 });
+
+const GUEST_EMAIL = 'guest.lookup@example.test';
+const GUEST_EMAIL_REQUEST = { kind: 'guest', query: { email: GUEST_EMAIL } };
+
+/**
+ * Guest search with the live race: a menu-bar `.x-window` is already visible (one `appmenusearch`
+ * input). The named Guest Search window appears after the trigger click plus `guestDelayMs`.
+ * `emailaddress` can lag the window (`fieldDelayMs`) or never appear (`neverField`).
+ * `namedSearch` is the Search control inside that window; `decoySearch` is Search in another
+ * visible window. `neverOpen` never shows the named window. Clicks on Search are recorded.
+ */
+function guestSearchPage({
+  clock,
+  guestDelayMs = 0,
+  fieldDelayMs = 0,
+  neverOpen = false,
+  neverField = false,
+  namedSearch = true,
+  decoySearch = false,
+}) {
+  const typed = { emailaddress: '', appmenusearch: '' };
+  const clicks = { namedSearch: 0, otherSearch: 0 };
+  let clickedAt = null;
+  const guestOpen = () => !neverOpen && clickedAt !== null && clock.now - clickedAt >= guestDelayMs;
+  const fieldReady = () => guestOpen() && !neverField && clock.now - clickedAt >= guestDelayMs + fieldDelayMs;
+  const isTrigger = (desc) => desc.includes('data-qtip') && desc.includes('Guest Search');
+  const isSearchControl = (desc) =>
+    (desc.includes('role=button') && desc.includes('^Search$'))
+    || desc.includes('text:/^Search$/')
+    || desc.includes('hasText:/^Search$/');
+  const isNamedGuestWin = (desc) =>
+    desc.includes('.x-window')
+    && desc.includes('Guest Search')
+    && !desc.includes('input')
+    && !desc.includes('role=button')
+    && !isSearchControl(desc);
+  const isWindow = (desc) =>
+    desc.includes('.x-window')
+    && !desc.includes('.x-grid')
+    && !desc.includes('input')
+    && !desc.includes('role=button')
+    && !isSearchControl(desc);
+  const isEmail = (desc) => desc.includes('emailaddress');
+  const isMenuSearch = (desc) => desc.includes('appmenusearch');
+  const inNamedGuest = (desc) => desc.includes('Guest Search') && !isTrigger(desc);
+  const counts = (desc) => {
+    if (isTrigger(desc)) return 1;
+    if (isEmail(desc)) return fieldReady() && inNamedGuest(desc) ? 1 : 0;
+    if (isMenuSearch(desc)) return 1;
+    if (isSearchControl(desc)) {
+      if (inNamedGuest(desc)) return guestOpen() && namedSearch ? 1 : 0;
+      return decoySearch ? 1 : 0;
+    }
+    if (isNamedGuestWin(desc)) return guestOpen() ? 1 : 0;
+    if (isWindow(desc)) return 1;
+    if (desc.includes('Processing request') || desc.includes('Cannot retrieve profile')) return 0;
+    return 0;
+  };
+  const loc = (desc) => {
+    const self = {
+      locator: (s) => loc(`${desc} >> ${s}`),
+      filter: (o) => loc(`${desc}${o?.hasText ? ` >> hasText:${String(o.hasText)}` : ''}`),
+      first: () => self,
+      last: () => self,
+      nth: (i) => loc(`${desc}#${i}`),
+      getByRole: (role, o) => loc(`${desc} >> role=${role}:${String(o?.name)}`),
+      getByText: (re) => loc(`${desc} >> text:${String(re)}`),
+      count: async () => counts(desc),
+      isVisible: async () => counts(desc) > 0,
+      waitFor: async () => {},
+      click: async () => {
+        if (isTrigger(desc) || (desc.includes('role=button') && /Guest Search/i.test(desc) && !isSearchControl(desc))) {
+          clickedAt = clock.now;
+        }
+        if (isSearchControl(desc)) {
+          if (inNamedGuest(desc)) clicks.namedSearch += 1;
+          else clicks.otherSearch += 1;
+        }
+      },
+      fill: async (v) => {
+        if (isEmail(desc)) typed.emailaddress = String(v);
+        if (isMenuSearch(desc)) typed.appmenusearch = String(v);
+      },
+      inputValue: async () => (isEmail(desc) ? typed.emailaddress : isMenuSearch(desc) ? typed.appmenusearch : ''),
+      press: async () => {},
+      innerText: async () => '',
+      evaluate: async (fn, arg) => (arg === undefined ? [] : { rows: [], loaded: 0 }),
+      getAttribute: async () => null,
+      isEnabled: async () => true,
+      boundingBox: async () => null,
+    };
+    return self;
+  };
+  const page = loc('page');
+  page.typed = typed;
+  page.clicks = clicks;
+  page.waitForTimeout = async (ms) => {
+    clock.advance(ms);
+  };
+  page.waitForResponse = () => new Promise(() => {});
+  page.setDefaultTimeout = () => {};
+  return page;
+}
+
+test('guest search waits for the named window so the email is typed there, not into the menu bar', async () => {
+  const clock = fakeClock();
+  const page = guestSearchPage({ clock, guestDelayMs: 800 });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, GUEST_EMAIL_REQUEST));
+  assert.equal(page.typed.emailaddress, GUEST_EMAIL);
+  assert.equal(page.typed.appmenusearch, '');
+  assert.notEqual(found.issues?.[0]?.reason, 'lookup_window_not_opened');
+});
+
+test('guest search that never opens the named window is lookup_window_not_opened, and nothing is typed', async () => {
+  const clock = fakeClock();
+  const page = guestSearchPage({ clock, neverOpen: true });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, GUEST_EMAIL_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].reason, 'lookup_window_not_opened');
+  assert.deepEqual(found.candidates, []);
+  assert.equal(page.typed.emailaddress, '');
+  assert.equal(page.typed.appmenusearch, '');
+});
+
+test('guest search waits for emailaddress when the named window opens first', async () => {
+  const clock = fakeClock();
+  const page = guestSearchPage({ clock, guestDelayMs: 0, fieldDelayMs: 800 });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, GUEST_EMAIL_REQUEST));
+  assert.equal(page.typed.emailaddress, GUEST_EMAIL);
+  assert.equal(page.typed.appmenusearch, '');
+  assert.notEqual(found.issues?.[0]?.reason, 'lookup_window_not_opened');
+  assert.notEqual(found.issues?.[0]?.reason, 'filter_not_applied');
+});
+
+test('guest search that never shows the typed field is filter_not_applied, and Search is not clicked', async () => {
+  const clock = fakeClock();
+  const page = guestSearchPage({ clock, neverField: true });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, GUEST_EMAIL_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].reason, 'filter_not_applied');
+  assert.deepEqual(found.candidates, []);
+  assert.equal(page.typed.emailaddress, '');
+  assert.equal(page.clicks.namedSearch, 0);
+  assert.equal(page.clicks.otherSearch, 0);
+});
+
+test('guest search with no Search control in the named window fails closed, and does not click Search in another window', async () => {
+  const clock = fakeClock();
+  const page = guestSearchPage({ clock, namedSearch: false, decoySearch: true });
+  const found = await withFakeClock(clock, () => lookup.searchKind(page, GUEST_EMAIL_REQUEST));
+  assert.equal(found.outcome, 'execution_failure');
+  assert.equal(found.issues[0].reason, 'filter_not_verified');
+  assert.equal(found.issues[0].detail, 'search_not_found');
+  assert.deepEqual(found.candidates, []);
+  assert.equal(page.typed.emailaddress, GUEST_EMAIL);
+  assert.equal(page.clicks.namedSearch, 0);
+  assert.equal(page.clicks.otherSearch, 0);
+});

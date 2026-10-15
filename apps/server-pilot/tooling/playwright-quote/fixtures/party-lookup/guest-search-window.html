@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- SYNTHETIC fixture: the app menu bar is already a visible .x-window (one appmenusearch input).
+     Clicking Guest Search opens a window titled exactly "Guest Search" after window.delayMs, or never
+     when window.neverOpen. The email must go in emailaddress, never appmenusearch. Names are invented. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Guest Search delayed window (synthetic)</title>
+<style>
+  body { margin: 0; width: 1280px; height: 720px; position: relative; font: 12px Arial, sans-serif; background: #f2f2f2; }
+  [hidden] { display: none !important; }
+  .abs { position: absolute; box-sizing: border-box; }
+  input.x-form-text { position: absolute; box-sizing: border-box; height: 26px; border: 1px solid #aaa; padding: 0 6px; background: #fff; }
+  button { position: absolute; box-sizing: border-box; height: 28px; }
+  .x-window { position: absolute; background: #fff; border: 1px solid #999; }
+  .mask { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; background: rgba(255,255,255,0.55); z-index: 50; }
+  .mask span { position: absolute; left: 600px; top: 420px; color: #1d4ed8; font-weight: bold; }
+</style>
+</head>
+<body>
+  <div class="x-window" id="app-menu" style="left:0; top:0; width:1280px; height:40px;">
+    <input class="x-form-text" name="appmenusearch" id="appmenusearch" style="left:20px; top:6px; width:200px;">
+    <button id="guest-search-trigger" data-qtip="Guest Search" style="left:240px; top:6px; width:28px;"></button>
+  </div>
+
+  <div class="mask" id="mask" hidden><span>Processing request.</span></div>
+
+  <div class="x-window" id="guest-search" hidden style="left:220px; top:80px; width:640px; height:360px;">
+    <div class="abs" style="left:20px; top:14px; font-weight:bold;">Guest Search</div>
+    <input class="x-form-text" name="lastname" id="guest-lastname" style="left:20px; top:50px; width:200px;">
+    <input class="x-form-text" name="firstname" id="guest-firstname" style="left:240px; top:50px; width:200px;">
+    <input class="x-form-text" name="emailaddress" id="guest-email" style="left:20px; top:90px; width:280px;">
+    <input class="x-form-text" name="phonenumber" id="guest-phone" style="left:320px; top:90px; width:160px;">
+    <input class="x-form-text" name="postalcode" id="guest-postal" style="left:20px; top:130px; width:120px;">
+    <button id="guest-search-btn" style="left:20px; top:180px; width:80px;">Search</button>
+    <button id="guest-new-profile" style="left:110px; top:180px; width:100px;">New Profile</button>
+    <button id="guest-ok" style="left:420px; top:310px; width:80px;">OK</button>
+    <button id="guest-cancel" style="left:510px; top:310px; width:80px;">Cancel</button>
+  </div>
+
+  <script>
+    window.delayMs = 800;
+    window.neverOpen = false;
+    const mask = document.getElementById('mask');
+    const dialog = document.getElementById('guest-search');
+    document.getElementById('guest-search-trigger').addEventListener('click', () => {
+      if (window.neverOpen) return;
+      setTimeout(() => { dialog.hidden = false; }, window.delayMs);
+    });
+    document.getElementById('guest-search-btn').addEventListener('click', () => {
+      mask.hidden = false;
+      setTimeout(() => { mask.hidden = true; }, 200);
+    });
+  </script>
+</body>
+</html>
