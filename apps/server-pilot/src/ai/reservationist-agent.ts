@@ -105,11 +105,26 @@ const createSchema = JSON.parse(readFileSync(join(TOOLING, 'create-tool.schema.j
 };
 const { shopRow: _shopRow, shop: _shop, result: _result, ...createDefs } = createSchema.$defs;
 
+/** AOP tools are pure helpers (pick/format over inputs). No send, HMS write, or IO tools. */
+const AOP_TOOL_ID = /^aop_[a-z0-9_]+$/;
+const AOP_TOOL_FORBIDDEN = /(send|save|create|cancel|amend|post|write|delete|refund|enqueue)/;
+
+export function assertAopToolsReadOnly(aopTools?: Record<string, ReturnType<typeof createTool>>) {
+  for (const [key, tool] of Object.entries(aopTools ?? {})) {
+    const id = String((tool as { id?: unknown }).id ?? key);
+    if (!AOP_TOOL_ID.test(key) || id !== key || AOP_TOOL_FORBIDDEN.test(key)) {
+      throw new Error(`AOP_TOOL_REFUSED: ${key} must be a pure aop_* helper`);
+    }
+  }
+  return aopTools ?? {};
+}
+
 export function createReservationistTools(
   runners?: ReservationistRunners,
   aopTools?: Record<string, ReturnType<typeof createTool>>,
 ) {
-  if (!runners) return { ...aopTools };
+  const aop = assertAopToolsReadOnly(aopTools);
+  if (!runners) return { ...aop };
   return {
     quote_stay: createTool({
       id: 'quote_stay',
@@ -150,7 +165,7 @@ export function createReservationistTools(
         ...(await runners.validateCreate(request)),
       }),
     }),
-    ...aopTools,
+    ...aop,
   };
 }
 

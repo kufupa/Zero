@@ -187,7 +187,7 @@ describe('reservationist agent SOP and tool hooks', () => {
 
   it('merges aopTools into the toolset', async () => {
     const folioRead = createTool({
-      id: 'folio_read',
+      id: 'aop_folio_read',
       description: 'Read-only folio lookup.',
       inputSchema: z.object({ confirmationNumber: z.string() }),
       execute: async () => ({ ok: true }),
@@ -195,15 +195,25 @@ describe('reservationist agent SOP and tool hooks', () => {
     const agent = createReservationistAgent({
       model: 'openai/gpt-5',
       runners: fakeRunners(),
-      aopTools: { folio_read: folioRead },
+      aopTools: { aop_folio_read: folioRead },
     });
     expect(Object.keys(await agent.listTools()).sort()).toEqual([
+      'aop_folio_read',
       'create_reservation_dry_run',
-      'folio_read',
       'party_lookup',
       'quote_proposal_pdf',
       'quote_stay',
     ]);
+  });
+
+  it('refuses aopTools that are not pure aop_* helpers', () => {
+    const tool = (id: string) =>
+      createTool({ id, description: 'x', inputSchema: z.object({}), execute: async () => ({}) });
+    for (const id of ['send_reply', 'aop_send_reply', 'aop_hms_post_payment', 'hms_cancel_reservation']) {
+      expect(() =>
+        createReservationistAgent({ model: 'openai/gpt-5', runners: fakeRunners(), aopTools: { [id]: tool(id) } }),
+      ).toThrow(/AOP_TOOL_REFUSED/);
+    }
   });
 });
 
