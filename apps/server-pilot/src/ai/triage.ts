@@ -844,6 +844,63 @@ function isVoucherInvoiceOrPaymentRequest(haystack: string): boolean {
   );
 }
 
+/** A voucher asking the hotel to book or record a stay is new booking work. */
+function isVoucherNewBookingRequest(haystack: string): boolean {
+  const normalized = haystack.replace(/\s+/g, ' ');
+  const asksToBook =
+    /\b(?:please|kindly|can you|could you|would you|we request you to)\b.{0,40}\b(?:book|make|create)\s+(?:(?:a|an|new)\s+)?(?:room|stay|reservation|booking|accommodation)\b/i.test(
+      normalized,
+    );
+  const asksToRecordPayment =
+    /\b(?:log|enter|register|record|load|add)\s+(?:(?:the|this|our|a)\s+)?(?:payment|remittance|invoice|proof\s+of\s+payment|pop)\b/i.test(
+      normalized,
+    );
+  const hasBookedStayReference =
+    /\b(?:already\s+)?booked\s+(?:(?:a|an|the|this|our)\s+)?(?:room|stay|reservation|booking|accommodation)\b/i.test(
+      normalized,
+    );
+  const asksToLog =
+    /\b(?:please|kindly|can you|could you|would you|we request you to)\b.{0,40}\b(?:log|enter|register|record|load|add)\s+(?:(?:the|this|our|a)\s+)?(?:stay|reservation|booking)\b/i.test(
+      normalized,
+    ) ||
+    (!asksToRecordPayment && hasBookedStayReference &&
+      /\b(?:log|enter|register|record|load|add)\s+(?:it|this)\s+(?:in|into|on)\s+(?:the\s+)?(?:hotel\s+)?(?:system|pms)\b/i.test(
+        normalized,
+      ));
+
+  return asksToBook || asksToLog;
+}
+
+/** Payment language is a sender claim unless backed by proof for an existing confirmation. */
+function hasSenderPaidClaim(haystack: string): boolean {
+  const deniesPayment =
+    /\bno\s+payment\s+(?:(?:has|was|is)\s+)?(?:been\s+)?(?:made|received|settled|completed)\b/i.test(
+      haystack,
+    ) ||
+    /\bpayment\s+(?:(?:has|was|is)\s+)?not\s+(?:been\s+)?(?:made|received|settled|completed)\b/i.test(
+      haystack,
+    ) ||
+    /\b(?:we|i|our client)\s+(?:have\s+)?not\s+paid\b/i.test(haystack);
+  if (deniesPayment) return false;
+
+  return /\b(?:already\s+(?:paid|settled)|paid\s+in\s+full|payment\s+(?:has\s+been|was|is)\s+(?:made|received|settled|completed)|payment\s+received|(?:we|i|our client)\s+(?:have\s+)?(?:already\s+)?paid)\b/i.test(
+    haystack,
+  );
+}
+
+/** POP for a numbered hotel confirmation is payment work, not a new booking request. */
+function isExistingConfirmationPaymentProof(haystack: string): boolean {
+  const hasPaymentProof = /\b(?:proof\s+of\s+payment|payment\s+proof|pop|remittance)\b/i.test(
+    haystack,
+  );
+  const hasConfirmationNumber =
+    /\b(?:existing\s+)?(?:hotel\s+)?confirmation\s*(?:number|no\.?|#)\s*[:#-]?\s*[a-z0-9][a-z0-9/-]{2,}\b/i.test(
+      haystack,
+    );
+
+  return hasPaymentProof && hasConfirmationNumber;
+}
+
 /** Detects external job applications / CVs. */
 function isJobApplication(input: TriageRefineInput, haystack: string): boolean {
   const from = normalizeEmailAddress(input.from ?? '');
@@ -1059,28 +1116,61 @@ function refineWorkflowTriageOutput(
       rationale: `${next.rationale} Internal hotel rate/system configuration is internal-partner.`,
     };
   } else if (isAgencyTravelVoucher(input, haystack)) {
-    const isInvoiceRequest = isVoucherInvoiceOrPaymentRequest(haystack);
-    if (isInvoiceRequest) {
+    const asksForNewBooking = isVoucherNewBookingRequest(haystack);
+    if (isExistingConfirmationPaymentProof(haystack) && !asksForNewBooking) {
       next = {
         ...next,
         primaryFolder: 'money-billing',
-        overlays: { ...next.overlays, payment: true },
+        overlays: { ...next.overlays, booking: false, payment: true },
         humanAction: 'payment_or_finance',
         suggestedTools: ['hms_read_folio', 'hms_find_reservation'],
         isSpam: false,
-        policyFlags: addPolicyFlag(next.policyFlags, 'refine:voucher-invoice-request'),
-        rationale: `${next.rationale} Travel voucher invoice/payment request is money-billing.`,
+        policyFlags: addPolicyFlag(
+          next.policyFlags,
+          'refine:voucher-existing-confirmation-payment-proof',
+        ),
+        rationale: `${next.rationale} POP/proof of payment for an existing hotel confirmation is money-billing payment work.`,
       };
-    } else {
+    } else if (asksForNewBooking) {
+      const reportsPaid = hasSenderPaidClaim(haystack);
+      const voucherAttached =
+        /\b(?:attached|enclosed|herewith)\b.{0,30}\bvouchers?\b|\bvouchers?\b.{0,30}\b(?:attached|enclosed)\b/i.test(
+          haystack,
+        );
       next = {
         ...next,
-        primaryFolder: 'documents-delivery',
-        humanAction: 'document_or_delivery',
-        suggestedTools: ['hms_list_documents'],
+        primaryFolder: 'bookings',
+        overlays: { ...next.overlays, booking: true, payment: reportsPaid },
+        humanAction: 'create_or_reconcile',
+        suggestedTools: ['hms_find_reservation'],
         isSpam: false,
-        policyFlags: addPolicyFlag(next.policyFlags, 'refine:agency-voucher-delivery'),
-        rationale: `${next.rationale} Agency travel voucher delivery is documents-delivery.`,
+        policyFlags: addPolicyFlag(next.policyFlags, 'refine:voucher-new-booking'),
+        rationale: `${next.rationale} Request to log an already-booked stay is bookings. ${voucherAttached ? 'Voucher attachment' : 'Voucher reference'} is supporting evidence.${reportsPaid ? ' Sender reports payment already made; not independently verified.' : ''}`,
       };
+    } else {
+      const isInvoiceRequest = isVoucherInvoiceOrPaymentRequest(haystack);
+      if (isInvoiceRequest) {
+        next = {
+          ...next,
+          primaryFolder: 'money-billing',
+          overlays: { ...next.overlays, payment: true },
+          humanAction: 'payment_or_finance',
+          suggestedTools: ['hms_read_folio', 'hms_find_reservation'],
+          isSpam: false,
+          policyFlags: addPolicyFlag(next.policyFlags, 'refine:voucher-invoice-request'),
+          rationale: `${next.rationale} Travel voucher invoice/payment request is money-billing.`,
+        };
+      } else {
+        next = {
+          ...next,
+          primaryFolder: 'documents-delivery',
+          humanAction: 'document_or_delivery',
+          suggestedTools: ['hms_list_documents'],
+          isSpam: false,
+          policyFlags: addPolicyFlag(next.policyFlags, 'refine:agency-voucher-delivery'),
+          rationale: `${next.rationale} Agency travel voucher delivery is documents-delivery.`,
+        };
+      }
     }
   } else if (isJobApplication(input, haystack)) {
     next = {
@@ -1167,6 +1257,8 @@ function refineWorkflowTriageOutput(
     next.policyFlags.includes('refine:groups-events-work') ||
     next.policyFlags.includes('refine:staff-forwarded-rfq') ||
     next.policyFlags.includes('refine:internal-system-mapping') ||
+    next.policyFlags.includes('refine:voucher-new-booking') ||
+    next.policyFlags.includes('refine:voucher-existing-confirmation-payment-proof') ||
     next.policyFlags.includes('refine:voucher-invoice-request') ||
     next.policyFlags.includes('refine:agency-voucher-delivery') ||
     next.policyFlags.includes('refine:job-application') ||

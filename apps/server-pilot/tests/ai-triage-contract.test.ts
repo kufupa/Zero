@@ -180,6 +180,9 @@ describe('AI triage contract', () => {
     expect(p).toMatch(/OTP|verification code/i);
     expect(p).toMatch(/FortiMail|quarantine/i);
     expect(p).toMatch(/travel voucher|booking voucher/i);
+    expect(p).toContain(
+      'Agent voucher with an explicit request to book or log a new stay routes to bookings; any stated payment or attached voucher is supporting evidence only. POP or proof of payment for an existing confirmation routes to money-billing. Voucher-only delivery or confirmation with no new-booking request routes to documents-delivery.',
+    );
   });
 
   it('system prompt uses decision sequence and contrastive queue boundaries', () => {
