@@ -8,13 +8,14 @@
  *      and ambiguous win over `X-Zero-Mailbox`.
  *   2. A unique stamp is trusted only when `isStampCorroborated` — the
  *      stamped transport identity (email + send_from_config aliases)
- *      appears in parsed To/Cc/Bcc, or From is that identity (own outbound
- *      echo — same trust as unstamped equated-From routing). Else ignore
- *      the stamp and fall through to the unstamped path. Stamp may only
- *      select a transport unstamped routing would also accept from those
- *      fields; it never moves mail to a hotel not named in To/Cc/Bcc/From.
- *      Sender-forgeable envelope headers (Delivered-To, X-Original-To) are
- *      not corroboration.
+ *      appears in parsed To/Cc/Bcc, or the actual From header is that
+ *      identity (own outbound echo — same trust as unstamped equated-From
+ *      routing; never Sender). Else ignore the stamp and fall through to
+ *      the unstamped path. Stamp may only select a transport unstamped
+ *      routing would also accept from those fields; it never moves mail
+ *      to a hotel not named in To/Cc/Bcc/From. Sender-forgeable envelope
+ *      headers (Delivered-To, X-Original-To) and Sender are not
+ *      corroboration.
  *   3. Unstamped / ignored-stamp: unique Direct-To → that transport. When
  *      `INGEST_REQUIRE_OWNER_HEADER=false` and Direct-To is none, also match
  *      hotel transport identities on To/Cc/Bcc then From. On miss quarantine
@@ -1911,13 +1912,14 @@ function transportIdentitySet(email: string, sendFromConfig: unknown): Set<strin
 
 /**
  * True when the stamped transport identity appears in parsed To/Cc/Bcc, or
- * From is that identity (own outbound echo — same trust as unstamped
- * equated-From routing).
+ * the actual `From` header (`fromHeaderAddress`, never `Sender`) is that
+ * identity (own outbound echo — same trust as unstamped equated-From routing).
  *
  * Invariant: the stamp may only select a transport that unstamped routing
  * would also accept from the same parsed recipients/From. It can never
  * move mail to a hotel not named in To/Cc/Bcc/From. Sender-forgeable
- * envelope headers (Delivered-To, X-Original-To) are not corroboration.
+ * envelope headers (Delivered-To, X-Original-To) and the `Sender` header
+ * are not corroboration.
  */
 export function isStampCorroborated(
   transport: TransportMatchCandidate,
@@ -1926,7 +1928,7 @@ export function isStampCorroborated(
   const identities = transportIdentitySet(transport.email, transport.sendFromConfig);
   if (identities.size === 0) return false;
   const candidates = [
-    parsed.fromAddress,
+    parsed.fromHeaderAddress ?? null,
     ...parsed.toAddresses,
     ...parsed.ccAddresses,
     ...parsed.bccAddresses,
