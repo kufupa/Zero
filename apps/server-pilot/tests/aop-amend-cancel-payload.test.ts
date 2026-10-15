@@ -60,10 +60,42 @@ describe('buildAmendCancelPayload', () => {
     const flags = flagMap(parsed.args);
     expect(flags.get('--mode')).toBe('preview');
     expect(flags.has('--out')).toBe(true);
-    expect(flags.has('--request')).toBe(true);
+    expect(flags.get('--request')).toBe('amend-request.json');
     expect(flags.has('--digest')).toBe(false);
     expect(parsed.args).not.toContain('--allow-real-guest');
     expect(parsed.args).not.toContain('--confirmation');
+    expect(parsed.request).toEqual({
+      confirmation: CONF,
+      expectedLastName: LAST,
+      fields: { arrival: '2027-09-14', roomType: 'STQN' },
+    });
+  });
+
+  it('binds each amend confirmation and change set onto the request body the wrapper writes', () => {
+    const a = buildAmendCancelPayload({
+      kind: 'amend',
+      confirmationNumber: CONF,
+      lastName: LAST,
+      changes: [{ field: 'adults', to: 2 }],
+    });
+    const b = buildAmendCancelPayload({
+      kind: 'amend',
+      confirmationNumber: '9999902-1',
+      lastName: LAST,
+      changes: [
+        { field: 'arrival', to: '2027-11-01' },
+        { field: 'departure', to: '2027-11-04' },
+      ],
+    });
+    expect(a.request).toEqual({ confirmation: CONF, expectedLastName: LAST, fields: { adults: 2 } });
+    expect(b.request).toEqual({
+      confirmation: '9999902-1',
+      expectedLastName: LAST,
+      fields: { arrival: '2027-11-01', departure: '2027-11-04' },
+    });
+    expect(a.request).not.toEqual(b.request);
+    expect(a.args).toContain('--request');
+    expect(b.args).toContain('--request');
   });
 
   it('builds preview cancel argv matching cancel-stay.mjs flags', () => {
@@ -90,6 +122,42 @@ describe('buildAmendCancelPayload', () => {
     expect(flags.has('--reason')).toBe(true);
     expect(out.args).not.toContain('--allow-real-guest');
     expect(out.args).not.toContain('--expect-stay');
+    expect(out.request).toBeNull();
+  });
+
+  it('refuses two cancel arrivals instead of picking the last date', () => {
+    const out = buildAmendCancelPayload({
+      kind: 'cancel',
+      confirmationNumber: CONF,
+      lastName: LAST,
+      changes: [
+        { field: 'arrival', to: '2027-09-14' },
+        { field: 'arrival', to: '2027-10-01' },
+      ],
+    });
+    expect(out.args).toEqual([]);
+    expect(out.request).toBeNull();
+    expect(out.refusals).toContain('repeated_field:arrival');
+  });
+
+  it('treats a confirmation number as a whole token, never a substring', () => {
+    const embedded = buildAmendCancelPayload({
+      kind: 'cancel',
+      confirmationNumber: `x${CONF}`,
+      lastName: LAST,
+      changes: [{ field: 'arrival', to: '2027-09-14' }],
+    });
+    expect(embedded.args).toEqual([]);
+    expect(embedded.refusals.some((row) => /confirm/i.test(row))).toBe(true);
+
+    const trailing = buildAmendCancelPayload({
+      kind: 'amend',
+      confirmationNumber: `${CONF}0`,
+      lastName: LAST,
+      changes: [{ field: 'arrival', to: '2027-09-14' }],
+    });
+    expect(trailing.args).toEqual([]);
+    expect(trailing.request).toBeNull();
   });
 
   it('refuses a missing or invalid confirmation number', () => {

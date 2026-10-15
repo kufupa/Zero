@@ -37,10 +37,18 @@ export const amendCancelPayloadInputSchema = z.object({
 });
 export type AmendCancelPayloadInput = z.infer<typeof amendCancelPayloadInputSchema>;
 
+const amendRequestBodySchema = z.object({
+  confirmation: z.string(),
+  expectedLastName: z.string(),
+  fields: z.record(z.string(), z.union([z.string(), z.number()])),
+});
+export type AmendRequestBody = z.infer<typeof amendRequestBodySchema>;
+
 export const amendCancelPayloadOutputSchema = z.object({
   tool: z.enum(['hms_amend_reservation', 'hms_cancel_reservation']),
   script: z.enum(['amend-stay.mjs', 'cancel-stay.mjs']),
   args: z.array(z.string()),
+  request: amendRequestBodySchema.nullable(),
   requiresApproval: z.literal(true),
   screenshotReview: z.literal(true),
   executed: z.literal(false),
@@ -49,18 +57,25 @@ export const amendCancelPayloadOutputSchema = z.object({
 export type AmendCancelPayloadOutput = z.infer<typeof amendCancelPayloadOutputSchema>;
 
 export const amendCancelPayloadDescription =
-  'Build preview CLI argv for amend-stay.mjs or cancel-stay.mjs from a confirmation number, last name, and field changes. Call after the agent chooses workflow amend or cancel and has a confirmation number. Returns args only; never runs HMS. Staff must approve, then review screenshots. Refuse (empty args) on a missing or invalid confirmation (NNNNNN-N) or an unsupported change field.';
+  'Build preview CLI argv for amend-stay.mjs or cancel-stay.mjs from a confirmation number, last name, and field changes. Call after the agent chooses workflow amend or cancel and has a confirmation number. For amend, also returns the JSON body the wrapper must write to the --request path before invoking the script. Never runs HMS. Staff must approve, then review screenshots. Refuse (empty args, request null) on a missing or invalid confirmation (NNNNNN-N, whole token) or an unsupported change field.';
 
 export const buildAmendCancelPayloadInputSchema = amendCancelPayloadInputSchema;
 export const buildAmendCancelPayloadOutputSchema = amendCancelPayloadOutputSchema;
 export const buildAmendCancelPayloadDescription = amendCancelPayloadDescription;
 
-function shell(kind: AmendCancelPayloadInput['kind'], refusals: string[], args: string[] = []): AmendCancelPayloadOutput {
+function shell(
+  kind: AmendCancelPayloadInput['kind'],
+  refusals: string[],
+  args: string[] = [],
+  request: AmendRequestBody | null = null,
+): AmendCancelPayloadOutput {
   const amend = kind === 'amend';
+  const blocked = refusals.length > 0;
   return {
     tool: amend ? 'hms_amend_reservation' : 'hms_cancel_reservation',
     script: amend ? 'amend-stay.mjs' : 'cancel-stay.mjs',
-    args: refusals.length > 0 ? [] : args,
+    args: blocked ? [] : args,
+    request: blocked ? null : request,
     requiresApproval: true,
     screenshotReview: true,
     executed: false,
@@ -87,11 +102,29 @@ function confirmationRefusals(confirmationNumber: string): string[] {
   return [];
 }
 
+function fieldValue(row: { field: string; to: string | number }): string | number {
+  if (row.field === 'adults' || row.field === 'children') {
+    return typeof row.to === 'number' ? row.to : Number(row.to);
+  }
+  return String(row.to);
+}
+
+function amendRequestFields(changes: NonNullable<AmendCancelPayloadInput['changes']>): AmendRequestBody['fields'] {
+  const fields: AmendRequestBody['fields'] = {};
+  for (const row of changes) {
+    if (!AMEND_FIELD_SET.has(row.field)) continue;
+    fields[row.field] = fieldValue(row);
+  }
+  return fields;
+}
+
 function amendRefusals(changes: AmendCancelPayloadInput['changes']): string[] {
   const rows = changes ?? [];
   if (rows.length === 0) return ['fields_required'];
   const refusals: string[] = [];
   const seen = new Set<string>();
+  let arrival: string | null = null;
+  let departure: string | null = null;
   for (const row of rows) {
     if (!AMEND_FIELD_SET.has(row.field)) {
       refusals.push(`unsupported_field:${row.field}`);
@@ -106,12 +139,15 @@ function amendRefusals(changes: AmendCancelPayloadInput['changes']): string[] {
     if (row.field === 'arrival' || row.field === 'departure') {
       if (!realIsoDate(value)) refusals.push('date_invalid');
       else if (row.field === 'arrival' && value < LAB_ARRIVAL_FLOOR) refusals.push('target_arrival_before_2027');
+      else if (row.field === 'arrival') arrival = value;
+      else departure = value;
     } else if (row.field === 'adults' || row.field === 'children') {
       if (!occupancy(row.to, row.field)) refusals.push('count_invalid');
     } else if (row.field === 'roomType' && !ROOM_TYPE_SET.has(value)) {
       refusals.push('room_type_invalid');
     }
   }
+  if (arrival && departure && departure <= arrival) refusals.push('departure_not_after_arrival');
   return refusals;
 }
 
@@ -119,17 +155,23 @@ function cancelRefusals(changes: AmendCancelPayloadInput['changes']): { refusals
   const rows = changes ?? [];
   const refusals: string[] = [];
   let arrival: string | null = null;
+  let sawArrival = false;
   for (const row of rows) {
     if (row.field !== 'arrival') {
       refusals.push(`unsupported_field:${row.field}`);
       continue;
     }
+    if (sawArrival) {
+      refusals.push('repeated_field:arrival');
+      continue;
+    }
+    sawArrival = true;
     const value = String(row.to);
     if (!realIsoDate(value)) refusals.push('date_invalid');
     else if (value < LAB_ARRIVAL_FLOOR) refusals.push('target_arrival_before_2027');
     else arrival = value;
   }
-  if (!arrival && !refusals.includes('date_invalid') && !refusals.some((row) => row.startsWith('unsupported_field'))) {
+  if (!arrival && !refusals.includes('date_invalid') && !refusals.some((row) => row.startsWith('unsupported_field') || row.startsWith('repeated_field'))) {
     refusals.push('missing_arrival');
   }
   return { refusals, arrival };
@@ -142,7 +184,12 @@ export function buildAmendCancelPayload(input: AmendCancelPayloadInput): AmendCa
   if (kind === 'amend') {
     refusals.push(...amendRefusals(parsed.changes));
     if (refusals.length > 0) return shell(kind, refusals);
-    return shell(kind, [], ['--request', AMEND_REQUEST_PATH, '--mode', 'preview', '--out', AMEND_OUT_DIR]);
+    const request: AmendRequestBody = {
+      confirmation: parsed.confirmationNumber.trim(),
+      expectedLastName: parsed.lastName.trim(),
+      fields: amendRequestFields(parsed.changes ?? []),
+    };
+    return shell(kind, [], ['--request', AMEND_REQUEST_PATH, '--mode', 'preview', '--out', AMEND_OUT_DIR], request);
   }
   const cancel = cancelRefusals(parsed.changes);
   refusals.push(...cancel.refusals);
