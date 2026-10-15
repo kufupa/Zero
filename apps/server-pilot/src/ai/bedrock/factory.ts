@@ -38,7 +38,14 @@ export function resolveModelAdapter(
   }
 
   if (profile === 'gpt6_luna_max') {
-    return new AzureLunaModelAdapter();
+    try {
+      return new AzureLunaModelAdapter();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `AI_TRIAGE_MODEL_PROFILE=gpt6_luna_max requires AZURE_OPENAI_BASE_URL and AZURE_FOUNDRY_API_KEY (${message}); refusing silent Bedrock fallback`,
+      );
+    }
   }
 
   return createBedrockModelAdapter({

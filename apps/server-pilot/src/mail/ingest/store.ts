@@ -52,7 +52,6 @@ import {
   newCanonicalAttachments,
 } from './canonical-identity.js';
 import {
-  DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
@@ -813,9 +812,14 @@ export async function persistInboundMessage(
             idempotencyKey: isHotelSent
               ? `external-sent-baseline:${messageId}`
               : `inbound-triage:${messageId}`,
-            modelId: DEFAULT_AI_MODEL_ID,
+            modelId: 'gpt-6-luna',
             promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
-            ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
+            metrics: {
+              routeId: 'azure_luna_max',
+              protocol: 'azure-foundry-responses',
+              modelId: 'gpt-6-luna',
+              ...(mailSourceDecision ? { mailSourceDecision } : {}),
+            },
           },
           tx as unknown as DB,
         );

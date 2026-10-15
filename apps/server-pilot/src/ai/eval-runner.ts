@@ -1,11 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import {
-  BedrockModelAdapter,
-  createBedrockModelAdapter,
-} from './bedrock/bedrock.js';
-import { createFakeModelAdapter } from './bedrock/fake.js';
+import { FakeModelAdapter, createFakeModelAdapter } from './bedrock/fake.js';
+import { resolveModelAdapter } from './bedrock/factory.js';
+import type { ModelAdapter } from './bedrock/adapter.js';
+import { parseAiTriageModelProfile, type MailEnv } from '../env.js';
 import {
   qualityInputCaseSchema,
   qualityLabelSchema,
@@ -366,18 +365,22 @@ export function createQualityModelAdapter(env: {
   NODE_ENV?: string;
   AI_ENABLED?: string | boolean;
   AI_MODEL_ID?: string;
+  AI_TRIAGE_MODEL_PROFILE?: string;
   BEDROCK_REGION?: string;
   BEDROCK_GUARDRAIL_ID?: string;
   BEDROCK_GUARDRAIL_VERSION?: string;
-}): BedrockModelAdapter {
+}): ModelAdapter {
   assertQualityCliRuntime(env);
-  const adapter = createBedrockModelAdapter({
-    region: env.BEDROCK_REGION,
-    modelId: env.AI_MODEL_ID,
-    guardrailId: env.BEDROCK_GUARDRAIL_ID,
-    guardrailVersion: env.BEDROCK_GUARDRAIL_VERSION,
+  const adapter = resolveModelAdapter({
+    NODE_ENV: env.NODE_ENV as MailEnv['NODE_ENV'],
+    AI_ENABLED: true,
+    AI_MODEL_ID: env.AI_MODEL_ID,
+    AI_TRIAGE_MODEL_PROFILE: parseAiTriageModelProfile(env.AI_TRIAGE_MODEL_PROFILE),
+    BEDROCK_REGION: env.BEDROCK_REGION,
+    BEDROCK_GUARDRAIL_ID: env.BEDROCK_GUARDRAIL_ID,
+    BEDROCK_GUARDRAIL_VERSION: env.BEDROCK_GUARDRAIL_VERSION,
   });
-  if (!(adapter instanceof BedrockModelAdapter)) {
+  if (adapter instanceof FakeModelAdapter) {
     throw new Error('quality eval aborted: fake adapter resolved');
   }
   return adapter;
@@ -399,6 +402,7 @@ export async function runQualityEvalCli(args: Extract<EvalCliArgs, { mode: 'qual
     NODE_ENV: process.env.NODE_ENV,
     AI_ENABLED: process.env.AI_ENABLED,
     AI_MODEL_ID: process.env.AI_MODEL_ID,
+    AI_TRIAGE_MODEL_PROFILE: process.env.AI_TRIAGE_MODEL_PROFILE,
     BEDROCK_REGION: process.env.BEDROCK_REGION,
     BEDROCK_GUARDRAIL_ID: process.env.BEDROCK_GUARDRAIL_ID,
     BEDROCK_GUARDRAIL_VERSION: process.env.BEDROCK_GUARDRAIL_VERSION,

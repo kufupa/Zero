@@ -63,14 +63,41 @@ describe('bedrock adapter contract', () => {
     expect(adapter.constructor.name).toBe('FakeModelAdapter');
   });
 
-  it('resolveModelAdapter returns bedrock when AI enabled in production', () => {
+  it('resolveModelAdapter defaults to Azure Luna when the profile is omitted', () => {
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', 'https://example.invalid/openai/v1');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', 'test-key');
     const adapter = resolveModelAdapter({
       NODE_ENV: 'production',
       AI_ENABLED: true,
       AI_MODEL_ID: 'amazon.nova-lite-v1:0',
       BEDROCK_REGION: 'us-east-1',
     });
+    expect(adapter).toBeInstanceOf(AzureLunaModelAdapter);
+    expect(adapter).not.toBeInstanceOf(BedrockModelAdapter);
+  });
+
+  it('resolveModelAdapter keeps nova_lite on Bedrock when that profile is explicit', () => {
+    const adapter = resolveModelAdapter({
+      NODE_ENV: 'production',
+      AI_ENABLED: true,
+      AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+      BEDROCK_REGION: 'us-east-1',
+      AI_TRIAGE_MODEL_PROFILE: 'nova_lite',
+    });
     expect(adapter).toBeInstanceOf(BedrockModelAdapter);
+  });
+
+  it('resolveModelAdapter fails loud on missing Azure env and never falls back to Bedrock', () => {
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', '');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', '');
+    expect(() =>
+      resolveModelAdapter({
+        NODE_ENV: 'production',
+        AI_ENABLED: true,
+        AI_MODEL_ID: 'amazon.nova-lite-v1:0',
+        BEDROCK_REGION: 'us-east-1',
+      }),
+    ).toThrow(/AZURE_OPENAI_BASE_URL|AZURE_FOUNDRY_API_KEY|refusing silent Bedrock fallback/i);
   });
 
   it('routes the GPT-6 Luna triage profile to Azure without making a model request', () => {

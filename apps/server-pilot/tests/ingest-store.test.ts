@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import {
@@ -1284,6 +1285,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 );
 
 // A pure unit test (no DB) — parse only, no persist.
+describe('ingest-store Azure Luna labels', () => {
+  it('enqueues inbound triage as Azure Luna, not Nova Lite', () => {
+    const source = readFileSync(new URL('../src/mail/ingest/store.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/modelId: 'gpt-6-luna'/);
+    expect(source).toMatch(/routeId: 'azure_luna_max'/);
+    expect(source).toMatch(/protocol: 'azure-foundry-responses'/);
+    expect(source).not.toMatch(/modelId: DEFAULT_AI_MODEL_ID/);
+  });
+});
+
 describe('parseRawMessage (no DB)', () => {
   it('extracts X-Zero-Mailbox and address fields', async () => {
     const storage = withFakeS3();

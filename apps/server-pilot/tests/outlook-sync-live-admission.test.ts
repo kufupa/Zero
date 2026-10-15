@@ -9,6 +9,7 @@ import { aiShadowAdmission } from '../src/db/schema/ai-shadow-evaluation.js';
 import { workItem } from '../src/db/schema/work.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import type { DB } from '../src/db/client.js';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 // Each integration case creates/migrates a fresh database and compiles the worker.
 import { eq } from 'drizzle-orm';
@@ -78,6 +79,19 @@ const history = (id: string, at = '2026-10-04T10:00:00Z') => ({
   originalMsgKey: `outlook-sync-originals/v1/source/${id}`,
   attachments: [],
   sourceProvenance: {},
+});
+
+describe('live-admission Azure Luna labels', () => {
+  it('enqueues inbound triage as Azure Luna, not Nova Lite', () => {
+    const source = readFileSync(
+      new URL('../src/mail/ingest/live-admission.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toMatch(/modelId: 'gpt-6-luna'/);
+    expect(source).toMatch(/routeId: 'azure_luna_max'/);
+    expect(source).toMatch(/protocol: 'azure-foundry-responses'/);
+    expect(source).not.toMatch(/modelId: DEFAULT_AI_MODEL_ID/);
+  });
 });
 
 describe('first live admission and immutable inputs on PostgreSQL', () => {

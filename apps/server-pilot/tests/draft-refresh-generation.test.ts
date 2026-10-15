@@ -33,4 +33,10 @@ describe('visible draft refresh safety', () => {
     expect(source).toMatch(/isVisibleDraftAssistanceEnabled/);
     expect(source).toMatch(/refreshHmsCandidate/);
   });
+
+  it('labels candidate-draft enqueue as Azure Luna, not Nova Lite', () => {
+    const source = readFileSync(new URL('../src/trpc/routes/drafts.ts', import.meta.url), 'utf8');
+    expect(source).toMatch(/modelId: input\.modelId \?\? 'gpt-6-luna'/);
+    expect(source).not.toMatch(/modelId: input\.modelId \?\? DEFAULT_AI_MODEL_ID/);
+  });
 });

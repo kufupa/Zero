@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,9 +9,14 @@ import {
   runSpikeEval,
 } from '../src/ai/eval-runner.js';
 import { BedrockModelAdapter } from '../src/ai/bedrock/bedrock.js';
+import { AzureLunaModelAdapter } from '../src/ai/bedrock/luna.js';
 import { applyDurableTriageResult } from '../src/ai/triage.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('AI eval runner', () => {
   it('loads demo fixtures with expected hotel labels', () => {
@@ -128,7 +133,7 @@ describe('AI eval runner', () => {
     });
   });
 
-  it('quality CLI aborts unless production + AI enabled + explicit Bedrock adapter', () => {
+  it('quality CLI aborts unless production + AI enabled + Azure Luna by default', () => {
     expect(() =>
       assertQualityCliRuntime({
         NODE_ENV: 'test',
@@ -142,16 +147,35 @@ describe('AI eval runner', () => {
       }),
     ).toThrow(/AI_ENABLED|disabled/i);
 
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', 'https://example.invalid/openai/v1');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', 'test-key');
     const adapter = createQualityModelAdapter({
+      NODE_ENV: 'production',
+      AI_ENABLED: true,
+    });
+    expect(adapter).toBeInstanceOf(AzureLunaModelAdapter);
+    expect(adapter).not.toBeInstanceOf(BedrockModelAdapter);
+
+    const nova = createQualityModelAdapter({
       NODE_ENV: 'production',
       AI_ENABLED: true,
       AI_MODEL_ID: 'amazon.nova-lite-v1:0',
       BEDROCK_REGION: 'us-east-1',
+      AI_TRIAGE_MODEL_PROFILE: 'nova_lite',
     });
-    expect(adapter).toBeInstanceOf(BedrockModelAdapter);
+    expect(nova).toBeInstanceOf(BedrockModelAdapter);
+
+    vi.stubEnv('AZURE_OPENAI_BASE_URL', '');
+    vi.stubEnv('AZURE_FOUNDRY_API_KEY', '');
+    expect(() =>
+      createQualityModelAdapter({
+        NODE_ENV: 'production',
+        AI_ENABLED: true,
+      }),
+    ).toThrow(/AZURE_OPENAI_BASE_URL|AZURE_FOUNDRY_API_KEY|refusing silent Bedrock fallback/i);
 
     const src = readFileSync(join(here, '../src/ai/eval-runner.ts'), 'utf8');
-    expect(src).toMatch(/createBedrockModelAdapter|new BedrockModelAdapter|BedrockModelAdapter/);
+    expect(src).toMatch(/resolveModelAdapter/);
     expect(src).toMatch(/mode === 'quality'|mode=quality|mode: 'quality'/);
     expect(src).not.toMatch(/createFakeModelAdapter\(\).*quality|quality.*createFakeModelAdapter/);
   });

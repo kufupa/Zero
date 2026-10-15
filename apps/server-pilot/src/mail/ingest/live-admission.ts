@@ -10,7 +10,6 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import {
-  DEFAULT_AI_MODEL_ID,
   DEFAULT_TRIAGE_PROMPT_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
@@ -519,11 +518,16 @@ export async function admitLiveMessage(
           trigger.direction === 'outbound'
             ? `external-sent-baseline:${trigger.id}`
             : `inbound-triage:${trigger.id}`,
-        modelId: DEFAULT_AI_MODEL_ID,
+        modelId: 'gpt-6-luna',
         promptVersion: DEFAULT_TRIAGE_PROMPT_VERSION,
         admissionSnapshotId: id,
         admissionSnapshotHash: snapshotHash,
-        ...(mailSourceDecision ? { metrics: { mailSourceDecision } } : {}),
+        metrics: {
+          routeId: 'azure_luna_max',
+          protocol: 'azure-foundry-responses',
+          modelId: 'gpt-6-luna',
+          ...(mailSourceDecision ? { mailSourceDecision } : {}),
+        },
       },
       db,
     );
