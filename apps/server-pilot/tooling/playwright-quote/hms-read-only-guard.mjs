@@ -2,6 +2,8 @@
 
 const MUTATION_METHOD = /^(POST|PUT|PATCH|DELETE)$/i;
 const MUTATION_PATH = /save|delete|cancel|duplicate|checkin|checkout|crs/i;
+const AVAILABILITY_READ_PATH = '/api/internalBooking/hotelAvail/inquiryForGrid';
+const SAFE_READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export function shouldAbortReadOnlyRequest({ method, url }) {
   const requestMethod = String(method ?? '').toUpperCase();
@@ -24,5 +26,31 @@ export async function installReadOnlyGuard(context) {
       return;
     }
     await route.continue();
+  });
+}
+
+export async function installAvailabilityReadOnlyGuard(context, origin) {
+  let allowedOrigin;
+  try {
+    const url = new URL(origin);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
+    allowedOrigin = url.origin;
+  } catch {
+    throw new Error('hms_availability_read_origin_invalid');
+  }
+  await context.route('**/*', async (route) => {
+    const request = route.request();
+    const method = String(request.method() ?? '').toUpperCase();
+    let allowed = SAFE_READ_METHODS.has(method);
+    if (method === 'POST') {
+      try {
+        const url = new URL(request.url());
+        allowed = url.origin === allowedOrigin && url.pathname === AVAILABILITY_READ_PATH;
+      } catch {
+        allowed = false;
+      }
+    }
+    if (allowed) await route.continue();
+    else await route.abort();
   });
 }
