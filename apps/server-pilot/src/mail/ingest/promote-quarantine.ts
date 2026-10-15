@@ -14,17 +14,18 @@ import {
 } from './parse-message.js';
 import { cleanupPartialParseFailureAttachments, persistInboundMessage } from './store.js';
 import { simpleParser, type AddressObject, type EmailAddress } from 'mailparser';
-import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
+import { mailIngestQuarantine, mailboxTransport, message } from '../../db/schema/mail.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
+import {
+  resolveMailboxPromotionRoute,
+  type MailboxRouteTransport,
+} from './mailbox-split.js';
 import type { DB } from '../../db/client.js';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 
 const PROMOTE_REASON = 'missing_owner_header';
-const RESERVE_CLOUD_PENNY_EMAIL = 'pmbobo@eu.mail.reservecloud.com';
-const LEGACY_PENNY_EMAIL = 'pmbobo@legacyhotels.co.za';
-export const CENTURION_TRANSPORT_ID = 'transport-centurion';
-/** Explicit ingest mailbox ownership; never promote another mailbox into Centurion. */
+/** Parse-failure restoration stays scoped to the original POP3 source in this slice. */
 export const CENTURION_INGEST_MAILBOX_IDS = ['ingest-nava-legacy'] as const;
 
 export function isCenturionIngestMailboxId(ingestMailboxId: string): boolean {
@@ -72,32 +73,6 @@ export function assertPromoteEnv(input: Record<string, string | undefined> = pro
   }
 }
 
-export interface PromoteReserveCloudStaffSignals {
-  fromAddress?: string | null;
-  toAddresses?: readonly string[] | null;
-  ccAddresses?: readonly string[] | null;
-  bccAddresses?: readonly string[] | null;
-}
-
-/**
- * Narrow promotion predicate. Exact sender + at least one non-Legacy recipient
- * is required; empty and Penny-Legacy-only recipient sets fail closed.
- */
-export function isPromotableReserveCloudStaff(parsed: PromoteReserveCloudStaffSignals): boolean {
-  if (normalizePromotionAddress(parsed.fromAddress) !== RESERVE_CLOUD_PENNY_EMAIL) {
-    return false;
-  }
-
-  const recipients = [
-    ...(parsed.toAddresses ?? []),
-    ...(parsed.ccAddresses ?? []),
-    ...(parsed.bccAddresses ?? []),
-  ]
-    .map(normalizePromotionAddress)
-    .filter(Boolean);
-  return recipients.some((address) => address !== LEGACY_PENNY_EMAIL);
-}
-
 export async function listMissingOwnerHeaderQuarantine(
   db: DB,
   limit?: number,
@@ -110,12 +85,7 @@ export async function listMissingOwnerHeaderQuarantine(
       rawMimeS3Key: mailIngestQuarantine.rawMimeS3Key,
     })
     .from(mailIngestQuarantine)
-    .where(
-      and(
-        eq(mailIngestQuarantine.reason, PROMOTE_REASON),
-        inArray(mailIngestQuarantine.ingestMailboxId, [...CENTURION_INGEST_MAILBOX_IDS]),
-      ),
-    )
+    .where(eq(mailIngestQuarantine.reason, PROMOTE_REASON))
     .orderBy(asc(mailIngestQuarantine.createdAt));
 
   if (limit !== undefined) {
@@ -131,6 +101,15 @@ export async function promoteMissingOwnerHeaderQuarantine(
 
   const storage = opts.storage ?? getS3Storage();
   const rows = await listMissingOwnerHeaderQuarantine(opts.db, opts.limit);
+  const transports = await opts.db
+    .select({
+      id: mailboxTransport.id,
+      email: mailboxTransport.email,
+      isActive: mailboxTransport.isActive,
+      sendFromConfig: mailboxTransport.sendFromConfig,
+    })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.isActive, true));
 
   const result: PromoteQuarantineResult = {
     scanned: rows.length,
@@ -147,6 +126,7 @@ export async function promoteMissingOwnerHeaderQuarantine(
     const outcome = await promoteOneQuarantineRow(row, {
       db: opts.db,
       storage,
+      transports,
       dryRun: opts.dryRun ?? false,
     });
 
@@ -186,12 +166,14 @@ type PromoteOneOutcome =
 
 async function promoteOneQuarantineRow(
   row: PromoteQuarantineRow,
-  opts: { db: DB; storage: S3Storage; dryRun: boolean },
+  opts: {
+    db: DB;
+    storage: S3Storage;
+    transports: readonly MailboxRouteTransport[];
+    dryRun: boolean;
+  },
 ): Promise<PromoteOneOutcome> {
-  const { db, storage } = opts;
-  if (!isCenturionIngestMailboxId(row.ingestMailboxId)) {
-    return { kind: 'skipped' };
-  }
+  const { db, storage, transports } = opts;
   const meta = {
     ingestMailboxId: row.ingestMailboxId,
     pop3Uidl: row.pop3Uidl,
@@ -209,7 +191,8 @@ async function promoteOneQuarantineRow(
     // convenience parser only inspects headers here; promotion parses again
     // through the streaming parser so existing attachment cleanup remains.
     const headerSignals = await parsePromotionSignals(object.body);
-    if (!isPromotableReserveCloudStaff(headerSignals)) {
+    const headerRoute = resolveMailboxPromotionRoute(headerSignals, transports);
+    if (headerRoute.kind !== 'routed') {
       return { kind: 'skipped' };
     }
 
@@ -228,9 +211,14 @@ async function promoteOneQuarantineRow(
       storage,
     });
 
-    // Re-check parser output before persistence. This keeps the exact sender
-    // and recipient gate attached to the bytes being promoted.
-    if (!isPromotableReserveCloudStaff(parsed)) {
+    // Re-check parser output before persistence so the routed identity and
+    // direction remain attached to the exact bytes being promoted.
+    const parsedRoute = resolveMailboxPromotionRoute(parsed, transports);
+    if (
+      parsedRoute.kind !== 'routed' ||
+      parsedRoute.transportId !== headerRoute.transportId ||
+      parsedRoute.direction !== headerRoute.direction
+    ) {
       if (parsed.attachments.length > 0) {
         await cleanupPartialParseFailureAttachments({
           db,
@@ -258,8 +246,8 @@ async function promoteOneQuarantineRow(
         db,
         storage,
         promoteQuarantineId: row.id,
-        transportOverride: CENTURION_TRANSPORT_ID,
-        directionOverride: 'outbound',
+        transportOverride: parsedRoute.transportId,
+        directionOverride: parsedRoute.direction,
       },
     );
 
@@ -379,11 +367,6 @@ export function formatPromoteSummary(result: PromoteQuarantineResult): string {
     parts.push(`error_ids=${result.errorIds.join(',')}`);
   }
   return parts.join(' ');
-}
-
-function normalizePromotionAddress(raw: string | null | undefined): string {
-  const value = (raw ?? '').trim().toLowerCase();
-  return value.match(/<([^>]+)>/)?.[1]?.trim() ?? value;
 }
 
 async function parsePromotionSignals(raw: Buffer): Promise<PromoteReserveCloudStaffSignals> {

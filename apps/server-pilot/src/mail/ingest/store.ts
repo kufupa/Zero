@@ -6,11 +6,11 @@
  *   2. Look up `mailboxTransport` by `ownerHeaderValue`. If found, store the
  *      message scoped to that transport (create/find a thread, insert
  *      `message` + `attachment` rows).
- *   3. If the header is missing, try direct `To` match against active transport
- *      emails; when `INGEST_REQUIRE_OWNER_HEADER=false`, also match Centurion
- *      transport email/aliases on To/Cc/Bcc/From. On miss quarantine with
- *      reason `missing_owner_header`. If the header is present but no matching
- *      transport (owner header or alias) -> quarantine with reason
+ *   3. If the header is missing, strict mode permits only a unique direct `To`
+ *      match against active transport emails; otherwise resolve configured
+ *      transport emails/aliases across To/Cc/Bcc/From and quarantine misses or
+ *      ambiguity as `missing_owner_header`. If the header
+ *      is present but no matching transport (owner header or alias) -> quarantine with reason
  *      `unknown_transport`.
  *   4. Degraded containment: when `AI_WRITE_GATE_ENABLED` is not `'true'`,
  *      apply soft label `soft-quarantine` for From domains outside the
@@ -59,6 +59,7 @@ import {
 import { enqueueInboundExtraction } from '../../ai/extraction/inbound-run.js';
 import { classifyMailSource } from '../../ai/mail-source.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
+import { resolveMailboxPromotionRoute } from './mailbox-split.js';
 import { enqueueShadowPrediction, rematchShadowPredictions } from '../../ai/shadow-evaluation.js';
 import { ingestRequireOwnerHeader, isInboundTriageClassifierEnabled } from '../../env.js';
 import { rawMimeKey, getS3Storage, type S3Storage } from '../../storage/s3.js';
@@ -76,7 +77,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
 
-const CENTURION_TRANSPORT_ID = 'transport-centurion';
 export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
 export const CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT = 500;
 const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS = 1_000;
@@ -185,9 +185,9 @@ export interface PersistOptions {
   db: DB;
   /** S3 storage override (tests inject a fake). */
   storage?: S3Storage;
-  /** Narrow promotion-only transport route; generic ingest must not set this. */
-  transportOverride?: 'transport-centurion';
-  /** Optional trusted direction selected by a narrow historical promotion. */
+  /** Promotion-only route resolved against an active configured mailbox. */
+  transportOverride?: string;
+  /** Optional direction resolved from the configured mailbox identity. */
   directionOverride?: 'inbound' | 'outbound';
   /**
    * Returned-copy reconciliation is only valid for newly retrieved POP3
@@ -286,6 +286,7 @@ export async function persistInboundMessage(
 
   // Routing ------------------------------------------------------------
   let transport: RoutedTransport | null = null;
+  let selectedDirectionOverride = opts.directionOverride;
 
   if (opts.transportOverride !== undefined) {
     // Promotion has already applied its exact sender/recipient gate. Still
@@ -305,9 +306,12 @@ export async function persistInboundMessage(
     }
     // Explicit promotion route wins over owner-header/direct-To routing.
   } else if (!parsed.ownerHeaderValue) {
-    transport = await findDirectToTransport(db, parsed.toAddresses);
-    if (!transport && !ingestRequireOwnerHeader()) {
-      transport = await findCenturionEquatedTransport(db, parsed);
+    if (ingestRequireOwnerHeader()) {
+      transport = await findDirectToTransport(db, parsed.toAddresses);
+    } else {
+      const configuredRoute = await findConfiguredAddressTransport(db, parsed);
+      transport = configuredRoute?.transport ?? null;
+      selectedDirectionOverride = configuredRoute?.direction;
     }
     if (!transport) {
       return quarantineWithAttachmentCleanup({
@@ -576,7 +580,7 @@ export async function persistInboundMessage(
       normalizeEmailAddress,
     );
     const direction =
-      opts.directionOverride ??
+      selectedDirectionOverride ??
       (identities.has(sender) && !recipients.some((a) => identities.has(a))
         ? 'outbound'
         : 'inbound');
@@ -674,9 +678,9 @@ export async function persistInboundMessage(
     const inferredHotelSent =
       Boolean(fromEmail) && transportIdentities.has(fromEmail) && !isSelfIngestLoopback;
     const isHotelSent =
-      opts.directionOverride === undefined
+      selectedDirectionOverride === undefined
         ? inferredHotelSent
-        : opts.directionOverride === 'outbound';
+        : selectedDirectionOverride === 'outbound';
     const mailSourceDecision = !isHotelSent
       ? classifyMailSource({
           fromAddress: parsed.fromAddress,
@@ -1782,14 +1786,13 @@ async function findDirectToTransport(
     .from(mailboxTransport)
     .where(eq(mailboxTransport.isActive, true));
 
-  return (
-    transports.find((transport) => directTo.has(normalizeEmailAddress(transport.email))) ?? null
-  );
+  const matches = transports.filter((transport) => directTo.has(normalizeEmailAddress(transport.email)));
+  return matches.length === 1 ? matches[0]! : null;
 }
 
 async function findActiveTransportById(
   db: DB,
-  transportId: 'transport-centurion',
+  transportId: string,
 ): Promise<RoutedTransport | null> {
   const rows = await db
     .select({
@@ -1828,13 +1831,6 @@ function transportIdentitySet(email: string, sendFromConfig: unknown): Set<strin
   return identities;
 }
 
-function equatedAddresses(parsed: ParsedInboundMessage): string[] {
-  return [parsed.fromAddress, ...parsed.toAddresses, ...parsed.ccAddresses, ...parsed.bccAddresses]
-    .filter((address): address is string => Boolean(address))
-    .map(normalizeEmailAddress)
-    .filter(Boolean);
-}
-
 async function findTransportByStamp(
   db: DB,
   ownerHeaderValue: string,
@@ -1862,30 +1858,23 @@ async function findTransportByStamp(
   );
 }
 
-async function findCenturionEquatedTransport(
+async function findConfiguredAddressTransport(
   db: DB,
   parsed: ParsedInboundMessage,
-): Promise<RoutedTransport | null> {
-  const centurionRows = await db
+): Promise<{ transport: RoutedTransport; direction: 'inbound' | 'outbound' } | null> {
+  const transports = await db
     .select({
       id: mailboxTransport.id,
       email: mailboxTransport.email,
+      isActive: mailboxTransport.isActive,
       sendFromConfig: mailboxTransport.sendFromConfig,
     })
     .from(mailboxTransport)
-    .where(
-      and(eq(mailboxTransport.id, CENTURION_TRANSPORT_ID), eq(mailboxTransport.isActive, true)),
-    )
-    .limit(1);
-
-  const centurion = centurionRows[0];
-  if (!centurion) return null;
-
-  const identities = transportIdentitySet(centurion.email, centurion.sendFromConfig);
-  if (equatedAddresses(parsed).some((address) => identities.has(address))) {
-    return centurion;
-  }
-  return null;
+    .where(eq(mailboxTransport.isActive, true));
+  const route = resolveMailboxPromotionRoute(parsed, transports);
+  if (route.kind !== 'routed') return null;
+  const transport = transports.find((candidate) => candidate.id === route.transportId);
+  return transport ? { transport, direction: route.direction } : null;
 }
 
 async function ensureSoftQuarantineLabel(db: DB, transportId: string): Promise<string> {

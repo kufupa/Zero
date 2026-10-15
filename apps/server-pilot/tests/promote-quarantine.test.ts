@@ -1,8 +1,6 @@
 import {
   assertPromoteEnv,
   formatPromoteSummary,
-  isCenturionIngestMailboxId,
-  isPromotableReserveCloudStaff,
   parsePromoteCliArgs,
   promoteMissingOwnerHeaderQuarantine,
   PromoteEnvError,
@@ -56,16 +54,16 @@ async function seedCenturionAliases(db: DB): Promise<void> {
     .where(eq(mailboxTransport.id, 'transport-centurion'));
 }
 
-function centurionInboundEml(): Buffer {
+function configuredMailboxOutboundEml(): Buffer {
   return Buffer.from(
     [
-      'From: pmbobo@eu.mail.reservecloud.com',
-      'To: centurion@legacyhotels.co.za, guest@example.com',
-      'Subject: promote ReserveCloud staff',
+      'From: centurion@legacyhotels.co.za',
+      'To: guest@example.com',
+      'Subject: promote configured mailbox sender',
       'MIME-Version: 1.0',
       'Content-Type: text/plain; charset=utf-8',
       '',
-      'ReserveCloud staff copy for promote.',
+      'Synthetic configured mailbox message.',
     ].join('\r\n'),
     'utf-8',
   );
@@ -74,8 +72,8 @@ function centurionInboundEml(): Buffer {
 function centurionInboundWithAttachmentEml(): Buffer {
   return Buffer.from(
     [
-      'From: pmbobo@eu.mail.reservecloud.com',
-      'To: centurion@legacyhotels.co.za, guest@example.com',
+      'From: centurion@legacyhotels.co.za',
+      'To: guest@example.com',
       'Subject: promote cleanup retry',
       'MIME-Version: 1.0',
       'Content-Type: multipart/mixed; boundary="promote-boundary"',
@@ -96,31 +94,31 @@ function centurionInboundWithAttachmentEml(): Buffer {
   );
 }
 
-function reserveCloudWrapperEml(): Buffer {
+function unmatchedAddressEml(): Buffer {
   return Buffer.from(
     [
-      'From: pmbobo@eu.mail.reservecloud.com',
-      'To: pmbobo@legacyhotels.co.za',
-      'Subject: ReserveCloud wrapper',
+      'From: unknown@example.invalid',
+      'To: unrelated@example.invalid',
+      'Subject: unconfigured mailbox',
       'MIME-Version: 1.0',
       'Content-Type: text/plain; charset=utf-8',
       '',
-      'Wrapper copy.',
+      'Synthetic unconfigured message.',
     ].join('\r\n'),
     'utf-8',
   );
 }
 
-function reserveCloudNoreplyEml(): Buffer {
+function ambiguousMailboxEml(): Buffer {
   return Buffer.from(
     [
-      'From: noreply@noreply.reservecloud.com',
-      'To: centurion@legacyhotels.co.za, guest@example.com',
-      'Subject: ReserveCloud automated notice',
+      'From: guest@example.invalid',
+      'To: centurion@legacyhotels.co.za, navaai@legacyhotels.co.za',
+      'Subject: ambiguous configured mailboxes',
       'MIME-Version: 1.0',
       'Content-Type: text/plain; charset=utf-8',
       '',
-      'Automated notice.',
+      'Synthetic ambiguous message.',
     ].join('\r\n'),
     'utf-8',
   );
@@ -172,21 +170,15 @@ async function seedMissingOwnerQuarantine(args: {
 }
 
 describe('promote-quarantine cli helpers', () => {
-  it('allows promotion only from explicitly owned Centurion ingest mailbox', () => {
-    expect(isCenturionIngestMailboxId('ingest-nava-legacy')).toBe(true);
-    expect(isCenturionIngestMailboxId('ingest-other-mailbox')).toBe(false);
-    expect(isCenturionIngestMailboxId('')).toBe(false);
-  });
-
-  it('routes true ReserveCloud staff promotion to Centurion before normal routing', async () => {
+  it('routes a configured mailbox sender before normal persistence routing', async () => {
     const storage = withFakeS3();
-    const raw = centurionInboundEml();
+    const raw = configuredMailboxOutboundEml();
     const row = {
       id: 'q-u11-route',
-      ingestMailboxId: 'ingest-nava-legacy',
+      ingestMailboxId: 'ingest-other-mailbox',
       pop3Uidl: 'uidl-u11-route',
       rawMimeS3Key: rawMimeKey({
-        ingestMailboxId: 'ingest-nava-legacy',
+        ingestMailboxId: 'ingest-other-mailbox',
         pop3Uidl: 'uidl-u11-route',
       }),
     };
@@ -196,11 +188,21 @@ describe('promote-quarantine cli helpers', () => {
       contentType: 'message/rfc822',
     });
 
+    const configuredTransport = {
+      id: 'transport-centurion',
+      email: 'centurion@legacyhotels.co.za',
+      isActive: true,
+      sendFromConfig: { aliases: ['centurion@legacyhotels.com'] },
+    };
     const db = {
       select: () => {
+        let source: unknown;
         const query = {
-          from: () => query,
-          where: () => query,
+          from: (table: unknown) => {
+            source = table;
+            return query;
+          },
+          where: () => (source === mailboxTransport ? Promise.resolve([configuredTransport]) : query),
           orderBy: () => Promise.resolve([row]),
           limit: () => Promise.resolve([]),
         };
@@ -255,56 +257,6 @@ describe('promote-quarantine cli helpers', () => {
     }
   });
 
-  it('promotes only exact ReserveCloud staff with a non-wrapper recipient', () => {
-    expect(
-      isPromotableReserveCloudStaff({
-        fromAddress: 'pmbobo@eu.mail.reservecloud.com',
-        toAddresses: ['guest@example.com'],
-        ccAddresses: [],
-        bccAddresses: [],
-      }),
-    ).toBe(true);
-  });
-
-  it('skips Penny Legacy-only wrappers', () => {
-    expect(
-      isPromotableReserveCloudStaff({
-        fromAddress: 'pmbobo@eu.mail.reservecloud.com',
-        toAddresses: ['pmbobo@legacyhotels.co.za'],
-        ccAddresses: [],
-        bccAddresses: [],
-      }),
-    ).toBe(false);
-  });
-
-  it('skips noreply, other ReserveCloud senders, and empty recipients', () => {
-    const base = {
-      toAddresses: ['guest@example.com'],
-      ccAddresses: [],
-      bccAddresses: [],
-    };
-    expect(
-      isPromotableReserveCloudStaff({
-        ...base,
-        fromAddress: 'noreply@noreply.reservecloud.com',
-      }),
-    ).toBe(false);
-    expect(
-      isPromotableReserveCloudStaff({
-        ...base,
-        fromAddress: 'other@eu.mail.reservecloud.com',
-      }),
-    ).toBe(false);
-    expect(
-      isPromotableReserveCloudStaff({
-        fromAddress: 'pmbobo@eu.mail.reservecloud.com',
-        toAddresses: [],
-        ccAddresses: [],
-        bccAddresses: [],
-      }),
-    ).toBe(false);
-  });
-
   it('parses dry-run and limit flags', () => {
     expect(parsePromoteCliArgs(['--dry-run', '--limit', '5'])).toEqual({
       dryRun: true,
@@ -346,10 +298,10 @@ describe('promote-quarantine cli helpers', () => {
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'promote missing_owner_header quarantine (seeded, rollback)',
   () => {
-    it('promotes true ReserveCloud staff to outbound + deletes quarantine', async () => {
+    it('promotes configured mailbox senders to outbound and deletes quarantine', async () => {
       const storage = withFakeS3();
       const pop3Uidl = 'uidl-promote-ae5';
-      const raw = centurionInboundEml();
+      const raw = configuredMailboxOutboundEml();
       const prevGate = process.env.AI_WRITE_GATE_ENABLED;
       process.env.AI_WRITE_GATE_ENABLED = 'true';
 
@@ -405,7 +357,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('clears quarantine when same UIDL already stored outbound without duplicate row', async () => {
       const storage = withFakeS3();
       const pop3Uidl = 'uidl-promote-dup-outbound';
-      const raw = centurionInboundEml();
+      const raw = configuredMailboxOutboundEml();
 
       await withIngestOwnerHeaderEnv('false', async () => {
         const outcome = await withSeededTestDb(async (db) => {
@@ -515,7 +467,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     }, 30000);
 
-    it('skips wrappers, noreply, and rows with another quarantine reason', async () => {
+    it('skips unmatched, ambiguous, and rows with another quarantine reason', async () => {
       const storage = withFakeS3();
 
       await withIngestOwnerHeaderEnv('false', async () => {
@@ -524,19 +476,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             db,
             storage,
             pop3Uidl: 'uidl-promote-wrapper',
-            raw: reserveCloudWrapperEml(),
+            raw: unmatchedAddressEml(),
           });
           const noreply = await seedMissingOwnerQuarantine({
             db,
             storage,
             pop3Uidl: 'uidl-promote-noreply',
-            raw: reserveCloudNoreplyEml(),
+            raw: ambiguousMailboxEml(),
           });
           const otherReason = await seedMissingOwnerQuarantine({
             db,
             storage,
             pop3Uidl: 'uidl-promote-other-reason',
-            raw: centurionInboundEml(),
+            raw: configuredMailboxOutboundEml(),
             reason: 'unknown_transport',
           });
 
@@ -566,7 +518,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('dry-run lists quarantine ids without writes', async () => {
       const storage = withFakeS3();
       const pop3Uidl = 'uidl-promote-dry-run';
-      const raw = centurionInboundEml();
+      const raw = configuredMailboxOutboundEml();
 
       await withIngestOwnerHeaderEnv('false', async () => {
         const outcome = await withSeededTestDb(async (db) => {
