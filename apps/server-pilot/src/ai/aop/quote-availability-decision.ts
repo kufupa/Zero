@@ -5,7 +5,15 @@ const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DAY_MS = 86_400_000;
 
-const isoDateSchema = z.string().regex(ISO_DAY, 'expected ISO date YYYY-MM-DD');
+function isCalendarDay(value: string): boolean {
+  const time = Date.parse(`${value}T00:00:00.000Z`);
+  return ISO_DAY.test(value) && Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
+}
+
+const isoDateSchema = z
+  .string()
+  .regex(ISO_DAY, 'expected ISO date YYYY-MM-DD')
+  .refine(isCalendarDay, 'expected real calendar day YYYY-MM-DD');
 
 const dinnerAddOnSchema = z
   .object({
@@ -56,11 +64,6 @@ export type DecideQuoteAvailabilityOutput = z.infer<typeof decideQuoteAvailabili
 export const decideQuoteAvailabilityDescription =
   'Call after quote_stay returns room counts (not rates). Decide full, partial, or sold_out, default missing departure to 1 night, and attach the DBB dinner line. Put replyLine in replyDraft only for partial ("shall I proceed?") or sold_out (one-line decline, no alternatives). Skip when quote_stay is unavailable — stay on workflow=quote with holding text.';
 
-function validDay(value: string): boolean {
-  const time = Date.parse(`${value}T00:00:00.000Z`);
-  return ISO_DAY.test(value) && Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
-}
-
 function addDays(value: string, days: number): string {
   return new Date(Date.parse(`${value}T00:00:00.000Z`) + days * DAY_MS).toISOString().slice(0, 10);
 }
@@ -88,15 +91,12 @@ export function formatStayDates(arrival: string, departure: string): string {
 export function decideQuoteAvailability(raw: DecideQuoteAvailabilityInput): DecideQuoteAvailabilityOutput {
   const input = decideQuoteAvailabilityInputSchema.parse(raw);
   const { requested, available, dinnerAddOn } = input;
-  if (!validDay(requested.arrival) || (requested.departure && !validDay(requested.departure))) {
-    throw new Error('invalid_stay_dates');
+  if (requested.departure !== null && nightsBetween(requested.arrival, requested.departure) < 1) {
+    throw new Error('departure_not_after_arrival');
   }
 
-  const checkout =
-    requested.departure && nightsBetween(requested.arrival, requested.departure) >= 1
-      ? requested.departure
-      : addDays(requested.arrival, 1);
-  const assumedOneNight = checkout !== requested.departure;
+  const checkout = requested.departure ?? addDays(requested.arrival, 1);
+  const assumedOneNight = requested.departure === null;
   const nights = nightsBetween(requested.arrival, checkout);
   const roomsAvailable = available.reduce((sum, row) => sum + row.rooms, 0);
   const roomsRequested = requested.rooms;
@@ -109,7 +109,7 @@ export function decideQuoteAvailability(raw: DecideQuoteAvailabilityInput): Deci
       : decision === 'sold_out'
         ? `Unfortunately we are fully booked for ${dates}.`
         : null;
-  const dinnerLine = requested.board === 'dbb' ? (dinnerAddOn ?? CENTURION_DINNER_ADD_ON) : null;
+  const dinnerLine = requested.board === 'dbb' ? (dinnerAddOn ?? { ...CENTURION_DINNER_ADD_ON }) : null;
 
   return decideQuoteAvailabilityOutputSchema.parse({
     decision,

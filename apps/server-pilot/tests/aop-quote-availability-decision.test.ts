@@ -148,4 +148,34 @@ describe('decideQuoteAvailability', () => {
       }).requested.rooms,
     ).toBe(4);
   });
+
+  it('rejects impossible calendar dates in the input schema', () => {
+    const parsed = decideQuoteAvailabilityInputSchema.safeParse({
+      requested: { ...requested, arrival: '2026-02-31' },
+      available: [{ roomType: 'TWN', rooms: 1 }],
+    });
+
+    expect(parsed.success).toBe(false);
+    expect(() =>
+      decideQuoteAvailability({
+        requested: { ...requested, arrival: '2026-02-31' },
+        available: [{ roomType: 'TWN', rooms: 1 }],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects an explicit departure on or before arrival without assuming one night', () => {
+    expect(() =>
+      decideQuoteAvailability({
+        requested: { ...requested, arrival: '2026-11-20', departure: '2026-11-18' },
+        available: [{ roomType: 'TWN', rooms: 1 }],
+      }),
+    ).toThrow(/departure_not_after_arrival/);
+    expect(() =>
+      decideQuoteAvailability({
+        requested: { ...requested, arrival: '2026-11-20', departure: '2026-11-20' },
+        available: [{ roomType: 'TWN', rooms: 1 }],
+      }),
+    ).toThrow(/departure_not_after_arrival/);
+  });
 });
