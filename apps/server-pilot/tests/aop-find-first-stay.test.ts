@@ -148,8 +148,79 @@ describe('findFirstStayMatch', () => {
     expect(result.confirmationNumber).toBe('9999912-1');
   });
 
+  it('matches a stated base confirmation to a single HMS leg', () => {
+    const result = findFirstStayMatch({
+      ask: { lastName: 'Smith', arrival: '2026-11-12', confirmationNumber: '9999920' },
+      candidates: [
+        stay({ confirmationNumber: '9999920-1', lastName: 'Smith', arrival: '2026-12-01' }),
+      ],
+    });
+    expect(result.status).toBe('match');
+    expect(result.confirmationNumber).toBe('9999920-1');
+  });
+
+  it('returns possible listing every live leg when a stated base matches two legs', () => {
+    const result = findFirstStayMatch({
+      ask: { lastName: 'Smith', arrival: '2026-11-12', confirmationNumber: '9999921' },
+      candidates: [
+        stay({ confirmationNumber: '9999921-1', lastName: 'Smith', arrival: '2026-12-01' }),
+        stay({ confirmationNumber: '9999921-2', lastName: 'Smith', arrival: '2026-12-08' }),
+      ],
+    });
+    expect(result.status).toBe('possible');
+    expect(result.confirmationNumber).toBeNull();
+    expect(result.why.join(' ')).toContain('9999921-1');
+    expect(result.why.join(' ')).toContain('9999921-2');
+  });
+
+  it('matches a stated full confirmation to that exact leg', () => {
+    const result = findFirstStayMatch({
+      ask: { lastName: 'Smith', arrival: '2026-11-12', confirmationNumber: '9999922-2' },
+      candidates: [
+        stay({ confirmationNumber: '9999922-1', lastName: 'Smith', arrival: '2026-12-01' }),
+        stay({ confirmationNumber: '9999922-2', lastName: 'Smith', arrival: '2026-12-08' }),
+      ],
+    });
+    expect(result.status).toBe('match');
+    expect(result.confirmationNumber).toBe('9999922-2');
+  });
+
+  it('returns conflict when a full confirmation matches and the surname contradicts', () => {
+    const result = findFirstStayMatch({
+      ask: { lastName: 'Smith', arrival: '2026-11-12', confirmationNumber: '9999923-2' },
+      candidates: [
+        stay({ confirmationNumber: '9999923-2', lastName: 'Jones', arrival: '2026-11-12' }),
+      ],
+    });
+    expect(result.status).toBe('conflict');
+    expect(result.confirmationNumber).toBeNull();
+  });
+
+  it('ignores a cancelled leg when matching a stated base confirmation', () => {
+    const result = findFirstStayMatch({
+      ask: { lastName: 'Smith', arrival: '2026-11-12', confirmationNumber: '9999924' },
+      candidates: [
+        stay({
+          confirmationNumber: '9999924-1',
+          lastName: 'Smith',
+          arrival: '2026-12-01',
+          status: 'Cancelled',
+        }),
+        stay({ confirmationNumber: '9999924-2', lastName: 'Smith', arrival: '2026-12-08' }),
+      ],
+    });
+    expect(result.status).toBe('match');
+    expect(result.confirmationNumber).toBe('9999924-2');
+  });
+
   it('exports schemas and a description for the agent tool wrapper', () => {
     expect(findFirstStayMatchInputSchema.parse({ ask, candidates: [] }).candidates).toEqual([]);
+    expect(
+      findFirstStayMatchInputSchema.parse({
+        ask: { ...ask, confirmationNumber: null },
+        candidates: [],
+      }).ask.confirmationNumber,
+    ).toBeNull();
     expect(
       findFirstStayMatchOutputSchema.parse({
         status: 'none',
@@ -158,5 +229,6 @@ describe('findFirstStayMatch', () => {
       }).status,
     ).toBe('none');
     expect(findFirstStayMatchDescription.toLowerCase()).toMatch(/find/);
+    expect(findFirstStayMatchDescription.toLowerCase()).toMatch(/base/);
   });
 });
