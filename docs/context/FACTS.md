@@ -134,6 +134,20 @@ Source: `/home/orca/nava-research/reports/leftover-worktrees-20261014.md` (ADE).
 | Prod runs ONE HMS process (`ai-worker`; pm2: http, worker, ai-worker, remote-http). The DB property lock covers Guest Stay only; group-block reads skip it. | pm2 read 2026-10-14; D1 audit |
 | HMS HTTP reads exist (`runtime.ts:3676` `postForm`: in-page fetch) but need a logged-in browser session; bare `page.request.post` bounced to login. | code |
 
+## 8. 2026-10-15 overnight
+
+Source: `/home/orca/nava-research/overnight/STATE.md` log (H1 steps 1–13, 10:05Z gold research), proof outputs in `/home/orca/nava-research/overnight/proof/`. Backed up to S3 (see `docs/context/VPS-MIGRATION.md`).
+
+| Fact | Source |
+|---|---|
+| **Live quote proof on prod, Centurion, 29 unique plannable threads: 7 pass** = 5 priced + PDF (~280 KB) + Excel (~2 MB), and 2 named HMS refusals (c414ac0d, 93cce357; a named refusal counts as pass per `quoteProofPass`). Prod SHAs ad6a5d9de → 405ac8522. | STATE.md H1 steps 6–13 |
+| Stops on the other threads: rates_timeout 5, missing departure 3, rooms null 4 (correct stop), room type 3, not_for_nava 2, party timeout 2, DBB dinner gate 1, edit limit 1, needs agency 1. | STATE.md H1 steps 10–13 |
+| **HMS lane: Nava's HMS jobs run serially on Nava's own Infor account, NOT shared with staff.** 06:28–07:15Z, `read_tool` jobs waited 80–1,025 s queued and ran 12–413 s. The rates timeouts came from Nava's own serial queue, not from staff load. | Coordinator measurement on prod HMS job rows, 2026-10-15 |
+| Gold-mail staff defaults: one date given → 1 night (4/4, staff never asked); no meal plan → B&B (6/7); DBB → a "Dinner Allowance" line at R350 pp/night (R400 seen once, R300 for groups); government → `NGOVDB` rate plan. | STATE.md 10:05Z gold research; `/home/orca/nava-research/reports/r1-quote-gold.md` (NGOVDB 120 code docs) |
+| Staff first replies to quote requests, n=49: priced quote 49%, booked directly 18%, unavailable/partial "proceed?" 14%, other 18%, **clarifying question 0%**. | STATE.md 10:05Z gold research |
+| **Goal metric changed (owner, 2026-10-15):** score = "same move as staff" on gold inbound/outbound pairs, not "prefillable". The 40/47 prefillable and 19/54 quote-readiness numbers from the same night are superseded as the headline metric. | Owner 2026-10-15 |
+| DBB with no `dinnerAddOn` in installation config stops with a `dinner_add_on` blocker (correct: the driver must not invent dinner prices). The R350 staff default above is the input for that config. | STATE.md 05:00Z |
+
 ## 5. Using these facts
 
 1. Reuse an existing source and its exact denominator/window before proposing a new study.

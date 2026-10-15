@@ -4,6 +4,11 @@ One entry per lesson: trigger, what happened, rule. Newest first. Add an entry w
 
 | Date | Trigger | What happened | Rule |
 |---|---|---|---|
+| 2026-10-15 | Rates runs timed out during staff hours | The coordinator claimed "HMS is too slow during staff hours" without measuring. The job rows showed Nava's own serial queue (80–1,025 s waiting) | Measure (queue wait vs run time from the job rows) before naming a cause |
+| 2026-10-15 | Long rates runs at 07:00Z | The coordinator invented a "no live batches once staff are on" rule. Nava has its own HMS account and does not share staff's lane | Do not invent constraints. Check the account/lane facts in FACTS.md first |
+| 2026-10-15 | `pr.sh` squashed #271 with a soft reset on a stale base | The squash nearly reverted #269 (same near-miss on #266 at 03:15Z) | Always rebase onto a fresh `origin/main` before squashing; check the diff stat for unrelated deletions |
+| 2026-10-15 | Gold research found staff defaults (1 night, B&B, R350 dinner) | The DEF lane started building the defaults before the owner discussed scope | Chat product/scope with the owner before building. Research findings are inputs, not a build order |
+| 2026-10-15 | 5-minute deploy of #273 | The coordinator blocked on the deploy instead of running other work in parallel | Run deploys in the background and keep the next slice moving |
 | 2026-10-14 | Lane briefs told every lane to typecheck locally | Parallel tsc runs froze the VPS (load 27, 85% iowait); Hermes had to kill them | Never typecheck on the VPS. The hook blocks it; use the remote EC2 runner. Briefs must say so up front |
 | 2026-10-14 | Lanes assumed opening a PR triggers Actions | 4 lanes refused to open PRs. Every kufupa/Zero workflow is disabled_manually | Briefs state "workflows disabled; opening PRs is safe" with the verify command |
 | 2026-10-14 | Started a case-mix + party study (R3) without reading prior reports | It repeated research already done in r2/r3/r7. The owner had to re-explain | Read `docs/context/FACTS.md` + `docs/research/CATALOG.md` first. A new study must name the prior artifact and its gap |

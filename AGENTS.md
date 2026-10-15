@@ -11,6 +11,8 @@ Read by Cursor CLI, Codex CLI, and any agent that looks for `AGENTS.md`. Claude 
 
 - Before any research or analysis lane, read `docs/context/FACTS.md` and `docs/research/CATALOG.md` and reuse.
 - A lane may only re-analyse when it names the prior artifact and why it’s insufficient.
+- Latest settled facts (live quote proof, HMS lane, staff defaults, "same move as staff" metric): `docs/context/FACTS.md` section 8 (2026-10-15).
+- New or migrated VPS: restore from `docs/context/VPS-MIGRATION.md` (GitHub branches, S3 backups, local tooling, backup cron).
 
 Done = score on the golden set in `PRODUCT.md`, not a merge.
 
