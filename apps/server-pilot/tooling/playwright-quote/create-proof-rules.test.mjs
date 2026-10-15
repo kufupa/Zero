@@ -342,3 +342,50 @@ test('stay lookup exposes reusable on-open confirmation and guest/date readers',
   assert.match(source, /export async function searchGuestOnOpenGuestStay/);
   assert.match(source, /export async function searchGuestOnOpenGuestStay\(ctx\) \{\s*if \(!ctx\.result\) ctx\.result = newLookupResult\(ctx\.args\);/);
 });
+
+test('confirmed save retains confirmation when pre-save rows are unavailable or incomplete', async () => {
+  for (const existingRows of [null, [{ ...EXPECTED, status: 'Reserved' }]]) {
+    const result = await rules.reconcileCreateSave({
+      save: { confirmed: true, confirmationNumber: '61143613-1' },
+      expected: EXPECTED,
+      existingRows,
+      readByConfirmation: async () => {
+        throw new Error('unusable pre-save rows must stop reconciliation');
+      },
+      searchByGuestDates: async () => {
+        throw new Error('confirmed save must not search guest dates');
+      },
+    });
+    assert.equal(result.confNo, '61143613-1');
+    assert.equal(result.unknownOutcome, 'unresolved');
+  }
+});
+
+test('proof pre-save search refuses Save when baseline rows are unavailable', () => {
+  assert.equal(typeof rules.proofPreSaveSearchRefusal, 'function');
+  assert.equal(rules.proofPreSaveSearchRefusal(null), 'proof_pre_save_search_unavailable');
+  assert.equal(rules.proofPreSaveSearchRefusal(undefined), 'proof_pre_save_search_unavailable');
+  assert.equal(rules.proofPreSaveSearchRefusal([]), null);
+});
+
+test('proof mode refuses profile, party, company, account, and billing fields', () => {
+  const options = { paneCommit: true, env: { RESERVATIONIST_PANE_SAVE: 'lab' } };
+  const fields = {
+    profileId: 42,
+    arAccount: 'Legacy Hotels AR',
+    billingReference: 'PO-1',
+    agency: 'Travel Agent Ltd',
+    bookingAgency: { nativeId: '49', name: 'Travel Agent Ltd' },
+    organization: { nativeId: '84', name: 'Real Company Ltd' },
+    reservationNote: 'Charge to company account',
+    bookerName: 'Jane Booker',
+    bookerEmail: 'jane@example.test',
+  };
+  for (const [field, value] of Object.entries(fields)) {
+    assert.equal(
+      rules.proofModeRefusal({ ...options, request: { ...EXPECTED, [field]: value } }),
+      'proof_party_or_billing_fields_forbidden',
+      `proof mode must refuse ${field}`,
+    );
+  }
+});

@@ -252,6 +252,16 @@ test('create CLI exits after cleanup and both output streams have flushed', asyn
   assert.ok(errorExit > stderrFlush);
 });
 
+test('proof mode refuses Save when the pre-save guest search is unavailable', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const preSaveSearch = source.indexOf('const existingRows = proofMode');
+  const refusal = source.indexOf('proofPreSaveSearchRefusal(existingRows)');
+  const saveClick = source.indexOf("await clickTip(page, '^Save')");
+  assert.ok(preSaveSearch !== -1 && refusal > preSaveSearch && saveClick > refusal);
+  assert.match(source, /result\.refusalReason = preSaveRefusal/);
+  assert.match(source, /result\.clickedSave = false/);
+});
+
 test('proof mode captures parsed search rows before Save', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   const baseline = source.indexOf('const existingRows = proofMode');

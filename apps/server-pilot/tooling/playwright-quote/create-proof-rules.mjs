@@ -16,9 +16,17 @@ function realIsoDate(value) {
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
+const PROOF_FORBIDDEN_FIELDS = [
+  'profileId', 'arAccount', 'billingReference', 'agency', 'bookingAgency', 'organization',
+  'reservationNote', 'bookerName', 'bookerEmail',
+];
+
 export function proofModeRefusal({ request, paneCommit, env = process.env }) {
   if (!paneCommit) return 'proof_requires_pane_commit';
   if (env.RESERVATIONIST_PANE_SAVE !== 'lab') return 'proof_requires_lab_flag';
+  if (PROOF_FORBIDDEN_FIELDS.some((field) => Object.hasOwn(request ?? {}, field))) {
+    return 'proof_party_or_billing_fields_forbidden';
+  }
   if (request?.firstName !== 'Proof' || request?.lastName !== 'Labtest') return 'proof_guest_required';
   if (!realIsoDate(request.arrival) || !realIsoDate(request.departure)
     || request.arrival < '2027-01-01' || request.departure < '2027-01-01') {
@@ -26,6 +34,10 @@ export function proofModeRefusal({ request, paneCommit, env = process.env }) {
   }
   if (request.departure <= request.arrival) return 'proof_departure_after_arrival';
   return null;
+}
+
+export function proofPreSaveSearchRefusal(existingRows) {
+  return Array.isArray(existingRows) ? null : 'proof_pre_save_search_unavailable';
 }
 
 export function saveClickMayHaveFired(error) {
@@ -71,6 +83,9 @@ export async function reconcileCreateSave({
   save, expected, existingRows, readByConfirmation, searchByGuestDates,
 }) {
   const result = { confNo: null, readbackMatch: null, mismatches: [], screenshot: null, unknownOutcome: null };
+  let confNo = save?.confirmed === true ? String(save.confirmationNumber ?? '').trim() : '';
+  if (confNo) result.confNo = confNo;
+
   if (!Array.isArray(existingRows)) return { ...result, unknownOutcome: 'unresolved' };
   const possibleExistingRows = possibleGuestRows(existingRows, expected);
   if (possibleExistingRows.some((stay) => !String(stay?.confirmation ?? '').trim())) {
@@ -79,8 +94,6 @@ export async function reconcileCreateSave({
   const existingConfirmations = new Set(
     possibleExistingRows.map((stay) => String(stay.confirmation).trim()),
   );
-  let confNo = save?.confirmed === true ? String(save.confirmationNumber ?? '').trim() : '';
-  if (confNo) result.confNo = confNo;
 
   if (!confNo) {
     let search;

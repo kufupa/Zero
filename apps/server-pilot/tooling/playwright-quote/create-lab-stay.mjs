@@ -10,7 +10,7 @@ import { displayDate, login, playwright, readSecret } from './fetch-quote.mjs';
 import { loadCreateRequest, loadCreateToolSchema, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
 import { readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
-import { proofModeRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
+import { proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
 
 const REQUIRED = [
   'arrivaldate',
@@ -376,6 +376,15 @@ async function main() {
     const existingRows = proofMode
       ? await readExistingGuestRows(browser, secret, stay, dir)
       : null;
+    const preSaveRefusal = proofMode ? proofPreSaveSearchRefusal(existingRows) : null;
+    if (preSaveRefusal) {
+      result.outcome = 'refused_save';
+      result.refusalReason = preSaveRefusal;
+      result.clickedSave = false;
+      process.stderr.write(`${preSaveRefusal}\n`);
+      process.exitCode = 2;
+      return;
+    }
     let saveClickUnknown = false;
     try {
       await clickTip(page, '^Save');
