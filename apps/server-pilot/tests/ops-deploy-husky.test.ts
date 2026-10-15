@@ -14,6 +14,23 @@ import { join } from 'node:path';
 // husky's prepare copies its shim onto .husky/_/h, which fails with EACCES while that file is mode 0444.
 // ops-deploy must restore the owner write bit before its first on-box pnpm install.
 describe('ops-deploy restores the husky hook before the first on-box install', () => {
+  it('places the guarded chmod before the first pnpm install', () => {
+    const lines = readFileSync(
+      new URL('../deploy/ops-deploy.sh', import.meta.url),
+      'utf8',
+    ).split(/\r?\n/);
+    const chmod = lines.findIndex((line) =>
+      line.includes('if [ -e "$hook" ]; then chmod u+w "$hook"; fi'),
+    );
+    const firstInstall = lines.findIndex(
+      (line) => !line.trimStart().startsWith('#') && /\bpnpm install\b/.test(line),
+    );
+
+    expect(chmod).toBeGreaterThanOrEqual(0);
+    expect(firstInstall).toBeGreaterThanOrEqual(0);
+    expect(chmod).toBeLessThan(firstInstall);
+  });
+
   it.skipIf(process.getuid?.() === 0)(
     'makes a read-only hook writable before pnpm install runs',
     () => {
