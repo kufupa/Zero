@@ -401,6 +401,8 @@ function lunaWithMappedDates(luna: LunaAnalysis, mapped: MappedQuoteDecision): L
   };
 }
 
+const MAX_PREFILL_ROOMS = 20;
+
 async function hmsTodoCardFromLuna(
   luna: LunaAnalysis | HmsTodoCardInput | null | undefined,
   attachments: SyncedQuoteAttachment[],
@@ -413,7 +415,9 @@ async function hmsTodoCardFromLuna(
     Array.isArray(groups) &&
     (workflow === 'create' || workflow === 'create_booking' || workflow === 'new_booking' || workflow === 'booking');
   let prefill: BuildCreatePrefillOutput | null = null;
-  if (isNewBooking && arrival) {
+  // Group-sized asks (or a bad count) get no per-room prefill; the card still shows.
+  const roomTotal = Array.isArray(groups) ? groups.reduce((sum, group) => sum + (group.rooms ?? 1), 0) : 0;
+  if (isNewBooking && arrival && Number.isSafeInteger(roomTotal) && roomTotal <= MAX_PREFILL_ROOMS) {
     try {
       const party = (luna as LunaAnalysis).party;
       prefill = await buildCreatePrefill({
