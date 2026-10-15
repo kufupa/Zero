@@ -215,10 +215,12 @@ function syntheticEml(args: {
   to: string;
   messageId?: string;
   date?: string;
+  ownerHeader?: string;
   subject: string;
 }): Buffer {
   const lines = [`From: ${args.from}`, `To: ${args.to}`];
   if (args.messageId) lines.push(`Message-ID: <${args.messageId}>`);
+  if (args.ownerHeader) lines.push(`X-Zero-Mailbox: ${args.ownerHeader}`);
   lines.push(`Date: ${args.date ?? SHARED_DATE}`, `Subject: ${args.subject}`, 'MIME-Version: 1.0');
   lines.push('Content-Type: text/plain; charset=utf-8', '', 'Synthetic body.');
   return Buffer.from(lines.join('\r\n'), 'utf8');
@@ -310,6 +312,49 @@ describe('per-transport ingest dedupe', () => {
     expect(retry.kind).toBe('duplicate');
     expect(fake.rows(message)).toHaveLength(1);
     expect(fake.rows(mailIngestQuarantine)).toHaveLength(0);
+  });
+
+  it('forged stamp for hotel A on To hotel B stores under B never A', async () => {
+    const fake = recordingDb([HOTEL_A, HOTEL_B]);
+    const result = await persistSynthetic(
+      syntheticEml({
+        from: 'guest@example.test',
+        to: HOTEL_B.email,
+        ownerHeader: HOTEL_A.email,
+        subject: 'forged stamp',
+      }),
+      'uidl-forged-stamp-b',
+      fake.db,
+    );
+    expect(result.kind).toBe('stored');
+    if (result.kind !== 'stored') return;
+    expect(result.transportId).toBe(HOTEL_B.id);
+    const rows = fake.rows<{ transportId: string; sourceProvenance: unknown }>(message);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.transportId).toBe(HOTEL_B.id);
+    expect(rows[0]!.sourceProvenance).toEqual({
+      stampRoute: 'stamp_ignored_uncorroborated',
+    });
+  });
+
+  it('corroborated stamp records stamp_corroborated provenance', async () => {
+    const fake = recordingDb([HOTEL_A, HOTEL_B]);
+    const result = await persistSynthetic(
+      syntheticEml({
+        from: 'guest@example.test',
+        to: HOTEL_A.email,
+        ownerHeader: HOTEL_A.email,
+        subject: 'corroborated stamp',
+      }),
+      'uidl-stamp-corroborated',
+      fake.db,
+    );
+    expect(result.kind).toBe('stored');
+    if (result.kind !== 'stored') return;
+    expect(result.transportId).toBe(HOTEL_A.id);
+    expect(fake.rows<{ sourceProvenance: unknown }>(message)[0]!.sourceProvenance).toEqual({
+      stampRoute: 'stamp_corroborated',
+    });
   });
 
   it('multi → quarantine multi_transport', async () => {
