@@ -6,12 +6,15 @@
  *   2. Look up `mailboxTransport` by `ownerHeaderValue`. If found, store the
  *      message scoped to that transport (create/find a thread, insert
  *      `message` + `attachment` rows).
- *   3. If the header is missing, try direct `To` match against active transport
- *      emails; when `INGEST_REQUIRE_OWNER_HEADER=false`, also match hotel
- *      transport email/aliases (Centurion, Da Vinci, Faith, Ayanda) on To/Cc/Bcc/From. On miss quarantine with
- *      reason `missing_owner_header`. If the header is present but no matching
- *      transport (owner header or alias) -> quarantine with reason
- *      `unknown_transport`.
+ *   3. If the header is missing, try direct `To` identity match (email +
+ *      aliases). Unique → route. One identity matching ≥2 transports →
+ *      `ambiguous_transport`. Distinct addresses matching ≥2 transports →
+ *      `multi_transport`. A fail-closed step does not fall through. When
+ *      `INGEST_REQUIRE_OWNER_HEADER=false` and Direct-To is none, also match
+ *      hotel transport identities on To/Cc/Bcc then From. On miss quarantine
+ *      with `missing_owner_header`. If the header is present: unique owner
+ *      header or identity → that transport; >1 match → `ambiguous_transport`;
+ *      none → `unknown_transport`.
  *   4. Degraded containment: when `AI_WRITE_GATE_ENABLED` is not `'true'`,
  *      apply soft label `soft-quarantine` for From domains outside the
  *      transport domain (healthy gated path stays inbox-first).
@@ -106,15 +109,25 @@ function mergeDeliveredAtSourceProvenance(deliveredAt: Date) {
   end`;
 }
 
-type RoutedTransport = {
+export type TransportMatchCandidate = {
   id: string;
   email: string;
   sendFromConfig: unknown;
 };
 
+type RoutedTransport = TransportMatchCandidate;
+
+export type TransportMatchResult<T extends TransportMatchCandidate = TransportMatchCandidate> =
+  | { kind: 'unique'; transport: T }
+  | { kind: 'none' }
+  | { kind: 'ambiguous'; ids: string[] }
+  | { kind: 'multi'; ids: string[] };
+
 export type QuarantineReason =
   | 'missing_owner_header'
   | 'unknown_transport'
+  | 'ambiguous_transport'
+  | 'multi_transport'
   | 'message_too_large'
   | 'parse_failure'
   | 'malformed_delivery_outcome';
@@ -254,6 +267,8 @@ export async function persistInboundMessage(
     });
   }
 
+  // Source receipt (ingestMailboxId+pop3Uidl) before routing dispatch: the
+  // same UIDL is duplicate even if current matching would quarantine as multi.
   const existingMessage = await findExistingMessageByIngestIdentity(db, meta);
   if (existingMessage) {
     const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
@@ -314,9 +329,34 @@ export async function persistInboundMessage(
     }
     // Explicit promotion route wins over owner-header/direct-To routing.
   } else if (!parsed.ownerHeaderValue) {
-    transport = await findDirectToTransport(db, parsed.toAddresses);
-    if (!transport && !ingestRequireOwnerHeader()) {
-      transport = await findEquatedHotelTransport(db, parsed);
+    const direct = await findDirectToTransport(db, parsed.toAddresses);
+    if (direct.kind === 'unique') {
+      transport = direct.transport;
+    } else if (direct.kind === 'ambiguous' || direct.kind === 'multi') {
+      return quarantineWithAttachmentCleanup({
+        db,
+        storage,
+        parsed,
+        meta,
+        rawMimeS3Key,
+        reason: quarantineReasonForMatch(direct),
+        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+      });
+    } else if (!ingestRequireOwnerHeader()) {
+      const equated = await findEquatedHotelTransport(db, parsed);
+      if (equated.kind === 'unique') {
+        transport = equated.transport;
+      } else if (equated.kind === 'ambiguous' || equated.kind === 'multi') {
+        return quarantineWithAttachmentCleanup({
+          db,
+          storage,
+          parsed,
+          meta,
+          rawMimeS3Key,
+          reason: quarantineReasonForMatch(equated),
+          activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+        });
+      }
     }
     if (!transport) {
       return quarantineWithAttachmentCleanup({
@@ -332,8 +372,20 @@ export async function persistInboundMessage(
     // Inbox-first: direct-To without X-Zero-Mailbox still stores + enqueues
     // triage; AI (when write gate on) may set spam later.
   } else {
-    transport = await findTransportByStamp(db, parsed.ownerHeaderValue);
-    if (!transport) {
+    const stamped = await findTransportByStamp(db, parsed.ownerHeaderValue);
+    if (stamped.kind === 'unique') {
+      transport = stamped.transport;
+    } else if (stamped.kind === 'ambiguous' || stamped.kind === 'multi') {
+      return quarantineWithAttachmentCleanup({
+        db,
+        storage,
+        parsed,
+        meta,
+        rawMimeS3Key,
+        reason: quarantineReasonForMatch(stamped),
+        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+      });
+    } else {
       return quarantineWithAttachmentCleanup({
         db,
         storage,
@@ -1782,9 +1834,8 @@ async function findExistingQuarantine(
 async function findDirectToTransport(
   db: DB,
   toAddresses: string[],
-): Promise<RoutedTransport | null> {
-  if (toAddresses.length === 0) return null;
-  const directTo = new Set(toAddresses.map(normalizeEmailAddress));
+): Promise<TransportMatchResult<RoutedTransport>> {
+  if (toAddresses.length === 0) return { kind: 'none' };
   const transports = await db
     .select({
       id: mailboxTransport.id,
@@ -1794,9 +1845,7 @@ async function findDirectToTransport(
     .from(mailboxTransport)
     .where(eq(mailboxTransport.isActive, true));
 
-  return (
-    transports.find((transport) => directTo.has(normalizeEmailAddress(transport.email))) ?? null
-  );
+  return resolveTransportMatch(transports, toAddresses);
 }
 
 async function findActiveTransportById(
@@ -1840,11 +1889,48 @@ function transportIdentitySet(email: string, sendFromConfig: unknown): Set<strin
   return identities;
 }
 
+export function resolveTransportMatch<T extends TransportMatchCandidate>(
+  candidates: T[],
+  addresses: string[],
+): TransportMatchResult<T> {
+  const normalizedAddresses = [...new Set(addresses.map(normalizeEmailAddress).filter(Boolean))];
+  if (normalizedAddresses.length === 0 || candidates.length === 0) return { kind: 'none' };
+
+  const byId = new Map<string, T>();
+  const ambiguousIds = new Set<string>();
+  for (const address of normalizedAddresses) {
+    const matchingIds = new Set<string>();
+    for (const candidate of candidates) {
+      if (transportIdentitySet(candidate.email, candidate.sendFromConfig).has(address)) {
+        matchingIds.add(candidate.id);
+        byId.set(candidate.id, candidate);
+      }
+    }
+    if (matchingIds.size >= 2) {
+      for (const id of matchingIds) ambiguousIds.add(id);
+    }
+  }
+
+  if (ambiguousIds.size > 0) {
+    return { kind: 'ambiguous', ids: [...ambiguousIds].sort() };
+  }
+  if (byId.size >= 2) {
+    return { kind: 'multi', ids: [...byId.keys()].sort() };
+  }
+  const unique = [...byId.values()][0];
+  return unique ? { kind: 'unique', transport: unique } : { kind: 'none' };
+}
+
+function quarantineReasonForMatch(match: { kind: 'ambiguous' | 'multi' }): QuarantineReason {
+  return match.kind === 'ambiguous' ? 'ambiguous_transport' : 'multi_transport';
+}
+
 async function findTransportByStamp(
   db: DB,
   ownerHeaderValue: string,
-): Promise<RoutedTransport | null> {
+): Promise<TransportMatchResult<RoutedTransport>> {
   const normalizedHeader = normalizeEmailAddress(ownerHeaderValue);
+  if (!normalizedHeader) return { kind: 'none' };
   const transports = await db
     .select({
       id: mailboxTransport.id,
@@ -1855,22 +1941,31 @@ async function findTransportByStamp(
     .from(mailboxTransport)
     .where(eq(mailboxTransport.isActive, true));
 
-  const byOwnerHeader = transports.find(
-    (transport) => normalizeEmailAddress(transport.ownerHeaderValue) === normalizedHeader,
-  );
-  if (byOwnerHeader) return byOwnerHeader;
+  const matched = new Map<string, RoutedTransport>();
+  for (const transport of transports) {
+    if (normalizeEmailAddress(transport.ownerHeaderValue) === normalizedHeader) {
+      matched.set(transport.id, transport);
+    }
+  }
+  const identity = resolveTransportMatch(transports, [normalizedHeader]);
+  if (identity.kind === 'unique') {
+    matched.set(identity.transport.id, identity.transport);
+  } else if (identity.kind === 'ambiguous' || identity.kind === 'multi') {
+    for (const id of identity.ids) {
+      const row = transports.find((transport) => transport.id === id);
+      if (row) matched.set(id, row);
+    }
+  }
 
-  return (
-    transports.find((transport) =>
-      transportIdentitySet(transport.email, transport.sendFromConfig).has(normalizedHeader),
-    ) ?? null
-  );
+  if (matched.size > 1) return { kind: 'ambiguous', ids: [...matched.keys()].sort() };
+  const unique = [...matched.values()][0];
+  return unique ? { kind: 'unique', transport: unique } : { kind: 'none' };
 }
 
 async function findEquatedHotelTransport(
   db: DB,
   parsed: ParsedInboundMessage,
-): Promise<RoutedTransport | null> {
+): Promise<TransportMatchResult<RoutedTransport>> {
   const rows = await db
     .select({
       id: mailboxTransport.id,
@@ -1885,21 +1980,13 @@ async function findEquatedHotelTransport(
       ),
     );
 
-  const matchAddresses = (addresses: string[]): RoutedTransport | null =>
-    rows.find((transport) => {
-      const identities = transportIdentitySet(transport.email, transport.sendFromConfig);
-      return addresses.some((address) => identities.has(address));
-    }) ?? null;
-
-  const recipientAddresses = [
+  const recipients = resolveTransportMatch(rows, [
     ...parsed.toAddresses,
     ...parsed.ccAddresses,
     ...parsed.bccAddresses,
-  ]
-    .map(normalizeEmailAddress)
-    .filter(Boolean);
-  const from = parsed.fromAddress ? normalizeEmailAddress(parsed.fromAddress) : '';
-  return matchAddresses(recipientAddresses) ?? matchAddresses(from ? [from] : []);
+  ]);
+  if (recipients.kind !== 'none') return recipients;
+  return resolveTransportMatch(rows, parsed.fromAddress ? [parsed.fromAddress] : []);
 }
 
 async function ensureSoftQuarantineLabel(db: DB, transportId: string): Promise<string> {
