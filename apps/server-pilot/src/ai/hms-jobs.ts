@@ -1725,6 +1725,9 @@ export async function prefetchPartyForExtraction(
       direction: message.direction,
       historyOnly: message.historyOnly,
       fromAddress: message.fromAddress,
+      ownerHeaderValue: message.ownerHeaderValue,
+      toAddresses: message.toAddresses,
+      ccAddresses: message.ccAddresses,
       threadHistoryOnly: mailThread.historyOnly,
       spamAt: mailThread.spamAt,
       mailboxEmail: mailboxTransport.email,
@@ -1755,6 +1758,16 @@ export async function prefetchPartyForExtraction(
   const from = normalizeEmailAddress(source.fromAddress);
   const mailbox = normalizeEmailAddress(source.mailboxEmail);
   if (from === mailbox) return 0;
+  if (
+    isDaVinciMailboxOrigin({
+      fromAddress: source.fromAddress,
+      ownerHeaderValue: source.ownerHeaderValue,
+      toAddresses: source.toAddresses,
+      ccAddresses: source.ccAddresses,
+    })
+  ) {
+    return 0;
+  }
   if (isStaffSender(source.fromAddress, source.mailboxEmail)) {
     const sentFrom = await knownSenders(db, run.transportId, [source.fromAddress]);
     if (sentFrom.has(from)) return 0;
@@ -2208,7 +2221,10 @@ async function executePartyMatchV2(input: {
     ccAddresses: source.ccAddresses,
   };
   if (isDaVinciMailboxOrigin(mailboxOrigin)) {
-    return partyMatchV2NoMatch('Da Vinci mailbox origin is not bound to Centurion HMS');
+    return {
+      ...partyMatchV2NoMatch('Da Vinci mailbox origin is not bound to Centurion HMS'),
+      outcome: 'refused_origin_mismatch',
+    };
   }
 
   const quoteLlmParty = await existingQuoteWorkflowParty(
