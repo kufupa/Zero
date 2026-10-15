@@ -43,6 +43,11 @@ export type SameMoveOpsRow = SameMoveFixture;
 
 export type SameMoveEvalCli = { mode: 'promptfoo' } | { mode: 'ops'; opsPath: string };
 
+export type SameMoveOpsPairCount = {
+  pair: string;
+  n: number;
+};
+
 export type SameMoveOpsReport = {
   n: number;
   match: number;
@@ -50,6 +55,9 @@ export type SameMoveOpsReport = {
   not_scored: number;
   rate: number;
   grades: Record<GoldGrade, number>;
+  claimedOps: Record<string, number>;
+  predOps: Record<string, number>;
+  pairTop: SameMoveOpsPairCount[];
 };
 
 export type SameMovePromptfooCase = {
@@ -105,6 +113,15 @@ function emptyGrades(): Record<GoldGrade, number> {
   };
 }
 
+function bumpCount(counts: Record<string, number>, key: string): void {
+  counts[key] = (counts[key] ?? 0) + 1;
+}
+
+function opsKey(ops: readonly GoldOperation[]): string {
+  if (ops.length === 0) return 'none';
+  return [...new Set(ops.map((row) => row.operation))].sort().join('+');
+}
+
 function parseOpsRow(raw: unknown, trail: string): SameMoveOpsRow {
   if (!raw || typeof raw !== 'object') {
     throw new Error(`invalid same-move ops row ${trail}`);
@@ -142,14 +159,25 @@ export function loadSameMoveOpsJsonl(opsPath: string): SameMoveOpsRow[] {
 
 export function scoreSameMoveOps(rows: readonly SameMoveOpsRow[]): SameMoveOpsReport {
   const grades = emptyGrades();
+  const claimedOps: Record<string, number> = {};
+  const predOps: Record<string, number> = {};
+  const pairCounts = new Map<string, number>();
   for (const row of rows) {
     const scored = scoreSameMove({
       predicted: row.predicted,
       claimed: row.claimed,
     });
     grades[scored.grade] += 1;
+    for (const claimed of row.claimed) bumpCount(claimedOps, claimed.operation);
+    for (const predicted of row.predicted) bumpCount(predOps, predicted.operation);
+    const pair = `${opsKey(row.claimed)}→${opsKey(row.predicted)}`;
+    pairCounts.set(pair, (pairCounts.get(pair) ?? 0) + 1);
   }
   const n = rows.length;
+  const pairTop = [...pairCounts.entries()]
+    .map(([pair, count]) => ({ pair, n: count }))
+    .sort((left, right) => right.n - left.n || left.pair.localeCompare(right.pair))
+    .slice(0, 10);
   return {
     n,
     match: grades.match,
@@ -157,6 +185,9 @@ export function scoreSameMoveOps(rows: readonly SameMoveOpsRow[]): SameMoveOpsRe
     not_scored: grades.not_scored,
     rate: n === 0 ? 0 : grades.match / n,
     grades,
+    claimedOps,
+    predOps,
+    pairTop,
   };
 }
 
