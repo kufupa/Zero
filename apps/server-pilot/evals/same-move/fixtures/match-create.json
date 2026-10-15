@@ -1,0 +1,22 @@
+{
+  "id": "match-create",
+  "expectPass": true,
+  "predicted": [
+    {
+      "operation": "create",
+      "needLevel": "required",
+      "requiredFields": ["arrival", "departure"],
+      "candidateTool": "hms_create_reservation",
+      "unknownReason": null
+    }
+  ],
+  "claimed": [
+    {
+      "operation": "create",
+      "needLevel": "required",
+      "requiredFields": ["arrival", "departure"],
+      "candidateTool": "hms_create_reservation",
+      "unknownReason": null
+    }
+  ]
+}
