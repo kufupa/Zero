@@ -1810,7 +1810,7 @@ describe('deploy config', () => {
     expect(nginx).toContain('listen 443 ssl');
     expect(nginx).toContain('proxy_pass http://127.0.0.1:8788/api/');
     expect(nginx).toContain('try_files $uri /index.html');
-    expect(nginx).toContain('client_max_body_size 35m');
+    expect(nginx.match(/client_max_body_size 50m/g)).toHaveLength(2);
   });
 
   it('nginx keeps legacy ingress unchanged and exposes remote only through ALB :8443', async () => {

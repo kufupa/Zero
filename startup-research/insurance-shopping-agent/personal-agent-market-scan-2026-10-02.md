@@ -1,0 +1,149 @@
+# Personal-Agent Startup Scan + Foresee GTM Audit
+
+**Date:** 2026-10-02  
+**Research mode:** Live Exa research; primary company, YC, investor, and selected independent sources  
+**Purpose:** Identify recently backed US/UK personal-agent companies, audit Foresee's public business model, and reset prior opportunity ranking around the founder's stated personal-agent thesis.  
+**Confidence:** High on facts explicitly published by company/YC/investors; medium on funding/launch summaries from reputable press; low on private-company unit economics and any inferred scale plan.
+
+## Executive read
+
+- **[Data] Strictly dated recent founding:** Touchy is the clearest verified match. A founder publicly said on June 16, 2026 that he was founding Tokenless with the other cofounders; the product became Touchy, joined YC S26, and launched in August. YC's published standard investment is $500K, so its YC backing is verified, though Touchy has not separately disclosed an individual check. [YC profile](https://www.ycombinator.com/companies/touchy) · [founder post](https://www.linkedin.com/posts/kevinzhiwang_im-founding-a-company-tokenless-with-rohit-activity-7472776281541996544-i9yy) · [YC deal](https://www.ycombinator.com/deal)
+- **[Data] More recent funded launches exist, but public evidence often dates the launch or round—not incorporation/start of company.** Orbits, Allowance, Gravy, and Agentcard are strong YC/a16z-aligned comps; do not claim all satisfy “founded within six months” without a date. Hello Haven and Quartz are fresh launches with credible pre-seed funding but longer product-development histories.
+- **[Data] UK:** Quartz is the strongest personal-agent/wealth assistant match found: £2.75M pre-seed, UK launch September 2026, and a published £16.99/month or £169.99/year subscription. Its founders say testing began at the start of 2026 and describe a year of building infrastructure, so it is not a strict sub-six-month-company match. [Launch/funding](https://myquartz.ai/newsroom/quartz-launches-in-the-uk) · [pricing/product](https://myquartz.ai/)
+- **[Data] Foresee consumer pricing is exactly free today.** Terms also permit possible insurer-paid compensation, such as commission if a policy is bought through its agency. Coverager reports the company described a carrier commission on purchase, but the exact transaction path, agency/attribution terms, rate, and realized revenue are not public. Free-to-shop does **not** establish who funds product operations.
+- **[Opinion] A good personal-agent company is not “workflow SaaS for consumers.”** The most investable pattern in these young comps is a durable personal context + trusted permission + real-world action loop. For insurance, a comparison chatbot alone is a thin feature. The larger bet would own a recurring household insurance relationship—understand current policies, compare equivalent coverage, detect changes, get authorized live quotes, complete licensed purchase/renewal, and help after bind—then distribute that capability through personal agents.
+- **[Important] No evidence says Foresee has a public plan or demonstrated path to a unicorn.** Foresee has no verified funding, revenue, users, bind volume, or valuation disclosed in reviewed sources. Insurify is a useful distribution/business-model precedent, but no public evidence located here establishes a $1B valuation for Insurify either.
+
+## Recent startups to study
+
+**Cutoff:** founded between 2026-04-02 and 2026-10-02. “Strict” means a public source supports an inception/founding date inside that interval—not merely a 2026 YC batch, launch, or seed announcement. The public record is incomplete, especially for private-company incorporation dates.
+
+| Company | Geography / fit | Age & funding evidence | Product / public price | Relevance and caveat |
+|---|---|---|---|---|
+| **Touchy (formerly Tokenless)** | San Francisco; direct personal agent | **Strict recent founding supported:** cofounder publicly announced founding Tokenless on **2026-06-16**; YC S26. YC's standard deal is **$500K** ($125K for 7% plus $375K uncapped MFN SAFE), which applies to accepted YC companies; exact company-specific cap table is private. | Voice/image-first iPhone assistant; remembers preferences, sees/hears context, acts across apps. YC launch said **free to try**; no verified ongoing paid tier found. | Best strictly dated direct match. Its public company story shifted from Tokenless/model routing to Touchy/personal tech: study the pivot and its attention-restoring UX, not just its features. [YC](https://www.ycombinator.com/companies/touchy) · [launch](https://www.ycombinator.com/launches/Syt-touchy-voice-first-ai-assistant-for-iphone-that-understands-the-world-around-you) · [founding post](https://www.linkedin.com/posts/kevinzhiwang_im-founding-a-company-tokenless-with-rohit-activity-7472776281541996544-i9yy) · [terms](https://touchyapp.com/tos/) |
+| **Orbits / Bit** | Toronto + San Francisco; personal household agent; **a16z Speedrun** | Company was described as **founded earlier in 2026**; exact founding day not verified. Announced nearly **US$2M pre-seed** (about C$2.6M) on **2026-09-16**; a16z Speedrun, N49P, Garage Capital, angels. | Household AI: shared calendar, tasks, grocery/meals, home maintenance, email extraction, calls, and authorized actions. No public subscription price confirmed. | Strongest direct “personal AI in daily life” financing signal and strongest a16z match. Their claim that founders previously scaled a consumer platform to 1M+ monthly subscribers/nine-figure ARR refers to prior experience, **not Orbits traction**. [funding release](https://www.prnewswire.com/news-releases/orbits-raises-2-6-million-pre-seed-round-to-bring-an-ai-assistant-to-the-household-302880247.html) · [BetaKit](https://betakit.com/orbits-secures-2-million-usd-to-manage-home-logistics-with-ai/) · [product](https://tryorbits.com/) |
+| **Hello Haven / Haven** | US; general personal agent | **Fresh public launch:** **2026-09-17**; **$15M pre-seed**, led by Mayfield, with MVP Ventures. Founder's release says he built alone for a year, so company/product work predates the six-month window. | Cross-channel assistant by call, text, email, web, app; personal memory, model routing, tasks and proactive follow-up. **Free during beta**, no later price announced. | Closest funded “digital twin/personal assistant” vision and biggest disclosed pre-seed in this set. Do not treat its promotional “millions of times” usage statement or testimonials as independently verified traction. [founder/funding release](https://my.hellohaven.ai/press/hello-haven-your-digital-twin-not-just-an-assistant) · [beta plans](https://my.hellohaven.ai/plans) · [product](https://my.hellohaven.ai/faq) |
+| **Allowance** | San Francisco; agentic-commerce infrastructure | YC Spring 2026; YC says Founded: 2026; public launch **2026-05-22**. YC standard deal **$500K** applies. Exact inception date not independently established. | User-approved one-time cards, spending limits, merchant restrictions; connects to ChatGPT, Claude and other agents. **Free right now**, per FAQ. | Not the personal agent: it is the trust/payment layer that lets agents transact. Directly relevant to Foresee's eventual quote-to-bind / purchase handoff. [YC](https://www.ycombinator.com/companies/allowance) · [FAQ/pricing](https://useallowance.com/faq) · [founder origin](https://useallowance.com/blog/allowance-virtual-cards-for-ai-agents/) |
+| **Gravy** | San Francisco; personal-finance agent | YC Spring 2026; YC page marks Founded: 2026. Exact inception date and separate check not published; YC standard deal is $500K. | Personal finance agent for spending, savings, money movement, trading/taxes; no public consumer price verified. | High-fit personal agent with an actual economic action domain. YC profile describes ambition/capabilities, not verified production performance. [YC](https://www.ycombinator.com/companies/gravy) |
+| **Agentcard** | US; agentic-commerce infrastructure | YC S26; company page confirms YC backing and product, while the exact incorporation/inception date is not published. YC standard deal is $500K. | Card vault and checkout completion for other agents; company claims 99% success on selected popular merchants. No public price found. | Adjacent control-plane comp; company success-rate statement is a **company claim**, not an independently audited benchmark. [YC](https://www.ycombinator.com/companies/agentcard) · [product](https://agentcard.sh/) |
+| **Quartz / Charlie** | UK; personal wealth agent | UK launch **2026-09-16**, **£2.75M pre-seed** led by Daphni, with Outward VC and K Fund. Founder says product testing since start of 2026 and substantial infrastructure built over the preceding year. | Connected portfolio/bank/pension context plus ongoing AI guidance. **£16.99/month or £169.99/year**, 14-day trial; no commission/percentage of assets, per company. | Best UK pricing and regulatory/business-model analogue. Monetizes ongoing personal context, not a rare quote event; FCA registration is as an Account Information Services Provider, not proof it is an investment adviser. [launch/funding](https://myquartz.ai/newsroom/quartz-launches-in-the-uk) · [pricing](https://myquartz.ai/) |
+| **Vellum Personal Intelligence** | US; personal-agent platform, not a new startup | Product launched **2026-05-07**, but Vellum company dates to **2023** and had existing enterprise product/funding. The $25M mentioned by the company is **total funding reported**, not a new May 2026 $25M seed round. | Hosted personal assistants, persistent memory, cross-device access, self-hosting. Public plans: **$30 / $100 / $200 per month**, plus usage credits; self-hosted option has no platform fee. | Useful pricing/compute architecture comp, **not** a <6-month-old pre-seed startup. The public price separates hosted compute capacity and usage. [launch/funding claim](https://www.vellum.ai/blog/introducing-vellum) · [pricing](https://www.vellum.ai/pricing) |
+| **Rivo** | US; autonomous personal-finance vertical agent | **$3.1M total**, including a **$2.7M seed**, announced **2026-09-07**. Exact company start date not established by the sources reviewed. | Moves idle cash into short-term Treasuries and back before known bills; the funding post does not state a consumer subscription price. | Adjacent example of an agent that does rather than only advises. Revenue / spread capture and user price are not clear from the cited launch post; do not infer them. [funding/product/origin](https://www.rivofi.com/blog/funding-announcement) |
+| **Poppy / Second Nature Computing** | US; proactive ambient personal agent | **$1.25M pre-seed** led by Kindred Ventures, reported by TechCrunch May 13, 2026. Public launch May 2026; exact company inception date not verified. | Cross-app personal context, proactive reminders/suggestions, travel/booking flows. Had paid subscriptions; exact historical price not verified here. | **Shutdown:** company announced wind-down Aug 17, 2026; service ended Aug 31. Do not infer the reason—the company only said the team was moving on. Important cautionary case. [TechCrunch funding/product](https://techcrunch.com/2026/05/13/poppy-debuts-a-proactive-ai-assistant-to-help-organize-your-digital-life/) · [shutdown](https://getpoppy.app/blog/sunset) |
+| **jo** | US; general personal agent | YC S26, but YC says founded in **2023**; older than six-month cutoff. Current YC batch is S26; founder history includes W24. | Managed personal agent with memory, connected app context, browser, and recurring routines. Current exact price not captured in reviewed sources. | Useful managed-agent/continuity comp, not a new company. [YC](https://www.ycombinator.com/companies/jo) · [current product](https://askjo.ai/) · [founder history](https://askjo.ai/blog) |
+
+### What the funding cluster suggests
+
+1. **Personal context and memory:** Touchy, Haven, Quartz, Vellum.
+2. **Delegation and action in everyday life:** Orbits, Haven, Touchy.
+3. **Permissioned financial action:** Allowance, Agentcard, Gravy, Rivo.
+4. **Distribution pattern:** mobile-first plus communication channels (voice/text/email), existing agent connectors, and an initial daily-life or financial job—not “workflow SaaS” as the end product.
+5. **Pricing pattern:** no settled standard yet: currently free beta (Haven, Allowance, Touchy free-to-try); explicit subscription where context is ongoing (Quartz); hosted compute + usage-based credits (Vellum). Round size alone does not reveal willingness to pay or durable economics.
+
+**UK gap:** Quartz was the strongest funded UK personal-agent match surfaced. MiiGenie (Southampton; voice-first companion for older adults and caregivers) calls itself pre-seed and says beta launched August 2026, but I found no named investor, round amount, or funding announcement; do not count it as verified pre-seed/seed-backed. Public discovery did not verify another UK company with both a precise post-April founding date and source-backed funding. This is a search limitation, not proof none exists. [MiiGenie](https://www.miigenie.com/) · [team and accelerator](https://www.miigenie.com/about)
+
+## Foresee: public product, price, monetization and GTM
+
+### What the product actually does
+
+- **[Company docs]** Foresee offers an instant quote-estimate tool over MCP/API. It says estimates are modeled from insurer rate filings/formulas and return per-carrier premiums, priced coverage details, assumptions, confidence ranges and deductible/limit price ladders. These are **estimates**, not insurer-issued offers.
+- **[Company docs]** With fresh explicit user consent, a separate computer-use agent can submit details to named carriers' real quote forms and read back the page premium. Carriers may run soft checks and contact the shopper. This is not a carrier API in every case, and availability varies by carrier/state.
+- **[Company terms]** Foresee does not take payment, accept an offer or bind coverage. The user continues on the carrier's site to finish purchase.
+- **[Independent test]** Coverager reported launch in California for auto on 2026-09-29. In its test Foresee produced an estimate and carrier-site result for available flows, but could not walk one carrier without online quoting; the shopper had to proceed to the carrier site to complete. This is a launch snapshot, not an audited coverage map or successful-conversion measure.
+- **[Company purpose]** Foresee says it built the product so a user's AI can shop home/auto insurance with transparent side-by-side options and coverage-level pricing. It argues state-filed rating rules make price estimation possible. This is company rationale; I found no named founder's personal origin story or verified customer research narrative.
+
+Sources: [Foresee “Why”](https://go-foresee.com/why-foresee) · [terms, last updated 2026-09-16](https://go-foresee.com/terms) · [official docs](https://go-foresee.com/llms-full.txt) · [Coverager launch test](https://coverager.com/foresee-launches-in-california/).
+
+### Pricing and who pays
+
+| Component | Public evidence | What remains unknown |
+|---|---|---|
+| Consumer estimates | **Free**; no account required. | Operating cost / subsidy. |
+| Carrier-site confirmations | **Free** to shopper in current terms; requires explicit consent. | Cost per successful walk; carrier coverage/appointment and attribution arrangements. |
+| Commission | Terms say Foresee **may** be compensated by carrier, e.g. commission if a policy is purchased through its agency. Coverager says a company agent described a carrier commission on purchase. | Commission schedule, whether each current carrier path is agency-of-record/attributed, bind/persistency conversion, actual commission cash collected and revenue. |
+| Ads / lead sales | Foresee's agent-facing documentation says it does not show ads or sell marketing leads. | Whether this remains true in all commercial arrangements; independent audit absent. |
+| API / developer / subscription pricing | No public developer price, usage tariff or consumer subscription discovered; current service is no-account/no-key. | Whether future B2B/API pricing is planned or contracted. |
+| Funding / scale | No public funding round, investor list, revenue, user/quote counts, or valuation found in reviewed company pages and launch coverage. | All operating finance and traction metrics. No disclosure ≠ no funding. |
+
+**Bottom line:** “Free insurance shopping” describes the shopper's price, not the company's model. The disclosed *possible* payer is a carrier after an agency-attributed policy sale; that is not proof of current realized revenue. Foresee's no-ads/no-lead statement is a product promise, not an explanation of its burn or runway.
+
+### Foresee's apparent go-to-market (facts vs inference)
+
+**Observed facts:**
+
+1. Launch with a narrowly stated geography/line: California auto (Coverager, 2026-09-29).
+2. Put product inside the user's chosen AI through public MCP instructions for agent/assistant clients; no sign-in or API key reduces initial setup friction.
+3. Lead with immediate free utility: modeled multi-carrier estimates and detailed coverage-price comparison.
+4. Ask for explicit consent before the more consequential step: submitting personal details to carriers for live quote confirmation.
+5. Hand off to carrier-owned purchase flows, rather than completing/binding in Foresee.
+6. Staff for AI-assistant/agent infrastructure: the public careers page lists Software Engineer and Agent Engineer roles. Hiring intent is not evidence of customers or scale.
+
+**[Hypothesis, not published company plan]** A large-company path could be: earn adoption inside third-party personal agents → convert quote intent to licensed/attributed purchases → expand state/line coverage → own policy memory, renewal and household coverage changes → earn recurring renewal commissions and/or paid agent/API distribution. The missing steps are the hard ones: rights and reliable carrier access, licensing/appointments, completed binds, attribution, repeat use, trust, and positive unit economics. MCP distribution alone is copyable and dependent on third-party platforms.
+
+## Insurify: actual distribution precedent, not a unicorn template
+
+- **Origin:** Insurify's company history says cofounder Snejina Zacharia struggled to switch after a premium rise following a minor accident and encountered cumbersome calls/spam; she founded the company with Giorgos Zacharia and Tod Kiryazov in 2013. [Company history](https://insurify.com/company/about/)
+- **Early product/GTM:** online comparison launched in 2016. Historical press described broad carrier comparison and Insurify as a technology/marketing platform; don't backdate its later full agency/AI model to its launch. [Boston Magazine, 2016](https://www.bostonmagazine.com/news/2016/01/28/insurify-car-insurance-comparison-tool/) · [company history](https://insurify.com/company/about/)
+- **Expansion:** Insurify's chronology documents adding additional personal insurance lines, launching its own in-house agency in 2020, adding direct and embedded distribution partnerships, and acquiring Compare.com in 2023. It maintained a long-standing MediaAlpha publishing partnership for carrier traffic. [company history](https://insurify.com/company/about/) · [Nationwide partnership](https://www.businesswire.com/news/home/20210610005093/en/Insurify-Partners-With-Nationwide) · [MediaAlpha partnership](https://investors.mediaalpha.com/news-releases/news-release-details/mediaalpha-and-insurify-extend-publishing-partnership-new-multi) · [Compare.com acquisition](https://www.admiralgroup.co.uk/news-releases/news-release-details/insurify-completes-acquisition-comparecom)
+- **AI GTM now:** Insurify launched a ChatGPT app in February 2026, initially with estimates/comparison and handoff. In August it announced secure real-time personalized quotes in 11 states and a plan for broader coverage. Its reported AI referral/revenue growth rates are company-reported channel metrics, not absolute company revenue or audited results. [Feb 2026](https://insurify.com/press/news/insurify-chatgpt-app/) · [Aug 2026](https://insurify.com/press/news/insurify-expands-chatgpt-plugin/)
+- **Money:** Insurify says it primarily earns policy-sale commissions and also advertising. Its public statement does **not** disclose percentages, commission rate, margin or absolute revenue. Do not state an ad/commission split as fact. [Company explanation](https://insurify.com/car-insurance/knowledge/how-do-insurance-comparison-sites-make-money/)
+- **Funding vs “unicorn”:** Insurify announced a $100M Series B in 2021 and $128M total raised at that time; this is funding raised, not company valuation. I found no reliable public valuation establishing Insurify as a unicorn. The company is a strong distribution/insurance operating precedent—not evidence that an AI comparison app alone creates a billion-dollar company.
+
+### What a venture-scale personal-agent version of Foresee would have to prove
+
+**[Opinion] Don't copy the free comparison front end; copy the larger customer relationship, if you can earn it.** Insurance is a low-frequency shopping task, but a household's policy, risk and coverage context persists. A potentially bigger product is an agent that:
+
+1. **Remembers** household assets, vehicles, current policies, deductibles, limits, exclusions and renewal dates with user-controlled access.
+2. **Explains** comparable coverage and total cost, not just a single opaque premium; shows assumptions and missing information.
+3. **Acts** across carriers with explicit consent: verify live quote, switch/renew, update after life events, and later support service/claims handoff—within licensing and carrier rules.
+4. **Keeps the trust contract clear:** disclose compensation and ranking effects; don't sell leads or claim neutrality if paid placement affects what users see.
+5. **Distributes through the user's personal agent** while retaining a durable direct relationship and policy/renewal record, so platform dependence does not own the customer.
+
+Possible revenue layers to research—not confirmed Foresee plans:
+
+- **Commission on completed policy/renewal:** strongest adjacent precedent; depends on producer licensing, carrier appointments, bind attribution, persistency and service costs.
+- **Consumer subscription:** Quartz proves one UK wealth assistant publishes subscription pricing; it does not prove insurance shoppers will pay for an annual/low-frequency task. The product would need ongoing value beyond quote day.
+- **Agent/platform API or embedded distribution:** potential infrastructure economics if other agent providers need trustworthy insurance data/fulfilment; requires contracts and carrier/data rights. No current Foresee price or contract verified.
+- **Advertising / paid leads:** established industry models (and Insurify says ads + commissions), but conflicts with Foresee's stated no-ad/no-marketing-lead promise unless clearly separated/disclosed. Not a free lunch.
+
+**Unit-economics test:**
+
+`net value per acquired household = retained commission/renewal revenue + any subscription/API revenue − acquisition cost − quote/walk costs − licensed support − service/claims handoff costs`
+
+The key number is not premium volume, estimate count, or app installs. It is repeat households whose coverage decision is completed, attribution is retained, and contribution after these costs is positive. All needed Foresee values remain undisclosed.
+
+## What to do now—still desk-research first
+
+1. **Use the scan as a 3-lane map, not a forced choice:** (A) personal agent application, (B) vertical personal agent such as insurance/wealth, (C) permissioned transaction/context infrastructure enabling agents. Don't rank consumer B2C below “workflow SaaS” by default.
+2. **Build source-backed dossiers on Touchy, Haven, Orbits, Quartz, Insurify, Foresee, Allowance and Agentcard.** For each capture release dates, funding stage vs cumulative funding, exact product boundary, public price, GTM channel, what user data is retained, and the next action it can complete. Separate company claims from independently measured traction.
+3. **Audit Foresee's public journey against 10 synthetic household profiles:** which states/lines are supported, estimate completeness, coverage matching, confidence/assumptions, live carrier-walk availability, consent, and exact handoff. Synthetic inputs only; no real personal data. This gives desk-research product truth without claiming PMF.
+4. **Model pricing as alternatives, not guesses:** (i) free-to-shop/commission after bound policy, (ii) ongoing subscription for policy memory/renewal concierge, (iii) paid agent/API/embedded channel. Use the unknown net commission and retention as variables; don't insert an invented rate.
+5. **Run a public-source distribution teardown:** what brings initial users (agent surfaces, SEO, app stores, founder-led launch), what converts them, and what retains them. For Insurify, the durable evidence points to multiple channels—consumer comparison, carrier/embedded partnerships, licensed agency, paid publishing distribution, acquisition, and now ChatGPT—not one viral agent channel.
+6. **Only after the desk-research gate**, validate whether buyers/users actually delegate this job and accept the proposed price. This next evidence cannot be resolved by more market reports.
+
+### Decision at this checkpoint
+
+**[Opinion] Continue exploring personal-agent insurance as a vertical-agent hypothesis; do not call it a validated unicorn path.** Foresee's public product has an interesting technical wedge—agent-readable coverage-level estimates plus consented live quote checking—and clear free consumer pricing. The weaknesses are equally clear: narrow reported launch, no bind inside product, uncertain carrier coverage/rights, no disclosed revenue or traction, and no public scale plan. The relevant challenge is to turn episodic comparison into a durable, trusted, completed insurance relationship—or prove a reusable integration layer that other agents pay to use.
+
+## Data gaps / flags
+
+- Private startups' incorporation dates, funding instruments, traction, margins and investor terms are not consistently public; only Touchy has an exact recent founding signal in the evidence collected here.
+- Foresee's funding, ownership, founders, launch conversion, carrier agreements, appointment/licensing footprint, bind/renewal volumes, actual compensation and API pricing are unknown from public sources reviewed.
+- Insurify's revenue mix, absolute revenue and valuation are not publicly established by sources cited here. Its reported percentages/growth rates are not absolute revenue.
+- Product claims such as “every carrier,” “99% checkout success,” “millions of uses,” and “category-defining” are not independent validation.
+
+**Red flags:** Comparison-only product may be a low-frequency, high-CAC funnel; live insurer access and binding matter; agent platform owners may control distribution; no evidence yet of Foresee's economics or traction.  
+**Yellow flags:** Public startup founding dates are sparse; free beta pricing may change; a published subscription by a wealth app is not willingness-to-pay evidence for insurance.
+
+## Sources
+
+- [Touchy YC profile](https://www.ycombinator.com/companies/touchy); [Touchy YC Launch](https://www.ycombinator.com/launches/Syt-touchy-voice-first-ai-assistant-for-iphone-that-understands-the-world-around-you); [Touchy cofounder founding post](https://www.linkedin.com/posts/kevinzhiwang_im-founding-a-company-tokenless-with-rohit-activity-7472776281541996544-i9yy); [YC standard deal](https://www.ycombinator.com/deal)
+- [Orbits funding announcement](https://www.prnewswire.com/news-releases/orbits-raises-2-6-million-pre-seed-round-to-bring-an-ai-assistant-to-the-household-302880247.html); [BetaKit independent coverage](https://betakit.com/orbits-secures-2-million-usd-to-manage-home-logistics-with-ai/); [Orbits product](https://tryorbits.com/)
+- [Hello Haven funding/origin](https://my.hellohaven.ai/press/hello-haven-your-digital-twin-not-just-an-assistant); [beta plans](https://my.hellohaven.ai/plans)
+- [Allowance YC profile](https://www.ycombinator.com/companies/allowance); [Allowance pricing FAQ](https://useallowance.com/faq); [Allowance founder explanation](https://useallowance.com/blog/allowance-virtual-cards-for-ai-agents/)
+- [Gravy YC profile](https://www.ycombinator.com/companies/gravy); [Agentcard YC profile](https://www.ycombinator.com/companies/agentcard)
+- [Quartz launch and funding](https://myquartz.ai/newsroom/quartz-launches-in-the-uk); [Quartz pricing](https://myquartz.ai/)
+- [Vellum Personal Intelligence launch](https://www.vellum.ai/blog/introducing-vellum); [Vellum pricing](https://www.vellum.ai/pricing)
+- [Rivo funding/origin](https://www.rivofi.com/blog/funding-announcement)
+- [Foresee purpose](https://go-foresee.com/why-foresee); [terms](https://go-foresee.com/terms); [official agent docs](https://go-foresee.com/llms-full.txt); [Coverager launch test](https://coverager.com/foresee-launches-in-california/)
+- [Insurify company history](https://insurify.com/company/about/); [comparison-site economics](https://insurify.com/car-insurance/knowledge/how-do-insurance-comparison-sites-make-money/); [AI app launch](https://insurify.com/press/news/insurify-chatgpt-app/); [AI expansion](https://insurify.com/press/news/insurify-expands-chatgpt-plugin/); [MediaAlpha partnership](https://investors.mediaalpha.com/news-releases/news-release-details/mediaalpha-and-insurify-extend-publishing-partnership-new-multi); [Compare.com acquisition](https://www.admiralgroup.co.uk/news-releases/news-release-details/insurify-completes-acquisition-comparecom)

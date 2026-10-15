@@ -1,0 +1,410 @@
+{
+  "schema": "codeburn.export.v2",
+  "generated": "2026-10-15T02:23:32.285Z",
+  "currency": {
+    "code": "USD",
+    "rate": 1,
+    "symbol": "$"
+  },
+  "summary": [
+    {
+      "Period": "2026-10-14 to 2026-10-14",
+      "Cost (USD)": 0.31,
+      "Saved (USD)": 0,
+      "API Calls": 1,
+      "Sessions": 1,
+      "Projects": 1
+    }
+  ],
+  "periods": [
+    {
+      "label": "2026-10-14 to 2026-10-14",
+      "daily": [
+        {
+          "Period": "2026-10-14 to 2026-10-14",
+          "Date": "2026-10-14",
+          "Cost (USD)": 0.31,
+          "Saved (USD)": 0,
+          "API Calls": 1,
+          "Sessions": 1,
+          "Input Tokens": 168,
+          "Output Tokens": 73996,
+          "Cache Read Tokens": 5967873,
+          "Cache Write Tokens": 1717314
+        }
+      ],
+      "activity": [
+        {
+          "Period": "2026-10-14 to 2026-10-14",
+          "Activity": "Coding",
+          "Cost (USD)": 0.31,
+          "Share (%)": 100,
+          "Turns": 1
+        }
+      ],
+      "models": [
+        {
+          "Period": "2026-10-14 to 2026-10-14",
+          "Model": "gpt-6-luna",
+          "Cost (USD)": 0.31,
+          "Saved (USD)": 0,
+          "Share (%)": 100,
+          "API Calls": 1,
+          "Edit Turns": 1,
+          "One-shot Rate (%)": 100,
+          "Retries/Edit": 0,
+          "Cost/Edit (USD)": 0.31,
+          "Input Tokens": 168,
+          "Output Tokens": 73996,
+          "Cache Read Tokens": 5967873,
+          "Cache Write Tokens": 1717314
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "Project": "hermes",
+      "Cost (USD)": 0.31,
+      "Saved (USD)": 0,
+      "Avg/Session (USD)": 0.31,
+      "Share (%)": 100,
+      "API Calls": 1,
+      "Sessions": 1
+    }
+  ],
+  "sessions": [
+    {
+      "Project": "hermes",
+      "Session ID": "8f01b7054933",
+      "Started At": "2026-10-14T20:02:18.665Z",
+      "Cost (USD)": 0.31,
+      "Saved (USD)": 0,
+      "API Calls": 1,
+      "Turns": 1,
+      "model": "gpt-6-luna"
+    }
+  ],
+  "records": [
+    {
+      "project": "hermes",
+      "sessionId": "8f01b7054933",
+      "timestamp": "2026-10-14T20:02:18.665Z",
+      "category": "coding",
+      "provider": "hermes",
+      "model": "gpt-6-luna",
+      "inputTokens": 168,
+      "outputTokens": 43577,
+      "reasoningTokens": 30419,
+      "cacheWriteTokens": 1717314,
+      "cacheReadTokens": 5967873,
+      "cost": 0.31,
+      "savings": 0
+    }
+  ],
+  "tools": [
+    {
+      "Tool": "Skill",
+      "Calls": 1,
+      "Share (%)": 11.11
+    },
+    {
+      "Tool": "Bash",
+      "Calls": 1,
+      "Share (%)": 11.11
+    },
+    {
+      "Tool": "Grep",
+      "Calls": 1,
+      "Share (%)": 11.11
+    },
+    {
+      "Tool": "Read",
+      "Calls": 1,
+      "Share (%)": 11.11
+    },
+    {
+      "Tool": "Edit",
+      "Calls": 1,
+      "Share (%)": 11.11
+    },
+    {
+      "Tool": "Vision",
+      "Calls": 1,
+      "Share (%)": 11.11
+    },
+    {
+      "Tool": "WebFetch",
+      "Calls": 1,
+      "Share (%)": 11.11
+    },
+    {
+      "Tool": "WebSearch",
+      "Calls": 1,
+      "Share (%)": 11.11
+    },
+    {
+      "Tool": "TodoWrite",
+      "Calls": 1,
+      "Share (%)": 11.11
+    }
+  ],
+  "mcp": [],
+  "shellCommands": [
+    {
+      "Command": "git status --short && printf '\\nTop-level files:\\n' && printf '%s\\n' * .[^.]* 2>/dev/null | head -80",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "git branch --show-current && git status --short --untracked-files=no | wc -l && printf '\\nHermes paths tracked/untracked:\\n' && git status --short -- .hermes docker apps/server-pilot/deploy apps/mail",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "git diff --cached -- apps/server-pilot/deploy/nginx.conf apps/server-pilot/tests/deploy-config.test.ts apps/server-pilot/deploy/deploy-ec2.sh && printf '\\nUnstaged diff for these files:\\n' && git diff -- apps/server-pilot/deploy/nginx.conf apps/server-pilot/tests/deploy-config.test.ts apps/server-pilot/deploy/deploy-ec2.sh",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV; pnpm --filter @zero/server-pilot exec vitest run tests/deploy-config.test.ts -t 'nginx config proxies /api to localhost:8788'",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "git diff -- apps/server-pilot/deploy/nginx.conf apps/server-pilot/tests/deploy-config.test.ts && printf '\\nWorking-tree status for edited files:\\n' && git status --short -- apps/server-pilot/deploy/nginx.conf apps/server-pilot/tests/deploy-config.test.ts && printf '\\nConfig count and old-limit check:\\n' && python3 -c \"from pathlib import Path; p=Path('apps/server-pilot/deploy/nginx.conf').read_text(); print('50m directives:', p.count('client_max_body_size 50m;')); print('35m directives:', p.count('client_max_body_size 35m;'))\"",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "python3 -c \"import subprocess; from pathlib import Path; p='apps/server-pilot/deploy/nginx.conf'; idx=subprocess.run(['git','show',':'+p],capture_output=True,check=True).stdout; wt=Path(p).read_bytes(); head=subprocess.run(['git','show','HEAD:'+p],capture_output=True,check=True).stdout; print('index bytes: CRLF',idx.count(b'\\\\r\\\\n'),'LF',idx.count(b'\\\\n')); print('worktree bytes: CRLF',wt.count(b'\\\\r\\\\n'),'LF',wt.count(b'\\\\n')); print('HEAD bytes: CRLF',head.count(b'\\\\r\\\\n'),'LF',head.count(b'\\\\n'))\" && printf '\\nAvailable test binaries:\\n' && test -x apps/server-pilot/node_modules/.bin/vitest && printf '%s\\n' apps/server-pilot/node_modules/.bin/vitest || true && test -x node_modules/.bin/vitest && printf '%s\\n' node_modules/.bin/vitest || true && printf '\\nWorkspace config:\\n' && node -e \"console.log(require('./pnpm-workspace.yaml'))\"",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "git diff --ignore-space-at-eol -- apps/server-pilot/deploy/nginx.conf && git diff --numstat -- apps/server-pilot/deploy/nginx.conf",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "unset DATABASE_URL VITEST_ALLOW_PILOT_RDS NODE_ENV; ./node_modules/.bin/vitest run tests/deploy-config.test.ts -t 'nginx config proxies /api to localhost:8788'",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "python3 -c \"from pathlib import Path; p=Path('apps/server-pilot/deploy/nginx.conf'); b=p.read_bytes(); p.write_bytes(b.replace(b'\\\\r\\\\n', b'\\\\n'))\" && git diff --numstat -- apps/server-pilot/deploy/nginx.conf && git diff -- apps/server-pilot/deploy/nginx.conf apps/server-pilot/tests/deploy-config.test.ts && git status --short -- apps/server-pilot/deploy/nginx.conf apps/server-pilot/tests/deploy-config.test.ts && python3 -c \"from pathlib import Path; p=Path('apps/server-pilot/deploy/nginx.conf').read_text(); assert p.count('client_max_body_size 50m;') == 2; assert 'client_max_body_size 35m;' not in p; print('Verified: two 50m directives; no 35m directives')\"",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "pwd; printf '\\nHermes-related processes:\\n'; ps -eo pid,ppid,user,args | grep -Ei '[h]ermes|[n]ginx|[c]addy|[t]raefik' | head -80; printf '\\nHERMES_HOME and profile paths (names only):\\n'; printf 'HERMES_HOME=%s\\n' \"${HERMES_HOME:-unset}\"; printf '\\nDirectories:\\n'; printf '%s\\n' /home/ubuntu/.hermes /home/ubuntu/.hermes/profiles/nava-car /home/ubuntu/projects/zero | xargs -n1 sh -c 'test -d \"$0\" && printf \"%s exists\\n\" \"$0\" || true'",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "readlink -f /home/ubuntu/hermes-releases/current; readlink -f /proc/589/cwd; readlink -f /proc/589/exe; printf '\\nService ownership (unit names only):\\n'; systemctl --user list-units --type=service --all --no-pager | grep -Ei 'hermes|webui' || true; systemctl list-units --type=service --all --no-pager | grep -Ei 'hermes|webui|caddy' || true; printf '\\nCaddy config routing lines:\\n'; awk '/reverse_proxy|handle|route|upload|request_body|file_server|:/{print NR \":\" $0}' /etc/caddy/Caddyfile 2>/dev/null | head -100",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "systemctl cat hermes-webui.service --no-pager; printf '\\nEffective unit settings (safe fields):\\n'; systemctl show hermes-webui.service -p User -p Group -p FragmentPath -p DropInPaths -p ExecStart -p EnvironmentFiles -p Restart -p ActiveState -p SubState; printf '\\nRelevant running environment keys only:\\n'; tr '\\0' '\\n' < /proc/589/environ | grep -E '^(HERMES_WEBUI_MAX_UPLOAD_MB|HERMES_HOME|HOME|PORT|WEBUI_PORT)=' || true; printf '\\nService recent logs (last 30):\\n'; journalctl -u hermes-webui.service -n 30 --no-pager -o cat",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'Live WebUI probe:\\n'; curl --silent --show-error --max-time 5 -o /tmp/hermes-webui-root.html -w 'HTTP %{http_code}; bytes=%{size_download}\\n' http://127.0.0.1:8787/; grep -oE 'Maximum upload size is [^<]+' /tmp/hermes-webui-root.html | head -3; grep -oE '__MAX_UPLOAD_BYTES__|MAX_UPLOAD_BYTES.{0,80}' /tmp/hermes-webui-root.html | head -3; printf '\\nProcess listener and caddy routes:\\n'; ss -ltnp | grep -E '8787|:80|:443' | head -30; sed -n '1,45p' /etc/caddy/Caddyfile",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf '%s\\n' 'WebUI env non-secret setting check:'; if sudo -n test -f /etc/hermes-webui/webui.env; then sudo -n awk -F= '$1==\"HERMES_WEBUI_MAX_UPLOAD_MB\" {print \"HERMES_WEBUI_MAX_UPLOAD_MB=\" $2; found=1} END {if (!found) print \"HERMES_WEBUI_MAX_UPLOAD_MB=<unset>\"}' /etc/hermes-webui/webui.env; else printf '%s\\n' 'env-file-missing'; fi; printf '\\nPermissions only:\\n'; sudo -n stat -c '%U:%G %a %n' /etc/hermes-webui/webui.env; printf '\\nEffective WebUI process env (limit only):\\n'; pid=$(systemctl show hermes-webui.service -p MainPID --value); printf 'MainPID=%s\\n' \"$pid\"; sudo -n sh -c \"tr '\\\\0' '\\\\n' < /proc/$pid/environ | grep '^HERMES_WEBUI_MAX_UPLOAD_MB=' || true\"",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf '%s\\n' 'Systemd unit-health preflight:'; systemctl is-active hermes-webui.service hermes-gateway.service caddy.service; printf '\\nWebUI health endpoint (no auth):\\n'; curl --silent --show-error --max-time 5 -o /tmp/hermes-webui-health.json -w 'HTTP %{http_code}; bytes=%{size_download}\\n' http://127.0.0.1:8787/api/health/agent; python3 -c \"from pathlib import Path; p=Path('/tmp/hermes-webui-health.json'); print(p.read_text()[:300])\"; printf '\\nRestart policy and memory baseline:\\n'; systemctl show hermes-webui.service -p Restart -p RestartUSec -p TimeoutStopUSec -p TimeoutStartUSec -p MemoryCurrent",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf '%s\\n' 'WebUI systemd drop-in directory:'; stat -c '%U:%G %a %n' /etc/systemd/system/hermes-webui.service.d; printf '\\nNon-interactive sudo authorization summary:\\n'; sudo -n -l | sed -n '1,40p'; printf '\\nWebUI guard status (before):\\n'; systemctl show hermes-guard.service -p ActiveState -p SubState -p ExecStart; printf '\\nHTTP root without following auth redirect:\\n'; curl --silent --show-error --max-time 5 -D - -o /dev/null http://127.0.0.1:8787/ | head -12",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf '%s\\n' 'Current cgroup memory headroom (system-level):'; free -h; printf '\\nWebUI cgroup memory settings:\\n'; systemctl show hermes-webui.service -p MemoryHigh -p MemoryMax -p TasksCurrent -p TasksMax; printf '\\nTest runner version:\\n'; /home/ubuntu/hermes-releases/current/agent/venv/bin/python -m pytest --version",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf '%s\\n' 'Dedicated drop-in collision check:'; if test -e /etc/systemd/system/hermes-webui.service.d/30-upload-limit.conf; then printf '%s\\n' 'already-exists'; sudo -n stat -c '%U:%G %a %n' /etc/systemd/system/hermes-webui.service.d/30-upload-limit.conf; else printf '%s\\n' 'not-present'; fi; printf '\\nEnvironment file metadata only:\\n'; sudo -n stat -c '%U:%G %a %s bytes %n' /etc/hermes-webui/webui.env; printf '\\nCurrent upload limit computation (deployed code):\\n'; cd /home/ubuntu/hermes-releases/current/webui && env PYTHONPATH=/home/ubuntu/hermes-releases/current/webui:/home/ubuntu/hermes-releases/current/agent HERMES_WEBUI_MAX_UPLOAD_MB=50 /home/ubuntu/hermes-releases/current/agent/venv/bin/python -c 'from api.config import MAX_UPLOAD_BYTES; print(f\"{MAX_UPLOAD_BYTES} bytes ({MAX_UPLOAD_BYTES // 1024 // 1024} MiB)\")'",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf '%s\\n' '[Service]' 'Environment=HERMES_WEBUI_MAX_UPLOAD_MB=50' | sudo -n tee /etc/systemd/system/hermes-webui.service.d/30-upload-limit.conf >/dev/null && sudo -n systemctl daemon-reload && sudo -n systemctl show hermes-webui.service -p Environment -p DropInPaths && sudo -n systemd-analyze verify hermes-webui.service && printf '\\nOverride contents:\\n' && sudo -n cat /etc/systemd/system/hermes-webui.service.d/30-upload-limit.conf && printf '\\nWebUI still active:\\n' && systemctl is-active hermes-webui.service hermes-gateway.service caddy.service",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "env -u DATABASE_URL -u VITEST_ALLOW_PILOT_RDS HERMES_WEBUI_MAX_UPLOAD_MB=50 /home/ubuntu/hermes-releases/current/agent/venv/bin/python -m pytest tests/test_issue1867_upload_size_preflight.py tests/test_index_shell_template_cache.py -q",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "systemctl is-active hermes-webui.service hermes-gateway.service caddy.service; printf '\\nInstalled restart guard:\\n'; systemctl cat hermes-guard.service --no-pager; printf '\\nUpload limit source and env default:\\n'; grep -n 'MAX_UPLOAD_BYTES = _env_mb_bytes' /home/ubuntu/hermes-releases/current/webui/api/config.py",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "systemd-run --unit=hermes-webui-upload-limit-restart --on-active=3s /usr/bin/systemctl restart hermes-webui.service && systemctl status hermes-webui-upload-limit-restart.timer --no-pager --full",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "sudo -n systemd-run --unit=hermes-webui-upload-limit-restart --on-active=5s /usr/bin/systemctl restart hermes-webui.service && sudo -n systemctl status hermes-webui-upload-limit-restart.timer --no-pager --full",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf '%s\\n' 'Wait for delayed WebUI-only restart:'; sudo -n systemctl show hermes-webui-upload-limit-restart.service -p ActiveState -p SubState -p Result --no-pager; printf '\\nService states:\\n'; systemctl is-active hermes-webui.service hermes-gateway.service caddy.service; printf '\\nWebUI service main PID + effective configured limit:\\n'; systemctl show hermes-webui.service -p MainPID -p Environment -p ActiveState -p SubState; printf '\\nAuthenticated app-shell upload limit probe:\\n'; python3 -c 'import json, urllib.request, urllib.error; url=\"http://127.0.0.1:8787/api/session/list\"; req=urllib.request.Request(url, headers={\"Accept\":\"application/json\"});\ntry:\n r=urllib.request.urlopen(req, timeout=8); print(\"HTTP\",r.status); print(r.read(300).decode(errors=\"replace\"))\nexcept urllib.error.HTTPError as e: print(\"HTTP\",e.code,e.read(300).decode(errors=\"replace\"))'",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "stat -c 'type=%F size=%s mode=%a path=%n' /home/ubuntu/.hermes/webui/attachments/8f01b7054933/interview-2026-10-14-handoff && file /home/ubuntu/.hermes/webui/attachments/8f01b7054933/interview-2026-10-14-handoff && test ! -e /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip && printf 'destination=available\\n'",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "systemctl show hermes-webui.service -p ActiveState -p SubState -p MainPID --no-pager; systemctl show hermes-webui-upload-limit-restart.service -p Result -p ActiveState -p SubState --no-pager",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "du -sh /home/ubuntu/.hermes/webui/attachments/8f01b7054933/interview-2026-10-14-handoff; printf '\\nTop-level entries:\\n'; printf '%s\\n' /home/ubuntu/.hermes/webui/attachments/8f01b7054933/interview-2026-10-14-handoff/* /home/ubuntu/.hermes/webui/attachments/8f01b7054933/interview-2026-10-14-handoff/.[!.]* 2>/dev/null; printf '\\nDestination parent:\\n'; stat -c '%A %U:%G %n' /home/ubuntu/.hermes/webui /home/ubuntu/.hermes/webui/attachments",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "install -d -m 700 /home/ubuntu/.hermes/webui/uploads && umask 077 && zip -qr -1 /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip interview-2026-10-14-handoff && chmod 600 /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip && zip -T /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip && printf '\\nArchive metadata:\\n' && stat -c 'type=%F size=%s bytes mode=%a owner=%U:%G path=%n' /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip && printf '\\nEntry counts:\\n' && printf 'source files: ' && find /home/ubuntu/.hermes/webui/attachments/8f01b7054933/interview-2026-10-14-handoff -type f | wc -l && printf 'archive entries: ' && unzip -Z1 /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip | wc -l",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "umask 077 && python3 -m zipfile -c /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip interview-2026-10-14-handoff && chmod 600 /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip && python3 -m zipfile -t /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip && printf '\\nArchive metadata:\\n' && stat -c 'type=%F size=%s bytes mode=%a owner=%U:%G path=%n' /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip && printf '\\nEntry counts:\\n' && printf 'source files: ' && find /home/ubuntu/.hermes/webui/attachments/8f01b7054933/interview-2026-10-14-handoff -type f | wc -l && printf 'archive entries: ' && python3 -m zipfile -l /home/ubuntu/.hermes/webui/uploads/interview-2026-10-14-handoff.zip | tail -n +3 | wc -l",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "date -Is; printf '\\n== CPU ==\\n'; uptime; nproc; lscpu | grep -E '^(Architecture|CPU\\(s\\)|On-line CPU|Model name|Thread|Core|Socket|CPU max MHz|CPU min MHz):'; printf '\\n== Memory ==\\n'; free -h; printf '\\n== Swap ==\\n'; swapon --show --bytes; printf '\\n== Load averages ==\\n'; cat /proc/loadavg; printf '\\n== Disk ==\\n'; df -hT / /home/ubuntu/projects/zero; printf '\\n== Top processes by CPU ==\\n'; ps -eo pid,comm,%cpu,%mem,rss --sort=-%cpu | head -12; printf '\\n== Top processes by RSS ==\\n'; ps -eo pid,comm,%cpu,%mem,rss --sort=-rss | head -12",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf '== cgroup v2 resource limits ==\\n'; for f in /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.events; do if test -r \"$f\"; then printf '\\n%s: ' \"$f\"; tr '\\n' ' ' < \"$f\"; printf '\\n'; fi; done; printf '\\n== Block devices ==\\n'; lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "vmstat 1 3; printf '\\n== Pressure stall information ==\\n'; for f in /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io; do printf '\\n%s\\n' \"$f\"; cat \"$f\"; done",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf '== Top CPU processes with command lines ==\\n'; ps -eo pid,ppid,%cpu,%mem,rss,etime,args --sort=-%cpu | head -12; printf '\\n== Memory pressure / OOM counters ==\\n'; grep -E '^(MemAvailable|MemFree|SwapTotal|SwapFree|Dirty|Writeback):' /proc/meminfo; printf '\\n'; cat /proc/vmstat | grep -E '^(pswpin|pswpout|oom_kill) ' || true",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'Timestamp: '; date -Is; printf '\\nLoad and CPU snapshot:\\n'; uptime; vmstat 1 2; printf '\\nMemory:\\n'; free -h; printf '\\nTop CPU processes (no command args):\\n'; ps -eo pid,comm,%cpu,%mem,rss,etime --sort=-%cpu | head -10; printf '\\nCurrent pressure (10s):\\n'; for f in /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io; do printf '%s ' \"$f\"; head -1 \"$f\"; done",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "ps -p 3929581,3929608 -o pid=,comm=,%cpu=,%mem=,rss=,etime=,args=",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "kill 3929581 3929608 && sleep 2 && printf 'Remaining compiler processes:\\n' && ps -p 3929581,3929608 -o pid=,comm=,%cpu=,%mem=,rss=,stat=,args= || true && printf '\\nCurrent load and memory:\\n' && uptime && free -h",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "ps -p 3929581,3929608 -o pid=,user=,comm=,etime=,args= && sudo -n kill -TERM 3929581 3929608 && sleep 3; printf '\\nRemaining target PIDs:\\n'; ps -p 3929581,3929608 -o pid=,user=,comm=,%cpu=,%mem=,rss=,stat=,args= || true; printf '\\nLoad and memory now:\\n'; uptime; free -h",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'Time: '; date -Is; printf '\\nMatching TypeScript noEmit processes:\\n'; ps -eo pid,ppid,user,%cpu,%mem,rss,etime,args | grep -E '[t]sc --(noEmit|-project)|[t]ypescript/.*/tsc' || true; printf '\\nLoad and memory:\\n'; uptime; free -h",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "ps -eo pid,ppid,pgid,user,%cpu,%mem,rss,etime,args | grep -E '[t]sc --noEmit|[t]sc --project'",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "sudo -n kill -TERM 3933726 3934278 && sleep 3 && printf 'Remaining typecheck PIDs:\\n' && ps -p 3933726,3934278 -o pid=,user=,comm=,%cpu=,%mem=,rss=,stat=,args= || true && printf '\\nMemory after termination:\\n' && free -h && printf '\\nLoad:\\n' && uptime",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'Hindsight API processes:\\n'; ps -eo pid,ppid,user,%cpu,%mem,rss,etime,args | grep -E '[h]indsight-api|[h]indsight_api' || true; printf '\\nContainer/service status (names, image, state, restart policy):\\n'; docker ps -a --format '{{.ID}} {{.Names}} {{.Image}} {{.Status}} {{.State}} {{.RunningFor}}' 2>/dev/null | grep -i hindsight || true; printf '\\nTarget cgroup if process found:\\n'; pgrep -f '^/app/api/.venv/bin/python /app/api/.venv/bin/hindsight-api$' | while read -r pid; do printf 'PID %s: ' \"$pid\"; tr '\\n' ' ' < \"/proc/$pid/cgroup\"; printf '\\n'; done",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'Target container policy and dependencies:\\n'; docker inspect hindsight-api --format 'name={{.Name}} restart={{.HostConfig.RestartPolicy.Name}} state={{.State.Status}} compose_project={{index .Config.Labels \"com.docker.compose.project\"}} compose_service={{index .Config.Labels \"com.docker.compose.service\"}}' && printf '\\nStopping only hindsight-api (database remains untouched):\\n' && docker stop --time 10 hindsight-api && printf '\\nVerified container state:\\n' && docker inspect hindsight-api --format 'state={{.State.Status}} exit={{.State.ExitCode}} finished={{.State.FinishedAt}} restart={{.HostConfig.RestartPolicy.Name}}' && printf '\\nHindsight DB state:\\n' && docker inspect hindsight-db --format 'state={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' && printf '\\nAny surviving API process:\\n' && ps -eo pid,ppid,comm,args | grep -E '[h]indsight-api|[h]indsight_api' || true && printf '\\nAvailable RAM:\\n' && free -h",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "sleep 3; printf 'Hindsight container state: '; docker inspect hindsight-api --format '{{.State.Status}} (restart={{.HostConfig.RestartPolicy.Name}})'; printf 'Hindsight DB state: '; docker inspect hindsight-db --format '{{.State.Status}} (health={{.State.Health.Status}})'; printf 'API process count: '; pgrep -fc '^/app/api/.venv/bin/python /app/api/.venv/bin/hindsight-api$' || true; printf '\\nMemory:\\n'; free -h",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'Time: '; date -Is; printf '\\nLoad averages and uptime:\\n'; uptime; printf '\\nCPU sample (2 seconds):\\n'; vmstat 1 3; printf '\\nCPU count/model:\\n'; getconf _NPROCESSORS_ONLN; lscpu | grep -E '^(Model name|CPU\\(s\\)):'; printf '\\nCPU pressure:\\n'; cat /proc/pressure/cpu; printf '\\nTop CPU processes:\\n'; ps -eo pid,user,comm,%cpu,%mem,rss,etime --sort=-%cpu | head -10; printf '\\nMemory snapshot:\\n'; free -h",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'Timestamp: '; date -Is; printf '\\n== Load / CPU ==\\n'; uptime; vmstat 1 2; printf '\\nCPU PSI: '; head -1 /proc/pressure/cpu; printf '\\n== RAM / swap ==\\n'; free -h; printf '\\n== Top RSS ==\\n'; ps -eo pid,ppid,user,comm,%cpu,%mem,rss,etime --sort=-rss | head -16; printf '\\n== Top CPU ==\\n'; ps -eo pid,ppid,user,comm,%cpu,%mem,rss,etime --sort=-%cpu | head -16; printf '\\n== Explicit heavy-job check ==\\n'; ps -eo pid,ppid,user,comm,%cpu,%mem,rss,etime | grep -E '(^| )(tsc|node \\(vitest|hindsight-api)( |$)' || true; printf '\\n== OOM counters ==\\n'; grep -E '^(oom_kill|pswpin|pswpout) ' /proc/vmstat",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf '== Running containers resource usage ==\\n'; docker stats --no-stream --format '{{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}\\t{{.MemPerc}}' 2>&1 | head -20; printf '\\n== Relevant service/container state ==\\n'; docker inspect hindsight-api hindsight-db --format '{{.Name}} {{.State.Status}}' 2>/dev/null || true; printf '\\n== Available memory pressure ==\\n'; cat /proc/pressure/memory; cat /proc/pressure/io",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "for p in 422441 311652 413741 113351 451266; do if test -r /proc/$p/status; then printf '\\nPID %s\\n' \"$p\"; ps -p \"$p\" -o pid,ppid,pgid,user,%cpu,%mem,rss,etime,stat,comm,args; printf 'cwd='; readlink -f \"/proc/$p/cwd\"; printf 'exe='; readlink -f \"/proc/$p/exe\"; fi; done",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'High memory processes after 3-second sample:\\n'; sleep 3; ps -eo pid,ppid,user,comm,%cpu,%mem,rss,etime,stat --sort=-rss | head -14; printf '\\nLoad and RAM:\\n'; uptime; free -h; printf '\\nCPU / I/O pressure:\\n'; head -1 /proc/pressure/cpu; head -1 /proc/pressure/io",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'Process count by name (largest RAM):\\n'; ps -eo comm,rss --sort=-rss | head -30; printf '\\nActive cgroup limits (host memory):\\n'; grep -E '^(MemAvailable|SwapFree):' /proc/meminfo; printf '\\nOut-of-memory events: '; grep '^oom_kill ' /proc/vmstat",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'Vitest process group members (PGID 247254):\\n'; ps -eo pid,ppid,pgid,sid,user,comm,%cpu,%mem,rss,etime,stat | awk 'NR==1 || $3==247254'; printf '\\nRemaining live TypeScript compiler processes:\\n'; ps -eo pid,comm,%cpu,%mem,rss,etime,args | grep -E '[t]sc --noEmit|[t]sc --project' || true; printf '\\nPrimary worker details (safe fields):\\n'; ps -p 422441,311652 -o pid,ppid,pgid,user,comm,%cpu,%mem,rss,etime,stat",
+      "Calls": 1,
+      "Share (%)": 1.96
+    },
+    {
+      "Command": "printf 'Current health snapshot:\\n'; uptime; free -h; printf '\\nCPU PSI: '; head -1 /proc/pressure/cpu; printf 'Memory PSI: '; head -1 /proc/pressure/memory; printf 'I/O PSI: '; head -1 /proc/pressure/io; printf '\\nOOM counter: '; awk '$1==\"oom_kill\"{print $2}' /proc/vmstat",
+      "Calls": 1,
+      "Share (%)": 1.96
+    }
+  ]
+}
