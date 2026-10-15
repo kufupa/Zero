@@ -2046,7 +2046,14 @@ describe('NavaPane screen states', () => {
   it('keeps Search disabled while a running job is read back, then clears the guard', async () => {
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
     let jobStatus: 'running' | 'done' = 'running';
-    bridgeMockState.storedWork = STORED_READY;
+    const firstGroup = STORED_READY.analysis.groups[0]!;
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: [{ ...firstGroup, roomCodes: ['SKNG'] }],
+      },
+    };
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     bridgeMockState.staffQuoteJobQuery.mockImplementation(async () =>
       jobStatus === 'running'
@@ -2080,6 +2087,75 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
     expect(screen.queryByText('An HMS search is already running. You can keep working.')).toBeNull();
   }, 15_000);
+
+  it('ignores a late running-job read-back after staff switch emails, leaving Search enabled', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    sessionStorage.setItem('nava.staff-quote-auto-suppressed:<other-quote@example.invalid>', '1');
+    let resolveFirstRead: ((view: unknown) => void) | undefined;
+    let firstReadPending = true;
+    const firstGroup = STORED_READY.analysis.groups[0]!;
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: [{ ...firstGroup, roomCodes: ['SKNG'] }],
+      },
+    };
+    bridgeMockState.staffQuoteSources['<other-quote@example.invalid>'] = {
+      messageId: 'mail-2',
+      threadId: 'thread-2',
+      sourceHash: 'cd'.repeat(32),
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(() => {
+      if (firstReadPending) {
+        firstReadPending = false;
+        return new Promise((resolve) => {
+          resolveFirstRead = resolve;
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const bridgeFor = (entryId: string, internetMessageId: string, subject: string) =>
+      ({
+        ...fakeBridge,
+        activeEmail: { ...fakeBridge.activeEmail!, entryId, internetMessageId, subject },
+      }) as unknown as PaneBridge;
+
+    const { rerender } = render(
+      <NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />,
+    );
+    await storedReadLands();
+    await waitFor(() => expect(resolveFirstRead).toBeTypeOf('function'));
+
+    rerender(<NavaPane bridge={bridgeFor('002', '<other-quote@example.invalid>', 'Quote B')} />);
+    await storedReadLands();
+    await waitFor(() => expect(screen.getByText('Quote B')).toBeDefined());
+    await waitFor(() =>
+      expect(bridgeMockState.staffQuoteJobQuery.mock.calls.length).toBeGreaterThan(1),
+    );
+
+    await act(async () =>
+      resolveFirstRead?.({
+        runId: 'staff-job-old-email',
+        status: 'running' as const,
+        result: null,
+        failureClass: null,
+        asOf: new Date().toISOString(),
+      }),
+    );
+    await settle();
+
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    confirmPublicRate();
+    await waitFor(() => {
+      const searches = screen.getAllByRole('button', { name: /^Search availability$/i });
+      expect(searches.length).toBeGreaterThan(0);
+      expect(searches.every((button) => (button as HTMLButtonElement).disabled)).toBe(false);
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: /^Search availability$/i })[0]!);
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+  });
 
   it('walks to a later stay’s saved quote after an empty first-stay probe, without starting pricing', async () => {
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');

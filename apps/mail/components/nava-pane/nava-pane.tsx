@@ -1462,10 +1462,57 @@ export function NavaPane({
     let lastStaffQuoteRunId: string | null = null;
     let pollLostRunId: string | null = null;
     let readBackArmedGuard = false;
+    const readBackObserved = {
+      messageId: source.messageId,
+      transportId: quoteSession.binding?.transportId ?? '',
+      internetMessageId: quoteSession.binding?.internetMessageId ?? null,
+      selectionEpoch,
+      inputRevision,
+      stepId: step.id,
+      stayKey: step.shareKey ?? '',
+    };
+    const releaseReadBackGuard = () => {
+      const current = quoteSessionRef.current;
+      if (current.runningStepId !== step.id) return;
+      dispatchQuote({
+        type: 'step_stale',
+        stepId: step.id,
+        selectionEpoch: current.binding?.selectionEpoch ?? 0,
+        inputRevision: current.inputRevision,
+      });
+    };
     const observedStaffQuoteJob: StaffQuoteJobQuery | undefined = originalStaffQuoteJob
       ? async (input, options) => {
           if ('runId' in input) lastStaffQuoteRunId = input.runId;
+          const observedMessageId = readBackObserved.messageId;
+          const observedTransportId = readBackObserved.transportId;
+          const observedInternetMessageId = readBackObserved.internetMessageId;
+          const observedSelectionEpoch = readBackObserved.selectionEpoch;
+          const observedInputRevision = readBackObserved.inputRevision;
+          const observedStepId = readBackObserved.stepId;
+          const observedStayKey = readBackObserved.stayKey;
           const view = await originalStaffQuoteJob(input, options);
+          const current = quoteSessionRef.current;
+          const stale =
+            current.staffSource?.messageId !== observedMessageId ||
+            current.binding?.transportId !== observedTransportId ||
+            (current.binding?.internetMessageId ?? null) !== observedInternetMessageId ||
+            (current.binding?.selectionEpoch ?? 0) !== observedSelectionEpoch ||
+            current.inputRevision !== observedInputRevision ||
+            !quoteStayRunIsCurrent(current, {
+              selectionEpoch: observedSelectionEpoch,
+              inputRevision: observedInputRevision,
+              stepId: observedStepId,
+              stayKey: observedStayKey,
+              groups: stayGroups,
+            });
+          if (stale) {
+            if (readBackArmedGuard) {
+              readBackArmedGuard = false;
+              releaseReadBackGuard();
+            }
+            return view;
+          }
           if (
             readBack &&
             !readBackArmedGuard &&
@@ -1569,13 +1616,9 @@ export function NavaPane({
       if (quoteSessionRef.current.staffSource?.messageId !== staffQuoteSource.messageId) return;
       autoStartStaffQuoteStepRef.current();
     };
-    const releaseReadBackGuard = () => {
-      if (quoteSessionRef.current.runningStepId === staffQuoteStep.id) {
-        dispatchQuote({ type: 'step_stale', stepId: staffQuoteStep.id, selectionEpoch, inputRevision });
-      }
-    };
     function applyStaffQuoteResult(remote: BoundExecuteStaffQuote | null) {
       if (
+        quoteSessionRef.current.staffSource?.messageId !== staffQuoteSource.messageId ||
         !quoteStayRunIsCurrent(quoteSessionRef.current, {
           selectionEpoch,
           inputRevision,
@@ -1584,8 +1627,14 @@ export function NavaPane({
           groups: stayGroups,
         })
       ) {
-        dispatchQuote({ type: 'step_stale', stepId: staffQuoteStep.id, selectionEpoch, inputRevision });
-        if (remote !== null) {
+        if (readBackArmedGuard) {
+          readBackArmedGuard = false;
+          releaseReadBackGuard();
+        }
+        if (
+          remote !== null &&
+          quoteSessionRef.current.staffSource?.messageId === staffQuoteSource.messageId
+        ) {
           toast.warning('Details changed while HMS was searching — search availability again.');
         }
         completeReadBack(false);
