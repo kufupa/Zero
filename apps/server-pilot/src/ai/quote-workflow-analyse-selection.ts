@@ -24,9 +24,11 @@ import {
   type AgentRunTrigger,
 } from './hitl-recorder.js';
 import { canonicalMessageId } from '../mail/ingest/message-id.js';
-import type {
-  SyncedQuoteAttachment,
-  SyncedQuoteSelection,
+import {
+  applyThreadConfirmationOverlay,
+  type OverlayPayload,
+  type SyncedQuoteAttachment,
+  type SyncedQuoteSelection,
 } from './quote-workflow-synced-selection.js';
 import { attachmentMattersForReview, unreadReasonWords } from './quote-attachment-review.js';
 import { stayDateSourceText, stayDateYearEvidenceText } from './stay-date-anchoring.js';
@@ -467,8 +469,17 @@ export async function analyseSyncedSelection(
             cacheWrittenAt: entry.writtenAt,
           })
         : null;
+      const withId = withAnalysisRunId(payload, analysisRunId);
       return {
-        payload: withAnalysisRunId(payload, analysisRunId),
+        payload: applyThreadConfirmationOverlay(
+          {
+            ...withId,
+            luna: hit.luna as OverlayPayload['luna'],
+            amendment: hit.amendment as OverlayPayload['amendment'],
+            reviewItems: hit.reviewItems as OverlayPayload['reviewItems'],
+          },
+          synced.threadConfirmation,
+        ),
         outcome: { kind: 'cache_hit' } as const,
       };
     }
@@ -555,7 +566,10 @@ export async function analyseSyncedSelection(
       }
     }
     return {
-      payload: withAnalysisRunId(payload, analysisRunId),
+      payload: applyThreadConfirmationOverlay(
+        withAnalysisRunId(payload, analysisRunId),
+        synced.threadConfirmation,
+      ),
       outcome: { kind: 'luna', cached } as const,
     };
   }
@@ -607,7 +621,10 @@ export async function analyseSyncedSelection(
       })
     : null;
   return {
-    payload: withAnalysisRunId(payload, analysisRunId),
+    payload: applyThreadConfirmationOverlay(
+      withAnalysisRunId(payload, analysisRunId),
+      synced.threadConfirmation,
+    ),
     outcome: { kind: 'fallback', reason: llm.fallbackReason } as const,
   };
 }

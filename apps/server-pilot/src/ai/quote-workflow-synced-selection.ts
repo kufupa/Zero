@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import { getDb } from '../db/client.js';
 import { attachment, message } from '../db/schema/mail.js';
 import {
@@ -42,7 +42,122 @@ export type SyncedQuoteSelection = {
   threadId?: string;
   /** Sender address of the selected message. Only the route reads it, to flag no-reply senders, so it is not hashed. */
   fromAddress?: string;
+  /** Sibling/later confirmation files. Not guest-request body or `attachments`. */
+  threadConfirmation?: ThreadConfirmationResolution;
 };
+
+const HMS_CONFIRMATION = /^\d{6,10}-\d{1,2}$/;
+const DASHED_CONFIRMATION = /(?<![0-9])(\d{6,10}-\d{1,2})(?![0-9])/g;
+
+export const THREAD_CONFIRMATION_AMBIGUOUS =
+  'This thread has more than one booking number on its confirmation files. Check HMS for the right one.';
+
+export type ThreadConfirmationResolution = {
+  confirmation: string | null;
+  reason: string | null;
+};
+
+export function isHmsConfirmation(value: string): boolean {
+  return HMS_CONFIRMATION.test(value);
+}
+
+export function resolveThreadConfirmationEvidence(
+  sources: Array<{ filename: string; text?: string }>,
+): ThreadConfirmationResolution {
+  const found = new Set<string>();
+  for (const source of sources) {
+    for (const match of source.filename.matchAll(DASHED_CONFIRMATION)) found.add(match[1]!);
+    if (source.text) for (const match of source.text.matchAll(DASHED_CONFIRMATION)) found.add(match[1]!);
+  }
+  if (found.size === 1) return { confirmation: [...found][0]!, reason: null };
+  if (found.size > 1) return { confirmation: null, reason: THREAD_CONFIRMATION_AMBIGUOUS };
+  return { confirmation: null, reason: null };
+}
+
+export function overlayHmsConfirmation(
+  selected: string | null | undefined,
+  evidence?: ThreadConfirmationResolution,
+): ThreadConfirmationResolution {
+  const trimmed = selected?.trim() || null;
+  if (trimmed && isHmsConfirmation(trimmed)) return { confirmation: trimmed, reason: null };
+  if (!evidence) return { confirmation: trimmed, reason: null };
+  if (evidence.confirmation) return { confirmation: evidence.confirmation, reason: null };
+  if (evidence.reason) return { confirmation: null, reason: evidence.reason };
+  return { confirmation: trimmed, reason: null };
+}
+
+export type OverlayPayload = {
+  luna?: { confirmationNumber?: string | null; missing?: Array<{ field: string; question: string }> } | null;
+  amendment?: { confirmationNumber: string | null } | null;
+  reviewItems?: Array<Record<string, unknown>>;
+};
+
+export function applyThreadConfirmationOverlay<T extends OverlayPayload>(
+  payload: T,
+  evidence: ThreadConfirmationResolution | undefined,
+): T {
+  if (evidence === undefined) return payload;
+  const current = payload.luna?.confirmationNumber ?? payload.amendment?.confirmationNumber ?? null;
+  const overlaid = overlayHmsConfirmation(current, evidence);
+  if (overlaid.confirmation === current && !overlaid.reason) return payload;
+  const missing = payload.luna?.missing ?? [];
+  return {
+    ...payload,
+    luna: payload.luna
+      ? {
+          ...payload.luna,
+          confirmationNumber: overlaid.confirmation,
+          missing:
+            overlaid.reason && !missing.some((item) => item.field === 'confirmationNumber')
+              ? [...missing, { field: 'confirmationNumber', question: overlaid.reason }]
+              : payload.luna.missing,
+        }
+      : payload.luna,
+    amendment: payload.amendment
+      ? { ...payload.amendment, confirmationNumber: overlaid.confirmation }
+      : payload.amendment,
+    reviewItems:
+      overlaid.reason && payload.reviewItems
+        ? [
+            ...payload.reviewItems,
+            {
+              id: 'missing:confirmationNumber:thread',
+              kind: 'question',
+              rank: 'secondary',
+              text: overlaid.reason,
+              sourceLabel: 'confirmationNumber',
+              blocking: false,
+            },
+          ]
+        : payload.reviewItems,
+  };
+}
+
+const ATTACHMENT_SELECT = {
+  id: attachment.id,
+  filename: attachment.filename,
+  mimeType: attachment.mimeType,
+  sizeBytes: attachment.sizeBytes,
+  isInline: attachment.isInline,
+  contentId: attachment.contentId,
+  sha256: attachment.sha256,
+  s3Key: attachment.s3Key,
+  messageId: attachment.messageId,
+};
+
+async function readerForRows(
+  rows: QuoteAttachmentRow[],
+  transportId: string,
+  signal: AbortSignal,
+): Promise<QuoteAttachmentReader> {
+  try {
+    return createArtifactReader(rows, signal, {
+      revalidateOffice: (officeRow) => revalidateOfficeAttachment(officeRow, transportId),
+    });
+  } catch {
+    return async () => ({ text: null, reason: 'storage unavailable' });
+  }
+}
 
 export type QuoteAttachmentRow = {
   id: string;
@@ -337,40 +452,34 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
 
   const preceding = orderCausalPreceding(row, threadRows);
 
-  const rows = await db
-    .select({
-      id: attachment.id,
-      filename: attachment.filename,
-      mimeType: attachment.mimeType,
-      sizeBytes: attachment.sizeBytes,
-      isInline: attachment.isInline,
-      contentId: attachment.contentId,
-      sha256: attachment.sha256,
-      s3Key: attachment.s3Key,
-      messageId: attachment.messageId,
-    })
-    .from(attachment)
-    .where(eq(attachment.messageId, row.id))
-    .orderBy(asc(attachment.id));
+  const threadMessageIds = threadRows.map((item) => item.id);
+  const threadIdSet = new Set(threadMessageIds);
+  const rows = (
+    threadMessageIds.length
+      ? await db
+          .select(ATTACHMENT_SELECT)
+          .from(attachment)
+          .where(inArray(attachment.messageId, threadMessageIds))
+          .orderBy(asc(attachment.id))
+      : []
+  ).filter((item) => threadIdSet.has(item.messageId));
+  const selectedRows = rows.filter((item) => item.messageId === row.id);
+  const siblingRows = rows.filter((item) => item.messageId !== row.id);
 
   const signal = input.signal ?? AbortSignal.timeout(15_000);
-  let reader: QuoteAttachmentReader;
-  try {
-    reader = createArtifactReader(rows, signal, {
-      revalidateOffice: (officeRow) => revalidateOfficeAttachment(officeRow, input.transportId),
-    });
-  } catch {
-    reader = async () => ({ text: null, reason: 'storage unavailable' });
-  }
+  const reader = await readerForRows(rows, input.transportId, signal);
 
   return {
     subject: row.subject ?? '',
     bodyText: row.textBody ?? '',
     receivedAt: row.receivedAt?.toISOString(),
     preceding,
-    attachments: await readQuoteAttachments(rows, reader),
+    attachments: await readQuoteAttachments(selectedRows, reader),
     messageId: row.id,
     threadId: row.threadId,
     fromAddress: row.fromAddress,
+    threadConfirmation: siblingRows.length
+      ? resolveThreadConfirmationEvidence(await readQuoteAttachments(siblingRows, reader))
+      : { confirmation: null, reason: null },
   };
 }

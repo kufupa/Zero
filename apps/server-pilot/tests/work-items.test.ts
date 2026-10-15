@@ -24,12 +24,13 @@ import {
   validFieldValue,
   workItemIdForMail,
 } from '../src/ai/work-items.js';
+import { THREAD_CONFIRMATION_AMBIGUOUS } from '../src/ai/quote-workflow-synced-selection.js';
 import { maskStaffNote, recordPaneActions, recordStaffNote } from '../src/ai/work-events.js';
 import { parseReplyLinkArgs, runReplyLinkBackfill } from '../scripts/backfill-reply-link.js';
 import { HMS_JOB_PROMPT_VERSION, NOT_APPLICABLE_MODEL_ID } from '../src/ai/run-ledger.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import * as schema from '../src/db/schema/index.js';
-import { aiWorkflowRun, mailboxTransport, mailDraft, mailThread, message } from '../src/db/schema/mail.js';
+import { aiWorkflowRun, attachment, mailboxTransport, mailDraft, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { user } from '../src/db/schema/auth.js';
 import { NAVA_USER_EMAIL, NAVA_USER_ID } from '../src/db/seed.js';
@@ -313,6 +314,84 @@ describe('stored read for the pane', () => {
         requestedChange: null,
       });
       expect(work.analysis.luna.flags).toContain('amendment_or_cancel');
+    }));
+
+  it('fills a stored amendment confirmation from thread PDF evidence when the selected read has none', () => {
+    const extracted = payload();
+    extracted.confirmationNumbers = [];
+    const analysis = storedAnalysis(
+      { kind: 'amendment', payload: extracted, attachments: [] },
+      {},
+      { confirmation: '57291630-1', reason: null },
+    ).analysis;
+    expect(analysis.amendment?.confirmationNumber).toBe('57291630-1');
+    expect(analysis.luna.confirmationNumber).toBe('57291630-1');
+  });
+
+  it('fails closed on the stored path when thread PDFs disagree, and never dashes a bare number', () => {
+    const extracted = payload();
+    extracted.confirmationNumbers = ['47360291'];
+    const ambiguous = storedAnalysis(
+      { kind: 'amendment', payload: extracted, attachments: [] },
+      {},
+      { confirmation: null, reason: THREAD_CONFIRMATION_AMBIGUOUS },
+    ).analysis;
+    expect(ambiguous.amendment?.confirmationNumber).toBeNull();
+    expect(ambiguous.reviewItems.some((item) => item.text.includes('more than one booking number'))).toBe(
+      true,
+    );
+
+    const bare = storedAnalysis(
+      { kind: 'amendment', payload: extracted, attachments: [] },
+      {},
+      { confirmation: null, reason: null },
+    ).analysis;
+    expect(bare.amendment?.confirmationNumber).toBe('47360291');
+    expect(bare.amendment?.confirmationNumber).not.toBe('47360291-1');
+  });
+
+  it('uses a later sibling confirmation PDF filename on the stored ready view', () =>
+    withDb(async (db) => {
+      const guestId = await seedMail(db, 'sib-guest');
+      await db.insert(message).values({
+        id: 'sib-staff',
+        transportId: CENTURION,
+        threadId: 'thread-sib-guest',
+        direction: 'outbound',
+        fromAddress: 'centurion@legacyhotels.co.za',
+        toAddresses: ['sender@example.com'],
+        ccAddresses: [],
+        bccAddresses: [],
+        subject: 'Re: Rooms request',
+        textBody: 'Confirmation attached.',
+        ownerHeaderValue: 'centurion@legacyhotels.co.za',
+        messageIdHeader: 'sib-staff@example.com',
+        references: [],
+        isRead: true,
+        isStarred: false,
+        receivedAt: new Date('2026-10-06T09:00:00Z'),
+      });
+      await db.insert(attachment).values({
+        id: 'sib-pdf',
+        messageId: 'sib-staff',
+        filename: '57291630-1.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 2048,
+        s3Key: 'test/sib-pdf.pdf',
+        isInline: false,
+      });
+      await insertRead(db, guestId, {
+        version: 'extract-v1',
+        kind: 'amendment',
+        payload: { ...payload(), confirmationNumbers: [] },
+      });
+      const work = await storedWorkFor(db, {
+        transportId: CENTURION,
+        internetMessageId: '<sib-guest@example.com>',
+      });
+      expect(work.status).toBe('ready');
+      if (work.status !== 'ready') throw new Error('expected ready');
+      expect(work.analysis.amendment?.confirmationNumber).toBe('57291630-1');
     }));
 
   it('gives an amendment with no booked dates in mail no booked dates, never the requested stay (AE2)', () =>

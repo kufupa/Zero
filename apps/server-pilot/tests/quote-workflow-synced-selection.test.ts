@@ -6,11 +6,16 @@ import { attachment } from '../src/db/schema/mail.js';
 import { attachmentReads, buildInboundPrompt } from '../src/ai/extraction/extract.js';
 import { buildQuoteWorkflowPrompt } from '../src/ai/quote-workflow-llm.js';
 import { readAuthorizedArtifactBytes } from '../src/mail/artifacts/read-artifact.js';
+import { storedAnalysis } from '../src/ai/work-items.js';
 import {
   createArtifactReader,
   loadSyncedQuoteSelectionFromMailbox,
   orderCausalPreceding,
+  overlayHmsConfirmation,
+  applyThreadConfirmationOverlay,
   readQuoteAttachments,
+  resolveThreadConfirmationEvidence,
+  THREAD_CONFIRMATION_AMBIGUOUS,
   type QuoteAttachmentRow,
 } from '../src/ai/quote-workflow-synced-selection.js';
 
@@ -422,6 +427,117 @@ describe('orderCausalPreceding', () => {
   });
 });
 
+describe('resolveThreadConfirmationEvidence', () => {
+  it('takes one exact dashed HMS number from a sibling confirmation PDF filename', () => {
+    expect(
+      resolveThreadConfirmationEvidence([{ filename: '57291630-1.pdf' }]),
+    ).toEqual({ confirmation: '57291630-1', reason: null });
+  });
+
+  it('takes a dashed number from readable attachment text, not from a later message body', () => {
+    expect(
+      resolveThreadConfirmationEvidence([
+        { filename: 'confirmation.pdf', text: 'Booking 73114001-1 is confirmed.' },
+      ]),
+    ).toEqual({ confirmation: '73114001-1', reason: null });
+    expect(
+      resolveThreadConfirmationEvidence([
+        { filename: 'note.txt', text: undefined },
+      ]),
+    ).toEqual({ confirmation: null, reason: null });
+  });
+
+  it('fails closed when distinct dashed numbers appear on thread confirmation files', () => {
+    const resolved = resolveThreadConfirmationEvidence([
+      { filename: '57291630-1.pdf' },
+      { filename: '73114001-1.pdf' },
+    ]);
+    expect(resolved.confirmation).toBeNull();
+    expect(resolved.reason).toEqual(expect.any(String));
+    expect(resolved.reason).not.toHaveLength(0);
+  });
+
+  it('never turns a bare eight-digit filename into a dashed HMS number', () => {
+    expect(resolveThreadConfirmationEvidence([{ filename: 'ren_47360291.pdf' }])).toEqual({
+      confirmation: null,
+      reason: null,
+    });
+    expect(overlayHmsConfirmation('47360291', { confirmation: null, reason: null })).toEqual({
+      confirmation: '47360291',
+      reason: null,
+    });
+  });
+
+  it('does not invent a number from unread, scanned, or over-limit PDFs', () => {
+    expect(
+      resolveThreadConfirmationEvidence([
+        { filename: 'scan.pdf', readFailure: 'no readable text' },
+        { filename: 'locked.pdf', readFailure: 'encrypted' },
+        { filename: 'huge.pdf', readFailure: 'over the 3 file / 5 MB analysis limit' },
+      ]),
+    ).toEqual({ confirmation: null, reason: null });
+  });
+
+  it('keeps a valid selected HMS number and fills from evidence only when that number is missing', () => {
+    expect(overlayHmsConfirmation('57291630-1', { confirmation: '73114001-1', reason: null })).toEqual({
+      confirmation: '57291630-1',
+      reason: null,
+    });
+    expect(overlayHmsConfirmation(null, { confirmation: '57291630-1', reason: null })).toEqual({
+      confirmation: '57291630-1',
+      reason: null,
+    });
+  });
+
+  it('overlays the live analysis payload without touching guest-request attachments', () => {
+    const payload = applyThreadConfirmationOverlay(
+      {
+        sourceRevision: 4,
+        luna: { confirmationNumber: null, missing: [] },
+        amendment: { confirmationNumber: null },
+        reviewItems: [],
+      },
+      { confirmation: '57291630-1', reason: null },
+    );
+    expect(payload.sourceRevision).toBe(4);
+    expect(payload.amendment?.confirmationNumber).toBe('57291630-1');
+    expect(payload.luna?.confirmationNumber).toBe('57291630-1');
+  });
+});
+
+function fakeThreadMailboxDb(input: {
+  selected: Record<string, unknown>;
+  threadMessages: Array<Record<string, unknown>>;
+  attachments: Array<Record<string, unknown>>;
+  orderByCalls: Array<{ table: string; args: unknown[] }>;
+}) {
+  let messageQueries = 0;
+  const query = (table: string, rows: unknown[]) => {
+    const builder = Object.assign(Promise.resolve(rows), {
+      where: () => builder,
+      limit: async () => rows,
+      orderBy: (...args: unknown[]) => {
+        input.orderByCalls.push({ table, args });
+        return builder;
+      },
+    });
+    return builder;
+  };
+  return {
+    select: () => ({
+      from: (table: object) => {
+        const name = getTableName(table as never);
+        if (name === 'message') {
+          messageQueries += 1;
+          const rows = messageQueries === 1 ? [input.selected] : input.threadMessages;
+          return query(name, rows);
+        }
+        return query(name, input.attachments);
+      },
+    }),
+  };
+}
+
 describe('loadSyncedQuoteSelectionFromMailbox', () => {
   it('reads attachment rows in id order so the analyse cache key does not follow row order', async () => {
     const orderByCalls: Array<{ table: string; args: unknown[] }> = [];
@@ -466,5 +582,105 @@ describe('loadSyncedQuoteSelectionFromMailbox', () => {
       internetMessageId: '<m1@example.com>',
     });
     expect(orderByCalls).toEqual([{ table: 'attachment', args: [asc(attachment.id)] }]);
+  });
+
+  it('resolves a later sibling confirmation PDF and keeps it out of the guest-request attachments', async () => {
+    const orderByCalls: Array<{ table: string; args: unknown[] }> = [];
+    const selected = {
+      id: 'guest',
+      threadId: 't1',
+      subject: 'Change dates',
+      textBody: 'Please move our stay.',
+      receivedAt: new Date('2026-10-05T12:00:00Z'),
+    };
+    vi.mocked(getDb).mockReturnValue(
+      fakeThreadMailboxDb({
+        selected,
+        threadMessages: [
+          selected,
+          {
+            id: 'staff',
+            threadId: 't1',
+            textBody: 'Later body must not supply a number.',
+            receivedAt: new Date('2026-10-06T09:00:00Z'),
+          },
+        ],
+        attachments: [
+          {
+            id: 'guest-sheet',
+            filename: 'dates.xlsx',
+            mimeType: 'application/vnd.ms-excel',
+            sizeBytes: 20_000,
+            isInline: false,
+            s3Key: 'attachments/guest/sheet',
+            messageId: 'guest',
+          },
+          {
+            id: 'staff-pdf',
+            filename: '57291630-1.pdf',
+            mimeType: 'application/pdf',
+            sizeBytes: 1_000,
+            isInline: false,
+            s3Key: 'attachments/staff/conf',
+            messageId: 'staff',
+          },
+          {
+            id: 'other-thread',
+            filename: '73114001-1.pdf',
+            mimeType: 'application/pdf',
+            sizeBytes: 1_000,
+            isInline: false,
+            s3Key: 'attachments/other/conf',
+            messageId: 'other-guest',
+          },
+        ],
+        orderByCalls,
+      }) as never,
+    );
+
+    const loaded = await loadSyncedQuoteSelectionFromMailbox({
+      transportId: 'transport-1',
+      internetMessageId: '<guest@example.com>',
+    });
+
+    expect(loaded?.attachments.map((part) => part.filename)).toEqual(['dates.xlsx']);
+    expect(loaded?.preceding).toEqual([]);
+    expect(loaded?.threadConfirmation).toEqual({ confirmation: '57291630-1', reason: null });
+  });
+});
+
+function amendmentRead(confirmationNumbers: string[]) {
+  return {
+    kind: 'amendment' as const,
+    payload: {
+      contact: { name: null, email: null, phone: null },
+      agency: null,
+      endClient: null,
+      confirmationNumbers,
+      stays: [],
+      missing: [],
+    },
+    attachments: [] as const,
+  };
+}
+
+describe('storedAnalysis thread confirmation overlay', () => {
+  it('fills a stored amendment confirmation from sibling PDF evidence', () => {
+    const analysis = storedAnalysis(amendmentRead([]), {}, { confirmation: '57291630-1', reason: null }).analysis;
+    expect(analysis.amendment?.confirmationNumber).toBe('57291630-1');
+    expect(analysis.luna.confirmationNumber).toBe('57291630-1');
+  });
+
+  it('fails closed on the stored path when thread PDFs disagree, and never dashes a bare number', () => {
+    const ambiguous = storedAnalysis(amendmentRead(['47360291']), {}, {
+      confirmation: null,
+      reason: THREAD_CONFIRMATION_AMBIGUOUS,
+    }).analysis;
+    expect(ambiguous.amendment?.confirmationNumber).toBeNull();
+    expect(ambiguous.reviewItems.some((item) => item.text.includes('more than one booking number'))).toBe(true);
+
+    const bare = storedAnalysis(amendmentRead(['47360291']), {}, { confirmation: null, reason: null }).analysis;
+    expect(bare.amendment?.confirmationNumber).toBe('47360291');
+    expect(bare.amendment?.confirmationNumber).not.toBe('47360291-1');
   });
 });

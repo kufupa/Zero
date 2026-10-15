@@ -17,6 +17,12 @@ import {
   questionItems,
 } from './quote-workflow-analyse-selection.js';
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
+import {
+  isHmsConfirmation,
+  loadSyncedQuoteSelectionFromMailbox,
+  overlayHmsConfirmation,
+  type ThreadConfirmationResolution,
+} from './quote-workflow-synced-selection.js';
 import { aopQuoteChannelFromSender } from './aop-playbook.js';
 import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
@@ -231,7 +237,11 @@ export type GroupRef = { stayId: string; rowId: string | null };
  * amendment fields, the review items). No model call. A value a person set in `state` wins over the extraction.
  * A group's id is its row id, or its stay id for a stay with dates and no rows.
  */
-export function storedAnalysis(read: StoredRead, state: WorkState) {
+export function storedAnalysis(
+  read: StoredRead,
+  state: WorkState,
+  threadConfirmation?: ThreadConfirmationResolution,
+) {
   const { kind, payload } = read;
   const pick = <T>(path: string, fallback: T): T =>
     Object.hasOwn(state, path) ? (state[path] as T) : fallback;
@@ -307,6 +317,7 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
   }
   const booked = payload.stays[0]?.booked;
   const requested = payload.stays[0]?.requested;
+  const overlaid = overlayHmsConfirmation(payload.confirmationNumbers[0] ?? null, threadConfirmation);
   const luna: LunaAnalysis = {
     workflow: WORKFLOW_BY_KIND[kind] ?? 'other',
     flags,
@@ -317,10 +328,12 @@ export function storedAnalysis(read: StoredRead, state: WorkState) {
       reference: null,
     },
     rateClaims: [],
-    missing: payload.missing,
+    missing: overlaid.reason
+      ? [...payload.missing, { field: 'confirmationNumber', question: overlaid.reason }]
+      : payload.missing,
     evidence: [],
     tasks: [],
-    confirmationNumber: payload.confirmationNumbers[0] ?? null,
+    confirmationNumber: overlaid.confirmation,
     guestLastName: null,
     // The booking as it stands comes from the booked dates only. A missing booked date stays null: the requested
     // stay never stands in for it, so the HMS lookup cannot match on the wrong day (AE2).
@@ -1256,6 +1269,7 @@ async function readyView(
   db: DB,
   msg: {
     id: string;
+    threadId: string;
     fromAddress: string | null;
     subject: string | null;
     textBody: string | null;
@@ -1263,6 +1277,7 @@ async function readyView(
   },
   latest: ReadyRead,
   item: Pick<WorkItemRef, 'id' | 'status' | 'state' | 'extractionId'> | null,
+  transportId: string,
 ): Promise<StoredWork> {
   const messageId = msg.id;
   const read =
@@ -1277,6 +1292,11 @@ async function readyView(
   });
   const paneItem = existingStayInformation ? null : item;
   const state = paneItem?.state ?? {};
+  const selectedConfirmation = read.payload.confirmationNumbers[0]?.trim() ?? '';
+  const threadConfirmation = isHmsConfirmation(selectedConfirmation)
+    ? undefined
+    : (await loadSyncedQuoteSelectionFromMailbox({ transportId, messageId: msg.id }))
+        ?.threadConfirmation;
   const stored = storedAnalysis(
     {
       ...read,
@@ -1285,6 +1305,7 @@ async function readyView(
       bodyText: msg.textBody,
     },
     state,
+    threadConfirmation,
   );
   return {
     status: 'ready',
@@ -1322,7 +1343,7 @@ export async function storedWorkFor(
     subject: msg.subject,
     confirmationNumbers: latest.payload.confirmationNumbers,
   });
-  if (existingStayInformation) return readyView(db, msg, latest, null);
+  if (existingStayInformation) return readyView(db, msg, latest, null, input.transportId);
   const [item] = await db
     .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
     .from(workItem)
@@ -1335,7 +1356,7 @@ export async function storedWorkFor(
       ),
     )
     .limit(1);
-  return readyView(db, msg, latest, item ?? null);
+  return readyView(db, msg, latest, item ?? null, input.transportId);
 }
 
 /**
@@ -1358,7 +1379,7 @@ export async function openStoredWork(
       confirmationNumbers: latest.payload.confirmationNumbers,
     })
   ) {
-    return readyView(db, msg, latest, null);
+    return readyView(db, msg, latest, null, input.transportId);
   }
   const item = await ensureWorkItem(db, {
     transportId: input.transportId,
@@ -1367,7 +1388,7 @@ export async function openStoredWork(
     kind: latest.kind,
     extractionId: latest.id,
   });
-  return readyView(db, msg, latest, item);
+  return readyView(db, msg, latest, item, input.transportId);
 }
 
 export type FieldEventResult =
