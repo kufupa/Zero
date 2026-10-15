@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  agentThreadPrompt,
   decisionToOperations,
   snapshotRowToAgentCase,
   type SnapshotRow,
@@ -145,5 +146,21 @@ describe('snapshotRowToAgentCase', () => {
     ]);
     expect(JSON.stringify(built)).not.toMatch(/ANSWER-KEY/);
     expect(JSON.stringify(built)).not.toMatch(/msg-out-secret/);
+  });
+
+  it('converts HTML bodies to plain text before the 20k emailBlock cap', () => {
+    const request = 'Please quote 12 October.';
+    const html = `<html><head><style>${'x'.repeat(25_000)}</style></head><body><p>${request}</p></body></html>`;
+    const built = snapshotRowToAgentCase({
+      inbound: mail({
+        id: 'msg-html-1',
+        body: html,
+        body_is_html: true,
+        subject: 'October stay',
+      }),
+    });
+
+    expect(built.trigger.text).not.toMatch(/<style|<p>|<\/p>|<html>/i);
+    expect(agentThreadPrompt(built)).toContain(request);
   });
 });

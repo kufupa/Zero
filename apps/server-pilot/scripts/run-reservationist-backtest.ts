@@ -498,6 +498,14 @@ function loadSnapshotJobs(path: string, limit?: number): Array<{ messageId: stri
   });
 }
 
+function loadPredictedOps(path: string): PredictedOpsRow[] {
+  if (!existsSync(path)) return [];
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as PredictedOpsRow);
+}
+
 async function replayOps(args: {
   snapshot: string;
   out: string;
@@ -505,6 +513,7 @@ async function replayOps(args: {
   concurrency: number;
 }): Promise<number> {
   const jobs = loadSnapshotJobs(args.snapshot, args.limit);
+  const latestPrior = new Map(loadPredictedOps(args.out).map((row) => [row.message_id, row]));
   const model = createAzureLunaModel();
   const runners = unavailableRunners();
   const requestContext = new RequestContext<ReservationistContext>([
@@ -512,46 +521,54 @@ async function replayOps(args: {
     ['hotelRules', CENTURION_HOTEL_RULES],
     ['liveQuoteOk', true],
   ]);
-  const outputs: PredictedOpsRow[] = new Array(jobs.length);
-  const indexed = jobs.map((job, index) => ({ job, index }));
-  await mapLimit(indexed, args.concurrency, async ({ job, index }) => {
-    if (job.error || !job.row) {
-      outputs[index] = predictedError(job.messageId, job.error ?? 'snapshot row invalid');
-      return;
-    }
-    try {
-      const agent = createReservationistAgent({ model, runners });
-      const res = await agent.generate(agentThreadPrompt(snapshotRowToAgentCase(job.row)), {
-        maxSteps: MAX_STEPS,
-        requestContext,
-        providerOptions: lunaProviderOptions(REASONING),
-        structuredOutput: { schema: reservationistDecisionSchema },
-      });
-      const decision = (res.object as ReservationistDecision | undefined) ?? null;
-      if (!decision) {
-        outputs[index] = predictedError(job.messageId, 'agent returned no decision');
-        return;
-      }
-      const tools = res.steps.flatMap((step) =>
-        step.toolResults.map(({ payload }) => payload.toolName as string),
-      );
-      outputs[index] = {
-        kind: 'predicted',
-        message_id: job.messageId,
-        operations: decisionToOperations(
-          decision,
-          tools.map((toolName) => ({ toolName })),
-        ),
-        workflow: decision.workflow,
-        tools,
-        error: null,
-      };
-    } catch (err) {
-      outputs[index] = predictedError(job.messageId, err instanceof Error ? err.message : String(err));
-    }
-  });
   mkdirSync(dirname(args.out), { recursive: true });
-  writeFileSync(args.out, `${outputs.map((row) => JSON.stringify(row)).join('\n')}${outputs.length ? '\n' : ''}`);
+  const outputs: PredictedOpsRow[] = new Array(jobs.length);
+  for (const [index, job] of jobs.entries()) {
+    const existing = latestPrior.get(job.messageId);
+    if (existing && existing.error === null) outputs[index] = existing;
+  }
+  const indexed = jobs
+    .map((job, index) => ({ job, index }))
+    .filter(({ index }) => outputs[index] === undefined);
+  await mapLimit(indexed, args.concurrency, async ({ job, index }) => {
+    let row: PredictedOpsRow;
+    if (job.error || !job.row) {
+      row = predictedError(job.messageId, job.error ?? 'snapshot row invalid');
+    } else {
+      try {
+        const agent = createReservationistAgent({ model, runners });
+        const res = await agent.generate(agentThreadPrompt(snapshotRowToAgentCase(job.row)), {
+          maxSteps: MAX_STEPS,
+          requestContext,
+          providerOptions: lunaProviderOptions(REASONING),
+          structuredOutput: { schema: reservationistDecisionSchema },
+        });
+        const decision = (res.object as ReservationistDecision | undefined) ?? null;
+        if (!decision) {
+          row = predictedError(job.messageId, 'agent returned no decision');
+        } else {
+          const tools = res.steps.flatMap((step) =>
+            step.toolResults.map(({ payload }) => payload.toolName as string),
+          );
+          row = {
+            kind: 'predicted',
+            message_id: job.messageId,
+            operations: decisionToOperations(
+              decision,
+              tools.map((toolName) => ({ toolName })),
+            ),
+            workflow: decision.workflow,
+            tools,
+            error: null,
+          };
+        }
+      } catch (err) {
+        row = predictedError(job.messageId, err instanceof Error ? err.message : String(err));
+      }
+    }
+    outputs[index] = row;
+    appendPrivate(args.out, row);
+  });
   const ok = outputs.filter((row) => row.error === null).length;
   const errors = outputs.length - ok;
   const workflows = tally(
