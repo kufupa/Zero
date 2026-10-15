@@ -282,6 +282,8 @@ export function NavaPane({
   const staffQuoteAutoSuppressed = useRef(new Set<string>());
   const staffQuoteRunCount = useRef(0);
   const staffQuoteReadBackInFlight = useRef(false);
+  // Mirrors the ref for render: the unquoted booking card waits until the earlier-quote lookup has settled.
+  const [priorQuoteSettled, setPriorQuoteSettled] = useState(0);
   const staffQuoteReadBackGeneration = useRef(0);
   const autoStartStaffQuoteStepRef = useRef<() => void>(() => undefined);
   const {
@@ -1020,11 +1022,13 @@ export function NavaPane({
       () => {
         if (staffQuoteReadBackGeneration.current === generation) {
           staffQuoteReadBackInFlight.current = false;
+          setPriorQuoteSettled((n) => n + 1);
         }
       },
       () => {
         if (staffQuoteReadBackGeneration.current === generation) {
           staffQuoteReadBackInFlight.current = false;
+          setPriorQuoteSettled((n) => n + 1);
         }
       },
     );
@@ -1047,9 +1051,12 @@ export function NavaPane({
     String(quoteSession.stayRevision),
     Object.keys(quoteSession.staffQuotes).join(','),
     Object.keys(quoteSession.bookingDrafts).join(','),
+    String(priorQuoteSettled),
   ].join(':');
   useEffect(() => {
     if (isNonActionableMessage) return;
+    // An earlier-quote lookup that lands later would replace this card mid-save, so wait for it to settle first.
+    if (staffQuoteReadBackInFlight.current) return;
     const luna = quoteSession.analysis?.luna;
     const source = quoteSession.staffSource;
     const binding = quoteSession.binding;
