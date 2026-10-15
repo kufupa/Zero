@@ -192,3 +192,36 @@ test('a dialog that never opens is not found, and no other window is typed into'
     await page.close();
   }
 });
+
+const GUEST_EMAIL = 'guest.lookup@example.test';
+
+test('guest search types email into the delayed Guest Search window, never the menu bar', { skip }, async () => {
+  const page = await openFixture('guest-search-window.html');
+  try {
+    await page.evaluate(() => {
+      window.delayMs = 800;
+    });
+    const found = await lookup.searchKind(page, { kind: 'guest', query: { email: GUEST_EMAIL } });
+    assert.equal(await page.inputValue('#guest-email'), GUEST_EMAIL);
+    assert.equal(await page.inputValue('#appmenusearch'), '');
+    assert.notEqual(found.issues?.[0]?.reason, 'lookup_window_not_opened');
+  } finally {
+    await page.close();
+  }
+});
+
+test('guest search that never opens Guest Search is lookup_window_not_opened, and types nowhere', { skip }, async () => {
+  const page = await openFixture('guest-search-window.html');
+  try {
+    await page.evaluate(() => {
+      window.neverOpen = true;
+    });
+    const found = await lookup.searchKind(page, { kind: 'guest', query: { email: GUEST_EMAIL } });
+    assert.equal(found.outcome, 'execution_failure');
+    assert.equal(found.issues[0].reason, 'lookup_window_not_opened');
+    assert.equal(await page.inputValue('#appmenusearch'), '');
+    assert.equal(await page.locator('#guest-email').inputValue(), '');
+  } finally {
+    await page.close();
+  }
+});

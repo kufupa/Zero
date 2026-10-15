@@ -12,6 +12,8 @@
  * a payment kind. Proof-of-payment classification is a follow-up.
  */
 
+import type { BuildCreatePrefillOutput } from './aop/create-prefill.js';
+
 export type HmsTodoKind = 'new_booking' | 'amend' | 'cancel';
 
 export type HmsTodoStepSource = 'mail' | 'attachment' | 'missing';
@@ -22,12 +24,18 @@ export type HmsTodoStep = {
   source: HmsTodoStepSource;
 };
 
+export type HmsTodoPrefill = {
+  fields: { label: string; value: string }[];
+  stillNeeded: string[];
+};
+
 export type HmsTodoCard = {
   kind: HmsTodoKind;
   title: string;
   steps: HmsTodoStep[];
   missing: string[];
   writesEnabled: false;
+  prefill?: HmsTodoPrefill;
 };
 
 export type HmsTodoStayAsk = {
@@ -56,6 +64,7 @@ export type HmsTodoCardInput = {
   requestedChange?: string | null;
   party?: { reference?: string | null } | null;
   attachmentFilenames?: readonly string[] | null;
+  prefill?: BuildCreatePrefillOutput | null;
 };
 
 const TITLE = 'Key into HMS';
@@ -95,6 +104,66 @@ function guestsOf(group: HmsTodoGroup): string | null {
     .map((name) => text(name))
     .filter((name): name is string => Boolean(name));
   return names.length ? names.join(', ') : null;
+}
+
+const CODE_FIELDS: Array<{ keys: readonly string[]; label: string }> = [
+  { keys: ['roomType'], label: 'Room type' },
+  { keys: ['ratePlan'], label: 'Rate plan' },
+  { keys: ['track'], label: 'Track' },
+  { keys: ['sourceOfBusiness'], label: 'Source of business' },
+  { keys: ['guaranteeType'], label: 'Guarantee' },
+  { keys: ['agency', 'bookingAgency', 'organization'], label: 'Agency' },
+  { keys: ['billingReference'], label: 'Billing reference' },
+  { keys: ['reservationNote'], label: 'Reservation note' },
+];
+
+const MISSING_FACT: Record<string, string[]> = {
+  arrival: ['Arrival'],
+  departure: ['Departure'],
+  rooms: ['Rooms'],
+  guestName: ['Guests', 'Guest last name'],
+};
+
+function pickText(request: Record<string, unknown>, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const shown = typeof request[key] === 'string' ? text(request[key] as string) : null;
+    if (shown) return shown;
+  }
+  return null;
+}
+
+function factAlreadyMissing(field: string, cardMissing: string[]): boolean {
+  const facts = MISSING_FACT[field];
+  if (!facts) return false;
+  return cardMissing.some((label) => facts.includes(label.replace(/^Group \d+ /, '')));
+}
+
+function derivePrefill(prefill: BuildCreatePrefillOutput, cardMissing: string[]): HmsTodoPrefill {
+  const requests = prefill.requests;
+  const primary = (requests[0] ?? {}) as Record<string, unknown>;
+  const fields: HmsTodoPrefill['fields'] = [];
+  for (const spec of CODE_FIELDS) {
+    const value = pickText(primary, spec.keys);
+    if (value) fields.push({ label: spec.label, value });
+  }
+  for (let index = 1; index < requests.length; index += 1) {
+    const room = requests[index] as Record<string, unknown>;
+    for (const spec of CODE_FIELDS) {
+      const value = pickText(room, spec.keys);
+      if (value && value !== pickText(primary, spec.keys)) {
+        fields.push({ label: `Room ${index + 1} ${spec.label.toLowerCase()}`, value });
+      }
+    }
+  }
+  const stillNeeded: string[] = [];
+  const seen = new Set<string>();
+  for (const row of prefill.missing) {
+    const question = text(row.question);
+    if (!question || seen.has(question) || factAlreadyMissing(row.field, cardMissing)) continue;
+    seen.add(question);
+    stillNeeded.push(question);
+  }
+  return { fields, stillNeeded };
 }
 
 function attachments(input: HmsTodoCardInput): string | null {
@@ -199,5 +268,7 @@ export function buildHmsTodoCard(input: HmsTodoCardInput): HmsTodoCard | null {
 
   pushFact(steps, missing, 'Attachments', files, false, 'attachment');
 
-  return { kind, title: TITLE, steps, missing, writesEnabled: false };
+  const card: HmsTodoCard = { kind, title: TITLE, steps, missing, writesEnabled: false };
+  if (kind === 'new_booking' && input.prefill) card.prefill = derivePrefill(input.prefill, missing);
+  return card;
 }

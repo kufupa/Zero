@@ -157,7 +157,7 @@ export function loadCredentialsIn(
   return out;
 }
 
-function printPlan(plan: ProvisionPlan): void {
+export function printPlan(plan: ProvisionPlan): void {
   const line = (label: string, ids: string[]) =>
     console.log(label, ids.length, ids.join(' ') || '(none)');
   line(
@@ -179,6 +179,7 @@ function printPlan(plan: ProvisionPlan): void {
   line('alreadyPresent users', plan.alreadyPresent.users);
   line('alreadyPresent transports', plan.alreadyPresent.transports);
   line('alreadyPresent grants', plan.alreadyPresent.grants);
+  line('aliasesToAdd', plan.aliasesToAdd.map((row) => `${row.transportId} ${row.aliases.length}`));
   if (plan.transportDrift.length === 0) return;
   console.log('transportDrift (reported, not overwritten)', plan.transportDrift.length);
   for (const row of plan.transportDrift) console.log(`  ${row.id} ${row.field}`);

@@ -785,17 +785,27 @@ export async function searchKind(page, request) {
     await clickLov(page, 'araccountname');
     return filteredLookup(page, 'arAccount', request, () => fillLookupFilter(page, 'arAccount', request.query.arAccountName));
   }
-  // Guest search: the grid is read only after the Search control was clicked and the grid settled.
+  // Guest search: wait for the named Guest Search window. Never fall back to another visible window.
   await page.locator('[data-qtip="Guest Search"], [data-qtip="Search Guest"]').first().click({ timeout: 5000 }).catch(async () => {
     await page.getByRole('button', { name: /Guest Search/i }).first().click();
   });
-  const guestWin = await lookupWindow(page, 'guest');
+  const guestOpened = await pollUntil(page, async () => (await namedLookupWindow(page, 'guest')) !== null, 10_000, 250);
+  if (!guestOpened.ok) return lookupWindowNotOpened();
+  const guestWin = await namedLookupWindow(page, 'guest');
+  if (!guestWin) return lookupWindowNotOpened();
   const before = await snapshotGrid(page, 'guest');
   const typed = [];
-  if (filled(request.query.lastName)) typed.push(await fillExt(guestWin.locator('input[name="lastname"]:visible'), request.query.lastName));
-  if (filled(request.query.firstName)) typed.push(await fillExt(guestWin.locator('input[name="firstname"]:visible'), request.query.firstName));
-  if (filled(request.query.email)) typed.push(await fillExt(guestWin.locator('input[name="emailaddress"]:visible'), request.query.email));
-  if (filled(request.query.phone)) typed.push(await fillExt(guestWin.locator('input[name="phonenumber"]:visible'), request.query.phone));
+  for (const [name, value] of [
+    ['lastname', request.query.lastName],
+    ['firstname', request.query.firstName],
+    ['emailaddress', request.query.email],
+    ['phonenumber', request.query.phone],
+  ]) {
+    if (!filled(value)) continue;
+    const field = guestWin.locator(`input[name="${name}"]:visible`);
+    await pollUntil(page, async () => (await field.count()) > 0, 10_000, 250);
+    typed.push(await fillExt(field, value));
+  }
   // No typed field, or a field that did not read back, means the search would run unfiltered: refuse before Search.
   if (!typed.length || typed.includes(false)) return filterNotApplied();
   const internal = guestWin.getByText(/Internal Search/);
@@ -810,7 +820,7 @@ export async function searchKind(page, request) {
   if (await searchBtn.count()) searched = await clicked(searchBtn.first());
   else if (await searchAnchor.count()) searched = await clicked(searchAnchor.last());
   else if (await searchText.count()) searched = await clicked(searchText.last());
-  else searched = (await fillLookupFilter(page, 'guest', request.query.lastName)) && (await runLookupFilter(page, 'guest'));
+  else return filterNotVerified('search_not_found');
   if (!searched) return filterNotVerified('search_not_clicked');
   const settled = await waitForFreshGrid(page, 'guest', before, { run });
   if (settled === 'busy') return lookupBusyTimeout();

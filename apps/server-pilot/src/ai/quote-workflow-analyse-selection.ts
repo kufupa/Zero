@@ -6,6 +6,7 @@ import type { ModelAdapter } from './bedrock/adapter.js';
 import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { analyseQuoteSources, type QuoteWorkflowAnalysis } from './quote-workflow-analyse.js';
+import { buildCreatePrefill, type BuildCreatePrefillOutput } from './aop/create-prefill.js';
 import { buildHmsTodoCard, type HmsTodoCardInput } from './hms-todo-card.js';
 import {
   amendmentFromAnalysis,
@@ -400,18 +401,61 @@ function lunaWithMappedDates(luna: LunaAnalysis, mapped: MappedQuoteDecision): L
   };
 }
 
-function hmsTodoCardFromLuna(
+const MAX_PREFILL_ROOMS = 20;
+
+async function hmsTodoCardFromLuna(
   luna: LunaAnalysis | HmsTodoCardInput | null | undefined,
   attachments: SyncedQuoteAttachment[],
 ) {
   if (!luna) return null;
+  const workflow = luna.workflow?.trim().toLowerCase();
+  const groups = (luna as LunaAnalysis).groups;
+  const arrival = groups?.[0]?.arrival?.trim() || null;
+  const isNewBooking =
+    Array.isArray(groups) &&
+    (workflow === 'create' || workflow === 'create_booking' || workflow === 'new_booking' || workflow === 'booking');
+  let prefill: BuildCreatePrefillOutput | null = null;
+  // Group-sized asks (or a bad count) get no per-room prefill; the card still shows.
+  const roomTotal = Array.isArray(groups) ? groups.reduce((sum, group) => sum + (group.rooms ?? 1), 0) : 0;
+  if (isNewBooking && arrival && Number.isSafeInteger(roomTotal) && roomTotal <= MAX_PREFILL_ROOMS) {
+    try {
+      const party = (luna as LunaAnalysis).party;
+      prefill = await buildCreatePrefill({
+        arrival,
+        departure: groups[0]?.departure ?? null,
+        nights: null,
+        rooms: groups.flatMap((group) =>
+          Array.from({ length: Math.max(group.rooms ?? 1, 0) }, (_, index) => ({
+            adults: group.adultsPerRoom ?? 1,
+            childAges: [...(group.childAges ?? [])],
+            roomTypeText: group.roomPreference ?? null,
+            guestName: group.guestNames?.[index] ?? null,
+          })),
+        ),
+        boardText: groups[0]?.board ?? null,
+        rateText: null,
+        agencyName: party?.kind === 'agency' ? (party.name ?? null) : null,
+        organizationName:
+          party?.kind === 'organization' || party?.kind === 'government' ? (party.name ?? null) : null,
+        voucherNumber: null,
+        bookerName: null,
+        bookerEmail: null,
+        billingReference: party?.reference ?? null,
+        paidBy: null,
+        defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
+      });
+    } catch {
+      prefill = null;
+    }
+  }
   return buildHmsTodoCard({
     ...luna,
     attachmentFilenames: attachments.map((attachment) => attachment.filename),
+    prefill,
   });
 }
 
-function hmsTodoCardFromCached(luna: unknown, attachments: SyncedQuoteAttachment[]) {
+async function hmsTodoCardFromCached(luna: unknown, attachments: SyncedQuoteAttachment[]) {
   if (!luna || typeof luna !== 'object' || Array.isArray(luna)) return null;
   return hmsTodoCardFromLuna(luna as HmsTodoCardInput, attachments);
 }
@@ -449,7 +493,7 @@ export async function analyseSyncedSelection(
       const payload = {
         ...cached,
         sourceRevision: options.selectionEpoch,
-        hmsTodoCard: hmsTodoCardFromCached(cached.luna, synced.attachments),
+        hmsTodoCard: await hmsTodoCardFromCached(cached.luna, synced.attachments),
       };
       const analysisRunId = ledger
         ? await recordAgentRunCapped(ledger.recorder, {
@@ -533,7 +577,7 @@ export async function analyseSyncedSelection(
       luna: dated,
       workflow: luna.workflow,
       amendment: amendmentFromAnalysis(luna),
-      hmsTodoCard: hmsTodoCardFromLuna(dated, synced.attachments),
+      hmsTodoCard: await hmsTodoCardFromLuna(dated, synced.attachments),
       sourceRevision: options.selectionEpoch,
       ratePlan: mapped.ratePlan,
       delivery: mapped.delivery,
@@ -601,7 +645,7 @@ export async function analyseSyncedSelection(
     fallbackReason: llm.fallbackReason,
     aiUnavailable: true as const,
     amendment: null,
-    hmsTodoCard: hmsTodoCardFromLuna(override.luna, synced.attachments),
+    hmsTodoCard: await hmsTodoCardFromLuna(override.luna, synced.attachments),
     sourceRevision: options.selectionEpoch,
   };
   const analysisRunId = ledger
