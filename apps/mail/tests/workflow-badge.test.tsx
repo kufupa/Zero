@@ -89,6 +89,10 @@ describe('shared Nava read-as vocabulary', () => {
   });
 
   it('uses amendment, group, payment and booking evidence before the generic quote label', () => {
+    expect(readAsForAnalysis(analysis('send_document'), { kind: 'other' })).toBe('billing');
+    expect(readAsForAnalysis(analysis('payment_ack'), { kind: 'voucher_pop' })).toBe('payment');
+    expect(readAsForAnalysis(analysis('forward_to_partner'), { kind: 'quote' })).toBe('group');
+    expect(readAsForAnalysis(analysis('skip'), { kind: 'other' })).toBe('not_for_nava');
     expect(readAsForAnalysis(analysis('other', { amendment: AMEND }))).toBe('amendment');
     expect(
       readAsForAnalysis(
