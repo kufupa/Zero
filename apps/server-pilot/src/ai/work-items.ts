@@ -13,7 +13,9 @@ import type { AttachmentRead } from './extraction/extract.js';
 import type { ExtractionRow, ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
 import {
   canonicalInternetMessageId,
+  currentSourceText,
   documentFailureItems,
+  hmsTodoCardFromLuna,
   questionItems,
 } from './quote-workflow-analyse-selection.js';
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
@@ -214,6 +216,21 @@ const WORKFLOW_BY_KIND: Partial<Record<MailKind, LunaAnalysis['workflow']>> = {
   cancellation: 'cancel',
 };
 
+// voucher_pop covers agency vouchers as well as payments. Only payment cues in the subject, the start of the body
+// or a file name make it payment_ack; a voucher alone stays other.
+const PAYMENT_WORDS = /\bremittance\b|proof of payment|\bpayment (?:advice|confirmation|notification)\b/i;
+const POP_CAPS = /\bPOP\b/;
+
+function storedWorkflow(read: StoredRead): LunaAnalysis['workflow'] {
+  if (read.kind !== 'voucher_pop') return WORKFLOW_BY_KIND[read.kind] ?? 'other';
+  const text = [
+    read.subject ?? '',
+    (read.bodyText ?? '').slice(0, 2000),
+    ...(read.attachments ?? []).map((item) => item.filename ?? ''),
+  ].join('\n');
+  return PAYMENT_WORDS.test(text) || POP_CAPS.test(text) ? 'payment_ack' : 'other';
+}
+
 const FAILURE_COPY: Record<string, string> = {
   timeout: 'Nava ran out of time reading this email.',
   invalid_output: 'Nava read this email but could not use the result.',
@@ -319,7 +336,7 @@ export function storedAnalysis(
   const requested = payload.stays[0]?.requested;
   const overlaid = overlayHmsConfirmation(payload.confirmationNumbers[0] ?? null, threadConfirmation);
   const luna: LunaAnalysis = {
-    workflow: WORKFLOW_BY_KIND[kind] ?? 'other',
+    workflow: storedWorkflow(read),
     flags,
     groups,
     party: {
@@ -1221,7 +1238,10 @@ export type StoredWork =
       extractionId: string;
       refs: Record<string, GroupRef>;
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
-      analysis: StoredAnalysis & { noReplySender: boolean };
+      analysis: StoredAnalysis & {
+        noReplySender: boolean;
+        hmsTodoCard: Awaited<ReturnType<typeof hmsTodoCardFromLuna>>;
+      };
       contact: StoredContact;
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
@@ -1293,10 +1313,12 @@ async function readyView(
   const paneItem = existingStayInformation ? null : item;
   const state = paneItem?.state ?? {};
   const selectedConfirmation = read.payload.confirmationNumbers[0]?.trim() ?? '';
+  const synced = existingStayInformation
+    ? null
+    : await loadSyncedQuoteSelectionFromMailbox({ transportId, messageId: msg.id });
   const threadConfirmation = isHmsConfirmation(selectedConfirmation)
     ? undefined
-    : (await loadSyncedQuoteSelectionFromMailbox({ transportId, messageId: msg.id }))
-        ?.threadConfirmation;
+    : synced?.threadConfirmation;
   const stored = storedAnalysis(
     {
       ...read,
@@ -1307,6 +1329,9 @@ async function readyView(
     state,
     threadConfirmation,
   );
+  const sourceText = synced
+    ? currentSourceText(synced)
+    : [msg.subject ?? '', msg.textBody ?? ''].join('\n');
   return {
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,
@@ -1317,7 +1342,13 @@ async function readyView(
     extractionId: read.id,
     refs: stored.refs,
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
-    analysis: { ...stored.analysis, noReplySender: isNoReplyAddress(msg.fromAddress) },
+    analysis: {
+      ...stored.analysis,
+      noReplySender: isNoReplyAddress(msg.fromAddress),
+      hmsTodoCard: existingStayInformation
+        ? null
+        : await hmsTodoCardFromLuna(stored.analysis.luna, synced?.attachments ?? [], sourceText),
+    },
     contact: storedContact(read.payload, state),
     language: read.language,
     translation: storedTranslation(read.translation),
