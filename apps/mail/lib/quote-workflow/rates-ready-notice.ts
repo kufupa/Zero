@@ -18,7 +18,11 @@ export type RatesReadyNotice = { runId: string; title: string; threadId: string 
 type OpenDeps = { onOpenThread?: (threadId: string) => void; displayMessageForm?: (itemId: string) => void };
 type JobMeta = Omit<OwnStaffQuoteJob, 'runId' | 'status' | 'refused'>;
 const ownerKey = () => `${getMailCacheScope().userId}:${getMailCacheScope().activeTransportId}`;
+// One list for every pane mount: the web panel remounts per thread, so a pane-owned list lost the job on switch.
+export const ratesReadyJobs: { current: OwnStaffQuoteJob[] } = { current: [] };
+const notifiedRuns = { ids: new Set<string>(), owner: '' };
 const answers = (job: OwnStaffQuoteJob) => job.status === 'done' || job.refused;
+const finished = (job: OwnStaffQuoteJob) => answers(job) || job.status === 'failed';
 
 export function ratesReadyToastTitle(job: Pick<OwnStaffQuoteJob, 'refused' | 'subject'>): string {
   return `${job.refused ? 'HMS answered' : 'Rates ready'} · ${job.subject?.trim() || 'this email'}`;
@@ -57,8 +61,10 @@ export function trackingStaffQuoteJob(
 ): StaffQuoteJobQuery | undefined {
   if (!query) return undefined;
   return async (input, options) => {
+    // The list is taken before the wait, so a reply that lands after a mailbox switch goes to the old, dropped list.
+    const jobs = jobsRef.current;
     const view = await query(input, options);
-    if (view?.runId) remember(jobsRef.current, { ...meta(), runId: view.runId, status: view.status, refused: staffQuoteViewRefused(view) });
+    if (view?.runId) remember(jobs, { ...meta(), runId: view.runId, status: view.status, refused: staffQuoteViewRefused(view) });
     return view;
   };
 }
@@ -85,36 +91,38 @@ export function useRatesReadyNotice(input: {
 }): void {
   const live = useRef(input);
   live.current = input;
-  const notified = useRef(new Set<string>());
-  const owner = useRef(ownerKey());
   useEffect(() => {
     let stopped = false;
     let prev: OwnStaffQuoteJob[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
-    owner.current = ownerKey();
     const resetOwner = () => {
       const next = ownerKey();
-      if (owner.current === next) return;
-      owner.current = next;
+      if (notifiedRuns.owner === next) return;
+      notifiedRuns.owner = next;
       live.current.jobsRef.current = [];
-      notified.current = new Set(); prev = [];
+      notifiedRuns.ids = new Set(); prev = [];
     };
     const poll = async () => {
       resetOwner();
       const { jobsRef, query, openMessageId, openEmailKey, onOpenThread } = live.current;
       const jobs = jobsRef.current;
       for (const job of jobs) {
-        if (answers(job) || !query) continue;
+        if (finished(job) || !query) continue;
         try {
           const view = await query({ runId: job.runId });
           if (view) remember(jobs, { ...job, status: view.status, refused: staffQuoteViewRefused(view) });
         } catch { /* keep the pane-session row */ }
       }
       if (stopped) return;
-      const notices = ratesReadyNotices({ prev, next: jobs, openMessageId, openEmailKey, notifiedIds: notified.current });
+      const notices = ratesReadyNotices({ prev, next: jobs, openMessageId, openEmailKey, notifiedIds: notifiedRuns.ids });
       prev = jobs.map((job) => ({ ...job }));
+      // A finished job is decided once (toasted, on screen, or failed): it never toasts again and is no longer polled.
+      for (let index = jobs.length - 1; index >= 0; index -= 1) {
+        if (!finished(jobs[index]!)) continue;
+        notifiedRuns.ids.add(jobs[index]!.runId);
+        jobs.splice(index, 1);
+      }
       for (const notice of notices) {
-        notified.current.add(notice.runId);
         toast(notice.title, canOpenRatesReadyMail({ onOpenThread })
           ? { action: { label: 'Open', onClick: () => openRatesReadyMail(notice, live.current) } }
           : undefined);

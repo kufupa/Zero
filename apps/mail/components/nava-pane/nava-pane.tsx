@@ -83,7 +83,7 @@ import {
   type BoundExecuteStaffQuote,
   type StaffQuoteJobQuery,
 } from '@/lib/quote-workflow/staff-quote-bind';
-import { trackingStaffQuoteJob, useRatesReadyNotice, type OwnStaffQuoteJob } from '@/lib/quote-workflow/rates-ready-notice';
+import { ratesReadyJobs, trackingStaffQuoteJob, useRatesReadyNotice } from '@/lib/quote-workflow/rates-ready-notice';
 import { useHmsQueueStatus } from '@/lib/quote-workflow/use-hms-queue-status';
 import {
   admissionKey,
@@ -358,7 +358,6 @@ export function NavaPane({
     fetchStatus: () =>
       bindHmsQueueStatus(staffQuoteFromTrpc(trpcClient).workstation.hmsQueueStatus?.query),
   });
-  const ratesReadyJobs = useRef<OwnStaffQuoteJob[]>([]);
   useRatesReadyNotice({
     jobsRef: ratesReadyJobs,
     openMessageId: quoteSession.staffSource?.messageId ?? null,
