@@ -205,6 +205,20 @@ describe('buildCreatePrefill', () => {
     expect(company.requests[0]).not.toHaveProperty('sourceOfBusiness');
   });
 
+  it('leaves Track and Source empty when partyKind is set even if the name is missing', async () => {
+    const result = await buildCreatePrefill(
+      stay({
+        agencyName: null,
+        organizationName: null,
+        paidBy: null,
+        partyKind: 'agency',
+        defaults: NULL_DEFAULTS,
+      }),
+    );
+    expect(result.requests[0]).not.toHaveProperty('track');
+    expect(result.requests[0]).not.toHaveProperty('sourceOfBusiness');
+  });
+
   it('exports schemas and a description ready for createTool', () => {
     expect(buildCreatePrefillInputSchema.parse(stay()).arrival).toBe('2027-09-14');
     expect(

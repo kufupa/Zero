@@ -460,6 +460,10 @@ export async function hmsTodoCardFromLuna(
         bookerEmail: null,
         billingReference: party?.reference ?? null,
         paidBy: null,
+        partyKind:
+          party?.kind === 'agency' || party?.kind === 'organization' || party?.kind === 'government'
+            ? party.kind
+            : null,
         defaults:
           party?.kind === 'agency' || party?.kind === 'organization' || party?.kind === 'government'
             ? { track: null, sourceOfBusiness: null, guaranteeType: null }

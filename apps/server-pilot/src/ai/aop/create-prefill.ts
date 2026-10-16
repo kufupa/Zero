@@ -37,6 +37,7 @@ export const buildCreatePrefillInputSchema = z.object({
   bookerEmail: z.string().nullable(),
   billingReference: z.string().nullable(),
   paidBy: z.enum(['agency', 'guest', 'company']).nullable(),
+  partyKind: z.enum(['agency', 'organization', 'government']).nullable().optional(),
   defaults: z.object({
     track: z.string().nullable(),
     sourceOfBusiness: z.string().nullable(),
@@ -163,7 +164,13 @@ export async function buildCreatePrefill(
     : null;
   if (!departure) missing.push({ field: 'departure', question: 'Departure date for this booking?' });
 
-  const partySet = Boolean(trimmed(parsed.agencyName) || trimmed(parsed.organizationName));
+  const partySet = Boolean(
+    trimmed(parsed.agencyName) ||
+      trimmed(parsed.organizationName) ||
+      parsed.partyKind === 'agency' ||
+      parsed.partyKind === 'organization' ||
+      parsed.partyKind === 'government',
+  );
   const fallback = partySet ? null : DIRECT_BOOKING_DEFAULTS;
   const track = matchEnum(parsed.defaults.track ?? fallback?.track, options.track);
   if (!track) missing.push({ field: 'track', question: 'Track for this booking?' });
