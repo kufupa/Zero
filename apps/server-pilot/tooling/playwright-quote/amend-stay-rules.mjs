@@ -42,7 +42,10 @@ function realDate(value) {
 const count = (value) => Number.isInteger(value) && value >= 0 && value <= 16;
 
 export function validateAmendRequest(value) {
-  if (!plainObject(value) || Object.keys(value).sort().join(',') !== 'confirmation,expectedLastName,fields') return { ok: false, reason: 'request_fields_invalid' };
+  const keys = Object.keys(value ?? {}).filter((key) => key !== 'currentArrival').sort().join(',');
+  if (!plainObject(value) || keys !== 'confirmation,expectedLastName,fields') return { ok: false, reason: 'request_fields_invalid' };
+  // currentArrival moves the HMS calendar window to the stay; without it find only sees the current window.
+  if (value.currentArrival !== undefined && !realDate(value.currentArrival)) return { ok: false, reason: 'current_arrival_invalid' };
   if (typeof value.confirmation !== 'string' || !CONFIRMATION.test(value.confirmation)) return { ok: false, reason: 'confirmation_invalid' };
   if (typeof value.expectedLastName !== 'string' || !/^labtest$/i.test(value.expectedLastName)) return { ok: false, reason: 'expected_last_name_not_labtest' };
   if (!plainObject(value.fields)) return { ok: false, reason: 'fields_invalid' };

@@ -318,6 +318,8 @@ export type PaneAttachSpawnResult = {
 
 export type PaneAmendSpawnInput = {
   confirmation: string;
+  /** The stay's arrival in HMS now, so the find moves the calendar window to it. */
+  currentArrival: string;
   expectedLastName: string;
   fields: AmendRequest;
   previewDigest?: string;
@@ -423,7 +425,7 @@ const AMEND_TIMEOUT_MS = 10 * 60_000;
 export async function spawnAmendStay(input: PaneAmendSpawnInput): Promise<PaneAmendSpawnResult> {
   const dir = await mkdtemp(join(tmpdir(), 'pane-amend-'));
   const requestPath = join(dir, 'request.json');
-  await writeFile(requestPath, `${JSON.stringify({ confirmation: input.confirmation, expectedLastName: input.expectedLastName, fields: input.fields })}\n`, { mode: 0o600 });
+  await writeFile(requestPath, `${JSON.stringify({ confirmation: input.confirmation, currentArrival: input.currentArrival, expectedLastName: input.expectedLastName, fields: input.fields })}\n`, { mode: 0o600 });
   const mode = input.mode ?? 'commit';
   const args =
     mode === 'commit'
@@ -479,6 +481,7 @@ async function runPaneAmend(
       if (mode === 'commit' && !takePanePreview(input.owner, input.previewDigest ?? '', paneStayClock())) return null;
       return spawn({
         confirmation: input.confirmation,
+        currentArrival: input.arrival,
         expectedLastName: input.lastName.trim(),
         fields: input.fields,
         mode,
@@ -548,7 +551,7 @@ async function saveAmend(form: AmendForm, stay: PaneStayFields): Promise<SaveOut
   const previewDigest = paneAmendPreviewDigest({ confirmation: form.confirmation, expectedLastName: form.lastName, current: stay, fields });
   if (previewDigest !== form.previewDigest) return amendRefusal('refused_digest_mismatch');
   const result = await (paneHmsWriteLoaders.spawnAmend ?? spawnAmendStay)({
-    confirmation: form.confirmation, expectedLastName: form.lastName, fields, previewDigest,
+    confirmation: form.confirmation, currentArrival: form.arrival, expectedLastName: form.lastName, fields, previewDigest,
   });
   return { outcome: result.outcome, clickedOk: false, uploadSent: false, saveAttempted: result.saveAttempted,
     screenshots: result.screenshots, runDir: result.runDir };

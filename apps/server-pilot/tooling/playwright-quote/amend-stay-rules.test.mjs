@@ -69,6 +69,12 @@ test('parseAmendArgs refuses unknown, repeated, missing and invalid mode argumen
   assert.match(parseAmendArgs(args('save')).error, /preview or commit/);
 });
 
+test('validateAmendRequest accepts a real currentArrival hint and refuses a bad one', () => {
+  const hinted = { ...REQUEST, currentArrival: '2027-11-23' };
+  assert.deepEqual(validateAmendRequest(hinted), { ok: true, request: hinted });
+  assert.deepEqual(validateAmendRequest({ ...REQUEST, currentArrival: '2027-02-30' }), { ok: false, reason: 'current_arrival_invalid' });
+});
+
 test('validateAmendRequest accepts only the exact lab identity and allowlisted fields', () => {
   assert.deepEqual(validateAmendRequest(REQUEST), { ok: true, request: REQUEST });
   assert.equal(validateAmendRequest({ ...REQUEST, expectedLastName: 'smith' }).reason, 'expected_last_name_not_labtest');
