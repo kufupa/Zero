@@ -40,7 +40,12 @@ function currentFields(stay) {
 }
 
 async function dangerousDialog(page) {
-  const windows = page.locator('.x-window:visible');
+  // The Guest Stay record and the Start Center menu are .x-windows too, and both say "Rate". A dialog has an
+  // OK, Yes or No button; those two never do.
+  const windows = page.locator('.x-window:visible').filter({
+    hasNot: page.locator(`input[name="${SELECTOR_BY_FIELD.arrival}"]`),
+    has: page.locator('.x-btn:visible', { hasText: /^\s*(OK|Yes|No)\s*$/ }),
+  });
   for (let index = 0; index < await windows.count(); index += 1) {
     const text = (await windows.nth(index).innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
     const kind = dangerousDialogKind(text);
@@ -114,7 +119,7 @@ function recordReadback(ctx, fields, stay) {
 }
 
 async function findByConfirmation(ctx, request, secret) {
-  const args = { mode: 'find', confirmation: request.confirmation, arrival: null, lastName: request.expectedLastName, debugHtml: false };
+  const args = { mode: 'find', confirmation: request.confirmation, arrival: request.currentArrival ?? null, lastName: request.expectedLastName, debugHtml: false };
   return findOnOpenGuestStay({ args, dir: ctx.dir, result: {}, started: Date.now(), page: ctx.page, secret }, { captureScreenshots: false });
 }
 
@@ -183,11 +188,6 @@ async function run(ctx, request) {
       return;
     }
     if (await refuseUnsupportedFields(ctx, request.fields)) return;
-    if (ctx.args.mode === 'preview') {
-      ctx.result.outcome = 'previewed';
-      return;
-    }
-
     const mismatch = await fillChangedFields(ctx.page, request.fields);
     if (mismatch) {
       ctx.result.outcome = 'refused_unsupported_field';
@@ -200,6 +200,11 @@ async function run(ctx, request) {
       ctx.result.outcome = 'refused_dangerous_dialog';
       ctx.result.reason = 'dangerous_dialog';
       ctx.result.refusal = beforeSaveDialog;
+      return;
+    }
+    if (ctx.args.mode === 'preview') {
+      await shot(ctx, 'diff.png');
+      ctx.result.outcome = 'previewed';
       return;
     }
     ctx.result.saveAttempted = true;

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -38,7 +38,17 @@ import {
   type PaneStayCancelSpawnInput,
   type PaneStayCancelSpawnResult,
 } from './pane-stay-cancel.js';
-import { assertLabStayGuard, paneStayPropertyLock, type PaneStayLock } from './pane-stay-save.js';
+import {
+  assertLabStayGuard,
+  PANE_SCREENSHOT_NAME_PATTERN,
+  paneStayClock,
+  paneStayPropertyLock,
+  pruneExpiredPaneRuns,
+  recordPanePreview,
+  registerPaneRun,
+  takePanePreview,
+  type PaneStayLock,
+} from './pane-stay-save.js';
 import { findStay, type PaneStayFields } from './pane-stay-lookup.js';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import {
@@ -107,7 +117,7 @@ const cancelFormSchema = z.object({
   reason: z.string().max(200),
 });
 
-const amendFieldsSchema = z.object({
+export const amendFieldsSchema = z.object({
   arrival: z.string().regex(ISO_DATE).optional(), departure: z.string().regex(ISO_DATE).optional(),
   adults: z.number().int().min(1).max(16).optional(), children: z.number().int().min(0).max(16).optional(),
   roomType: z.enum(['STQN', 'STWN', 'SKNG', 'EXKNG', 'LUXKNG', 'SUITE', 'DLXKNG', 'DLXQN', 'DLXTWN']).optional(),
@@ -308,9 +318,12 @@ export type PaneAttachSpawnResult = {
 
 export type PaneAmendSpawnInput = {
   confirmation: string;
+  /** The stay's arrival in HMS now, so the find moves the calendar window to it. */
+  currentArrival: string;
   expectedLastName: string;
   fields: AmendRequest;
-  previewDigest: string;
+  previewDigest?: string;
+  mode?: 'preview' | 'commit';
 };
 
 export type PaneAmendSpawnResult = {
@@ -318,6 +331,7 @@ export type PaneAmendSpawnResult = {
   saveAttempted: boolean;
   screenshots: string[];
   runDir?: string;
+  previewDigest?: string | null;
   changedFieldsReadback?: Record<string, unknown> | null;
 };
 
@@ -411,13 +425,17 @@ const AMEND_TIMEOUT_MS = 10 * 60_000;
 export async function spawnAmendStay(input: PaneAmendSpawnInput): Promise<PaneAmendSpawnResult> {
   const dir = await mkdtemp(join(tmpdir(), 'pane-amend-'));
   const requestPath = join(dir, 'request.json');
-  await writeFile(requestPath, `${JSON.stringify({ confirmation: input.confirmation, expectedLastName: input.expectedLastName, fields: input.fields })}\n`, { mode: 0o600 });
+  await writeFile(requestPath, `${JSON.stringify({ confirmation: input.confirmation, currentArrival: input.currentArrival, expectedLastName: input.expectedLastName, fields: input.fields })}\n`, { mode: 0o600 });
+  const mode = input.mode ?? 'commit';
+  const args =
+    mode === 'commit'
+      ? [AMEND_STAY, '--request', requestPath, '--mode', 'commit', '--digest', input.previewDigest ?? '', '--out', dir]
+      : [AMEND_STAY, '--request', requestPath, '--mode', 'preview', '--out', dir];
   let runError: unknown = null;
   try {
-    await execFileAsync('node', [AMEND_STAY, '--request', requestPath, '--mode', 'commit', '--digest', input.previewDigest, '--out', dir],
-      { timeout: AMEND_TIMEOUT_MS, env: paneStaySpawnEnv() });
+    await execFileAsync('node', args, { timeout: AMEND_TIMEOUT_MS, env: paneStaySpawnEnv() });
   } catch (error) { runError = error; }
-  let result: { outcome?: string; saveAttempted?: boolean; screenshots?: string[]; changedFieldsReadback?: Record<string, unknown> | null };
+  let result: { outcome?: string; saveAttempted?: boolean; screenshots?: string[]; previewDigest?: string | null; changedFieldsReadback?: Record<string, unknown> | null };
   try { result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as typeof result; }
   catch {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -426,8 +444,72 @@ export async function spawnAmendStay(input: PaneAmendSpawnInput): Promise<PaneAm
   const outcome = result.outcome ?? 'execution_failure';
   if (outcome === 'execution_failure') warnPaneStaySpawnFailed('amend', runError ?? new Error(outcome));
   return { outcome, saveAttempted: result.saveAttempted === true, screenshots: result.screenshots ?? [],
-    changedFieldsReadback: result.changedFieldsReadback ?? null, runDir: dir };
+    previewDigest: result.previewDigest ?? null, changedFieldsReadback: result.changedFieldsReadback ?? null, runDir: dir };
 }
+
+export type PaneAmendPreviewInput = {
+  confirmation: string; arrival: string; lastName: string; fields: AmendRequest;
+};
+export type PaneAmendResult = {
+  outcome: string; screenshots: string[]; runId: string | null;
+  previewDigest: string | null; changedFieldsReadback: Record<string, unknown> | null;
+};
+const refusedAmend = (outcome: string): PaneAmendResult =>
+  ({ outcome, screenshots: [], runId: null, previewDigest: null, changedFieldsReadback: null });
+
+export function checkAmendPaneInput(input: PaneAmendPreviewInput): string | null {
+  const shape = checkCancelInput({ confirmation: input.confirmation, arrival: input.arrival });
+  if (shape) return shape;
+  if (!/^labtest$/i.test(input.lastName.trim())) return 'refused_not_lab';
+  return amendFieldsSchema.safeParse(input.fields).success ? null : 'refused_input_invalid';
+}
+
+async function runPaneAmend(
+  mode: 'preview' | 'commit',
+  input: PaneAmendPreviewInput & { owner: string; previewDigest?: string },
+): Promise<PaneAmendResult> {
+  if (paneHmsWriteMode() !== 'lab') return refusedAmend('refused_flag_off');
+  const inputRefusal = checkAmendPaneInput(input);
+  if (inputRefusal) return refusedAmend(inputRefusal);
+  if (mode === 'commit' && !input.previewDigest) return refusedAmend('amend_preview_required');
+  const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock();
+  if (!lock) return refusedAmend('refused_lock_unavailable');
+  const spawn = paneHmsWriteLoaders.spawnAmend ?? spawnAmendStay;
+  try {
+    await pruneExpiredPaneRuns(paneStayClock());
+    const spawned = await lock.withLock(async () => {
+      if (mode === 'commit' && !takePanePreview(input.owner, input.previewDigest ?? '', paneStayClock())) return null;
+      return spawn({
+        confirmation: input.confirmation,
+        currentArrival: input.arrival,
+        expectedLastName: input.lastName.trim(),
+        fields: input.fields,
+        mode,
+        ...(mode === 'commit' ? { previewDigest: input.previewDigest } : {}),
+      });
+    }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    if (spawned === null) return refusedAmend('amend_digest_mismatch');
+    const runId = spawned.runDir ? randomUUID() : null;
+    if (runId && spawned.runDir) registerPaneRun({ runId, dir: spawned.runDir, owner: input.owner, now: paneStayClock() });
+    const previewDigest = mode === 'preview' && spawned.outcome === 'previewed' ? spawned.previewDigest ?? null : null;
+    if (previewDigest) recordPanePreview(input.owner, previewDigest, paneStayClock());
+    return {
+      outcome: spawned.outcome,
+      screenshots: spawned.screenshots.map((path) => basename(path)).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)),
+      runId,
+      previewDigest,
+      changedFieldsReadback: spawned.changedFieldsReadback ?? null,
+    };
+  } catch (error) {
+    if (isPropertyReadLockDeadline(error)) return refusedAmend('refused_lock_busy');
+    warnPaneStaySpawnFailed('amend', error);
+    return refusedAmend('execution_failure');
+  }
+}
+
+export const previewAmend = (input: PaneAmendPreviewInput & { owner: string }) => runPaneAmend('preview', input);
+export const commitAmend = (input: PaneAmendPreviewInput & { owner: string; previewDigest: string }) =>
+  runPaneAmend('commit', input);
 
 type SaveOutcome = {
   outcome: string;
@@ -469,7 +551,7 @@ async function saveAmend(form: AmendForm, stay: PaneStayFields): Promise<SaveOut
   const previewDigest = paneAmendPreviewDigest({ confirmation: form.confirmation, expectedLastName: form.lastName, current: stay, fields });
   if (previewDigest !== form.previewDigest) return amendRefusal('refused_digest_mismatch');
   const result = await (paneHmsWriteLoaders.spawnAmend ?? spawnAmendStay)({
-    confirmation: form.confirmation, expectedLastName: form.lastName, fields, previewDigest,
+    confirmation: form.confirmation, currentArrival: form.arrival, expectedLastName: form.lastName, fields, previewDigest,
   });
   return { outcome: result.outcome, clickedOk: false, uploadSent: false, saveAttempted: result.saveAttempted,
     screenshots: result.screenshots, runDir: result.runDir };

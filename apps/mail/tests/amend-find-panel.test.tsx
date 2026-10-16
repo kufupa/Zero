@@ -1492,11 +1492,11 @@ describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
     expect(screen.getByText('Nava only looks the booking up. Make the change in HMS yourself.')).toBeTruthy();
   });
 
-  it('shows disabled Run instead of the removed look-up footer on amend mail', () => {
+  it('shows disabled Preview instead of the removed look-up footer on amend mail', () => {
     capabilities.paneSave = true;
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(vi.fn(NEVER_SETTLES))} />);
     expect(screen.getByTestId('amend-run-placeholder')).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Run' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByText(AMEND_FIND_COPY.footer)).toBeNull();
     expect(screen.queryByText(/Nava can preview the cancellation/)).toBeNull();
   });
@@ -1789,5 +1789,81 @@ describe('amend find helpers', () => {
   it('keeps the amendment on the session where the badge can read it', () => {
     expect(amendmentOf(sessionWith(CANCEL))?.kind).toBe('cancel');
     expect(amendmentOf(sessionWith(null))).toBeNull();
+  });
+});
+
+describe('AmendLookupPanel amend form', () => {
+  const DATE_CHANGE: QuoteAmendment = { ...AMEND, requestedArrival: '2026-10-13' };
+
+  function amendTrpc(
+    findStay: ReturnType<typeof vi.fn>,
+    preview: ReturnType<typeof vi.fn>,
+    commit: ReturnType<typeof vi.fn> = vi.fn(),
+    shot: ReturnType<typeof vi.fn> = vi.fn().mockResolvedValue(NO_SHOT),
+  ) {
+    return {
+      ...lookupTrpc(findStay),
+      paneStayAmend: {
+        previewAmend: { mutate: preview },
+        commitAmend: { mutate: commit },
+        paneStayScreenshot: { query: shot },
+      },
+    };
+  }
+
+  it('shows only changed rows after HMS find', async () => {
+    capabilities.paneSave = true;
+    capabilities.paneSaveMode = 'lab';
+    const findStay = vi.fn().mockResolvedValue(found());
+    render(<AmendLookupPanel session={sessionWith(DATE_CHANGE)} trpc={amendTrpc(findStay, vi.fn())} />);
+    await pressFind();
+    const form = await screen.findByTestId('amend-form');
+    expect(within(form).getAllByTestId('amend-diff-row').map((row) => row.getAttribute('data-field'))).toEqual([
+      'arrival',
+    ]);
+    expect((within(form).getByTestId('amend-diff-row').querySelector('input') as HTMLInputElement).value).toBe(
+      '2026-10-13',
+    );
+  });
+
+  it('previews then approves with the digest and only the changed fields', async () => {
+    capabilities.paneSave = true;
+    capabilities.paneSaveMode = 'lab';
+    const preview = vi.fn().mockResolvedValue({
+      outcome: 'previewed',
+      screenshots: ['diff.png'],
+      runId: RUN_ID,
+      previewDigest: DIGEST,
+      changedFieldsReadback: null,
+    });
+    const commit = vi.fn().mockResolvedValue({
+      outcome: 'amended',
+      screenshots: ['after.png'],
+      runId: RUN_ID,
+      previewDigest: null,
+      changedFieldsReadback: { arrival: '2026-10-13' },
+    });
+    const findStay = vi.fn().mockResolvedValue(found({ lastName: 'Labtest', arrival: '2026-10-12' }));
+    render(
+      <AmendLookupPanel session={sessionWith({ ...DATE_CHANGE, guestLastName: 'Labtest' })} trpc={amendTrpc(findStay, preview, commit)} />,
+    );
+    await pressFind();
+    const form = await screen.findByTestId('amend-form');
+    fireEvent.click(await within(form).findByRole('button', { name: 'Preview' }));
+    expect(preview).toHaveBeenCalledWith({
+      confirmation: CONFIRMATION,
+      arrival: '2026-10-12',
+      lastName: 'Labtest',
+      fields: { arrival: '2026-10-13' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+    expect(await screen.findByText('Saved in HMS.')).toBeTruthy();
+    expect(commit).toHaveBeenCalledWith({
+      confirmation: CONFIRMATION,
+      arrival: '2026-10-12',
+      lastName: 'Labtest',
+      fields: { arrival: '2026-10-13' },
+      previewDigest: DIGEST,
+    });
   });
 });

@@ -1,16 +1,28 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import {
   AMEND_CANCEL_COPY,
+  AMEND_FIELD_LABEL,
+  AMEND_FORM_FIELDS,
+  AMEND_SAVE_COPY,
   amendCancelClientFromTrpc,
   amendCapabilitiesFromTrpc,
+  amendStayClientFromTrpc,
+  canPreviewAmendFromCapabilities,
   canPreviewCancelFromCapabilities,
   cancelConfirmLine,
   cancelFeeSentence,
   cancelSwitchedOffNote,
+  changedAmendRows,
   isoDayOf,
+  viewAfterAmendCommit,
+  viewAfterAmendPreview,
   viewAfterCommit,
   viewAfterPreview,
   type AmendCancelClient,
+  type AmendFormField,
+  type AmendFormValues,
+  type AmendStayClient,
+  type AmendView,
   type CancelRun,
   type CancelView,
 } from '@/lib/quote-workflow/amend-cancel';
@@ -74,20 +86,27 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const amendment = amendmentOf(session);
   const client = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
   const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
+  const amendClient = useMemo(() => amendStayClientFromTrpc(trpc), [trpc]);
   const loadCapabilities = useMemo(() => amendCapabilitiesFromTrpc(trpc), [trpc]);
   const [canPreviewCancel, setCanPreviewCancel] = useState(false);
+  const [canPreviewAmend, setCanPreviewAmend] = useState(false);
   useEffect(() => {
     if (!loadCapabilities) {
       setCanPreviewCancel(false);
+      setCanPreviewAmend(false);
       return;
     }
     let live = true;
     loadCapabilities()
       .then((capabilities) => {
-        if (live) setCanPreviewCancel(canPreviewCancelFromCapabilities(capabilities));
+        if (!live) return;
+        setCanPreviewCancel(canPreviewCancelFromCapabilities(capabilities));
+        setCanPreviewAmend(canPreviewAmendFromCapabilities(capabilities));
       })
       .catch(() => {
-        if (live) setCanPreviewCancel(false);
+        if (!live) return;
+        setCanPreviewCancel(false);
+        setCanPreviewAmend(false);
       });
     return () => {
       live = false;
@@ -136,6 +155,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const [refusedSearch, setRefusedSearch] = useState<{ scope: string; message: string } | null>(null);
   // Cancel views are kept per booking on an email (see cancelScope), so a reply for one booking never shows on another.
   const [cancelViews, setCancelViews] = useState<Record<string, CancelView>>({});
+  const [amendViews, setAmendViews] = useState<Record<string, AmendView>>({});
+  const [requestedByScope, setRequestedByScope] = useState<Record<string, AmendFormValues>>({});
 
   if (!amendment) return null;
 
@@ -196,6 +217,27 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   // The HMS arrival is the stay the cancel must match; the email's date is only a fallback.
   const cancelArrival = isoDayOf(stayText(stay?.arrival)) ?? isoDayOf(amendment.arrival);
   const cancelInput = foundNumber && cancelArrival ? { confirmation: foundNumber, arrival: cancelArrival } : null;
+  const amendScope = cancelScope;
+  const amendView = amendScope ? (amendViews[amendScope] ?? null) : null;
+  const requested = (amendScope && requestedByScope[amendScope]) || {};
+  const stayCurrent = {
+    arrival: isoDayOf(stayText(stay?.arrival)), departure: isoDayOf(stayText(stay?.departure)),
+    roomType: stayText(stay?.roomType), adults: stay?.adults ?? null, children: stay?.children ?? null,
+  };
+  const requestedValues: AmendFormValues = {
+    arrival: requested.arrival ?? isoDayOf(amendment.requestedArrival) ?? stayCurrent.arrival ?? undefined,
+    departure: requested.departure ?? isoDayOf(amendment.requestedDeparture) ?? stayCurrent.departure ?? undefined,
+    roomType: requested.roomType ?? knownRoomCode(stayCurrent.roomType ?? '') ?? stayCurrent.roomType ?? undefined,
+    adults: requested.adults ?? stayCurrent.adults ?? undefined,
+    children: requested.children ?? stayCurrent.children ?? undefined,
+  };
+  const amendRows = stay && amendment.kind === 'amend' ? changedAmendRows(stayCurrent, requestedValues) : [];
+  const amendFields = Object.fromEntries(amendRows.map((row) => [row.field, requestedValues[row.field]])) as AmendFormValues;
+  const amendLastName = stayText(stay?.lastName) ?? amendment.guestLastName ?? '';
+  const amendInput =
+    foundNumber && cancelArrival && amendLastName && Object.keys(amendFields).length
+      ? { confirmation: foundNumber, arrival: cancelArrival, lastName: amendLastName, fields: amendFields }
+      : null;
 
   const previewCancel = async () => {
     if (!canPreviewCancel || !cancelScope || !cancelClient || !cancelInput) return;
@@ -220,6 +262,31 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
       setCancelViews((prev) => ({ ...prev, [scope]: viewAfterCommit(run, ready.run, cancelInput.confirmation) }));
     } catch {
       setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } }));
+    }
+  };
+
+  const previewAmendStay = async () => {
+    if (!canPreviewAmend || !amendScope || !amendClient || !amendInput) return;
+    const scope = amendScope;
+    setAmendViews((prev) => ({ ...prev, [scope]: { kind: 'previewing' } }));
+    try {
+      const run = await amendClient.previewAmend(amendInput);
+      setAmendViews((prev) => ({ ...prev, [scope]: viewAfterAmendPreview(run, amendInput.confirmation) }));
+    } catch {
+      setAmendViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_SAVE_COPY.failed } }));
+    }
+  };
+
+  const commitAmendStay = async (ready: Extract<AmendView, { kind: 'ready' }>) => {
+    const previewDigest = ready.run.previewDigest;
+    if (!canPreviewAmend || !amendScope || !amendClient || !amendInput || !previewDigest) return;
+    const scope = amendScope;
+    setAmendViews((prev) => ({ ...prev, [scope]: { kind: 'committing', run: ready.run } }));
+    try {
+      const run = await amendClient.commitAmend({ ...amendInput, previewDigest });
+      setAmendViews((prev) => ({ ...prev, [scope]: viewAfterAmendCommit(run, amendInput.confirmation) }));
+    } catch {
+      setAmendViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_SAVE_COPY.failed } }));
     }
   };
 
@@ -432,10 +499,33 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           }}
         />
       ) : null}
-      {amendment.kind === 'amend' ? (
+      {amendment.kind === 'amend' && stay && foundNumber ? (
+        <AmendSection
+          view={amendView}
+          canPreview={canPreviewAmend}
+          offNote={`${AMEND_SAVE_COPY.switchedOff} Open ${foundNumber} in HMS and save the change there.`}
+          rows={amendRows}
+          values={requestedValues}
+          current={stayCurrent}
+          client={amendClient}
+          onChange={(field, value) => {
+            if (!amendScope) return;
+            setRequestedByScope((prev) => ({ ...prev, [amendScope]: { ...prev[amendScope], [field]: value } }));
+            setAmendViews((prev) => {
+              const view = prev[amendScope];
+              if (view?.kind !== 'ready' && view?.kind !== 'committing') return prev;
+              return { ...prev, [amendScope]: { kind: 'idle', note: null } };
+            });
+          }}
+          onPreview={() => void previewAmendStay()}
+          onCommit={() => {
+            if (amendView?.kind === 'ready') void commitAmendStay(amendView);
+          }}
+        />
+      ) : amendment.kind === 'amend' ? (
         <div data-testid="amend-run-placeholder" className="flex justify-end border-t border-[#e2e8f0] pt-2">
-          <button type="button" className={buttonClass} disabled title="Amend save not enabled yet">
-            Run
+          <button type="button" className={buttonClass} disabled title="Find the booking first">
+            {AMEND_SAVE_COPY.preview}
           </button>
         </div>
       ) : (
@@ -710,6 +800,113 @@ function RequestedChangeRow({ label, from, to }: { label: string; from: string; 
     <p data-testid="amend-diff-row" data-pii={label === 'Guest' || undefined} className={valueClass}>
       {`${label}: ${from} → ${to}`}
     </p>
+  );
+}
+
+function AmendSection({
+  view,
+  canPreview,
+  offNote,
+  rows,
+  values,
+  current,
+  client,
+  onChange,
+  onPreview,
+  onCommit,
+}: {
+  view: AmendView | null;
+  canPreview: boolean;
+  offNote: string;
+  rows: ReturnType<typeof changedAmendRows>;
+  values: AmendFormValues;
+  current: Record<string, string | number | null>;
+  client: AmendStayClient | null;
+  onChange: (field: AmendFormField, value: string | number) => void;
+  onPreview: () => void;
+  onCommit: () => void;
+}) {
+  const currentView: AmendView = view ?? { kind: 'idle', note: null };
+  const changed = new Set(rows.map((row) => row.field));
+  const busy = currentView.kind === 'previewing' || currentView.kind === 'committing';
+  const shot = (run: { runId: string | null; screenshots: string[] }) => (
+    <RunScreenshot
+      load={client?.paneStayScreenshot ?? null}
+      runId={run.runId}
+      name={run.screenshots.at(-1) ?? null}
+      label={AMEND_SAVE_COPY.seeScreenshot}
+      alt="What Nava saw on the HMS amend screen"
+    />
+  );
+  if (currentView.kind === 'done') {
+    return (
+      <div aria-live="polite" className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+        <p className={headingClass}>Change in HMS</p>
+        <p className={infoNoteClass}>{currentView.text}</p>
+        {shot(currentView.run)}
+      </div>
+    );
+  }
+  return (
+    <div data-testid="amend-form" aria-live="polite" className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+      <p className={headingClass}>Change in HMS</p>
+      <div className="grid grid-cols-[1fr_1fr] gap-x-2 gap-y-1.5">
+        <p className={captionClass}>HMS now</p>
+        <p className={captionClass}>Requested</p>
+        {AMEND_FORM_FIELDS.map((field) => {
+          const isChanged = changed.has(field);
+          const from = current[field];
+          const countField = field === 'adults' || field === 'children';
+          return (
+            <div
+              key={field}
+              data-testid={isChanged ? 'amend-diff-row' : undefined}
+              data-field={field}
+              className={`col-span-2 grid grid-cols-2 gap-2 rounded-xs px-1 py-1 ${isChanged ? 'bg-amber-50' : ''}`}
+            >
+              <p className={valueClass}>{`${AMEND_FIELD_LABEL[field]}: ${from == null || from === '' ? '—' : String(from)}`}</p>
+              {field === 'roomType' ? (
+                <select className={selectClass} disabled={busy} value={String(values[field] ?? '')} onChange={(event) => onChange(field, event.target.value)}>
+                  {Object.entries(ROOM_TYPE_NAMES).map(([code, name]) => (
+                    <option key={code} value={code}>{name}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className={selectClass}
+                  disabled={busy}
+                  type={countField ? 'number' : field === 'arrival' || field === 'departure' ? 'date' : 'text'}
+                  min={field === 'adults' ? 1 : field === 'children' ? 0 : undefined}
+                  max={countField ? 16 : undefined}
+                  value={String(values[field] ?? '')}
+                  onChange={(event) => onChange(field, countField ? Number(event.target.value) : event.target.value)}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {currentView.kind === 'ready' || currentView.kind === 'committing' ? shot(currentView.run) : null}
+      {canPreview ? (
+        <button
+          type="button"
+          className={buttonClass}
+          disabled={
+            currentView.kind === 'ready' || currentView.kind === 'committing'
+              ? currentView.kind === 'committing'
+              : busy || rows.length === 0
+          }
+          onClick={currentView.kind === 'ready' || currentView.kind === 'committing' ? onCommit : onPreview}
+        >
+          {currentView.kind === 'ready' || currentView.kind === 'committing' ? AMEND_SAVE_COPY.commit : AMEND_SAVE_COPY.preview}
+        </button>
+      ) : (
+        <p data-pii className={infoNoteClass}>{offNote}</p>
+      )}
+      {currentView.kind === 'previewing' ? <p className={infoNoteClass}>{AMEND_SAVE_COPY.previewing}</p> : null}
+      {currentView.kind === 'committing' ? <p className={infoNoteClass}>{AMEND_SAVE_COPY.committing}</p> : null}
+      {currentView.kind === 'idle' && currentView.note ? <p className={warnNoteClass}>{currentView.note}</p> : null}
+    </div>
   );
 }
 

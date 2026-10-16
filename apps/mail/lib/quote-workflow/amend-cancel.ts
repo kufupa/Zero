@@ -183,6 +183,109 @@ export function canPreviewCancelFromCapabilities(
   return capabilities?.paneSave === true;
 }
 
+export function canPreviewAmendFromCapabilities(
+  capabilities: PaneCapabilitiesReply | null | undefined,
+): boolean {
+  return capabilities?.paneSave === true && capabilities.paneSaveMode === 'lab';
+}
+
+export const AMEND_SAVE_COPY = {
+  preview: 'Preview',
+  previewing: 'Nava is reading the change in HMS… (usually under a minute)',
+  commit: 'Approve',
+  committing: 'Nava is saving the change in HMS… (usually under a minute)',
+  seeScreenshot: 'See what Nava saw in HMS',
+  switchedOff: 'Changing this booking from here is switched off for now.',
+  testOnly: 'Changing this booking from here only works on test bookings right now.',
+  previewAgain: 'Preview the change again first.',
+  unconfirmed: 'HMS may have saved this change. Check HMS before trying again.',
+  failed: "Nava couldn't finish in HMS. Check HMS yourself.",
+  done: 'Saved in HMS.',
+} as const;
+
+export const AMEND_FORM_FIELDS = ['arrival', 'departure', 'roomType', 'adults', 'children'] as const;
+export type AmendFormField = (typeof AMEND_FORM_FIELDS)[number];
+export type AmendFormValues = Partial<Record<AmendFormField, string | number>>;
+export const AMEND_FIELD_LABEL: Record<AmendFormField, string> = {
+  arrival: 'Arrival', departure: 'Departure', roomType: 'Room', adults: 'Adults', children: 'Children',
+};
+
+export function changedAmendRows(
+  current: Record<string, string | number | null | undefined>,
+  requested: AmendFormValues,
+) {
+  return AMEND_FORM_FIELDS.flatMap((field) => {
+    const to = requested[field];
+    if (to === undefined || to === '') return [];
+    const from = current[field];
+    if (String(from ?? '') === String(to)) return [];
+    return [{ field, label: AMEND_FIELD_LABEL[field], from: from == null || from === '' ? 'HMS: —' : String(from), to: String(to) }];
+  });
+}
+
+export type AmendRun = {
+  outcome: string;
+  screenshots: string[];
+  runId: string | null;
+  previewDigest: string | null;
+  changedFieldsReadback: Record<string, unknown> | null;
+};
+export type AmendView =
+  | { kind: 'idle'; note: string | null }
+  | { kind: 'previewing' }
+  | { kind: 'ready'; run: AmendRun; note: string | null }
+  | { kind: 'committing'; run: AmendRun }
+  | { kind: 'done'; run: AmendRun; text: string };
+
+function amendOutcomeNote(outcome: string, confirmation: string): string {
+  if (outcome === 'refused_flag_off') return `${AMEND_SAVE_COPY.switchedOff} Open ${confirmation} in HMS and save the change there.`;
+  if (outcome === 'refused_not_lab') return AMEND_SAVE_COPY.testOnly;
+  if (outcome === 'refused_lock_busy') return AMEND_FIND_COPY.busy;
+  if (outcome === 'refused_lock_unavailable') return AMEND_FIND_COPY.unreachable;
+  if (outcome === 'amend_preview_required' || outcome === 'amend_digest_mismatch' || outcome === 'refused_digest_mismatch') {
+    return AMEND_SAVE_COPY.previewAgain;
+  }
+  return outcome === 'save_not_confirmed' ? AMEND_SAVE_COPY.unconfirmed : AMEND_SAVE_COPY.failed;
+}
+
+export function viewAfterAmendPreview(run: AmendRun, confirmation: string): AmendView {
+  return run.outcome === 'previewed' && run.previewDigest
+    ? { kind: 'ready', run, note: null }
+    : { kind: 'idle', note: amendOutcomeNote(run.outcome, confirmation) };
+}
+export function viewAfterAmendCommit(run: AmendRun, confirmation: string): AmendView {
+  return run.outcome === 'amended'
+    ? { kind: 'done', run, text: AMEND_SAVE_COPY.done }
+    : { kind: 'idle', note: amendOutcomeNote(run.outcome, confirmation) };
+}
+
+export type AmendStayClient = {
+  previewAmend: (input: { confirmation: string; arrival: string; lastName: string; fields: AmendFormValues }) => Promise<AmendRun>;
+  commitAmend: (input: {
+    confirmation: string; arrival: string; lastName: string; fields: AmendFormValues; previewDigest: string;
+  }) => Promise<AmendRun>;
+  paneStayScreenshot: (input: ScreenshotInput) => Promise<ScreenshotReply>;
+};
+
+export function amendStayClientFromTrpc(trpc: unknown): AmendStayClient | null {
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+  const routes = (
+    trpc as {
+      paneStayAmend?: {
+        previewAmend?: { mutate: AmendStayClient['previewAmend'] };
+        commitAmend?: { mutate: AmendStayClient['commitAmend'] };
+        paneStayScreenshot?: { query: AmendStayClient['paneStayScreenshot'] };
+      };
+    }
+  ).paneStayAmend;
+  if (!routes?.previewAmend || !routes.commitAmend || !routes.paneStayScreenshot) return null;
+  return {
+    previewAmend: (input) => routes.previewAmend!.mutate(input),
+    commitAmend: (input) => routes.commitAmend!.mutate(input),
+    paneStayScreenshot: (input) => routes.paneStayScreenshot!.query(input),
+  };
+}
+
 type TrpcCapabilityRoutes = {
   brain?: { getCapabilities?: { query: () => Promise<PaneCapabilitiesReply> } };
 };

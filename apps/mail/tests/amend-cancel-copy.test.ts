@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   AMEND_CANCEL_COPY,
+  AMEND_SAVE_COPY,
+  canPreviewAmendFromCapabilities,
   canPreviewCancelFromCapabilities,
   cancellationChargeCopy,
   cancelledText,
   cancelOutcomeNote,
+  changedAmendRows,
+  viewAfterAmendCommit,
+  viewAfterAmendPreview,
   viewAfterCommit,
   viewAfterPreview,
+  type AmendRun,
   type CancelRun,
 } from '../lib/quote-workflow/amend-cancel';
 
@@ -94,5 +100,48 @@ describe('canPreviewCancelFromCapabilities', () => {
     expect(canPreviewCancelFromCapabilities({ paneSave: true })).toBe(true);
     expect(canPreviewCancelFromCapabilities({ paneSave: true, paneSaveMode: 'lab' })).toBe(true);
     expect(canPreviewCancelFromCapabilities({ paneSave: true, paneSaveMode: 'on' })).toBe(true);
+  });
+});
+
+describe('canPreviewAmendFromCapabilities', () => {
+  it('is on only when paneSave is lab', () => {
+    expect(canPreviewAmendFromCapabilities(undefined)).toBe(false);
+    expect(canPreviewAmendFromCapabilities({ paneSave: true })).toBe(false);
+    expect(canPreviewAmendFromCapabilities({ paneSave: true, paneSaveMode: 'on' })).toBe(false);
+    expect(canPreviewAmendFromCapabilities({ paneSave: false, paneSaveMode: 'lab' })).toBe(false);
+    expect(canPreviewAmendFromCapabilities({ paneSave: true, paneSaveMode: 'lab' })).toBe(true);
+  });
+});
+
+describe('changed amend rows', () => {
+  it('keeps only fields that differ from HMS', () => {
+    expect(
+      changedAmendRows(
+        { arrival: '2027-09-14', departure: '2027-09-16', roomType: 'DLXKNG', adults: 1, children: 0 },
+        { arrival: '2027-09-15', departure: '2027-09-16', roomType: 'DLXKNG', adults: 1, children: 0 },
+      ).map((row) => row.field),
+    ).toEqual(['arrival']);
+  });
+});
+
+describe('amend preview and commit views', () => {
+  const amendRun = (overrides: Partial<AmendRun> = {}): AmendRun => ({
+    outcome: 'previewed',
+    screenshots: [],
+    runId: null,
+    previewDigest: 'a'.repeat(64),
+    changedFieldsReadback: null,
+    ...overrides,
+  });
+
+  it('a previewed run with a digest is ready to approve', () => {
+    expect(viewAfterAmendPreview(amendRun(), CONFIRMATION)).toMatchObject({ kind: 'ready' });
+  });
+
+  it('a stale digest sends staff back to preview', () => {
+    expect(viewAfterAmendCommit(amendRun({ outcome: 'amend_digest_mismatch' }), CONFIRMATION)).toEqual({
+      kind: 'idle',
+      note: AMEND_SAVE_COPY.previewAgain,
+    });
   });
 });

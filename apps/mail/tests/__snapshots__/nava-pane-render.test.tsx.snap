@@ -391,10 +391,10 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
             <button
               class="rounded-sm border border-[#0066cc] bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8]"
               disabled=""
-              title="Amend save not enabled yet"
+              title="Find the booking first"
               type="button"
             >
-              Run
+              Preview
             </button>
           </div>
         </section>

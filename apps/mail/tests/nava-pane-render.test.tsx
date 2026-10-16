@@ -2488,9 +2488,8 @@ describe('NavaPane screen states', () => {
     expect(card.querySelectorAll('[data-testid="amend-hms-facts"] [data-field="dates"]')).toHaveLength(1);
     expect(card.querySelector('[data-testid="amend-changes"]')).toBeNull();
     expect(within(card).getByRole('button', { name: 'Copy confirmation' })).toBeDefined();
-    const run = within(card).getByRole('button', { name: 'Run' });
-    expect(run.hasAttribute('disabled')).toBe(true);
-    expect(run.getAttribute('title')).toBe('Amend save not enabled yet');
+    expect(within(card).queryByRole('button', { name: 'Run' })).toBeNull();
+    expect(within(card).getByText(/Changing this booking from here is switched off/)).toBeTruthy();
   });
 
   it('amendment: right column shows only the requested departure difference', async () => {
