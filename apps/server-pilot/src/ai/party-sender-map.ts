@@ -45,7 +45,15 @@ export function lookupLearnedSenderParty(host: string): { kind: 'company' | 'age
 }
 
 export async function refreshLearnedSenderMap(db: DB): Promise<number> {
-  rows = take(await db.select().from(partySenderMap));
+  const found = await db.select().from(partySenderMap);
+  rows = take(
+    found.map((row) => ({
+      host: row.host,
+      kind: row.kind as LearnedSenderRow['kind'],
+      name: row.name,
+      support: row.support,
+    })),
+  );
   loadedAt = Date.now();
   return rows.length;
 }
@@ -54,7 +62,9 @@ function refreshIfDue(): void {
   if (testsPinned || process.env.VITEST || !process.env.DATABASE_URL) return;
   if (pending || (loadedAt > 0 && Date.now() - loadedAt < HOUR_MS)) return;
   pending = import('../db/client.js')
-    .then(({ getDb }) => refreshLearnedSenderMap(getDb()))
+    .then(async ({ getDb }) => {
+      await refreshLearnedSenderMap(getDb());
+    })
     .catch(() => {
       loadedAt = Date.now();
     })
