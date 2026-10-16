@@ -266,6 +266,22 @@ describe('booking cards', () => {
     expect((fields[0] as HTMLInputElement).value).toBe('BARRO');
   });
 
+  it('prefills rate code and price from the prepared stay result', () => {
+    const draft = draftReady();
+    for (const room of draft.draft.rooms) delete room.request.ratePlan;
+    render(
+      <BookingCards
+        draft={draft}
+        groups={[{ ...g1, quotedRateCode: 'BARRO', quotedAmountMinor: 185000 }]}
+      />,
+    );
+    const fields = screen.getAllByLabelText('Rate code');
+    expect(fields.map((field) => (field as HTMLInputElement).value)).toEqual(['BARRO', 'BARRO']);
+    expect(screen.getAllByText('R1850.00')).toHaveLength(2);
+    fireEvent.change(fields[0]!, { target: { value: 'bco1b' } });
+    expect((fields[0] as HTMLInputElement).value).toBe('BCO1B');
+  });
+
   it('shows an amber mismatch banner with the claim quote', () => {
     render(
       <QuoteWorkflowPanel

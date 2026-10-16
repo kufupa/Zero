@@ -545,7 +545,15 @@ export function BookingCards({
               track: textValue(room.request.track),
               sourceOfBusiness: textValue(room.request.sourceOfBusiness),
               guaranteeType: textValue(room.request.guaranteeType),
-              ratePlan: textValue(room.request.ratePlan),
+              ratePlan:
+                textValue(room.request.ratePlan) ||
+                (() => {
+                  const stay =
+                    groups.find((item) => item.id === room.groupId) ??
+                    groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
+                  return stay?.rateCode || stay?.quotedRateCode || '';
+                })() ||
+                '',
               bookingAgency: textValue(room.request.agency) || pickedName(parties?.agency),
               organization: textValue(room.request.organization) || pickedName(parties?.company),
               reservationNote: textValue(room.request.reservationNote),
@@ -708,6 +716,13 @@ export function BookingCards({
             ) : (
               <RoomTextField roomLabel={roomLabel} label="Rate code" value={choice.ratePlan} disabled={locked} maxLength={10} onChange={(value) => setChoice({ ratePlan: value.toUpperCase() })} />
             )}
+            {typeof group?.quotedAmountMinor === 'number' || group?.rowPrice ? (
+              <CopyRow
+                roomLabel={roomLabel}
+                label="Price"
+                value={`R${((group.rowPrice?.amountMinor ?? group.quotedAmountMinor ?? 0) / 100).toFixed(2)}`}
+              />
+            ) : null}
             <CopyRow roomLabel={roomLabel} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
             <CopyRow roomLabel={roomLabel} label="Last name" value={textValue(request.lastName)} pii />
             <CopyRow roomLabel={roomLabel} label="First name" value={textValue(request.firstName)} pii />
@@ -828,8 +843,11 @@ export function BookingCards({
                     specialRequests: group?.specialRequests,
                     authorisedBy: override?.note,
                     rate: {
-                      code: override?.rateCode ?? (choice.ratePlan || textValue(request.ratePlan)),
-                      nightlyMinor: price ? [price.amountMinor] : undefined,
+                      code:
+                        override?.rateCode ??
+                        (choice.ratePlan || textValue(request.ratePlan) || group?.rateCode || group?.quotedRateCode),
+                      nightlyMinor:
+                        price ? [price.amountMinor] : group?.quotedAmountMinor != null ? [group.quotedAmountMinor] : undefined,
                       board: BOARD_LABELS[room.board ?? ''],
                     },
                   },

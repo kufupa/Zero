@@ -89,6 +89,7 @@ import {
 import {
   buildPreparedStaffQuotePlan,
   confidentPartyFromV2Result,
+  quotePrepareKindReason,
   staffQuoteInputsPriceEquivalent,
   type PreparedStaffQuotePlan,
 } from './quote-ready.js';
@@ -389,7 +390,7 @@ export function selectPartyPrefetchRequest(input: {
   sender: string | null;
   body: string | null;
 }): Extract<HmsJobRequest, { kind: 'party' }> | null {
-  if (input.kind !== 'quote') return null;
+  if (quotePrepareKindReason({ kind: input.kind, payload: input.payload }) === 'not_quote') return null;
   const payload = objectRecord(input.payload);
   const agency = typeof payload.agency === 'string' ? payload.agency.trim() : '';
   if (agency.length > 0 && agency.length <= 256)
@@ -407,7 +408,11 @@ export function selectPartyMatchV2PrefetchRequest(input: {
   subject?: string | null;
   body: string | null;
 }): Extract<HmsJobRequest, { kind: 'party' }> | null {
-  if (input.kind !== 'quote') return null;
+  if (
+    quotePrepareKindReason({ kind: input.kind, payload: input.payload, subject: input.subject }) === 'not_quote'
+  ) {
+    return null;
+  }
   const candidates = buildPartyMatchCandidates({
     payload: input.payload,
     fromAddress: input.sender,
@@ -1771,7 +1776,8 @@ export async function prefetchPartyForExtraction(
   if (
     !source ||
     source.extractionStatus !== 'succeeded' ||
-    source.kind !== 'quote' ||
+    quotePrepareKindReason({ kind: source.kind, payload: source.payload, subject: source.subject }) ===
+      'not_quote' ||
     source.spamAt ||
     source.threadHistoryOnly ||
     source.historyOnly ||
@@ -1998,7 +2004,9 @@ export async function evaluateQuoteReadyForMessage(
   const source = await quoteReadySourceForMessage(db, input.messageId, input.transportId);
   if (!source) return empty('source_not_found');
   if (source.extractionStatus !== 'succeeded') return empty('extraction_not_succeeded', source);
-  if (source.kind !== 'quote') return empty('not_quote', source);
+  if (quotePrepareKindReason({ kind: source.kind, payload: source.payload, subject: source.subject }) === 'not_quote') {
+    return empty('not_quote', source);
+  }
   if (source.direction !== 'inbound') return empty('not_inbound', source);
   if (source.historyOnly || source.threadHistoryOnly) return empty('history_copy', source);
   if (source.spamAt) return empty('spam', source);
@@ -2223,7 +2231,6 @@ async function executePartyMatchV2(input: {
         eq(mailExtraction.messageId, input.run.triggerMessageId),
         eq(message.transportId, input.run.transportId),
         eq(mailExtraction.status, 'succeeded'),
-        eq(mailExtraction.kind, 'quote'),
       ),
     )
     .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
@@ -2231,7 +2238,11 @@ async function executePartyMatchV2(input: {
   if (
     !source ||
     source.extractionStatus !== 'succeeded' ||
-    source.extractionKind !== 'quote' ||
+    quotePrepareKindReason({
+      kind: source.extractionKind,
+      payload: source.payload,
+      subject: source.subject,
+    }) === 'not_quote' ||
     source.direction !== 'inbound' ||
     source.historyOnly ||
     source.threadHistoryOnly ||

@@ -222,6 +222,30 @@ describe('party prefetch selection', () => {
         body: '',
       }),
     ).toBeNull();
+    expect(
+      selectPartyPrefetchRequest({
+        kind: 'booking',
+        payload: {
+          agency: 'Sample Agency',
+          confirmationNumbers: [],
+          stays: [{ id: 'stay-1' }],
+        },
+        sender: 'sender@example.test',
+        body: '',
+      }),
+    ).toEqual({ kind: 'party', name: 'Sample Agency' });
+    expect(
+      selectPartyPrefetchRequest({
+        kind: 'booking',
+        payload: {
+          agency: 'Sample Agency',
+          confirmationNumbers: ['57291630-1'],
+          stays: [{ id: 'stay-1' }],
+        },
+        sender: 'sender@example.test',
+        body: '',
+      }),
+    ).toBeNull();
   });
 
   it('builds one kind-less prefetch key from transport, normalized name, and day', () => {
