@@ -30,6 +30,12 @@ import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
+import {
+  COARSE_TO_AGENT,
+  parseStoredClassifier,
+  shouldAttachWorkflowHint,
+  type ClassifierResult,
+} from './workflow-classifier/index.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 
 /**
@@ -231,6 +237,15 @@ function storedWorkflow(read: StoredRead): LunaAnalysis['workflow'] {
   return PAYMENT_WORDS.test(text) || POP_CAPS.test(text) ? 'payment_ack' : 'other';
 }
 
+function workflowForStoredRead(read: StoredRead): LunaAnalysis['workflow'] {
+  const classifier = read.classifier;
+  if (classifier && shouldAttachWorkflowHint(classifier.confidence)) {
+    const agent = COARSE_TO_AGENT[classifier.workflow];
+    return agent === 'create' ? 'create_booking' : agent;
+  }
+  return storedWorkflow(read);
+}
+
 const FAILURE_COPY: Record<string, string> = {
   timeout: 'Nava ran out of time reading this email.',
   invalid_output: 'Nava read this email but could not use the result.',
@@ -245,6 +260,7 @@ export type StoredRead = {
   fromAddress?: string | null;
   subject?: string | null;
   bodyText?: string | null;
+  classifier?: ClassifierResult | null;
 };
 /** Where one pane group's values live: its stay, and its row when it has one. */
 export type GroupRef = { stayId: string; rowId: string | null };
@@ -336,7 +352,7 @@ export function storedAnalysis(
   const requested = payload.stays[0]?.requested;
   const overlaid = overlayHmsConfirmation(payload.confirmationNumbers[0] ?? null, threadConfirmation);
   const luna: LunaAnalysis = {
-    workflow: storedWorkflow(read),
+    workflow: workflowForStoredRead(read),
     flags,
     groups,
     party: {
@@ -650,6 +666,7 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
     attachments: row.attachments as AttachmentRead[] | null,
     language: row.language,
     translation: row.translation,
+    classifier: parseStoredClassifier(row.usage),
   };
 }
 
