@@ -18,6 +18,9 @@ export type RatesReadyNotice = { runId: string; title: string; threadId: string 
 type OpenDeps = { onOpenThread?: (threadId: string) => void; displayMessageForm?: (itemId: string) => void };
 type JobMeta = Omit<OwnStaffQuoteJob, 'runId' | 'status' | 'refused'>;
 const ownerKey = () => `${getMailCacheScope().userId}:${getMailCacheScope().activeTransportId}`;
+// One list for every pane mount: the web panel remounts per thread, so a pane-owned list lost the job on switch.
+export const ratesReadyJobs: { current: OwnStaffQuoteJob[] } = { current: [] };
+const notifiedRuns = { ids: new Set<string>(), owner: '' };
 const answers = (job: OwnStaffQuoteJob) => job.status === 'done' || job.refused;
 
 export function ratesReadyToastTitle(job: Pick<OwnStaffQuoteJob, 'refused' | 'subject'>): string {
@@ -85,19 +88,16 @@ export function useRatesReadyNotice(input: {
 }): void {
   const live = useRef(input);
   live.current = input;
-  const notified = useRef(new Set<string>());
-  const owner = useRef(ownerKey());
   useEffect(() => {
     let stopped = false;
     let prev: OwnStaffQuoteJob[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
-    owner.current = ownerKey();
     const resetOwner = () => {
       const next = ownerKey();
-      if (owner.current === next) return;
-      owner.current = next;
+      if (notifiedRuns.owner === next) return;
+      notifiedRuns.owner = next;
       live.current.jobsRef.current = [];
-      notified.current = new Set(); prev = [];
+      notifiedRuns.ids = new Set(); prev = [];
     };
     const poll = async () => {
       resetOwner();
@@ -111,10 +111,11 @@ export function useRatesReadyNotice(input: {
         } catch { /* keep the pane-session row */ }
       }
       if (stopped) return;
-      const notices = ratesReadyNotices({ prev, next: jobs, openMessageId, openEmailKey, notifiedIds: notified.current });
+      const notices = ratesReadyNotices({ prev, next: jobs, openMessageId, openEmailKey, notifiedIds: notifiedRuns.ids });
       prev = jobs.map((job) => ({ ...job }));
+      // A job seen finished (toasted or on screen) never toasts again, even from a later pane mount.
+      for (const job of jobs) if (answers(job)) notifiedRuns.ids.add(job.runId);
       for (const notice of notices) {
-        notified.current.add(notice.runId);
         toast(notice.title, canOpenRatesReadyMail({ onOpenThread })
           ? { action: { label: 'Open', onClick: () => openRatesReadyMail(notice, live.current) } }
           : undefined);
