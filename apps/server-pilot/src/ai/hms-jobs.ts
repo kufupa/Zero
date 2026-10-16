@@ -2231,7 +2231,6 @@ async function executePartyMatchV2(input: {
         eq(mailExtraction.messageId, input.run.triggerMessageId),
         eq(message.transportId, input.run.transportId),
         eq(mailExtraction.status, 'succeeded'),
-        eq(mailExtraction.kind, 'quote'),
       ),
     )
     .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
@@ -2239,7 +2238,11 @@ async function executePartyMatchV2(input: {
   if (
     !source ||
     source.extractionStatus !== 'succeeded' ||
-    source.extractionKind !== 'quote' ||
+    quotePrepareKindReason({
+      kind: source.extractionKind,
+      payload: source.payload,
+      subject: source.subject,
+    }) === 'not_quote' ||
     source.direction !== 'inbound' ||
     source.historyOnly ||
     source.threadHistoryOnly ||

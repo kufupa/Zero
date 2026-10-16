@@ -718,7 +718,7 @@ export function BookingCards({
               <CopyRow
                 roomLabel={roomLabel}
                 label="Price"
-                value={`R${((group.quotedAmountMinor ?? group.rowPrice?.amountMinor ?? 0) / 100).toFixed(2)}`}
+                value={`R${((group.rowPrice?.amountMinor ?? group.quotedAmountMinor ?? 0) / 100).toFixed(2)}`}
               />
             ) : null}
             <CopyRow roomLabel={roomLabel} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />

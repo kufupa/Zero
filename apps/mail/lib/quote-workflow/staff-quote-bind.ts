@@ -644,9 +644,7 @@ export function groupsWithPreparedStayRates(
     return {
       ...group,
       ...(prepared.rateCode && !group.rateCode ? { rateCode: prepared.rateCode } : {}),
-      ...(prepared.amountMinor != null && group.quotedAmountMinor == null
-        ? { quotedAmountMinor: prepared.amountMinor }
-        : {}),
+      ...(prepared.amountMinor != null ? { quotedAmountMinor: prepared.amountMinor } : {}),
     };
   });
 }
