@@ -797,7 +797,6 @@ export function NavaPane({
       .join(','),
     quoteSession.staffQuote ? 'quoted' : '',
     Object.keys(quoteSession.staffQuotes).join(','),
-    Object.keys(quoteSession.bookingDrafts).join(','),
   ].join(':');
   useEffect(() => {
     if (isNonActionableMessage) return;

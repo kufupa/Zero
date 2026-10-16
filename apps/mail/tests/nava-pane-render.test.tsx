@@ -1696,7 +1696,8 @@ describe('NavaPane screen states', () => {
     expect(await screen.findByRole('heading', { name: 'Book in HMS' })).toBeDefined();
     expect(screen.queryByText('$.roomType required')).toBeNull();
     expect(screen.queryByText('Available')).toBeNull();
-    await act(async () => resolveJob(null));
+    await act(async () => resolveJob(completedStaffQuoteJob(STAFF_QUOTE_READY)));
+    expect(await screen.findByText('Available')).toBeDefined();
   });
 
   it('keeps a persisted staff-quote refusal instead of falling back to an older quote', async () => {
