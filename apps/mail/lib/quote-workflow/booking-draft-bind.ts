@@ -21,7 +21,6 @@ export type PrepareBookingDraftInput = {
 };
 
 export const UNQUOTED_BOOKING_REVISION_REF = 'unquoted';
-
 export type PrepareUnquotedBookingDraftInput = {
   messageId: string;
   selectionEpoch: number;

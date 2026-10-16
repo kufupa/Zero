@@ -9,12 +9,8 @@ import {
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
 import {
-  bookingDraftFromPrefill,
-  buildBookingDrafts,
-  createRequestFieldOptions,
-  isUnquotedSingleStayNewBooking,
-  prefillBoardFromLuna,
-  UNQUOTED_BOOKING_REVISION_REF,
+  bookingDraftFromPrefill, buildBookingDrafts, createRequestFieldOptions,
+  isUnquotedSingleStayNewBooking, prefillBoardFromLuna, UNQUOTED_BOOKING_REVISION_REF,
 } from '../../ai/booking-draft.js';
 import { buildCreatePrefill } from '../../ai/aop/create-prefill.js';
 import {
@@ -169,15 +165,13 @@ export const prepareBookingDraftInput = z
   })
   .strict();
 
-export const prepareUnquotedBookingDraftInput = z
-  .object({
-    messageId: z.string().min(1),
-    selectionEpoch: z.number().int().nonnegative(),
-    inputRevision: z.number().int().nonnegative(),
-    analysis: lunaAnalysisSchema,
-    rateCode: z.string().regex(/^[A-Z0-9]{2,10}$/).optional(),
-  })
-  .strict();
+export const prepareUnquotedBookingDraftInput = z.object({
+  messageId: z.string().min(1),
+  selectionEpoch: z.number().int().nonnegative(),
+  inputRevision: z.number().int().nonnegative(),
+  analysis: lunaAnalysisSchema,
+  rateCode: z.string().trim().regex(/^[A-Z0-9]{2,10}$/).optional(),
+}).strict();
 
 export const listThreadQuoteRevisionsInput = z.object({ threadId: z.string().min(1) }).strict();
 
@@ -973,68 +967,46 @@ export const workstationRouter = router({
   prepareUnquotedBookingDraft: mailboxProcedure
     .input(prepareUnquotedBookingDraftInput)
     .mutation(async ({ input }) => {
+      const unavailable = { status: 'unavailable' as const, reason: 'prefill_unavailable' };
       if (!isUnquotedSingleStayNewBooking(input.analysis)) {
         return { status: 'unavailable' as const, reason: 'not_a_single_stay_new_booking' };
       }
-      const groups = input.analysis.groups.filter((group) => group.arrival?.trim());
+      const groups = input.analysis.groups.filter((g) => g.arrival?.trim());
       const group = groups[0];
       if (
         !group?.arrival ||
-        groups.some(
-          (row) =>
-            !Number.isInteger(row.rooms) ||
-            (row.rooms ?? 0) < 1 ||
-            !Number.isInteger(row.adultsPerRoom) ||
-            (row.adultsPerRoom ?? 0) < 1,
-        )
+        groups.some((r) => !Number.isInteger(r.rooms) || (r.rooms ?? 0) < 1 || !Number.isInteger(r.adultsPerRoom) || (r.adultsPerRoom ?? 0) < 1)
       ) {
-        return { status: 'unavailable' as const, reason: 'prefill_unavailable' };
+        return unavailable;
       }
       const party = input.analysis.party;
-      let prefill;
       try {
-        prefill = await buildCreatePrefill({
-          arrival: group.arrival,
-          departure: group.departure ?? null,
-          nights: null,
-          rooms: groups.flatMap((row) =>
-            Array.from({ length: row.rooms ?? 0 }, (_, index) => ({
-              adults: row.adultsPerRoom ?? 0,
-              childAges: [...row.childAges],
-              roomTypeText: row.roomPreference ?? null,
-              guestName: row.guestNames[index] ?? null,
-            })),
-          ),
-          boardText: group.board ?? null,
-          rateText: input.rateCode ?? null,
+        const prefill = await buildCreatePrefill({
+          arrival: group.arrival, departure: group.departure ?? null, nights: null,
+          rooms: groups.flatMap((row) => Array.from({ length: row.rooms ?? 0 }, (_, i) => ({
+            adults: row.adultsPerRoom ?? 0, childAges: [...row.childAges],
+            roomTypeText: row.roomPreference ?? null, guestName: row.guestNames[i] ?? null,
+          }))),
+          boardText: group.board ?? null, rateText: input.rateCode ?? null,
           agencyName: party.kind === 'agency' ? party.name : null,
-          organizationName:
-            party.kind === 'organization' || party.kind === 'government' ? party.name : null,
-          voucherNumber: null,
-          bookerName: null,
-          bookerEmail: null,
-          billingReference: party.reference,
-          paidBy: null,
-          defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
+          organizationName: party.kind === 'organization' || party.kind === 'government' ? party.name : null,
+          voucherNumber: null, bookerName: null, bookerEmail: null, billingReference: party.reference,
+          paidBy: null, defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
         });
+        if (!prefill.requests.length) return unavailable;
+        return {
+          status: 'ready' as const,
+          draft: bookingDraftFromPrefill({
+            requests: prefill.requests, missing: prefill.missing, schemaErrors: prefill.schemaErrors,
+            board: prefillBoardFromLuna(group.board),
+          }),
+          options: createRequestFieldOptions(),
+          messageId: input.messageId, selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision,
+          revisionRef: UNQUOTED_BOOKING_REVISION_REF,
+        };
       } catch {
-        return { status: 'unavailable' as const, reason: 'prefill_unavailable' };
+        return unavailable;
       }
-      if (!prefill.requests.length) return { status: 'unavailable' as const, reason: 'prefill_unavailable' };
-      return {
-        status: 'ready' as const,
-        draft: bookingDraftFromPrefill({
-          requests: prefill.requests,
-          missing: prefill.missing,
-          schemaErrors: prefill.schemaErrors,
-          board: prefillBoardFromLuna(group.board),
-        }),
-        options: createRequestFieldOptions(),
-        messageId: input.messageId,
-        selectionEpoch: input.selectionEpoch,
-        inputRevision: input.inputRevision,
-        revisionRef: UNQUOTED_BOOKING_REVISION_REF,
-      };
     }),
   listThreadQuoteRevisions: mailboxProcedure
     .input(listThreadQuoteRevisionsInput)

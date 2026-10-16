@@ -706,14 +706,7 @@ export function BookingCards({
             {textValue(request.ratePlan) ? (
               <CopyRow roomLabel={roomLabel} label="Rate code" value={textValue(request.ratePlan)} />
             ) : (
-              <RoomTextField
-                roomLabel={roomLabel}
-                label="Rate code"
-                value={choice.ratePlan}
-                disabled={locked}
-                maxLength={10}
-                onChange={(value) => setChoice({ ratePlan: value.toUpperCase() })}
-              />
+              <RoomTextField roomLabel={roomLabel} label="Rate code" value={choice.ratePlan} disabled={locked} maxLength={10} onChange={(value) => setChoice({ ratePlan: value.toUpperCase() })} />
             )}
             <CopyRow roomLabel={roomLabel} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
             <CopyRow roomLabel={roomLabel} label="Last name" value={textValue(request.lastName)} pii />

@@ -969,6 +969,31 @@ describe('pane save helpers', () => {
     expect(built.stay?.ratePlan).toBe('BARRO');
   });
 
+  it('refuses an empty or whitespace rate code even when the draft has one', () => {
+    const request = {
+      firstName: 'John',
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      departure: '2026-11-14',
+      adults: 1,
+      ratePlan: 'BCO1B',
+    };
+    const choice = {
+      roomType: 'STQN',
+      track: 'BAR',
+      sourceOfBusiness: 'E-Mail',
+      guaranteeType: '6pm Release',
+    };
+    expect(paneStayInputForRoom(request, { ...choice, ratePlan: '' })).toEqual({
+      stay: null,
+      missing: ['rate code'],
+    });
+    expect(paneStayInputForRoom(request, { ...choice, ratePlan: '  ' })).toEqual({
+      stay: null,
+      missing: ['rate code'],
+    });
+  });
+
   it('reads the server flag, and reads off when the client has no brain router', async () => {
     await expect(
       readPaneSaveFlag({ brain: { getCapabilities: { query: async () => ({ paneSave: true }) } } }),

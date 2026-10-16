@@ -1005,17 +1005,11 @@ export function NavaPane({
         }
       }
 
-      const stayKey = unbound.size === 1 ? [...unbound][0] : null;
-      const rateCode = stayKey
-        ? quoteSession.groups.find((group) => stayKeyForGroup(group) === stayKey)?.rateCode
-        : undefined;
+      const stayKey = unbound.size === 1 && stayKeys.length <= 1 ? [...unbound][0] : null;
       const mutate = staff.workstation.prepareUnquotedBookingDraft?.mutate;
+      const rateCode = stayKey ? quoteSession.groups.find((g) => stayKeyForGroup(g) === stayKey)?.rateCode : undefined;
       const result =
-        stayKey &&
-        stayKeys.length <= 1 &&
-        !cancelled &&
-        !(luna.flags ?? []).some((flag) => flag === 'conference_or_group' || flag === 'rooms_only_group') &&
-        mutate
+        stayKey && !cancelled && !(luna.flags ?? []).some((f) => f === 'conference_or_group' || f === 'rooms_only_group') && mutate
           ? await mutate({
               messageId: source.messageId,
               selectionEpoch,

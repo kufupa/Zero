@@ -1607,18 +1607,16 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const draftKey = Object.keys(session.staffQuotes).find(
         (key) => session.staffQuotes[key]?.revisionRef === action.payload.revisionRef,
       );
-      if (draftKey) {
-        return { ...session, bookingDrafts: { ...session.bookingDrafts, [draftKey]: action.payload } };
-      }
-      if (action.payload.revisionRef !== 'unquoted') return session;
-      if (Object.keys(session.staffQuotes).length > 0) return session;
+      if (draftKey) return { ...session, bookingDrafts: { ...session.bookingDrafts, [draftKey]: action.payload } };
       const keys = requestedQuoteKeys(session.groups);
-      if (keys.length !== 1) return session;
       const room = action.payload.draft.rooms[0]?.request;
-      const arrival = typeof room?.arrival === 'string' ? room.arrival : '';
-      const departure = typeof room?.departure === 'string' ? room.departure : '';
-      const stayKey = arrival && departure ? `${arrival}:${departure}` : keys[0];
-      if (stayKey !== keys[0]) return session;
+      const stayKey =
+        typeof room?.arrival === 'string' && typeof room?.departure === 'string'
+          ? `${room.arrival}:${room.departure}`
+          : keys[0];
+      if (action.payload.revisionRef !== 'unquoted' || Object.keys(session.staffQuotes).length > 0 || keys.length !== 1 || stayKey !== keys[0]) {
+        return session;
+      }
       return { ...session, bookingDrafts: { ...session.bookingDrafts, [stayKey]: action.payload } };
     }
     case 'handle_review_item': {

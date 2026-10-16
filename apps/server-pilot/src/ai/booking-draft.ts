@@ -42,18 +42,14 @@ export function isUnquotedSingleStayNewBooking(analysis: {
   if (analysis.workflow !== 'create_booking') return false;
   if (analysis.flags?.some((flag) => flag === 'conference_or_group' || flag === 'rooms_only_group')) return false;
   const keys = new Set(
-    (analysis.groups ?? [])
-      .filter((group) => group.arrival?.trim())
-      .map((group) => `${group.arrival}:${group.departure ?? ''}`),
+    (analysis.groups ?? []).filter((g) => g.arrival?.trim()).map((g) => `${g.arrival}:${g.departure ?? ''}`),
   );
   return keys.size === 1;
 }
 
 export function prefillBoardFromLuna(board: string | null | undefined): QuotedBoard {
-  if (board === 'room_only') return 'room_only';
-  if (board === 'bb') return 'bb';
-  if (board === 'dbb' || board === 'dinner_bb') return 'dinner_bb';
-  return 'unknown';
+  if (board === 'room_only' || board === 'bb') return board;
+  return board === 'dbb' || board === 'dinner_bb' ? 'dinner_bb' : 'unknown';
 }
 
 export function bookingDraftFromPrefill(input: {
@@ -62,19 +58,14 @@ export function bookingDraftFromPrefill(input: {
   schemaErrors: string[][];
   board?: QuotedBoard;
 }): BookingDraft {
-  const rooms: BookingDraftRoom[] = input.requests.map((request, index) => {
-    const arrival = typeof request.arrival === 'string' ? request.arrival : 'unknown';
-    const departure = typeof request.departure === 'string' ? request.departure : 'unknown';
-    return {
-      groupId: `${arrival}:${departure}`,
+  return {
+    rooms: input.requests.map((request, index) => ({
+      groupId: `${typeof request.arrival === 'string' ? request.arrival : 'unknown'}:${typeof request.departure === 'string' ? request.departure : 'unknown'}`,
       roomIndex: index + 1,
       board: input.board ?? 'unknown',
       request,
       schemaErrors: (input.schemaErrors[index] ?? []).filter((error) => !/ratePlan/i.test(error)),
-    };
-  });
-  return {
-    rooms,
+    })),
     rateCheck: [],
     missing: input.missing.filter((item) => item.field !== 'ratePlan'),
     flags: [],
