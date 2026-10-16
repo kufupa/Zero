@@ -183,11 +183,6 @@ async function run(ctx, request) {
       return;
     }
     if (await refuseUnsupportedFields(ctx, request.fields)) return;
-    if (ctx.args.mode === 'preview') {
-      ctx.result.outcome = 'previewed';
-      return;
-    }
-
     const mismatch = await fillChangedFields(ctx.page, request.fields);
     if (mismatch) {
       ctx.result.outcome = 'refused_unsupported_field';
@@ -200,6 +195,11 @@ async function run(ctx, request) {
       ctx.result.outcome = 'refused_dangerous_dialog';
       ctx.result.reason = 'dangerous_dialog';
       ctx.result.refusal = beforeSaveDialog;
+      return;
+    }
+    if (ctx.args.mode === 'preview') {
+      await shot(ctx, 'diff.png');
+      ctx.result.outcome = 'previewed';
       return;
     }
     ctx.result.saveAttempted = true;

@@ -20,6 +20,7 @@ import { adminDashboardRouter } from './routes/admin-dashboard.js';
 import { catchupRouter } from './routes/catchup.js';
 import { workstationRouter } from './routes/workstation.js';
 import { quoteWorkflowRouter } from './routes/quote-workflow.js';
+import { paneStayAmendRouter } from './routes/pane-stay-amend.js';
 import { paneStayCancelRouter } from './routes/pane-stay-cancel.js';
 import { paneStayLookupRouter } from './routes/pane-stay-lookup.js';
 import { panePartyLookupRouter } from './routes/pane-party-lookup.js';
@@ -45,6 +46,7 @@ export const appRouter = router({
   catchup: catchupRouter,
   workstation: workstationRouter,
   quoteWorkflow: quoteWorkflowRouter,
+  paneStayAmend: paneStayAmendRouter,
   paneStayCancel: paneStayCancelRouter,
   paneStayLookup: paneStayLookupRouter,
   panePartyLookup: panePartyLookupRouter,
