@@ -19,6 +19,7 @@ CLI `AMEND_FIELDS` unchanged: `arrivaldate`, `departuredate`, `adults`, `childre
 - Unit: preview refuses non-Labtest when mode=lab; commit refuses a stale digest; form `amend-diff-row` is only changed fields.
 - Remote typecheck `--baseline` (mail + server-pilot).
 - PR + `@greptileai`, ≤2 fix rounds.
+- Greptile round 1: fixed P1 edits leaking across bookings; clear ready preview on edit. Left HITL `recordedToolRun` P2 — no `amend_preview`/`amend_commit` kind without a schema change.
 
 ## Next (orchestrator)
 

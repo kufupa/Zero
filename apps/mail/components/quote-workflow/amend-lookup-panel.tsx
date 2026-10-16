@@ -156,7 +156,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   // Cancel views are kept per booking on an email (see cancelScope), so a reply for one booking never shows on another.
   const [cancelViews, setCancelViews] = useState<Record<string, CancelView>>({});
   const [amendViews, setAmendViews] = useState<Record<string, AmendView>>({});
-  const [requested, setRequested] = useState<AmendFormValues>({});
+  const [requestedByScope, setRequestedByScope] = useState<Record<string, AmendFormValues>>({});
 
   if (!amendment) return null;
 
@@ -219,6 +219,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const cancelInput = foundNumber && cancelArrival ? { confirmation: foundNumber, arrival: cancelArrival } : null;
   const amendScope = cancelScope;
   const amendView = amendScope ? (amendViews[amendScope] ?? null) : null;
+  const requested = (amendScope && requestedByScope[amendScope]) || {};
   const stayCurrent = {
     arrival: isoDayOf(stayText(stay?.arrival)), departure: isoDayOf(stayText(stay?.departure)),
     roomType: stayText(stay?.roomType), adults: stay?.adults ?? null, children: stay?.children ?? null,
@@ -507,7 +508,15 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           values={requestedValues}
           current={stayCurrent}
           client={amendClient}
-          onChange={(field, value) => setRequested((prev) => ({ ...prev, [field]: value }))}
+          onChange={(field, value) => {
+            if (!amendScope) return;
+            setRequestedByScope((prev) => ({ ...prev, [amendScope]: { ...prev[amendScope], [field]: value } }));
+            setAmendViews((prev) => {
+              const view = prev[amendScope];
+              if (view?.kind !== 'ready' && view?.kind !== 'committing') return prev;
+              return { ...prev, [amendScope]: { kind: 'idle', note: null } };
+            });
+          }}
           onPreview={() => void previewAmendStay()}
           onCommit={() => {
             if (amendView?.kind === 'ready') void commitAmendStay(amendView);
