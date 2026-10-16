@@ -76,8 +76,14 @@ describe('buildCreatePrefill', () => {
     expect(hit.requests[0]).toMatchObject({ roomType: 'STQN' });
     expect(hit.missing.filter((row) => row.field === 'roomType')).toEqual([]);
 
-    const miss = await buildCreatePrefill(
+    const named = await buildCreatePrefill(
       stay({ rooms: [{ adults: 1, childAges: [], roomTypeText: 'Standard Queen', guestName: GUEST }] }),
+    );
+    expect(named.requests[0]).toMatchObject({ roomType: 'STQN' });
+    expect(named.missing.filter((row) => row.field === 'roomType')).toEqual([]);
+
+    const miss = await buildCreatePrefill(
+      stay({ rooms: [{ adults: 1, childAges: [], roomTypeText: 'penthouse loft', guestName: GUEST }] }),
     );
     expect(miss.requests[0]).not.toHaveProperty('roomType');
     expect(miss.missing.some((row) => row.field === 'roomType' && /room type/i.test(row.question))).toBe(true);
@@ -163,6 +169,54 @@ describe('buildCreatePrefill', () => {
     expect(result.missing.map((row) => row.field)).toEqual(
       expect.arrayContaining(['track', 'sourceOfBusiness', 'guaranteeType']),
     );
+  });
+
+  it('prefills Walk in / BAR / Non-Guaranteed Individual for a direct booking', async () => {
+    const result = await buildCreatePrefill(
+      stay({
+        agencyName: null,
+        organizationName: null,
+        paidBy: 'guest',
+        defaults: NULL_DEFAULTS,
+        rateText: null,
+        rooms: [{ adults: 1, childAges: [], roomTypeText: 'Standard Queen', guestName: GUEST }],
+      }),
+    );
+    expect(result.requests[0]).toMatchObject({
+      track: 'BAR',
+      sourceOfBusiness: 'Walk in',
+      guaranteeType: 'Non-Guaranteed Individual',
+      ratePlan: 'BAR',
+      roomType: 'STQN',
+    });
+    expect(result.missing.map((row) => row.field)).not.toEqual(
+      expect.arrayContaining(['track', 'sourceOfBusiness', 'guaranteeType', 'ratePlan', 'roomType']),
+    );
+  });
+
+  it('leaves Track and Source empty when an agency or company party is set', async () => {
+    const agency = await buildCreatePrefill(stay({ defaults: NULL_DEFAULTS }));
+    expect(agency.requests[0]).not.toHaveProperty('track');
+    expect(agency.requests[0]).not.toHaveProperty('sourceOfBusiness');
+    const company = await buildCreatePrefill(
+      stay({ agencyName: null, organizationName: 'Woolworths Holdings', defaults: NULL_DEFAULTS }),
+    );
+    expect(company.requests[0]).not.toHaveProperty('track');
+    expect(company.requests[0]).not.toHaveProperty('sourceOfBusiness');
+  });
+
+  it('leaves Track and Source empty when partyKind is set even if the name is missing', async () => {
+    const result = await buildCreatePrefill(
+      stay({
+        agencyName: null,
+        organizationName: null,
+        paidBy: null,
+        partyKind: 'agency',
+        defaults: NULL_DEFAULTS,
+      }),
+    );
+    expect(result.requests[0]).not.toHaveProperty('track');
+    expect(result.requests[0]).not.toHaveProperty('sourceOfBusiness');
   });
 
   it('exports schemas and a description ready for createTool', () => {

@@ -20,9 +20,12 @@ const NO_CONTACT: StoredContact = {
 export function ContactBlock({
   contact,
   senderFallback,
+  quote = true,
   onEdit,
 }: {
   contact: StoredContact | null;
+  /** Only a quote prints this contact on a PDF; other mail types show it as the plain contact. */
+  quote?: boolean;
   senderFallback?: Pick<StoredContact, 'name' | 'email'> | null;
   onEdit: (field: ContactField, value: string | null) => void;
 }) {
@@ -36,7 +39,7 @@ export function ContactBlock({
 
   return (
     <Section
-      title="Quote contact — printed on the PDF"
+      title={quote ? 'Quote contact — printed on the PDF' : 'Contact'}
       id="quote-contact"
     >
       <dl className="grid grid-cols-2 gap-x-2.5 gap-y-2">

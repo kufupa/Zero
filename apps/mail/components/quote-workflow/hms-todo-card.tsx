@@ -84,9 +84,6 @@ export function HmsTodoCard({ card }: { card: HmsTodoCardPayload | null | undefi
           </ul>
         </>
       ) : null}
-      {card.kind === 'new_booking' ? null : (
-        <p className="text-[11px] text-[#64748b]">Nava does not write to HMS</p>
-      )}
     </Section>
   );
 }

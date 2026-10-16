@@ -1260,6 +1260,11 @@ export function QuoteWorkflowPanel({
     );
   }
   const amendment = amendmentOf(session);
+  const bookCardShowing = requestedQuoteKeys(session.groups).some((key) => session.bookingDrafts[key]);
+  const hmsTodoCard =
+    bookCardShowing && session.analysis?.hmsTodoCard?.kind === 'new_booking'
+      ? undefined
+      : session.analysis?.hmsTodoCard;
   if (session.phase === 'non_quote') {
     // One notice. Staff only see more when Nava flagged something they must act on: the not-supported guidance, or a file it could not read.
     const unreadFiles = (session.reviewItems ?? []).filter((item) => item.kind === 'document_failure');
@@ -1268,7 +1273,7 @@ export function QuoteWorkflowPanel({
         {TELL_NAVA_ENABLED ? (
           <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         ) : null}
-        <HmsTodoCard card={session.analysis?.hmsTodoCard} />
+        <HmsTodoCard card={hmsTodoCard} />
         <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} unreadFiles={unreadFiles.length > 0} />
         {unreadFiles.map((item) => (
           <Notice key={item.id} tone="warn">
@@ -1993,7 +1998,7 @@ export function QuoteWorkflowPanel({
       ) : null}
       {showWorkspace ? (
         <>
-          <HmsTodoCard card={session.analysis?.hmsTodoCard} />
+          <HmsTodoCard card={hmsTodoCard} />
           <NotSupportedList
             flags={session.analysis?.luna?.flags}
             tasks={session.analysis?.luna?.tasks}

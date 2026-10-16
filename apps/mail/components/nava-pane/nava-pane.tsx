@@ -768,10 +768,11 @@ export function NavaPane({
   useEffect(() => {
     const fields = missingQuoteReplyFieldsForGroups(quoteSession.groups);
     if (fields.length && missingQuoteDetailsReplyOnly(quoteSession)) {
-      const senderName = activeEmail?.senderName.trim() ?? '';
-      const senderEmail = activeEmail?.senderEmail.trim().toLowerCase() ?? '';
-      const greetingName = senderName.toLowerCase() === senderEmail ? '' : senderName;
-      const html = missingQuoteDetailsWrapperHtml(greetingName, fields, staffSignerName);
+      const html = missingQuoteDetailsWrapperHtml(
+        replyGreetingName(documentContact?.name, activeEmail),
+        fields,
+        staffSignerName,
+      );
       if (
         (!quoteSession.reviewedReplyHtml.trim() && !quoteSession.reviewedReplyEdited) ||
         (quoteSession.reviewedReplySource === 'missing_quote_details' && quoteSession.reviewedReplyHtml !== html)
@@ -786,6 +787,7 @@ export function NavaPane({
   }, [
     activeEmail?.senderEmail,
     activeEmail?.senderName,
+    documentContact?.name,
     quoteSession.analysis,
     quoteSession.groups,
     quoteSession.reviewedReplyEdited,
@@ -1836,9 +1838,7 @@ export function NavaPane({
     const selectionEpoch = session.binding?.selectionEpoch ?? 0;
     const inputRevision = session.inputRevision;
     const selectedOfferIds = [quote.revisionRef];
-    const senderName = activeEmail?.senderName.trim() ?? '';
-    const senderEmail = activeEmail?.senderEmail.trim().toLowerCase() ?? '';
-    const greetingName = senderName.toLowerCase() === senderEmail ? '' : senderName;
+    const greetingName = replyGreetingName(documentContactRef.current?.name, activeEmail);
     const reviewedReplyHtml = session.analysis?.intent === 'quote'
       ? quoteWrapperHtml(greetingName, staffSignerName, {
           ...(quote.dinnerAddOn ? { dinnerAddOn: quote.dinnerAddOn } : {}),
@@ -2185,6 +2185,7 @@ export function NavaPane({
                 key={`${contactMessageKey}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
                 contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
                 senderFallback={senderFallback}
+                quote={readAs === 'quote' || readAs === 'new_booking' || readAs === 'group'}
                 onEdit={storedWork.recordContact}
               />
             ) : null}
@@ -2355,4 +2356,15 @@ export function NavaPane({
       </div>
     </HmsJobNoticeProvider>
   );
+}
+
+/** The reply greets the quote contact (a forwarded mail's sender is often our own staff), else a named sender. */
+function replyGreetingName(
+  contactName: string | null | undefined,
+  email: { senderName: string; senderEmail: string } | null | undefined,
+): string {
+  const contact = contactName?.trim() ?? '';
+  if (contact) return contact;
+  const senderName = email?.senderName.trim() ?? '';
+  return senderName.toLowerCase() === (email?.senderEmail.trim().toLowerCase() ?? '') ? '' : senderName;
 }

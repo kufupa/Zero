@@ -55,6 +55,12 @@ function fakeTrpc(lookup: StoredWork) {
 }
 
 describe('ContactBlock', () => {
+  it('titles a non-quote contact plainly', () => {
+    render(<ContactBlock contact={PRIYA} quote={false} onEdit={vi.fn()} />);
+    expect(screen.getByRole('region', { name: 'Contact' })).toBeDefined();
+    expect(screen.queryByRole('region', { name: 'Quote contact — printed on the PDF' })).toBeNull();
+  });
+
   it('shows only the quote contact printed on the PDF and keeps corrections request-scoped', () => {
     render(<ContactBlock contact={PRIYA} onEdit={vi.fn()} />);
     expect(screen.getByRole('region', { name: 'Quote contact — printed on the PDF' })).toBeDefined();

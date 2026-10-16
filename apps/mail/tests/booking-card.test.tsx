@@ -285,6 +285,7 @@ describe('booking cards', () => {
     };
     render(<QuoteWorkflowPanel session={session} />);
     expect(screen.getByRole('heading', { name: 'Book in HMS' })).toBeDefined();
+    expect(screen.queryByRole('heading', { name: 'Key into HMS' })).toBeNull();
     expect(screen.queryByText('Nava does not write to HMS')).toBeNull();
   });
 
@@ -392,6 +393,25 @@ describe('booking cards', () => {
     expect(screen.getByText(ROOM_TYPE_CHANGED_COPY)).toBeDefined();
     fireEvent.change(screen.getAllByLabelText('Room type')[0]!, { target: { value: 'STQN' } });
     expect(screen.getByText(/Price matches the email/)).toBeDefined();
+  });
+
+  it('does not warn about a quote room change when there is no quote', () => {
+    render(<BookingCards draft={draftReady({ rateCheck: [] })} />);
+    fireEvent.change(screen.getAllByLabelText('Room type')[0]!, { target: { value: 'DLXKNG' } });
+    expect(screen.queryByText(ROOM_TYPE_CHANGED_COPY)).toBeNull();
+  });
+
+  it('lists missing facts as muted labels, not amber questions', () => {
+    render(
+      <BookingCards
+        draft={draftReady({
+          missing: [{ field: 'guestName', question: 'Guest name for this booking?' }],
+        })}
+      />,
+    );
+    expect(screen.getByText('Guest name')).toBeDefined();
+    expect(screen.queryByText('Guest name for this booking?')).toBeNull();
+    expect(document.querySelectorAll('[class*="amber"]').length).toBe(0);
   });
 
   it('fills an empty Organization and Booking agency from the picked company and agency', () => {
