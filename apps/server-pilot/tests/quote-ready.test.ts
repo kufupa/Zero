@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildPreparedStaffQuotePlan,
   confidentPartyFromV2Result,
+  quotePrepareKindReason,
   staffQuoteInputsPriceEquivalent,
 } from '../src/ai/quote-ready.js';
 
@@ -237,6 +238,51 @@ describe('prepared quote input from stored extraction', () => {
 
     expect(plan.inputs).toHaveLength(2);
     expect(plan.inputs.map((input) => input.groups[0]?.arrivalDate)).toEqual(['2026-10-20', '2026-11-01']);
+  });
+});
+
+describe('quote prepare kind gate', () => {
+  it('builds a prepared plan for a single-stay booking with no confirmation number', () => {
+    expect(quotePrepareKindReason({ kind: 'booking', payload: payload(), subject: 'New booking 12 Nov' })).toBeNull();
+    expect(build().reason).toBeNull();
+    expect(build().inputs).toHaveLength(1);
+  });
+
+  it('rejects a booking that already has a confirmation number', () => {
+    expect(
+      quotePrepareKindReason({
+        kind: 'booking',
+        payload: payload({ confirmationNumbers: ['57291630-1'] }),
+        subject: 'Booking confirmed',
+      }),
+    ).toBe('not_quote');
+  });
+
+  it('rejects a booking whose subject carries a confirmation number', () => {
+    expect(
+      quotePrepareKindReason({
+        kind: 'booking',
+        payload: payload(),
+        subject: 'Please honour 57291630-1',
+      }),
+    ).toBe('not_quote');
+  });
+
+  it('rejects a multi-stay booking even without a confirmation number', () => {
+    const first = payload().stays[0]!;
+    expect(
+      quotePrepareKindReason({
+        kind: 'booking',
+        payload: payload({
+          stays: [first, { ...first, id: 'stay-2', requested: { arrival: '2026-11-01', departure: '2026-11-03' } }],
+        }),
+        subject: 'Two stays',
+      }),
+    ).toBe('not_quote');
+  });
+
+  it('still admits ordinary quote extractions', () => {
+    expect(quotePrepareKindReason({ kind: 'quote', payload: payload(), subject: 'Quote 57291630-1' })).toBeNull();
   });
 });
 

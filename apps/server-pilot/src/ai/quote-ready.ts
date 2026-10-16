@@ -23,6 +23,34 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+const HMS_CONFIRMATION = /^\d{6,10}-\d{1,2}$/;
+const CONFIRMATION_IN_TEXT = /(?<![\d-])\d{6,10}-\d{1,2}(?![\d-])/g;
+
+function payloadHasConfirmation(payload: Record<string, unknown> | null): boolean {
+  const values = payload?.confirmationNumbers;
+  return Array.isArray(values) && values.some((value) => typeof value === 'string' && value.trim().length > 0);
+}
+
+function subjectHasConfirmation(subject: string): boolean {
+  CONFIRMATION_IN_TEXT.lastIndex = 0;
+  return CONFIRMATION_IN_TEXT.test(subject) || HMS_CONFIRMATION.test(subject.trim());
+}
+
+/** Quote extractions always admit. New-booking extractions admit only a single stay with no confirmation number. */
+export function quotePrepareKindReason(input: {
+  kind: string | null | undefined;
+  payload: unknown;
+  subject?: string | null;
+}): 'not_quote' | null {
+  if (input.kind === 'quote') return null;
+  if (input.kind !== 'booking') return 'not_quote';
+  const payload = record(input.payload);
+  const stays = payload?.stays;
+  if (!Array.isArray(stays) || stays.length !== 1) return 'not_quote';
+  if (payloadHasConfirmation(payload) || subjectHasConfirmation(input.subject ?? '')) return 'not_quote';
+  return null;
+}
+
 function validIsoDay(value: string | null): value is string {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00.000Z`);

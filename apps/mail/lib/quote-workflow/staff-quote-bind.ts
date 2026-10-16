@@ -620,6 +620,37 @@ export function readRowRates(value: unknown): StaffRowRate[] {
   return rates;
 }
 
+/** Rate code and nightly amount the quote panel reads from a prepared staff_quote. */
+export function preparedStayRate(
+  group: StayGroupRequirement,
+  quote?: StaffQuoteAllocation | null,
+): { rateCode: string; amountMinor: number | null } {
+  const row = quote?.rowRates?.find((item) => item.groupId === group.id);
+  const selected = quote?.rateOptions?.find((item) => item.groupId === group.id && item.selected);
+  const rateCode = (row?.rateCode ?? selected?.rateCode ?? group.rateCode ?? '').trim();
+  const amountMinor = row?.nightlyMinor[0] ?? selected?.perNightMinor ?? group.quotedAmountMinor ?? group.rowPrice?.amountMinor ?? null;
+  return { rateCode, amountMinor };
+}
+
+export function groupsWithPreparedStayRates(
+  groups: StayGroupRequirement[],
+  quote: StaffQuoteAllocation,
+  groupIds: ReadonlySet<string>,
+): StayGroupRequirement[] {
+  return groups.map((group) => {
+    if (!groupIds.has(group.id)) return group;
+    const prepared = preparedStayRate(group, quote);
+    if (!prepared.rateCode && prepared.amountMinor == null) return group;
+    return {
+      ...group,
+      ...(prepared.rateCode && !group.rateCode ? { rateCode: prepared.rateCode } : {}),
+      ...(prepared.amountMinor != null && group.quotedAmountMinor == null
+        ? { quotedAmountMinor: prepared.amountMinor }
+        : {}),
+    };
+  });
+}
+
 export type BoundStaffSource =
   | { kind: 'unavailable'; reason: string }
   | { kind: 'message_not_synced' }

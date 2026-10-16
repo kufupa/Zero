@@ -57,6 +57,8 @@ export type StayGroupRequirement = {
   fields: Record<string, FactProvenance>;
   /** HMS rate code pinned from a rate card. Cleared when staff change the board, dates or room type by hand. */
   rateCode?: string;
+  /** Nightly amount from a prepared staff quote, shown on the booking card. */
+  quotedAmountMinor?: number;
   /** The price staff chose for this row instead of HMS's nightly rate. Absent means HMS prices the row. */
   rowPrice?: RowPriceChoice;
 };
