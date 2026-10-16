@@ -685,8 +685,8 @@ describe('prepareUnquotedBookingDraft route', () => {
       departure: '2026-10-13',
       firstName: 'John',
       lastName: 'Smith',
+      ratePlan: 'BAR',
     });
-    expect(result.draft.rooms[0]?.request).not.toHaveProperty('ratePlan');
   });
 
   it('prefills a party-contract rate code when given', async () => {

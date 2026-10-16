@@ -118,6 +118,10 @@ async function writeClipboard(value: string): Promise<boolean> {
 export const ROOM_TYPE_CHANGED_COPY =
   'Room type changed from the quote, so the price check no longer applies. Quote again to check the price for this room.';
 
+function missingFactLabel(question: string): string {
+  return question.replace(/\s+for this booking\??$/i, '').replace(/\?$/, '');
+}
+
 function RateCheckChip({ check }: { check: BookingRateCheck }) {
   if (check.status === 'match') {
     return (
@@ -634,7 +638,7 @@ export function BookingCards({
           ? 'Preview each room in HMS first, then book it. Click Copy next to any field to paste it by hand instead.'
           : 'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.'}
       </p>
-      {roomTypeChanged ? (
+      {roomTypeChanged && draft.draft.rateCheck.length > 0 ? (
         <Notice tone="warn">{ROOM_TYPE_CHANGED_COPY}</Notice>
       ) : (
         draft.draft.rateCheck.map((check, index) => (
@@ -651,8 +655,8 @@ export function BookingCards({
         </Notice>
       ) : null}
       {draft.draft.missing.map((item) => (
-        <p key={`${item.field}:${item.question}`} className="text-[11px] text-amber-800">
-          {item.question}
+        <p key={`${item.field}:${item.question}`} className="text-[11px] text-[#64748b]">
+          {missingFactLabel(item.question)}
         </p>
       ))}
       {draft.draft.rooms.map((room) => {

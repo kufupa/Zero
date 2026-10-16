@@ -6,7 +6,11 @@ import type { ModelAdapter } from './bedrock/adapter.js';
 import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { analyseQuoteSources, type QuoteWorkflowAnalysis } from './quote-workflow-analyse.js';
-import { buildCreatePrefill, type BuildCreatePrefillOutput } from './aop/create-prefill.js';
+import {
+  buildCreatePrefill,
+  DIRECT_BOOKING_DEFAULTS,
+  type BuildCreatePrefillOutput,
+} from './aop/create-prefill.js';
 import {
   buildHmsTodoCard,
   extractBillingAskKind,
@@ -456,7 +460,10 @@ export async function hmsTodoCardFromLuna(
         bookerEmail: null,
         billingReference: party?.reference ?? null,
         paidBy: null,
-        defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
+        defaults:
+          party?.kind === 'agency' || party?.kind === 'organization' || party?.kind === 'government'
+            ? { track: null, sourceOfBusiness: null, guaranteeType: null }
+            : { ...DIRECT_BOOKING_DEFAULTS },
       });
     } catch {
       prefill = null;

@@ -6,7 +6,15 @@ import {
   type BookingDraftDefaults,
   type BookingDraftMissing,
 } from '../booking-draft.js';
+import { matchRoomType } from '../room-types.js';
 import { dayFromText } from '../voucher-find.js';
+
+/** Direct individual booking: HMS Labtest read-back. Skip when an agency/company party is set. */
+export const DIRECT_BOOKING_DEFAULTS = {
+  track: 'BAR',
+  sourceOfBusiness: 'Walk in',
+  guaranteeType: 'Non-Guaranteed Individual',
+} as const;
 
 const roomSchema = z.object({
   adults: z.number().int(),
@@ -155,20 +163,28 @@ export async function buildCreatePrefill(
     : null;
   if (!departure) missing.push({ field: 'departure', question: 'Departure date for this booking?' });
 
-  const track = matchEnum(parsed.defaults.track, options.track);
+  const partySet = Boolean(trimmed(parsed.agencyName) || trimmed(parsed.organizationName));
+  const fallback = partySet ? null : DIRECT_BOOKING_DEFAULTS;
+  const track = matchEnum(parsed.defaults.track ?? fallback?.track, options.track);
   if (!track) missing.push({ field: 'track', question: 'Track for this booking?' });
-  const sourceOfBusiness = matchEnum(parsed.defaults.sourceOfBusiness, options.sourceOfBusiness);
+  const sourceOfBusiness = matchEnum(
+    parsed.defaults.sourceOfBusiness ?? fallback?.sourceOfBusiness,
+    options.sourceOfBusiness,
+  );
   if (!sourceOfBusiness) {
     missing.push({ field: 'sourceOfBusiness', question: 'Source of business for this booking?' });
   }
-  const guaranteeType = matchEnum(parsed.defaults.guaranteeType, options.guaranteeType);
+  const guaranteeType = matchEnum(
+    parsed.defaults.guaranteeType ?? fallback?.guaranteeType,
+    options.guaranteeType,
+  );
   if (!guaranteeType) {
     missing.push({ field: 'guaranteeType', question: 'Guarantee type for this booking?' });
   }
 
   // ratePlan is a native HMS code (BAR, BARRO, BWEBB), not an enum; prose like "Best Available Rate" goes to missing.
   const rateText = trimmed(parsed.rateText);
-  const ratePlan = rateText && NATIVE_RATE_CODE.test(rateText) ? rateText : null;
+  const ratePlan = rateText && NATIVE_RATE_CODE.test(rateText) ? rateText : rateText ? null : 'BAR';
   if (!ratePlan) missing.push({ field: 'ratePlan', question: 'Rate plan code for this booking?' });
 
   const shared: Record<string, unknown> = {};
@@ -210,7 +226,10 @@ export async function buildCreatePrefill(
       adults: room.adults,
       childAges: [...room.childAges],
     };
-    const roomType = matchEnum(room.roomTypeText, options.roomType);
+    const mapped = matchRoomType(room.roomTypeText ?? undefined).code;
+    const roomType =
+      matchEnum(room.roomTypeText, options.roomType) ??
+      (mapped && options.roomType.includes(mapped) ? mapped : null);
     if (roomType) request.roomType = roomType;
     else missing.push({ field: 'roomType', question: roomTypeQuestion(roomCount, roomIndex) });
 
