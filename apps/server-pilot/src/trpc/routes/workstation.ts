@@ -975,6 +975,7 @@ export const workstationRouter = router({
       const group = groups[0];
       if (
         !group?.arrival ||
+        groups.length !== 1 ||
         groups.some((r) => !Number.isInteger(r.rooms) || (r.rooms ?? 0) < 1 || !Number.isInteger(r.adultsPerRoom) || (r.adultsPerRoom ?? 0) < 1)
       ) {
         return unavailable;
