@@ -547,10 +547,12 @@ export function BookingCards({
               guaranteeType: textValue(room.request.guaranteeType),
               ratePlan:
                 textValue(room.request.ratePlan) ||
-                (
-                  groups.find((item) => item.id === room.groupId) ??
-                  groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId)
-                )?.rateCode ||
+                (() => {
+                  const stay =
+                    groups.find((item) => item.id === room.groupId) ??
+                    groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
+                  return stay?.rateCode || stay?.quotedRateCode || '';
+                })() ||
                 '',
               bookingAgency: textValue(room.request.agency) || pickedName(parties?.agency),
               organization: textValue(room.request.organization) || pickedName(parties?.company),
@@ -841,7 +843,9 @@ export function BookingCards({
                     specialRequests: group?.specialRequests,
                     authorisedBy: override?.note,
                     rate: {
-                      code: override?.rateCode ?? (choice.ratePlan || textValue(request.ratePlan) || group?.rateCode),
+                      code:
+                        override?.rateCode ??
+                        (choice.ratePlan || textValue(request.ratePlan) || group?.rateCode || group?.quotedRateCode),
                       nightlyMinor:
                         price ? [price.amountMinor] : group?.quotedAmountMinor != null ? [group.quotedAmountMinor] : undefined,
                       board: BOARD_LABELS[room.board ?? ''],

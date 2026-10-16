@@ -627,7 +627,7 @@ export function preparedStayRate(
 ): { rateCode: string; amountMinor: number | null } {
   const row = quote?.rowRates?.find((item) => item.groupId === group.id);
   const selected = quote?.rateOptions?.find((item) => item.groupId === group.id && item.selected);
-  const rateCode = (row?.rateCode ?? selected?.rateCode ?? group.rateCode ?? '').trim();
+  const rateCode = (row?.rateCode ?? selected?.rateCode ?? group.rateCode ?? group.quotedRateCode ?? '').trim();
   const amountMinor = row?.nightlyMinor[0] ?? selected?.perNightMinor ?? group.quotedAmountMinor ?? group.rowPrice?.amountMinor ?? null;
   return { rateCode, amountMinor };
 }
@@ -643,7 +643,7 @@ export function groupsWithPreparedStayRates(
     if (!prepared.rateCode && prepared.amountMinor == null) return group;
     return {
       ...group,
-      ...(prepared.rateCode && !group.rateCode ? { rateCode: prepared.rateCode } : {}),
+      ...(prepared.rateCode ? { quotedRateCode: prepared.rateCode } : {}),
       ...(prepared.amountMinor != null ? { quotedAmountMinor: prepared.amountMinor } : {}),
     };
   });

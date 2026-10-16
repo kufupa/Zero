@@ -272,7 +272,7 @@ describe('booking cards', () => {
     render(
       <BookingCards
         draft={draft}
-        groups={[{ ...g1, rateCode: 'BARRO', quotedAmountMinor: 185000 }]}
+        groups={[{ ...g1, quotedRateCode: 'BARRO', quotedAmountMinor: 185000 }]}
       />,
     );
     const fields = screen.getAllByLabelText('Rate code');
