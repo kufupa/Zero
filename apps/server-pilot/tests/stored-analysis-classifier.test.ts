@@ -62,7 +62,7 @@ describe('storedAnalysis classifier overlay', () => {
     ).analysis;
     expect(other.luna.workflow).toBe('other');
 
-    const voucher = storedAnalysis({ kind: 'voucher_pop', payload, attachments: [] }, {}).analysis;
+    const voucher = storedAnalysis({ kind: 'voucher_pop', payload, attachments: [], subject: 'POP attached' }, {}).analysis;
     expect(voucher.luna.workflow).toBe('payment_ack');
   });
 });
