@@ -358,6 +358,8 @@ export function NavaPane({
     const query = staff.workstation.ownStaffQuoteJobs?.query;
     if (!query) return;
     let stopped = false;
+    let primed = false;
+    const seen = new Map<string, string>();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
       let rows: Awaited<ReturnType<NonNullable<typeof query>>> = [];
@@ -369,7 +371,11 @@ export function NavaPane({
       if (stopped) return;
       const openId = quoteSessionRef.current.staffSource?.messageId;
       for (const row of rows) {
-        if (row.status !== 'done' || row.messageId === openId || toastedStaffQuoteRuns.has(row.runId)) continue;
+        const previous = seen.get(row.runId);
+        seen.set(row.runId, row.status);
+        if (!primed || toastedStaffQuoteRuns.has(row.runId) || row.messageId === openId) continue;
+        if (row.status !== 'done' || row.ok === false) continue;
+        if (previous !== 'queued' && previous !== 'running' && previous !== 'retrying') continue;
         toastedStaffQuoteRuns.add(row.runId);
         const label = row.subject ? `Rates ready · ${row.subject}` : 'Rates ready';
         toast.success(
@@ -379,6 +385,7 @@ export function NavaPane({
             : undefined,
         );
       }
+      primed = true;
       timer = setTimeout(tick, 4_000);
     };
     void tick();

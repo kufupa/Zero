@@ -3124,6 +3124,7 @@ export type OwnStaffQuoteJob = {
   threadId: string | null;
   subject: string | null;
   status: HmsJobStatus;
+  ok: boolean;
 };
 
 /** This user's recent staff_quote jobs, for a background "rates ready" toast. */
@@ -3138,6 +3139,7 @@ export async function listUserStaffQuoteJobs(
       state: aiWorkflowRun.state,
       triggerMessageId: aiWorkflowRun.triggerMessageId,
       threadId: aiWorkflowRun.threadId,
+      readResult: aiWorkflowRun.readResult,
       subject: message.subject,
     })
     .from(aiWorkflowRun)
@@ -3162,6 +3164,7 @@ export async function listUserStaffQuoteJobs(
       threadId: row.threadId,
       subject: row.subject?.trim() || null,
       status: STATUS_BY_STATE[row.state],
+      ok: row.state === 'succeeded' && objectRecord(row.readResult).ok !== false,
     }));
 }
 

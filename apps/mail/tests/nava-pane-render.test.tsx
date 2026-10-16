@@ -1524,22 +1524,28 @@ describe('NavaPane screen states', () => {
     const onOpenThread = vi.fn();
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
-    bridgeMockState.ownStaffQuoteJobsQuery.mockResolvedValue([
-      {
-        runId: 'staff-job-other',
-        messageId: 'mail-other',
-        threadId: 'thread-other',
-        subject: 'Group rates 12 Nov',
-        status: 'done',
-      },
-    ]);
+    const otherJob = {
+      runId: 'staff-job-other',
+      messageId: 'mail-other',
+      threadId: 'thread-other',
+      subject: 'Group rates 12 Nov',
+      status: 'running' as const,
+      ok: true,
+    };
+    bridgeMockState.ownStaffQuoteJobsQuery
+      .mockResolvedValueOnce([otherJob])
+      .mockResolvedValue([{ ...otherJob, status: 'done' as const }]);
     render(<NavaPane bridge={fakeBridge} onOpenThread={onOpenThread} />);
     await storedReadLands();
-    await waitFor(() =>
-      expect(toast.success).toHaveBeenCalledWith(
-        'Rates ready · Group rates 12 Nov',
-        expect.objectContaining({ action: expect.objectContaining({ label: 'Open' }) }),
-      ),
+    await waitFor(() => expect(bridgeMockState.ownStaffQuoteJobsQuery).toHaveBeenCalled());
+    expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/^Rates ready/));
+    await waitFor(
+      () =>
+        expect(toast.success).toHaveBeenCalledWith(
+          'Rates ready · Group rates 12 Nov',
+          expect.objectContaining({ action: expect.objectContaining({ label: 'Open' }) }),
+        ),
+      { timeout: 6_000 },
     );
     const call = vi.mocked(toast.success).mock.calls.find((row) => row[0] === 'Rates ready · Group rates 12 Nov');
     (call?.[1] as { action?: { onClick: () => void } } | undefined)?.action?.onClick();

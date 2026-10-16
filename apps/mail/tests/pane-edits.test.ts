@@ -47,5 +47,7 @@ describe('pane edits', () => {
     expect(overlayRememberedGroups([extracted], null)).toEqual([extracted]);
     const draft = { ...GROUP, id: DRAFT_GROUP_ID };
     expect(overlayRememberedGroups([extracted], [draft])).toEqual([extracted]);
+    const extra = { ...GROUP, id: 'r_2', adults: 1 };
+    expect(overlayRememberedGroups([extracted, extra], [GROUP])).toEqual([GROUP]);
   });
 });

@@ -37,11 +37,13 @@ export function overlayRememberedGroups(
   groups: StayGroupRequirement[],
   remembered: StayGroupRequirement[] | null,
 ): StayGroupRequirement[] {
-  if (!remembered?.length) return groups;
-  const byId = new Map(remembered.map((row) => [row.id, row]));
-  const next = groups.map((row) => byId.get(row.id) ?? row);
-  for (const row of remembered) {
-    if (row.id === DRAFT_GROUP_ID || groups.some((item) => item.id === row.id)) continue;
+  if (!remembered) return groups;
+  const kept = remembered.filter((row) => row.id !== DRAFT_GROUP_ID);
+  if (!kept.length) return groups;
+  const byId = new Map(kept.map((row) => [row.id, row]));
+  const next = groups.filter((row) => byId.has(row.id)).map((row) => byId.get(row.id) ?? row);
+  for (const row of kept) {
+    if (next.some((item) => item.id === row.id)) continue;
     next.push(row);
   }
   return next;

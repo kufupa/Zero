@@ -595,6 +595,37 @@ describe('staff quote HMS job binding', () => {
     });
   });
 
+  it('does not restore rates when the saved job is for a different occupancy', async () => {
+    const query = vi.fn(async () => ({
+      ...view('done', READY),
+      request: {
+        kind: 'staff_quote' as const,
+        input: {
+          messageId: source.messageId,
+          sourceHash: source.sourceHash,
+          selectionEpoch: 1,
+          inputRevision: 1,
+          groups: [{ ...groups[0]!, adults: 9, specialRequests: undefined, fields: undefined }],
+          salesStrategy: 'BAR' as const,
+          company: '',
+          agency: '',
+          attention: '',
+          clientEmail: '',
+          clientTelephone: '',
+        },
+      },
+    }));
+    const result = await bindReadBackStaffQuote({
+      query,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(result).toBeNull();
+  });
+
   it('labels a prepared result for staff with its saved as-of time', async () => {
     const asOf = new Date().toISOString();
     const query = vi.fn(async () => view('done', READY, asOf, true));

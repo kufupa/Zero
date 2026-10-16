@@ -1316,6 +1316,7 @@ export async function bindReadBackStaffQuote(
       ? await args.query(lookup, { signal: args.signal })
       : await args.query(lookup);
     if (!first || args.signal?.aborted) return null;
+    if (first.request && !staffQuoteRequestMatches(first.request, built.input)) return null;
     if (
       first.status === 'done' &&
       (!first.asOf ||
@@ -1476,6 +1477,7 @@ type StaffQuoteClient = {
         threadId: string | null;
         subject: string | null;
         status: string;
+        ok?: boolean;
       }>
     >;
   };
