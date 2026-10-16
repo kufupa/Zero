@@ -652,7 +652,9 @@ export function BookingCards({
         const locked = commitStatus === 'running' || commitStatus === 'booked';
         const request = room.request;
         const built = paneStayInputForRoom(request, choice);
-        const group = groups.find((item) => item.id === room.groupId);
+        const group =
+          groups.find((item) => item.id === room.groupId) ??
+          groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
         // The quoted rate for the room's HMS notes: the row's price choice, its approval note for an override, and the
         // confirmation once Book in HMS has booked the room.
         const price = group?.rowPrice;
@@ -701,14 +703,18 @@ export function BookingCards({
               </label>
               <CopyButton label="Room type" roomLabel={roomLabel} value={choice.roomType} />
             </div>
-            <RoomTextField
-              roomLabel={roomLabel}
-              label="Rate code"
-              value={choice.ratePlan}
-              disabled={locked}
-              maxLength={10}
-              onChange={(value) => setChoice({ ratePlan: value.toUpperCase() })}
-            />
+            {textValue(request.ratePlan) ? (
+              <CopyRow roomLabel={roomLabel} label="Rate code" value={textValue(request.ratePlan)} />
+            ) : (
+              <RoomTextField
+                roomLabel={roomLabel}
+                label="Rate code"
+                value={choice.ratePlan}
+                disabled={locked}
+                maxLength={10}
+                onChange={(value) => setChoice({ ratePlan: value.toUpperCase() })}
+              />
+            )}
             <CopyRow roomLabel={roomLabel} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
             <CopyRow roomLabel={roomLabel} label="Last name" value={textValue(request.lastName)} pii />
             <CopyRow roomLabel={roomLabel} label="First name" value={textValue(request.firstName)} pii />

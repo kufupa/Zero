@@ -978,7 +978,18 @@ export const workstationRouter = router({
       }
       const groups = input.analysis.groups.filter((group) => group.arrival?.trim());
       const group = groups[0];
-      if (!group?.arrival) return { status: 'unavailable' as const, reason: 'prefill_unavailable' };
+      if (
+        !group?.arrival ||
+        groups.some(
+          (row) =>
+            !Number.isInteger(row.rooms) ||
+            (row.rooms ?? 0) < 1 ||
+            !Number.isInteger(row.adultsPerRoom) ||
+            (row.adultsPerRoom ?? 0) < 1,
+        )
+      ) {
+        return { status: 'unavailable' as const, reason: 'prefill_unavailable' };
+      }
       const party = input.analysis.party;
       let prefill;
       try {
@@ -987,8 +998,8 @@ export const workstationRouter = router({
           departure: group.departure ?? null,
           nights: null,
           rooms: groups.flatMap((row) =>
-            Array.from({ length: Math.max(row.rooms ?? 1, 0) }, (_, index) => ({
-              adults: row.adultsPerRoom ?? 1,
+            Array.from({ length: row.rooms ?? 0 }, (_, index) => ({
+              adults: row.adultsPerRoom ?? 0,
               childAges: [...row.childAges],
               roomTypeText: row.roomPreference ?? null,
               guestName: row.guestNames[index] ?? null,

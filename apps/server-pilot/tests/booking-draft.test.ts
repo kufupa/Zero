@@ -699,6 +699,22 @@ describe('prepareUnquotedBookingDraft route', () => {
     expect(result.draft.rooms[0]?.request).toMatchObject({ ratePlan: 'BCO1B' });
   });
 
+  it('returns unavailable when room or adult counts are missing', async () => {
+    const first = analysis().groups[0]!;
+    await expect(
+      draftCaller().workstation.prepareUnquotedBookingDraft({
+        ...unquotedInput,
+        analysis: analysis({ groups: [{ ...first, rooms: null }] }),
+      }),
+    ).resolves.toMatchObject({ status: 'unavailable' });
+    await expect(
+      draftCaller().workstation.prepareUnquotedBookingDraft({
+        ...unquotedInput,
+        analysis: analysis({ groups: [{ ...first, adultsPerRoom: null }] }),
+      }),
+    ).resolves.toMatchObject({ status: 'unavailable' });
+  });
+
   it('returns unavailable for a quote workflow or a second stay', async () => {
     await expect(
       draftCaller().workstation.prepareUnquotedBookingDraft({

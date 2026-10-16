@@ -250,10 +250,7 @@ describe('booking cards', () => {
     ]);
     expect(screen.getAllByRole('heading', { name: 'Standard Queen ×2' })).toHaveLength(2);
     expect(screen.getAllByText('STQN')).toHaveLength(2);
-    expect(screen.getAllByLabelText('Rate code').map((field) => (field as HTMLInputElement).value)).toEqual([
-      'TAXYZ',
-      'TAXYZ',
-    ]);
+    expect(screen.getAllByText('TAXYZ')).toHaveLength(2);
     expect(screen.getByText('Smith')).toBeDefined();
     expect(screen.getByText('Doe')).toBeDefined();
     expect(screen.getAllByRole('button', { name: 'Copy Adults for Standard Queen ×2' })).toHaveLength(2);
