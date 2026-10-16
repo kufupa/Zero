@@ -1114,7 +1114,7 @@ describe('NavaPane screen states', () => {
     if (visible) {
       expect(await screen.findByRole('region', { name: VOUCHER_COPY.heading }, { timeout: 5000 })).toBeDefined();
     } else {
-      const intent = (await screen.findByLabelText('Change how Nava reads this email')) as HTMLSelectElement;
+      const intent = (await screen.findByLabelText('Change how Nava reads this email')) as unknown as HTMLSelectElement;
       expect(intent.value).toBe(name);
       expect(voucherFindQuery).not.toHaveBeenCalled();
       expect(screen.queryByRole('region', { name: VOUCHER_COPY.heading })).toBeNull();
@@ -1383,7 +1383,7 @@ describe('NavaPane screen states', () => {
     bridgeMockState.analysisOverride = intentAnalysis({ intent: 'other', workflow: 'other' });
     render(<NavaPane bridge={fakeBridge} preview />);
 
-    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as HTMLSelectElement;
+    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as unknown as HTMLSelectElement;
     expect(intent.value).toBe('other');
     expect(screen.queryByRole('button', { name: 'Save reply' })).toBeNull();
     expect(screen.queryByText('Prepare the quote PDF first')).toBeNull();
@@ -1395,7 +1395,7 @@ describe('NavaPane screen states', () => {
   it('preview: the webmail reply saves to the thread, not that the add-in is too old', async () => {
     bridgeMockState.analysisOverride = intentAnalysis({ intent: 'quote', workflow: 'quote' });
     render(<NavaPane bridge={fakeBridge} preview />);
-    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as HTMLSelectElement;
+    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as unknown as HTMLSelectElement;
     expect(intent.value).toBe('quote');
     expect(await screen.findByRole('button', { name: 'Draft quotation into email reply' })).toBeDefined();
     expect(
@@ -1694,7 +1694,7 @@ describe('NavaPane screen states', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Use this' }));
     await waitFor(() => {
       expect(reviewedReplyHtml()).toBe('');
-      expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('DLXTWN');
+      expect((screen.getByLabelText('Room type') as unknown as HTMLSelectElement).value).toBe('DLXTWN');
     });
     expect(await screen.findByText('Available')).toBeDefined();
   });
@@ -2007,7 +2007,7 @@ describe('NavaPane screen states', () => {
     const { rerender } = render(
       <NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />,
     );
-    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as HTMLSelectElement;
+    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as unknown as HTMLSelectElement;
     fireEvent.change(intent, { target: { value: 'create_booking' } });
     await waitFor(() => expect(intent.value).toBe('create_booking'));
 
@@ -2016,7 +2016,7 @@ describe('NavaPane screen states', () => {
 
     rerender(<NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />);
     await waitFor(() =>
-      expect((screen.getByLabelText('Change how Nava reads this email') as HTMLSelectElement).value).toBe(
+      expect((screen.getByLabelText('Change how Nava reads this email') as unknown as HTMLSelectElement).value).toBe(
         'create_booking',
       ),
     );
