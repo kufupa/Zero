@@ -605,7 +605,18 @@ describe('staff quote HMS job binding', () => {
           sourceHash: source.sourceHash,
           selectionEpoch: 1,
           inputRevision: 1,
-          groups: [{ ...groups[0]!, adults: 9, specialRequests: undefined, fields: undefined }],
+          groups: [
+            {
+              id: 'single',
+              arrivalDate: '2026-11-12',
+              departureDate: '2026-11-14',
+              quantity: 1,
+              adults: 9,
+              childrenAges: [],
+              board: 'room_only',
+              roomCodes: ['SKNG'],
+            },
+          ],
           salesStrategy: 'BAR' as const,
           company: '',
           agency: '',
@@ -616,7 +627,7 @@ describe('staff quote HMS job binding', () => {
       },
     }));
     const result = await bindReadBackStaffQuote({
-      query,
+      query: query as never,
       source,
       selectionEpoch: 3,
       inputRevision: 4,
