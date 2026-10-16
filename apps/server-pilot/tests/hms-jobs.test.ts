@@ -827,6 +827,39 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(reused).toMatchObject({ created: false, run: { id: run.id, readResult: { ok } } });
     }));
 
+  it('auto-start reuses a 3 h-old priced result and enqueues after 25 h', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000);
+      await db.update(aiWorkflowRun).set({
+        state: 'succeeded',
+        readResult: {
+          kind: 'staff_quote',
+          status: 'ready',
+          asOf: threeHoursAgo.toISOString(),
+        },
+        readResultExpiresAt: new Date(threeHoursAgo.getTime() + 15 * 60_000),
+      }).where(eq(aiWorkflowRun.id, run.id));
+
+      const reused = await hmsJobs.queueAutoStaffQuoteHmsJob(autoStaffQuoteRequest(threadId, messageId), db);
+      expect(reused).toMatchObject({ created: false, run: { id: run.id } });
+
+      const twentyFiveHoursAgo = new Date(Date.now() - 25 * 60 * 60_000);
+      await db.update(aiWorkflowRun).set({
+        readResult: {
+          kind: 'staff_quote',
+          status: 'ready',
+          asOf: twentyFiveHoursAgo.toISOString(),
+        },
+        readResultExpiresAt: new Date(twentyFiveHoursAgo.getTime() + 15 * 60_000),
+      }).where(eq(aiWorkflowRun.id, run.id));
+
+      const queued = await hmsJobs.queueAutoStaffQuoteHmsJob(autoStaffQuoteRequest(threadId, messageId), db);
+      expect(queued.created).toBe(true);
+      expect(queued.run.id).not.toBe(run.id);
+    }));
+
   it.each(['dead_letter', 'superseded'] as const)(
     'auto-start reuses a %s staff quote until six hours after it finishes',
     (state) => withSeededTestDb(async (db) => {
@@ -1069,8 +1102,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       });
       expect(view?.asOf).toEqual(expect.any(String));
       const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
-      expect(stored?.readResultExpiresAt?.getTime()).toBeGreaterThan(Date.now() + 6 * 60 * 60_000 - 1_000);
-      expect(stored?.readResultExpiresAt?.getTime()).toBeLessThan(Date.now() + 6 * 60 * 60_000 + 1_000);
+      expect(stored?.readResultExpiresAt?.getTime()).toBeGreaterThan(Date.now() + 24 * 60 * 60_000 - 1_000);
+      expect(stored?.readResultExpiresAt?.getTime()).toBeLessThan(Date.now() + 24 * 60 * 60_000 + 1_000);
       const [toolRun] = await db
         .select()
         .from(hitlToolRun)

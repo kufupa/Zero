@@ -48,7 +48,7 @@ import {
 } from '../../outlook-security/authorization.js';
 import { buildQuoteProposalPdf, ProposalInputError } from '../../quote-proposal/proposal-pdf.js';
 import type { ImportedOffer, QuoteRevision } from '../../quote-proposal/quote-revision.js';
-import { quoteDigest } from '../../quote-proposal/quote-revision.js';
+import { PRICED_QUOTE_REUSE_MS, quoteDigest } from '../../quote-proposal/quote-revision.js';
 import {
   classifyBookingDraft,
   classifyPdf,
@@ -343,13 +343,12 @@ export function resolvePreparedLedgerProposal(
     parsedInput.data.messageId === scope.messageId &&
     parsedInput.data.sourceHash === scope.sourceHash &&
     prepared?.sourceHash === scope.sourceHash;
+  const asOfMs = typeof result?.asOf === 'string' ? Date.parse(result.asOf) : Number.NaN;
   const freshResult = !!result &&
     staffQuoteResultReusable(result, now) &&
-    typeof result.asOf === 'string' &&
-    Number.isFinite(Date.parse(result.asOf)) &&
-    Date.parse(result.asOf) <= now.getTime() &&
-    !!run.readResultExpiresAt &&
-    run.readResultExpiresAt > now;
+    Number.isFinite(asOfMs) &&
+    asOfMs <= now.getTime() &&
+    asOfMs + PRICED_QUOTE_REUSE_MS > now.getTime();
   if (
     run.transportId !== scope.transportId ||
     run.triggerMessageId !== scope.messageId ||
