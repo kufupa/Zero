@@ -597,6 +597,61 @@ describe('staff-approved quotation beneath native guards', () => {
         party: { company: '', agency: '' },
       }).revision.id,
     ).toBe(revision.id);
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000);
+    const observedAt = revision.sourceFreshness?.observedAt ?? threeHoursAgo.toISOString();
+    const agedRevision = {
+      ...revision,
+      sourceFreshness: {
+        ...revision.sourceFreshness!,
+        observedAt,
+        expiresAt: new Date(Date.parse(observedAt) + 24 * 60 * 60_000).toISOString(),
+      },
+    };
+    expect(
+      resolvePreparedLedgerProposal(
+        {
+          ...preparedRun,
+          readResultExpiresAt: new Date(threeHoursAgo.getTime() + 15 * 60_000),
+          readResult: {
+            ...preparedRun.readResult!,
+            asOf: threeHoursAgo.toISOString(),
+            preparedProposal: {
+              ...(preparedRun.readResult!.preparedProposal as object),
+              revision: agedRevision,
+            },
+          },
+        },
+        {
+          transportId: scope.transportId,
+          messageId: scope.messageId,
+          revisionRef: revision.id,
+          factRefs: [],
+          sourceHash: scope.sourceHash,
+          party: { company: '', agency: '' },
+          now: new Date(),
+        },
+      ).revision.id,
+    ).toBe(revision.id);
+    expect(() =>
+      resolvePreparedLedgerProposal(
+        {
+          ...preparedRun,
+          readResultExpiresAt: new Date(Date.now() - 60_000),
+          readResult: {
+            ...preparedRun.readResult!,
+            asOf: new Date(Date.now() - 25 * 60 * 60_000).toISOString(),
+          },
+        },
+        {
+          transportId: scope.transportId,
+          messageId: scope.messageId,
+          revisionRef: revision.id,
+          factRefs: [],
+          sourceHash: scope.sourceHash,
+          party: { company: '', agency: '' },
+        },
+      ),
+    ).toThrow(/proposal_not_ready/);
     expect(() =>
       resolvePreparedLedgerProposal(preparedRun, {
         transportId: scope.transportId,

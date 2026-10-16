@@ -951,7 +951,7 @@ export async function runStaffQuote(
       currency: revision.currency,
       arrivalDate: revision.groups[0].arrivalDate,
       departureDate: revision.groups.at(-1)!.departureDate,
-      // The HMS evidence behind this price backs a PDF only until then; a queued result is not reused past it.
+      // The HMS evidence behind this price backs a PDF for 24 h from the observation.
       freshUntil: revision.sourceFreshness?.expiresAt ?? null,
       description: deriveQuoteLines(revision, rowPrices)
         .map((line) => line.description)

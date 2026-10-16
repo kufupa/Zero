@@ -20,7 +20,7 @@ import { and, desc, eq, or } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { z } from 'zod';
 import { load } from 'cheerio';
-import { assessQuoteAcceptance, quoteDigest } from '../quote-proposal/quote-revision.js';
+import { assessQuoteAcceptance, PRICED_QUOTE_REUSE_MS, quoteDigest } from '../quote-proposal/quote-revision.js';
 import type { BookingAcceptanceProof } from './reservationist-booking-packet.js';
 import { reservationContextReadResultSchema } from '../hms/reservation-context-contract.js';
 import type { PreparedFact } from './prepared-draft-input.js';
@@ -241,7 +241,13 @@ export function assertReservationistResultFreshForAction(result: unknown, now = 
     }
     const proof = offer.sourceFreshness;
     const refs = offer.groups?.map(group => group.sourceRef).filter((ref): ref is string => !!ref) ?? [offer.sourceRef ?? offer.ref].filter((ref): ref is string => !!ref);
-    if (!offer.authorizationId || proof?.authorizationId !== offer.authorizationId || !proof.sourceRefs?.length || !refs.length || refs.some(ref => !proof.sourceRefs.includes(ref)) || proof.sourceRefs.some(ref => !refs.includes(ref)) || !['offer_source', 'current_inventory'].includes(proof.purpose) || !Number.isFinite(Date.parse(proof.observedAt)) || Date.parse(proof.observedAt) > now.getTime() || !Number.isFinite(Date.parse(proof.expiresAt)) || Date.parse(proof.expiresAt) <= now.getTime() || Date.parse(proof.expiresAt) <= Date.parse(proof.observedAt))
+    const observed = Date.parse(proof?.observedAt ?? '');
+    const storedExpiry = Date.parse(proof?.expiresAt ?? '');
+    const liveUntil =
+      proof?.purpose === 'offer_source' && Number.isFinite(observed)
+        ? observed + PRICED_QUOTE_REUSE_MS
+        : storedExpiry;
+    if (!offer.authorizationId || proof?.authorizationId !== offer.authorizationId || !proof.sourceRefs?.length || !refs.length || refs.some(ref => !proof.sourceRefs.includes(ref)) || proof.sourceRefs.some(ref => !refs.includes(ref)) || !['offer_source', 'current_inventory'].includes(proof.purpose) || !Number.isFinite(observed) || observed > now.getTime() || !Number.isFinite(storedExpiry) || liveUntil <= now.getTime() || storedExpiry <= observed)
       throw new DraftApprovalError('reservationist source freshness authority unavailable or expired');
   }
 }
