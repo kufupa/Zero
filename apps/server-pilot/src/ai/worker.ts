@@ -193,7 +193,7 @@ import { LocalModelRouteUnavailableError } from './bedrock/local.js';
 import { AzureLunaModelAdapter } from './bedrock/luna.js';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { TRIAGE_PROMPT_VERSION } from './workflows/mail-triage.js';
-import { and, asc, desc, eq, inArray, lt, lte, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, lte, or, sql } from 'drizzle-orm';
 import { extractDraftFeedbackLabels } from './feedback.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { normalizeEmailAddress } from './never-spam.js';
@@ -205,7 +205,6 @@ import { executeInboundExtractionRun } from './extraction/inbound-run.js';
 import {
   BODY_HEAD_CHARS,
   classifyWorkflow,
-  mergeClassifierUsage,
   parseStoredClassifier,
 } from './workflow-classifier/index.js';
 import { executeQuoteFollowupRun } from './quote-followup.js';
@@ -4120,46 +4119,53 @@ async function executeShadowPredictionRun(
 /** Attempts after which an inbound read a worker shutdown keeps cutting off dead-letters instead of requeueing. */
 export const MAX_WORKER_SHUTDOWN_ATTEMPTS = 3;
 
+const CLASSIFIER_DEADLINE_MS = 8_000;
+
 /** After a succeeded inbound extraction: store short-context {workflow, confidence} on usage.classifier. */
 export async function storeWorkflowClassifierForInbound(
   db: DB,
   messageId: string,
   classify: typeof classifyWorkflow = classifyWorkflow,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const [row] = await db
-    .select({
-      id: mailExtraction.id,
-      usage: mailExtraction.usage,
-      attachments: mailExtraction.attachments,
-    })
-    .from(mailExtraction)
-    .where(and(eq(mailExtraction.messageId, messageId), eq(mailExtraction.status, 'succeeded')))
-    .orderBy(desc(mailExtraction.createdAt))
-    .limit(1);
-  if (!row || parseStoredClassifier(row.usage)) return;
-  const [msg] = await db
-    .select({ subject: message.subject, textBody: message.textBody })
-    .from(message)
-    .where(eq(message.id, messageId))
-    .limit(1);
-  if (!msg) return;
-  const attachmentNames = Array.isArray(row.attachments)
-    ? row.attachments
-        .map((item) => (item && typeof item === 'object' && 'filename' in item ? String(item.filename ?? '') : ''))
-        .filter(Boolean)
-    : [];
   try {
-    const result = await classify({
-      subject: msg.subject ?? '',
-      attachmentNames,
-      bodyHead: (msg.textBody ?? '').slice(0, BODY_HEAD_CHARS),
-    });
-    if (!result) return;
-    const usage = mergeClassifierUsage(
-      row.usage && typeof row.usage === 'object' ? row.usage : {},
-      result,
+    const [row] = await db
+      .select({
+        id: mailExtraction.id,
+        usage: mailExtraction.usage,
+        attachments: mailExtraction.attachments,
+      })
+      .from(mailExtraction)
+      .where(and(eq(mailExtraction.messageId, messageId), eq(mailExtraction.status, 'succeeded')))
+      .orderBy(desc(mailExtraction.createdAt))
+      .limit(1);
+    if (!row || parseStoredClassifier(row.usage)) return;
+    const [msg] = await db
+      .select({ subject: message.subject, textBody: message.textBody })
+      .from(message)
+      .where(eq(message.id, messageId))
+      .limit(1);
+    if (!msg) return;
+    const attachmentNames = Array.isArray(row.attachments)
+      ? row.attachments
+          .map((item) => (item && typeof item === 'object' && 'filename' in item ? String(item.filename ?? '') : ''))
+          .filter(Boolean)
+      : [];
+    const deadline = AbortSignal.timeout(CLASSIFIER_DEADLINE_MS);
+    const result = await classify(
+      {
+        subject: msg.subject ?? '',
+        attachmentNames,
+        bodyHead: (msg.textBody ?? '').slice(0, BODY_HEAD_CHARS),
+      },
+      { signal: signal ? AbortSignal.any([signal, deadline]) : deadline },
     );
-    await db.update(mailExtraction).set({ usage }).where(eq(mailExtraction.id, row.id));
+    if (!result) return;
+    const patch = JSON.stringify({ classifier: result });
+    await db
+      .update(mailExtraction)
+      .set({ usage: sql`coalesce(${mailExtraction.usage}, '{}'::jsonb) || ${patch}::jsonb` })
+      .where(eq(mailExtraction.id, row.id));
   } catch {
     // Extraction already succeeded; pane keeps WORKFLOW_BY_KIND.
   }
@@ -5469,7 +5475,12 @@ export async function executeAiRun(
       });
       // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
       if (extracted.state === 'succeeded') {
-        await storeWorkflowClassifierForInbound(db, runWithFence.triggerMessageId, options.ingestClassify);
+        await storeWorkflowClassifierForInbound(
+          db,
+          runWithFence.triggerMessageId,
+          options.ingestClassify,
+          signal,
+        );
         scheduleAvailabilityPrefetch(runWithFence);
         scheduleQuotePreparationForExtraction(runWithFence);
         // U3 reads the committed extraction; the scheduler waits for matching triage too when that run exists.
