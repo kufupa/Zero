@@ -4126,7 +4126,6 @@ export async function storeWorkflowClassifierForInbound(
   db: DB,
   messageId: string,
   classify: typeof classifyWorkflow = classifyWorkflow,
-  signal?: AbortSignal,
 ): Promise<void> {
   try {
     const [row] = await db
@@ -4151,23 +4150,27 @@ export async function storeWorkflowClassifierForInbound(
           .map((item) => (item && typeof item === 'object' && 'filename' in item ? String(item.filename ?? '') : ''))
           .filter(Boolean)
       : [];
-    const deadline = AbortSignal.timeout(CLASSIFIER_DEADLINE_MS);
+    // Own deadline only: the run is already succeeded here, so its lease signal can abort under us.
     const result = await classify(
       {
         subject: msg.subject ?? '',
         attachmentNames,
         bodyHead: (msg.textBody ?? '').slice(0, BODY_HEAD_CHARS),
       },
-      { signal: signal ? AbortSignal.any([signal, deadline]) : deadline },
+      { signal: AbortSignal.timeout(CLASSIFIER_DEADLINE_MS) },
     );
-    if (!result) return;
+    if (!result) {
+      console.error('ingest_classifier_empty', messageId);
+      return;
+    }
     const patch = JSON.stringify({ classifier: result });
     await db
       .update(mailExtraction)
       .set({ usage: sql`coalesce(${mailExtraction.usage}, '{}'::jsonb) || ${patch}::jsonb` })
       .where(eq(mailExtraction.id, row.id));
-  } catch {
+  } catch (error) {
     // Extraction already succeeded; pane keeps WORKFLOW_BY_KIND.
+    console.error('ingest_classifier_failed', messageId, error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -5475,12 +5478,7 @@ export async function executeAiRun(
       });
       // Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on; quote mail only (U10).
       if (extracted.state === 'succeeded') {
-        await storeWorkflowClassifierForInbound(
-          db,
-          runWithFence.triggerMessageId,
-          options.ingestClassify,
-          signal,
-        );
+        await storeWorkflowClassifierForInbound(db, runWithFence.triggerMessageId, options.ingestClassify);
         scheduleAvailabilityPrefetch(runWithFence);
         scheduleQuotePreparationForExtraction(runWithFence);
         // U3 reads the committed extraction; the scheduler waits for matching triage too when that run exists.
