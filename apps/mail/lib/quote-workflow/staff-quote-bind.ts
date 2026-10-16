@@ -1311,10 +1311,18 @@ export async function bindReadBackStaffQuote(
   const built = staffQuoteRequest(args);
   if ('error' in built) return null;
   try {
-    const lookup = { messageId: args.source.messageId };
-    const first = args.signal
-      ? await args.query(lookup, { signal: args.signal })
-      : await args.query(lookup);
+    const byMessage = args.signal
+      ? await args.query({ messageId: args.source.messageId }, { signal: args.signal })
+      : await args.query({ messageId: args.source.messageId });
+    const matched =
+      byMessage &&
+      (!byMessage.request || staffQuoteRequestMatches(byMessage.request, built.input))
+        ? byMessage
+        : null;
+    const first = matched
+      ?? (args.signal
+        ? await args.query({ input: built.input }, { signal: args.signal })
+        : await args.query({ input: built.input }));
     if (!first || args.signal?.aborted) return null;
     if (first.request && !staffQuoteRequestMatches(first.request, built.input)) return null;
     if (
