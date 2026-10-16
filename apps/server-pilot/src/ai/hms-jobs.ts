@@ -3112,9 +3112,20 @@ async function latestStaffQuoteRunFor(
 }
 
 function staffQuoteRunFreshness(now: Date) {
+  const asOfFloor = new Date(now.getTime() - PRICED_QUOTE_REUSE_MS).toISOString();
   return or(
     inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
-    and(eq(aiWorkflowRun.state, 'succeeded'), gt(aiWorkflowRun.readResultExpiresAt, now)),
+    and(
+      eq(aiWorkflowRun.state, 'succeeded'),
+      or(
+        gt(aiWorkflowRun.readResultExpiresAt, now),
+        and(
+          sql`${aiWorkflowRun.readResult}->>'status' = 'ready'`,
+          sql`(${aiWorkflowRun.readResult}->>'asOf')::timestamptz > ${asOfFloor}::timestamptz`,
+          sql`(${aiWorkflowRun.readResult}->>'asOf')::timestamptz <= ${now.toISOString()}::timestamptz`,
+        ),
+      ),
+    ),
     and(
       inArray(aiWorkflowRun.state, ['dead_letter', 'superseded']),
       sql`coalesce(${aiWorkflowRun.finishedAt}, ${aiWorkflowRun.updatedAt}, ${aiWorkflowRun.createdAt}) > ${new Date(now.getTime() - STAFF_QUOTE_RESULT_TTL_MS).toISOString()}::timestamp`,

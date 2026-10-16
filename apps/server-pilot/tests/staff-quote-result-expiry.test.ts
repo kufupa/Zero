@@ -62,7 +62,7 @@ describe('priced quote PDF / approval', () => {
                 authorizationId: 'staff-quote:test',
                 sourceRefs: ['native:quote'],
                 observedAt,
-                expiresAt: new Date(Date.parse(observedAt) + PRICED_QUOTE_REUSE_MS).toISOString(),
+                expiresAt: new Date(Date.parse(observedAt) + 15 * 60_000).toISOString(),
                 purpose: 'offer_source',
               },
             },
