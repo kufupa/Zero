@@ -77,7 +77,9 @@ Typecheck: `bash /home/orca/bin/remote-typecheck.sh <wt> --app mail --baseline` 
 ## 6. Status
 
 - [x] Step 0 written
-- [ ] TDD + impl
-- [ ] Focused vitest + remote typecheck
-- [ ] PR + @greptileai ≤2 rounds
-- [ ] `LANE_DONE PR=<n>`
+- [x] TDD + impl
+- [x] Focused vitest + remote typecheck (mail 127 pass, typecheck new=0)
+- [x] PR https://github.com/kufupa/Zero/pull/344 — Greptile CLI 2 rounds (P1 occupancy/removals/toast; prepared-job fallback)
+- [ ] Prod screenshots + run ids in `runs/proof/B0b/` (no deploy this lane)
+
+`LANE_DONE PR=344` pending owner deploy + pane proof.
